@@ -19,6 +19,7 @@ export * from "./security/allowlist.js";
 export * from "./security/entropy.js";
 export * from "./security/scanner.js";
 export * from "./state/baseline.js";
+export * from "./state/atomic.js";
 export * from "./state/layout.js";
 export * from "./state/locks.js";
 export * from "./skill-ir/bundle.js";
