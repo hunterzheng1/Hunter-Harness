@@ -3,6 +3,11 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  oxc: {
+    jsx: {
+      runtime: "automatic"
+    }
+  },
   resolve: {
     alias: {
       "@hunter-harness/contracts": fileURLToPath(
@@ -18,6 +23,7 @@ export default defineConfig({
     include: [
       "packages/**/*.test.ts",
       "apps/**/*.test.ts",
+      "apps/**/*.test.tsx",
       "tests/**/*.test.ts"
     ],
     coverage: {

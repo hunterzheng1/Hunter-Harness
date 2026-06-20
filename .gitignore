@@ -9,6 +9,8 @@ dist/
 build/
 out/
 lib/
+!apps/web/lib/
+!apps/web/lib/**
 *.tsbuildinfo
 .tsbuildinfo
 
