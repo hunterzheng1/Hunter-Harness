@@ -73,6 +73,15 @@ function reviewFrom(row: QueryResultRow): ReviewRecord {
   };
 }
 
+export function idempotencyLockKey(input: {
+  actorId: string;
+  method: string;
+  path: string;
+  key: string;
+}): string {
+  return JSON.stringify([input.actorId, input.method, input.path, input.key]);
+}
+
 export class PostgresRepository implements ServerRepository {
   constructor(readonly pool: Pool) {}
 
@@ -83,7 +92,7 @@ export class PostgresRepository implements ServerRepository {
     key: string;
   }): Promise<{ release(): Promise<void> }> {
     const client = await this.pool.connect();
-    const lockKey = [input.actorId, input.method, input.path, input.key].join("\0");
+    const lockKey = idempotencyLockKey(input);
     try {
       await client.query(`SELECT pg_advisory_lock(hashtextextended($1, 0))`, [lockKey]);
     } catch (error) {

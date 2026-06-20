@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/main.js",
-    "test:postgres": "vitest run test/postgres.integration.test.ts"
+    "test:postgres": "vitest --root ../.. --config vitest.config.ts run apps/server/test/postgres.integration.test.ts"
   },
   "dependencies": {
     "@hunter-harness/contracts": "*",
