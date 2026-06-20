@@ -9,6 +9,8 @@ dist/
 build/
 out/
 lib/
+!apps/web/lib/
+!apps/web/lib/**
 *.tsbuildinfo
 .tsbuildinfo
 
@@ -32,6 +34,7 @@ coverage/
 !.env.example
 *.pem
 *.key
+secrets/
 
 # ===== 缓存 =====
 .cache/
@@ -75,6 +78,7 @@ $RECYCLE.BIN/
 tmp/
 temp/
 .worktrees/
+/packages/cli/resources/
 
 # ===== AI 工具本地目录（按需保留）=====
 .agents/

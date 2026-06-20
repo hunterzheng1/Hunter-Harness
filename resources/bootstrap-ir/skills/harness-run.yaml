@@ -1,0 +1,23 @@
+name: harness-run
+kind: workflow
+description: Execute an approved implementation plan with test-first evidence and an execution log.
+triggers: [implement the plan, run approved tasks]
+inputs: [implementation_plan, test_scenarios]
+outputs: [implementation_changes, execution_log]
+forbidden_actions: [skip_red_green_verification, claim_unverified_success, automatic_source_control_write]
+required_context: [AGENTS.md, .harness/context-index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Execute one bounded task at a time.
+  - Record real command output and distinguish it from static inspection.
+  - Stop on unsafe or unexplained failures.
+allowed_capabilities: [read, search, write_project_files, run_tests]
+source_provenance: user-provided validated execution workflow adapted to Hunter Harness

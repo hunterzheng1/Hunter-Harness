@@ -1,0 +1,23 @@
+name: harness-archive
+kind: workflow
+description: Archive completed change evidence and extract unpromoted candidate Knowledge.
+triggers: [archive completed change, extract reusable knowledge]
+inputs: [change_documents, verification_evidence]
+outputs: [archive_summary, candidate_knowledge]
+forbidden_actions: [auto_promote_candidate_knowledge, discard_evidence, expose_sensitive_data]
+required_context: [AGENTS.md, .harness/context-index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Preserve the final summary and execution evidence.
+  - Extract reusable facts into the candidate area with source references.
+  - Never promote candidates to active Knowledge automatically.
+allowed_capabilities: [read, write_harness_archive, write_candidate_knowledge]
+source_provenance: user-provided validated archive workflow adapted to Hunter Harness

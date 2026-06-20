@@ -1,0 +1,23 @@
+name: harness-knowledge-ingest
+kind: governance
+description: Validate, deduplicate, index, and propose project Knowledge without bypassing review.
+triggers: [ingest knowledge, rebuild knowledge index]
+inputs: [knowledge_entries, candidate_entries]
+outputs: [knowledge_index, validation_report]
+forbidden_actions: [auto_promote_candidate_knowledge, include_project_local_by_default, erase_conflicts]
+required_context: [AGENTS.md, .harness/knowledge/index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Validate frontmatter and lifecycle relationships.
+  - Detect duplicate IDs, duplicate content, and conflicting active facts.
+  - Keep project-local entries excluded unless explicitly selected.
+allowed_capabilities: [read, search, write_knowledge_index, write_candidate_knowledge]
+source_provenance: Hunter Harness Knowledge governance contract
