@@ -22,7 +22,7 @@ function defaultDependencies(overrides: CliDependencies): CommandDependencies {
   return {
     cwd: overrides.cwd ?? process.cwd(),
     resourcesRoot: overrides.resourcesRoot ?? fileURLToPath(
-      new URL("../../../resources/bootstrap-ir", import.meta.url)
+      new URL("../resources/bootstrap-ir", import.meta.url)
     ),
     stdout: overrides.stdout ?? ((value) => process.stdout.write(value)),
     stderr: overrides.stderr ?? ((value) => process.stderr.write(value)),

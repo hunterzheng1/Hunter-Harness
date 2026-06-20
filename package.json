@@ -15,12 +15,13 @@
     "postcss": "8.5.10"
   },
   "scripts": {
-    "build": "tsc -b && npm run build -w apps/web",
+    "build": "tsc -b && npm run bundle -w packages/cli && npm run copy-resources -w packages/cli && npm run build -w apps/web",
     "typecheck": "tsc -b && npm run typecheck -w apps/web",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+    "smoke:pack": "node scripts/smoke-pack.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:pack"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

@@ -1,24 +1,30 @@
 {
   "name": "hunter-harness",
   "version": "0.1.0",
-  "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "bin": {
     "hunter-harness": "./dist/bin.js"
   },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
+  "files": [
+    "dist/bin.js",
+    "resources/bootstrap-ir"
+  ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -p tsconfig.json && npm run bundle && npm run copy-resources",
+    "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --outfile=dist/bin.js",
+    "copy-resources": "node scripts/copy-resources.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
   },
   "dependencies": {
+    "commander": "15.0.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
     "@hunter-harness/contracts": "*",
     "@hunter-harness/core": "*",
-    "commander": "15.0.0"
+    "esbuild": "^0.25.12"
   }
 }
