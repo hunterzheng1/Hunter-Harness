@@ -1,0 +1,263 @@
+openapi: 3.1.0
+info:
+  title: Hunter Harness API
+  version: 1.0.0
+servers:
+  - url: https://harness.example.com
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/projects:resolve:
+    post:
+      operationId: resolveProject
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectResolveRequest"
+      responses:
+        "200":
+          description: Project created or bound
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}:
+    get:
+      operationId: getProject
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Project metadata
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/proposal-sessions:
+    post:
+      operationId: createProposalSession
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Upload session created
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/proposal-sessions/{session_id}/blobs:query:
+    post:
+      operationId: queryBlobs
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Present and missing blob hashes
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/proposal-sessions/{session_id}/blobs/{content_sha256}:
+    put:
+      operationId: uploadBlob
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/ContentSha256"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: Chunk accepted
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/proposal-sessions/{session_id}:finalize:
+    post:
+      operationId: finalizeProposal
+      parameters:
+        - $ref: "#/components/parameters/SessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Proposal created
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/proposals:
+    get:
+      operationId: listProposals
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Proposal page
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/proposals/{proposal_id}:
+    get:
+      operationId: getProposal
+      parameters:
+        - $ref: "#/components/parameters/ProposalId"
+      responses:
+        "200":
+          description: Proposal details
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/proposals/{proposal_id}/review-decisions:
+    post:
+      operationId: createReviewDecision
+      parameters:
+        - $ref: "#/components/parameters/ProposalId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201":
+          description: Review decision recorded
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/update-manifest:
+    get:
+      operationId: getUpdateManifest
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+      responses:
+        "200":
+          description: Approved artifact delta metadata
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/artifacts/{artifact_id}/manifest:
+    get:
+      operationId: getArtifactManifest
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+      responses:
+        "200":
+          description: Immutable artifact manifest
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/artifacts/{artifact_id}/blobs/{content_sha256}:
+    get:
+      operationId: downloadArtifactBlob
+      parameters:
+        - $ref: "#/components/parameters/ArtifactId"
+        - $ref: "#/components/parameters/ContentSha256"
+      responses:
+        "200":
+          description: Artifact blob
+        default:
+          $ref: "#/components/responses/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    RequestId:
+      name: X-Request-Id
+      in: header
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema:
+        type: string
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ProposalId:
+      name: proposal_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ArtifactId:
+      name: artifact_id
+      in: path
+      required: true
+      schema:
+        type: string
+    ContentSha256:
+      name: content_sha256
+      in: path
+      required: true
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type:
+          - string
+          - "null"
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+  schemas:
+    ProjectResolveRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - local_project_key
+        - display_name
+        - client_id
+      properties:
+        schema_version:
+          const: 1
+        local_project_key:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        requested_project_id:
+          type:
+            - string
+            - "null"
+        client_id:
+          type: string
+    ApiError:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+            - code
+            - message
+            - request_id
+            - details
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            request_id:
+              type: string
+              format: uuid
+            details:
+              type: object
+  responses:
+    Error:
+      description: Standard error envelope
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
