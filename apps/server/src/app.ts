@@ -291,6 +291,33 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     };
   });
 
+  app.get("/api/v1/projects", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "limit must be between 1 and 100");
+    }
+    const listed = await repository.listProjects({
+      actorId: actor.actorId,
+      limit,
+      cursor: query.cursor ?? null
+    });
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: listed.items.map((project) => ({
+        project_id: project.projectId,
+        display_name: project.displayName,
+        role: "owner",
+        latest_project_version: project.latestProjectVersion,
+        latest_artifact_id: project.latestArtifactId,
+        created_at: project.createdAt
+      })),
+      page: { next_cursor: listed.nextCursor, limit },
+      request_id: requestId
+    };
+  });
+
   app.post("/api/v1/projects/:projectId/proposal-sessions", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { projectId } = request.params as { projectId: string };
@@ -532,6 +559,37 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         risk_count: 0,
         base_project_version: proposal.baseProjectVersion,
         created_by: proposal.createdBy
+      })),
+      page: { next_cursor: listed.nextCursor, limit },
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/artifacts", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const query = request.query as Record<string, string | undefined>;
+    const limit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "limit must be between 1 and 100");
+    }
+    const listed = await repository.listArtifacts({
+      actorId: actor.actorId,
+      projectId,
+      limit,
+      cursor: query.cursor ?? null
+    });
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: listed.items.map((artifact) => ({
+        artifact_id: artifact.artifactId,
+        project_id: artifact.projectId,
+        project_version: artifact.projectVersion,
+        base_project_version: artifact.baseProjectVersion,
+        proposal_id: artifact.proposalId,
+        changed_item_count: artifact.manifest.files.length,
+        manifest_sha256: artifact.manifest.manifest_sha256,
+        created_at: artifact.createdAt
       })),
       page: { next_cursor: listed.nextCursor, limit },
       request_id: requestId

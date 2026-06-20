@@ -96,6 +96,16 @@ describe("/api/v1 governed server", () => {
     expect(reused.statusCode).toBe(409);
     expect(reused.json()).toMatchObject({ error: { code: "IDEMPOTENCY_KEY_REUSED" } });
 
+    const projects = await app.inject({
+      method: "GET",
+      url: "/api/v1/projects?limit=10",
+      headers: headers()
+    });
+    expect(projects.statusCode).toBe(200);
+    expect(projects.json().items).toEqual([
+      expect.objectContaining({ project_id: first.json().project_id, role: "owner" })
+    ]);
+
     const forbidden = await app.inject({
       method: "POST",
       url: "/api/v1/projects:resolve",
@@ -231,6 +241,18 @@ describe("/api/v1 governed server", () => {
     });
     expect(manifest.statusCode).toBe(200);
     expect(manifest.headers.etag).toBe(manifest.json().manifest_sha256);
+    const history = await app.inject({
+      method: "GET",
+      url: `/api/v1/projects/${projectId}/artifacts?limit=10`,
+      headers: headers()
+    });
+    expect(history.json().items).toEqual([
+      expect.objectContaining({
+        artifact_id: artifactId,
+        proposal_id: proposalId,
+        changed_item_count: 1
+      })
+    ]);
 
     const blob = await app.inject({
       method: "GET",

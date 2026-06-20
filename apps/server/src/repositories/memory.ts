@@ -130,6 +130,31 @@ export class MemoryRepository implements ServerRepository {
     return this.requireProject(actorId, projectId);
   }
 
+  async listProjects(input: {
+    actorId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
+    const offset = input.cursor === null
+      ? 0
+      : Number.parseInt(Buffer.from(input.cursor, "base64url").toString("utf8"), 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
+    }
+    const values = [...this.projects.values()]
+      .filter((project) => project.ownerActorId === input.actorId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) ||
+        right.projectId.localeCompare(left.projectId));
+    const items = values.slice(offset, offset + input.limit);
+    const nextOffset = offset + items.length;
+    return {
+      items,
+      nextCursor: nextOffset < values.length
+        ? Buffer.from(String(nextOffset)).toString("base64url")
+        : null
+    };
+  }
+
   async createProposalSession(
     input: Omit<ProposalSessionRecord, "sessionId">
   ): Promise<ProposalSessionRecord> {
@@ -354,6 +379,32 @@ export class MemoryRepository implements ServerRepository {
         artifact.baseProjectVersion === baseProjectVersion)
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt) ||
         left.artifactId.localeCompare(right.artifactId))[0] ?? null;
+  }
+
+  async listArtifacts(input: {
+    actorId: string;
+    projectId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ArtifactRecord[]; nextCursor: string | null }> {
+    this.requireProject(input.actorId, input.projectId);
+    const offset = input.cursor === null
+      ? 0
+      : Number.parseInt(Buffer.from(input.cursor, "base64url").toString("utf8"), 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
+    }
+    const values = [...this.artifacts.values()]
+      .filter((artifact) => artifact.projectId === input.projectId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) ||
+        right.artifactId.localeCompare(left.artifactId));
+    const items = values.slice(offset, offset + input.limit);
+    return {
+      items,
+      nextCursor: offset + items.length < values.length
+        ? Buffer.from(String(offset + items.length)).toString("base64url")
+        : null
+    };
   }
 
   async appendAudit(

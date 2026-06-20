@@ -129,6 +129,11 @@ export interface ServerRepository {
     requestedProjectId: string | null;
   }): Promise<{ project: ProjectRecord; bindingStatus: "created" | "bound" }>;
   getProject(actorId: string, projectId: string): Promise<ProjectRecord>;
+  listProjects(input: {
+    actorId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }>;
   createProposalSession(input: Omit<ProposalSessionRecord, "sessionId">): Promise<ProposalSessionRecord>;
   getProposalSession(actorId: string, sessionId: string): Promise<ProposalSessionRecord>;
   updateProposalSession(session: ProposalSessionRecord): Promise<void>;
@@ -156,6 +161,12 @@ export interface ServerRepository {
     projectId: string,
     baseProjectVersion: string | null
   ): Promise<ArtifactRecord | null>;
+  listArtifacts(input: {
+    actorId: string;
+    projectId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ArtifactRecord[]; nextCursor: string | null }>;
   appendAudit(event: Omit<AuditEvent, "eventId" | "createdAt">): Promise<AuditEvent>;
   getIdempotency(input: {
     actorId: string;

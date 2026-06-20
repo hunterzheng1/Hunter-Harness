@@ -220,6 +220,30 @@ export class PostgresRepository implements ServerRepository {
     return projectFrom(result.rows[0] ?? {});
   }
 
+  async listProjects(input: {
+    actorId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
+    const offset = input.cursor === null
+      ? 0
+      : Number.parseInt(Buffer.from(input.cursor, "base64url").toString("utf8"), 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
+    }
+    const result = await this.pool.query(
+      `SELECT * FROM projects WHERE owner_actor_id = $1
+       ORDER BY created_at DESC, project_id DESC LIMIT $2 OFFSET $3`,
+      [input.actorId, input.limit + 1, offset]
+    );
+    return {
+      items: result.rows.slice(0, input.limit).map(projectFrom),
+      nextCursor: result.rows.length > input.limit
+        ? Buffer.from(String(offset + input.limit)).toString("base64url")
+        : null
+    };
+  }
+
   async createProposalSession(
     input: Omit<ProposalSessionRecord, "sessionId">
   ): Promise<ProposalSessionRecord> {
@@ -585,6 +609,37 @@ export class PostgresRepository implements ServerRepository {
     return result.rowCount === 0
       ? null
       : this.getArtifact(actorId, String(result.rows[0]?.artifact_id));
+  }
+
+  async listArtifacts(input: {
+    actorId: string;
+    projectId: string;
+    limit: number;
+    cursor: string | null;
+  }): Promise<{ items: ArtifactRecord[]; nextCursor: string | null }> {
+    await this.getProject(input.actorId, input.projectId);
+    const offset = input.cursor === null
+      ? 0
+      : Number.parseInt(Buffer.from(input.cursor, "base64url").toString("utf8"), 10);
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
+    }
+    const result = await this.pool.query(
+      `SELECT artifact_id FROM artifacts WHERE project_id = $1
+       ORDER BY created_at DESC, artifact_id DESC LIMIT $2 OFFSET $3`,
+      [input.projectId, input.limit + 1, offset]
+    );
+    const selected = result.rows.slice(0, input.limit);
+    const items = [];
+    for (const row of selected) {
+      items.push(await this.getArtifact(input.actorId, String(row.artifact_id)));
+    }
+    return {
+      items,
+      nextCursor: result.rows.length > input.limit
+        ? Buffer.from(String(offset + input.limit)).toString("base64url")
+        : null
+    };
   }
 
   async appendAudit(
