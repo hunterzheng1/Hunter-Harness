@@ -4,6 +4,8 @@ export * from "./fs/hash.js";
 export * from "./fs/path-safety.js";
 export * from "./managed/managed-block.js";
 export * from "./policy/file-policy.js";
+export * from "./project/initialize.js";
+export * from "./project/uuid-v7.js";
 export * from "./state/baseline.js";
 export * from "./state/layout.js";
 export * from "./state/locks.js";

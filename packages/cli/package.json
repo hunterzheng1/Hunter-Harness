@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@hunter-harness/contracts": "*",
-    "@hunter-harness/core": "*"
+    "@hunter-harness/core": "*",
+    "commander": "15.0.0"
   }
 }
