@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 import {
   ApiClientError,
@@ -16,6 +16,9 @@ import {
 function errorMessage(error: unknown): string {
   if (error instanceof ApiClientError && (error.status === 401 || error.status === 403)) {
     return "Authentication required. Add a valid API token to this browser session.";
+  }
+  if (error instanceof ApiClientError && error.code === "NETWORK_ERROR") {
+    return "Governance request failed (NETWORK_ERROR). " + error.message;
   }
   if (error instanceof ApiClientError) {
     return "Governance request failed (" + error.code + "). No sensitive details were displayed.";
@@ -37,6 +40,7 @@ export function DashboardConsole({ api }: { api: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
+    setError(null);
     void Promise.all([api.listProjects(), api.listAllProposals()])
       .then(([nextProjects, nextProposals]) => {
         if (active) {
@@ -83,6 +87,7 @@ export function ProjectRegistry({ api }: { api: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
+    setError(null);
     void api.listProjects().then((items) => { if (active) setProjects(items); })
       .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
@@ -109,6 +114,7 @@ export function ReviewQueue({ api }: { api: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
+    setError(null);
     void api.listAllProposals().then((items) => {
       if (active) setProposals(items.filter((item) => item.status === "pending_review"));
     }).catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
@@ -134,6 +140,7 @@ export function ArtifactHistory({ api }: { api: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
+    setError(null);
     void api.listAllArtifacts().then((items) => { if (active) setArtifacts(items); })
       .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
@@ -167,6 +174,7 @@ export function ProposalDetail({ api, proposalId }: { api: HunterApi; proposalId
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let active = true;
+    setError(null);
     void api.getProposal(proposalId).then((value) => { if (active) setProposal(value); })
       .catch((reason: unknown) => { if (active) setError(errorMessage(reason)); });
     return () => { active = false; };
@@ -227,18 +235,50 @@ export function ProposalDetail({ api, proposalId }: { api: HunterApi; proposalId
 export function AuthTokenForm() {
   const [token, setToken] = useState("");
   const [saved, setSaved] = useState(false);
-  return (
-    <form className="token-form" onSubmit={(event) => {
-      event.preventDefault();
-      if (token.trim() !== "") {
-        window.sessionStorage.setItem("hunter-harness-token", token.trim());
-        setToken("");
-        setSaved(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function submitToken(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    const nextToken = token.trim();
+    setSaved(false);
+    setMessage(null);
+    if (nextToken === "") return;
+    if (!/^hh_[A-Za-z0-9_-]+$/.test(nextToken)) {
+      setMessage("Token format looks invalid. Paste only the hh_… token value.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch("/api/v1/projects?limit=1", {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer " + nextToken,
+          "X-Request-Id": globalThis.crypto.randomUUID()
+        }
+      });
+      if (!response.ok) {
+        setMessage(response.status === 401 || response.status === 403
+          ? "Token was rejected by the server."
+          : "Token check failed with HTTP " + response.status + ".");
+        return;
       }
-    }}>
+      window.sessionStorage.setItem("hunter-harness-token", nextToken);
+      setToken("");
+      setSaved(true);
+      window.location.assign(window.location.pathname + window.location.search);
+    } catch {
+      setMessage("Browser could not reach /api/v1/projects. Check extensions or network policy.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="token-form" onSubmit={(event) => { void submitToken(event); }}>
       <label htmlFor="api-token">Session API token</label>
-      <input id="api-token" type="password" autoComplete="off" value={token} onChange={(event) => { setToken(event.target.value); setSaved(false); }} placeholder="Stored in this tab only" />
-      <button type="submit">Set token</button>{saved ? <span>Saved</span> : null}
+      <input id="api-token" type="password" autoComplete="off" value={token} onChange={(event) => { setToken(event.target.value); setSaved(false); setMessage(null); }} placeholder="Stored in this tab only" />
+      <button type="submit" disabled={busy}>{busy ? "Checking…" : "Set token"}</button>{saved ? <span>Saved</span> : null}{message === null ? null : <span>{message}</span>}
     </form>
   );
 }

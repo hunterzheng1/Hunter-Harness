@@ -80,6 +80,10 @@ temp/
 .worktrees/
 /packages/cli/resources/
 
+# ===== 本机部署/调试产物 =====
+/caddy/
+/run-push.sh
+
 # ===== AI 工具本地目录（按需保留）=====
 .agents/
 .codex/

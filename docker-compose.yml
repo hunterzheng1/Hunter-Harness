@@ -28,7 +28,6 @@ services:
       ARTIFACT_ROOT: /var/lib/hunter-harness/artifacts
       HUNTER_HARNESS_BOOTSTRAP_ACTOR: ${HUNTER_HARNESS_BOOTSTRAP_ACTOR:-actor_owner}
       HUNTER_HARNESS_BOOTSTRAP_NAME: ${HUNTER_HARNESS_BOOTSTRAP_NAME:-Owner}
-      HUNTER_HARNESS_BOOTSTRAP_TOKEN_FILE: /run/secrets/bootstrap_token
     entrypoint:
       - /bin/sh
       - -ec
@@ -38,7 +37,6 @@ services:
         exec node apps/server/dist/main.js
     secrets:
       - postgres_password
-      - bootstrap_token
     volumes:
       - artifact-data:/var/lib/hunter-harness/artifacts
     depends_on:
@@ -78,5 +76,3 @@ volumes:
 secrets:
   postgres_password:
     file: ${POSTGRES_PASSWORD_FILE:-./secrets/postgres_password.txt}
-  bootstrap_token:
-    file: ${BOOTSTRAP_TOKEN_FILE:-./secrets/bootstrap_token.txt}

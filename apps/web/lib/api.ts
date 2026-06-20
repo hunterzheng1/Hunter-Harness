@@ -112,7 +112,7 @@ export class HttpHunterApi implements HunterApi {
   }) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.tokenProvider = options.tokenProvider;
-    this.fetch = options.fetch ?? globalThis.fetch;
+    this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
   private async request<T>(
@@ -126,10 +126,10 @@ export class HttpHunterApi implements HunterApi {
     }
     const headers = new Headers({
       Accept: "application/json",
-      Authorization: "Bearer " + token,
-      "X-Request-Id": uuid()
+      Authorization: "Bearer " + token
     });
     if (body !== undefined) {
+      headers.set("X-Request-Id", uuid());
       headers.set("Content-Type", "application/json");
       headers.set("Idempotency-Key", uuid());
     }
@@ -141,7 +141,7 @@ export class HttpHunterApi implements HunterApi {
         ...(body === undefined ? {} : { body: JSON.stringify(body) })
       });
     } catch {
-      throw new ApiClientError(0, "NETWORK_ERROR", "Unable to reach the governance server.");
+      throw new ApiClientError(0, "NETWORK_ERROR", "Unable to reach the governance server while requesting " + path + ".");
     }
     const payload = await response.json() as {
       error?: { code?: string; message?: string };
