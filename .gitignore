@@ -74,6 +74,7 @@ $RECYCLE.BIN/
 *.temp
 tmp/
 temp/
+.worktrees/
 
 # ===== AI 工具本地目录（按需保留）=====
 .agents/
