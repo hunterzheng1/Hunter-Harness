@@ -16,7 +16,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         <div className="shell">
           <aside>
             <Link className="brand" href="/"><span>HH</span><div>Hunter Harness<small>Governance Console</small></div></Link>
-            <nav><Link href="/">Overview</Link><Link href="/projects">Projects</Link><Link href="/proposals">Review queue</Link><Link href="/artifacts">Artifacts</Link></nav>
+            <nav><Link href="/">Overview</Link><Link href="/projects">Projects</Link><Link href="/workflows">Harness Workflows</Link><Link href="/skills">Skills</Link><Link href="/proposals">Review queue</Link><Link href="/artifacts">Artifacts</Link></nav>
             <AuthTokenForm />
           </aside>
           <main>{children}</main>
