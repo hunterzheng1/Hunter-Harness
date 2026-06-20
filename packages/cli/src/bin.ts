@@ -10,6 +10,8 @@ import {
   type ConfigureOptions
 } from "./commands/configure.js";
 import { runPush, type PushOptions } from "./commands/push.js";
+import { runUpdate, type UpdateOptions } from "./commands/update.js";
+import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
 
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
@@ -67,13 +69,20 @@ export async function runCli(
 
   let exitCode = 0;
   program.action(async (options: ConfigureOptions) => {
+    const recoveryResult = await runRecoveryMenuIfApplicable(options, dependencies);
+    if (recoveryResult !== null) {
+      exitCode = recoveryResult;
+      return;
+    }
     exitCode = await runConfigure(options, dependencies);
   });
   addCommonOptions(program.command("update"))
     .description("Apply approved server artifacts")
-    .action(() => {
-      dependencies.stderr("update is not implemented yet\n");
-      exitCode = 1;
+    .action(async (options: UpdateOptions) => {
+      exitCode = await runUpdate(
+        { ...program.opts<UpdateOptions>(), ...options },
+        dependencies
+      );
     });
   addCommonOptions(program.command("push"))
     .description("Create a governed proposal")

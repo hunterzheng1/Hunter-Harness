@@ -49,3 +49,14 @@ export function upsertManagedBlock(original: string, content: string): string {
   const end = original.indexOf(MANAGED_BLOCK_END) + MANAGED_BLOCK_END.length;
   return original.slice(0, start) + block + original.slice(end);
 }
+
+export function removeManagedBlock(original: string): string {
+  if (validateMarkers(original) === "absent") {
+    return original;
+  }
+  const start = original.indexOf(MANAGED_BLOCK_START);
+  const end = original.indexOf(MANAGED_BLOCK_END) + MANAGED_BLOCK_END.length;
+  const before = original.slice(0, start).replace(/(?:\r?\n){2}$/, "\n");
+  const after = original.slice(end).replace(/^(?:\r?\n){1,2}/, "");
+  return before + after;
+}

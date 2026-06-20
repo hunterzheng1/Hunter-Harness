@@ -73,6 +73,7 @@ export const baselineFileSchema = z.object({
   file_kind: fileKindSchema,
   adapter: z.string().optional(),
   canonical_target: z.string().optional(),
+  managed_block_hash: sha256Schema.optional(),
   last_applied_version: z.string().nullable(),
   deleted: z.boolean()
 }).strict();

@@ -224,4 +224,99 @@ export class HunterHarnessApiClient {
       { requestId, idempotencyKey, body }
     );
   }
+
+  async getUpdateManifest(
+    projectId: string,
+    query: {
+      base_project_version: string | null;
+      base_manifest_hash: string;
+      adapter: string;
+      profile: string;
+    },
+    requestId: string
+  ): Promise<{
+    schema_version: 1;
+    project_id: string;
+    observed_project_version: string | null;
+    artifact_id: string | null;
+    artifact_manifest_url: string | null;
+    delta_available: boolean;
+    request_id: string;
+  }> {
+    const parameters = new URLSearchParams({
+      base_project_version: query.base_project_version ?? "",
+      base_manifest_hash: query.base_manifest_hash,
+      adapter: query.adapter,
+      profile: query.profile
+    });
+    return this.request(
+      "GET",
+      "/api/v1/projects/" + encodeURIComponent(projectId) +
+        "/update-manifest?" + parameters.toString(),
+      { requestId }
+    );
+  }
+
+  async getArtifactManifest<T>(
+    artifactId: string,
+    requestId: string
+  ): Promise<T> {
+    return this.request(
+      "GET",
+      "/api/v1/artifacts/" + encodeURIComponent(artifactId) + "/manifest",
+      { requestId }
+    );
+  }
+
+  async downloadArtifactBlob(
+    artifactId: string,
+    contentSha256: string,
+    requestId: string
+  ): Promise<Uint8Array> {
+    const response = await withRetry(async () => {
+      const value = await this.fetch(
+        this.serverUrl + "/api/v1/artifacts/" + encodeURIComponent(artifactId) +
+          "/blobs/" + encodeURIComponent(contentSha256),
+        {
+          headers: {
+            Accept: "application/octet-stream",
+            Authorization: "Bearer " + this.token,
+            "X-Request-Id": requestId
+          }
+        }
+      );
+      if (value.status === 429 || value.status >= 500) {
+        throw new RetryableResponseError(value);
+      }
+      return value;
+    }, {
+      attempts: this.retryAttempts,
+      ...(this.sleep === undefined ? {} : { sleep: this.sleep }),
+      shouldRetry: () => true
+    });
+    if (!response.ok) {
+      const payload = await response.json() as {
+        error?: { code?: string; message?: string; request_id?: string; details?: unknown };
+      };
+      throw new ApiError(
+        response.status,
+        payload.error?.code ?? "HTTP_ERROR",
+        payload.error?.message ?? "artifact download failed",
+        payload.error?.request_id ?? null,
+        payload.error?.details ?? {}
+      );
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (response.headers.get("X-Content-SHA256") !== contentSha256 ||
+        sha256Bytes(bytes) !== contentSha256) {
+      throw new ApiError(
+        422,
+        "ARTIFACT_HASH_MISMATCH",
+        "artifact blob integrity check failed",
+        response.headers.get("X-Request-Id"),
+        {}
+      );
+    }
+    return bytes;
+  }
 }

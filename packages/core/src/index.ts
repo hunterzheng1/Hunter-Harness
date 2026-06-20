@@ -28,3 +28,5 @@ export * from "./skill-ir/overlay.js";
 export * from "./transaction/journal.js";
 export * from "./transaction/recovery.js";
 export * from "./transaction/transaction.js";
+export * from "./update/conflicts.js";
+export * from "./update/update.js";

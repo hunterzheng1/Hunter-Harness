@@ -27,6 +27,7 @@ import type {
 
 export interface TransactionOptions {
   id?: string;
+  kind?: TransactionJournal["kind"];
   failAfterApply?: number;
   interruptAfterApply?: number;
 }
@@ -227,6 +228,7 @@ export async function runTransaction(
   const journal: TransactionJournal = {
     schema_version: 1,
     transaction_id: transactionId,
+    ...(options.kind === undefined ? {} : { kind: options.kind }),
     state: "prepared",
     created_at: new Date().toISOString(),
     operations,
