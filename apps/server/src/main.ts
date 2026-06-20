@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 import { Pool } from "pg";
 
@@ -7,15 +8,24 @@ import { runMigrations } from "./repositories/migrate.js";
 import { PostgresRepository } from "./repositories/postgres.js";
 import { LocalArtifactStorage } from "./storage/local.js";
 
-function required(name: string): string {
+async function secret(name: string, required: boolean): Promise<string | undefined> {
   const value = process.env[name];
-  if (value === undefined || value.trim() === "") {
+  if (value !== undefined && value.trim() !== "") {
+    return value.trim();
+  }
+  const file = process.env[name + "_FILE"];
+  if (file !== undefined && file.trim() !== "") {
+    const fileValue = (await readFile(file, "utf8")).trim();
+    if (fileValue !== "") return fileValue;
+  }
+  if (required) {
     throw new Error(name + " is required");
   }
-  return value;
+  return undefined;
 }
 
-const databaseUrl = required("DATABASE_URL");
+const databaseUrl = await secret("DATABASE_URL", true);
+if (databaseUrl === undefined) throw new Error("DATABASE_URL is required");
 const artifactRoot = process.env.ARTIFACT_ROOT ?? "/var/lib/hunter-harness/artifacts";
 const pool = new Pool({
   connectionString: databaseUrl,
@@ -28,7 +38,7 @@ await runMigrations(
   fileURLToPath(new URL("../migrations", import.meta.url))
 );
 const repository = new PostgresRepository(pool);
-const bootstrapToken = process.env.HUNTER_HARNESS_BOOTSTRAP_TOKEN;
+const bootstrapToken = await secret("HUNTER_HARNESS_BOOTSTRAP_TOKEN", false);
 if (bootstrapToken !== undefined && bootstrapToken !== "") {
   await repository.createActorWithToken({
     actorId: process.env.HUNTER_HARNESS_BOOTSTRAP_ACTOR ?? "actor_owner",

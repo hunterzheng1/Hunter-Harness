@@ -7,6 +7,13 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /health:
+    get:
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: Process liveness
   /api/v1/projects:resolve:
     post:
       operationId: resolveProject
@@ -22,6 +29,17 @@ paths:
       responses:
         "200":
           description: Project created or bound
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Project registry page
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}:
@@ -89,6 +107,18 @@ paths:
       responses:
         "200":
           description: Proposal page
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/projects/{project_id}/artifacts:
+    get:
+      operationId: listArtifacts
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Approved artifact history page
         default:
           $ref: "#/components/responses/Error"
   /api/v1/proposals/{proposal_id}:

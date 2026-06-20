@@ -376,6 +376,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       ))];
       const missing = [];
       for (const hash of hashes) {
+        if (hash === sha256Bytes(new Uint8Array())) {
+          await storage.putBlob(hash, new Uint8Array());
+        }
         if (!await storage.hasBlob(hash)) {
           missing.push(hash);
         }
