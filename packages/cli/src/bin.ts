@@ -9,6 +9,7 @@ import {
   type CommandDependencies,
   type ConfigureOptions
 } from "./commands/configure.js";
+import { runPush, type PushOptions } from "./commands/push.js";
 
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
@@ -30,7 +31,9 @@ function defaultDependencies(overrides: CliDependencies): CommandDependencies {
       } finally {
         terminal.close();
       }
-    })
+    }),
+    fetch: overrides.fetch ?? globalThis.fetch,
+    env: overrides.env ?? process.env
   };
 }
 
@@ -66,16 +69,17 @@ export async function runCli(
   program.action(async (options: ConfigureOptions) => {
     exitCode = await runConfigure(options, dependencies);
   });
-  for (const name of ["update", "push"] as const) {
-    addCommonOptions(program.command(name))
-      .description(name === "update"
-        ? "Apply approved server artifacts"
-        : "Create a governed proposal")
-      .action(() => {
-        dependencies.stderr(name + " is not implemented yet\n");
-        exitCode = 1;
-      });
-  }
+  addCommonOptions(program.command("update"))
+    .description("Apply approved server artifacts")
+    .action(() => {
+      dependencies.stderr("update is not implemented yet\n");
+      exitCode = 1;
+    });
+  addCommonOptions(program.command("push"))
+    .description("Create a governed proposal")
+    .action(async (options: PushOptions) => {
+      exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
+    });
 
   try {
     await program.parseAsync(["node", "hunter-harness", ...argv]);

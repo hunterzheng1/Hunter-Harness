@@ -26,6 +26,8 @@ export interface CommandDependencies {
   stdout(value: string): void;
   stderr(value: string): void;
   prompt(question: string): Promise<string>;
+  fetch: typeof globalThis.fetch;
+  env: Readonly<Record<string, string | undefined>>;
 }
 
 export async function runConfigure(
