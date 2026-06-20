@@ -1,0 +1,23 @@
+name: harness-sync
+kind: workflow
+description: Check Harness context, Knowledge indexes, managed blocks, rules, and codebase-map freshness.
+triggers: [sync harness context, check project context]
+inputs: [project_root, context_index]
+outputs: [sync_report, refresh_recommendations]
+forbidden_actions: [automatic_codebase_map_execution, manage_codegraph, install_external_tools]
+required_context: [AGENTS.md, .harness/context-index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Validate managed blocks and local Harness structure.
+  - Rebuild deterministic indexes when their sources changed.
+  - Recommend codebase-map refresh when stale, but wait for explicit user confirmation.
+allowed_capabilities: [read, search, write_harness_metadata]
+source_provenance: user-provided validated Java workflow adapted to Hunter Harness

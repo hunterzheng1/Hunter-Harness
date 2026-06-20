@@ -1,0 +1,23 @@
+name: harness-submit
+kind: workflow
+description: Prepare a submission summary, suggested message, and verification checklist without changing source control.
+triggers: [prepare submission, summarize completed change]
+inputs: [change_ref, verification_evidence]
+outputs: [submission_summary, suggested_message, submission_checklist]
+forbidden_actions: [source_control_write_without_explicit_confirmation, publish_without_review]
+required_context: [AGENTS.md, .harness/context-index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Summarize verified changes and remaining risks.
+  - Produce a suggested message and final checklist only.
+  - Require explicit user confirmation before any source-control mutation.
+allowed_capabilities: [read, search, write_submission_documents]
+source_provenance: user-provided validated submission workflow adapted to Hunter Harness

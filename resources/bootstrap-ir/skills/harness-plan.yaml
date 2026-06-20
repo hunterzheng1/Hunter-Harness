@@ -1,0 +1,23 @@
+name: harness-plan
+kind: workflow
+description: Produce evidence-based designs, implementation plans, impact analysis, and test scenarios.
+triggers: [plan a change, design an implementation]
+inputs: [requirements, context_index]
+outputs: [design, implementation_plan, test_scenarios]
+forbidden_actions: [invent_evidence, expose_sensitive_data, automatic_source_control_write]
+required_context: [AGENTS.md, .harness/context-index.json, .harness/knowledge/index.json]
+profiles:
+  general: { enabled: true }
+  java: { enabled: true }
+adapters:
+  claude-code: { enabled: true }
+  codex: { enabled: true }
+  generic: { enabled: true }
+  mcp: { enabled: true }
+version: 1.0.0
+instructions:
+  - Inspect relevant Knowledge and codebase-map evidence before proposing changes.
+  - Separate assumptions from verified facts.
+  - Define exact files, tests, risks, and rollback points.
+allowed_capabilities: [read, search, write_change_documents]
+source_provenance: user-provided validated planning workflow adapted to Hunter Harness

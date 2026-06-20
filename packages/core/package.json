@@ -14,6 +14,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@hunter-harness/contracts": "*"
+    "@hunter-harness/contracts": "*",
+    "yaml": "2.9.0"
   }
 }
