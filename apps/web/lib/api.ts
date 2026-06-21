@@ -1,4 +1,6 @@
-import type { FileOperation } from "@hunter-harness/contracts";
+import { canonicalJson, type FileOperation } from "@hunter-harness/contracts";
+
+import type { WebFileKind } from "./file-policy";
 
 export interface ProjectSummary {
   project_id: string;
@@ -7,6 +9,38 @@ export interface ProjectSummary {
   latest_project_version: string | null;
   latest_artifact_id: string | null;
   created_at: string;
+}
+
+export interface ProjectDetailModel extends ProjectSummary {
+  request_id: string;
+}
+
+export interface ArtifactManifestModel {
+  schema_version: 1;
+  project_id: string;
+  project_version: string | null;
+  artifact_id: string;
+  manifest_sha256: string;
+  files: FileOperation[];
+}
+
+export interface ProjectFileProposalInput {
+  projectId: string;
+  baseProjectVersion: string | null;
+  baseManifestHash: string;
+  action: "add" | "modify" | "rename" | "delete";
+  path: string;
+  targetPath?: string;
+  baseContentHash?: string;
+  content?: string;
+  fileKind: WebFileKind;
+  confirmProjectLocal: boolean;
+}
+
+export interface ProjectFileProposalResult {
+  proposal_id: string;
+  status: "pending_review";
+  received_files: number;
 }
 
 export interface ProposalSummary {
@@ -68,10 +102,14 @@ export interface ReviewResult {
 
 export interface HunterApi {
   listProjects(): Promise<ProjectSummary[]>;
+  getProject(projectId: string): Promise<ProjectDetailModel>;
   listProjectProposals(projectId: string): Promise<ProposalSummary[]>;
   listAllProposals(): Promise<ProposalSummary[]>;
   listProjectArtifacts(projectId: string): Promise<ArtifactSummary[]>;
   listAllArtifacts(): Promise<ArtifactSummary[]>;
+  getArtifactManifest(artifactId: string): Promise<ArtifactManifestModel>;
+  getArtifactText(artifactId: string, contentHash: string): Promise<string>;
+  createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult>;
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
   reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
 }
@@ -98,6 +136,11 @@ function redact(message: string): string {
 
 function uuid(): string {
   return globalThis.crypto.randomUUID();
+}
+
+export async function sha256Text(value: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return "sha256:" + [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export class HttpHunterApi implements HunterApi {
@@ -156,11 +199,42 @@ export class HttpHunterApi implements HunterApi {
     return payload;
   }
 
+  private async binaryRequest(
+    method: string,
+    path: string,
+    body: Uint8Array,
+    headers: Readonly<Record<string, string>>
+  ): Promise<void> {
+    const token = this.tokenProvider();
+    if (token === null || token === "") {
+      throw new ApiClientError(401, "AUTH_REQUIRED", "Authentication required.");
+    }
+    const uploadBody = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer;
+    const response = await this.fetch(this.baseUrl + path, {
+      method,
+      headers: {
+        Authorization: "Bearer " + token,
+        "X-Request-Id": uuid(),
+        "Idempotency-Key": uuid(),
+        ...headers
+      },
+      body: uploadBody
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
+      throw new ApiClientError(response.status, payload.error?.code ?? "HTTP_ERROR", payload.error?.message ?? "Upload failed.");
+    }
+  }
+
   async listProjects(): Promise<ProjectSummary[]> {
     const result = await this.request<{
       items: ProjectSummary[];
     }>("GET", "/api/v1/projects?limit=100");
     return result.items;
+  }
+
+  async getProject(projectId: string): Promise<ProjectDetailModel> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId));
   }
 
   async listProjectProposals(projectId: string): Promise<ProposalSummary[]> {
@@ -191,6 +265,83 @@ export class HttpHunterApi implements HunterApi {
     return (await Promise.all(projects.map(async (project) =>
       this.listProjectArtifacts(project.project_id)
     ))).flat().sort((left, right) => right.created_at.localeCompare(left.created_at));
+  }
+
+  async getArtifactManifest(artifactId: string): Promise<ArtifactManifestModel> {
+    return this.request("GET", "/api/v1/artifacts/" + encodeURIComponent(artifactId) + "/manifest");
+  }
+
+  async getArtifactText(artifactId: string, contentHash: string): Promise<string> {
+    const token = this.tokenProvider();
+    if (token === null || token === "") {
+      throw new ApiClientError(401, "AUTH_REQUIRED", "Authentication required.");
+    }
+    const response = await this.fetch(
+      this.baseUrl + "/api/v1/artifacts/" + encodeURIComponent(artifactId) + "/blobs/" + encodeURIComponent(contentHash),
+      { method: "GET", headers: { Accept: "text/plain", Authorization: "Bearer " + token, "X-Request-Id": uuid() } }
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
+      throw new ApiClientError(response.status, payload.error?.code ?? "HTTP_ERROR", payload.error?.message ?? "Artifact content is unavailable.");
+    }
+    const content = await response.text();
+    if (await sha256Text(content) !== contentHash || response.headers.get("X-Content-SHA256") !== contentHash) {
+      throw new ApiClientError(422, "ARTIFACT_HASH_MISMATCH", "Artifact content failed integrity verification.");
+    }
+    return content;
+  }
+
+  async createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult> {
+    const encoded = input.content === undefined ? undefined : new TextEncoder().encode(input.content);
+    const contentHash = encoded === undefined ? undefined : await sha256Text(input.content ?? "");
+    let operation: FileOperation;
+    if (input.action === "delete") {
+      if (input.baseContentHash === undefined) throw new ApiClientError(400, "VALIDATION_FAILED", "A delete proposal requires the current file hash.");
+      operation = {
+        operation: "delete",
+        path: input.path,
+        file_kind: input.fileKind,
+        base_content_sha256: input.baseContentHash,
+        tombstone: { deleted_at: new Date().toISOString(), reason: "Web Console proposal", previous_sha256: input.baseContentHash }
+      };
+    } else if (input.action === "add") {
+      if (contentHash === undefined || encoded === undefined) throw new ApiClientError(400, "VALIDATION_FAILED", "An add proposal requires content.");
+      operation = { operation: "add", path: input.path, file_kind: input.fileKind, content_sha256: contentHash, size_bytes: encoded.byteLength };
+    } else if (input.action === "modify") {
+      if (contentHash === undefined || encoded === undefined || input.baseContentHash === undefined) throw new ApiClientError(400, "VALIDATION_FAILED", "A modification proposal requires content and the current file hash.");
+      operation = { operation: "modify", path: input.path, file_kind: input.fileKind, base_content_sha256: input.baseContentHash, content_sha256: contentHash, size_bytes: encoded.byteLength };
+    } else {
+      if (contentHash === undefined || encoded === undefined || input.baseContentHash === undefined || input.targetPath === undefined) throw new ApiClientError(400, "VALIDATION_FAILED", "A rename proposal requires content, source hash, and target path.");
+      operation = { operation: "rename", from_path: input.path, to_path: input.targetPath, file_kind: input.fileKind, base_content_sha256: input.baseContentHash, content_sha256: contentHash, size_bytes: encoded.byteLength };
+    }
+    const session = await this.request<{
+      session_id: string;
+      missing_blobs: string[];
+    }>("POST", "/api/v1/projects/" + encodeURIComponent(input.projectId) + "/proposal-sessions", {
+      schema_version: 1,
+      request_id: uuid(),
+      client_id: "cli_web_console",
+      base_project_version: input.baseProjectVersion,
+      base_manifest_hash: input.baseManifestHash,
+      proposal_manifest: { files: [operation] },
+      artifact_manifest: { schema_version: 1, files: [operation] },
+      confirmations: {
+        project_local_paths: input.confirmProjectLocal
+          ? [...new Set([input.path, input.targetPath].filter((path): path is string => path !== undefined))]
+          : []
+      }
+    });
+    if (contentHash !== undefined && encoded !== undefined && session.missing_blobs.includes(contentHash)) {
+      await this.binaryRequest("PUT", "/api/v1/proposal-sessions/" + encodeURIComponent(session.session_id) + "/blobs/" + encodeURIComponent(contentHash), encoded, {
+        "Content-Type": "application/octet-stream",
+        "Content-Range": "bytes 0-" + Math.max(0, encoded.byteLength - 1) + "/" + encoded.byteLength,
+        "X-Chunk-SHA256": contentHash
+      });
+    }
+    return this.request("POST", "/api/v1/proposal-sessions/" + encodeURIComponent(session.session_id) + ":finalize", {
+      schema_version: 1,
+      manifest_sha256: await sha256Text(canonicalJson([operation]))
+    });
   }
 
   async getProposal(proposalId: string): Promise<ProposalDetailModel> {

@@ -90,6 +90,29 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
     listAllProposals: vi.fn(async () => proposals),
     listProjectArtifacts: vi.fn(async () => artifacts),
     listAllArtifacts: vi.fn(async () => artifacts),
+    getProject: vi.fn(async () => ({
+      project_id: "prj_one",
+      display_name: "Payments",
+      role: "owner" as const,
+      latest_project_version: "pv_1",
+      latest_artifact_id: "art_1",
+      created_at: "2026-06-20T00:00:00Z",
+      request_id: "req_project"
+    })),
+    getArtifactManifest: vi.fn(async () => ({
+      artifact_id: "art_1",
+      project_id: "prj_one",
+      schema_version: 1 as const,
+      project_version: "pv_1",
+      manifest_sha256: "sha256:" + "c".repeat(64),
+      files: []
+    })),
+    getArtifactText: vi.fn(async () => ""),
+    createProjectFileProposal: vi.fn(async () => ({
+      proposal_id: "prp_new",
+      status: "pending_review" as const,
+      received_files: 1
+    })),
     getProposal: vi.fn(async () => detail),
     reviewProposal: vi.fn(async () => ({
       review_id: "rev_one",

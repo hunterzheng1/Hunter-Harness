@@ -100,7 +100,7 @@ export function ProjectRegistry({ api }: { api: HunterApi }) {
       {projects.length === 0 ? <Empty>No projects have been registered.</Empty> : (
         <div className="table-wrap"><table><thead><tr><th>Project</th><th>Role</th><th>Version</th><th>Artifact</th></tr></thead>
           <tbody>{projects.map((project) => <tr key={project.project_id}>
-            <td><strong>{project.display_name}</strong><code>{project.project_id}</code></td>
+            <td><Link href={`/projects/${project.project_id}`}><strong>{project.display_name}</strong><code>{project.project_id}</code></Link></td>
             <td>{project.role}</td><td>{project.latest_project_version ?? "—"}</td>
             <td>{project.latest_artifact_id ?? "—"}</td>
           </tr>)}</tbody></table></div>
@@ -153,7 +153,7 @@ export function ArtifactHistory({ api }: { api: HunterApi }) {
       {artifacts.length === 0 ? <Empty>No artifacts have been published.</Empty> : (
         <div className="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Version</th><th>Changes</th><th>Proposal</th></tr></thead>
           <tbody>{artifacts.map((artifact) => <tr key={artifact.artifact_id}>
-            <td><strong>{artifact.artifact_id}</strong><code>{artifact.manifest_sha256.slice(0, 20)}…</code></td>
+            <td><Link href={`/artifacts/${artifact.artifact_id}`}><strong>{artifact.artifact_id}</strong><code>{artifact.manifest_sha256.slice(0, 20)}…</code></Link></td>
             <td>{artifact.project_id}</td><td>{artifact.project_version}</td>
             <td>{artifact.changed_item_count}</td><td><Link href={`/proposals/${artifact.proposal_id}`}>{artifact.proposal_id}</Link></td>
           </tr>)}</tbody></table></div>
