@@ -1,26 +1,20 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
-import { AuthTokenForm } from "../components/console";
+import { ClientLayout } from "../components/client-layout";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Hunter Harness Console",
-  description: "Human review and governed artifact publishing"
+  description: "Human review and governed artifact publishing",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="zh">
       <body>
-        <div className="shell">
-          <aside>
-            <Link className="brand" href="/"><span>HH</span><div>Hunter Harness<small>Governance Console</small></div></Link>
-            <nav><Link href="/">Overview</Link><Link href="/projects">Projects</Link><Link href="/workflows">Harness Workflows</Link><Link href="/skills">Skills</Link><Link href="/proposals">Review queue</Link><Link href="/artifacts">Artifacts</Link></nav>
-            <AuthTokenForm />
-          </aside>
-          <main>{children}</main>
-        </div>
+        <ClientLayout>{children}</ClientLayout>
       </body>
     </html>
   );
