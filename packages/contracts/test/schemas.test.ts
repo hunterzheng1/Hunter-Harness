@@ -12,6 +12,11 @@ import {
   initConfigSchema,
   knowledgeFrontmatterSchema,
   projectConfigSchema,
+  registryAgentSchema,
+  registrySkillDetailSchema,
+  registrySkillProposalSchema,
+  registryTagSchema,
+  registryWorkflowSchema,
   skillIrSchema
 } from "../src/index.js";
 
@@ -103,6 +108,74 @@ describe("shared contracts", () => {
       supersedes: [],
       superseded_by: []
     }).status).toBe("active");
+  });
+
+  it("validates governed registry records and direct workflow metadata", () => {
+    expect(registryAgentSchema.parse("claude-code")).toBe("claude-code");
+    expect(registryAgentSchema.safeParse("unknown-agent").success).toBe(false);
+    const ir = skillIrSchema.parse({
+      name: "harness-review",
+      kind: "governance",
+      description: "Evidence based review",
+      triggers: ["review"],
+      inputs: ["change_ref"],
+      outputs: ["review_report"],
+      forbidden_actions: ["automatic_git_write"],
+      required_context: ["AGENTS.md"],
+      profiles: { general: { enabled: true } },
+      adapters: { "claude-code": { enabled: true } },
+      version: "1.1.0"
+    });
+    expect(registrySkillDetailSchema.parse({
+      skill_id: "skl_review",
+      slug: "harness-review",
+      name: "harness-review",
+      description: "Evidence based review",
+      category: "governance",
+      tags: ["review", "security"],
+      status: "published",
+      latest_version: "1.1.0",
+      ir,
+      adapters: ["claude-code"],
+      revision: 3,
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-21T00:00:00Z"
+    }).tags).toEqual(["review", "security"]);
+
+    expect(registryWorkflowSchema.parse({
+      workflow_id: "wf_general",
+      key: "general",
+      name: "General",
+      description: "Default governance workflow",
+      profile: "general",
+      default_agent: "claude-code",
+      enabled: true,
+      skill_slugs: ["harness-sync", "harness-review"],
+      revision: 2,
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-21T00:00:00Z"
+    }).revision).toBe(2);
+
+    expect(registryTagSchema.parse({
+      tag_id: "tag_security",
+      slug: "security",
+      label: "Security",
+      active: true,
+      revision: 1,
+      created_at: "2026-06-20T00:00:00Z",
+      updated_at: "2026-06-20T00:00:00Z"
+    }).slug).toBe("security");
+
+    expect(registrySkillProposalSchema.parse({
+      proposal_id: "skp_review",
+      skill_slug: "harness-review",
+      proposed_ir: ir,
+      status: "pending_review",
+      created_by: "actor_owner",
+      validation: { schema_valid: true, sensitive_findings: 0, claude_compilable: true },
+      created_at: "2026-06-21T00:00:00Z",
+      reviewed_at: null
+    }).status).toBe("pending_review");
   });
 
   it("enforces the common API error envelope", () => {

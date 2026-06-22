@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import type { RegistryProjectWorkflowBinding, RegistryWorkflow } from "@hunter-harness/contracts";
 
 import {
   ApiClientError,
@@ -17,6 +19,8 @@ interface WorkspaceData {
   artifacts: ArtifactSummary[];
   files: WorkspaceFile[];
   latestManifest: ArtifactManifestModel | null;
+  workflows: RegistryWorkflow[];
+  workflowBinding: RegistryProjectWorkflowBinding | null;
 }
 
 type DraftAction = "add" | "modify" | "rename" | "delete";
@@ -45,9 +49,11 @@ function textHashes(manifest: ArtifactManifestModel): string[] {
 }
 
 async function loadWorkspace(api: HunterApi, projectId: string): Promise<WorkspaceData> {
-  const [project, artifacts] = await Promise.all([
+  const [project, artifacts, workflows, workflowBinding] = await Promise.all([
     api.getProject(projectId),
-    api.listProjectArtifacts(projectId)
+    api.listProjectArtifacts(projectId),
+    api.listWorkflows?.() ?? Promise.resolve([]),
+    api.getProjectWorkflowBinding?.(projectId) ?? Promise.resolve(null)
   ]);
   const loadedArtifacts: WorkspaceArtifact[] = await Promise.all(artifacts.map(async (artifact) => {
     const manifest = await api.getArtifactManifest(artifact.artifact_id);
@@ -66,7 +72,10 @@ async function loadWorkspace(api: HunterApi, projectId: string): Promise<Workspa
   const latestManifest = latestArtifact === undefined
     ? null
     : loadedArtifacts.find((artifact) => artifact.artifactId === latestArtifact.artifact_id)?.manifest ?? null;
-  return { project, artifacts, files: reconstructWorkspace(loadedArtifacts), latestManifest };
+  return {
+    project, artifacts, files: reconstructWorkspace(loadedArtifacts), latestManifest,
+    workflows, workflowBinding
+  };
 }
 
 function Policy({ policy }: { policy: WebFilePolicy }) {
@@ -175,14 +184,42 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
     }
   }
 
+  async function bindWorkflow(workflowId: string): Promise<void> {
+    if (data === null || api.bindProjectWorkflow === undefined) return;
+    setBusy(true);
+    try {
+      const binding = await api.bindProjectWorkflow(
+        data.project.project_id,
+        workflowId,
+        data.workflowBinding?.revision ?? null
+      );
+      setData({ ...data, workflowBinding: binding });
+      setResult("Workflow binding saved directly with optimistic revision and audit evidence.");
+    } catch (reason) {
+      setError(safeError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (error !== null) return <section className="empty-state">{error}</section>;
   if (data === null) return <section className="empty-state">Loading managed project workspace…</section>;
   const selectedEditable = selected !== null && isProposalEditable(selected.policy);
+  const boundWorkflow = data.workflows.find((item) => item.workflow_id === data.workflowBinding?.workflow_id) ?? null;
 
   return <section className="stack">
     <div className="page-heading"><div><p className="eyebrow">Managed project</p><h1>{data.project.display_name}</h1><code>{data.project.project_id}</code></div><span className="status status-clear">{data.project.role}</span></div>
     <div className="metric-grid compact"><article className="metric"><strong>{data.files.length}</strong><span>reconstructed files</span></article><article className="metric"><strong>{data.artifacts.length}</strong><span>approved artifacts</span></article><article className="metric"><strong>{data.project.latest_project_version ?? "—"}</strong><span>latest version</span></article></div>
     {data.latestManifest === null ? <div className="notice">No approved baseline artifact exists. Create the first project proposal with the CLI; this console will not invent a baseline.</div> : null}
+    <div className="panel project-governance">
+      <div>
+        <p className="eyebrow">Workflow Profile</p>
+        <h2>{boundWorkflow?.name ?? "No workflow bound"}</h2>
+        <p>Workflow metadata is direct-maintenance; managed project files still require proposal review.</p>
+        {boundWorkflow === null ? null : <div className="effective-skills" aria-label="Effective ordered Skills">{boundWorkflow.skill_slugs.map((slug, index) => <Link href={`/skills/${slug}`} aria-label={`${String(index + 1).padStart(2, "0")} ${slug}`} key={slug}><span>{String(index + 1).padStart(2, "0")}</span>{slug}</Link>)}</div>}
+      </div>
+      <label>Bound workflow<select aria-label="Bound workflow" disabled={busy} value={data.workflowBinding?.workflow_id ?? ""} onChange={(event) => event.target.value !== "" && void bindWorkflow(event.target.value)}><option value="">Select workflow</option>{data.workflows.filter((workflow) => workflow.enabled).map((workflow) => <option value={workflow.workflow_id} key={workflow.workflow_id}>{workflow.name} · {workflow.skill_slugs.length} skills</option>)}</select></label>
+    </div>
     <div className="workspace-grid">
       <article className="panel file-browser"><div className="panel-title"><h2>Managed files</h2><button className="secondary-button" type="button" onClick={startAdd} disabled={data.latestManifest === null}>Propose new file</button></div>
         {data.files.length === 0 ? <div className="empty-state">No files are present in the approved artifact chain.</div> : <ul className="file-list">{data.files.map((file) => <li key={file.path}><button type="button" aria-label={file.path} className={file.path === selected?.path ? "selected" : ""} onClick={() => choose(file)}>{file.path}<small>{file.policy.file_kind}</small></button></li>)}</ul>}

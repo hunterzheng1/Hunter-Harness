@@ -81,7 +81,43 @@ try {
     "harness-review",
     "SKILL.md"
   ));
-  process.stdout.write("packaged CLI smoke test passed\n");
+  run(process.execPath, [
+    npmCli,
+    "pack",
+    "-w",
+    "packages/skill-cli",
+    "--pack-destination",
+    temporary
+  ]);
+  const skillArchive = (await readdir(temporary)).find((name) =>
+    name.startsWith("hunter-harness-skill-cli-") && name.endsWith(".tgz")
+  );
+  if (skillArchive === undefined) throw new Error("npm pack did not create the Skill CLI archive");
+  run(process.execPath, [
+    npmCli,
+    "install",
+    "--prefix",
+    temporary,
+    "--ignore-scripts",
+    join(temporary, skillArchive)
+  ]);
+  const skillBin = join(
+    temporary,
+    "node_modules",
+    "@hunter-harness",
+    "skill-cli",
+    "dist",
+    "bin.js"
+  );
+  const skillHelp = run(process.execPath, [skillBin, "--help"], {
+    cwd: temporary,
+    capture: true
+  });
+  if (!skillHelp.includes("install") || !skillHelp.includes("upload") ||
+      /\b(search|download|update|uninstall|publish)\b/.test(skillHelp)) {
+    throw new Error("packaged Skill CLI command surface is invalid");
+  }
+  process.stdout.write("packaged project CLI and Skill CLI smoke tests passed\n");
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

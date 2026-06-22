@@ -173,6 +173,160 @@ paths:
           description: Artifact blob
         default:
           $ref: "#/components/responses/Error"
+  /api/v1/skills:
+    get:
+      operationId: listSkills
+      responses:
+        "200": { description: Canonical Skill Registry }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}:
+    get:
+      operationId: getSkill
+      responses:
+        "200": { description: Canonical Skill detail }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/versions:
+    get:
+      operationId: listSkillVersions
+      responses:
+        "200": { description: Published Skill versions }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/adapter-preview/{agent}:
+    get:
+      operationId: previewSkillAdapter
+      responses:
+        "200": { description: Verified published adapter output preview }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/artifacts/{agent}/download:
+    get:
+      operationId: downloadSkillArtifact
+      responses:
+        "200": { description: Approved adapter ZIP with SHA-256 headers }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skill-artifacts:
+    get:
+      operationId: listSkillArtifacts
+      responses:
+        "200": { description: Published Skill adapter artifacts }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skill-proposals:
+    get:
+      operationId: listSkillProposals
+      responses:
+        "200": { description: Skill proposal queue }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createSkillProposal
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Validated Skill proposal created }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skill-proposals/{proposal_id}:
+    get:
+      operationId: getSkillProposal
+      responses:
+        "200": { description: Skill proposal detail and validation }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skill-proposals/{proposal_id}/review:
+    post:
+      operationId: reviewSkillProposal
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Review recorded and approved artifact published when approved }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/tags:
+    get:
+      operationId: listSkillTags
+      responses:
+        "200": { description: Skill tags }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createSkillTag
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Tag created directly with audit }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/tags/{tag_id}:
+    patch:
+      operationId: updateSkillTag
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Tag renamed or deactivated }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/tags/{tag_id}/merge:
+    post:
+      operationId: mergeSkillTag
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Tag bindings merged directly with audit }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/tags/{tag_id}:
+    put:
+      operationId: bindSkillTag
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Tag bound to Skill }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: unbindSkillTag
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Tag removed from Skill }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflows:
+    get:
+      operationId: listWorkflows
+      responses:
+        "200": { description: Workflow profiles }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Workflow created directly with audit }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflows/{workflow_id}:
+    get:
+      operationId: getWorkflow
+      responses:
+        "200": { description: Workflow detail }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Workflow updated with optimistic revision }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Unreferenced Workflow deleted }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/workflow-binding:
+    get:
+      operationId: getProjectWorkflowBinding
+      responses:
+        "200": { description: Current project Workflow binding }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      operationId: bindProjectWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Project Workflow binding updated with optimistic revision }
+        default: { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearerAuth:

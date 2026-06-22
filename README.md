@@ -1,8 +1,10 @@
 # Hunter Harness
 
-Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。CLI 在项目中维护可编辑 working copy；push 只创建 proposal，人工 Review 批准后，update 才事务化应用已发布 artifact。
+Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。项目 CLI 维护本地 working copy；`push` 只创建 proposal，人工审核通过后，`update` 才事务化应用已发布 artifact。
 
-## 三个公开命令
+## 项目级 CLI
+
+项目级公开命令保持不变：
 
 ```bash
 npx hunter-harness
@@ -10,66 +12,67 @@ npx hunter-harness push
 npx hunter-harness update
 ```
 
-- `npx hunter-harness`：离线初始化、配置和事务恢复菜单。
-- `push`：生成 preview、扫描敏感信息、首次绑定项目并上传 proposal；不推进 baseline。
-- `update`：只拉取人工批准的 artifact，校验 SHA-256 后以本地事务应用。
+- `npx hunter-harness`：离线初始化、配置与事务恢复菜单。
+- `push`：预览、敏感信息扫描、首次项目绑定并上传 proposal；不推进 baseline。
+- `update`：仅拉取已批准 artifact，校验 SHA-256 后事务化写入。
 
-初始化自动创建 `AGENTS.md`，保持 `CLAUDE.md` 为 managed block 路由文件；默认不创建 `.harness/rules/`。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
+初始化默认创建 `AGENTS.md`，`CLAUDE.md` 保持为极简路由文件；默认不创建 `.harness/rules/`。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
+
+## 独立 Skill CLI
+
+独立 Skill 分发使用单独的 npm 包，只提供安装和上传两个动作：
+
+```bash
+npx @hunter-harness/skill-cli install <skill-slug> --agent claude-code
+npx @hunter-harness/skill-cli upload <directory-or-zip> --agent claude-code
+```
+
+- `install`：不存在时安装，已安装且未被本地修改时更新；校验 artifact SHA-256 与 ZIP identity 后原子写入。
+- `upload`：上传 ZIP、YAML、JSON 或目录并创建待审 proposal，不直接发布。
+- CLI 不提供 search、download、update、uninstall 或 publish 命令；浏览、历史版本、详情与 ZIP 下载位于 Web Console。
+- MVP 仅将 Claude Code adapter 标记为可安装；Codex、Generic、MCP 保留契约与预览边界。
 
 ## 仓库结构
 
 ```text
 packages/contracts  wire/schema 合同
 packages/core       文件策略、Skill IR、扫描、事务、push/update
-packages/cli        三命令 CLI
+packages/cli        项目级三命令 CLI
+packages/skill-cli  独立 Skill install/upload CLI
 apps/server         Fastify API、PostgreSQL repository、artifact storage
-apps/web            Next.js Review Console（治理控制台）
+apps/web            Next.js 治理控制台
 resources           bootstrap Skill IR
-tests/e2e           完整治理闭环测试
-docs                 实施与部署文档
+tests/e2e           治理闭环测试
+docs                实施、部署与验收文档
 ```
 
-## Web 控制台
+## Web 治理控制台
 
-`apps/web` 是基于 Next.js 的治理控制台，提供人工审核与可视化管理界面。
+控制台提供总览、项目、Workflow、Skill Center、审核队列和 Artifact 历史：
 
-### 快速本地预览（Mock 模式）
+- Skill Center：搜索、分类/Agent 筛选、Canonical IR、adapter 输出、版本历史与 Diff、标签管理、安装命令和 ZIP 下载。
+- Skill 内容上传/修改：仅创建 proposal，owner 人工 approve/reject 后才发布版本与 adapter artifact。
+- Workflow：直接 CRUD、启停、删除保护和有序 Skill binding，不进入 proposal，但保留审计与 revision 冲突保护。
+- 标签：创建、重命名、合并、停用和 Skill 绑定直接生效，保留审计。
+- 项目详情：展示并直接绑定 Workflow；项目受管文件仍沿用原有 proposal/review/update 治理协议。
+- Dark 与 Light 使用同一套语义设计 token；首次遵循系统主题，用户选择后写入本地偏好。
 
-无需连接真实后端即可浏览完整 UI：
+### 连接真实服务端
+
+生产模式不会静默回退到 mock。侧栏设置中填写 API Token，控制台先执行真实认证探测，成功后仅将 token 保存到当前浏览器 session storage。
 
 ```bash
-cd apps/web
-npx next dev --webpack -p 3000
+npm run dev -w apps/web -- -p 3000
 ```
 
-打开 `http://localhost:3000`，所有数据来自内置 Mock 层，适用于离线开发与 UI 调试。
+如仅需本地 UI 演示，必须显式启用只读 demo 模式，页面会持续显示“演示数据”标识：
 
-### 连接真实后端
+```powershell
+$env:NEXT_PUBLIC_HUNTER_HARNESS_DEMO='true'
+npm run dev -w apps/web -- -p 3000
+```
 
-在侧边栏底部点击 **设置 → API 令牌**，输入有效的治理 token 后保存，控制台自动切换为实时数据。
-
-### UI 功能
-
-| 功能 | 说明 |
-|------|------|
-| **双语界面** | 默认中文，设置面板中一键切换 English。所有页面文案同步翻译 |
-| **深色/浅色主题** | 设置面板自由切换，偏好自动持久化到 localStorage |
-| **设置面板** | 侧边栏底部齿轮按钮，集成语言、主题、API 令牌管理 |
-| **主题 Logo** | 侧边栏 Logo 随主题自动切换（深色/浅色各一套） |
-| **Mock 数据** | 5 个示例项目、3 个待审核提案、2 个已批准制品，零配置预览 |
-| **页面总览** | 总览（统计卡片）、项目注册表、工作流、技能浏览器、审核队列、制品历史 |
-
-### 设计系统
-
-基于 Emil Kowalski（动画约束）、Impeccable（反模式）、Taste-Skill（反 slop）三个开源设计指南构建：
-
-- 深色产品 UI，Linear 风格
-- OKLCH 色空间精炼配色（主色调 `#829cff` 蓝靛）
-- 自定义 `cubic-bezier` 缓动曲线，器质性动效
-- 语义化 z-index 层级，四档阴影系统
-- 响应式断点适配移动端
-
-## 本地开发
+## 本地开发与验证
 
 要求 Node.js 24+、npm 11+。
 
@@ -78,19 +81,22 @@ npm ci
 npm run check
 ```
 
-`npm run check` 依次执行 lint、TypeScript、全部单元/集成/E2E 测试和生产构建。PostgreSQL 实库测试需要单独设置：
+`npm run check` 依次执行 lint、TypeScript、全部测试、生产构建和两个 npm 包的 pack/install smoke test。
 
-```bash
-set HUNTER_HARNESS_TEST_DATABASE_URL=postgresql://...
+PostgreSQL 实库测试需要单独设置：
+
+```powershell
+$env:HUNTER_HARNESS_TEST_DATABASE_URL='postgresql://...'
 npm run test:postgres -w apps/server
 ```
 
-服务端和 Web 的生产部署、TLS、secrets、备份、恢复、升级与回滚见 [SERVER-DEPLOYMENT.md](docs/SERVER-DEPLOYMENT.md)。完整 API 描述位于 [hunter-harness-v1.yaml](apps/server/openapi/hunter-harness-v1.yaml)。
+部署、TLS、secrets、备份、恢复、升级与回滚见 [SERVER-DEPLOYMENT.md](docs/SERVER-DEPLOYMENT.md)。完整 API 合同见 [hunter-harness-v1.yaml](apps/server/openapi/hunter-harness-v1.yaml)。
 
 ## 安全边界
 
 - token 只从环境变量、secret file 或浏览器 session storage 读取，不写入项目文件或 CLI JSON。
 - `.harness/state/**`、`.harness/cache/**`、`.codegraph/**` 永不进入 proposal。
 - 高风险 secret 永远阻断；中低风险 override 必须保留审计证据。
+- Skill artifact 下载与安装必须校验 SHA-256；本地 dirty Skill 默认拒绝覆盖。
 - CodeGraph、Superpowers 只在初始化检查；Yao 不进入 CLI、项目和 MVP 验收。
-- 发布参考资产前仍需确认上游 license、commit/tag 和再分发范围。
+- 对外发布参考资产前仍须确认上游许可证、commit/tag 与再分发范围。

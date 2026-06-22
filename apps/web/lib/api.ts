@@ -1,4 +1,17 @@
-import { canonicalJson, type FileOperation } from "@hunter-harness/contracts";
+import {
+  canonicalJson,
+  type FileOperation,
+  type RegistryAgent,
+  type RegistryArtifact,
+  type RegistryProjectWorkflowBinding,
+  type RegistrySkillDetail,
+  type RegistrySkillProposal,
+  type RegistrySkillVersion,
+  type RegistryTag,
+  type RegistryWorkflow,
+  type RegistryWorkflowMutation,
+  type SkillIr
+} from "@hunter-harness/contracts";
 
 import type { WebFileKind } from "./file-policy";
 
@@ -112,6 +125,26 @@ export interface HunterApi {
   createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult>;
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
   reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
+  listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
+  listSkillArtifacts?(): Promise<RegistryArtifact[]>;
+  getSkill?(slug: string): Promise<RegistrySkillDetail>;
+  listSkillVersions?(slug: string): Promise<RegistrySkillVersion[]>;
+  getSkillAdapterPreview?(slug: string, agent: RegistryAgent): Promise<{ path: string; content: string; sourceIrHash: string; compilerVersion: string; adapter: string }>;
+  listSkillProposals?(status?: string): Promise<RegistrySkillProposal[]>;
+  createSkillProposal?(ir: SkillIr, agent: RegistryAgent): Promise<RegistrySkillProposal>;
+  reviewSkillProposal?(proposalId: string, decision: "approve" | "reject", comment: string | null): Promise<Record<string, unknown>>;
+  downloadSkillArtifact?(slug: string, agent: RegistryAgent): Promise<{ blob: Blob; hash: string; filename: string }>;
+  listTags?(): Promise<RegistryTag[]>;
+  createTag?(slug: string, label: string): Promise<RegistryTag>;
+  updateTag?(tagId: string, input: { revision: number; label?: string; active?: boolean }): Promise<RegistryTag>;
+  mergeTag?(tagId: string, targetTagId: string, revision: number): Promise<RegistryTag>;
+  bindSkillTag?(skillSlug: string, tagId: string, remove?: boolean): Promise<RegistrySkillDetail>;
+  listWorkflows?(): Promise<RegistryWorkflow[]>;
+  createWorkflow?(input: RegistryWorkflowMutation): Promise<RegistryWorkflow>;
+  updateWorkflow?(workflowId: string, input: Partial<RegistryWorkflowMutation> & { revision: number }): Promise<RegistryWorkflow>;
+  deleteWorkflow?(workflowId: string, revision: number): Promise<void>;
+  getProjectWorkflowBinding?(projectId: string): Promise<RegistryProjectWorkflowBinding | null>;
+  bindProjectWorkflow?(projectId: string, workflowId: string, revision: number | null): Promise<RegistryProjectWorkflowBinding>;
 }
 
 export class ApiClientError extends Error {
@@ -357,6 +390,139 @@ export class HttpHunterApi implements HunterApi {
       "/api/v1/proposals/" + encodeURIComponent(proposalId) + "/review-decisions",
       { schema_version: 1, ...input }
     );
+  }
+
+  async listSkills(filters: Record<string, string> = {}): Promise<RegistrySkillDetail[]> {
+    const query = new URLSearchParams(filters);
+    const result = await this.request<{ items: RegistrySkillDetail[] }>(
+      "GET", "/api/v1/skills" + (query.size === 0 ? "" : "?" + query.toString())
+    );
+    return result.items;
+  }
+
+  async listSkillArtifacts(): Promise<RegistryArtifact[]> {
+    return (await this.request<{ items: RegistryArtifact[] }>("GET", "/api/v1/skill-artifacts")).items;
+  }
+
+  async getSkill(slug: string): Promise<RegistrySkillDetail> {
+    return this.request("GET", "/api/v1/skills/" + encodeURIComponent(slug));
+  }
+
+  async listSkillVersions(slug: string): Promise<RegistrySkillVersion[]> {
+    const result = await this.request<{ items: RegistrySkillVersion[] }>(
+      "GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/versions"
+    );
+    return result.items;
+  }
+
+  async getSkillAdapterPreview(slug: string, agent: RegistryAgent): Promise<{
+    path: string;
+    content: string;
+    sourceIrHash: string;
+    compilerVersion: string;
+    adapter: string;
+  }> {
+    return this.request(
+      "GET",
+      "/api/v1/skills/" + encodeURIComponent(slug) + "/adapter-preview/" + encodeURIComponent(agent)
+    );
+  }
+  async listSkillProposals(status?: string): Promise<RegistrySkillProposal[]> {
+    const suffix = status === undefined ? "" : "?status=" + encodeURIComponent(status);
+    const result = await this.request<{ items: RegistrySkillProposal[] }>("GET", "/api/v1/skill-proposals" + suffix);
+    return result.items;
+  }
+
+  async createSkillProposal(ir: SkillIr, agent: RegistryAgent): Promise<RegistrySkillProposal> {
+    return this.request("POST", "/api/v1/skill-proposals", {
+      schema_version: 1, skill_ir: ir, agent
+    });
+  }
+
+  async reviewSkillProposal(
+    proposalId: string,
+    decision: "approve" | "reject",
+    comment: string | null
+  ): Promise<Record<string, unknown>> {
+    return this.request("POST", "/api/v1/skill-proposals/" + encodeURIComponent(proposalId) + "/review", {
+      schema_version: 1, decision, comment
+    });
+  }
+
+  async downloadSkillArtifact(
+    slug: string,
+    agent: RegistryAgent
+  ): Promise<{ blob: Blob; hash: string; filename: string }> {
+    const token = this.tokenProvider();
+    if (token === null || token === "") throw new ApiClientError(401, "AUTH_REQUIRED", "Authentication required.");
+    const response = await this.fetch(
+      this.baseUrl + "/api/v1/skills/" + encodeURIComponent(slug) + "/artifacts/" + encodeURIComponent(agent) + "/download",
+      { headers: { Authorization: "Bearer " + token, "X-Request-Id": uuid() } }
+    );
+    if (!response.ok) throw new ApiClientError(response.status, "DOWNLOAD_FAILED", "Skill artifact download failed.");
+    return {
+      blob: await response.blob(),
+      hash: response.headers.get("X-Content-SHA256") ?? "",
+      filename: /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? slug + ".zip"
+    };
+  }
+
+  async listTags(): Promise<RegistryTag[]> {
+    return (await this.request<{ items: RegistryTag[] }>("GET", "/api/v1/tags")).items;
+  }
+
+  async createTag(slug: string, label: string): Promise<RegistryTag> {
+    return this.request("POST", "/api/v1/tags", { schema_version: 1, slug, label });
+  }
+
+  async updateTag(tagId: string, input: { revision: number; label?: string; active?: boolean }): Promise<RegistryTag> {
+    return this.request("PATCH", "/api/v1/tags/" + encodeURIComponent(tagId), input);
+  }
+
+  async mergeTag(tagId: string, targetTagId: string, revision: number): Promise<RegistryTag> {
+    return this.request("POST", "/api/v1/tags/" + encodeURIComponent(tagId) + "/merge", {
+      revision, target_tag_id: targetTagId
+    });
+  }
+
+  async bindSkillTag(skillSlug: string, tagId: string, remove = false): Promise<RegistrySkillDetail> {
+    return this.request(remove ? "DELETE" : "PUT", "/api/v1/skills/" + encodeURIComponent(skillSlug) + "/tags/" + encodeURIComponent(tagId), {});
+  }
+
+  async listWorkflows(): Promise<RegistryWorkflow[]> {
+    return (await this.request<{ items: RegistryWorkflow[] }>("GET", "/api/v1/workflows")).items;
+  }
+
+  async createWorkflow(input: RegistryWorkflowMutation): Promise<RegistryWorkflow> {
+    return this.request("POST", "/api/v1/workflows", { schema_version: 1, ...input });
+  }
+
+  async updateWorkflow(
+    workflowId: string,
+    input: Partial<RegistryWorkflowMutation> & { revision: number }
+  ): Promise<RegistryWorkflow> {
+    return this.request("PATCH", "/api/v1/workflows/" + encodeURIComponent(workflowId), input);
+  }
+
+  async deleteWorkflow(workflowId: string, revision: number): Promise<void> {
+    await this.request("DELETE", "/api/v1/workflows/" + encodeURIComponent(workflowId) + "?revision=" + revision, {});
+  }
+
+  async getProjectWorkflowBinding(projectId: string): Promise<RegistryProjectWorkflowBinding | null> {
+    const result = await this.request<{ binding: RegistryProjectWorkflowBinding | null }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/workflow-binding"
+    );
+    return result.binding;
+  }
+
+  async bindProjectWorkflow(
+    projectId: string,
+    workflowId: string,
+    revision: number | null
+  ): Promise<RegistryProjectWorkflowBinding> {
+    return this.request("PUT", "/api/v1/projects/" + encodeURIComponent(projectId) + "/workflow-binding", {
+      schema_version: 1, workflow_id: workflowId, revision
+    });
   }
 }
 

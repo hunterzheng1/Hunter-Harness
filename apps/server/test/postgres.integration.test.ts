@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../src/repositories/migrate.js";
 import { PostgresRepository } from "../src/repositories/postgres.js";
+import { PostgresRegistryPersistence } from "../src/registry/persistence.js";
 
 const databaseUrl = process.env.HUNTER_HARNESS_TEST_DATABASE_URL;
 const postgresDescribe = databaseUrl === undefined ? describe.skip : describe;
@@ -21,7 +22,7 @@ postgresDescribe("PostgreSQL repository integration", () => {
     );
     await pool.query(`
       TRUNCATE TABLE
-        idempotency_records, audit_events, reviews, artifacts, proposal_items,
+        registry_state, idempotency_records, audit_events, reviews, artifacts, proposal_items,
         proposals, proposal_sessions, project_bindings, projects, api_tokens, actors
       CASCADE
     `);
@@ -108,5 +109,19 @@ postgresDescribe("PostgreSQL repository integration", () => {
       statusCode: 201,
       response: { ok: true }
     });
+  });
+  it("persists the canonical registry snapshot across process instances", async () => {
+    const persistence = new PostgresRegistryPersistence(pool);
+    const snapshot = {
+      schemaVersion: 1,
+      compilerVersion: "1.0.0",
+      skills: [["harness-sync", { latestVersion: "1.0.0" }]],
+      proposals: [],
+      tags: [],
+      workflows: [],
+      projectBindings: []
+    };
+    await persistence.save(snapshot);
+    await expect(new PostgresRegistryPersistence(pool).load()).resolves.toEqual(snapshot);
   });
 });

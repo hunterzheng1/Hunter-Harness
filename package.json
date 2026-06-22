@@ -15,7 +15,7 @@
     "postcss": "8.5.10"
   },
   "scripts": {
-    "build": "tsc -b && npm run bundle -w packages/cli && npm run copy-resources -w packages/cli && npm run build -w apps/web",
+    "build": "tsc -b && npm run bundle -w packages/cli && npm run copy-resources -w packages/cli && npm run bundle -w packages/skill-cli && npm run build -w apps/web",
     "typecheck": "tsc -b && npm run typecheck -w apps/web",
     "test": "vitest run",
     "test:watch": "vitest",

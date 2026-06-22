@@ -18,11 +18,13 @@
   "dependencies": {
     "@hunter-harness/contracts": "*",
     "@hunter-harness/core": "*",
+    "adm-zip": "^0.5.17",
     "fastify": "^5.8.5",
     "pg": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/pg": "^8.15.5"
   }
 }

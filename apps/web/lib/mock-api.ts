@@ -1,7 +1,22 @@
 import type {
+  RegistryAgent,
+  RegistrySkillDetail,
+  RegistrySkillProposal,
+  RegistrySkillVersion,
+  RegistryTag,
+  RegistryWorkflow,
+  RegistryWorkflowMutation,
+  SkillIr
+} from "@hunter-harness/contracts";
+
+import { bootstrapSkills, workflowOrder } from "./catalog";
+import { ApiClientError } from "./api";
+import type {
   HunterApi,
   ProjectSummary,
   ProjectDetailModel,
+  ProjectFileProposalInput,
+  ProjectFileProposalResult,
   ProposalSummary,
   ArtifactSummary,
   ArtifactManifestModel,
@@ -155,11 +170,107 @@ const MOCK_ARTIFACTS: ArtifactSummary[] = [
 
 const DELAY_MS = 400; // simulate a slight async feel
 
+function toIr(skill: (typeof bootstrapSkills)[number]): SkillIr {
+  return {
+    name: skill.name,
+    kind: skill.kind,
+    description: skill.description,
+    triggers: skill.triggers,
+    inputs: skill.inputs,
+    outputs: skill.outputs,
+    forbidden_actions: skill.forbiddenActions,
+    required_context: skill.requiredContext,
+    profiles: Object.fromEntries(skill.profiles.map((profile) => [profile, { enabled: true }])),
+    adapters: Object.fromEntries(skill.adapters.map((adapter) => [adapter, { enabled: true }])),
+    version: skill.version,
+    instructions: skill.instructions,
+    source_provenance: "Explicit demo data"
+  };
+}
+
+const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) => ({
+  skill_id: "skl_demo_" + index,
+  slug: skill.name,
+  name: skill.name,
+  description: skill.description,
+  category: skill.kind,
+  tags: skill.kind === "governance" ? ["review"] : ["bootstrap"],
+  status: "published",
+  latest_version: skill.version,
+  adapters: skill.adapters,
+  revision: 1,
+  created_at: "2026-06-20T00:00:00Z",
+  updated_at: "2026-06-20T00:00:00Z",
+  ir: toIr(skill)
+}));
+
+const MOCK_TAGS: RegistryTag[] = [
+  { tag_id: "tag_demo_bootstrap", slug: "bootstrap", label: "Bootstrap", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
+  { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
+];
+
+const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
+  workflow_id: "wf_demo_general",
+  key: "general",
+  name: "General",
+  description: "Explicit read-only demo workflow",
+  profile: "general",
+  default_agent: "claude-code",
+  enabled: true,
+  skill_slugs: [...workflowOrder],
+  revision: 1,
+  created_at: "2026-06-20T00:00:00Z",
+  updated_at: "2026-06-20T00:00:00Z"
+}];
+
+function demoReadOnly(): never {
+  throw new ApiClientError(403, "DEMO_READ_ONLY", "Demo mode is read-only and did not write server state.");
+}
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
 function delay<T>(value: T): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), DELAY_MS));
 }
 
 export class MockApiClient implements HunterApi {
+  async listSkills(): Promise<RegistrySkillDetail[]> {
+    return delay(clone(MOCK_SKILLS));
+  }
+
+  async getSkill(slug: string): Promise<RegistrySkillDetail> {
+    const skill = MOCK_SKILLS.find((item) => item.slug === slug);
+    if (skill === undefined) throw new ApiClientError(404, "SKILL_NOT_FOUND", "Demo Skill not found.");
+    return delay(clone(skill));
+  }
+
+  async listSkillVersions(slug: string): Promise<RegistrySkillVersion[]> {
+    const skill = await this.getSkill(slug);
+    if (skill.ir === null) throw new ApiClientError(500, "DEMO_SKILL_IR_MISSING", "Demo Skill IR is missing.");
+    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", ir: skill.ir, artifacts: [], source_proposal_id: null, created_at: skill.updated_at }]);
+  }
+
+  async getSkillAdapterPreview(slug: string, agent: RegistryAgent) {
+    const skill = await this.getSkill(slug);
+    if (agent !== "claude-code") throw new ApiClientError(422, "ADAPTER_NOT_INSTALLABLE", "Demo adapter is contract-only.");
+    return delay({ path: `.claude/skills/${slug}/SKILL.md`, content: `# ${slug}\n\n${skill.description}\n`, sourceIrHash: "sha256:" + "d".repeat(64), compilerVersion: "1.0.0", adapter: agent });
+  }
+
+  async listSkillProposals(): Promise<RegistrySkillProposal[]> { return delay([]); }
+  async listTags(): Promise<RegistryTag[]> { return delay(clone(MOCK_TAGS)); }
+  async listWorkflows(): Promise<RegistryWorkflow[]> { return delay(clone(MOCK_WORKFLOWS)); }
+  async listSkillArtifacts() { return delay([]); }
+  async createSkillProposal(): Promise<RegistrySkillProposal> { return demoReadOnly(); }
+  async reviewSkillProposal(): Promise<Record<string, unknown>> { return demoReadOnly(); }
+  async downloadSkillArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
+  async createTag(): Promise<RegistryTag> { return demoReadOnly(); }
+  async updateTag(): Promise<RegistryTag> { return demoReadOnly(); }
+  async mergeTag(): Promise<RegistryTag> { return demoReadOnly(); }
+  async bindSkillTag(): Promise<RegistrySkillDetail> { return demoReadOnly(); }
+  async createWorkflow(input: RegistryWorkflowMutation): Promise<RegistryWorkflow> { void input; return demoReadOnly(); }
+  async updateWorkflow(): Promise<RegistryWorkflow> { return demoReadOnly(); }
+  async deleteWorkflow(): Promise<void> { return demoReadOnly(); }
   async listProjects(): Promise<ProjectSummary[]> {
     return delay([...MOCK_PROJECTS]);
   }
@@ -201,7 +312,8 @@ export class MockApiClient implements HunterApi {
     );
   }
 
-  async getArtifactManifest(_artifactId: string): Promise<ArtifactManifestModel> {
+  async getArtifactManifest(artifactId: string): Promise<ArtifactManifestModel> {
+    void artifactId;
     return delay({
       schema_version: 1,
       project_id: "agent-harness",
@@ -212,14 +324,14 @@ export class MockApiClient implements HunterApi {
         {
           operation: "add",
           path: "src/index.ts",
-          file_kind: "source" as any,
+          file_kind: "user_editable",
           content_sha256: "sha256:abc123",
           size_bytes: 2048,
         },
         {
           operation: "modify",
           path: "package.json",
-          file_kind: "manifest" as any,
+          file_kind: "user_editable",
           base_content_sha256: "sha256:old456",
           content_sha256: "sha256:new789",
           size_bytes: 1024,
@@ -229,13 +341,16 @@ export class MockApiClient implements HunterApi {
   }
 
   async getArtifactText(
-    _artifactId: string,
-    _contentHash: string
+    artifactId: string,
+    contentHash: string
   ): Promise<string> {
+    void artifactId;
+    void contentHash;
     return delay("// Mock artifact content\nconsole.log('hello hunter-harness');");
   }
 
-  async createProjectFileProposal(_input: any): Promise<any> {
+  async createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult> {
+    void input;
     return delay({
       proposal_id: "prop_mock" + Date.now(),
       status: "pending_review",
@@ -243,7 +358,8 @@ export class MockApiClient implements HunterApi {
     });
   }
 
-  async getProposal(_proposalId: string): Promise<ProposalDetailModel> {
+  async getProposal(proposalId: string): Promise<ProposalDetailModel> {
+    void proposalId;
     return delay({
       schema_version: 1,
       proposal_id: "prop_a1b2c3",
@@ -257,7 +373,7 @@ export class MockApiClient implements HunterApi {
           operation: {
             operation: "modify",
             path: "src/agent.ts",
-            file_kind: "source" as any,
+            file_kind: "user_editable",
             base_content_sha256: "sha256:old123",
             content_sha256: "sha256:new456",
             size_bytes: 4096,
@@ -268,7 +384,7 @@ export class MockApiClient implements HunterApi {
           operation: {
             operation: "add",
             path: "src/tools/skill-loader.ts",
-            file_kind: "source" as any,
+            file_kind: "user_editable",
             content_sha256: "sha256:abc789",
             size_bytes: 1536,
           },
@@ -279,7 +395,7 @@ export class MockApiClient implements HunterApi {
             operation: "rename",
             from_path: "src/old-utils.ts",
             to_path: "src/utils/helpers.ts",
-            file_kind: "source" as any,
+            file_kind: "user_editable",
             base_content_sha256: "sha256:old999",
             content_sha256: "sha256:old999",
             size_bytes: 2048,

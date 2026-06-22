@@ -3,6 +3,10 @@ import { Buffer } from "node:buffer";
 import {
   canonicalJson,
   fileOperationSchema,
+  registryAgentSchema,
+  registrySlugSchema,
+  registryWorkflowMutationSchema,
+  skillIrSchema,
   type FileOperation
 } from "@hunter-harness/contracts";
 import {
@@ -11,6 +15,7 @@ import {
   scanSensitiveFiles,
   sha256Bytes,
   uuidV7,
+  type BootstrapBundle,
   type FindingOverride
 } from "@hunter-harness/core";
 import Fastify, {
@@ -23,6 +28,8 @@ import { z, ZodError } from "zod";
 import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
+import { RegistryStore } from "./registry/store.js";
+import type { RegistryPersistence } from "./registry/persistence.js";
 import type {
   Actor,
   IdempotencyRecord,
@@ -36,6 +43,8 @@ export interface CreateServerOptions {
   storage: ArtifactStorage;
   config?: Partial<ServerConfig>;
   logger?: boolean;
+  bootstrapBundle?: BootstrapBundle;
+  registryPersistence?: RegistryPersistence;
 }
 
 interface MutationResult {
@@ -91,6 +100,49 @@ const reviewSchema = z.object({
     item_ids: z.array(z.string().regex(/^item_/)).min(1),
     target_scope: z.string().min(1)
   }).strict()).default([])
+}).strict();
+
+const registryProposalCreateSchema = z.object({
+  schema_version: z.literal(1),
+  skill_ir: skillIrSchema,
+  agent: registryAgentSchema
+}).strict();
+
+const registryReviewSchema = z.object({
+  schema_version: z.literal(1),
+  decision: z.enum(["approve", "reject"]),
+  comment: z.string().max(4000).nullable().optional()
+}).strict();
+
+const tagCreateSchema = z.object({
+  schema_version: z.literal(1),
+  slug: registrySlugSchema,
+  label: z.string().min(1).max(80)
+}).strict();
+
+const tagUpdateSchema = z.object({
+  revision: z.number().int().positive(),
+  label: z.string().min(1).max(80).optional(),
+  active: z.boolean().optional()
+}).strict();
+
+const tagMergeSchema = z.object({
+  revision: z.number().int().positive(),
+  target_tag_id: z.string().regex(/^tag_/)
+}).strict();
+
+const workflowCreateSchema = registryWorkflowMutationSchema.extend({
+  schema_version: z.literal(1)
+}).strict();
+
+const workflowUpdateSchema = registryWorkflowMutationSchema.partial().extend({
+  revision: z.number().int().positive()
+}).strict();
+
+const projectWorkflowBindingSchema = z.object({
+  schema_version: z.literal(1),
+  workflow_id: z.string().regex(/^wf_/),
+  revision: z.number().int().positive().nullable()
 }).strict();
 
 function routeRequestId(request: FastifyRequest): string {
@@ -193,6 +245,8 @@ function send(reply: FastifyReply, requestId: string, result: MutationResult) {
 export async function createServer(options: CreateServerOptions): Promise<FastifyInstance> {
   const config = { ...defaultServerConfig, ...options.config };
   const { repository, storage } = options;
+  const registry = new RegistryStore(storage, options.registryPersistence);
+  await registry.initialize(options.bootstrapBundle);
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: config.maxProposalBytes
@@ -748,6 +802,320 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       .header("X-Request-Id", requestId)
       .code(statusCode);
     return content;
+  });
+
+  app.get("/api/v1/skills", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: registry.listSkills({
+        search: query.search,
+        category: query.category,
+        tag: query.tag,
+        agent: query.agent,
+        status: query.status
+      }),
+      page: { next_cursor: null },
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/skills/:slug", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getSkill(slug), request_id: requestId };
+  });
+
+  app.get("/api/v1/skills/:slug/adapter-preview/:agent", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const preview = registry.adapterPreview(slug, registryAgentSchema.parse(agentValue));
+    reply.header("X-Request-Id", requestId);
+    return { ...preview, request_id: requestId };
+  });
+  app.get("/api/v1/skill-artifacts", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    reply.header("X-Request-Id", requestId);
+    return { items: registry.listArtifacts(), request_id: requestId };
+  });
+
+  app.get("/api/v1/skills/:slug/versions", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    reply.header("X-Request-Id", requestId);
+    return { items: registry.listVersions(slug), request_id: requestId };
+  });
+
+  app.get("/api/v1/skills/:slug/artifacts/:agent/download", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agent = registryAgentSchema.parse(agentValue);
+    const artifact = registry.latestArtifact(slug, agent);
+    const bytes = await registry.artifactBytes(artifact);
+    await writeAudit(repository, {
+      actorId: actor.actorId,
+      projectId: null,
+      action: "skill.artifact.downloaded",
+      targetId: artifact.artifact_id,
+      requestId,
+      details: { skill_slug: slug, version: artifact.version, agent }
+    });
+    reply
+      .header("Content-Type", "application/zip")
+      .header("Content-Disposition", `attachment; filename="${slug}-${artifact.version}-${agent}.zip"`)
+      .header("X-Content-SHA256", artifact.content_sha256)
+      .header("ETag", artifact.content_sha256)
+      .header("X-Request-Id", requestId);
+    return Buffer.from(bytes);
+  });
+
+  app.get("/api/v1/skill-proposals", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    reply.header("X-Request-Id", requestId);
+    return { items: registry.listProposals(query.status), request_id: requestId };
+  });
+
+  app.get("/api/v1/skill-proposals/:proposalId", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { proposalId } = request.params as { proposalId: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getProposal(proposalId), request_id: requestId };
+  });
+
+  app.post("/api/v1/skill-proposals", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = registryProposalCreateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const proposal = registry.createProposal({
+        ir: body.skill_ir,
+        actorId: actor.actorId,
+        agent: body.agent
+      });
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "skill.proposal.created",
+        targetId: proposal.proposal_id,
+        requestId,
+        details: { skill_slug: proposal.skill_slug, version: proposal.proposed_ir.version }
+      });
+      return { statusCode: 201, body: { ...proposal } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/skill-proposals/:proposalId/review", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { proposalId } = request.params as { proposalId: string };
+    const body = registryReviewSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const proposal = await registry.reviewProposal({
+        proposalId,
+        actorId: actor.actorId,
+        decision: body.decision,
+        comment: body.comment ?? null
+      });
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: body.decision === "approve" ? "skill.proposal.approved" : "skill.proposal.rejected",
+        targetId: proposalId,
+        requestId,
+        details: {
+          skill_slug: proposal.skill_slug,
+          published_version: body.decision === "approve" ? proposal.proposed_ir.version : null,
+          artifact_ids: proposal.publishedArtifacts.map((item) => item.artifact_id)
+        }
+      });
+      return {
+        statusCode: 201,
+        body: {
+          proposal_id: proposalId,
+          decision: body.decision,
+          status: proposal.status,
+          published_version: body.decision === "approve" ? proposal.proposed_ir.version : null,
+          artifacts: proposal.publishedArtifacts
+        }
+      };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/tags", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    reply.header("X-Request-Id", requestId);
+    return { items: registry.listTags(), request_id: requestId };
+  });
+
+  app.post("/api/v1/tags", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = tagCreateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const tag = registry.createTag(body);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "tag.created",
+        targetId: tag.tag_id, requestId, details: { slug: tag.slug }
+      });
+      return { statusCode: 201, body: tag };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.patch("/api/v1/tags/:tagId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { tagId } = request.params as { tagId: string };
+    const body = tagUpdateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const tag = registry.updateTag(tagId, body);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "tag.updated",
+        targetId: tagId, requestId, details: { revision: tag.revision }
+      });
+      return { statusCode: 200, body: tag };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/tags/:tagId/merge", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { tagId } = request.params as { tagId: string };
+    const body = tagMergeSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const source = registry.mergeTag(tagId, body.target_tag_id, body.revision);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "tag.merged",
+        targetId: tagId, requestId, details: { target_tag_id: body.target_tag_id }
+      });
+      return { statusCode: 200, body: { ...source, merged_into: body.target_tag_id } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  for (const method of ["PUT", "DELETE"] as const) {
+    app.route({
+      method,
+      url: "/api/v1/skills/:slug/tags/:tagId",
+      handler: async (request, reply) => {
+        const { actor, requestId } = await authenticated(request, repository);
+        const { slug, tagId } = request.params as { slug: string; tagId: string };
+        const result = await mutation(request, repository, actor, requestId, async () => {
+          const skill = registry.bindTag(slug, tagId, method === "DELETE");
+          await registry.persist();
+          await writeAudit(repository, {
+            actorId: actor.actorId, projectId: null,
+            action: method === "DELETE" ? "skill.tag.removed" : "skill.tag.bound",
+            targetId: skill.skill_id, requestId, details: { tag_id: tagId }
+          });
+          return { statusCode: 200, body: skill };
+        });
+        return send(reply, requestId, result);
+      }
+    });
+  }
+
+  app.get("/api/v1/workflows", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    reply.header("X-Request-Id", requestId);
+    return { items: registry.listWorkflows(), request_id: requestId };
+  });
+
+  app.get("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return { binding: registry.getProjectBinding(projectId), request_id: requestId };
+  });
+
+  app.put("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    const body = projectWorkflowBindingSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const binding = registry.bindProjectWorkflow({
+        projectId, workflowId: body.workflow_id, revision: body.revision
+      });
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId, action: "project.workflow.bound",
+        targetId: projectId, requestId,
+        details: { workflow_id: binding.workflow_id, revision: binding.revision }
+      });
+      return { statusCode: 200, body: binding };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/workflows/:workflowId", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { workflowId } = request.params as { workflowId: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getWorkflow(workflowId), request_id: requestId };
+  });
+
+  app.post("/api/v1/workflows", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const parsed = workflowCreateSchema.parse(request.body);
+    const body = {
+      key: parsed.key,
+      name: parsed.name,
+      description: parsed.description,
+      profile: parsed.profile,
+      default_agent: parsed.default_agent,
+      enabled: parsed.enabled,
+      skill_slugs: parsed.skill_slugs
+    };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const workflow = registry.createWorkflow(body);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.created",
+        targetId: workflow.workflow_id, requestId, details: { key: workflow.key }
+      });
+      return { statusCode: 201, body: workflow };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.patch("/api/v1/workflows/:workflowId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { workflowId } = request.params as { workflowId: string };
+    const body = workflowUpdateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const workflow = registry.updateWorkflow(workflowId, body);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.updated",
+        targetId: workflowId, requestId, details: { revision: workflow.revision }
+      });
+      return { statusCode: 200, body: workflow };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.delete("/api/v1/workflows/:workflowId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { workflowId } = request.params as { workflowId: string };
+    const query = z.object({ revision: z.coerce.number().int().positive() }).parse(request.query);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      registry.deleteWorkflow(workflowId, query.revision);
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.deleted",
+        targetId: workflowId, requestId
+      });
+      return { statusCode: 200, body: { workflow_id: workflowId, deleted: true } };
+    });
+    return send(reply, requestId, result);
   });
 
   await app.ready();

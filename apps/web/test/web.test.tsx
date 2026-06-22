@@ -128,9 +128,9 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
 describe("Web Console", () => {
   it("renders dashboard and project registry from /api/v1", async () => {
     render(<DashboardConsole api={api()} />);
-    expect(screen.getByText(/loading governance overview/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading governance overview|正在加载治理总览/i)).toBeInTheDocument();
     expect(await screen.findByText("Payments")).toBeInTheDocument();
-    expect(screen.getByText("pending review")).toBeInTheDocument();
+    expect(screen.getByText(/pending review|待审核/i)).toBeInTheDocument();
 
     render(<ProjectRegistry api={api()} />);
     expect(await screen.findByText("pv_1")).toBeInTheDocument();
@@ -144,19 +144,19 @@ describe("Web Console", () => {
       })
     });
     render(<DashboardConsole api={failing} />);
-    expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
+    expect(await screen.findByText(/authentication required|需要认证/i)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("super-secret-token");
   });
 
   it("renders the review queue with loading and empty states", async () => {
     const client = api();
     const view = render(<ReviewQueue api={client} />);
-    expect(screen.getByText(/loading review queue/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading review queue|正在加载审核队列/i)).toBeInTheDocument();
     expect(await screen.findByText("prp_one")).toBeInTheDocument();
     view.unmount();
 
     render(<ReviewQueue api={api({ listAllProposals: vi.fn(async () => []) })} />);
-    expect(await screen.findByText(/review queue is clear/i)).toBeInTheDocument();
+    expect(await screen.findByText(/review queue is clear|审核队列为空/i)).toBeInTheDocument();
   });
 
   it("renders approved artifact history without artifact content", async () => {
@@ -177,17 +177,17 @@ describe("Web Console", () => {
     }));
     render(<ProposalDetail api={api({ reviewProposal })} proposalId="prp_one" />);
     expect(await screen.findByText(".claude/rules/one.md")).toBeInTheDocument();
-    expect(screen.getByText(/content is redacted/i)).toBeInTheDocument();
+    expect(screen.getByText(/content is redacted|内容.*隐去/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    fireEvent.click(screen.getByRole("button", { name: /approve|批准/i }));
     await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
       "prp_one", expect.objectContaining({ decision: "approve" })
     ));
-    fireEvent.click(screen.getByRole("button", { name: /reject/i }));
+    fireEvent.click(screen.getByRole("button", { name: /reject|拒绝/i }));
     await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
       "prp_one", expect.objectContaining({ decision: "reject" })
     ));
-    fireEvent.click(screen.getByRole("button", { name: /split/i }));
+    fireEvent.click(screen.getByRole("button", { name: /split|拆分/i }));
     await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
       "prp_one",
       expect.objectContaining({

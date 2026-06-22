@@ -5,6 +5,7 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
 COPY packages/core/package.json packages/core/tsconfig.json ./packages/core/
 COPY packages/cli/package.json packages/cli/tsconfig.json ./packages/cli/
+COPY packages/skill-cli/package.json packages/skill-cli/tsconfig.json ./packages/skill-cli/
 COPY apps/server/package.json apps/server/tsconfig.json ./apps/server/
 COPY apps/web/package.json apps/web/tsconfig.json apps/web/next.config.ts apps/web/next-env.d.ts ./apps/web/
 RUN npm ci --ignore-scripts

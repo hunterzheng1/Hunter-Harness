@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import type { RegistryArtifact, RegistrySkillProposal } from "@hunter-harness/contracts";
 
 import {
   ApiClientError,
+  browserApi,
   type HunterApi,
   type ArtifactSummary,
   type ProjectSummary,
@@ -18,15 +20,7 @@ import { mockApi } from "../lib/mock-api";
 // ── Resolve API: real (with token) or mock (offline demo) ──
 
 function resolveApi(): HunterApi {
-  if (typeof window === "undefined") return mockApi;
-  const token = window.sessionStorage.getItem("hunter-harness-token");
-  if (!token) return mockApi;
-  const { HttpHunterApi } = require("../lib/api");
-  return new HttpHunterApi({
-    baseUrl: process.env.NEXT_PUBLIC_HUNTER_HARNESS_API_URL ?? "",
-    tokenProvider: () =>
-      window.sessionStorage.getItem("hunter-harness-token"),
-  });
+  return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
 }
 
 function errorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
@@ -63,16 +57,28 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
+  const [registryCounts, setRegistryCounts] = useState({ skills: 0, workflows: 0, artifacts: 0 });
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void Promise.all([api.listProjects(), api.listAllProposals()])
-      .then(([nextProjects, nextProposals]) => {
+    void Promise.all([
+      api.listProjects(),
+      api.listAllProposals(),
+      api.listSkills?.() ?? Promise.resolve([]),
+      api.listWorkflows?.() ?? Promise.resolve([]),
+      api.listAllArtifacts()
+    ])
+      .then(([nextProjects, nextProposals, nextSkills, nextWorkflows, nextArtifacts]) => {
         if (active) {
           setProjects(nextProjects);
           setProposals(nextProposals);
+          setRegistryCounts({
+            skills: nextSkills.filter((skill) => skill.status === "published").length,
+            workflows: nextWorkflows.length,
+            artifacts: nextArtifacts.length
+          });
         }
       })
       .catch((reason: unknown) => {
@@ -119,6 +125,9 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
                 </strong>
                 <span>{t.dashboard.approvedProposals}</span>
               </article>
+              <article className="metric"><strong>{registryCounts.workflows}</strong><span>Workflows</span></article>
+              <article className="metric"><strong>{registryCounts.skills}</strong><span>Published Skills</span></article>
+              <article className="metric"><strong>{registryCounts.artifacts}</strong><span>Project Artifacts</span></article>
             </div>
 
       <div className="panel">
@@ -152,19 +161,29 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
+  const [workflowInfo, setWorkflowInfo] = useState<Record<string, { name: string; skillCount: number }>>({});
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [role, setRole] = useState("all");
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void api
-      .listProjects()
-      .then((items) => {
-        if (active) setProjects(items);
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, t));
+    void api.listProjects().then(async (items) => {
+      const workflows = await (api.listWorkflows?.() ?? Promise.resolve([]));
+      const bindings = api.getProjectWorkflowBinding === undefined
+        ? items.map(() => null)
+        : await Promise.all(items.map((project) => api.getProjectWorkflowBinding?.(project.project_id) ?? Promise.resolve(null)));
+      const nextInfo: Record<string, { name: string; skillCount: number }> = {};
+      items.forEach((project, index) => {
+        const binding = bindings[index];
+        const workflow = workflows.find((item) => item.workflow_id === binding?.workflow_id);
+        if (workflow !== undefined) nextInfo[project.project_id] = { name: workflow.name, skillCount: workflow.skill_slugs.length };
       });
+      if (active) { setProjects(items); setWorkflowInfo(nextInfo); }
+    }).catch((reason: unknown) => {
+      if (active) setError(errorMessage(reason, t));
+    });
     return () => {
       active = false;
     };
@@ -172,6 +191,13 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
 
   if (error !== null) return <Empty>{error}</Empty>;
   if (projects === null) return <Empty>{t.projects.loading}</Empty>;
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredProjects = projects.filter((project) =>
+    (normalizedQuery === "" || project.display_name.toLowerCase().includes(normalizedQuery) || project.project_id.toLowerCase().includes(normalizedQuery)) &&
+    (role === "all" || project.role === role)
+  );
+  const roles = [...new Set(projects.map((project) => project.role))].sort();
 
   return (
     <section className="stack">
@@ -181,8 +207,23 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.projects.title}</h1>
         </div>
       </div>
+      <div className="registry-toolbar compact-toolbar">
+        <label>
+          搜索项目 / Search projects
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="name or project id" />
+        </label>
+        <label>
+          角色 / Role
+          <select value={role} onChange={(event) => setRole(event.target.value)}>
+            <option value="all">全部 / All</option>
+            {roles.map((item) => <option value={item} key={item}>{item}</option>)}
+          </select>
+        </label>
+      </div>
       {projects.length === 0 ? (
         <Empty>{t.projects.noProjects}</Empty>
+      ) : filteredProjects.length === 0 ? (
+        <Empty>没有符合筛选条件的项目。</Empty>
       ) : (
         <div className="table-wrap">
           <table>
@@ -190,12 +231,15 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
               <tr>
                 <th>{t.projects.table.project}</th>
                 <th>{t.projects.table.role}</th>
+                <th>Workflow</th>
+                <th>Skills</th>
                 <th>{t.projects.table.version}</th>
                 <th>{t.projects.table.artifact}</th>
+                <th>Registered</th>
               </tr>
             </thead>
             <tbody>
-              {projects.map((project) => (
+              {filteredProjects.map((project) => (
                 <tr key={project.project_id}>
                   <td>
                     <Link href={`/projects/${project.project_id}`}>
@@ -204,8 +248,11 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
                     </Link>
                   </td>
                   <td>{project.role}</td>
+                  <td>{workflowInfo[project.project_id]?.name ?? "Not bound"}</td>
+                  <td>{workflowInfo[project.project_id]?.skillCount ?? 0}</td>
                   <td>{project.latest_project_version ?? t.projects.table.none}</td>
                   <td>{project.latest_artifact_id ?? t.projects.table.none}</td>
+                  <td>{project.created_at.slice(0, 10)}</td>
                 </tr>
               ))}
             </tbody>
@@ -222,18 +269,21 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
+  const [skillProposals, setSkillProposals] = useState<RegistrySkillProposal[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void api
-      .listAllProposals()
-      .then((items) => {
-        if (active)
-          setProposals(
-            items.filter((item) => item.status === "pending_review")
-          );
+    void Promise.all([
+      api.listAllProposals(),
+      api.listSkillProposals?.("pending_review") ?? Promise.resolve([])
+    ])
+      .then(([items, skillItems]) => {
+        if (active) {
+          setProposals(items.filter((item) => item.status === "pending_review"));
+          setSkillProposals(skillItems);
+        }
       })
       .catch((reason: unknown) => {
         if (active) setError(errorMessage(reason, t));
@@ -254,13 +304,18 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.reviewQueue.title}</h1>
         </div>
         <span>
-          {proposals.length} {t.reviewQueue.waiting}
+          {proposals.length + skillProposals.length} {t.reviewQueue.waiting}
         </span>
       </div>
-      {proposals.length === 0 ? (
+      {proposals.length === 0 && skillProposals.length === 0 ? (
         <Empty>{t.reviewQueue.clear}</Empty>
       ) : (
-        proposals.map((proposal) => (
+        <>{skillProposals.map((proposal) => (
+          <Link className="proposal-card" href={`/skills/${proposal.skill_slug}`} key={proposal.proposal_id}>
+            <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug} · v{proposal.proposed_ir.version}</code></div>
+            <div><span>Canonical Skill IR</span><Status value={proposal.status} /></div>
+          </Link>
+        ))}{proposals.map((proposal) => (
           <Link
             className="proposal-card"
             href={`/proposals/${proposal.proposal_id}`}
@@ -277,7 +332,7 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
               <Status value={proposal.status} />
             </div>
           </Link>
-        ))
+        ))}</>
       )}
     </section>
   );
@@ -289,15 +344,21 @@ export function ArtifactHistory({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [artifacts, setArtifacts] = useState<ArtifactSummary[] | null>(null);
+  const [skillArtifacts, setSkillArtifacts] = useState<RegistryArtifact[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void api
-      .listAllArtifacts()
-      .then((items) => {
-        if (active) setArtifacts(items);
+    void Promise.all([
+      api.listAllArtifacts(),
+      api.listSkillArtifacts?.() ?? Promise.resolve([])
+    ])
+      .then(([items, nextSkillArtifacts]) => {
+        if (active) {
+          setArtifacts(items);
+          setSkillArtifacts(nextSkillArtifacts);
+        }
       })
       .catch((reason: unknown) => {
         if (active) setError(errorMessage(reason, t));
@@ -318,10 +379,10 @@ export function ArtifactHistory({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.artifacts.title}</h1>
         </div>
         <span>
-          {artifacts.length} {t.artifacts.published}
+          {artifacts.length + skillArtifacts.length} {t.artifacts.published}
         </span>
       </div>
-      {artifacts.length === 0 ? (
+      {artifacts.length === 0 && skillArtifacts.length === 0 ? (
         <Empty>{t.artifacts.noArtifacts}</Empty>
       ) : (
         <div className="table-wrap">
@@ -336,6 +397,15 @@ export function ArtifactHistory({ api: propApi }: { api?: HunterApi }) {
               </tr>
             </thead>
             <tbody>
+              {skillArtifacts.map((artifact) => (
+                <tr key={artifact.artifact_id}>
+                  <td><Link href={`/skills/${artifact.skill_slug}`}><strong>{artifact.artifact_id}</strong><code>{artifact.content_sha256.slice(0, 20)}…</code></Link></td>
+                  <td>{artifact.skill_slug}</td>
+                  <td>{artifact.version} · {artifact.agent}</td>
+                  <td>{artifact.size_bytes} B</td>
+                  <td>{artifact.source_proposal_id}</td>
+                </tr>
+              ))}
               {artifacts.map((artifact) => (
                 <tr key={artifact.artifact_id}>
                   <td>

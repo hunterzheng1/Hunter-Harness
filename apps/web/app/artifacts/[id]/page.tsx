@@ -3,9 +3,9 @@
 import { useParams } from "next/navigation";
 
 import { ArtifactDetail } from "../../../components/artifact-detail";
-import { mockApi } from "../../../lib/mock-api";
+import { browserApi } from "../../../lib/api";
 
 export default function ArtifactDetailPage() {
   const params = useParams<{ id: string }>();
-  return <ArtifactDetail api={mockApi} artifactId={params.id} />;
+  return <ArtifactDetail api={browserApi()} artifactId={params.id} />;
 }

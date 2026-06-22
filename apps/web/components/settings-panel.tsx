@@ -69,38 +69,85 @@ function TokenSection() {
   const { t } = useI18n();
   const [token, setToken] = useState("");
   const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const stored = sessionStorage.getItem("ghp_governance_token");
+    const stored = sessionStorage.getItem("hunter-harness-token");
     if (stored) setToken(stored);
   }, []);
 
-  function handleSet() {
+  async function handleSet() {
     const trimmed = token.trim();
-    if (trimmed) {
-      sessionStorage.setItem("ghp_governance_token", trimmed);
-    } else {
-      sessionStorage.removeItem("ghp_governance_token");
+    setSaved(false);
+    setMessage(null);
+    if (trimmed === "") {
+      sessionStorage.removeItem("hunter-harness-token");
+      setMessage("Session token removed.");
+      return;
     }
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/v1/projects?limit=1", {
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer " + trimmed,
+          "X-Request-Id": globalThis.crypto.randomUUID()
+        }
+      });
+      if (!response.ok) {
+        setMessage(response.status === 401 || response.status === 403
+          ? "Token was rejected by the server."
+          : "Token check failed with HTTP " + response.status + ".");
+        return;
+      }
+      sessionStorage.setItem("hunter-harness-token", trimmed);
+      setSaved(true);
+      setMessage("Token verified for this browser session.");
+      window.setTimeout(() => window.location.reload(), 250);
+    } catch {
+      setMessage("The governance API could not be reached.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
     <div>
-      <label className="settings-label">{t.settings.apiToken}</label>
+      <label className="settings-label" htmlFor="settings-api-token">{t.settings.apiToken}</label>
       <div className="token-row">
-        <input
-          className="token-input"
-          type="password"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-          placeholder={t.token.placeholder}
-        />
-        <button className="token-set-btn" onClick={handleSet}>
-          {saved ? t.token.saved : t.token.setButton}
+        <input id="settings-api-token" className="token-input" type="password" autoComplete="off" value={token} onChange={(event) => setToken(event.target.value)} placeholder={t.token.placeholder} />
+        <button className="token-set-btn" disabled={busy} onClick={() => void handleSet()}>
+          {busy ? t.token.checking : saved ? t.token.saved : t.token.setButton}
         </button>
       </div>
+      {message === null ? null : <small>{message}</small>}
+    </div>
+  );
+}
+
+function DefaultAgentSection() {
+  const [agent, setAgent] = useState("claude-code");
+  useEffect(() => {
+    setAgent(localStorage.getItem("hunter-harness-default-agent") ?? "claude-code");
+  }, []);
+  return (
+    <div>
+      <label className="settings-label" htmlFor="default-agent">默认 Agent</label>
+      <select
+        id="default-agent"
+        className="token-input"
+        value={agent}
+        onChange={(event) => {
+          setAgent(event.target.value);
+          localStorage.setItem("hunter-harness-default-agent", event.target.value);
+        }}
+      >
+        <option value="claude-code">Claude Code</option>
+        <option value="codex">Codex（契约占位）</option>
+        <option value="generic">Generic（契约占位）</option>
+        <option value="mcp">MCP（契约占位）</option>
+      </select>
     </div>
   );
 }
@@ -136,6 +183,7 @@ export function SettingsPanel({ theme, setTheme }: { theme: "dark" | "light"; se
           <div className="settings-header">{t.settings.title}</div>
           <LanguageSwitch />
           <ThemeToggle theme={theme} setTheme={setTheme} />
+          <DefaultAgentSection />
           <div className="settings-divider" />
           <TokenSection />
         </div>

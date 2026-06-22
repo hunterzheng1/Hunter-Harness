@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
 
 import { createServer } from "./app.js";
+import { loadBootstrapBundle } from "@hunter-harness/core";
+import { PostgresRegistryPersistence } from "./registry/persistence.js";
 import { runMigrations } from "./repositories/migrate.js";
 import { PostgresRepository } from "./repositories/postgres.js";
 import { LocalArtifactStorage } from "./storage/local.js";
@@ -38,6 +40,9 @@ await runMigrations(
   fileURLToPath(new URL("../migrations", import.meta.url))
 );
 const repository = new PostgresRepository(pool);
+const bootstrapBundle = await loadBootstrapBundle(
+  fileURLToPath(new URL("../../../resources/bootstrap-ir", import.meta.url))
+);
 const bootstrapToken = await secret("HUNTER_HARNESS_BOOTSTRAP_TOKEN", false);
 if (bootstrapToken !== undefined && bootstrapToken !== "") {
   await repository.createActorWithToken({
@@ -51,6 +56,8 @@ if (bootstrapToken !== undefined && bootstrapToken !== "") {
 const app = await createServer({
   repository,
   storage: new LocalArtifactStorage(artifactRoot),
+  bootstrapBundle,
+  registryPersistence: new PostgresRegistryPersistence(pool),
   logger: true
 });
 const port = Number(process.env.PORT ?? "3001");

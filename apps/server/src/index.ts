@@ -9,3 +9,4 @@ export * from "./repositories/migrate.js";
 export * from "./storage/interface.js";
 export * from "./storage/local.js";
 export * from "./storage/memory.js";
+export * from "./registry/persistence.js";

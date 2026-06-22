@@ -1,0 +1,28 @@
+{
+  "name": "@hunter-harness/skill-cli",
+  "version": "0.1.0",
+  "description": "Install and upload governed Hunter Harness skills",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "bin": { "hunter-harness-skill": "./dist/bin.js" },
+  "files": ["dist/bin.js"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && npm run bundle",
+    "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:adm-zip --external:commander --external:yaml --external:zod --outfile=dist/bin.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "commander": "15.0.0",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@hunter-harness/contracts": "*",
+    "@hunter-harness/core": "*",
+    "@types/adm-zip": "^0.5.7",
+    "esbuild": "^0.25.12"
+  }
+}
