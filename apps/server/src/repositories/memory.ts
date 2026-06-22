@@ -419,8 +419,11 @@ export class MemoryRepository implements ServerRepository {
     return stored;
   }
 
-  async listAuditEvents(): Promise<AuditEvent[]> {
-    return structuredClone(this.auditEvents);
+  async listAuditEvents(input?: { actorId: string; limit: number }): Promise<AuditEvent[]> {
+    const events = this.auditEvents
+      .filter((event) => input === undefined || event.actorId === input.actorId)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.eventId.localeCompare(left.eventId));
+    return structuredClone(input === undefined ? events : events.slice(0, input.limit));
   }
 
   private idempotencyKey(input: {

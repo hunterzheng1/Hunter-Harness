@@ -168,6 +168,10 @@ export interface ServerRepository {
     cursor: string | null;
   }): Promise<{ items: ArtifactRecord[]; nextCursor: string | null }>;
   appendAudit(event: Omit<AuditEvent, "eventId" | "createdAt">): Promise<AuditEvent>;
+  listAuditEvents(input: {
+    actorId: string;
+    limit: number;
+  }): Promise<AuditEvent[]>;
   getIdempotency(input: {
     actorId: string;
     method: string;

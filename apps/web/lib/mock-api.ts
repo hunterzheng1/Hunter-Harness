@@ -1,4 +1,5 @@
 import type {
+  DashboardOverview,
   RegistryAgent,
   RegistrySkillDetail,
   RegistrySkillProposal,
@@ -223,6 +224,48 @@ const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
   updated_at: "2026-06-20T00:00:00Z"
 }];
 
+const MOCK_DASHBOARD: DashboardOverview = {
+  generated_at: "2026-06-22T12:00:00.000Z",
+  window: { days: 7, starts_at: "2026-06-16T00:00:00.000Z", ends_at: "2026-06-22T12:00:00.000Z" },
+  metrics: {
+    projects: 5, workflows: 1, skills: MOCK_SKILLS.length, published_skills: MOCK_SKILLS.length,
+    pending_reviews: 3, approved_proposals: 2, rejected_proposals: 1,
+    artifacts: 15, project_artifacts: 3, skill_artifacts: 12
+  },
+  trend: [
+    { date: "2026-06-16", submitted: 1, approved: 1, rejected: 0, pending: 0 },
+    { date: "2026-06-17", submitted: 3, approved: 1, rejected: 0, pending: 1 },
+    { date: "2026-06-18", submitted: 2, approved: 0, rejected: 1, pending: 1 },
+    { date: "2026-06-19", submitted: 4, approved: 2, rejected: 0, pending: 2 },
+    { date: "2026-06-20", submitted: 2, approved: 1, rejected: 0, pending: 1 },
+    { date: "2026-06-21", submitted: 1, approved: 1, rejected: 0, pending: 0 },
+    { date: "2026-06-22", submitted: 3, approved: 1, rejected: 0, pending: 2 }
+  ],
+  distributions: {
+    skill_categories: [
+      { key: "workflow", count: 5 }, { key: "governance", count: 3 },
+      { key: "tooling", count: 2 }, { key: "migration", count: 2 }
+    ],
+    workflow_profiles: [{ key: "general", count: 1 }]
+  },
+  health: [
+    { key: "review_backlog", label: "Review backlog", status: "attention", value: "3 pending", detail: "Human review is required before pending proposals can publish." },
+    { key: "review_outcome", label: "Review outcome", status: "healthy", value: "2/3 approved", detail: "Calculated from recorded review decisions." },
+    { key: "artifact_traceability", label: "Artifact traceability", status: "healthy", value: "15/15 linked", detail: "Every demo artifact has a governed source." },
+    { key: "audit_evidence", label: "Audit evidence", status: "healthy", value: "12 recent events", detail: "Recent immutable audit entries are available." }
+  ],
+  services: [
+    { key: "api", label: "Governance API", status: "operational", detail: "Authenticated overview request completed.", checked_at: "2026-06-22T12:00:00.000Z" },
+    { key: "repository", label: "Project repository", status: "operational", detail: "Projects, proposals, and artifacts were read successfully.", checked_at: "2026-06-22T12:00:00.000Z" },
+    { key: "registry", label: "Skill registry", status: "operational", detail: "Skill and Workflow metadata were read successfully.", checked_at: "2026-06-22T12:00:00.000Z" },
+    { key: "audit", label: "Audit log", status: "operational", detail: "Recent audit events were read without exposing details.", checked_at: "2026-06-22T12:00:00.000Z" }
+  ],
+  activity: [
+    { event_id: "evt_demo_1", action: "skill.proposal.created", target_id: "skp_demo_1", project_id: null, actor_id: "actor_owner", created_at: "2026-06-22T11:40:00.000Z" },
+    { event_id: "evt_demo_2", action: "workflow.updated", target_id: "wf_demo_general", project_id: null, actor_id: "actor_owner", created_at: "2026-06-22T10:20:00.000Z" }
+  ]
+};
+
 function demoReadOnly(): never {
   throw new ApiClientError(403, "DEMO_READ_ONLY", "Demo mode is read-only and did not write server state.");
 }
@@ -235,6 +278,8 @@ function delay<T>(value: T): Promise<T> {
 }
 
 export class MockApiClient implements HunterApi {
+  async getDashboardOverview(): Promise<DashboardOverview> { return delay(clone(MOCK_DASHBOARD)); }
+
   async listSkills(): Promise<RegistrySkillDetail[]> {
     return delay(clone(MOCK_SKILLS));
   }

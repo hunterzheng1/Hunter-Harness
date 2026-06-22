@@ -28,6 +28,7 @@ import { z, ZodError } from "zod";
 import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
+import { buildDashboardOverview } from "./dashboard/overview.js";
 import { RegistryStore } from "./registry/store.js";
 import type { RegistryPersistence } from "./registry/persistence.js";
 import type {
@@ -290,6 +291,19 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   });
 
   app.get("/health", async () => ({ status: "ok" }));
+
+  app.get("/api/v1/dashboard/overview", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const query = z.object({ days: z.coerce.number().int().min(7).max(30).default(7) }).strict().parse(request.query);
+    const overview = await buildDashboardOverview({
+      repository,
+      registry,
+      actorId: actor.actorId,
+      days: query.days
+    });
+    reply.header("X-Request-Id", requestId);
+    return { ...overview, request_id: requestId };
+  });
 
   app.post("/api/v1/projects:resolve", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);

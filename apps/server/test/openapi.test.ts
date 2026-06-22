@@ -16,6 +16,7 @@ describe("OpenAPI v1 contract", () => {
     expect(Object.keys(document.paths).sort()).toEqual([
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}",
       "/api/v1/artifacts/{artifact_id}/manifest",
+      "/api/v1/dashboard/overview",
       "/api/v1/projects",
       "/api/v1/projects/{project_id}",
       "/api/v1/projects/{project_id}/artifacts",

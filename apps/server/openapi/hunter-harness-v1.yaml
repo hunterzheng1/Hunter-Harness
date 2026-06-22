@@ -14,6 +14,26 @@ paths:
       responses:
         "200":
           description: Process liveness
+  /api/v1/dashboard/overview:
+    get:
+      operationId: getDashboardOverview
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 7
+            maximum: 30
+            default: 7
+      responses:
+        "200":
+          description: Authenticated governance metrics, trend, health checks, service reads, and sanitized audit activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOverview"
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/projects:resolve:
     post:
       operationId: resolveProject
@@ -392,6 +412,51 @@ components:
         maximum: 100
         default: 50
   schemas:
+    DashboardOverview:
+      type: object
+      additionalProperties: false
+      required:
+        - generated_at
+        - window
+        - metrics
+        - trend
+        - distributions
+        - health
+        - services
+        - activity
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        window:
+          type: object
+          required: [days, starts_at, ends_at]
+        metrics:
+          type: object
+          description: Counts sourced from the authenticated actor's project repository and canonical Skill Registry.
+        trend:
+          type: array
+          description: Daily proposal submissions and recorded review outcomes for the requested window.
+          items:
+            type: object
+        distributions:
+          type: object
+          description: Canonical Skill category and Workflow profile counts.
+        health:
+          type: array
+          description: Explainable governance checks; unavailable means insufficient evidence rather than success.
+          items:
+            type: object
+        services:
+          type: array
+          description: Data-source read signals, not synthetic infrastructure telemetry.
+          items:
+            type: object
+        activity:
+          type: array
+          description: Sanitized audit event metadata; audit details are never returned.
+          items:
+            type: object
     ProjectResolveRequest:
       type: object
       additionalProperties: false

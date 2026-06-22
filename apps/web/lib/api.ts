@@ -1,5 +1,6 @@
 import {
   canonicalJson,
+  type DashboardOverview,
   type FileOperation,
   type RegistryAgent,
   type RegistryArtifact,
@@ -114,6 +115,7 @@ export interface ReviewResult {
 }
 
 export interface HunterApi {
+  getDashboardOverview(days?: number): Promise<DashboardOverview>;
   listProjects(): Promise<ProjectSummary[]>;
   getProject(projectId: string): Promise<ProjectDetailModel>;
   listProjectProposals(projectId: string): Promise<ProposalSummary[]>;
@@ -264,6 +266,10 @@ export class HttpHunterApi implements HunterApi {
       items: ProjectSummary[];
     }>("GET", "/api/v1/projects?limit=100");
     return result.items;
+  }
+
+  async getDashboardOverview(days = 7): Promise<DashboardOverview> {
+    return this.request("GET", "/api/v1/dashboard/overview?days=" + encodeURIComponent(String(days)));
   }
 
   async getProject(projectId: string): Promise<ProjectDetailModel> {

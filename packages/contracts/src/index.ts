@@ -6,5 +6,6 @@ export * from "./file-policy.js";
 export * from "./knowledge.js";
 export * from "./project.js";
 export * from "./protocol.js";
+export * from "./dashboard.js";
 export * from "./registry.js";
 export * from "./skill-ir.js";

@@ -37,6 +37,7 @@ afterEach(cleanup);
 
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
+    getDashboardOverview: vi.fn(async () => { throw new Error("dashboard snapshot is not used by this test"); }),
     listProjects: vi.fn(async () => []),
     getProject: vi.fn(async () => ({
       project_id: "prj_one",

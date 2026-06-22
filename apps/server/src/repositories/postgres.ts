@@ -681,6 +681,26 @@ export class PostgresRepository implements ServerRepository {
     };
   }
 
+  async listAuditEvents(input: { actorId: string; limit: number }): Promise<AuditEvent[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM audit_events
+       WHERE actor_id = $1
+       ORDER BY created_at DESC, event_id DESC
+       LIMIT $2`,
+      [input.actorId, input.limit]
+    );
+    return result.rows.map((row) => ({
+      eventId: String(row.event_id),
+      actorId: String(row.actor_id),
+      projectId: row.project_id === null ? null : String(row.project_id),
+      action: String(row.action),
+      targetId: String(row.target_id),
+      requestId: String(row.request_id),
+      details: row.details as Record<string, unknown>,
+      createdAt: timestamp(row.created_at)
+    }));
+  }
+
   async getIdempotency(input: {
     actorId: string;
     method: string;

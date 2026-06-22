@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import type { RegistryArtifact, RegistrySkillProposal } from "@hunter-harness/contracts";
+import type {
+  DashboardOverview,
+  RegistryArtifact,
+  RegistrySkillProposal
+} from "@hunter-harness/contracts";
 
 import {
   ApiClientError,
@@ -55,32 +59,14 @@ function Status({ value }: { value: string }) {
 export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
-  const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
-  const [registryCounts, setRegistryCounts] = useState({ skills: 0, workflows: 0, artifacts: 0 });
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void Promise.all([
-      api.listProjects(),
-      api.listAllProposals(),
-      api.listSkills?.() ?? Promise.resolve([]),
-      api.listWorkflows?.() ?? Promise.resolve([]),
-      api.listAllArtifacts()
-    ])
-      .then(([nextProjects, nextProposals, nextSkills, nextWorkflows, nextArtifacts]) => {
-        if (active) {
-          setProjects(nextProjects);
-          setProposals(nextProposals);
-          setRegistryCounts({
-            skills: nextSkills.filter((skill) => skill.status === "published").length,
-            workflows: nextWorkflows.length,
-            artifacts: nextArtifacts.length
-          });
-        }
-      })
+    void api.getDashboardOverview(7)
+      .then((nextOverview) => { if (active) setOverview(nextOverview); })
       .catch((reason: unknown) => {
         if (active) setError(errorMessage(reason, t));
       });
@@ -90,69 +76,114 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   }, [api, t]);
 
   if (error !== null) return <Empty>{error}</Empty>;
-  if (projects === null || proposals === null) {
+  if (overview === null) {
     return <Empty>{t.dashboard.loading}</Empty>;
   }
 
-  const pending = proposals.filter((p) => p.status === "pending_review");
+  const attention = overview.health.some((item) => item.status === "attention");
+  const metricCards = [
+    { label: t.dashboard.registeredProjects, value: overview.metrics.projects, href: "/projects", icon: "projects" as const },
+    { label: "Workflows", value: overview.metrics.workflows, href: "/workflows", icon: "workflow" as const },
+    { label: "Published Skills", value: overview.metrics.published_skills, href: "/skills", icon: "skill" as const },
+    { label: t.dashboard.pendingReviews, value: overview.metrics.pending_reviews, href: "/proposals", icon: "review" as const, attention: overview.metrics.pending_reviews > 0 },
+    { label: "Artifacts", value: overview.metrics.artifacts, href: "/artifacts", icon: "artifact" as const },
+    { label: "Approved proposals", value: overview.metrics.approved_proposals, href: "/proposals", icon: "approval" as const }
+  ];
 
   return (
-    <section className="stack">
-      <div className="page-heading">
+    <section className="stack dashboard-stack">
+      <div className="page-heading dashboard-heading">
         <div>
           <p className="eyebrow">{t.dashboard.eyebrow}</p>
           <h1>{t.dashboard.title}</h1>
+          <p className="dashboard-subtitle">真实聚合数据 · 最近 {overview.window.days} 天 · {new Date(overview.generated_at).toLocaleString()}</p>
         </div>
-        <Status value={pending.length === 0 ? "clear" : "attention"} />
+        <Status value={attention ? "attention" : "clear"} />
       </div>
 
-      <div className="metric-grid">
-              <article className="metric stagger-1">
-                <strong>{projects.length}</strong>
-                <span>{t.dashboard.registeredProjects}</span>
-              </article>
-              <article className="metric stagger-2">
-                <strong>{pending.length}</strong>
-                <span>
-                  {pending.length === 1
-                    ? t.dashboard.pendingReview
-                    : t.dashboard.pendingReviews}
-                </span>
-              </article>
-              <article className="metric stagger-3">
-                <strong>
-                  {proposals.filter((p) => p.status === "approved").length}
-                </strong>
-                <span>{t.dashboard.approvedProposals}</span>
-              </article>
-              <article className="metric"><strong>{registryCounts.workflows}</strong><span>Workflows</span></article>
-              <article className="metric"><strong>{registryCounts.skills}</strong><span>Published Skills</span></article>
-              <article className="metric"><strong>{registryCounts.artifacts}</strong><span>Project Artifacts</span></article>
-            </div>
-
-      <div className="panel">
-        <div className="panel-title">
-          <h2>{t.dashboard.projectsPanel}</h2>
-          <Link href="/projects">{t.dashboard.openRegistry}</Link>
-        </div>
-        {projects.length === 0 ? (
-          <Empty>{t.dashboard.noProjects}</Empty>
-        ) : (
-          projects.map((project) => (
-            <div className="row" key={project.project_id}>
-              <div>
-                <strong>{project.display_name}</strong>
-                <code>{project.project_id}</code>
-              </div>
-              <span>
-                {project.latest_project_version ?? t.dashboard.noVersion}
-              </span>
-            </div>
-          ))
-        )}
+      <div className="dashboard-metric-grid">
+        {metricCards.map((metric) => (
+          <Link className={`dashboard-metric ${metric.attention ? "metric-attention" : ""}`} href={metric.href} key={metric.label}>
+            <DashboardIcon name={metric.icon} />
+            <strong>{metric.value}</strong>
+            <span>{metric.label}</span>
+            <small>View →</small>
+          </Link>
+        ))}
       </div>
+
+      <div className="dashboard-main-grid">
+        <section className="panel dashboard-chart-panel">
+          <div className="panel-title dashboard-panel-title">
+            <div><p className="eyebrow">7 day signal</p><h2>Proposal activity / 提案态势</h2></div>
+            <div className="chart-legend"><span className="submitted">Submitted</span><span className="approved">Approved</span><span className="rejected">Rejected</span></div>
+          </div>
+          <TrendChart trend={overview.trend} />
+        </section>
+
+        <section className="panel dashboard-distribution-panel">
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Registry composition</p><h2>Skill distribution / 技能分布</h2></div><span>{overview.metrics.skills} total</span></div>
+          <DistributionChart items={overview.distributions.skill_categories} />
+        </section>
+      </div>
+
+      <div className="dashboard-lower-grid">
+        <section className="panel dashboard-list-panel">
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Control checks</p><h2>Governance health / 治理健康度</h2></div><Status value={attention ? "attention" : "clear"} /></div>
+          <div className="signal-list">
+            {overview.health.map((item) => <article className="health-row" key={item.key}><Status value={item.status} /><div><strong>{item.label}</strong><p>{item.detail}</p></div><b>{item.value}</b></article>)}
+          </div>
+        </section>
+
+        <section className="panel dashboard-list-panel">
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Live reads</p><h2>System signals / 系统信号</h2></div><span>{new Date(overview.generated_at).toLocaleTimeString()}</span></div>
+          <div className="signal-list">
+            {overview.services.map((service) => <article className="service-row" key={service.key}><span className={`service-dot ${service.status}`} aria-hidden="true" /><div><strong>{service.label}</strong><p>{service.detail}</p></div><Status value={service.status} /></article>)}
+          </div>
+        </section>
+
+        <section className="panel dashboard-list-panel">
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Immutable evidence</p><h2>Recent activity / 最近活动</h2></div><Link href="/proposals">Review queue →</Link></div>
+          <div className="activity-list">
+            {overview.activity.length === 0 ? <Empty>No recorded governance activity yet.</Empty> : overview.activity.map((event) => <article key={event.event_id}><DashboardIcon name="activity" /><div><strong>{event.action}</strong><p>{event.target_id} · {event.project_id ?? "registry"}</p></div><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time></article>)}
+          </div>
+        </section>
+      </div>
+
+      <section className="dashboard-actions">
+        <div><p className="eyebrow">Next action</p><strong>{overview.metrics.pending_reviews === 0 ? "Governance queue is clear" : `${overview.metrics.pending_reviews} proposals need review`}</strong><span>{overview.metrics.pending_reviews === 0 ? "Explore the Registry or attach a Workflow to a project." : "Review evidence before a new Skill or project artifact can publish."}</span></div>
+        <div className="dashboard-action-links"><Link href="/proposals">Open review queue</Link><Link href="/workflows">Maintain Workflows</Link><Link href="/skills">Browse Skills</Link></div>
+      </section>
     </section>
   );
+}
+
+function DashboardIcon({ name }: { name: "projects" | "workflow" | "skill" | "review" | "artifact" | "approval" | "activity" }) {
+  const paths: Record<typeof name, React.ReactNode> = {
+    projects: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 8h10M7 12h6M7 16h4" /></>,
+    workflow: <><circle cx="6" cy="6" r="2" /><circle cx="18" cy="12" r="2" /><circle cx="6" cy="18" r="2" /><path d="M8 7.5 16 11M8 16.5 16 13" /></>,
+    skill: <><path d="m12 3 2.4 5.1L20 9l-4 4.1.9 5.9-4.9-2.7L7.1 19l.9-5.9L4 9l5.6-.9L12 3Z" /></>,
+    review: <><path d="M5 4h14v16H5zM8 9h8M8 13h5" /><path d="m15 16 1.5 1.5L20 14" /></>,
+    artifact: <><path d="M5 4h14v16H5zM8 4v5h8V4M8 15h8" /></>,
+    approval: <><circle cx="12" cy="12" r="8" /><path d="m8.5 12 2.3 2.3 4.7-5" /></>,
+    activity: <><path d="M4 12h3l2-6 4 12 2-6h5" /></>
+  };
+  return <svg className="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function TrendChart({ trend }: { trend: DashboardOverview["trend"] }) {
+  const maximum = Math.max(1, ...trend.flatMap((point) => [point.submitted, point.approved, point.rejected]));
+  const points = (key: "submitted" | "approved" | "rejected") => trend.map((point, index) => `${(index / Math.max(1, trend.length - 1)) * 100},${88 - (point[key] / maximum) * 72}`).join(" ");
+  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polyline className="chart-line submitted-line" points={points("submitted")} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} submitted</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} approved</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} rejected</span></div></div>;
+}
+
+function DistributionChart({ items }: { items: DashboardOverview["distributions"]["skill_categories"] }) {
+  const total = items.reduce((sum, item) => sum + item.count, 0);
+  let offset = 0;
+  const palette = ["#17d4ff", "#8f7cff", "#20e3a2", "#f6a956"];
+  const segments = items.map((item, index) => { const share = total === 0 ? 0 : item.count / total; const segment = { ...item, color: palette[index % palette.length], offset, share }; offset += share; return segment; });
+  const style = { background: total === 0 ? "conic-gradient(var(--line) 0 100%)" : `conic-gradient(${segments.map((segment) => `${segment.color} ${segment.offset * 100}% ${(segment.offset + segment.share) * 100}%`).join(", ")})` };
+  return <div className="distribution-chart"><div className="distribution-donut" style={style}><span>{total}</span><small>Skills</small></div><div className="distribution-list">{segments.map((item) => <div key={item.key}><i style={{ background: item.color }} /><span>{item.key}</span><b>{item.count}</b><small>{total === 0 ? 0 : Math.round(item.share * 100)}%</small></div>)}</div></div>;
 }
 
 // ── Project Registry ──────────────────────────────────────

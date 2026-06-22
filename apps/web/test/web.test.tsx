@@ -81,10 +81,26 @@ const detail: ProposalDetailModel = {
   review_history: []
 };
 
+const overview = {
+  generated_at: "2026-06-22T00:00:00.000Z",
+  window: { days: 7, starts_at: "2026-06-16T00:00:00.000Z", ends_at: "2026-06-22T00:00:00.000Z" },
+  metrics: {
+    projects: 1, workflows: 1, skills: 1, published_skills: 1,
+    pending_reviews: 1, approved_proposals: 0, rejected_proposals: 0,
+    artifacts: 1, project_artifacts: 1, skill_artifacts: 0
+  },
+  trend: Array.from({ length: 7 }, (_, index) => ({ date: `2026-06-${String(16 + index).padStart(2, "0")}`, submitted: index === 6 ? 1 : 0, approved: 0, rejected: 0, pending: index === 6 ? 1 : 0 })),
+  distributions: { skill_categories: [{ key: "workflow", count: 1 }], workflow_profiles: [{ key: "general", count: 1 }] },
+  health: [{ key: "review_backlog", label: "Review backlog", status: "attention" as const, value: "1 pending", detail: "Human review is required." }],
+  services: [{ key: "api", label: "Governance API", status: "operational" as const, detail: "Authenticated overview request completed.", checked_at: "2026-06-22T00:00:00.000Z" }],
+  activity: [{ event_id: "evt_1", action: "project.resolved", target_id: "prj_one", project_id: "prj_one", actor_id: "actor_owner", created_at: "2026-06-22T00:00:00.000Z" }]
+};
+
 afterEach(cleanup);
 
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
+    getDashboardOverview: vi.fn(async () => overview),
     listProjects: vi.fn(async () => projects),
     listProjectProposals: vi.fn(async () => proposals),
     listAllProposals: vi.fn(async () => proposals),
@@ -126,11 +142,49 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
 }
 
 describe("Web Console", () => {
+  it("renders the real governance workbench from one overview snapshot", async () => {
+    const dashboardApi = {
+      ...api(),
+      getDashboardOverview: vi.fn(async () => ({
+        generated_at: "2026-06-22T00:00:00.000Z",
+        window: { days: 7, starts_at: "2026-06-16T00:00:00.000Z", ends_at: "2026-06-22T00:00:00.000Z" },
+        metrics: {
+          projects: 4, workflows: 3, skills: 12, published_skills: 10,
+          pending_reviews: 2, approved_proposals: 8, rejected_proposals: 1,
+          artifacts: 14, project_artifacts: 4, skill_artifacts: 10
+        },
+        trend: [
+          { date: "2026-06-16", submitted: 1, approved: 0, rejected: 0, pending: 1 },
+          { date: "2026-06-17", submitted: 2, approved: 1, rejected: 0, pending: 0 },
+          { date: "2026-06-18", submitted: 1, approved: 1, rejected: 0, pending: 0 },
+          { date: "2026-06-19", submitted: 1, approved: 0, rejected: 1, pending: 0 },
+          { date: "2026-06-20", submitted: 2, approved: 1, rejected: 0, pending: 1 },
+          { date: "2026-06-21", submitted: 0, approved: 0, rejected: 0, pending: 0 },
+          { date: "2026-06-22", submitted: 1, approved: 1, rejected: 0, pending: 0 }
+        ],
+        distributions: {
+          skill_categories: [{ key: "workflow", count: 7 }, { key: "governance", count: 3 }],
+          workflow_profiles: [{ key: "general", count: 2 }, { key: "java", count: 1 }]
+        },
+        health: [{ key: "review_backlog", label: "Review backlog", status: "attention", value: "2 pending", detail: "Human review is required." }],
+        services: [{ key: "api", label: "Governance API", status: "operational", detail: "Authenticated overview request completed.", checked_at: "2026-06-22T00:00:00.000Z" }],
+        activity: [{ event_id: "evt_1", action: "skill.proposal.created", target_id: "skp_1", project_id: null, actor_id: "actor_owner", created_at: "2026-06-22T00:00:00.000Z" }]
+      }))
+    };
+    render(<DashboardConsole api={dashboardApi as HunterApi} />);
+
+    expect(await screen.findByRole("heading", { name: /proposal activity/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /governance health/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /system signals/i })).toBeInTheDocument();
+    expect(screen.getByText("skill.proposal.created")).toBeInTheDocument();
+    expect(dashboardApi.getDashboardOverview).toHaveBeenCalledOnce();
+  });
+
   it("renders dashboard and project registry from /api/v1", async () => {
     render(<DashboardConsole api={api()} />);
     expect(screen.getByText(/loading governance overview|正在加载治理总览/i)).toBeInTheDocument();
-    expect(await screen.findByText("Payments")).toBeInTheDocument();
-    expect(screen.getByText(/pending review|待审核/i)).toBeInTheDocument();
+    expect(await screen.findByText("1 pending")).toBeInTheDocument();
+    expect(screen.getByText(/proposal activity|提案态势/i)).toBeInTheDocument();
 
     render(<ProjectRegistry api={api()} />);
     expect(await screen.findByText("pv_1")).toBeInTheDocument();
@@ -139,7 +193,7 @@ describe("Web Console", () => {
 
   it("shows a redacted authentication failure without leaking server details", async () => {
     const failing = api({
-      listProjects: vi.fn(async () => {
+      getDashboardOverview: vi.fn(async () => {
         throw new ApiClientError(401, "TOKEN_INVALID", "Bearer super-secret-token");
       })
     });
