@@ -63,14 +63,14 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 }
 
 function ClientLayoutInner({ children }: { children: React.ReactNode }) {
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   const demo = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true";
 
   return (
     <div className="shell">
       <Sidebar />
       <main key={lang}>
-        {demo ? <div className="demo-banner">演示数据模式：所有内容均为只读示例，不代表服务端真实状态。</div> : null}
+        {demo ? <div className="demo-banner">{t.demoBanner}</div> : null}
         {children}
       </main>
     </div>

@@ -127,13 +127,14 @@ function TokenSection() {
 }
 
 function DefaultAgentSection() {
+  const { t } = useI18n();
   const [agent, setAgent] = useState("claude-code");
   useEffect(() => {
     setAgent(localStorage.getItem("hunter-harness-default-agent") ?? "claude-code");
   }, []);
   return (
     <div>
-      <label className="settings-label" htmlFor="default-agent">默认 Agent</label>
+      <label className="settings-label" htmlFor="default-agent">{t.settings.defaultAgent}</label>
       <select
         id="default-agent"
         className="token-input"
@@ -144,9 +145,9 @@ function DefaultAgentSection() {
         }}
       >
         <option value="claude-code">Claude Code</option>
-        <option value="codex">Codex（契约占位）</option>
-        <option value="generic">Generic（契约占位）</option>
-        <option value="mcp">MCP（契约占位）</option>
+        <option value="codex">{t.settings.codexContract}</option>
+        <option value="generic">{t.settings.genericContract}</option>
+        <option value="mcp">{t.settings.mcpContract}</option>
       </select>
     </div>
   );

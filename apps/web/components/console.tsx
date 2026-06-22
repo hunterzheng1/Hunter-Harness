@@ -35,7 +35,7 @@ function errorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"]): strin
     return t.error.networkError + " " + error.message;
   }
   if (error instanceof ApiClientError) {
-    return "Governance request failed (" + error.code + "). No sensitive details were displayed.";
+    return t.error.apiFailed.replace("{code}", error.code);
   }
   return t.error.genericError;
 }
@@ -83,11 +83,11 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   const attention = overview.health.some((item) => item.status === "attention");
   const metricCards = [
     { label: t.dashboard.registeredProjects, value: overview.metrics.projects, href: "/projects", icon: "projects" as const },
-    { label: "Workflows", value: overview.metrics.workflows, href: "/workflows", icon: "workflow" as const },
-    { label: "Published Skills", value: overview.metrics.published_skills, href: "/skills", icon: "skill" as const },
+     { label: t.dashboard.workflows, value: overview.metrics.workflows, href: "/workflows", icon: "workflow" as const },
+     { label: t.dashboard.publishedSkills, value: overview.metrics.published_skills, href: "/skills", icon: "skill" as const },
     { label: t.dashboard.pendingReviews, value: overview.metrics.pending_reviews, href: "/proposals", icon: "review" as const, attention: overview.metrics.pending_reviews > 0 },
-    { label: "Artifacts", value: overview.metrics.artifacts, href: "/artifacts", icon: "artifact" as const },
-    { label: "Approved proposals", value: overview.metrics.approved_proposals, href: "/proposals", icon: "approval" as const }
+     { label: t.dashboard.artifacts, value: overview.metrics.artifacts, href: "/artifacts", icon: "artifact" as const },
+     { label: t.dashboard.approvedProposals, value: overview.metrics.approved_proposals, href: "/proposals", icon: "approval" as const }
   ];
 
   return (
@@ -96,7 +96,7 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
         <div>
           <p className="eyebrow">{t.dashboard.eyebrow}</p>
           <h1>{t.dashboard.title}</h1>
-          <p className="dashboard-subtitle">真实聚合数据 · 最近 {overview.window.days} 天 · {new Date(overview.generated_at).toLocaleString()}</p>
+          <p className="dashboard-subtitle">{t.dashboard.subtitle.replace("{days}", String(overview.window.days)).replace("{time}", new Date(overview.generated_at).toLocaleString())}</p>
         </div>
         <Status value={attention ? "attention" : "clear"} />
       </div>
@@ -107,7 +107,7 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
             <DashboardIcon name={metric.icon} />
             <strong>{metric.value}</strong>
             <span>{metric.label}</span>
-            <small>View →</small>
+            <small>{t.dashboard.view}</small>
           </Link>
         ))}
       </div>
@@ -115,44 +115,44 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
       <div className="dashboard-main-grid">
         <section className="panel dashboard-chart-panel">
           <div className="panel-title dashboard-panel-title">
-            <div><p className="eyebrow">7 day signal</p><h2>Proposal activity / 提案态势</h2></div>
-            <div className="chart-legend"><span className="submitted">Submitted</span><span className="approved">Approved</span><span className="rejected">Rejected</span></div>
+            <div><p className="eyebrow">{t.dashboard.sevenDaySignal}</p><h2>{t.dashboard.proposalActivity}</h2></div>
+            <div className="chart-legend"><span className="submitted">{t.dashboard.submitted}</span><span className="approved">{t.dashboard.approved}</span><span className="rejected">{t.dashboard.rejected}</span></div>
           </div>
           <TrendChart trend={overview.trend} />
         </section>
 
         <section className="panel dashboard-distribution-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Registry composition</p><h2>Skill distribution / 技能分布</h2></div><span>{overview.metrics.skills} total</span></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.registryComposition}</p><h2>{t.dashboard.skillDistribution}</h2></div><span>{overview.metrics.skills} {t.dashboard.total}</span></div>
           <DistributionChart items={overview.distributions.skill_categories} />
         </section>
       </div>
 
       <div className="dashboard-lower-grid">
         <section className="panel dashboard-list-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Control checks</p><h2>Governance health / 治理健康度</h2></div><Status value={attention ? "attention" : "clear"} /></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.controlChecks}</p><h2>{t.dashboard.governanceHealth}</h2></div><Status value={attention ? "attention" : "clear"} /></div>
           <div className="signal-list">
             {overview.health.map((item) => <article className="health-row" key={item.key}><Status value={item.status} /><div><strong>{item.label}</strong><p>{item.detail}</p></div><b>{item.value}</b></article>)}
           </div>
         </section>
 
         <section className="panel dashboard-list-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Live reads</p><h2>System signals / 系统信号</h2></div><span>{new Date(overview.generated_at).toLocaleTimeString()}</span></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.liveReads}</p><h2>{t.dashboard.systemSignals}</h2></div><span>{new Date(overview.generated_at).toLocaleTimeString()}</span></div>
           <div className="signal-list">
             {overview.services.map((service) => <article className="service-row" key={service.key}><span className={`service-dot ${service.status}`} aria-hidden="true" /><div><strong>{service.label}</strong><p>{service.detail}</p></div><Status value={service.status} /></article>)}
           </div>
         </section>
 
         <section className="panel dashboard-list-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">Immutable evidence</p><h2>Recent activity / 最近活动</h2></div><Link href="/proposals">Review queue →</Link></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.immutableEvidence}</p><h2>{t.dashboard.recentActivity}</h2></div><Link href="/proposals">{t.dashboard.goReviewQueue}</Link></div>
           <div className="activity-list">
-            {overview.activity.length === 0 ? <Empty>No recorded governance activity yet.</Empty> : overview.activity.map((event) => <article key={event.event_id}><DashboardIcon name="activity" /><div><strong>{event.action}</strong><p>{event.target_id} · {event.project_id ?? "registry"}</p></div><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time></article>)}
+            {overview.activity.length === 0 ? <Empty>{t.dashboard.noActivity}</Empty> : overview.activity.map((event) => <article key={event.event_id}><DashboardIcon name="activity" /><div><strong>{event.action}</strong><p>{event.target_id} · {event.project_id ?? "registry"}</p></div><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time></article>)}
           </div>
         </section>
       </div>
 
       <section className="dashboard-actions">
-        <div><p className="eyebrow">Next action</p><strong>{overview.metrics.pending_reviews === 0 ? "Governance queue is clear" : `${overview.metrics.pending_reviews} proposals need review`}</strong><span>{overview.metrics.pending_reviews === 0 ? "Explore the Registry or attach a Workflow to a project." : "Review evidence before a new Skill or project artifact can publish."}</span></div>
-        <div className="dashboard-action-links"><Link href="/proposals">Open review queue</Link><Link href="/workflows">Maintain Workflows</Link><Link href="/skills">Browse Skills</Link></div>
+        <div><p className="eyebrow">{t.dashboard.nextAction}</p><strong>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClear : `${overview.metrics.pending_reviews} ${t.dashboard.needReview}`}</strong><span>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClearHint : t.dashboard.needReviewHint}</span></div>
+        <div className="dashboard-action-links"><Link href="/proposals">{t.dashboard.openReviewQueue}</Link><Link href="/workflows">{t.dashboard.maintainWorkflows}</Link><Link href="/skills">{t.dashboard.browseSkills}</Link></div>
       </section>
     </section>
   );
@@ -172,18 +172,20 @@ function DashboardIcon({ name }: { name: "projects" | "workflow" | "skill" | "re
 }
 
 function TrendChart({ trend }: { trend: DashboardOverview["trend"] }) {
+  const { t } = useI18n();
   const maximum = Math.max(1, ...trend.flatMap((point) => [point.submitted, point.approved, point.rejected]));
   const points = (key: "submitted" | "approved" | "rejected") => trend.map((point, index) => `${(index / Math.max(1, trend.length - 1)) * 100},${88 - (point[key] / maximum) * 72}`).join(" ");
-  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polyline className="chart-line submitted-line" points={points("submitted")} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} submitted</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} approved</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} rejected</span></div></div>;
+  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polyline className="chart-line submitted-line" points={points("submitted")} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} {t.dashboard.submitted}</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} {t.dashboard.approved}</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} {t.dashboard.rejected}</span></div></div>;
 }
 
 function DistributionChart({ items }: { items: DashboardOverview["distributions"]["skill_categories"] }) {
+  const { t } = useI18n();
   const total = items.reduce((sum, item) => sum + item.count, 0);
   let offset = 0;
   const palette = ["#17d4ff", "#8f7cff", "#20e3a2", "#f6a956"];
   const segments = items.map((item, index) => { const share = total === 0 ? 0 : item.count / total; const segment = { ...item, color: palette[index % palette.length], offset, share }; offset += share; return segment; });
   const style = { background: total === 0 ? "conic-gradient(var(--line) 0 100%)" : `conic-gradient(${segments.map((segment) => `${segment.color} ${segment.offset * 100}% ${(segment.offset + segment.share) * 100}%`).join(", ")})` };
-  return <div className="distribution-chart"><div className="distribution-donut" style={style}><span>{total}</span><small>Skills</small></div><div className="distribution-list">{segments.map((item) => <div key={item.key}><i style={{ background: item.color }} /><span>{item.key}</span><b>{item.count}</b><small>{total === 0 ? 0 : Math.round(item.share * 100)}%</small></div>)}</div></div>;
+  return <div className="distribution-chart"><div className="distribution-donut" style={style}><span>{total}</span><small>{t.dashboard.publishedSkills}</small></div><div className="distribution-list">{segments.map((item) => <div key={item.key}><i style={{ background: item.color }} /><span>{item.key}</span><b>{item.count}</b><small>{total === 0 ? 0 : Math.round(item.share * 100)}%</small></div>)}</div></div>;
 }
 
 // ── Project Registry ──────────────────────────────────────
@@ -240,13 +242,13 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
       </div>
       <div className="registry-toolbar compact-toolbar">
         <label>
-          搜索项目 / Search projects
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="name or project id" />
+          {t.projects.searchProjects}
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.projects.searchPlaceholder} />
         </label>
         <label>
-          角色 / Role
+          {t.projects.role}
           <select value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="all">全部 / All</option>
+            <option value="all">{t.common.all}</option>
             {roles.map((item) => <option value={item} key={item}>{item}</option>)}
           </select>
         </label>
@@ -254,7 +256,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
       {projects.length === 0 ? (
         <Empty>{t.projects.noProjects}</Empty>
       ) : filteredProjects.length === 0 ? (
-        <Empty>没有符合筛选条件的项目。</Empty>
+        <Empty>{t.projects.noMatch}</Empty>
       ) : (
         <div className="table-wrap">
           <table>
@@ -262,11 +264,11 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
               <tr>
                 <th>{t.projects.table.project}</th>
                 <th>{t.projects.table.role}</th>
-                <th>Workflow</th>
-                <th>Skills</th>
+                <th>{t.projects.table.workflow}</th>
+                <th>{t.projects.table.skills}</th>
                 <th>{t.projects.table.version}</th>
                 <th>{t.projects.table.artifact}</th>
-                <th>Registered</th>
+                <th>{t.projects.table.registered}</th>
               </tr>
             </thead>
             <tbody>
@@ -279,7 +281,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
                     </Link>
                   </td>
                   <td>{project.role}</td>
-                  <td>{workflowInfo[project.project_id]?.name ?? "Not bound"}</td>
+                  <td>{workflowInfo[project.project_id]?.name ?? t.common.notBound}</td>
                   <td>{workflowInfo[project.project_id]?.skillCount ?? 0}</td>
                   <td>{project.latest_project_version ?? t.projects.table.none}</td>
                   <td>{project.latest_artifact_id ?? t.projects.table.none}</td>
@@ -344,7 +346,7 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
         <>{skillProposals.map((proposal) => (
           <Link className="proposal-card" href={`/skills/${proposal.skill_slug}`} key={proposal.proposal_id}>
             <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug} · v{proposal.proposed_ir.version}</code></div>
-            <div><span>Canonical Skill IR</span><Status value={proposal.status} /></div>
+            <div><span>{t.reviewQueue.canonicalSkillIR}</span><Status value={proposal.status} /></div>
           </Link>
         ))}{proposals.map((proposal) => (
           <Link
@@ -657,9 +659,7 @@ export function AuthTokenForm() {
     setMessage(null);
     if (nextToken === "") return;
     if (!/^hh_[A-Za-z0-9_-]+$/.test(nextToken)) {
-      setMessage(
-        "Token format looks invalid. Paste only the hh_… token value."
-      );
+      setMessage(t.token.invalidFormat);
       return;
     }
     setBusy(true);
@@ -674,8 +674,8 @@ export function AuthTokenForm() {
       if (!response.ok) {
         setMessage(
           response.status === 401 || response.status === 403
-            ? "Token was rejected by the server."
-            : "Token check failed with HTTP " + response.status + "."
+            ? t.token.rejected
+            : t.token.httpError + response.status + "."
         );
         return;
       }
@@ -686,9 +686,7 @@ export function AuthTokenForm() {
         window.location.pathname + window.location.search
       );
     } catch {
-      setMessage(
-        "Browser could not reach /api/v1/projects. Check extensions or network policy."
-      );
+      setMessage(t.token.networkPolicy);
     } finally {
       setBusy(false);
     }
