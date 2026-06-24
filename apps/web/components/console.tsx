@@ -4,6 +4,7 @@ import Link from "next/link";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   DashboardOverview,
+  RegistrySkillDetail,
   RegistryArtifact,
   RegistrySkillProposal
 } from "@hunter-harness/contracts";
@@ -60,13 +61,27 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [skills, setSkills] = useState<RegistrySkillDetail[]>([]);
+  const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void api.getDashboardOverview(7)
-      .then((nextOverview) => { if (active) setOverview(nextOverview); })
+    void Promise.all([
+      api.getDashboardOverview(7),
+      api.listProjects(),
+      api.listSkills?.() ?? Promise.resolve([]),
+      api.listAllArtifacts()
+    ])
+      .then(([nextOverview, nextProjects, nextSkills, nextArtifacts]) => {
+        if (!active) return;
+        setOverview(nextOverview);
+        setProjects(nextProjects);
+        setSkills(nextSkills);
+        setArtifacts(nextArtifacts);
+      })
       .catch((reason: unknown) => {
         if (active) setError(errorMessage(reason, t));
       });
@@ -127,6 +142,51 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
         </section>
       </div>
 
+      <div className="dashboard-work-grid">
+        <section className="panel dashboard-work-panel dashboard-project-panel">
+          <div className="panel-title dashboard-panel-title">
+            <div><p className="eyebrow">Project registry</p><h2>Recent projects</h2></div>
+            <Link href="/projects">View all</Link>
+          </div>
+          <div className="dashboard-project-list">
+            {projects.length === 0 ? <Empty>{t.dashboard.noProjects}</Empty> : projects.slice(0, 4).map((project) => (
+              <Link href={`/projects/${project.project_id}`} key={project.project_id}>
+                <span className="dashboard-project-mark" aria-hidden="true">{project.display_name.slice(0, 1).toUpperCase()}</span>
+                <div><strong>{project.display_name}</strong><code>{project.latest_project_version ?? t.dashboard.noVersion}</code></div>
+                <span className="dashboard-role">{project.role}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        <section className="panel dashboard-work-panel">
+          <div className="panel-title dashboard-panel-title">
+            <div><p className="eyebrow">Registry posture</p><h2>Skill usage</h2></div>
+            <Link href="/skills">Open skills</Link>
+          </div>
+          <div className="skill-usage-summary">
+            <div><span>Published coverage</span><strong>{overview.metrics.published_skills}/{overview.metrics.skills}</strong><i><b style={{ width: `${overview.metrics.skills === 0 ? 0 : (overview.metrics.published_skills / overview.metrics.skills) * 100}%` }} /></i></div>
+            <div><span>Workflow bindings</span><strong>{overview.metrics.workflows}</strong><small>active governed paths</small></div>
+          </div>
+          <div className="dashboard-skill-list">
+            {skills.slice(0, 3).map((skill) => <Link href={`/skills/${skill.slug}`} key={skill.skill_id}><span>{skill.category}</span><strong>{skill.name}</strong><code>{skill.latest_version ?? "unversioned"}</code></Link>)}
+            {skills.length === 0 ? <Empty>No published Skills are available.</Empty> : null}
+          </div>
+        </section>
+
+        <section className="panel dashboard-work-panel">
+          <div className="panel-title dashboard-panel-title">
+            <div><p className="eyebrow">Immutable release log</p><h2>Artifact changes</h2></div>
+            <Link href="/artifacts">Open history</Link>
+          </div>
+          <div className="artifact-change-total"><strong>{overview.metrics.project_artifacts}</strong><span>project artifacts</span><small>{overview.metrics.skill_artifacts} Skill bundles</small></div>
+          <div className="dashboard-artifact-list">
+            {artifacts.slice(0, 3).map((artifact) => <Link href={`/artifacts/${artifact.artifact_id}`} key={artifact.artifact_id}><div><strong>{artifact.artifact_id}</strong><code>{artifact.project_id} / {artifact.project_version}</code></div><span><b>+{artifact.changed_item_count}</b> changes</span></Link>)}
+            {artifacts.length === 0 ? <Empty>No artifacts have been published.</Empty> : null}
+          </div>
+        </section>
+      </div>
+
       <div className="dashboard-lower-grid">
         <section className="panel dashboard-list-panel">
           <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.controlChecks}</p><h2>{t.dashboard.governanceHealth}</h2></div><Status value={attention ? "attention" : "clear"} /></div>
@@ -175,7 +235,9 @@ function TrendChart({ trend }: { trend: DashboardOverview["trend"] }) {
   const { t } = useI18n();
   const maximum = Math.max(1, ...trend.flatMap((point) => [point.submitted, point.approved, point.rejected]));
   const points = (key: "submitted" | "approved" | "rejected") => trend.map((point, index) => `${(index / Math.max(1, trend.length - 1)) * 100},${88 - (point[key] / maximum) * 72}`).join(" ");
-  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><svg viewBox="0 0 100 100" preserveAspectRatio="none"><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polyline className="chart-line submitted-line" points={points("submitted")} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} {t.dashboard.submitted}</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} {t.dashboard.approved}</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} {t.dashboard.rejected}</span></div></div>;
+  const submittedPoints = points("submitted");
+  const submittedArea = `0,100 ${submittedPoints} 100,100`;
+  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><div className="trend-chart-meta"><span>Review throughput</span><strong>{trend.reduce((sum, point) => sum + point.approved, 0)} <small>approved</small></strong></div><svg viewBox="0 0 100 100" preserveAspectRatio="none"><defs><linearGradient id="submitted-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--accent)" stopOpacity=".26" /><stop offset="100%" stopColor="var(--accent)" stopOpacity="0" /></linearGradient></defs><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polygon className="submitted-area" points={submittedArea} /><polyline className="chart-line submitted-line" points={submittedPoints} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} {t.dashboard.submitted}</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} {t.dashboard.approved}</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} {t.dashboard.rejected}</span></div></div>;
 }
 
 function DistributionChart({ items }: { items: DashboardOverview["distributions"]["skill_categories"] }) {

@@ -22,9 +22,13 @@ function Sidebar() {
       <Link className="brand" href="/">
         <img
           className="brand-logo"
-          src={theme === "dark" ? "/logo-dark.png" : "/logo-light.png"}
+          src={theme === "dark" ? "/logo-dark-mark.png" : "/logo-light-mark.png"}
           alt="Hunter Harness"
         />
+        <span className="brand-copy">
+          <strong>Harness 工作台</strong>
+          <small>Governed developer console</small>
+        </span>
       </Link>
       <nav>
         <Link href="/" className={isActive("/") ? "active" : ""}>

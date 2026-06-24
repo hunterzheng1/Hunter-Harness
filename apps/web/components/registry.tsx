@@ -271,7 +271,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   async function submitDraft(): Promise<void> {
     try {
       const proposal = await required(api, "createSkillProposal")(JSON.parse(draft) as SkillIr, "claude-code");
-      setMessage(`{t.skillDetail.proposalCreatedHint.replace("{id}", proposal.proposal_id)}`); await refresh();
+      setMessage(`${t.skillDetail.proposalCreatedHint.replace("{id}", proposal.proposal_id)}`); await refresh();
     } catch (reason) { setError(apiError(reason, t)); }
   }
   async function review(proposalId: string, decision: "approve" | "reject"): Promise<void> {

@@ -6,6 +6,9 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Hunter Harness Console",
   description: "Human review and governed artifact publishing",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({

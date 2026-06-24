@@ -46,7 +46,7 @@ export function WorkflowList({ api: apiValue }: { api?: HunterApi }) {
     }
   }
 
-  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [api]);
+  useEffect(() => { void refresh(); }, [api]);
 
   async function remove(workflow: RegistryWorkflow): Promise<void> {
     if (!window.confirm(t.workflows.deleteConfirm)) return;

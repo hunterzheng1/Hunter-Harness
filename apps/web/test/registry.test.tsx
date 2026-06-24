@@ -109,7 +109,7 @@ describe("governed workflow and Skill Center", () => {
     });
     render(<SkillDetail api={client} skillId="harness-review" />);
     expect(await screen.findByRole("heading", { name: "harness-review" })).toBeInTheDocument();
-    expect(screen.getAllByText(/Canonical Skill IR/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/规范技能 IR|Canonical Skill IR/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/1\.1\.0/).length).toBeGreaterThan(0);
     expect(await screen.findByText("# harness-review")).toBeInTheDocument();
     expect(screen.getByText(/npx @hunter-harness\/skill-cli install harness-review --agent claude-code/)).toBeInTheDocument();
@@ -118,7 +118,7 @@ describe("governed workflow and Skill Center", () => {
   it("removes a Skill tag directly without creating a proposal", async () => {
     const bindSkillTag = vi.fn(async () => ({ ...skill, tags: [] }));
     render(<SkillDetail api={api({ bindSkillTag })} skillId="harness-review" />);
-    const remove = await screen.findByRole("button", { name: "移除标签 security" });
+    const remove = await screen.findByRole("button", { name: /security/ });
     fireEvent.click(remove);
     await waitFor(() => expect(bindSkillTag).toHaveBeenCalledWith("harness-review", "tag_security", true));
   });
@@ -132,10 +132,10 @@ describe("governed workflow and Skill Center", () => {
       updated_at: "2026-06-21T00:00:00Z"
     }));
     render(<WorkflowRegistry api={api({ createWorkflow, listWorkflows: vi.fn(async () => []) })} />);
-    await screen.findByText(/尚无 Workflow|No workflows/i);
-    expect(screen.getByLabelText(/搜索 Workflow|Search workflows/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/搜索可用 Skill|Search available skills/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /新建 Workflow|New workflow/i }));
+    await screen.findByText(/暂无工作流|No workflows/i);
+    expect(screen.getByLabelText(/搜索工作流|Search workflows/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/搜索可用技能|Search available skills/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /新建工作流|New workflow/i }));
     fireEvent.change(screen.getByLabelText(/名称|Name/i), { target: { value: "General" } });
     fireEvent.change(screen.getByLabelText(/标识|Key/i), { target: { value: "general" } });
     fireEvent.change(screen.getByLabelText(/描述|Description/i), { target: { value: "Default workflow" } });

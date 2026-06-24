@@ -173,19 +173,23 @@ describe("Web Console", () => {
     };
     render(<DashboardConsole api={dashboardApi as HunterApi} />);
 
-    expect(await screen.findByRole("heading", { name: /proposal activity/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /governance health/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /system signals/i })).toBeInTheDocument();
+    expect(await screen.findByRole("img", { name: "Proposal activity line chart" })).toBeInTheDocument();
+    expect(screen.getByText("Review backlog")).toBeInTheDocument();
+    expect(screen.getByText("Governance API")).toBeInTheDocument();
     expect(screen.getByText("skill.proposal.created")).toBeInTheDocument();
     expect(dashboardApi.getDashboardOverview).toHaveBeenCalledOnce();
   });
 
   it("renders dashboard and project registry from /api/v1", async () => {
-    render(<DashboardConsole api={api()} />);
+    const dashboard = render(<DashboardConsole api={api()} />);
     expect(screen.getByText(/loading governance overview|正在加载治理总览/i)).toBeInTheDocument();
     expect(await screen.findByText("1 pending")).toBeInTheDocument();
-    expect(screen.getByText(/proposal activity|提案态势/i)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Proposal activity line chart" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Recent projects" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Skill usage" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Artifact changes" })).toBeInTheDocument();
 
+    dashboard.unmount();
     render(<ProjectRegistry api={api()} />);
     expect(await screen.findByText("pv_1")).toBeInTheDocument();
     expect(screen.getByText("art_1")).toBeInTheDocument();

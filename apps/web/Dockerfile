@@ -14,6 +14,7 @@ COPY packages/contracts/src ./packages/contracts/src
 COPY apps/web/app ./apps/web/app
 COPY apps/web/components ./apps/web/components
 COPY apps/web/lib ./apps/web/lib
+COPY apps/web/public ./apps/web/public
 ARG HUNTER_HARNESS_INTERNAL_API_URL=http://server:3001
 ARG NEXT_PUBLIC_HUNTER_HARNESS_API_URL=
 ENV HUNTER_HARNESS_INTERNAL_API_URL=${HUNTER_HARNESS_INTERNAL_API_URL} \
@@ -30,6 +31,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build --chown=node:node /app/apps/web/public ./apps/web/public
 USER node
 EXPOSE 3000
 CMD ["node", "apps/web/server.js"]

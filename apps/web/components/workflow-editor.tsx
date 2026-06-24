@@ -68,7 +68,7 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
     }
   }
 
-  useEffect(() => { void refresh(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [api, workflowId]);
+  useEffect(() => { void refresh(); }, [api, workflowId]);
 
   // ── Skill binding helpers ──
 
@@ -84,7 +84,9 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
   function moveSkill(from: number, to: number): void {
     if (from === to) return;
     const next = [...form.skill_slugs];
-    const [moved] = next.splice(from, 1);
+    const moved = next[from];
+    if (moved === undefined) return;
+    next.splice(from, 1);
     next.splice(to, 0, moved);
     setForm({ ...form, skill_slugs: next });
   }
@@ -123,7 +125,8 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
         setRevision(saved.revision);
         setMessage(t.workflows.saveSuccess);
       } else {
-        const saved = await required(api, "updateWorkflow")(workflowId, { ...form, revision: revision! });
+        if (revision === null) throw new Error("Workflow revision is unavailable.");
+        const saved = await required(api, "updateWorkflow")(workflowId, { ...form, revision });
         setWorkflow(saved);
         setRevision(saved.revision);
         setMessage(t.workflows.saveSuccess);
