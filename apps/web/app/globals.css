@@ -1744,3 +1744,294 @@ tbody tr:last-child td {
   .skeleton-block { animation: none; }
   .skill-row { transition: none; }
 }
+
+/* ══════════════════════════════════════════════════════
+   Workflow List
+   ══════════════════════════════════════════════════════ */
+
+.workflow-list-toolbar {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px;
+}
+
+.workflow-list-toolbar .search-wide {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 0 12px; height: 38px;
+  transition: border-color 0.15s;
+}
+.workflow-list-toolbar .search-wide:focus-within { border-color: var(--accent); }
+.workflow-list-toolbar .search-wide svg { color: var(--muted); flex-shrink: 0; }
+.workflow-list-toolbar .search-wide input {
+  border: none; background: none; outline: none;
+  color: var(--text); font-size: 0.875rem; width: 100%;
+}
+.workflow-list-toolbar .search-wide input::placeholder { color: var(--muted-dim); }
+
+.workflow-list-toolbar .muted-stat { color: var(--muted-dim); font-size: 0.8rem; white-space: nowrap; }
+
+/* ── Workflow table ── */
+
+.workflow-table-wrap {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; overflow: hidden;
+}
+
+.workflow-table {
+  width: 100%; border-collapse: collapse; font-size: 0.85rem;
+}
+
+.workflow-table thead th {
+  text-align: left; font-size: 0.7rem; font-weight: 600;
+  color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.05em; padding: 12px 16px;
+  background: var(--bg-raised); border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.workflow-table tbody tr {
+  border-bottom: 1px solid var(--line-dim);
+  transition: background 0.12s;
+}
+.workflow-table tbody tr:last-child { border-bottom: none; }
+.workflow-table tbody tr:hover { background: var(--panel-hover); }
+
+.workflow-table td {
+  padding: 14px 16px; vertical-align: middle;
+}
+
+.workflow-table .row-link {
+  display: flex; flex-direction: column; gap: 2px;
+  text-decoration: none; color: inherit;
+}
+.workflow-table .row-link strong {
+  font-size: 0.9rem; font-weight: 600; color: var(--text-heading);
+}
+.workflow-table .row-link code {
+  font-size: 0.72rem; color: var(--muted-dim);
+}
+.workflow-table .row-link:hover strong { color: var(--accent); }
+
+.workflow-table .col-num {
+  font-variant-numeric: tabular-nums; color: var(--text);
+  font-weight: 500;
+}
+
+.workflow-table .muted-cell {
+  color: var(--muted); font-size: 0.8rem;
+}
+
+.workflow-table .col-actions {
+  text-align: right; white-space: nowrap;
+}
+.workflow-table .col-actions .icon-btn {
+  display: inline-flex; margin-left: 4px;
+}
+
+.meta-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.72rem; color: var(--muted);
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: 5px; padding: 2px 8px;
+}
+.meta-chip svg { flex-shrink: 0; }
+
+/* ── Icon buttons ── */
+
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--bg-raised);
+  color: var(--muted); cursor: pointer;
+  transition: all 0.15s;
+}
+.icon-btn:hover { background: var(--panel-hover); color: var(--text); border-color: var(--line-strong); }
+.icon-btn-danger:hover { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+.icon-btn-add {
+  color: var(--accent); border-color: var(--accent-glow-strong);
+  width: 28px; height: 28px; flex-shrink: 0;
+}
+.icon-btn-add:hover { background: var(--accent-glow); border-color: var(--accent); }
+
+/* ══════════════════════════════════════════════════════
+   Workflow Editor
+   ══════════════════════════════════════════════════════ */
+
+.workflow-editor-header {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 20px; flex-wrap: wrap;
+}
+.workflow-editor-header h1 {
+  font-size: 1.25rem; font-weight: 600; color: var(--text-heading); margin: 0;
+}
+.workflow-editor-header .header-actions {
+  margin-left: auto; display: flex; align-items: center; gap: 8px;
+}
+
+.back-link {
+  font-size: 0.8rem; color: var(--muted); text-decoration: none;
+  padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
+  transition: all 0.15s;
+}
+.back-link:hover { border-color: var(--accent); color: var(--accent); }
+
+.workflow-id-badge {
+  font-size: 0.7rem; color: var(--muted-dim); margin-left: 8px;
+}
+
+.revision-badge {
+  font-size: 0.72rem; color: var(--muted); padding: 2px 8px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+}
+
+/* ── Editor three-column grid ── */
+
+.workflow-editor-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  gap: 16px; align-items: start;
+}
+
+/* ── Metadata panel (left) ── */
+
+.workflow-metadata-panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 20px;
+}
+
+.form-stack { display: flex; flex-direction: column; gap: 14px; }
+
+.field-label {
+  display: block; font-size: 0.72rem; font-weight: 600;
+  color: var(--muted); margin-bottom: 4px; text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.form-stack input,
+.form-stack textarea,
+.form-stack select {
+  width: 100%; padding: 8px 10px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--line);
+  color: var(--text); font-size: 0.85rem; font-family: inherit;
+  outline: none; transition: border-color 0.15s;
+}
+.form-stack input:focus,
+.form-stack textarea:focus,
+.form-stack select:focus { border-color: var(--accent); }
+.form-stack textarea { resize: vertical; min-height: 70px; }
+
+/* ── Skills panel (center) ── */
+
+.workflow-skills-panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 20px; min-height: 200px;
+}
+
+.panel-hint {
+  font-size: 0.7rem; color: var(--muted-dim); margin-left: auto;
+}
+
+.skill-card-grid {
+  display: flex; flex-direction: column; gap: 8px;
+}
+
+.skill-card {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; background: var(--bg-raised);
+  border: 1px solid var(--line); border-radius: 8px;
+  cursor: grab; transition: all 0.15s;
+  user-select: none;
+}
+.skill-card:hover { border-color: var(--line-strong); background: var(--panel-hover); }
+.skill-card:active { cursor: grabbing; }
+.skill-card.dragging { opacity: 0.4; border-color: var(--accent); }
+
+.card-order {
+  font-size: 0.75rem; font-weight: 700; color: var(--muted-dim);
+  width: 22px; text-align: center; flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-body { flex: 1; min-width: 0; }
+.card-body strong {
+  font-size: 0.85rem; font-weight: 600; color: var(--text-heading);
+  display: block; margin-bottom: 3px;
+}
+.card-meta { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--muted); }
+
+.card-remove {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 5px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--muted-dim); cursor: pointer; flex-shrink: 0;
+  transition: all 0.15s;
+}
+.card-remove:hover { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
+
+/* ── Library panel (right) ── */
+
+.workflow-library-panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 16px; display: flex; flex-direction: column;
+  max-height: calc(100vh - 180px);
+}
+
+.library-search {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0 8px; height: 32px; margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.library-search svg { color: var(--muted-dim); flex-shrink: 0; }
+.library-search input {
+  border: none; background: none; outline: none;
+  color: var(--text); font-size: 0.78rem; width: 100%;
+}
+.library-search input::placeholder { color: var(--muted-dim); }
+
+.library-list {
+  flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+
+.library-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 7px; background: var(--bg-raised);
+  transition: all 0.12s;
+}
+.library-item:hover { border-color: var(--line-strong); }
+.library-item-info { flex: 1; min-width: 0; }
+.library-item-info strong { font-size: 0.8rem; font-weight: 600; color: var(--text-heading); display: block; }
+.library-item-meta { display: flex; align-items: center; gap: 6px; font-size: 0.68rem; color: var(--muted); margin-top: 3px; }
+.library-item-meta code { font-size: 0.66rem; }
+
+.primary-button {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 7px; border: none;
+  background: var(--accent); color: var(--accent-ink);
+  font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  text-decoration: none; transition: all 0.15s;
+}
+.primary-button:hover { background: var(--accent-strong); }
+.primary-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.secondary-button {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); font-size: 0.85rem; cursor: pointer;
+  transition: all 0.15s; text-decoration: none;
+}
+.secondary-button:hover { border-color: var(--line-strong); background: var(--panel-hover); }
+.secondary-button.danger { color: var(--danger); }
+.secondary-button.danger:hover { border-color: var(--danger-border); background: var(--danger-bg); }
+
+/* ── Responsive ── */
+
+@media (max-width: 1100px) {
+  .workflow-editor-grid {
+    grid-template-columns: 1fr;
+  }
+  .workflow-library-panel { max-height: none; }
+}

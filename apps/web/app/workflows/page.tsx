@@ -1,7 +1,7 @@
 "use client";
 
-import { WorkflowRegistry } from "../../components/registry";
+import { WorkflowList } from "../../components/workflow-list";
 
 export default function WorkflowsPage() {
-  return <WorkflowRegistry />;
+  return <WorkflowList />;
 }

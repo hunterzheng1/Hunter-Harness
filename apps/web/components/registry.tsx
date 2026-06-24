@@ -124,13 +124,13 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     event.preventDefault();
     try {
       await required(api, "createTag")(tagSlug, tagLabel);
-      setTagSlug(""); setTagLabel(""); setMessage("{t.skills.tagSavedAudit}");
+      setTagSlug(""); setTagLabel(""); setMessage(t.skills.tagSavedAudit);
       await refresh();
     } catch (reason) { setError(apiError(reason, t)); }
   }
 
   async function updateTag(tag: RegistryTag, input: { label?: string; active?: boolean }): Promise<void> {
-    try { await required(api, "updateTag")(tag.tag_id, { revision: tag.revision, ...input }); setMessage("{t.skills.tagUpdatedAudit}"); await refresh(); }
+    try { await required(api, "updateTag")(tag.tag_id, { revision: tag.revision, ...input }); setMessage(t.skills.tagUpdatedAudit); await refresh(); }
     catch (reason) { setError(apiError(reason, t)); }
   }
 
@@ -164,7 +164,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       </header>
 
       <div className="registry-toolbar registry-toolbar-expanded panel">
-        <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="{t.skills.searchPlaceholder}" /></label>
+        <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t.skills.searchPlaceholder} /></label>
         <label>{t.skills.category}<select value={category} onChange={(event) => setCategory(event.target.value)}><option value="">{t.common.all}</option><option value="workflow">Workflow</option><option value="governance">Governance</option><option value="tooling">Tooling</option><option value="migration">Migration</option></select></label>
         <label>{t.skills.tag}<select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">{t.common.all}</option>{tags.filter((tag) => tag.active).map((tag) => <option value={tag.slug} key={tag.tag_id}>{tag.label}</option>)}</select></label>
         <label>Profile<select value={profile} onChange={(event) => setProfile(event.target.value)}><option value="">{t.common.all}</option>{profiles.map((item) => <option value={item} key={item}>{item}</option>)}</select></label>
@@ -258,7 +258,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   }, [api, skillId, agent]);
   const command = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent}`;
   async function copyCommand(): Promise<void> {
-    await navigator.clipboard.writeText(command); setMessage("{t.skillDetail.installCopied}");
+    await navigator.clipboard.writeText(command); setMessage(t.skillDetail.installCopied);
   }
   async function download(): Promise<void> {
     try {
@@ -280,18 +280,18 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   }
   async function bindTag(): Promise<void> {
     if (selectedTag === "") return;
-    try { setSkill(await required(api, "bindSkillTag")(skillId, selectedTag)); setMessage("{t.skills.tagSavedAudit}"); }
+    try { setSkill(await required(api, "bindSkillTag")(skillId, selectedTag)); setMessage(t.skills.tagSavedAudit); }
     catch (reason) { setError(apiError(reason, t)); }
   }
   async function unbindTag(slug: string): Promise<void> {
     const tag = tags.find((item) => item.slug === slug);
     if (tag === undefined) {
-      setError("{t.skillDetail.tagMissing}");
+      setError(t.skillDetail.tagMissing);
       return;
     }
     try {
       setSkill(await required(api, "bindSkillTag")(skillId, tag.tag_id, true));
-      setMessage("{t.skillDetail.tagRemovedAudit}");
+      setMessage(t.skillDetail.tagRemovedAudit);
     } catch (reason) { setError(apiError(reason, t)); }
   }
 
@@ -328,7 +328,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         <article className="panel"><div className="panel-title"><h2>Version Diff</h2><span>{previous === undefined ? "first version" : `${previous.version} → ${skill.latest_version}`}</span></div><div className="diff-panel"><pre>{previous === undefined ? "No previous version." : JSON.stringify(previous.ir, null, 2)}</pre><pre>{JSON.stringify(skill.ir, null, 2)}</pre></div></article>
       </div>
 
-      <article className="panel compact-form"><div className="panel-title"><h2>{t.skillDetail.tagBinding}</h2><span>{t.skillDetail.noReview}</span></div><div className="inline-form"><select aria-label="{t.skillDetail.selectTag}" value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}><option value="">{t.skillDetail.selectTag}</option>{tags.filter((tag) => tag.active && !skill.tags.includes(tag.slug)).map((tag) => <option value={tag.tag_id} key={tag.tag_id}>{tag.label}</option>)}</select><button onClick={() => void bindTag()}>{t.skillDetail.addTag}</button></div></article>
+      <article className="panel compact-form"><div className="panel-title"><h2>{t.skillDetail.tagBinding}</h2><span>{t.skillDetail.noReview}</span></div><div className="inline-form"><select aria-label={t.skillDetail.selectTag} value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}><option value="">{t.skillDetail.selectTag}</option>{tags.filter((tag) => tag.active && !skill.tags.includes(tag.slug)).map((tag) => <option value={tag.tag_id} key={tag.tag_id}>{tag.label}</option>)}</select><button onClick={() => void bindTag()}>{t.skillDetail.addTag}</button></div></article>
 
       <article className="panel"><div className="panel-title"><h2>{t.skillDetail.createProposal}</h2><Status value="review-required" /></div><textarea className="ir-editor" aria-label="Skill IR draft" value={draft} onChange={(event) => setDraft(event.target.value)} /><div className="actions"><button onClick={() => void submitDraft()}>{t.skillDetail.validateSubmit}</button></div></article>
 
@@ -412,14 +412,14 @@ export function WorkflowRegistry({ api: apiValue }: { api?: HunterApi }) {
       <div className="workflow-workbench">
         <div className="panel workflow-index"><div className="panel-title"><h2>{t.workflows.profiles}</h2><span>{filteredWorkflows.length}</span></div><label className="rail-search">{t.workflows.search}<input value={workflowQuery} onChange={(event) => setWorkflowQuery(event.target.value)} placeholder="name, key, profile" /></label>{workflows === null ? <div className="skeleton-block" /> : workflows.length === 0 ? <Empty>{t.workflows.noWorkflows}</Empty> : filteredWorkflows.length === 0 ? <Empty>{t.workflows.noMatch}</Empty> : filteredWorkflows.map((workflow) => <button className={workflow.workflow_id === selectedId ? "selected" : ""} key={workflow.workflow_id} onClick={() => edit(workflow)}><strong>{workflow.name}</strong><span>{workflow.profile} · {workflow.skill_slugs.length} skills</span><Status value={workflow.enabled ? "active" : "archived"} /></button>)}</div>
         <div className="panel workflow-editor compact-form">
-          <div className="panel-title"><h2>{selected === null ? "{t.workflows.editingNew}" : "{t.workflows.editingExisting}"}</h2><span>{revision === null ? "new" : `revision ${revision}`}</span></div>
+          <div className="panel-title"><h2>{selected === null ? t.workflows.editingNew : t.workflows.editingExisting}</h2><span>{revision === null ? "new" : `revision ${revision}`}</span></div>
           <div className="form-grid"><label>{t.workflows.name}<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>{t.workflows.key}<input value={form.key} onChange={(event) => setForm({ ...form, key: event.target.value })} /></label><label className="span-2">{t.workflows.description2}<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Profile<input value={form.profile} onChange={(event) => setForm({ ...form, profile: event.target.value })} /></label><label>{t.workflows.defaultAgent}<select value={form.default_agent} onChange={(event) => setForm({ ...form, default_agent: event.target.value as RegistryAgent })}><option value="claude-code">Claude Code</option></select></label></div>
           <div className="panel-title"><h3>{t.workflows.orderedSkillBinding}</h3><span>{t.workflows.directSaveAudit}</span></div>
           <ol className="binding-list">{form.skill_slugs.map((slug, index) => <li key={slug}><span className="sequence">{String(index + 1).padStart(2, "0")}</span><strong>{slug}</strong><div><button className="icon-button" aria-label={`move-up ${slug}`} onClick={() => move(index, -1)}>↑</button><button className="icon-button" aria-label={`move-down ${slug}`} onClick={() => move(index, 1)}>↓</button><button className="icon-button danger" aria-label={`remove ${slug}`} onClick={() => setForm({ ...form, skill_slugs: form.skill_slugs.filter((item) => item !== slug) })}>×</button></div></li>)}</ol>
           <label>{t.workflows.addPublishedSkill}<select value="" onChange={(event) => event.target.value !== "" && setForm({ ...form, skill_slugs: [...form.skill_slugs, event.target.value] })}><option value="">{t.workflows.selectSkill}</option>{skills.filter((skill) => !form.skill_slugs.includes(skill.slug) && skill.adapters.includes(form.default_agent) && skill.ir?.profiles[form.profile]?.enabled).map((skill) => <option value={skill.slug} key={skill.skill_id}>{skill.name}</option>)}</select></label>
           <div className="actions"><button disabled={!form.name || !form.key || !form.description} onClick={() => void save()}>{t.workflows.save}</button>{revision === null ? null : <button className="secondary danger" onClick={() => void remove()}>{t.workflows.archiveDelete}</button>}</div>
         </div>
-        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder="{t.workflows.availablePlaceholder}" /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.category} /></div>)}</div>
+        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder={t.workflows.availablePlaceholder} /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.category} /></div>)}</div>
       </div>
       {error === null ? null : <div className="notice danger">{error}</div>}
     </section>
