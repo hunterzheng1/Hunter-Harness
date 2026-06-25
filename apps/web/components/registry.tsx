@@ -48,18 +48,6 @@ function Status({ value }: { value: string }) {
   return <span className={`status status-${value.replaceAll("_", "-")}`}>{value.replaceAll("_", " ")}</span>;
 }
 
-function statusLabel(value: string, t: ReturnType<typeof useI18n>["t"]["skillDetail"]): string {
-  if (value === "workflow") return t.categoryWorkflow;
-  if (value === "governance") return t.categoryGovernance;
-  if (value === "tooling") return t.categoryTooling;
-  if (value === "migration") return t.categoryMigration;
-  return value.replaceAll("_", " ");
-}
-
-function LocalizedStatus({ value, t }: { value: string; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
-  return <span className={`status status-${value.replaceAll("_", "-")}`}>{statusLabel(value, t)}</span>;
-}
-
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="empty-state">{children}</div>;
 }
@@ -1080,7 +1068,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [selectedTag, setSelectedTag] = useState("");
   const [draft, setDraft] = useState("");
   const [demoDefaultAgent, setDemoDefaultAgent] = useState<DemoAgent | null>(null);
-  const [adapterPreview, setAdapterPreview] = useState<{ path: string; content: string; sourceIrHash: string; compilerVersion: string } | null>(null);
   const [sourcePath, setSourcePath] = useState("SKILL.md");
   const [activeTab, setActiveTab] = useState<SkillDetailTab>("source");
   const [message, setMessage] = useState<string | null>(null);
@@ -1113,18 +1100,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     void refresh();
   }, [api, skillId]);
 
-  useEffect(() => {
-    let active = true;
-    setAdapterPreview(null);
-    if (!isRegistryAgent(agent) || api.getSkillAdapterPreview === undefined) return () => { active = false; };
-    void api.getSkillAdapterPreview(skillId, agent)
-      .then((value) => { if (active) setAdapterPreview(value); })
-      .catch((reason: unknown) => {
-        if (active && agent === "claude-code") setError(apiError(reason, t));
-      });
-    return () => { active = false; };
-  }, [api, skillId, agent]);
-
   useEffect(() => { setSourcePath("SKILL.md"); }, [skillId]);
   const command = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent}`;
   async function copyCommand(): Promise<void> {
@@ -1142,7 +1117,9 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   async function submitDraft(): Promise<void> {
     setMessage(t.skillDetail.localDraftOnly);
   }
-  async function review(_proposalId: string, _decision: "approve" | "reject"): Promise<void> {
+  async function review(proposalId: string, decision: "approve" | "reject"): Promise<void> {
+    void proposalId;
+    void decision;
     setMessage(t.skillDetail.localDraftOnly);
   }
   function saveLocalMeta(next: { description: string; tags: string[] }): void {
@@ -1170,18 +1147,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     try { setSkill(await required(api, "bindSkillTag")(skillId, selectedTag)); setMessage(t.skills.tagSavedAudit); }
     catch (reason) { setError(apiError(reason, t)); }
   }
-  async function unbindTag(slug: string): Promise<void> {
-    const tag = tags.find((item) => item.slug === slug);
-    if (tag === undefined) {
-      setError(t.skillDetail.tagMissing);
-      return;
-    }
-    try {
-      setSkill(await required(api, "bindSkillTag")(skillId, tag.tag_id, true));
-      setMessage(t.skillDetail.tagRemovedAudit);
-    } catch (reason) { setError(apiError(reason, t)); }
-  }
-
   if (error !== null && skill === null) return <Empty>{error}</Empty>;
   if (skill === null) return <Empty>{t.skillDetail.loading}</Empty>;
   const sourceSkill = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true"
@@ -1190,11 +1155,9 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const activeDefaultAgent = demoDefaultAgent ?? sourceSkill?.defaultAgent;
   const selectedAgent = sourceSkill?.agents.find((item) => item.agent === agent);
   const defaultAgent = sourceSkill?.agents.find((item) => item.agent === activeDefaultAgent);
-  const resolvedAgent = selectedAgent?.configured === true ? selectedAgent : defaultAgent;
   const fallback = selectedAgent !== undefined && selectedAgent.configured === false && defaultAgent !== undefined;
   const sourceFile = sourceSkill?.source.files.find((file) => file.path === sourcePath) ?? sourceSkill?.source.entrypoint;
   const adapterPatch = sourceSkill?.adapters[agent];
-  const latestVersion = resolvedAgent?.latestVersion?.version ?? skill.latest_version;
   return (
     <section className="stack governance-page">
       <header className="page-heading command-hero skill-detail-hero">

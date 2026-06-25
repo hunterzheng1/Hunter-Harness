@@ -28,7 +28,7 @@ npx @hunter-harness/skill-cli upload <directory-or-zip> --agent claude-code
 ```
 
 - `install`：不存在时安装，已安装且未被本地修改时更新；校验 artifact SHA-256 与 ZIP identity 后原子写入。
-- `upload`：上传 ZIP、YAML、JSON 或目录并创建待审 proposal，不直接发布。
+- `upload`：上传 ZIP 或目录（也兼容单个 canonical Skill IR 文件）并创建待审 proposal，不直接发布；当前发布校验目标为 Claude Code。
 - CLI 不提供 search、download、update、uninstall 或 publish 命令；浏览、历史版本、详情与 ZIP 下载位于 Web Console。
 - MVP 仅将 Claude Code adapter 标记为可安装；Codex、Generic、MCP 保留契约与预览边界。
 
@@ -50,12 +50,12 @@ docs                实施、部署与验收文档
 
 控制台提供总览、项目、Workflow、Skill Center、审核队列和 Artifact 历史：
 
-- Skill Center：搜索、分类/Agent 筛选、Canonical IR、adapter 输出、版本历史与 Diff、标签管理、安装命令和 ZIP 下载。
-- Skill 内容上传/修改：仅创建 proposal，owner 人工 approve/reject 后才发布版本与 adapter artifact。
+- Skill Center：搜索、标签/Agent/状态筛选、ZIP 或文件夹上传、Canonical IR、adapter 输出、版本历史与 Diff、标签管理、安装命令和 ZIP 下载。
+- Skill 内容上传/修改：Web demo 可本地暂存未发布 Skill；真实服务端链路通过 Skill proposal 创建，owner 人工 approve/reject 后才发布版本与 adapter artifact。
 - Workflow：直接 CRUD、启停、删除保护和有序 Skill binding，不进入 proposal，但保留审计与 revision 冲突保护。
 - 标签：创建、重命名、合并、停用和 Skill 绑定直接生效，保留审计。
 - 项目详情：展示并直接绑定 Workflow；项目受管文件仍沿用原有 proposal/review/update 治理协议。
-- Dark 与 Light 使用同一套语义设计 token；首次遵循系统主题，用户选择后写入本地偏好。
+- Dark 与 Light 使用同一套语义设计 token；技能中心在两套主题下保持一致的信息层级和卡片区分，首次遵循系统主题，用户选择后写入本地偏好。
 
 ### 连接真实服务端
 

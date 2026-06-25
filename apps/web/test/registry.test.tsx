@@ -97,7 +97,9 @@ describe("governed workflow and Skill Center", () => {
     expect(screen.getByText(/技能统计|Skill stats/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Security" }));
     expect(screen.getByText("harness-review")).toBeInTheDocument();
-    fireEvent.change(screen.getAllByLabelText(/状态|Status/i)[0]!, { target: { value: "unpublished" } });
+    const statusFilter = screen.getAllByLabelText(/状态|Status/i).at(0);
+    expect(statusFilter).toBeDefined();
+    fireEvent.change(statusFilter as HTMLElement, { target: { value: "unpublished" } });
     expect(screen.queryByText("harness-review")).not.toBeInTheDocument();
   });
 
