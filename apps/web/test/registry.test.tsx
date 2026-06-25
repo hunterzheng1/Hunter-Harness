@@ -93,11 +93,11 @@ describe("governed workflow and Skill Center", () => {
   it("loads the canonical registry, exposes governance metadata, and applies compound filters", async () => {
     render(<SkillRegistry api={api()} />);
     expect(await screen.findByText("harness-review")).toBeInTheDocument();
-    expect(screen.getByText("1 workflow")).toBeInTheDocument();
-    expect(screen.getByText(/validated/i)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/标签|Tag/i), { target: { value: "security" } });
-    fireEvent.change(screen.getByLabelText(/Profile/i), { target: { value: "general" } });
-    fireEvent.change(screen.getByLabelText(/状态|Status/i), { target: { value: "deprecated" } });
+    expect(screen.getByText(/技能列表|Skill list/i)).toBeInTheDocument();
+    expect(screen.getByText(/技能统计|Skill stats/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Security" }));
+    expect(screen.getByText("harness-review")).toBeInTheDocument();
+    fireEvent.change(screen.getAllByLabelText(/状态|Status/i)[0]!, { target: { value: "unpublished" } });
     expect(screen.queryByText("harness-review")).not.toBeInTheDocument();
   });
 
@@ -111,16 +111,17 @@ describe("governed workflow and Skill Center", () => {
     expect(await screen.findByRole("heading", { name: "harness-review" })).toBeInTheDocument();
     expect(screen.getAllByText(/规范技能 IR|Canonical Skill IR/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/1\.1\.0/).length).toBeGreaterThan(0);
-    expect(await screen.findByText("# harness-review")).toBeInTheDocument();
+    expect(await screen.findByText((content) => content.includes('"name": "harness-review"'))).toBeInTheDocument();
     expect(screen.getByText(/npx @hunter-harness\/skill-cli install harness-review --agent claude-code/)).toBeInTheDocument();
   });
 
-  it("removes a Skill tag directly without creating a proposal", async () => {
+  it("removes a Skill tag locally without creating a proposal", async () => {
     const bindSkillTag = vi.fn(async () => ({ ...skill, tags: [] }));
     render(<SkillDetail api={api({ bindSkillTag })} skillId="harness-review" />);
     const remove = await screen.findByRole("button", { name: /security/ });
     fireEvent.click(remove);
-    await waitFor(() => expect(bindSkillTag).toHaveBeenCalledWith("harness-review", "tag_security", true));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /security/ })).not.toBeInTheDocument());
+    expect(bindSkillTag).not.toHaveBeenCalled();
   });
 
   it("creates workflows directly without a review proposal", async () => {

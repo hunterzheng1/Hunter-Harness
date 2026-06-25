@@ -43,6 +43,9 @@ function Sidebar() {
         <Link href="/skills" className={isActive("/skills") ? "active" : ""}>
           {t.nav.skills}
         </Link>
+        <Link href="/ai-config" className={isActive("/ai-config") ? "active" : ""}>
+          {t.nav.aiConfig}
+        </Link>
         <Link href="/proposals" className={isActive("/proposals") ? "active" : ""}>
           {t.nav.reviewQueue}
         </Link>

@@ -1,6 +1,4 @@
-import type { RegistryAgent } from "@hunter-harness/contracts";
-
-import type { DemoSourceSkill } from "./types";
+import type { DemoAgent, DemoSourceSkill } from "./types";
 
 const files = [
   {
@@ -30,13 +28,209 @@ const codexPatch = {
   "appendedContent": "\n\n---\n\n## Codex adaptation\n\n- Replace hook-driven checks with explicit verification steps in the current task.\n- When subagents are unavailable, perform the delegated investigation in the current session and report its evidence.\n- Preserve the SAP table extraction, T-table merge, API query, and output-template workflow above.\n"
 } as const;
 
+const cursorPatch = {
+  "patchSummary": "Cursor fallback preview: use the Claude Code source package but publish to Cursor rules path until a Cursor-specific package is uploaded.",
+  "appendedContent": "\n\n---\n\n## Cursor fallback notes\n\nThis preview is resolved from the default Claude Code package. Downloading with `--agent cursor` installs the generated artifact under `.cursor/rules/sap-field-mapper.md` until a Cursor-specific version is uploaded and published.\n"
+} as const;
+
+const codexPreviewPatch = {
+  "patchSummary": "Codex draft preview: remove Claude-only frontmatter and keep explicit execution instructions for Codex.",
+  "appendedContent": "\n\n---\n\n## Codex draft notes\n\n- Treat this as a project-local instruction file.\n- Do not rely on Claude Code `allowed-tools` frontmatter.\n- Ask before writing generated mapping tables when the target document is ambiguous.\n"
+} as const;
+
+const claudeSkillPublished = [
+  "---",
+  "name: sap-field-mapper",
+  "allowed-tools: Read, Grep, Glob, Bash(curl *), Write, Edit",
+  "---",
+  "",
+  "## Rules",
+  "- Always use tempAdminToken as the API token.",
+  "- Append the generated mapping table to the requested Markdown document.",
+  "- Report progress after each workflow step."
+].join("\n");
+
+const claudeSkillDraft = [
+  "---",
+  "name: sap-field-mapper",
+  "allowed-tools: Read, Grep, Glob, Bash(curl *), Write, Edit",
+  "---",
+  "",
+  "## Rules",
+  "- Always use tempAdminToken as the API token; confirm it is a test token before publishing.",
+  "- Ask before appending the generated mapping table to a user document.",
+  "- Report progress after each workflow step with the target file path."
+].join("\n");
+
+const codexSkillPublished = [
+  "# sap-field-mapper",
+  "",
+  "Use the SAP/S4 extraction workflow from the source package.",
+  "Generated mapping tables may be appended when the target document is clear.",
+  "No hard dependency on subagents is required."
+].join("\n");
+
+const codexSkillDraft = [
+  "# sap-field-mapper",
+  "",
+  "Use the SAP/S4 extraction workflow from the source package.",
+  "Ask before appending generated mapping tables to user documents.",
+  "Run verification steps in the current Codex session when subagents are unavailable."
+].join("\n");
+
 export const sapFieldMapper: DemoSourceSkill = {
   slug: "sap-field-mapper",
+  defaultAgent: "claude-code",
   source: { entrypoint, files },
-  adapters: { codex: codexPatch },
-  preview(agent: RegistryAgent): string | null {
+  examples: [
+    {
+      title: "自动识别 Markdown 中的 SAP 字段",
+      description: "当需求文档中出现 BKPF、ACDOCA、T001 等 SAP/S4 表字段时，直接生成实体类映射表。",
+      request: "请检查 docs/payment-posting.md 里的 SAP 表字段，并补充实体类对照表。",
+      result: "在目标 Markdown 末尾追加按表分组的 S/4 字段与实体字段映射。",
+      files: ["docs/payment-posting.md"]
+    },
+    {
+      title: "手动指定输入文件",
+      description: "用户明确给出一个 Markdown 文件路径时，只处理该文件并保留原文内容。",
+      request: "/sap-field-mapper requirements/fi-clearing.md",
+      result: "读取指定文件、提取字段、查询实体信息，并把结果追加到同一文件。",
+      files: ["requirements/fi-clearing.md", "templates/output-template.md"]
+    },
+    {
+      title: "从字段引用片段生成映射",
+      description: "当对话或代码片段中出现 bkpf.bldat、ACDOCA-WSL 这类引用时，按字段引用生成映射。",
+      request: "这些字段需要实体映射：bkpf.bldat、BKPF-BUDAT、ACDOCA-WSL、T001-BUKRS。",
+      result: "输出 BKPF、ACDOCA、T001 三组字段的实体类名称、文件路径和字段映射。",
+      files: ["reference.md"]
+    }
+  ],
+  agents: [
+    {
+      agent: "claude-code",
+      label: "Claude Code",
+      configured: true,
+      default: true,
+      targetPath: ".claude/skills/sap-field-mapper/SKILL.md",
+      latestVersion: {
+        version: "1.2.0",
+        sourceLabel: "Published Claude Code source package",
+        releasedAt: "2026-06-25T09:30:00Z",
+        sourceHash: "sha256:22f5c9c3d8f4c7a1",
+        artifactHash: "sha256:7cc2f0f6a7e89144",
+        targetPath: ".claude/skills/sap-field-mapper/SKILL.md",
+        fileCount: files.length,
+        status: "published"
+      },
+      draftVersion: {
+        version: "1.3.0-draft",
+        sourceLabel: "Uploaded folder draft",
+        releasedAt: "2026-06-25T15:20:00Z",
+        sourceHash: "sha256:draftb8d5c3f1a992",
+        artifactHash: "sha256:draft9e12087f44",
+        targetPath: ".claude/skills/sap-field-mapper/SKILL.md",
+        fileCount: files.length + 1,
+        status: "draft"
+      },
+      checks: [
+        { id: "entrypoint", label: "SKILL.md entrypoint", status: "green", message: "Found root SKILL.md and supporting files." },
+        { id: "path-safe", label: "Path safety", status: "green", message: "No absolute paths, parent traversal, or unsafe names detected." },
+        { id: "secret-scan", label: "Sensitive content", status: "yellow", message: "Token-like value `tempAdminToken` appears in reference instructions; confirm it is a test token.", filePath: "reference.md", fixable: true },
+        { id: "publish", label: "Publish readiness", status: "green", message: "Claude Code artifact can be generated for the draft." }
+      ],
+      diffFiles: [
+        {
+          path: ".claude/skills/sap-field-mapper/SKILL.md",
+          status: "modified",
+          publishedContent: claudeSkillPublished,
+          draftContent: claudeSkillDraft
+        },
+        {
+          path: ".claude/skills/sap-field-mapper/templates/checklist.md",
+          status: "added",
+          publishedContent: "",
+          draftContent: "# Publish checklist\n\n- Confirm tempAdminToken is safe for demo use.\n- Confirm document write permission before appending output.\n- Run adapter generation for Claude Code."
+        }
+      ],
+      metrics: { files: files.length + 1, green: 3, yellow: 1, red: 0, suggestions: 2 },
+      uploadHint: "Upload a Claude Code Skill folder or zip containing SKILL.md."
+    },
+    {
+      agent: "cursor",
+      label: "Cursor",
+      configured: false,
+      default: false,
+      fallbackFrom: "claude-code",
+      targetPath: ".cursor/rules/sap-field-mapper.md",
+      checks: [
+        { id: "fallback", label: "Fallback source", status: "yellow", message: "Cursor has no dedicated package; preview resolves from Claude Code default." },
+        { id: "target-path", label: "Install target", status: "green", message: "Download would install to .cursor/rules/sap-field-mapper.md." },
+        { id: "cursor-native", label: "Cursor native rules", status: "yellow", message: "No Cursor-specific rule formatting has been uploaded yet.", fixable: true }
+      ],
+      metrics: { files: files.length, green: 1, yellow: 2, red: 0, suggestions: 3 },
+      uploadHint: "Upload a Cursor rules folder or zip to create a dedicated Cursor version."
+    },
+    {
+      agent: "codex",
+      label: "Codex",
+      configured: true,
+      default: false,
+      targetPath: ".codex/skills/sap-field-mapper/SKILL.md",
+      latestVersion: {
+        version: "0.8.0",
+        sourceLabel: "Codex adaptation package",
+        releasedAt: "2026-06-24T18:00:00Z",
+        sourceHash: "sha256:4df0d7cfa190ab22",
+        artifactHash: "sha256:b18c669830ba11d0",
+        targetPath: ".codex/skills/sap-field-mapper/SKILL.md",
+        fileCount: files.length,
+        status: "published"
+      },
+      checks: [
+        { id: "claude-frontmatter", label: "Claude-only metadata", status: "yellow", message: "`allowed-tools` frontmatter should be rewritten for Codex guidance.", filePath: "SKILL.md", fixable: true },
+        { id: "subagent", label: "Unsupported automation", status: "green", message: "No hard dependency on subagents detected." },
+        { id: "write-boundary", label: "Write boundary", status: "red", message: "Generated table append behavior should explicitly ask before modifying user documents.", filePath: "SKILL.md", fixable: true }
+      ],
+      diffFiles: [
+        {
+          path: ".codex/skills/sap-field-mapper/SKILL.md",
+          status: "modified",
+          publishedContent: codexSkillPublished,
+          draftContent: codexSkillDraft
+        }
+      ],
+      metrics: { files: files.length, green: 1, yellow: 1, red: 1, suggestions: 4 },
+      uploadHint: "Upload a Codex-specific skill package or apply AI fixes to the current draft."
+    },
+    {
+      agent: "generic",
+      label: "Generic Markdown",
+      configured: false,
+      default: false,
+      fallbackFrom: "claude-code",
+      targetPath: ".harness/generated/generic/sap-field-mapper.md",
+      checks: [
+        { id: "fallback", label: "Fallback source", status: "yellow", message: "Generic output currently falls back to the Claude Code source package." },
+        { id: "portable", label: "Portable instructions", status: "red", message: "The source references tool-specific frontmatter and Bash permissions.", filePath: "SKILL.md", fixable: true }
+      ],
+      diffFiles: [
+        {
+          path: ".harness/generated/generic/sap-field-mapper.md",
+          status: "modified",
+          publishedContent: "This generic preview is derived from the Claude Code package.",
+          draftContent: "This generic preview removes tool-specific frontmatter and keeps portable instructions only."
+        }
+      ],
+      metrics: { files: files.length, green: 0, yellow: 1, red: 1, suggestions: 2 },
+      uploadHint: "Upload a portable Markdown package to create a generic version."
+    }
+  ],
+  adapters: { codex: codexPatch, cursor: cursorPatch },
+  preview(agent: DemoAgent): string | null {
     if (agent === "claude-code") return entrypoint.content;
-    if (agent === "codex") return entrypoint.content + codexPatch.appendedContent;
+    if (agent === "codex") return entrypoint.content + codexPreviewPatch.appendedContent;
+    if (agent === "cursor") return entrypoint.content + cursorPatch.appendedContent;
+    if (agent === "generic") return entrypoint.content + "\n\n---\n\n## Generic fallback\n\nThis generic preview is derived from the default Claude Code package and should be simplified before publishing as a portable instruction file.\n";
     return null;
   }
 };
