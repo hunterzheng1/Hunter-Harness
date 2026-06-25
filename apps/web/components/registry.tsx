@@ -541,7 +541,7 @@ function AgentCheckPanel({
   return <div className="check-publish-layout">
     <div className="publish-toolbar">
       <label className="upload-drop-strip">
-        <input type="file" multiple accept=".zip,.md,.json,.yaml,.yml" {...{ webkitdirectory: "" }} />
+        <input type="file" multiple accept=".zip" {...{ webkitdirectory: "" }} />
         <strong>{t.uploadSkillPackage}</strong>
         <span>{t.uploadSkillPackageHint}</span>
       </label>
@@ -843,22 +843,47 @@ function SourceFileTree({
   return <div className="source-file-tree" role="tree">{renderNode(root, "")}</div>;
 }
 
-async function parseSkillFile(file: File): Promise<SkillIr> {
-  let name = file.name;
-  let content: string;
-  if (name.toLowerCase().endsWith(".zip")) {
-    const zip = await JSZip.loadAsync(await file.arrayBuffer());
+const SKILL_IR_ENTRY_PATTERN = /(^|\/)(skill\.ya?ml|skill\.json|hunter-skill-ir\.json)$/i;
+
+async function parseSkillFile(input: File | FileList | File[]): Promise<{ ir: SkillIr; sourceName: string }> {
+  const files: File[] = Array.isArray(input)
+    ? input
+    : input instanceof FileList
+      ? Array.from(input)
+      : [input];
+  if (files.length === 0) throw new Error("No file selected");
+
+  const first = files[0];
+  if (first !== undefined && files.length === 1 && first.name.toLowerCase().endsWith(".zip")) {
+    const zip = await JSZip.loadAsync(await first.arrayBuffer());
     const entry = Object.values(zip.files).find((item) =>
-      !item.dir && /(^|\/)(skill\.ya?ml|skill\.json|hunter-skill-ir\.json)$/i.test(item.name) && !item.name.includes("..")
+      !item.dir && SKILL_IR_ENTRY_PATTERN.test(item.name) && !item.name.includes("..")
     );
     if (entry === undefined) throw new Error("ZIP: skill IR not found");
-    name = entry.name;
-    content = await entry.async("text");
-  } else {
-    content = await file.text();
+    const content = await entry.async("text");
+    const ir = entry.name.toLowerCase().endsWith(".json") ? JSON.parse(content) : parseYaml(content);
+    return { ir: ir as SkillIr, sourceName: first.name };
   }
-  const candidate = name.toLowerCase().endsWith(".json") ? JSON.parse(content) : parseYaml(content);
-  return candidate as SkillIr;
+
+  const folderEntry = files
+    .map((file) => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name }))
+    .filter(({ path }) => SKILL_IR_ENTRY_PATTERN.test(path) && !path.includes(".."))
+    .sort((left, right) => left.path.split("/").length - right.path.split("/").length)[0];
+  if (folderEntry === undefined) throw new Error("Folder: skill IR not found");
+  const content = await folderEntry.file.text();
+  const ir = folderEntry.path.toLowerCase().endsWith(".json") ? JSON.parse(content) : parseYaml(content);
+  const rootName = folderEntry.path.includes("/") ? (folderEntry.path.split("/")[0] ?? folderEntry.file.name) : folderEntry.file.name;
+  return { ir: ir as SkillIr, sourceName: rootName };
+}
+
+function uploadLabel(files: File[] | null, fallback: string): string {
+  if (files === null || files.length === 0) return fallback;
+  const first = files[0];
+  if (first === undefined) return fallback;
+  if (files.length === 1) return first.name;
+  const relative = (first as File & { webkitRelativePath?: string }).webkitRelativePath ?? "";
+  const segment = relative.split("/")[0];
+  return segment !== undefined && segment !== "" ? segment : files.length + " files";
 }
 
 export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
@@ -873,8 +898,9 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const [status, setStatus] = useState<"" | "published" | "unpublished">("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
-  const [upload, setUpload] = useState<File | null>(null);
+  const [upload, setUpload] = useState<File[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [deleteModal, setDeleteModal] = useState<RegistrySkillDetail | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -919,10 +945,10 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   }
 
   async function submitUpload(): Promise<void> {
-    if (upload === null) return;
+    if (upload === null || upload.length === 0) return;
     try {
-      const ir = await parseSkillFile(upload);
-      const localSkill = localSkillFromIr(ir, upload.name);
+      const { ir, sourceName } = await parseSkillFile(upload);
+      const localSkill = localSkillFromIr(ir, sourceName);
       setSkills((current) => {
         const withoutSame = (current ?? []).filter((skill) => skill.slug !== localSkill.slug);
         const next = [localSkill, ...withoutSame];
@@ -935,13 +961,22 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   }
 
   function deleteSkill(skill: RegistrySkillDetail): void {
-    if (!window.confirm(t.skills.deleteConfirm.replace("{name}", skill.name))) return;
+    setDeleteModal(skill);
+  }
+
+  function confirmDelete(): void {
+    if (deleteModal === null) return;
     setSkills((current) => {
-      const next = (current ?? []).filter((item) => item.slug !== skill.slug);
+      const next = (current ?? []).filter((item) => item.slug !== deleteModal.slug);
       saveLocalSkills(next.filter((item) => item.skill_id.startsWith("skl_local_")));
       return next;
     });
-    setMessage(t.skills.deletedSkill.replace("{name}", skill.name));
+    setMessage(t.skills.deletedSkill.replace("{name}", deleteModal.name));
+    setDeleteModal(null);
+  }
+
+  function cancelDelete(): void {
+    setDeleteModal(null);
   }
 
   if (error !== null && skills === null) return <Empty>{error}</Empty>;
@@ -956,7 +991,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
          <div className="hero-actions"><Status value="governed" /><span>{skills?.length ?? 0} {t.skills.publishedCount}</span></div>
       </header>
 
-      <div className="registry-toolbar registry-toolbar-expanded panel">
+      <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
         <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t.skills.searchPlaceholder} /></label>
         <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="generic">Generic</option><option value="mcp">MCP</option></select></label>
         <label>{t.skills.status}<select value={status} onChange={(event) => setStatus(event.target.value as "" | "published" | "unpublished")}><option value="">{t.common.all}</option><option value="published">{t.skills.statusPublished}</option><option value="unpublished">{t.skills.statusUnpublished}</option></select></label>
@@ -969,34 +1004,38 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       </div>
 
       <div className="hub-grid">
-        <div className="panel registry-list">
+        <div className="panel panel-themed panel-list registry-list">
           <div className="panel-title"><h2>{t.skills.skillList}</h2><span>{filtered.length}</span></div>
+          <div className="registry-list-body">
           {skills === null ? <div className="skeleton-block" /> : filtered.length === 0 ? <Empty>{t.skills.noMatch}</Empty> : pageItems.map((skill) => {
             const usageCount = workflows.filter((workflow) => workflow.skill_slugs.includes(skill.slug)).length;
             return (
               <div className="skill-row-with-actions" key={skill.skill_id}>
                 <Link className="skill-row" href={`/skills/${skill.slug}`}>
-                  <div><strong>{skill.name}</strong><p>{displayValue(skill.description, t.skillDetail)}</p><div className="tag-row">{skill.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></div>
-                  <div className="skill-meta"><span className="meta-pill meta-pill-version">v{skill.latest_version ?? "0.0.0"}</span><span>{skill.adapters.length} {t.skills.adapters}</span><span>{usageCount} {usageCount === 1 ? t.skills.workflow : t.skills.workflowsPl}</span><span>{t.skills.updated} {skill.updated_at.slice(0, 10)}</span><span className={`status ${skill.status === "published" ? "status-published" : "status-draft"}`}>{skillStatusLabel(skill.status, t.skills)}</span></div>
+                  <div className="skill-row-main"><strong className="skill-row-name">{skill.name}</strong><p className="skill-row-desc" title={displayValue(skill.description, t.skillDetail)}>{displayValue(skill.description, t.skillDetail)}</p><div className="tag-row">{skill.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></div>
+                  <div className="skill-meta"><span className="meta-pill meta-pill-version">v{skill.latest_version ?? "0.0.0"}</span><span className="skill-meta-cell"><strong>{skill.adapters.length}</strong>{t.skills.adapters}</span><span className="skill-meta-cell"><strong>{usageCount}</strong>{t.skills.workflowsPl}</span><span className="skill-meta-cell" title={`${t.skills.updated} ${skill.updated_at.slice(0, 10)}`}>{skill.updated_at.slice(0, 10)}</span><span className={`status ${skill.status === "published" ? "status-published" : "status-draft"}`}>{skillStatusLabel(skill.status, t.skills)}</span></div>
                 </Link>
-                <button type="button" className="icon-btn icon-btn-danger skill-delete-button" aria-label={t.common.delete} title={t.common.delete} onClick={() => deleteSkill(skill)}>×</button>
+                <button type="button" className="skill-delete-button" aria-label={t.common.delete} title={t.common.delete} onClick={(event) => { event.preventDefault(); event.stopPropagation(); deleteSkill(skill); }}>×</button>
               </div>
             );
           })}
-          {filtered.length > pageSize ? <div className="pagination-bar">
+          </div>
+          <div className="pagination-bar">
+            <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage(1)}>{t.skills.firstPage}</button>
             <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>{t.skills.prevPage}</button>
             <span>{t.skills.pageInfo.replace("{page}", String(currentPage)).replace("{total}", String(totalPages))}</span>
             <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>{t.skills.nextPage}</button>
-          </div> : null}
+            <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage(totalPages)}>{t.skills.lastPage}</button>
+          </div>
         </div>
         <aside className="hub-rail">
-          <div className="panel compact-form">
+          <div className="panel panel-themed panel-upload compact-form">
             <div className="panel-title"><h2>{t.skills.uploadSkill}</h2><Status value="draft" /></div>
             <p>{t.skills.uploadHint}</p>
-            <label className="file-drop upload-drop-strip"><strong>{t.skills.chooseFile}</strong><span>{upload?.name ?? t.skills.uploadDropHint}</span><input type="file" accept=".zip,.yaml,.yml,.json" onChange={(event: ChangeEvent<HTMLInputElement>) => setUpload(event.target.files?.[0] ?? null)} /></label>
+            <label className="upload-drop-strip"><input type="file" multiple accept=".zip" onChange={(event: ChangeEvent<HTMLInputElement>) => { const files = event.target.files; setUpload(files === null || files.length === 0 ? null : Array.from(files)); }} {...{ webkitdirectory: "" }} /><strong>{t.skills.chooseFile}</strong><span>{uploadLabel(upload, t.skills.uploadDropHint)}</span></label>
             <button disabled={upload === null} onClick={() => void submitUpload()}>{t.skills.addUnpublishedSkill}</button>
           </div>
-          <div className="panel skill-stats-panel">
+          <div className="panel panel-themed panel-stats skill-stats-panel">
             <div className="panel-title"><h2>{t.skills.stats}</h2><span>{t.skills.liveLocal}</span></div>
             <div className="skill-stat-grid">
               <article><strong>{skills?.length ?? 0}</strong><span>{t.skills.totalSkills}</span></article>
@@ -1011,6 +1050,21 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       </div>
       {message === null ? null : <div className="notice success">{message}</div>}
       {error === null ? null : <div className="notice danger">{error}</div>}
+      {deleteModal === null ? null : (
+        <div className="modal-backdrop" role="presentation" onClick={cancelDelete}>
+          <div className="check-confirm-modal delete-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-skill-title" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-title">
+              <h2 id="delete-skill-title">{t.common.delete}</h2>
+              <button type="button" className="icon-button" aria-label={t.common.cancel} onClick={cancelDelete}>×</button>
+            </div>
+            <p>{t.skills.deleteConfirm.replace("{name}", deleteModal.name)}</p>
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={cancelDelete}>{t.common.cancel}</button>
+              <button type="button" className="danger" onClick={confirmDelete}>{t.common.delete}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -1143,14 +1197,24 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const latestVersion = resolvedAgent?.latestVersion?.version ?? skill.latest_version;
   return (
     <section className="stack governance-page">
-      <header className="page-heading command-hero">
-        <div><p className="eyebrow">{t.skillDetail.eyebrow}</p><h1>{skill.name}</h1><p className="lede">{displayValue(skill.description, t.skillDetail)}</p><div className="tag-row">{skill.tags.map((tag) => <button type="button" className="tag tag-remove" aria-label={`remove-tag  ${tag}`} onClick={() => removeLocalTag(tag)} key={tag}>{tag}<span aria-hidden="true">×</span></button>)}</div></div>
-        <div className="skill-meta"><Status value={skill.status} /><code>v{skill.latest_version}</code></div>
+      <header className="page-heading command-hero skill-detail-hero">
+        <div className="page-heading-main">
+          <Link className="back-button" href="/skills" aria-label={t.common.back}>
+            <span aria-hidden="true">‹</span>
+          </Link>
+          <div className="page-heading-content">
+            <p className="eyebrow">{t.skillDetail.eyebrow}</p>
+            <h1>{skill.name}</h1>
+            <p className="lede">{displayValue(skill.description, t.skillDetail)}</p>
+            <div className="tag-row">{skill.tags.map((tag) => <button type="button" className="tag tag-remove" aria-label={`remove-tag  ${tag}`} onClick={() => removeLocalTag(tag)} key={tag}>{tag}<span aria-hidden="true">×</span></button>)}</div>
+          </div>
+        </div>
+        <div className="skill-meta skill-detail-meta"><Status value={skill.status} /><code className="skill-detail-version">v{skill.latest_version}</code></div>
       </header>
 
-      <div className="command-panel panel">
+      <div className="command-panel skill-command-panel panel">
         <label>{t.skillDetail.targetAgent}<select value={agent} onChange={(event) => { const value = event.target.value as DemoAgent; setAgent(value); localStorage.setItem("hunter-harness-default-agent", value); }}>{detailAgents.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
-        <code>{command}</code>
+        <code className="command-code">{command}</code>
         <button onClick={() => void copyCommand()}>{t.skillDetail.copyCommand}</button>
         <button className="secondary" onClick={() => void download()}>{t.skillDetail.downloadZip}</button>
       </div>

@@ -1386,7 +1386,87 @@ tbody tr:last-child td {
 
 .hero-actions,
 .skill-meta,
-.inline-form,
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1;
+  text-decoration: none;
+  transition: all var(--dur-fast);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.back-button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+  transform: translateX(-2px);
+}
+
+.skill-detail-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.skill-detail-hero .page-heading-main {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+
+.skill-detail-hero .back-button {
+  width: 34px;
+  height: 34px;
+  margin-top: 22px;
+  border-radius: 9px;
+  font-size: 31px;
+  font-weight: 350;
+  padding-bottom: 3px;
+  background: color-mix(in srgb, var(--bg-raised) 86%, var(--accent) 14%);
+}
+
+.skill-detail-hero .back-button:hover {
+  transform: translateX(-2px);
+}
+
+.skill-detail-hero .skill-detail-meta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: none;
+  color: var(--muted);
+  margin-top: 26px;
+}
+
+.skill-detail-version {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-dim);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
 .command-panel {
   display: flex;
   align-items: center;
@@ -1567,6 +1647,49 @@ tbody tr:last-child td {
   overflow: hidden;
 }
 
+.pagination-bar {
+  display: flex;
+  width: 100%;
+  min-height: 58px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line-dim);
+  background: color-mix(in srgb, var(--panel) 92%, var(--bg-raised));
+}
+
+.pagination-bar span {
+  min-width: 72px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination-bar button {
+  min-width: 58px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pagination-bar button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-heading);
+  background: var(--panel-hover);
+}
+
+.pagination-bar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .registry-list > .panel-title,
 .workflow-index > .panel-title,
 .skill-library > .panel-title {
@@ -1595,19 +1718,32 @@ tbody tr:last-child td {
 .skill-row:hover { background: var(--panel-hover); transform: translateX(2px); }
 
 .skill-delete-button {
+  position: relative;
+  z-index: 10;
   align-self: center;
-  margin-right: 14px;
+  width: 36px;
+  height: 36px;
+  margin: 0 10px 0 6px;
+  border-radius: 8px;
+  border: 1.5px solid color-mix(in srgb, var(--danger) 65%, var(--line));
+  color: var(--danger);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--danger) 12%, transparent), color-mix(in srgb, var(--danger) 6%, transparent)), var(--bg-raised);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  opacity: 0.95;
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--danger) 15%, transparent);
+  transition: all var(--dur-fast);
+  cursor: pointer;
 }
 
-.pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--line-dim);
-  color: var(--text-secondary);
-  font-size: 13px;
+.skill-delete-button:hover,
+.skill-delete-button:focus-visible {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, var(--bg-raised));
+  color: var(--text-heading);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
 }
 
 .skill-row p,
@@ -1763,6 +1899,29 @@ tbody tr:last-child td {
   font-size: 12.5px;
   font-weight: 550;
   white-space: nowrap;
+}
+
+.skill-command-panel {
+  grid-template-columns: 220px minmax(360px, 1fr) auto auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.skill-command-panel label {
+  min-width: 0;
+}
+
+.skill-command-panel select,
+.skill-command-panel .command-code,
+.skill-command-panel button {
+  height: 40px;
+}
+
+.skill-command-panel .command-code {
+  display: flex;
+  align-items: center;
+  margin-top: 0;
+  padding: 0 13px;
 }
 
 .definition-list {
@@ -2597,6 +2756,70 @@ tbody tr:last-child td {
   margin: 0;
   color: var(--text-secondary);
   line-height: 1.65;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.delete-confirm-modal {
+  width: min(460px, 100%);
+  gap: 0;
+  padding: 0;
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--line));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--danger) 8%, transparent), transparent 42%),
+    var(--bg-raised);
+  overflow: hidden;
+}
+
+.delete-confirm-modal .panel-title {
+  padding: 16px 18px;
+  border-bottom-color: color-mix(in srgb, var(--danger) 24%, var(--line-dim));
+}
+
+.delete-confirm-modal .panel-title h2 {
+  margin: 0;
+  color: var(--text-heading);
+  font-size: 16px;
+}
+
+.delete-confirm-modal p {
+  padding: 18px 18px 6px;
+}
+
+.delete-confirm-modal .modal-actions {
+  padding: 14px 18px 18px;
+}
+
+.delete-confirm-modal .modal-actions button {
+  min-width: 86px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-weight: 750;
+}
+
+.delete-confirm-modal .modal-actions button:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-hover);
+  color: var(--text-heading);
+}
+
+.delete-confirm-modal .modal-actions .danger {
+  border-color: color-mix(in srgb, var(--danger) 72%, var(--line));
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-raised));
+  color: var(--danger) !important;
+}
+
+.delete-confirm-modal .modal-actions .danger:hover {
+  background: color-mix(in srgb, var(--danger) 24%, var(--bg-raised));
+  color: var(--text-heading) !important;
 }
 
 .check-scope-grid {
