@@ -11,6 +11,7 @@ import type {
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills, workflowOrder } from "./catalog";
+import { findDemoSourceSkill, sapFieldMapper } from "./demo-skills/sap-field-mapper";
 import { ApiClientError } from "./api";
 import type {
   HunterApi,
@@ -205,6 +206,43 @@ const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) =>
   ir: toIr(skill)
 }));
 
+const SAP_FIELD_MAPPER_IR: SkillIr = {
+  name: "harness-sap-field-mapper",
+  kind: "tooling",
+  description: "Extract SAP/S4 table and field references from Markdown and build entity-class mapping tables.",
+  triggers: ["map SAP fields", "map S/4 fields", "SAP entity mapping"],
+  inputs: ["markdown_document", "project_source"],
+  outputs: ["sap_entity_mapping_table", "entity_class_paths"],
+  forbidden_actions: ["modify_source_without_request", "discard_unmatched_fields"],
+  required_context: ["target_markdown_document", "project_root"],
+  profiles: { general: { enabled: true } },
+  adapters: { "claude-code": { enabled: true }, codex: { enabled: true } },
+  version: "1.0.0",
+  instructions: [
+    "Extract SAP/S4 table and field references from the target Markdown document.",
+    "Merge T-table fields into the derived base-table entity mapping.",
+    "Append the verified mapping table to the requested document."
+  ],
+  allowed_capabilities: ["read", "search", "network-api", "write"],
+  source_provenance: "Demo source package imported from the original sap-field-mapper directory."
+};
+
+MOCK_SKILLS.push({
+  skill_id: "skl_demo_sap_field_mapper",
+  slug: sapFieldMapper.slug,
+  name: sapFieldMapper.slug,
+  description: SAP_FIELD_MAPPER_IR.description,
+  category: "tooling",
+  tags: ["sap", "source-package"],
+  status: "published",
+  latest_version: SAP_FIELD_MAPPER_IR.version,
+  adapters: ["claude-code", "codex"],
+  revision: 1,
+  created_at: "2026-06-25T00:00:00Z",
+  updated_at: "2026-06-25T00:00:00Z",
+  ir: SAP_FIELD_MAPPER_IR
+});
+
 const MOCK_TAGS: RegistryTag[] = [
   { tag_id: "tag_demo_bootstrap", slug: "bootstrap", label: "Bootstrap", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
   { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
@@ -297,6 +335,15 @@ export class MockApiClient implements HunterApi {
   }
 
   async getSkillAdapterPreview(slug: string, agent: RegistryAgent) {
+    const sourceSkill = findDemoSourceSkill(slug);
+    if (sourceSkill !== undefined) {
+      const content = sourceSkill.preview(agent);
+      if (content === null) throw new ApiClientError(422, "ADAPTER_NOT_INSTALLABLE", "Demo adapter is contract-only.");
+      const path = agent === "claude-code"
+        ? `.claude/skills/${slug}/SKILL.md`
+        : `.harness/generated/codex/${slug}/SKILL.md`;
+      return delay({ path, content, sourceIrHash: "sha256:" + "d".repeat(64), compilerVersion: "demo-source-package", adapter: agent });
+    }
     const skill = await this.getSkill(slug);
     if (agent !== "claude-code") throw new ApiClientError(422, "ADAPTER_NOT_INSTALLABLE", "Demo adapter is contract-only.");
     return delay({ path: `.claude/skills/${slug}/SKILL.md`, content: `# ${slug}\n\n${skill.description}\n`, sourceIrHash: "sha256:" + "d".repeat(64), compilerVersion: "1.0.0", adapter: agent });

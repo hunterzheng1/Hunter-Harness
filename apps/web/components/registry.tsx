@@ -16,6 +16,7 @@ import { type ChangeEvent, type FormEvent, useEffect, useMemo, useState } from "
 import { parse as parseYaml } from "yaml";
 
 import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
+import { findDemoSourceSkill } from "../lib/demo-skills/sap-field-mapper";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
 
@@ -48,6 +49,153 @@ function Status({ value }: { value: string }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="empty-state">{children}</div>;
+}
+
+function isMarkdownFile(path: string): boolean {
+  return /\.md(?:own)?$/i.test(path);
+}
+
+function renderInlineMarkdown(value: string, keyPrefix: string): React.ReactNode {
+  const tokens = value.split(/(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^\s)]+\)|\*[^*]+\*)/g);
+  return tokens.map((token, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (token.startsWith("`") && token.endsWith("`")) return <code key={key}>{token.slice(1, -1)}</code>;
+    if (token.startsWith("**") && token.endsWith("**")) return <strong key={key}>{token.slice(2, -2)}</strong>;
+    if (token.startsWith("*") && token.endsWith("*")) return <em key={key}>{token.slice(1, -1)}</em>;
+    const link = token.match(/^\[([^\]]+)\]\(([^\s)]+)\)$/);
+    if (link !== null) return <a key={key} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
+    return <span key={key}>{token}</span>;
+  });
+}
+
+function tableCells(line: string): string[] {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function MarkdownDocument({ content }: { content: string }) {
+  const lines = content.replace(/^---\s*\r?\n[\s\S]*?\r?\n---\s*(?:\r?\n|$)/, "").split(/\r?\n/);
+  const blocks: React.ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim() === "") { index += 1; continue; }
+    const fence = line.match(/^```([^\s]*)/);
+    if (fence !== null) {
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].startsWith("```")) code.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      blocks.push(<pre className="markdown-code" key={`code-${blocks.length}`}><code>{code.join("\n")}</code></pre>);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading !== null) {
+      const key = `heading-${blocks.length}`;
+      const headingContent = renderInlineMarkdown(heading[2], key);
+      blocks.push(heading[1].length === 1 ? <h1 key={key}>{headingContent}</h1>
+        : heading[1].length === 2 ? <h2 key={key}>{headingContent}</h2>
+          : heading[1].length === 3 ? <h3 key={key}>{headingContent}</h3>
+            : <h4 key={key}>{headingContent}</h4>);
+      index += 1;
+      continue;
+    }
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line)) { blocks.push(<hr key={`rule-${blocks.length}`} />); index += 1; continue; }
+    if (line.startsWith("> ")) {
+      const quote: string[] = [];
+      while (index < lines.length && lines[index].startsWith("> ")) quote.push(lines[index++].slice(2));
+      blocks.push(<blockquote key={`quote-${blocks.length}`}>{renderInlineMarkdown(quote.join(" "), `quote-${blocks.length}`)}</blockquote>);
+      continue;
+    }
+    if (line.includes("|") && index + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1])) {
+      const header = tableCells(line); index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim() !== "") rows.push(tableCells(lines[index++]));
+      blocks.push(<div className="markdown-table-wrap" key={`table-${blocks.length}`}><table><thead><tr>{header.map((cell, cellIndex) => <th key={cellIndex}>{renderInlineMarkdown(cell, `head-${cellIndex}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{header.map((_, cellIndex) => <td key={cellIndex}>{renderInlineMarkdown(row[cellIndex] ?? "", `cell-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table></div>);
+      continue;
+    }
+    const list = line.match(/^\s*([-+*]|\d+\.)\s+(.+)$/);
+    if (list !== null) {
+      const ordered = /\d+\./.test(list[1]); const items: string[] = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*([-+*]|\d+\.)\s+(.+)$/);
+        if (item === null || /\d+\./.test(item[1]) !== ordered) break;
+        items.push(item[2]); index += 1;
+      }
+      const List = ordered ? "ol" : "ul";
+      blocks.push(<List key={`list-${blocks.length}`}>{items.map((item, itemIndex) => <li key={itemIndex}>{renderInlineMarkdown(item, `list-${itemIndex}`)}</li>)}</List>);
+      continue;
+    }
+    const paragraph: string[] = [];
+    while (index < lines.length && lines[index].trim() !== "" && !/^(#{1,6})\s+|^```|^> |^\s*([-+*]|\d+\.)\s+/.test(lines[index])) paragraph.push(lines[index++]);
+    blocks.push(<p key={`paragraph-${blocks.length}`}>{renderInlineMarkdown(paragraph.join(" "), `paragraph-${blocks.length}`)}</p>);
+  }
+  return <div className="markdown-document">{blocks}</div>;
+}
+
+function FilePreview({ path, content, showRaw, showRendered }: { path: string; content: string; showRaw: string; showRendered: string }) {
+  const [raw, setRaw] = useState(false);
+  if (!isMarkdownFile(path)) return <pre className="code-view">{content}</pre>;
+  return <div className="file-preview">
+    {raw ? <pre className="code-view">{content}</pre> : <MarkdownDocument content={content} />}
+    <button type="button" className="preview-toggle" onClick={() => setRaw((value) => !value)}>{raw ? showRendered : showRaw}</button>
+  </div>;
+}
+
+type SkillDetailTab = "content" | "source" | "definition" | "versions" | "governance";
+
+interface SourceTreeNode {
+  files: string[];
+  directories: Map<string, SourceTreeNode>;
+}
+
+function SourceFileTree({
+  files,
+  selectedPath,
+  onSelect
+}: {
+  files: readonly { path: string }[];
+  selectedPath: string;
+  onSelect: (path: string) => void;
+}) {
+  const root: SourceTreeNode = { files: [], directories: new Map() };
+  for (const file of files) {
+    const segments = file.path.split("/");
+    const name = segments.pop();
+    if (name === undefined) continue;
+    let node = root;
+    for (const segment of segments) {
+      let child = node.directories.get(segment);
+      if (child === undefined) {
+        child = { files: [], directories: new Map() };
+        node.directories.set(segment, child);
+      }
+      node = child;
+    }
+    node.files.push(name);
+  }
+
+  function renderNode(node: SourceTreeNode, prefix: string): React.ReactNode {
+    return <>
+      {[...node.files].sort((left, right) => {
+        if (left === "SKILL.md") return -1;
+        if (right === "SKILL.md") return 1;
+        return left.localeCompare(right);
+      }).map((name) => {
+        const path = prefix === "" ? name : `${prefix}/${name}`;
+        return <button type="button" role="treeitem" key={path} className={path === selectedPath ? "selected" : ""} onClick={() => onSelect(path)}>{name}</button>;
+      })}
+      {[...node.directories.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([name, child]) => {
+        const nextPrefix = prefix === "" ? name : `${prefix}/${name}`;
+        return <details className="source-tree-directory" open key={nextPrefix}>
+          <summary>{name}</summary>
+          <div className="source-tree-children">{renderNode(child, nextPrefix)}</div>
+        </details>;
+      })}
+    </>;
+  }
+
+  return <div className="source-file-tree" role="tree">{renderNode(root, "")}</div>;
 }
 
 async function parseSkillFile(file: File): Promise<SkillIr> {
@@ -224,6 +372,8 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [selectedTag, setSelectedTag] = useState("");
   const [draft, setDraft] = useState("");
   const [adapterPreview, setAdapterPreview] = useState<{ path: string; content: string; sourceIrHash: string; compilerVersion: string } | null>(null);
+  const [sourcePath, setSourcePath] = useState("SKILL.md");
+  const [activeTab, setActiveTab] = useState<SkillDetailTab>("content");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -256,6 +406,8 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       });
     return () => { active = false; };
   }, [api, skillId, agent]);
+
+  useEffect(() => { setSourcePath("SKILL.md"); }, [skillId]);
   const command = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent}`;
   async function copyCommand(): Promise<void> {
     await navigator.clipboard.writeText(command); setMessage(t.skillDetail.installCopied);
@@ -298,6 +450,11 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   if (error !== null && skill === null) return <Empty>{error}</Empty>;
   if (skill === null) return <Empty>{t.skillDetail.loading}</Empty>;
   const previous = versions[1];
+  const sourceSkill = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true"
+    ? findDemoSourceSkill(skill.slug)
+    : undefined;
+  const sourceFile = sourceSkill?.source.files.find((file) => file.path === sourcePath) ?? sourceSkill?.source.entrypoint;
+  const adapterPatch = sourceSkill?.adapters[agent];
   return (
     <section className="stack governance-page">
       <header className="page-heading command-hero">
@@ -312,27 +469,51 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         <button className="secondary" disabled={agent !== "claude-code"} onClick={() => void download()}>{t.skillDetail.downloadZip}</button>
       </div>
 
-      <article className="panel adapter-preview">
-        <div className="panel-title"><h2>Published adapter output</h2><span>{adapterPreview?.path ?? `${agent} contract only`}</span></div>
+      <div className="skill-detail-tabs" role="tablist" aria-label="Skill detail sections">
+        {([
+          ["content", t.skillDetail.tabContent],
+          ["source", t.skillDetail.tabSource],
+          ["definition", t.skillDetail.tabDefinition],
+          ["versions", t.skillDetail.tabVersions],
+          ["governance", t.skillDetail.tabGovernance]
+        ] as const).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={activeTab === id} className={activeTab === id ? "selected" : ""} onClick={() => setActiveTab(id)}>{label}</button>)}
+      </div>
+
+      {activeTab === "content" ? <>
+        <article className="panel adapter-preview">
+        <div className="panel-title"><h2>{t.skillDetail.publishedAdapter}</h2><span>{t.skillDetail.adapterPreviewDescription} · {adapterPreview?.path ?? t.skillDetail.contractOnlyText.replace("{agent}", agent)}</span></div>
         {adapterPreview === null
-          ? <Empty>{agent === "claude-code" ? "Loading verified adapter output…" : "This adapter is contract-only in MVP and is not offered as one-click install."}</Empty>
-          : <><pre className="code-view">{adapterPreview.content}</pre><div className="artifact-proof"><code>{adapterPreview.sourceIrHash}</code><span>compiler {adapterPreview.compilerVersion}</span></div></>}
-      </article>
-      <div className="detail-grid">
+          ? <Empty>{agent === "claude-code" ? t.skillDetail.loadingAdapter : t.skillDetail.notAvailable}</Empty>
+          : <><FilePreview key={`${adapterPreview.path}-${agent}`} path={adapterPreview.path} content={adapterPreview.content} showRaw={t.skillDetail.showRaw} showRendered={t.skillDetail.showRendered} /><div className="artifact-proof"><code>{adapterPreview.sourceIrHash}</code><span>compiler {adapterPreview.compilerVersion}</span></div></>}
+        </article>
+      </> : null}
+
+      {activeTab === "source" && sourceSkill !== undefined && sourceFile !== undefined ? <article className="panel source-package">
+        <div className="panel-title"><h2>{t.skillDetail.sourceFiles}</h2><span>{t.skillDetail.authoritativeDemoPackage}</span></div>
+        <div className="source-package-grid">
+          <SourceFileTree files={sourceSkill.source.files} selectedPath={sourceFile.path} onSelect={setSourcePath} />
+          <FilePreview key={sourceFile.path} path={sourceFile.path} content={sourceFile.content} showRaw={t.skillDetail.showRaw} showRendered={t.skillDetail.showRendered} />
+        </div>
+        {adapterPatch === undefined ? null : <div className="adapter-patch"><strong>{t.skillDetail.codexAdaptation}</strong><p>{adapterPatch.patchSummary}</p></div>}
+      </article> : null}
+
+      {activeTab === "definition" ? <div className="detail-grid">
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.eyebrow}</h2><span>review required</span></div><pre className="code-view">{JSON.stringify(skill.ir, null, 2)}</pre></article>
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2></div><dl className="definition-list"><dt>Triggers</dt><dd>{skill.ir?.triggers.join(" · ")}</dd><dt>Inputs</dt><dd>{skill.ir?.inputs.join(" · ") || t.skillDetail.noneShort}</dd><dt>Outputs</dt><dd>{skill.ir?.outputs.join(" · ")}</dd><dt>Forbidden actions</dt><dd>{skill.ir?.forbidden_actions.join(" · ") || t.skillDetail.noneShort}</dd><dt>Required context</dt><dd>{skill.ir?.required_context.join(" · ") || t.skillDetail.noneShort}</dd><dt>Provenance</dt><dd>{skill.ir?.source_provenance ?? t.skillDetail.provenanceDefault}</dd></dl></article>
-      </div>
+      </div> : null}
 
-      <div className="detail-grid">
+      {activeTab === "versions" ? <div className="detail-grid">
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.versionHistory}</h2><span>{versions.length}</span></div>{versions.map((version) => <div className="version-row" key={version.version}><div><strong>v{version.version}</strong><code>{version.source_proposal_id ?? "bootstrap"}</code></div><span>{new Date(version.created_at).toLocaleString()}</span></div>)}</article>
         <article className="panel"><div className="panel-title"><h2>Version Diff</h2><span>{previous === undefined ? "first version" : `${previous.version} → ${skill.latest_version}`}</span></div><div className="diff-panel"><pre>{previous === undefined ? "No previous version." : JSON.stringify(previous.ir, null, 2)}</pre><pre>{JSON.stringify(skill.ir, null, 2)}</pre></div></article>
-      </div>
+      </div> : null}
 
-      <article className="panel compact-form"><div className="panel-title"><h2>{t.skillDetail.tagBinding}</h2><span>{t.skillDetail.noReview}</span></div><div className="inline-form"><select aria-label={t.skillDetail.selectTag} value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}><option value="">{t.skillDetail.selectTag}</option>{tags.filter((tag) => tag.active && !skill.tags.includes(tag.slug)).map((tag) => <option value={tag.tag_id} key={tag.tag_id}>{tag.label}</option>)}</select><button onClick={() => void bindTag()}>{t.skillDetail.addTag}</button></div></article>
+      {activeTab === "governance" ? <>
+        <article className="panel compact-form"><div className="panel-title"><h2>{t.skillDetail.tagBinding}</h2><span>{t.skillDetail.noReview}</span></div><div className="inline-form"><select aria-label={t.skillDetail.selectTag} value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}><option value="">{t.skillDetail.selectTag}</option>{tags.filter((tag) => tag.active && !skill.tags.includes(tag.slug)).map((tag) => <option value={tag.tag_id} key={tag.tag_id}>{tag.label}</option>)}</select><button onClick={() => void bindTag()}>{t.skillDetail.addTag}</button></div></article>
 
-      <article className="panel"><div className="panel-title"><h2>{t.skillDetail.createProposal}</h2><Status value="review-required" /></div><textarea className="ir-editor" aria-label="Skill IR draft" value={draft} onChange={(event) => setDraft(event.target.value)} /><div className="actions"><button onClick={() => void submitDraft()}>{t.skillDetail.validateSubmit}</button></div></article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.createProposal}</h2><Status value="review-required" /></div><textarea className="ir-editor" aria-label="Skill IR draft" value={draft} onChange={(event) => setDraft(event.target.value)} /><div className="actions"><button onClick={() => void submitDraft()}>{t.skillDetail.validateSubmit}</button></div></article>
 
-      <article className="panel"><div className="panel-title"><h2>{t.skillDetail.reviewRecord}</h2><span>{proposals.length}</span></div>{proposals.length === 0 ? <Empty>{t.skillDetail.noProposalLinked}</Empty> : proposals.map((proposal) => <div className="proposal-card" key={proposal.proposal_id}><div><strong>{proposal.proposal_id}</strong><code>v{proposal.proposed_ir.version}</code><small>schema {proposal.validation.schema_valid ? "valid" : "invalid"} · sensitive findings {proposal.validation.sensitive_findings} · Claude compile {proposal.validation.claude_compilable ? "passed" : "failed"}</small></div><div><Status value={proposal.status} />{proposal.status === "pending_review" ? <><button onClick={() => void review(proposal.proposal_id, "approve")}>{t.skillDetail.approve}</button><button className="secondary" onClick={() => void review(proposal.proposal_id, "reject")}>{t.skillDetail.reject}</button></> : null}</div></div>)}</article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.reviewRecord}</h2><span>{proposals.length}</span></div>{proposals.length === 0 ? <Empty>{t.skillDetail.noProposalLinked}</Empty> : proposals.map((proposal) => <div className="proposal-card" key={proposal.proposal_id}><div><strong>{proposal.proposal_id}</strong><code>v{proposal.proposed_ir.version}</code><small>schema {proposal.validation.schema_valid ? "valid" : "invalid"} · sensitive findings {proposal.validation.sensitive_findings} · Claude compile {proposal.validation.claude_compilable ? "passed" : "failed"}</small></div><div><Status value={proposal.status} />{proposal.status === "pending_review" ? <><button onClick={() => void review(proposal.proposal_id, "approve")}>{t.skillDetail.approve}</button><button className="secondary" onClick={() => void review(proposal.proposal_id, "reject")}>{t.skillDetail.reject}</button></> : null}</div></div>)}</article>
+      </> : null}
       {message === null ? null : <div className="notice success">{message}</div>}{error === null ? null : <div className="notice danger">{error}</div>}
     </section>
   );
