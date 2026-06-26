@@ -26,15 +26,17 @@ const skill = {
   slug: "harness-review",
   name: "harness-review",
   description: ir.description,
-  category: "governance" as const,
   tags: ["security"],
   status: "published" as const,
   latest_version: "1.1.0",
-  adapters: ["claude-code" as const],
+  defaultAgent: "claude-code" as const,
+  agents: [{ agent: "claude-code" as const, enabled: true, isDefault: true, installTarget: ".claude/skills/harness-review", latestVersion: "1.1.0", draftVersion: null, sourcePackagePath: null }],
   revision: 2,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-21T00:00:00Z",
-  ir
+  ir,
+  sourceFiles: [],
+  examples: []
 };
 
 const securityTag = {
@@ -43,6 +45,7 @@ const securityTag = {
   label: "Security",
   active: true,
   revision: 1,
+  usageCount: 0,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z"
 };
@@ -71,6 +74,9 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       ir,
       artifacts: [],
       source_proposal_id: "skp_review",
+      sourceFiles: [],
+      examples: [],
+      changeNote: null,
       created_at: "2026-06-21T00:00:00Z"
     }]),
     listSkillProposals: vi.fn(async () => []),

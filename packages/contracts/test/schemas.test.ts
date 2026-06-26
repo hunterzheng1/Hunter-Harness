@@ -5,19 +5,31 @@ import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 
 import {
+  agentSkillConfigSchema,
   apiErrorEnvelopeSchema,
   artifactManifestSchema,
   canonicalJson,
+  checkStatusSchema,
+  draftStateSchema,
   filePolicySchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
   projectConfigSchema,
+  publishSkillRequestSchema,
   registryAgentSchema,
+  registryArtifactSchema,
   registrySkillDetailSchema,
   registrySkillProposalSchema,
+  registrySkillSummarySchema,
+  registrySkillVersionSchema,
   registryTagSchema,
   registryWorkflowSchema,
-  skillIrSchema
+  skillCheckItemSchema,
+  skillCheckResultSchema,
+  skillDiffFileSchema,
+  skillIrSchema,
+  skillUsageExampleSchema,
+  sourceFileSchema
 } from "../src/index.js";
 
 describe("shared contracts", () => {
@@ -131,12 +143,20 @@ describe("shared contracts", () => {
       slug: "harness-review",
       name: "harness-review",
       description: "Evidence based review",
-      category: "governance",
       tags: ["review", "security"],
       status: "published",
       latest_version: "1.1.0",
+      defaultAgent: "claude-code",
+      agents: [{
+        agent: "claude-code",
+        enabled: true,
+        isDefault: true,
+        installTarget: ".claude/skills/harness-review",
+        latestVersion: "1.1.0",
+        draftVersion: null,
+        sourcePackagePath: null
+      }],
       ir,
-      adapters: ["claude-code"],
       revision: 3,
       created_at: "2026-06-20T00:00:00Z",
       updated_at: "2026-06-21T00:00:00Z"
@@ -162,6 +182,7 @@ describe("shared contracts", () => {
       label: "Security",
       active: true,
       revision: 1,
+      usageCount: 0,
       created_at: "2026-06-20T00:00:00Z",
       updated_at: "2026-06-20T00:00:00Z"
     }).slug).toBe("security");
@@ -193,6 +214,147 @@ describe("shared contracts", () => {
   it("canonicalizes object keys deterministically", () => {
     expect(canonicalJson({ z: 1, a: { y: 2, b: 3 } }))
       .toBe('{"a":{"b":3,"y":2},"z":1}');
+  });
+});
+
+describe("skill-center schemas", () => {
+  const validIr = {
+    name: "harness-x",
+    kind: "governance",
+    description: "demo skill",
+    triggers: ["run"],
+    inputs: ["ctx"],
+    outputs: ["out"],
+    forbidden_actions: ["automatic_git_write"],
+    required_context: ["AGENTS.md"],
+    profiles: { general: { enabled: true } },
+    adapters: { "claude-code": { enabled: true } },
+    version: "1.0.0"
+  };
+  const agentCfg = {
+    agent: "claude-code",
+    enabled: true,
+    isDefault: true,
+    installTarget: ".claude/skills/harness-x",
+    latestVersion: "1.0.0",
+    draftVersion: null,
+    sourcePackagePath: null
+  };
+
+  it("checkStatus accepts green/yellow/red and rejects others", () => {
+    expect(checkStatusSchema.parse("green")).toBe("green");
+    expect(checkStatusSchema.parse("yellow")).toBe("yellow");
+    expect(checkStatusSchema.parse("red")).toBe("red");
+    expect(checkStatusSchema.safeParse("blue").success).toBe(false);
+  });
+
+  it("sourceFile requires path+content", () => {
+    expect(() => sourceFileSchema.parse({ path: "a.md" })).toThrow();
+    expect(sourceFileSchema.parse({ path: "a.md", content: "x" })).toEqual({ path: "a.md", content: "x" });
+  });
+
+  it("skillUsageExample defaults files to []", () => {
+    expect(skillUsageExampleSchema.parse({
+      title: "t", description: "d", request: "r", result: "s"
+    }).files).toEqual([]);
+  });
+
+  it("agentSkillConfig parses valid and rejects extras", () => {
+    expect(agentSkillConfigSchema.parse(agentCfg)).toEqual(agentCfg);
+    expect(() => agentSkillConfigSchema.parse({ ...agentCfg, extra: 1 })).toThrow();
+  });
+
+  it("skillCheckItem and skillCheckResult parse", () => {
+    const item = { id: "SENSITIVE", label: "敏感信息", status: "red", message: "token", filePath: "SKILL.md", fixable: false };
+    expect(skillCheckItemSchema.parse(item)).toEqual(item);
+    const r = skillCheckResultSchema.parse({
+      items: [item],
+      summary: { green: 0, yellow: 0, red: 1 },
+      checkedAt: "2026-06-26T00:00:00Z"
+    });
+    expect(r.summary.red).toBe(1);
+  });
+
+  it("draftState requires ir/sourceFiles/revision and defaults examples", () => {
+    const d = draftStateSchema.parse({
+      slug: "harness-x",
+      sourceFiles: [{ path: "SKILL.md", content: "..." }],
+      ir: validIr,
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z"
+    });
+    expect(d.examples).toEqual([]);
+    expect(d.revision).toBe(1);
+  });
+
+  it("publishSkillRequest requires version and accepts optional releaseNote", () => {
+    expect(() => publishSkillRequestSchema.parse({})).toThrow();
+    expect(publishSkillRequestSchema.parse({ version: "1.0.0" }).releaseNote).toBeUndefined();
+    expect(publishSkillRequestSchema.parse({ version: "1.0.0", releaseNote: "init" }).releaseNote).toBe("init");
+  });
+
+  it("skillDiffFile only allows modified/added/removed", () => {
+    expect(skillDiffFileSchema.parse({ path: "a", status: "modified", publishedContent: "1", draftContent: "2" }).status).toBe("modified");
+    expect(() => skillDiffFileSchema.parse({ path: "a", status: "deleted", publishedContent: null, draftContent: null })).toThrow();
+  });
+
+  it("summary has no category, has agents+defaultAgent, rejects category", () => {
+    const s = {
+      skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
+      tags: [], status: "published", latest_version: "1.0.0",
+      defaultAgent: "claude-code", agents: [agentCfg],
+      revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
+    };
+    const parsed = registrySkillSummarySchema.parse(s);
+    expect(parsed).not.toHaveProperty("category");
+    expect(parsed.agents).toHaveLength(1);
+    expect(parsed.defaultAgent).toBe("claude-code");
+    expect(() => registrySkillSummarySchema.parse({ ...s, category: "tooling" })).toThrow();
+  });
+
+  it("detail extends summary with ir and defaults sourceFiles/examples", () => {
+    const d = registrySkillDetailSchema.parse({
+      skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
+      tags: [], status: "published", latest_version: "1.0.0",
+      defaultAgent: "claude-code", agents: [agentCfg],
+      ir: validIr,
+      revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
+    });
+    expect(d.sourceFiles).toEqual([]);
+    expect(d.examples).toEqual([]);
+    expect(d.ir).toEqual(validIr);
+  });
+
+  it("version has sourceFiles/examples/changeNote and nullable source_proposal_id", () => {
+    const v = registrySkillVersionSchema.parse({
+      skill_slug: "harness-x", version: "1.0.0", ir: validIr, artifacts: [],
+      source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null,
+      created_at: "2026-06-26T00:00:00Z"
+    });
+    expect(v.changeNote).toBeNull();
+    expect(v.sourceFiles).toEqual([]);
+  });
+
+  it("artifact allows null source_proposal_id for draft-published artifacts", () => {
+    const a = registryArtifactSchema.parse({
+      artifact_id: "ska_1", skill_slug: "harness-x", version: "1.0.0", agent: "claude-code",
+      content_sha256: "sha256:" + "a".repeat(64), size_bytes: 10, source_proposal_id: null,
+      created_at: "2026-06-26T00:00:00Z"
+    });
+    expect(a.source_proposal_id).toBeNull();
+  });
+
+  it("tag has nonnegative usageCount", () => {
+    const t = registryTagSchema.parse({
+      tag_id: "tag_1", slug: "x", label: "X", active: true, revision: 1,
+      created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z", usageCount: 0
+    });
+    expect(t.usageCount).toBe(0);
+    expect(() => registryTagSchema.parse({ ...t, usageCount: -1 })).toThrow();
   });
 });
 
