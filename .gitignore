@@ -89,6 +89,9 @@ temp/
 .codex/
 .claude/
 .codegraph/
+.harness/
+AGENTS.md
+CLAUDE.md
 
 # ===== 需求/设计文档（本地保留，暂不纳入版本库）=====
 requirements/
