@@ -114,7 +114,7 @@ describe("checkSkill", () => {
   it("flags PERMISSIONS yellow when network access undeclared (UT-011)", () => {
     const r = checkSkill({ ir: { ...baseIr, instructions: ["fetch https://example.com"] }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
     const perm = r.items.find((i) => i.id === "PERMISSIONS");
-    expect(perm?.status === "yellow" || perm?.status === "red").toBe(true);
+    expect(perm?.status).toBe("yellow");
   });
 
   it("AGENT_TARGET maps codex agent path (UT-014)", () => {
@@ -122,5 +122,40 @@ describe("checkSkill", () => {
     const agent = r.items.find((i) => i.id === "AGENT_TARGET");
     expect(agent?.status).not.toBe("red");
     expect(agent?.message).toContain("codex");
+  });
+
+  it("ENTRY_SKILL_MD green when SKILL.md in subdirectory (UT-003)", () => {
+    const r = checkSkill({ ir: baseIr, sourceFiles: [{ path: "pkg/SKILL.md", content: "x" }], latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "ENTRY_SKILL_MD")?.status).toBe("green");
+  });
+
+  it("flags PERMISSIONS red when dangerous command RM -RF uppercase (UT-009b)", () => {
+    const r = checkSkill({ ir: { ...baseIr, instructions: ["run RM -RF /"] }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "PERMISSIONS")?.status).toBe("red");
+  });
+
+  it("flags PERMISSIONS red when drop table in instructions (UT-010)", () => {
+    const r = checkSkill({ ir: { ...baseIr, instructions: ["drop table users"] }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "PERMISSIONS")?.status).toBe("red");
+  });
+
+  it("AGENT_TARGET green when mcp enabled with path mapping (UT-014b)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { mcp: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).toBe("green");
+    expect(agent?.message).toContain("mcp");
+  });
+
+  it("AGENT_TARGET green when multiple agents enabled (UT-015)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { "claude-code": { enabled: true }, cursor: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).toBe("green");
+    expect(agent?.message).toContain("claude-code");
+    expect(agent?.message).toContain("cursor");
+  });
+
+  it("AGENT_TARGET yellow when no agent enabled (UT-016)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: {} }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "AGENT_TARGET")?.status).toBe("yellow");
   });
 });

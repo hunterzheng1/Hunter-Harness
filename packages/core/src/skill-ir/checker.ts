@@ -12,12 +12,13 @@ import { compareSemver } from "./semver.js";
 
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 const DANGEROUS_CAPABILITY = /^Bash\(/;
-const DANGEROUS_CMD = /rm\s+-rf|drop\s+table|curl\s+|wget\s+|sudo\s+/;
+const DANGEROUS_CMD = /rm\s+-rf|drop\s+table|curl\s+|wget\s+|sudo\s+/i;
 const AGENT_PATHS: Record<string, string> = {
   "claude-code": ".claude/skills",
   "codex": ".codex/skills",
   "cursor": ".cursor/skills",
-  "generic": "./"
+  "generic": "./",
+  "mcp": ".mcp/skills"
 };
 
 export function checkSkill(input: {
