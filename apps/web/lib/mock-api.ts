@@ -1,4 +1,5 @@
 import type {
+  AiProviderConfig,
   DashboardOverview,
   DraftState,
   RegistryAgent,
@@ -280,6 +281,11 @@ const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z"
 }];
+
+const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
+  { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z" },
+  { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z" }
+];
 
 const MOCK_DASHBOARD: DashboardOverview = {
   generated_at: "2026-06-22T12:00:00.000Z",
@@ -583,6 +589,7 @@ export class MockApiClient implements HunterApi {
       examples: src.examples.map((e) => ({ title: e.title, description: e.description, request: e.request, result: e.result, files: e.files ? [...e.files] : [] })),
       draftVersion: agent.draftVersion?.version ?? null,
       checks: demoChecksToResult(agent.checks),
+      aiChecks: null,
       releaseNote: null,
       revision: 1,
       created_at: "2026-06-25T00:00:00Z",
@@ -610,6 +617,27 @@ export class MockApiClient implements HunterApi {
   }
 
   async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
+
+  async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {
+    return delay({ items: clone(MOCK_AI_PROVIDERS), default_provider: "deepseek" });
+  }
+  async createAiProvider(): Promise<AiProviderConfig> { return demoReadOnly(); }
+  async updateAiProvider(): Promise<AiProviderConfig> { return demoReadOnly(); }
+  async deleteAiProvider(): Promise<{ provider_id: string; deleted: boolean }> { return demoReadOnly(); }
+  async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
+    return delay({ provider_id: providerId, ok: true, model: "deepseek-v4-pro" });
+  }
+  async getAiUsage(): Promise<{ requests: number; tokens: number }> {
+    return delay({ requests: 128, tokens: 1842000 });
+  }
+  async runSkillAiChecks(slug: string): Promise<SkillCheckResult> {
+    void slug;
+    return delay({
+      items: [{ id: "AI_TRIGGER_QUALITY", label: "AI 触发质量", status: "green", message: "AI 检查通过（demo）", filePath: null, fixable: false }],
+      summary: { green: 1, yellow: 0, red: 0 },
+      checkedAt: new Date().toISOString()
+    });
+  }
 }
 
 export const mockApi = new MockApiClient();

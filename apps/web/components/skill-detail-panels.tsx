@@ -183,6 +183,8 @@ function AgentCheckPanel({
 }) {
   const sd = t.skillDetail;
   const [checksResult, setChecksResult] = useState<SkillCheckResult | null>(draft?.checks ?? null);
+  const [aiChecksResult, setAiChecksResult] = useState<SkillCheckResult | null>(draft?.aiChecks ?? null);
+  const [aiChecking, setAiChecking] = useState(false);
   const [diffFiles, setDiffFiles] = useState<readonly SkillDiffFile[]>([]);
   const [diffRun, setDiffRun] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<"green" | "yellow" | "red" | "suggestions" | null>(null);
@@ -197,10 +199,18 @@ function AgentCheckPanel({
 
   useEffect(() => {
     setChecksResult(draft?.checks ?? null);
+    setAiChecksResult(draft?.aiChecks ?? null);
   }, [draft]);
 
-  const summary = checksResult?.summary ?? { green: 0, yellow: 0, red: 0 };
-  const checks: readonly SkillCheckItem[] = checksResult?.items ?? [];
+  const summary = {
+    green: (checksResult?.summary.green ?? 0) + (aiChecksResult?.summary.green ?? 0),
+    yellow: (checksResult?.summary.yellow ?? 0) + (aiChecksResult?.summary.yellow ?? 0),
+    red: (checksResult?.summary.red ?? 0) + (aiChecksResult?.summary.red ?? 0)
+  };
+  const checks: readonly SkillCheckItem[] = [
+    ...(checksResult?.items ?? []),
+    ...(aiChecksResult?.items ?? [])
+  ];
   const defaultPublishVersion = nextPatchVersion(draft?.draftVersion ?? undefined);
   const resolvedPublishVersion = publishVersion || defaultPublishVersion;
   const resolvedPublishNote = publishNote || sd.defaultPublishModalNote;
@@ -228,6 +238,16 @@ function AgentCheckPanel({
       setChecksResult(result);
     } catch (reason) { setError(apiError(reason, t)); }
     finally { setChecking(false); }
+  }
+
+  async function runAiChecks(): Promise<void> {
+    setAiChecking(true);
+    setError(null);
+    try {
+      const result = await required(api, "runSkillAiChecks")(slug);
+      setAiChecksResult(result);
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setAiChecking(false); }
   }
 
   async function runDiff(): Promise<void> {
@@ -293,6 +313,7 @@ function AgentCheckPanel({
       <div className="publish-toolbar-actions">
         {draft === null ? null : <>
           <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
+          <button type="button" className="secondary prominent-action" disabled={aiChecking} onClick={() => void runAiChecks()}>{aiChecking ? sd.aiCheckRunning : sd.aiCheckAction}</button>
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>

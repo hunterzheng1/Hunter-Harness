@@ -1,5 +1,6 @@
 export const packageName = "@hunter-harness/contracts" as const;
 
+export * from "./ai-config.js";
 export * from "./canonical-json.js";
 export * from "./errors.js";
 export * from "./file-policy.js";

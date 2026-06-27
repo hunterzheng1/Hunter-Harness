@@ -70,6 +70,7 @@ export const draftStateSchema = z.object({
   examples: z.array(skillUsageExampleSchema).default([]),
   draftVersion: registrySemverSchema.nullable(),
   checks: skillCheckResultSchema.nullable(),
+  aiChecks: skillCheckResultSchema.nullable().default(null),
   releaseNote: z.string().nullable(),
   revision: z.number().int(),
   created_at: z.string(),

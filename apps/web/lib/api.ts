@@ -1,5 +1,6 @@
 import {
   canonicalJson,
+  type AiProviderConfig,
   type DashboardOverview,
   type DraftState,
   type FileOperation,
@@ -158,6 +159,18 @@ export interface HunterApi {
   publishSkillDraft?(slug: string, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
   diffSkillDraft?(slug: string): Promise<SkillDiffFile[]>;
   deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
+  listAiProviders?(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }>;
+  createAiProvider?(input: {
+    provider_id: string; label: string; base_url: string; model: string;
+    enabled: boolean; api_key_env: string; is_default?: boolean;
+  }): Promise<AiProviderConfig>;
+  updateAiProvider?(providerId: string, revision: number, patch: {
+    label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
+  }): Promise<AiProviderConfig>;
+  deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
+  testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
+  getAiUsage?(): Promise<{ requests: number; tokens: number }>;
+  runSkillAiChecks?(slug: string): Promise<SkillCheckResult>;
 }
 
 export class ApiClientError extends Error {
@@ -611,6 +624,33 @@ export class HttpHunterApi implements HunterApi {
 
   async deleteSkill(slug: string): Promise<{ slug: string; deleted: boolean }> {
     return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug), {});
+  }
+
+  async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {
+    return this.request("GET", "/api/v1/ai-config/providers");
+  }
+  async createAiProvider(input: {
+    provider_id: string; label: string; base_url: string; model: string;
+    enabled: boolean; api_key_env: string; is_default?: boolean;
+  }): Promise<AiProviderConfig> {
+    return this.request("POST", "/api/v1/ai-config/providers", { schema_version: 1, ...input });
+  }
+  async updateAiProvider(providerId: string, revision: number, patch: {
+    label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
+  }): Promise<AiProviderConfig> {
+    return this.request("PATCH", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), { schema_version: 1, revision, ...patch });
+  }
+  async deleteAiProvider(providerId: string): Promise<{ provider_id: string; deleted: boolean }> {
+    return this.request("DELETE", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), {});
+  }
+  async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
+    return this.request("POST", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId) + "/test", {});
+  }
+  async getAiUsage(): Promise<{ requests: number; tokens: number }> {
+    return this.request("GET", "/api/v1/ai-config/usage");
+  }
+  async runSkillAiChecks(slug: string): Promise<SkillCheckResult> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/ai-checks", {});
   }
 }
 

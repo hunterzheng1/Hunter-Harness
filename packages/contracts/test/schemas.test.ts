@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentSkillConfigSchema,
+  aiConfigStateSchema,
+  aiProviderConfigSchema,
   apiErrorEnvelopeSchema,
   artifactManifestSchema,
   canonicalJson,
@@ -355,6 +357,43 @@ describe("skill-center schemas", () => {
     });
     expect(t.usageCount).toBe(0);
     expect(() => registryTagSchema.parse({ ...t, usageCount: -1 })).toThrow();
+  });
+
+  it("aiProviderConfig parses valid (no key) and rejects apiKey extra", () => {
+    const cfg = {
+      provider_id: "deepseek",
+      label: "DeepSeek",
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+      enabled: true,
+      is_default: true,
+      api_key_env: "secret-file",
+      revision: 1,
+      created_at: "2026-06-28T00:00:00Z",
+      updated_at: "2026-06-28T00:00:00Z"
+    };
+    expect(aiProviderConfigSchema.parse(cfg)).toEqual(cfg);
+    expect(() => aiProviderConfigSchema.parse({ ...cfg, apiKey: "sk-xxx" })).toThrow();
+  });
+
+  it("aiConfigState has nullable defaultProvider and providers array", () => {
+    expect(aiConfigStateSchema.parse({ defaultProvider: null, providers: [] }).defaultProvider).toBeNull();
+    expect(aiConfigStateSchema.parse({ defaultProvider: "deepseek", providers: [] }).providers).toEqual([]);
+  });
+
+  it("draftState defaults aiChecks to null (separate from program checks)", () => {
+    const d = draftStateSchema.parse({
+      slug: "harness-x",
+      sourceFiles: [{ path: "SKILL.md", content: "..." }],
+      ir: validIr,
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z"
+    });
+    expect(d.aiChecks).toBeNull();
   });
 });
 

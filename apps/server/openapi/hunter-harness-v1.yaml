@@ -259,6 +259,56 @@ paths:
       responses:
         "200": { description: Programmatic Skill draft check results }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/ai-checks:
+    post:
+      operationId: runSkillDraftAiChecks
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: AI Skill draft check results written to draft.aiChecks }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/providers:
+    get:
+      operationId: listAiProviders
+      responses:
+        "200": { description: AI provider configurations without secrets }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createAiProvider
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: AI provider created }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/providers/{provider_id}:
+    patch:
+      operationId: updateAiProvider
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: AI provider updated }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteAiProvider
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: AI provider deleted }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/providers/{provider_id}/test:
+    post:
+      operationId: testAiProvider
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: AI provider connectivity test result }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/usage:
+    get:
+      operationId: getAiUsage
+      responses:
+        "200": { description: Cumulative AI usage statistics }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/publish:
     post:
       operationId: publishSkillDraft

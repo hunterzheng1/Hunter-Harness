@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 
 import {
+  aiConfigStateSchema,
+  aiProviderConfigSchema,
   canonicalJson,
   draftStateSchema,
   registrySkillDetailSchema,
@@ -12,6 +14,8 @@ import {
   registryWorkflowMutationSchema,
   registryWorkflowSchema,
   skillIrSchema,
+  type AiConfigState,
+  type AiProviderConfig,
   type AgentSkillConfig,
   type DraftState,
   type RegistryAgent,
@@ -179,6 +183,8 @@ export class RegistryStore {
   private readonly drafts = new Map<string, DraftState>();
   private compilerVersion = "1.0.0";
   private tagUsageCache: Map<string, number> | null = null;
+  private aiConfig: AiConfigState = { defaultProvider: null, providers: [] };
+  private aiUsage: { requests: number; tokens: number } = { requests: 0, tokens: 0 };
 
   constructor(
     private readonly storage: ArtifactStorage,
@@ -196,6 +202,8 @@ export class RegistryStore {
         workflows: Array<[string, RegistryWorkflow]>;
         projectBindings?: Array<[string, RegistryProjectWorkflowBinding]>;
         drafts?: Array<[string, unknown]>;
+        aiConfig?: unknown;
+        aiUsage?: unknown;
       };
       this.compilerVersion = value.compilerVersion;
       for (const [key, raw] of value.skills) {
@@ -210,6 +218,13 @@ export class RegistryStore {
         const parsed = draftStateSchema.safeParse(raw);
         if (parsed.success) this.drafts.set(key, parsed.data);
       }
+      const aiCfg = aiConfigStateSchema.safeParse(value.aiConfig);
+      this.aiConfig = aiCfg.success ? aiCfg.data : { defaultProvider: null, providers: [] };
+      const usageRaw = value.aiUsage as { requests?: number; tokens?: number } | undefined;
+      this.aiUsage = {
+        requests: typeof usageRaw?.requests === "number" ? usageRaw.requests : 0,
+        tokens: typeof usageRaw?.tokens === "number" ? usageRaw.tokens : 0
+      };
       return;
     }
     if (bundle === undefined) return;
@@ -230,7 +245,9 @@ export class RegistryStore {
       tags: [...this.tags.entries()],
       workflows: [...this.workflows.entries()],
       projectBindings: [...this.projectBindings.entries()],
-      drafts: [...this.drafts.entries()]
+      drafts: [...this.drafts.entries()],
+      aiConfig: this.aiConfig,
+      aiUsage: this.aiUsage
     });
   }
 
@@ -374,6 +391,22 @@ export class RegistryStore {
     return structuredClone(result);
   }
 
+  // 写 AI 检查结果到 draft.aiChecks（§6.3；与程序 checks 分离，组合时合并展示）
+  async setDraftAiChecks(input: {
+    slug: string;
+    aiChecks: SkillCheckResult;
+    checkedAt: string;
+  }): Promise<DraftState> {
+    const draft = this.drafts.get(input.slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
+    }
+    const updated: DraftState = { ...draft, aiChecks: input.aiChecks, updated_at: input.checkedAt };
+    this.drafts.set(input.slug, updated);
+    await this.persist();
+    return structuredClone(updated);
+  }
+
   async publish(input: {
     slug: string;
     version: string;
@@ -486,6 +519,136 @@ export class RegistryStore {
     if (state !== undefined) this.skills.delete(input.slug);
     if (draft !== undefined) this.drafts.delete(input.slug);
     this.invalidateTagUsageCache();
+    await this.persist();
+  }
+
+  // ---- AI provider 配置（§12.9；key 不进 store，只存 provider 元数据 + 用量）----
+
+  listProviders(): AiProviderConfig[] {
+    return structuredClone(this.aiConfig.providers);
+  }
+
+  getProvider(providerId: string): AiProviderConfig | undefined {
+    const p = this.aiConfig.providers.find((item) => item.provider_id === providerId);
+    return p === undefined ? undefined : structuredClone(p);
+  }
+
+  getDefaultProvider(): AiProviderConfig | null {
+    if (this.aiConfig.defaultProvider === null) return null;
+    return this.getProvider(this.aiConfig.defaultProvider) ?? null;
+  }
+
+  async upsertProvider(input: {
+    provider_id: string;
+    label: string;
+    base_url: string;
+    model: string;
+    enabled: boolean;
+    api_key_env: string;
+    is_default?: boolean;
+  }): Promise<AiProviderConfig> {
+    const now = new Date().toISOString();
+    const existing = this.aiConfig.providers.find((item) => item.provider_id === input.provider_id);
+    let provider: AiProviderConfig;
+    if (existing === undefined) {
+      provider = aiProviderConfigSchema.parse({
+        provider_id: input.provider_id,
+        label: input.label,
+        base_url: input.base_url,
+        model: input.model,
+        enabled: input.enabled,
+        is_default: false,
+        api_key_env: input.api_key_env,
+        revision: 1,
+        created_at: now,
+        updated_at: now
+      });
+      this.aiConfig.providers.push(provider);
+    } else {
+      provider = aiProviderConfigSchema.parse({
+        ...existing,
+        label: input.label,
+        base_url: input.base_url,
+        model: input.model,
+        enabled: input.enabled,
+        api_key_env: input.api_key_env,
+        revision: existing.revision + 1,
+        updated_at: now
+      });
+      const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === input.provider_id);
+      if (idx !== -1) this.aiConfig.providers[idx] = provider;
+    }
+    if (input.is_default === true) {
+      this.applyDefault(input.provider_id);
+    }
+    await this.persist();
+    return structuredClone(provider);
+  }
+
+  async updateProvider(
+    providerId: string,
+    revision: number,
+    patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env">>
+  ): Promise<AiProviderConfig> {
+    const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === providerId);
+    if (idx === -1) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+    }
+    const existing = this.aiConfig.providers[idx];
+    if (existing === undefined) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+    }
+    if (existing.revision !== revision) {
+      throw new ServerDomainError(409, "REVISION_CONFLICT", "ai provider revision is stale", {
+        provider_id: providerId, expected: existing.revision, provided: revision
+      });
+    }
+    const updated = aiProviderConfigSchema.parse({
+      ...existing,
+      ...patch,
+      revision: existing.revision + 1,
+      updated_at: new Date().toISOString()
+    });
+    this.aiConfig.providers[idx] = updated;
+    await this.persist();
+    return structuredClone(updated);
+  }
+
+  async deleteProvider(providerId: string): Promise<void> {
+    const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === providerId);
+    if (idx === -1) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+    }
+    this.aiConfig.providers.splice(idx, 1);
+    if (this.aiConfig.defaultProvider === providerId) {
+      this.aiConfig.defaultProvider = null;
+    }
+    await this.persist();
+  }
+
+  async setDefault(providerId: string): Promise<void> {
+    this.applyDefault(providerId);
+    await this.persist();
+  }
+
+  private applyDefault(providerId: string): void {
+    const exists = this.aiConfig.providers.some((item) => item.provider_id === providerId);
+    if (!exists) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+    }
+    this.aiConfig.defaultProvider = providerId;
+    for (const p of this.aiConfig.providers) {
+      p.is_default = p.provider_id === providerId;
+    }
+  }
+
+  getUsage(): { requests: number; tokens: number } {
+    return { ...this.aiUsage };
+  }
+
+  async recordUsage(usage: { requests: number; tokens: number }): Promise<void> {
+    this.aiUsage.requests += usage.requests;
+    this.aiUsage.tokens += usage.tokens;
     await this.persist();
   }
 

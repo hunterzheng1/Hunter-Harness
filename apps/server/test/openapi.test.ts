@@ -41,6 +41,7 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/skills/{slug}/artifacts/{agent}/download",
       "/api/v1/skills/{slug}/diff",
       "/api/v1/skills/{slug}/draft",
+      "/api/v1/skills/{slug}/draft/ai-checks",
       "/api/v1/skills/{slug}/draft/checks",
       "/api/v1/skills/{slug}/publish",
       "/api/v1/skills/{slug}/tags/{tag_id}",
@@ -50,6 +51,10 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/tags/{tag_id}/merge",
       "/api/v1/workflows",
       "/api/v1/workflows/{workflow_id}",
+      "/api/v1/ai-config/providers",
+      "/api/v1/ai-config/providers/{provider_id}",
+      "/api/v1/ai-config/providers/{provider_id}/test",
+      "/api/v1/ai-config/usage",
       "/health"
     ].sort());
     const operationIds = Object.values(document.paths).flatMap((path) =>

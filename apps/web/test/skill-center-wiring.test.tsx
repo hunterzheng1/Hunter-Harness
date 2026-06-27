@@ -95,6 +95,7 @@ const draft: DraftState = {
   examples: skill.examples,
   draftVersion: "1.3.0-draft",
   checks: checksResult,
+  aiChecks: null,
   releaseNote: null,
   revision: 3,
   created_at: "2026-06-25T00:00:00Z",

@@ -8,17 +8,22 @@ import {
   registrySlugSchema,
   registryWorkflowMutationSchema,
   skillIrSchema,
+  type AiProviderConfig,
   type FileOperation,
+  type SkillCheckResult,
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
+  buildAiCheckPrompt,
   classifyFile,
   decidePush,
+  parseAiCheckResult,
   scanSensitiveFiles,
   sha256Bytes,
   uuidV7,
   type BootstrapBundle,
-  type FindingOverride
+  type FindingOverride,
+  type LlmClient
 } from "@hunter-harness/core";
 import Fastify, {
   type FastifyInstance,
@@ -29,6 +34,8 @@ import { z, ZodError } from "zod";
 import multipart from "@fastify/multipart";
 import AdmZip from "adm-zip";
 
+import { createLlmClient } from "./ai/llm-factory.js";
+import { loadAiSecret } from "./ai/secret-loader.js";
 import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
@@ -50,6 +57,8 @@ export interface CreateServerOptions {
   logger?: boolean;
   bootstrapBundle?: BootstrapBundle;
   registryPersistence?: RegistryPersistence;
+  // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
+  aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient;
 }
 
 interface MutationResult {
@@ -148,6 +157,27 @@ const projectWorkflowBindingSchema = z.object({
   schema_version: z.literal(1),
   workflow_id: z.string().regex(/^wf_/),
   revision: z.number().int().positive().nullable()
+}).strict();
+
+const aiProviderCreateSchema = z.object({
+  schema_version: z.literal(1),
+  provider_id: z.string().min(1),
+  label: z.string().min(1).max(120),
+  base_url: z.url(),
+  model: z.string().min(1),
+  enabled: z.boolean(),
+  api_key_env: z.string().min(1),
+  is_default: z.boolean().optional()
+}).strict();
+
+const aiProviderUpdateSchema = z.object({
+  schema_version: z.literal(1),
+  revision: z.number().int().positive(),
+  label: z.string().min(1).max(120).optional(),
+  base_url: z.url().optional(),
+  model: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  api_key_env: z.string().min(1).optional()
 }).strict();
 
 function routeRequestId(request: FastifyRequest): string {
@@ -274,6 +304,26 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   const { repository, storage } = options;
   const registry = new RegistryStore(storage, options.registryPersistence);
   await registry.initialize(options.bootstrapBundle);
+  // AI LlmClient 装配（§12.9）：按 defaultProvider 或指定 provider + secret file key 构造 DeepSeek 客户端。
+  // 无配置/无 key/未启用 → null（路由层返回 AI_NOT_CONFIGURED）；key 只内存用，不写 store/log/响应。
+  const llmFactory = options.aiLlmClientFactory ?? createLlmClient;
+  const resolveLlmClient = async (providerId: string | null): Promise<{
+    client: LlmClient;
+    provider: AiProviderConfig;
+  } | null> => {
+    const provider = providerId === null
+      ? registry.getDefaultProvider()
+      : registry.getProvider(providerId) ?? null;
+    if (provider === null || !provider.enabled) return null;
+    const secret = await loadAiSecret(config.aiSecretFile, provider.provider_id);
+    if (secret === null) return null;
+    const merged: AiProviderConfig = {
+      ...provider,
+      base_url: secret.baseUrl ?? provider.base_url,
+      model: secret.model ?? provider.model
+    };
+    return { client: llmFactory(merged, secret.apiKey), provider };
+  };
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: config.maxProposalBytes
@@ -1255,6 +1305,156 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: workflowId, requestId
       });
       return { statusCode: 200, body: { workflow_id: workflowId, deleted: true } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  // ---- AI 配置 + AI 检查（§12.9 / §6.2）----
+
+  app.get("/api/v1/ai-config/providers", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const providers = registry.listProviders();
+    const defaultProvider = registry.getDefaultProvider();
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: providers,
+      default_provider: defaultProvider?.provider_id ?? null,
+      request_id: requestId
+    };
+  });
+
+  app.post("/api/v1/ai-config/providers", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = aiProviderCreateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const provider = await registry.upsertProvider({
+        provider_id: body.provider_id,
+        label: body.label,
+        base_url: body.base_url,
+        model: body.model,
+        enabled: body.enabled,
+        api_key_env: body.api_key_env,
+        ...(body.is_default === undefined ? {} : { is_default: body.is_default })
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "ai.provider.created",
+        targetId: provider.provider_id, requestId,
+        details: { provider_id: provider.provider_id, label: provider.label, revision: provider.revision }
+      });
+      return { statusCode: 201, body: provider };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.patch("/api/v1/ai-config/providers/:providerId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { providerId } = request.params as { providerId: string };
+    const body = aiProviderUpdateSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const patch: { label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string } = {};
+      if (body.label !== undefined) patch.label = body.label;
+      if (body.base_url !== undefined) patch.base_url = body.base_url;
+      if (body.model !== undefined) patch.model = body.model;
+      if (body.enabled !== undefined) patch.enabled = body.enabled;
+      if (body.api_key_env !== undefined) patch.api_key_env = body.api_key_env;
+      const provider = await registry.updateProvider(providerId, body.revision, patch);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "ai.provider.updated",
+        targetId: providerId, requestId,
+        details: { provider_id: provider.provider_id, revision: provider.revision }
+      });
+      return { statusCode: 200, body: provider };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.delete("/api/v1/ai-config/providers/:providerId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { providerId } = request.params as { providerId: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      await registry.deleteProvider(providerId);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "ai.provider.deleted",
+        targetId: providerId, requestId, details: { provider_id: providerId }
+      });
+      return { statusCode: 200, body: { provider_id: providerId, deleted: true } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/ai-config/providers/:providerId/test", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { providerId } = request.params as { providerId: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const resolved = await resolveLlmClient(providerId);
+      if (resolved === null) {
+        throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "ai provider not configured or missing secret", { provider_id: providerId });
+      }
+      try {
+        const res = await resolved.client.analyze({ system: "Reply with the single word: ok", user: "ping" });
+        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        return { statusCode: 200, body: { provider_id: providerId, ok: true, model: resolved.provider.model } };
+      } catch (err) {
+        return { statusCode: 200, body: { provider_id: providerId, ok: false, error: err instanceof Error ? err.message : "unknown" } };
+      }
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/ai-config/usage", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const usage = registry.getUsage();
+    reply.header("X-Request-Id", requestId);
+    return { ...usage, request_id: requestId };
+  });
+
+  app.post("/api/v1/skills/:slug/draft/ai-checks", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = registry.getDraft(slug);
+      if (draft === undefined) {
+        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+      }
+      const resolved = await resolveLlmClient(null);
+      if (resolved === null) {
+        throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
+      }
+      const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
+      const checkedAt = new Date().toISOString();
+      let content: string;
+      try {
+        const res = await resolved.client.analyze(prompt);
+        content = res.content;
+        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+      } catch (err) {
+        // LLM 超时/网络错 → 降级 AI_TIMEOUT yellow（不 500，不阻塞 draft）
+        const degraded: SkillCheckResult = {
+          items: [{
+            id: "AI_TIMEOUT",
+            label: "AI 分析请求失败",
+            status: "yellow",
+            message: err instanceof Error ? err.message : "AI analysis request failed",
+            filePath: null,
+            fixable: false
+          }],
+          summary: { green: 0, yellow: 1, red: 0 },
+          checkedAt
+        };
+        await registry.setDraftAiChecks({ slug, aiChecks: degraded, checkedAt });
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
+          targetId: slug, requestId, details: { slug, degraded: true }
+        });
+        return { statusCode: 200, body: degraded };
+      }
+      const aiChecks = parseAiCheckResult(content);
+      await registry.setDraftAiChecks({ slug, aiChecks, checkedAt });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
+        targetId: slug, requestId, details: { slug, red: aiChecks.summary.red }
+      });
+      return { statusCode: 200, body: aiChecks };
     });
     return send(reply, requestId, result);
   });

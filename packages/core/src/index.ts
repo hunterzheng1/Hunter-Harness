@@ -1,5 +1,6 @@
 export const packageName = "@hunter-harness/core" as const;
 
+export * from "./ai/index.js";
 export * from "./fs/hash.js";
 export * from "./fs/path-safety.js";
 export * from "./codebase/map.js";
