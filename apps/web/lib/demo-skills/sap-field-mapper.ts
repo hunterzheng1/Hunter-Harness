@@ -133,10 +133,10 @@ export const sapFieldMapper: DemoSourceSkill = {
         status: "draft"
       },
       checks: [
-        { id: "entrypoint", label: "SKILL.md entrypoint", status: "green", message: "Found root SKILL.md and supporting files." },
-        { id: "path-safe", label: "Path safety", status: "green", message: "No absolute paths, parent traversal, or unsafe names detected." },
+        { id: "entrypoint", label: "SKILL.md entrypoint", status: "green", message: "Found root SKILL.md and supporting files.", filePath: null, fixable: false },
+        { id: "path-safe", label: "Path safety", status: "green", message: "No absolute paths, parent traversal, or unsafe names detected.", filePath: null, fixable: false },
         { id: "secret-scan", label: "Sensitive content", status: "yellow", message: "Token-like value `tempAdminToken` appears in reference instructions; confirm it is a test token.", filePath: "reference.md", fixable: true },
-        { id: "publish", label: "Publish readiness", status: "green", message: "Claude Code artifact can be generated for the draft." }
+        { id: "publish", label: "Publish readiness", status: "green", message: "Claude Code artifact can be generated for the draft.", filePath: null, fixable: false }
       ],
       diffFiles: [
         {
@@ -163,9 +163,9 @@ export const sapFieldMapper: DemoSourceSkill = {
       fallbackFrom: "claude-code",
       targetPath: ".cursor/rules/sap-field-mapper.md",
       checks: [
-        { id: "fallback", label: "Fallback source", status: "yellow", message: "Cursor has no dedicated package; preview resolves from Claude Code default." },
-        { id: "target-path", label: "Install target", status: "green", message: "Download would install to .cursor/rules/sap-field-mapper.md." },
-        { id: "cursor-native", label: "Cursor native rules", status: "yellow", message: "No Cursor-specific rule formatting has been uploaded yet.", fixable: true }
+        { id: "fallback", label: "Fallback source", status: "yellow", message: "Cursor has no dedicated package; preview resolves from Claude Code default.", filePath: null, fixable: false },
+        { id: "target-path", label: "Install target", status: "green", message: "Download would install to .cursor/rules/sap-field-mapper.md.", filePath: null, fixable: false },
+        { id: "cursor-native", label: "Cursor native rules", status: "yellow", message: "No Cursor-specific rule formatting has been uploaded yet.", filePath: null, fixable: true }
       ],
       metrics: { files: files.length, green: 1, yellow: 2, red: 0, suggestions: 3 },
       uploadHint: "Upload a Cursor rules folder or zip to create a dedicated Cursor version."
@@ -188,7 +188,7 @@ export const sapFieldMapper: DemoSourceSkill = {
       },
       checks: [
         { id: "claude-frontmatter", label: "Claude-only metadata", status: "yellow", message: "`allowed-tools` frontmatter should be rewritten for Codex guidance.", filePath: "SKILL.md", fixable: true },
-        { id: "subagent", label: "Unsupported automation", status: "green", message: "No hard dependency on subagents detected." },
+        { id: "subagent", label: "Unsupported automation", status: "green", message: "No hard dependency on subagents detected.", filePath: null, fixable: false },
         { id: "write-boundary", label: "Write boundary", status: "red", message: "Generated table append behavior should explicitly ask before modifying user documents.", filePath: "SKILL.md", fixable: true }
       ],
       diffFiles: [
@@ -210,7 +210,7 @@ export const sapFieldMapper: DemoSourceSkill = {
       fallbackFrom: "claude-code",
       targetPath: ".harness/generated/generic/sap-field-mapper.md",
       checks: [
-        { id: "fallback", label: "Fallback source", status: "yellow", message: "Generic output currently falls back to the Claude Code source package." },
+        { id: "fallback", label: "Fallback source", status: "yellow", message: "Generic output currently falls back to the Claude Code source package.", filePath: null, fixable: false },
         { id: "portable", label: "Portable instructions", status: "red", message: "The source references tool-specific frontmatter and Bash permissions.", filePath: "SKILL.md", fixable: true }
       ],
       diffFiles: [

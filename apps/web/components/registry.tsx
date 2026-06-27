@@ -1,6 +1,8 @@
 "use client";
 
 import type {
+  AgentSkillConfig,
+  DraftState,
   RegistryAgent,
   RegistrySkillDetail,
   RegistrySkillProposal,
@@ -8,6 +10,9 @@ import type {
   RegistryTag,
   RegistryWorkflow,
   RegistryWorkflowMutation,
+  SkillCheckItem,
+  SkillCheckResult,
+  SkillDiffFile,
   SkillIr
 } from "@hunter-harness/contracts";
 import JSZip from "jszip";
@@ -16,7 +21,7 @@ import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse as parseYaml } from "yaml";
 
 import { ApiClientError, browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
-import type { DemoAgent, DemoAgentConfig, DemoAgentDiffFile, DemoAgentVersion, DemoUsageExample } from "../lib/demo-skills/types";
+import type { DemoAgent, DemoAgentConfig, DemoUsageExample } from "../lib/demo-skills/types";
 import { findDemoSourceSkill } from "../lib/demo-skills/sap-field-mapper";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
@@ -413,15 +418,6 @@ function checkStatusCopy(status: "green" | "yellow" | "red", t: ReturnType<typeo
   return { title: t.checkFailed, description: t.checkFailedDescription };
 }
 
-function AgentVersionCard({ title, version, empty }: { title: string; version: DemoAgentVersion | undefined; empty: string }) {
-  if (version === undefined) return <article className="version-summary-card empty"><span>{title}</span><p>{empty}</p></article>;
-  return <article className="version-summary-card">
-    <span>{title}</span>
-    <strong>{version.version}</strong>
-    <small>{version.fileCount} files · {new Date(version.releasedAt).toLocaleString()}</small>
-  </article>;
-}
-
 function nextPatchVersion(version: string | undefined): string {
   const match = version?.match(/^(\d+)\.(\d+)\.(\d+)/);
   if (match === undefined || match === null) return "1.0.1";
@@ -434,10 +430,10 @@ function shiftPatchVersion(version: string, delta: number): string {
   return `${match[1]}.${match[2]}.${Math.max(0, Number(match[3]) + delta)}`;
 }
 
-function diffStats(files: readonly DemoAgentDiffFile[]): { changedFiles: number; addedFiles: number; modifiedFiles: number; removedFiles: number; changedLines: number } {
+function diffStats(files: readonly SkillDiffFile[]): { changedFiles: number; addedFiles: number; modifiedFiles: number; removedFiles: number; changedLines: number } {
   return files.reduce((stats, file) => {
-    const published = file.publishedContent.split("\n");
-    const draft = file.draftContent.split("\n");
+    const published = (file.publishedContent ?? "").split("\n");
+    const draft = (file.draftContent ?? "").split("\n");
     const max = Math.max(published.length, draft.length);
     let changedLines = 0;
     for (let index = 0; index < max; index += 1) {
@@ -454,286 +450,251 @@ function diffStats(files: readonly DemoAgentDiffFile[]): { changedFiles: number;
 }
 
 function AgentCheckPanel({
-  agent,
-  fallbackAgent,
+  api,
+  slug,
+  draft,
+  onPublished,
   t
 }: {
-  agent: DemoAgentConfig | undefined;
-  fallbackAgent: DemoAgentConfig | undefined;
-  t: ReturnType<typeof useI18n>["t"]["skillDetail"];
+  api: HunterApi;
+  slug: string;
+  draft: DraftState | null;
+  onPublished: () => void;
+  t: ReturnType<typeof useI18n>["t"];
 }) {
-  const value = agent ?? fallbackAgent;
+  const sd = t.skillDetail;
+  const [checksResult, setChecksResult] = useState<SkillCheckResult | null>(draft?.checks ?? null);
+  const [diffFiles, setDiffFiles] = useState<readonly SkillDiffFile[]>([]);
+  const [diffRun, setDiffRun] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<"green" | "yellow" | "red" | "suggestions" | null>(null);
   const [selectedFile, setSelectedFile] = useState(0);
   const [checking, setChecking] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [publishVersion, setPublishVersion] = useState("");
   const [publishNote, setPublishNote] = useState("");
-  if (value === undefined) return <Empty>{t.notAvailable}</Empty>;
-  const diffFiles: readonly DemoAgentDiffFile[] = value.diffFiles ?? [];
-  const stats = diffStats(diffFiles);
-  const defaultPublishVersion = nextPatchVersion(value.latestVersion?.version);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setChecksResult(draft?.checks ?? null);
+  }, [draft]);
+
+  const summary = checksResult?.summary ?? { green: 0, yellow: 0, red: 0 };
+  const checks: readonly SkillCheckItem[] = checksResult?.items ?? [];
+  const defaultPublishVersion = nextPatchVersion(draft?.draftVersion ?? undefined);
   const resolvedPublishVersion = publishVersion || defaultPublishVersion;
-  const resolvedPublishNote = publishNote || t.defaultPublishModalNote;
+  const resolvedPublishNote = publishNote || sd.defaultPublishModalNote;
   const activeFile = diffFiles[selectedFile] ?? diffFiles[0];
-  const selectedChecks = selectedStatus === null || selectedStatus === "suggestions"
-    ? value.checks
-    : value.checks.filter((check) => check.status === selectedStatus);
+  const stats = diffStats(diffFiles);
+  const selectedChecks = selectedStatus === null
+    ? checks
+    : selectedStatus === "suggestions"
+      ? checks.filter((check) => check.fixable)
+      : checks.filter((check) => check.status === selectedStatus);
   const metricCards = [
-    { key: "green" as const, count: value.metrics.green, ...checkStatusCopy("green", t) },
-    { key: "yellow" as const, count: value.metrics.yellow, ...checkStatusCopy("yellow", t) },
-    { key: "red" as const, count: value.metrics.red, ...checkStatusCopy("red", t) },
-    { key: "suggestions" as const, count: value.metrics.suggestions, title: t.fixSuggestions, description: t.fixSuggestionsDescription }
+    { key: "green" as const, count: summary.green, ...checkStatusCopy("green", sd) },
+    { key: "yellow" as const, count: summary.yellow, ...checkStatusCopy("yellow", sd) },
+    { key: "red" as const, count: summary.red, ...checkStatusCopy("red", sd) },
+    { key: "suggestions" as const, count: checks.filter((c) => c.fixable).length, title: sd.fixSuggestions, description: sd.fixSuggestionsDescription }
   ];
-  const publishedLines = activeFile?.publishedContent.split("\n") ?? [];
-  const draftLines = activeFile?.draftContent.split("\n") ?? [];
+  const publishedLines = (activeFile?.publishedContent ?? "").split("\n");
+  const draftLines = (activeFile?.draftContent ?? "").split("\n");
+
+  async function runChecks(): Promise<void> {
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await required(api, "runSkillDraftChecks")(slug);
+      setChecksResult(result);
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setChecking(false); }
+  }
+
+  async function runDiff(): Promise<void> {
+    setError(null);
+    try {
+      const files = await required(api, "diffSkillDraft")(slug);
+      setDiffFiles(files);
+      setSelectedFile(0);
+      setDiffRun(true);
+    } catch (reason) { setError(apiError(reason, t)); }
+  }
+
+  async function publish(): Promise<void> {
+    setError(null);
+    try {
+      await required(api, "publishSkillDraft")(slug, { version: resolvedPublishVersion, releaseNote: resolvedPublishNote });
+      setPublishing(false);
+      setPublishVersion("");
+      setPublishNote("");
+      onPublished();
+    } catch (reason) { setError(apiError(reason, t)); setPublishing(false); }
+  }
+
+  async function upload(files: File[]): Promise<void> {
+    setError(null);
+    try {
+      await required(api, "uploadSkillDraft")(buildUploadFormData(files));
+      onPublished();
+    } catch (reason) { setError(apiError(reason, t)); }
+  }
+
+  function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
+    const files = event.target.files;
+    if (files === null || files.length === 0) return;
+    void upload(Array.from(files));
+  }
+
   return <div className="check-publish-layout">
     <div className="publish-toolbar">
       <label className="upload-drop-strip">
-        <input type="file" multiple accept=".zip" {...{ webkitdirectory: "" }} />
-        <strong>{t.uploadSkillPackage}</strong>
-        <span>{t.uploadSkillPackageHint}</span>
+        <input type="file" multiple accept=".zip" onChange={onUploadChange} {...{ webkitdirectory: "" }} />
+        <strong>{sd.uploadSkillPackage}</strong>
+        <span>{sd.uploadSkillPackageHint}</span>
       </label>
       <div className="publish-toolbar-actions">
-        <button type="button" className="secondary prominent-action" onClick={() => setChecking(true)}>{t.checkAction}</button>
-        <button type="button" className={`prominent-action ${value.metrics.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(t.defaultPublishModalNote); setPublishing(true); }}>{t.publishAction}</button>
-        {value.metrics.red > 0 ? <span className="publish-warning">{t.redPublishWarning}</span> : null}
+        {draft === null ? null : <>
+          <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
+          <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
+          <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
+          {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
+        </>}
       </div>
     </div>
+    {draft === null ? <Empty>{sd.draftEmpty}</Empty> : <>
     <div className="check-metrics">
-      {metricCards.map((metric) => <button type="button" className={`check-metric-card check-metric-${metric.key}`} key={metric.key} onClick={() => setSelectedStatus(metric.key)}>
+      {metricCards.map((metric) => <button type="button" className={`check-metric-card check-metric-${metric.key}`} key={metric.key} onClick={() => setSelectedStatus((cur) => cur === metric.key ? null : metric.key)}>
         <strong>{metric.count}</strong>
         <span>{metric.title}</span>
         <small>{metric.description}</small>
       </button>)}
     </div>
-    <div className="agent-version-row">
-      <AgentVersionCard title={t.currentPublishedVersion} version={value.latestVersion} empty={t.noAgentVersion} />
-      <AgentVersionCard title={t.stagedDraftVersion} version={value.draftVersion} empty={t.noDraftVersion} />
-    </div>
-    {activeFile === undefined ? <Empty>{t.noVersionDiff}</Empty> : <div className="version-diff-workbench">
+    {checks.length === 0 ? null : <div className="check-list">
+      {selectedChecks.map((check) => <article className="check-row" key={check.id}>
+        <CheckLight status={check.status} />
+        <div><strong>{check.label}</strong><p>{check.message}</p>{check.filePath === null ? null : <code>{check.filePath}</code>}</div>
+        {check.fixable ? <button type="button" className="secondary">{sd.applyFix}</button> : null}
+      </article>)}
+    </div>}
+    {!diffRun ? null : diffFiles.length === 0 ? <Empty>{sd.diffNoChange}</Empty> : <div className="version-diff-workbench">
       <aside className="version-file-tree">
-        <div className="version-file-tree-title">{t.changedFiles}</div>
+        <div className="version-file-tree-title">{sd.changedFiles}</div>
         {diffFiles.map((file, index) => <button type="button" className={index === selectedFile ? "selected" : ""} key={file.path} onClick={() => setSelectedFile(index)}>
           <span className={`file-change-dot file-change-${file.status}`} />
           <span>{file.path}</span>
-          <small>{t.diffStatus[file.status]}</small>
+          <small>{sd.diffStatus[file.status]}</small>
         </button>)}
       </aside>
       <div className="version-diff-pane">
-        <div className="diff-column-title"><span>{t.currentPublishedVersion}</span><code>{value.latestVersion?.version ?? "-"}</code></div>
+        <div className="diff-column-title"><span>{sd.currentPublishedVersion}</span></div>
         <pre>{publishedLines.map((line, index) => <span className={line !== (draftLines[index] ?? "") ? "diff-line diff-line-old" : "diff-line"} key={`old-${index}`}>{line || " "}</span>)}</pre>
       </div>
       <div className="version-diff-pane">
-        <div className="diff-column-title"><span>{t.stagedDraftVersion}</span><code>{value.draftVersion?.version ?? "-"}</code></div>
+        <div className="diff-column-title"><span>{sd.stagedDraftVersion}</span></div>
         <pre>{draftLines.map((line, index) => <span className={line !== (publishedLines[index] ?? "") ? "diff-line diff-line-new" : "diff-line"} key={`new-${index}`}>{line || " "}</span>)}</pre>
       </div>
     </div>}
-    {selectedStatus === null ? null : <div className="modal-backdrop" role="presentation" onClick={() => setSelectedStatus(null)}>
-      <div className="check-result-modal" role="dialog" aria-modal="true" aria-labelledby="check-result-title" onClick={(event) => event.stopPropagation()}>
-        <div className="panel-title">
-          <h2 id="check-result-title">{selectedStatus === "suggestions" ? t.fixSuggestions : checkStatusCopy(selectedStatus, t).title}</h2>
-          <button type="button" className="icon-button" aria-label={t.close} onClick={() => setSelectedStatus(null)}>×</button>
-        </div>
-        <div className="check-list">
-          {selectedChecks.map((check) => <article className="check-row" key={check.id}>
-            <CheckLight status={check.status} />
-            <div><strong>{check.label}</strong><p>{check.message}</p>{check.filePath === undefined ? null : <code>{check.filePath}</code>}</div>
-            {check.fixable ? <button type="button" className="secondary">{t.applyFix}</button> : null}
-          </article>)}
-        </div>
-      </div>
-    </div>}
-    {!checking ? null : <div className="modal-backdrop" role="presentation" onClick={() => setChecking(false)}>
-      <div className="check-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="check-confirm-title" onClick={(event) => event.stopPropagation()}>
-        <div className="panel-title">
-          <h2 id="check-confirm-title">{t.checkConfirmTitle}</h2>
-          <button type="button" className="icon-button" aria-label={t.close} onClick={() => setChecking(false)}>×</button>
-        </div>
-        <p>{t.checkConfirmDescription}</p>
-        <div className="check-scope-grid">
-          <article><CheckLight status="green" /><span>{t.checkScopeStructure}</span></article>
-          <article><CheckLight status="yellow" /><span>{t.checkScopeCompatibility}</span></article>
-          <article><CheckLight status="yellow" /><span>{t.checkScopeSecrets}</span></article>
-          <article><CheckLight status="red" /><span>{t.checkScopePublish}</span></article>
-        </div>
-        <div className="editable-card-actions">
-          <button type="button" onClick={() => setChecking(false)}>{t.confirmCheck}</button>
-          <button type="button" className="secondary" onClick={() => setChecking(false)}>{t.cancelEdit}</button>
-        </div>
-      </div>
-    </div>}
+    </>}
     {!publishing ? null : <div className="modal-backdrop" role="presentation" onClick={() => setPublishing(false)}>
       <div className="publish-modal" role="dialog" aria-modal="true" aria-labelledby="publish-modal-title" onClick={(event) => event.stopPropagation()}>
         <div className="panel-title">
-          <h2 id="publish-modal-title">{t.publishConfirmTitle}</h2>
-          <button type="button" className="icon-button" aria-label={t.close} onClick={() => setPublishing(false)}>×</button>
+          <h2 id="publish-modal-title">{sd.publishConfirmTitle}</h2>
+          <button type="button" className="icon-button" aria-label={sd.close} onClick={() => setPublishing(false)}>×</button>
         </div>
         <div className="publish-hero-grid">
           <article className="publish-version-card">
             <div className="publish-version-pair">
-              <div className="version-readonly"><span>{t.currentVersion}</span><strong>{value.latestVersion?.version ?? "-"}</strong></div>
-              <span className="version-arrow">→</span>
-              <label className="version-stepper"><span>{t.newVersion}</span><input value={resolvedPublishVersion} onChange={(event) => setPublishVersion(event.target.value)} /><span className="version-stepper-actions"><button type="button" aria-label={t.increaseVersion} onClick={() => setPublishVersion(shiftPatchVersion(resolvedPublishVersion, 1))}>↑</button><button type="button" aria-label={t.decreaseVersion} onClick={() => setPublishVersion(shiftPatchVersion(resolvedPublishVersion, -1))}>↓</button></span></label>
+              <label className="version-stepper"><span>{sd.newVersion}</span><input value={resolvedPublishVersion} onChange={(event) => setPublishVersion(event.target.value)} /><span className="version-stepper-actions"><button type="button" aria-label={sd.increaseVersion} onClick={() => setPublishVersion(shiftPatchVersion(resolvedPublishVersion, 1))}>↑</button><button type="button" aria-label={sd.decreaseVersion} onClick={() => setPublishVersion(shiftPatchVersion(resolvedPublishVersion, -1))}>↓</button></span></label>
             </div>
           </article>
-          <article className="publish-target-card"><span>{t.publishTarget}</span><strong>{value.label}</strong><small>{value.metrics.red > 0 ? t.publishHasWarnings : t.publishReady}</small></article>
+          <article className="publish-target-card"><span>{sd.publishTarget}</span><strong>{slug}</strong><small>{summary.red > 0 ? sd.publishHasWarnings : sd.publishReady}</small></article>
         </div>
         <div className="publish-summary-grid">
-          <article className="summary-changed"><strong>{stats.changedFiles}</strong><span>{t.changedFiles}</span></article>
-          <article className="summary-modified"><strong>{stats.modifiedFiles}</strong><span>{t.modifiedFiles}</span></article>
-          <article className="summary-added"><strong>{stats.addedFiles}</strong><span>{t.addedFiles}</span></article>
-          <article className="summary-lines"><strong>{stats.changedLines}</strong><span>{t.changedLines}</span></article>
+          <article className="summary-changed"><strong>{stats.changedFiles}</strong><span>{sd.changedFiles}</span></article>
+          <article className="summary-modified"><strong>{stats.modifiedFiles}</strong><span>{sd.modifiedFiles}</span></article>
+          <article className="summary-added"><strong>{stats.addedFiles}</strong><span>{sd.addedFiles}</span></article>
+          <article className="summary-lines"><strong>{stats.changedLines}</strong><span>{sd.changedLines}</span></article>
         </div>
         <label className="release-note-editor publish-note-field">
-          <span className="publish-note-heading"><span className="config-card-label">{t.releaseNote}</span><button type="button" className="secondary" onClick={() => setPublishNote(t.aiPublishModalNote)}>{t.aiGenerate}</button></span>
+          <span className="publish-note-heading"><span className="config-card-label">{sd.releaseNote}</span></span>
           <textarea value={resolvedPublishNote} onChange={(event) => setPublishNote(event.target.value)} />
         </label>
         <div className="publish-modal-footer">
-          <span>{t.publishModalHint}</span>
+          <span>{sd.publishModalHint}</span>
           <div className="editable-card-actions">
-          <button type="button" onClick={() => setPublishing(false)}>{t.confirmPublish}</button>
-          <button type="button" className="secondary" onClick={() => setPublishing(false)}>{t.cancelEdit}</button>
+            <button type="button" onClick={() => void publish()}>{sd.confirmPublish}</button>
+            <button type="button" className="secondary" onClick={() => setPublishing(false)}>{sd.cancelEdit}</button>
           </div>
         </div>
       </div>
     </div>}
+    {error === null ? null : <div className="notice danger">{error}</div>}
   </div>;
 }
 
-interface VersionDisplayItem {
-  version: string;
-  createdAt: string;
-  source: string;
-  ir: SkillIr;
-  changeNote: string;
-}
-
-function previousIrFor(current: SkillIr): SkillIr {
-  return {
-    ...current,
-    version: "1.1.0",
-    description: current.description.replace("entity-class mapping tables", "entity mapping tables"),
-    forbidden_actions: current.forbidden_actions.filter((item) => item !== "discard_unmatched_fields"),
-    instructions: current.instructions?.slice(0, Math.max(1, current.instructions.length - 1))
-  };
-}
-
-function versionDiffFiles(current: VersionDisplayItem, previous: VersionDisplayItem | undefined): readonly DemoAgentDiffFile[] {
-  const prior = previous?.ir;
-  if (prior === undefined) {
-    return [{
-      path: "skill-ir.json",
-      status: "added",
-      publishedContent: "",
-      draftContent: JSON.stringify(current.ir, null, 2)
-    }];
-  }
-  return [
-    {
-      path: "skill-ir/basic-info.json",
-      status: "modified",
-      publishedContent: JSON.stringify({ name: prior.name, kind: prior.kind, description: prior.description, version: prior.version }, null, 2),
-      draftContent: JSON.stringify({ name: current.ir.name, kind: current.ir.kind, description: current.ir.description, version: current.ir.version }, null, 2)
-    },
-    {
-      path: "skill-ir/instructions.json",
-      status: "modified",
-      publishedContent: JSON.stringify(prior.instructions ?? [], null, 2),
-      draftContent: JSON.stringify(current.ir.instructions ?? [], null, 2)
-    },
-    {
-      path: "skill-ir/security-boundary.json",
-      status: "modified",
-      publishedContent: JSON.stringify({ forbidden_actions: prior.forbidden_actions, required_context: prior.required_context }, null, 2),
-      draftContent: JSON.stringify({ forbidden_actions: current.ir.forbidden_actions, required_context: current.ir.required_context }, null, 2)
-    }
-  ];
+function AgentConfigsOverview({ agents, defaultAgent, t }: { agents: readonly AgentSkillConfig[]; defaultAgent: RegistryAgent | null; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
+  void defaultAgent;
+  if (agents.length === 0) return <span className="muted-inline">{t.noneShort}</span>;
+  return <article className="system-config-card system-config-card-wide">
+    <span className="config-card-label">{t.adapters}</span>
+    <div className="default-agent-actions">
+      {agents.map((a) => (
+        <span className={`config-chip config-chip-${a.enabled ? "enabled" : "disabled"}`} key={a.agent}>
+          <span>{a.agent}</span>
+          <small>{a.isDefault ? t.defaultAgent : a.enabled ? t.enabled : t.disabled}</small>
+        </span>
+      ))}
+    </div>
+  </article>;
 }
 
 function VersionHistoryPanel({
   versions,
-  currentSkill,
   t
 }: {
   versions: readonly RegistrySkillVersion[];
-  currentSkill: RegistrySkillDetail;
   t: ReturnType<typeof useI18n>["t"]["skillDetail"];
 }) {
-  const currentIr = currentSkill.ir;
-  const [selectedVersion, setSelectedVersion] = useState(currentSkill.latest_version ?? versions[0]?.version ?? "1.0.0");
-  const [selectedFile, setSelectedFile] = useState(0);
-  if (currentIr === null) return <Empty>{t.notAvailable}</Empty>;
-
-  const fallbackPrevious = previousIrFor(currentIr);
-  const displayVersions: VersionDisplayItem[] = [
-    {
-      version: currentSkill.latest_version ?? currentIr.version,
-      createdAt: currentSkill.updated_at,
-      source: "release",
-      ir: currentIr,
-      changeNote: t.defaultReleaseNote
-    },
-    ...versions
-      .filter((version) => version.version !== currentSkill.latest_version)
-      .map((version) => ({
-        version: version.version,
-        createdAt: version.created_at,
-        source: version.source_proposal_id ?? "bootstrap",
-        ir: version.ir,
-        changeNote: t.defaultReleaseNote
-      })),
-    {
-      version: fallbackPrevious.version,
-      createdAt: "2026-06-24T12:00:00Z",
-      source: "previous",
-      ir: fallbackPrevious,
-      changeNote: t.previousReleaseNote
-    }
-  ];
-  const selectedIndex = Math.max(0, displayVersions.findIndex((version) => version.version === selectedVersion));
-  const current = displayVersions[selectedIndex] ?? displayVersions[0];
-  const previous = displayVersions[selectedIndex + 1];
-  const files = current === undefined ? [] : versionDiffFiles(current, previous);
-  const activeFile = files[selectedFile] ?? files[0];
-  const publishedLines = activeFile?.publishedContent.split("\n") ?? [];
-  const draftLines = activeFile?.draftContent.split("\n") ?? [];
-
+  const [selectedVersion, setSelectedVersion] = useState(versions[0]?.version ?? "");
+  const [selectedVersionFile, setSelectedVersionFile] = useState(versions[0]?.sourceFiles[0]?.path ?? "");
+  if (versions.length === 0) return <Empty>{t.noVersionHistory}</Empty>;
+  const current = versions.find((v) => v.version === selectedVersion) ?? versions[0];
   if (current === undefined) return <Empty>{t.noVersionHistory}</Empty>;
+  const sourceFiles = current.sourceFiles;
+  const activeFile = sourceFiles.find((f) => f.path === selectedVersionFile) ?? sourceFiles[0];
+
+  function selectVersion(version: string, firstFilePath: string): void {
+    setSelectedVersion(version);
+    setSelectedVersionFile(firstFilePath);
+  }
+
   return <div className="version-history-workbench">
     <aside className="version-history-list">
       <div className="version-file-tree-title">{t.versionHistory}</div>
-      {displayVersions.map((version) => <button type="button" className={version.version === current.version ? "selected" : ""} key={version.version} onClick={() => { setSelectedVersion(version.version); setSelectedFile(0); }}>
-        <strong>v{version.version}</strong>
-        <span>{new Date(version.createdAt).toLocaleString()}</span>
-        <small>{version.source}</small>
+      {versions.map((v) => <button type="button" className={v.version === current.version ? "selected" : ""} key={v.version} onClick={() => selectVersion(v.version, v.sourceFiles[0]?.path ?? "")}>
+        <strong>v{v.version}</strong>
+        <span>{new Date(v.created_at).toLocaleString()}</span>
+        <small>{v.source_proposal_id ?? "bootstrap"}</small>
       </button>)}
     </aside>
     <section className="version-history-main">
       <article className="release-note-card">
         <div className="editable-card-heading">
           <div><span className="config-card-label">{t.releaseNote}</span><h3>v{current.version}</h3></div>
+          <small>{current.ir.version} · {current.artifacts.length} artifacts</small>
         </div>
-        <p>{current.changeNote}</p>
+        <p>{current.changeNote ?? t.defaultReleaseNote}</p>
       </article>
-      <div className="version-diff-workbench">
-        <aside className="version-file-tree">
-          <div className="version-file-tree-title">{t.changedFiles}</div>
-          {files.map((file, index) => <button type="button" className={index === selectedFile ? "selected" : ""} key={file.path} onClick={() => setSelectedFile(index)}>
-            <span className={`file-change-dot file-change-${file.status}`} />
-            <span>{file.path}</span>
-            <small>{t.diffStatus[file.status]}</small>
-          </button>)}
-        </aside>
-        <div className="version-diff-pane">
-          <div className="diff-column-title"><span>{t.previousVersion}</span><code>{previous === undefined ? "-" : `v${previous.version}`}</code></div>
-          <pre>{publishedLines.map((line, index) => <span className={line !== (draftLines[index] ?? "") ? "diff-line diff-line-old" : "diff-line"} key={`old-${index}`}>{line || " "}</span>)}</pre>
-        </div>
-        <div className="version-diff-pane">
-          <div className="diff-column-title"><span>{t.selectedVersion}</span><code>v{current.version}</code></div>
-          <pre>{draftLines.map((line, index) => <span className={line !== (publishedLines[index] ?? "") ? "diff-line diff-line-new" : "diff-line"} key={`new-${index}`}>{line || " "}</span>)}</pre>
-        </div>
-      </div>
+      {sourceFiles.length === 0 ? <Empty>{t.noVersionDiff}</Empty> : <div className="source-package-grid">
+        <SourceFileTree files={sourceFiles} selectedPath={activeFile?.path ?? ""} onSelect={setSelectedVersionFile} />
+        {activeFile === undefined ? null : <FilePreview key={activeFile.path} path={activeFile.path} content={activeFile.content} showRaw={t.showRaw} showRendered={t.showRendered} />}
+      </div>}
+      {current.examples.length === 0 ? null : <div className="usage-example-grid">
+        {current.examples.map((example, index) => <article className="usage-example-card" key={example.title}>
+          <span className="config-card-label">{t.exampleLabel.replace("{index}", String(index + 1).padStart(2, "0"))}</span>
+          <h3>{example.title}</h3>
+          <p>{example.description}</p>
+        </article>)}
+      </div>}
     </section>
   </div>;
 }
@@ -1027,6 +988,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [activeTab, setActiveTab] = useState<SkillDetailTab>("source");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [skillDraft, setSkillDraft] = useState<DraftState | null>(null);
 
   async function refresh(): Promise<void> {
     try {
@@ -1041,10 +1003,25 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     }
   }
 
+  async function refreshDraft(): Promise<void> {
+    try {
+      const d = await required(api, "getSkillDraft")(skillId);
+      setSkillDraft(d);
+    } catch {
+      setSkillDraft(null);
+    }
+  }
+
+  function handlePublished(): void {
+    void refresh();
+    void refreshDraft();
+  }
+
   useEffect(() => {
     const stored = globalThis.localStorage?.getItem("hunter-harness-default-agent") as DemoAgent | null;
     if (stored === "claude-code" || stored === "cursor" || stored === "codex" || stored === "generic" || stored === "mcp") setAgent(stored);
     void refresh();
+    void refreshDraft();
   }, [api, skillId]);
 
   useEffect(() => { setSourcePath("SKILL.md"); }, [skillId]);
@@ -1104,6 +1081,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const defaultAgent = sourceSkill?.agents.find((item) => item.agent === activeDefaultAgent);
   const fallback = selectedAgent !== undefined && selectedAgent.configured === false && defaultAgent !== undefined;
   const sourceFile = sourceSkill?.source.files.find((file) => file.path === sourcePath) ?? sourceSkill?.source.entrypoint;
+  const prodSourceFile = skill.sourceFiles.find((file) => file.path === sourcePath) ?? skill.sourceFiles[0];
   const adapterPatch = sourceSkill?.adapters[agent];
   return (
     <section className="stack governance-page">
@@ -1150,14 +1128,22 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         {adapterPatch === undefined ? null : <div className="adapter-patch"><strong>{t.skillDetail.codexAdaptation}</strong><p>{adapterPatch.patchSummary}</p></div>}
       </article> : null}
 
-      {activeTab === "source" && sourceSkill === undefined && skill.ir !== null ? <article className="panel source-package">
+      {activeTab === "source" && sourceSkill === undefined && skill.sourceFiles.length > 0 && prodSourceFile !== undefined ? <article className="panel source-package">
+        <div className="panel-title"><h2>{t.skillDetail.sourceFiles}</h2><span>{t.skillDetail.configSummary}</span></div>
+        <div className="source-package-grid">
+          <SourceFileTree files={skill.sourceFiles} selectedPath={prodSourceFile.path} onSelect={setSourcePath} />
+          <FilePreview key={prodSourceFile.path} path={prodSourceFile.path} content={prodSourceFile.content} showRaw={t.skillDetail.showRaw} showRendered={t.skillDetail.showRendered} />
+        </div>
+      </article> : null}
+
+      {activeTab === "source" && sourceSkill === undefined && skill.sourceFiles.length === 0 && skill.ir !== null ? <article className="panel source-package">
         <div className="panel-title"><h2>{t.skillDetail.sourceFiles}</h2><span>{t.skillDetail.configSummary}</span></div>
         <FilePreview path="skill-ir.json" content={JSON.stringify(skill.ir, null, 2)} showRaw={t.skillDetail.showRaw} showRendered={t.skillDetail.showRendered} />
       </article> : null}
 
       {activeTab === "examples" ? <article className="panel">
         <div className="panel-title"><h2>{t.skillDetail.usageExamples}</h2><span>{t.skillDetail.usageExamplesSummary}</span></div>
-        <UsageExamples examples={sourceSkill?.examples ?? []} t={t.skillDetail} />
+        <UsageExamples examples={sourceSkill !== undefined ? sourceSkill.examples : skill.examples} t={t.skillDetail} />
       </article> : null}
 
       {activeTab === "definition" && sourceSkill !== undefined && skill.ir !== null ? <div className="detail-grid system-config-layout">
@@ -1166,7 +1152,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       </div> : null}
 
       {activeTab === "definition" && sourceSkill === undefined && skill.ir !== null ? <div className="detail-grid system-config-layout">
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} /></article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<AgentConfigsOverview agents={skill.agents} defaultAgent={skill.defaultAgent} t={t.skillDetail} />} /></article>
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview ir={skill.ir} t={t.skillDetail} /></article>
       </div> : null}
 
@@ -1176,12 +1162,12 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
 
       {activeTab === "checks" ? <article className="panel">
         <div className="panel-title"><h2>{t.skillDetail.checkPublish}</h2><span>{selectedAgent?.label ?? agentLabel(agent)}</span></div>
-        <AgentCheckPanel agent={selectedAgent} fallbackAgent={defaultAgent} t={t.skillDetail} />
+        <AgentCheckPanel api={api} slug={skillId} draft={skillDraft} onPublished={handlePublished} t={t} />
       </article> : null}
 
       {activeTab === "versions" ? <article className="panel">
         <div className="panel-title"><h2>{t.skillDetail.versionHistory}</h2><span>{versions.length}</span></div>
-        <VersionHistoryPanel versions={versions} currentSkill={skill} t={t.skillDetail} />
+        <VersionHistoryPanel versions={versions} t={t.skillDetail} />
       </article> : null}
 
       {activeTab === "governance" ? <>

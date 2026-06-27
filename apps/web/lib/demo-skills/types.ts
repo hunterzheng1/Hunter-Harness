@@ -1,8 +1,6 @@
-import type { RegistryAgent } from "@hunter-harness/contracts";
+import type { RegistryAgent, SkillCheckItem, SkillDiffFile } from "@hunter-harness/contracts";
 
 export type DemoAgent = RegistryAgent | "cursor";
-
-export type DemoCheckStatus = "green" | "yellow" | "red";
 
 export interface DemoSourceFile {
   path: string;
@@ -25,22 +23,6 @@ export interface DemoAgentVersion {
   status: "published" | "draft";
 }
 
-export interface DemoAgentCheck {
-  id: string;
-  label: string;
-  status: DemoCheckStatus;
-  message: string;
-  filePath?: string;
-  fixable?: boolean;
-}
-
-export interface DemoAgentDiffFile {
-  path: string;
-  status: "modified" | "added" | "removed";
-  publishedContent: string;
-  draftContent: string;
-}
-
 export interface DemoUsageExample {
   title: string;
   description: string;
@@ -58,8 +40,8 @@ export interface DemoAgentConfig {
   targetPath: string;
   latestVersion?: DemoAgentVersion;
   draftVersion?: DemoAgentVersion;
-  checks: readonly DemoAgentCheck[];
-  diffFiles?: readonly DemoAgentDiffFile[];
+  checks: readonly SkillCheckItem[];
+  diffFiles?: readonly SkillDiffFile[];
   metrics: {
     files: number;
     green: number;

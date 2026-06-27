@@ -406,6 +406,11 @@ const zh = {
     close: "关闭",
     changedFiles: "变更文件",
     noVersionDiff: "暂无发布版与暂存版差异。",
+    publishSuccess: "已发布新版本并刷新版本记录。",
+    draftEmpty: "暂无暂存草稿。上传技能包以开始检查与发布。",
+    discardConfirm: "确定丢弃当前暂存草稿吗？此操作不可撤销。",
+    checkRunning: "正在运行检查…",
+    diffNoChange: "发布版与暂存版无差异。",
     diffStatus: {
       modified: "已修改",
       added: "新增",
@@ -940,6 +945,11 @@ const en: typeof zh = {
     close: "Close",
     changedFiles: "Changed files",
     noVersionDiff: "No difference between published and staged versions.",
+    publishSuccess: "Published a new version and refreshed the version history.",
+    draftEmpty: "No staged draft. Upload a skill package to start checks and publishing.",
+    discardConfirm: "Discard the current staged draft? This cannot be undone.",
+    checkRunning: "Running checks…",
+    diffNoChange: "No difference between published and staged versions.",
     diffStatus: {
       modified: "Modified",
       added: "Added",

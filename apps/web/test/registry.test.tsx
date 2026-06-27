@@ -64,6 +64,28 @@ const workflow = {
   updated_at: "2026-06-20T00:00:00Z"
 };
 
+const draft = {
+  slug: skill.slug,
+  sourceFiles: [],
+  ir,
+  examples: [],
+  draftVersion: "0.1.0",
+  checks: null,
+  releaseNote: null,
+  revision: 1,
+  created_at: "2026-06-21T00:00:00Z",
+  updated_at: "2026-06-21T00:00:00Z"
+};
+
+const draftChecks = {
+  items: [
+    { id: "c1", label: "Entry check", status: "green" as const, message: "ok", filePath: null, fixable: false },
+    { id: "c2", label: "Secret scan", status: "yellow" as const, message: "warn", filePath: "reference.md", fixable: true }
+  ],
+  summary: { green: 1, yellow: 1, red: 0 },
+  checkedAt: "2026-06-21T00:00:00Z"
+};
+
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
     listSkills: vi.fn(async () => [skill]),
@@ -89,6 +111,21 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
     })),
     listTags: vi.fn(async () => [securityTag]),
     listWorkflows: vi.fn(async () => [workflow]),
+    getSkillDraft: vi.fn(async () => draft),
+    runSkillDraftChecks: vi.fn(async () => draftChecks),
+    diffSkillDraft: vi.fn(async () => []),
+    publishSkillDraft: vi.fn(async () => ({
+      skill_slug: skill.slug,
+      version: "1.2.0",
+      ir,
+      artifacts: [],
+      source_proposal_id: "skp_new",
+      sourceFiles: [],
+      examples: [],
+      changeNote: "published",
+      created_at: "2026-06-22T00:00:00Z"
+    })),
+    discardSkillDraft: vi.fn(async () => ({ slug: skill.slug, discarded: true })),
     ...overrides
   } as unknown as HunterApi;
 }
@@ -190,5 +227,15 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /^删除$|^delete$/i }));
     await waitFor(() => expect(deleteSkill).toHaveBeenCalledWith("harness-review"));
     expect(listSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs draft checks via the API and renders the result in the checks tab", async () => {
+    const runSkillDraftChecks = vi.fn(async () => draftChecks);
+    render(<SkillDetail api={api({ runSkillDraftChecks, getSkillDraft: vi.fn(async () => ({ ...draft, checks: null })) })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
+    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review"));
+    expect(await screen.findByText("Entry check")).toBeInTheDocument();
   });
 });

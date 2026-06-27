@@ -327,8 +327,8 @@ function demoReadOnly(): never {
   throw new ApiClientError(403, "DEMO_READ_ONLY", "Demo mode is read-only and did not write server state.");
 }
 
-type DemoCheckLike = { id: string; label: string; status: "green" | "yellow" | "red"; message: string; filePath?: string; fixable?: boolean };
-type DemoDiffLike = { path: string; status: "modified" | "added" | "removed"; publishedContent: string; draftContent: string };
+type DemoCheckLike = { id: string; label: string; status: "green" | "yellow" | "red"; message: string; filePath: string | null; fixable: boolean };
+type DemoDiffLike = { path: string; status: "modified" | "added" | "removed"; publishedContent: string | null; draftContent: string | null };
 
 function demoChecksToResult(checks: readonly DemoCheckLike[]): SkillCheckResult {
   const items: SkillCheckItem[] = checks.map((c) => ({
