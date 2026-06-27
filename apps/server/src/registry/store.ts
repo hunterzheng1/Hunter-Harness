@@ -459,6 +459,7 @@ export class RegistryStore {
         ir
       });
     }
+    this.invalidateTagUsageCache();
     this.drafts.delete(input.slug);
     await this.persist();
     return structuredClone(version);
@@ -637,6 +638,7 @@ export class RegistryStore {
         ir
       });
     }
+    this.invalidateTagUsageCache();
     return [artifact];
   }
 

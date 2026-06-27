@@ -257,13 +257,100 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
   });
 
   describe("listTags usage cache (YELLOW-4)", () => {
-    it("returns consistent usageCount across cached calls (UT-005)", () => {
-      const store = newStore();
-      store.createTag({ slug: "red", label: "Red" });
-      const first = store.listTags();
-      const second = store.listTags();
-      expect(first.find((t) => t.slug === "red")?.usageCount).toBe(0);
-      expect(second.find((t) => t.slug === "red")?.usageCount).toBe(0);
+    // 最小合法 SkillIr（triggers/outputs 需 ≥1 项，其余可空）
+    function minIr(name: string): SkillIr {
+      return {
+        name, kind: "tooling", description: "d",
+        triggers: ["run"], inputs: [], outputs: ["out"],
+        forbidden_actions: [], required_context: [],
+        profiles: { general: { enabled: true } },
+        adapters: { "claude-code": { enabled: true } },
+        version: "1.0.0"
+      };
+    }
+
+    // schemaVersion:2 snapshot 中的 skill 条目；tags 决定该 skill 绑定的 tag slug
+    function snapshotSkill(slug: string, tags: string[]): [string, unknown] {
+      return [slug, {
+        detail: {
+          skill_id: "skl_" + slug, slug, name: slug, description: "d",
+          tags, status: "published", latest_version: "1.0.0",
+          agents: [{ agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/" + slug, latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
+          defaultAgent: "claude-code",
+          revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z",
+          ir: minIr(slug)
+        },
+        versions: []
+      }];
+    }
+
+    function tagEntry(tagId: string, slug: string, label: string): [string, unknown] {
+      return [tagId, {
+        tag_id: tagId, slug, label, active: true,
+        revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z"
+      }];
+    }
+
+    it("returns cached usageCount=2 for two skills bound to same tag (UT-005)", async () => {
+      const p = new MemoryPersistence();
+      p.snapshot = {
+        schemaVersion: 2,
+        compilerVersion: "1.0.0",
+        skills: [snapshotSkill("harness-a", ["red"]), snapshotSkill("harness-b", ["red"])],
+        proposals: [],
+        tags: [tagEntry("tag_red", "red", "Red")],
+        workflows: [],
+        projectBindings: []
+      };
+      const store = newStore(p);
+      await store.initialize();
+      // 连续两次 listTags 命中同一缓存，usageCount 仍为 2（压测缓存命中分支）
+      const first = store.listTags().find((t) => t.slug === "red");
+      const second = store.listTags().find((t) => t.slug === "red");
+      expect(first?.usageCount).toBe(2);
+      expect(second?.usageCount).toBe(2);
+    });
+
+    it("invalidates cache on bindTag so new tag usageCount updates (UT-006)", async () => {
+      const p = new MemoryPersistence();
+      p.snapshot = {
+        schemaVersion: 2,
+        compilerVersion: "1.0.0",
+        skills: [snapshotSkill("harness-a", ["red"])],
+        proposals: [],
+        tags: [tagEntry("tag_red", "red", "Red"), tagEntry("tag_blue", "blue", "Blue")],
+        workflows: [],
+        projectBindings: []
+      };
+      const store = newStore(p);
+      await store.initialize();
+      // 先填充缓存：blue 的 usageCount=0
+      expect(store.listTags().find((t) => t.slug === "blue")?.usageCount).toBe(0);
+      // bindTag 后缓存失效，再查 blue 的 usageCount 应更新为 1
+      store.bindTag("harness-a", "tag_blue");
+      const blue = store.listTags().find((t) => t.slug === "blue");
+      expect(blue?.usageCount).toBe(1);
+    });
+
+    it("invalidates cache on deleteSkill so tag usageCount drops to 0 (UT-007)", async () => {
+      const p = new MemoryPersistence();
+      p.snapshot = {
+        schemaVersion: 2,
+        compilerVersion: "1.0.0",
+        skills: [snapshotSkill("harness-a", ["red"])],
+        proposals: [],
+        tags: [tagEntry("tag_red", "red", "Red")],
+        workflows: [],
+        projectBindings: []
+      };
+      const store = newStore(p);
+      await store.initialize();
+      // 先填充缓存：red 的 usageCount=1
+      expect(store.listTags().find((t) => t.slug === "red")?.usageCount).toBe(1);
+      // deleteSkill 后缓存失效，再查 red 的 usageCount 应降为 0
+      await store.deleteSkill({ slug: "harness-a", actorId: "owner" });
+      const red = store.listTags().find((t) => t.slug === "red");
+      expect(red?.usageCount).toBe(0);
     });
   });
 });
