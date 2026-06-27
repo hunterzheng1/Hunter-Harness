@@ -1,5 +1,6 @@
 import type {
   DashboardOverview,
+  DraftState,
   RegistryAgent,
   RegistrySkillDetail,
   RegistrySkillProposal,
@@ -7,6 +8,9 @@ import type {
   RegistryTag,
   RegistryWorkflow,
   RegistryWorkflowMutation,
+  SkillCheckItem,
+  SkillCheckResult,
+  SkillDiffFile,
   SkillIr
 } from "@hunter-harness/contracts";
 
@@ -322,6 +326,38 @@ const MOCK_DASHBOARD: DashboardOverview = {
 function demoReadOnly(): never {
   throw new ApiClientError(403, "DEMO_READ_ONLY", "Demo mode is read-only and did not write server state.");
 }
+
+type DemoCheckLike = { id: string; label: string; status: "green" | "yellow" | "red"; message: string; filePath?: string; fixable?: boolean };
+type DemoDiffLike = { path: string; status: "modified" | "added" | "removed"; publishedContent: string; draftContent: string };
+
+function demoChecksToResult(checks: readonly DemoCheckLike[]): SkillCheckResult {
+  const items: SkillCheckItem[] = checks.map((c) => ({
+    id: c.id,
+    label: c.label,
+    status: c.status,
+    message: c.message,
+    filePath: c.filePath ?? null,
+    fixable: c.fixable ?? false
+  }));
+  return {
+    items,
+    summary: {
+      green: items.filter((i) => i.status === "green").length,
+      yellow: items.filter((i) => i.status === "yellow").length,
+      red: items.filter((i) => i.status === "red").length
+    },
+    checkedAt: "2026-06-25T15:20:00Z"
+  };
+}
+
+function demoDiffToFiles(diffFiles: readonly DemoDiffLike[] | undefined): SkillDiffFile[] {
+  return (diffFiles ?? []).map((d) => ({
+    path: d.path,
+    status: d.status,
+    publishedContent: d.publishedContent,
+    draftContent: d.draftContent
+  }));
+}
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -535,6 +571,48 @@ export class MockApiClient implements HunterApi {
           : [],
     });
   }
+
+  async uploadSkillDraft(): Promise<DraftState> { return demoReadOnly(); }
+
+  async getSkillDraft(slug: string): Promise<DraftState> {
+    const src = findDemoSourceSkill(slug);
+    if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
+    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    if (agent === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
+    return delay({
+      slug: src.slug,
+      sourceFiles: src.source.files.map((f) => ({ path: f.path, content: f.content })),
+      ir: SAP_FIELD_MAPPER_IR,
+      examples: src.examples.map((e) => ({ title: e.title, description: e.description, request: e.request, result: e.result, files: e.files ? [...e.files] : [] })),
+      draftVersion: agent.draftVersion?.version ?? null,
+      checks: demoChecksToResult(agent.checks),
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-25T00:00:00Z",
+      updated_at: "2026-06-25T15:20:00Z"
+    });
+  }
+
+  async discardSkillDraft(): Promise<{ slug: string; discarded: boolean }> { return demoReadOnly(); }
+
+  async runSkillDraftChecks(slug: string): Promise<SkillCheckResult> {
+    const src = findDemoSourceSkill(slug);
+    if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
+    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    if (agent === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
+    return delay(demoChecksToResult(agent.checks));
+  }
+
+  async publishSkillDraft(): Promise<RegistrySkillVersion> { return demoReadOnly(); }
+
+  async diffSkillDraft(slug: string): Promise<SkillDiffFile[]> {
+    const src = findDemoSourceSkill(slug);
+    if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
+    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    return delay(demoDiffToFiles(agent?.diffFiles));
+  }
+
+  async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
 }
 
 export const mockApi = new MockApiClient();

@@ -1,7 +1,9 @@
 import {
   canonicalJson,
   type DashboardOverview,
+  type DraftState,
   type FileOperation,
+  type PublishSkillRequest,
   type RegistryAgent,
   type RegistryArtifact,
   type RegistryProjectWorkflowBinding,
@@ -11,6 +13,8 @@ import {
   type RegistryTag,
   type RegistryWorkflow,
   type RegistryWorkflowMutation,
+  type SkillCheckResult,
+  type SkillDiffFile,
   type SkillIr
 } from "@hunter-harness/contracts";
 
@@ -147,6 +151,13 @@ export interface HunterApi {
   deleteWorkflow?(workflowId: string, revision: number): Promise<void>;
   getProjectWorkflowBinding?(projectId: string): Promise<RegistryProjectWorkflowBinding | null>;
   bindProjectWorkflow?(projectId: string, workflowId: string, revision: number | null): Promise<RegistryProjectWorkflowBinding>;
+  uploadSkillDraft?(form: FormData): Promise<DraftState>;
+  getSkillDraft?(slug: string): Promise<DraftState>;
+  discardSkillDraft?(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }>;
+  runSkillDraftChecks?(slug: string): Promise<SkillCheckResult>;
+  publishSkillDraft?(slug: string, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
+  diffSkillDraft?(slug: string): Promise<SkillDiffFile[]>;
+  deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
 }
 
 export class ApiClientError extends Error {
@@ -176,6 +187,16 @@ function uuid(): string {
 export async function sha256Text(value: string): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
   return "sha256:" + [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function buildUploadFormData(files: File[]): FormData {
+  const fd = new FormData();
+  for (const f of files) {
+    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+    const filename = rel && rel.length > 0 ? rel : f.name;
+    fd.append("file", f, filename);
+  }
+  return fd;
 }
 
 export class HttpHunterApi implements HunterApi {
@@ -529,6 +550,67 @@ export class HttpHunterApi implements HunterApi {
     return this.request("PUT", "/api/v1/projects/" + encodeURIComponent(projectId) + "/workflow-binding", {
       schema_version: 1, workflow_id: workflowId, revision
     });
+  }
+
+  private async multipartRequest<T>(path: string, formData: FormData): Promise<T> {
+    const token = this.tokenProvider();
+    if (token === null || token === "") {
+      throw new ApiClientError(401, "AUTH_REQUIRED", "Authentication required.");
+    }
+    let response: Response;
+    try {
+      const headers = new Headers({
+        Accept: "application/json",
+        Authorization: "Bearer " + token
+      });
+      headers.set("X-Request-Id", uuid());
+      headers.set("Idempotency-Key", uuid());
+      response = await this.fetch(this.baseUrl + path, {
+        method: "POST",
+        headers,
+        body: formData
+      });
+    } catch {
+      throw new ApiClientError(0, "NETWORK_ERROR", "Unable to reach the governance server while uploading " + path + ".");
+    }
+    const payload = await response.json() as { error?: { code?: string; message?: string } } & T;
+    if (!response.ok) {
+      throw new ApiClientError(
+        response.status,
+        payload.error?.code ?? "HTTP_ERROR",
+        payload.error?.message ?? "Skill upload failed."
+      );
+    }
+    return payload;
+  }
+
+  async uploadSkillDraft(form: FormData): Promise<DraftState> {
+    return this.multipartRequest<DraftState>("/api/v1/skills/draft", form);
+  }
+
+  async getSkillDraft(slug: string): Promise<DraftState> {
+    return this.request("GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft");
+  }
+
+  async discardSkillDraft(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }> {
+    return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft", { revision });
+  }
+
+  async runSkillDraftChecks(slug: string): Promise<SkillCheckResult> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/checks", {});
+  }
+
+  async publishSkillDraft(slug: string, req: PublishSkillRequest): Promise<RegistrySkillVersion> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/publish", req);
+  }
+
+  async diffSkillDraft(slug: string): Promise<SkillDiffFile[]> {
+    const result = await this.request<{ items: SkillDiffFile[] }>("GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/diff");
+    return result.items;
+  }
+
+  async deleteSkill(slug: string): Promise<{ slug: string; deleted: boolean }> {
+    return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug), {});
   }
 }
 
