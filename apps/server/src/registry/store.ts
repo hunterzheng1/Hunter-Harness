@@ -178,6 +178,7 @@ export class RegistryStore {
   private readonly projectBindings = new Map<string, RegistryProjectWorkflowBinding>();
   private readonly drafts = new Map<string, DraftState>();
   private compilerVersion = "1.0.0";
+  private tagUsageCache: Map<string, number> | null = null;
 
   constructor(
     private readonly storage: ArtifactStorage,
@@ -483,6 +484,7 @@ export class RegistryStore {
     }
     if (state !== undefined) this.skills.delete(input.slug);
     if (draft !== undefined) this.drafts.delete(input.slug);
+    this.invalidateTagUsageCache();
     await this.persist();
   }
 
@@ -685,13 +687,25 @@ export class RegistryStore {
     return structuredClone(tag);
   }
 
-  listTags(): RegistryTag[] {
-    const usageBySlug = new Map<string, number>();
-    for (const state of this.skills.values()) {
-      for (const slug of state.detail.tags) {
-        usageBySlug.set(slug, (usageBySlug.get(slug) ?? 0) + 1);
+  private invalidateTagUsageCache(): void {
+    this.tagUsageCache = null;
+  }
+
+  private ensureTagUsageCache(): Map<string, number> {
+    if (this.tagUsageCache === null) {
+      const usageBySlug = new Map<string, number>();
+      for (const state of this.skills.values()) {
+        for (const slug of state.detail.tags) {
+          usageBySlug.set(slug, (usageBySlug.get(slug) ?? 0) + 1);
+        }
       }
+      this.tagUsageCache = usageBySlug;
     }
+    return this.tagUsageCache;
+  }
+
+  listTags(): RegistryTag[] {
+    const usageBySlug = this.ensureTagUsageCache();
     return [...this.tags.values()].map((tag) => structuredClone({
       ...tag,
       usageCount: usageBySlug.get(tag.slug) ?? 0
@@ -735,6 +749,7 @@ export class RegistryStore {
         updated_at: new Date().toISOString()
       });
     }
+    this.invalidateTagUsageCache();
     return this.updateTag(tagId, { revision, active: false });
   }
 
@@ -751,6 +766,7 @@ export class RegistryStore {
       revision: state.detail.revision + 1,
       updated_at: new Date().toISOString()
     });
+    this.invalidateTagUsageCache();
     return structuredClone(state.detail);
   }
 

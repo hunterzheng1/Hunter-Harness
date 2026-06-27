@@ -255,4 +255,15 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
       expect(() => store.getSkill("harness-corrupt")).toThrow();
     });
   });
+
+  describe("listTags usage cache (YELLOW-4)", () => {
+    it("returns consistent usageCount across cached calls (UT-005)", () => {
+      const store = newStore();
+      store.createTag({ slug: "red", label: "Red" });
+      const first = store.listTags();
+      const second = store.listTags();
+      expect(first.find((t) => t.slug === "red")?.usageCount).toBe(0);
+      expect(second.find((t) => t.slug === "red")?.usageCount).toBe(0);
+    });
+  });
 });
