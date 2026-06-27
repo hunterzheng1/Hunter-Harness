@@ -16,6 +16,7 @@
     "test:postgres": "vitest --root ../.. --config vitest.config.ts run apps/server/test/postgres.integration.test.ts"
   },
   "dependencies": {
+    "@fastify/multipart": "^10.0.0",
     "@hunter-harness/contracts": "*",
     "@hunter-harness/core": "*",
     "adm-zip": "^0.5.17",

@@ -3,13 +3,17 @@ import { randomUUID } from "node:crypto";
 
 import {
   canonicalJson,
+  draftStateSchema,
   registrySkillDetailSchema,
   registrySkillProposalSchema,
+  registrySkillVersionSchema,
   registryProjectWorkflowBindingSchema,
   registryTagSchema,
   registryWorkflowMutationSchema,
   registryWorkflowSchema,
   skillIrSchema,
+  type AgentSkillConfig,
+  type DraftState,
   type RegistryAgent,
   type RegistryArtifact,
   type RegistryProjectWorkflowBinding,
@@ -19,10 +23,17 @@ import {
   type RegistryTag,
   type RegistryWorkflow,
   type RegistryWorkflowMutation,
-  type SkillIr
+  type SkillCheckResult,
+  type SkillDiffFile,
+  type SkillIr,
+  type SourceFile
 } from "@hunter-harness/contracts";
 import {
+  checkSkill,
+  compareSemver,
   compileSkill,
+  computeDiff,
+  findSkillIr,
   scanSensitiveFiles,
   sha256Bytes,
   type BootstrapBundle
@@ -49,27 +60,76 @@ function id(prefix: string): string {
   return prefix + randomUUID().replaceAll("-", "");
 }
 
-function adapters(ir: SkillIr): RegistryAgent[] {
+function agentsFor(ir: SkillIr, latestVersion: string | null): AgentSkillConfig[] {
   return Object.entries(ir.adapters)
     .filter(([, value]) => value.enabled)
     .map(([key]) => key)
     .filter((key): key is RegistryAgent =>
       key === "claude-code" || key === "codex" || key === "generic" || key === "mcp"
-    );
+    )
+    .map((agent) => ({
+      agent,
+      enabled: true,
+      isDefault: agent === "claude-code",
+      installTarget: ".claude/skills/" + ir.name,
+      latestVersion: agent === "claude-code" ? latestVersion : null,
+      draftVersion: null,
+      sourcePackagePath: null
+    }));
 }
 
-function category(ir: SkillIr): RegistrySkillDetail["category"] {
-  return ir.kind;
+function defaultAgentOf(ir: SkillIr): RegistryAgent | null {
+  return ir.adapters["claude-code"]?.enabled === true ? "claude-code" : null;
 }
 
-function compareSemver(left: string, right: string): number {
-  const leftParts = left.split(".").map(Number);
-  const rightParts = right.split(".").map(Number);
-  for (let index = 0; index < 3; index += 1) {
-    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
-    if (difference !== 0) return difference;
-  }
-  return 0;
+function bumpPatch(version: string): string {
+  const parts = version.split(".").map(Number);
+  return (parts[0] ?? 0) + "." + (parts[1] ?? 0) + "." + ((parts[2] ?? 0) + 1);
+}
+
+function migrateSkillDetail(raw: unknown): RegistrySkillDetail {
+  const direct = registrySkillDetailSchema.safeParse(raw);
+  if (direct.success) return direct.data;
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const adaptersArr: RegistryAgent[] = Array.isArray(obj.adapters)
+    ? obj.adapters as RegistryAgent[]
+    : (["claude-code"] as RegistryAgent[]);
+  const slug = typeof obj.slug === "string" ? obj.slug : "";
+  const latestVersion = typeof obj.latest_version === "string" ? obj.latest_version : null;
+  const agents: AgentSkillConfig[] = adaptersArr.map((agent) => ({
+    agent,
+    enabled: true,
+    isDefault: agent === "claude-code",
+    installTarget: ".claude/skills/" + slug,
+    latestVersion: agent === "claude-code" ? latestVersion : null,
+    draftVersion: null,
+    sourcePackagePath: null
+  }));
+  const defaultAgent = agents.some((a) => a.agent === "claude-code") ? "claude-code" : null;
+  const cleaned: Record<string, unknown> = { ...obj };
+  delete cleaned.category;
+  delete cleaned.adapters;
+  cleaned.agents = agents;
+  cleaned.defaultAgent = defaultAgent;
+  return registrySkillDetailSchema.parse(cleaned);
+}
+
+function migrateSkillVersion(raw: unknown): RegistrySkillVersion {
+  const direct = registrySkillVersionSchema.safeParse(raw);
+  if (direct.success) return direct.data;
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const cleaned: Record<string, unknown> = { ...obj };
+  if (cleaned.changeNote === undefined) cleaned.changeNote = null;
+  if (!Array.isArray(cleaned.sourceFiles)) cleaned.sourceFiles = [];
+  if (!Array.isArray(cleaned.examples)) cleaned.examples = [];
+  return registrySkillVersionSchema.parse(cleaned);
+}
+
+function migrateTag(raw: unknown): RegistryTag {
+  const direct = registryTagSchema.safeParse(raw);
+  if (direct.success) return direct.data;
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  return registryTagSchema.parse({ ...obj, usageCount: 0 });
 }
 
 function requireForwardVersion(existing: SkillState | undefined, version: string): void {
@@ -108,12 +168,15 @@ function zipArtifact(ir: SkillIr, compilerVersion: string): Uint8Array {
   return zip.toBuffer();
 }
 
+const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
+
 export class RegistryStore {
   private readonly skills = new Map<string, SkillState>();
   private readonly proposals = new Map<string, ProposalState>();
   private readonly tags = new Map<string, RegistryTag>();
   private readonly workflows = new Map<string, RegistryWorkflow>();
   private readonly projectBindings = new Map<string, RegistryProjectWorkflowBinding>();
+  private readonly drafts = new Map<string, DraftState>();
   private compilerVersion = "1.0.0";
 
   constructor(
@@ -126,44 +189,66 @@ export class RegistryStore {
     if (snapshot !== null && snapshot !== undefined) {
       const value = snapshot as {
         compilerVersion: string;
-        skills: Array<[string, SkillState]>;
+        skills: Array<[string, unknown]>;
         proposals: Array<[string, ProposalState]>;
-        tags: Array<[string, RegistryTag]>;
+        tags: Array<[string, unknown]>;
         workflows: Array<[string, RegistryWorkflow]>;
         projectBindings?: Array<[string, RegistryProjectWorkflowBinding]>;
+        drafts?: Array<[string, unknown]>;
       };
       this.compilerVersion = value.compilerVersion;
-      for (const [key, state] of value.skills) this.skills.set(key, state);
+      for (const [key, raw] of value.skills) {
+        const state = this.migrateSkillState(raw);
+        if (state !== null) this.skills.set(key, state);
+      }
       for (const [key, state] of value.proposals) this.proposals.set(key, state);
-      for (const [key, state] of value.tags) this.tags.set(key, state);
+      for (const [key, raw] of value.tags) this.tags.set(key, migrateTag(raw));
       for (const [key, state] of value.workflows) this.workflows.set(key, state);
       for (const [key, state] of value.projectBindings ?? []) this.projectBindings.set(key, state);
+      for (const [key, raw] of value.drafts ?? []) {
+        const parsed = draftStateSchema.safeParse(raw);
+        if (parsed.success) this.drafts.set(key, parsed.data);
+      }
       return;
     }
     if (bundle === undefined) return;
     this.compilerVersion = bundle.compilerVersion;
     for (const ir of bundle.skills) {
       if (this.skills.has(ir.name)) continue;
-      await this.publish(ir, null, new Date().toISOString());
+      await this.publishIr(ir, null, new Date().toISOString());
     }
     await this.persist();
   }
 
   async persist(): Promise<void> {
     await this.persistence?.save({
-      schemaVersion: 1,
+      schemaVersion: 2,
       compilerVersion: this.compilerVersion,
       skills: [...this.skills.entries()],
       proposals: [...this.proposals.entries()],
       tags: [...this.tags.entries()],
       workflows: [...this.workflows.entries()],
-      projectBindings: [...this.projectBindings.entries()]
+      projectBindings: [...this.projectBindings.entries()],
+      drafts: [...this.drafts.entries()]
     });
+  }
+
+  private migrateSkillState(raw: unknown): SkillState | null {
+    try {
+      const obj = (raw ?? {}) as Record<string, unknown>;
+      const detail = migrateSkillDetail(obj.detail);
+      const versions = Array.isArray(obj.versions) ? obj.versions.map(migrateSkillVersion) : [];
+      return { detail, versions };
+    } catch (error) {
+      // 损坏 skill（如旧 snapshot 的 ir:null）无法迁移为合法 detail — 跳过该条目并记录警告，
+      // 避免单个损坏条目阻塞整体 initialize（与旧数据兼容迁移的不报错语义一致）
+      console.warn("[registry] skipping corrupt skill during migration:", (error as Error).message);
+      return null;
+    }
   }
 
   listSkills(query: {
     search?: string | undefined;
-    category?: string | undefined;
     tag?: string | undefined;
     agent?: string | undefined;
     status?: string | undefined;
@@ -173,9 +258,9 @@ export class RegistryStore {
       .filter((skill) => search === "" ||
         skill.slug.includes(search) || skill.name.toLowerCase().includes(search) ||
         skill.description.toLowerCase().includes(search))
-      .filter((skill) => query.category === undefined || skill.category === query.category)
       .filter((skill) => query.tag === undefined || skill.tags.includes(query.tag))
-      .filter((skill) => query.agent === undefined || skill.adapters.includes(query.agent as RegistryAgent))
+      .filter((skill) => query.agent === undefined ||
+        skill.agents.some((a) => a.agent === (query.agent as RegistryAgent)))
       .filter((skill) => query.status === undefined || skill.status === query.status)
       .sort((left, right) => left.slug.localeCompare(right.slug));
   }
@@ -190,6 +275,215 @@ export class RegistryStore {
     const state = this.skills.get(slug);
     if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
     return structuredClone(state.versions).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  getDraft(slug: string): DraftState | undefined {
+    const draft = this.drafts.get(slug);
+    return draft === undefined ? undefined : structuredClone(draft);
+  }
+
+  async upsertDraft(input: {
+    slug: string;
+    sourceFiles: SourceFile[];
+    ir: SkillIr;
+    draftVersion: string | null;
+  }): Promise<DraftState> {
+    const now = new Date().toISOString();
+    const existing = this.drafts.get(input.slug);
+    const draft = draftStateSchema.parse({
+      slug: input.slug,
+      sourceFiles: input.sourceFiles,
+      ir: input.ir,
+      examples: existing?.examples ?? [],
+      draftVersion: input.draftVersion,
+      checks: null,
+      releaseNote: existing?.releaseNote ?? null,
+      revision: existing === undefined ? 1 : existing.revision + 1,
+      created_at: existing?.created_at ?? now,
+      updated_at: now
+    }) as DraftState;
+    this.drafts.set(input.slug, draft);
+    await this.persist();
+    return structuredClone(draft);
+  }
+
+  async deleteDraft(slug: string, revision: number): Promise<void> {
+    const draft = this.drafts.get(slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+    }
+    if (draft.revision !== revision) {
+      throw new ServerDomainError(409, "REVISION_CONFLICT", "draft revision is stale", {
+        slug, expected: draft.revision, provided: revision
+      });
+    }
+    this.drafts.delete(slug);
+    await this.persist();
+  }
+
+  async uploadDraft(input: { files: SourceFile[]; actorId: string }): Promise<DraftState> {
+    const paths = input.files.map((f) => f.path);
+    const hasWorkflow = paths.some((p) => /(^|\/)workflow\.ya?ml$/i.test(p));
+    const hasSkillsDir = paths.some((p) => /(^|\/)skills\//.test(p));
+    const hasAgentsDir = paths.some((p) => /(^|\/)agents\//.test(p));
+    if (hasWorkflow && (hasSkillsDir || hasAgentsDir)) {
+      throw new ServerDomainError(422, "WORKFLOW_PACKAGE_NOT_SUPPORTED", "workflow packages must use the workflow center");
+    }
+    const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
+    if (unsafe !== undefined) {
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "unsafe file path: " + unsafe.path);
+    }
+    let ir: SkillIr;
+    try {
+      ir = findSkillIr(input.files);
+    } catch (error) {
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", (error as Error).message);
+    }
+    const fileMap: Record<string, string> = {};
+    for (const f of input.files) fileMap[f.path] = f.content;
+    fileMap["skill-ir.json"] = canonicalJson(ir);
+    const findings = scanSensitiveFiles(fileMap);
+    if (findings.blocked) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
+        finding_count: findings.findings.length
+      });
+    }
+    const slug = ir.name;
+    const latest = this.skills.get(slug)?.detail.latest_version ?? null;
+    const draftVersion = latest === null ? "0.1.0" : bumpPatch(latest);
+    return this.upsertDraft({ slug, sourceFiles: input.files, ir, draftVersion });
+  }
+
+  async runChecks(input: { slug: string; checkedAt: string }): Promise<SkillCheckResult> {
+    const draft = this.drafts.get(input.slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
+    }
+    const latest = this.skills.get(input.slug)?.detail.latest_version ?? null;
+    const result = checkSkill({
+      ir: draft.ir,
+      sourceFiles: draft.sourceFiles,
+      latestVersion: latest,
+      compilerVersion: this.compilerVersion,
+      checkedAt: input.checkedAt
+    });
+    const updated: DraftState = { ...draft, checks: result, updated_at: input.checkedAt };
+    this.drafts.set(input.slug, updated);
+    await this.persist();
+    return structuredClone(result);
+  }
+
+  async publish(input: {
+    slug: string;
+    version: string;
+    releaseNote?: string | null;
+    actorId: string;
+  }): Promise<RegistrySkillVersion> {
+    const draft = this.drafts.get(input.slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
+    }
+    const existing = this.skills.get(input.slug);
+    const latest = existing?.detail.latest_version ?? null;
+    if (latest !== null && compareSemver(input.version, latest) <= 0) {
+      throw new ServerDomainError(422, "VERSION_NOT_FORWARD", "skill version must be greater than the latest published version", {
+        latest_version: latest,
+        proposed_version: input.version
+      });
+    }
+    const ir = draft.ir;
+    skillIrSchema.parse(ir);
+    const fileMap: Record<string, string> = {};
+    for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
+    fileMap["skill-ir.json"] = canonicalJson(ir);
+    const findings = scanSensitiveFiles(fileMap);
+    if (findings.blocked) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
+        finding_count: findings.findings.length
+      });
+    }
+    const bytes = zipArtifact(ir, this.compilerVersion);
+    const hash = sha256Bytes(bytes);
+    await this.storage.putBlob(hash, bytes);
+    const createdAt = new Date().toISOString();
+    const artifact = {
+      artifact_id: id("ska_"),
+      skill_slug: input.slug,
+      version: input.version,
+      agent: "claude-code" as const,
+      content_sha256: hash,
+      size_bytes: bytes.byteLength,
+      source_proposal_id: null,
+      created_at: createdAt
+    } satisfies RegistryArtifact;
+    const version: RegistrySkillVersion = {
+      skill_slug: input.slug,
+      version: input.version,
+      ir,
+      artifacts: [artifact],
+      source_proposal_id: null,
+      sourceFiles: draft.sourceFiles,
+      examples: draft.examples,
+      changeNote: input.releaseNote ?? null,
+      created_at: createdAt
+    };
+    if (existing === undefined) {
+      const detail = registrySkillDetailSchema.parse({
+        skill_id: id("skl_"),
+        slug: input.slug,
+        name: ir.name,
+        description: ir.description,
+        tags: [],
+        status: "published",
+        latest_version: input.version,
+        defaultAgent: defaultAgentOf(ir),
+        agents: agentsFor(ir, input.version),
+        revision: 1,
+        created_at: createdAt,
+        updated_at: createdAt,
+        ir
+      });
+      this.skills.set(input.slug, { detail, versions: [version] });
+    } else {
+      existing.versions.push(version);
+      existing.detail = registrySkillDetailSchema.parse({
+        ...existing.detail,
+        description: ir.description,
+        status: "published",
+        latest_version: input.version,
+        defaultAgent: defaultAgentOf(ir),
+        agents: agentsFor(ir, input.version),
+        revision: existing.detail.revision + 1,
+        updated_at: createdAt,
+        ir
+      });
+    }
+    this.drafts.delete(input.slug);
+    await this.persist();
+    return structuredClone(version);
+  }
+
+  diffDraft(slug: string): SkillDiffFile[] {
+    const draft = this.drafts.get(slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+    }
+    const skill = this.skills.get(slug);
+    const latest = skill?.detail.latest_version ?? null;
+    const publishedVersion = skill?.versions.find((v) => v.version === latest);
+    const published = publishedVersion?.sourceFiles ?? [];
+    return computeDiff(published, draft.sourceFiles);
+  }
+
+  async deleteSkill(input: { slug: string; actorId: string }): Promise<void> {
+    const state = this.skills.get(input.slug);
+    const draft = this.drafts.get(input.slug);
+    if (state === undefined && draft === undefined) {
+      throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found", { slug: input.slug });
+    }
+    if (state !== undefined) this.skills.delete(input.slug);
+    if (draft !== undefined) this.drafts.delete(input.slug);
+    await this.persist();
   }
 
   createProposal(input: { ir: SkillIr; actorId: string; agent: RegistryAgent }): ProposalState {
@@ -269,7 +563,7 @@ export class RegistryStore {
     }
     const reviewedAt = new Date().toISOString();
     const artifacts = input.decision === "approve"
-      ? await this.publish(proposal.proposed_ir, proposal.proposal_id, reviewedAt)
+      ? await this.publishIr(proposal.proposed_ir, proposal.proposal_id, reviewedAt)
       : [];
     proposal.status = input.decision === "approve" ? "approved" : "rejected";
     proposal.reviewed_at = reviewedAt;
@@ -279,7 +573,7 @@ export class RegistryStore {
     return structuredClone(proposal);
   }
 
-  private async publish(
+  private async publishIr(
     ir: SkillIr,
     proposalId: string | null,
     createdAt: string
@@ -305,6 +599,9 @@ export class RegistryStore {
       ir,
       artifacts: [artifact],
       source_proposal_id: proposalId,
+      sourceFiles: [],
+      examples: [],
+      changeNote: null,
       created_at: createdAt
     };
     if (existing === undefined) {
@@ -313,11 +610,11 @@ export class RegistryStore {
         slug: ir.name,
         name: ir.name,
         description: ir.description,
-        category: category(ir),
         tags: [],
         status: "published",
         latest_version: ir.version,
-        adapters: adapters(ir),
+        defaultAgent: defaultAgentOf(ir),
+        agents: agentsFor(ir, ir.version),
         revision: 1,
         created_at: createdAt,
         updated_at: createdAt,
@@ -329,10 +626,10 @@ export class RegistryStore {
       existing.detail = registrySkillDetailSchema.parse({
         ...existing.detail,
         description: ir.description,
-        category: category(ir),
         status: "published",
         latest_version: ir.version,
-        adapters: adapters(ir),
+        defaultAgent: defaultAgentOf(ir),
+        agents: agentsFor(ir, ir.version),
         revision: existing.detail.revision + 1,
         updated_at: createdAt,
         ir
@@ -346,7 +643,6 @@ export class RegistryStore {
       throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "this adapter is contract-only in MVP");
     }
     const ir = this.getSkill(slug).ir;
-    if (ir === null) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "published Skill IR is unavailable");
     const profile = Object.entries(ir.profiles).find(([, value]) => value.enabled)?.[0];
     if (profile === undefined) throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled profile");
     return compileSkill(ir, {
@@ -355,6 +651,7 @@ export class RegistryStore {
       compilerVersion: this.compilerVersion
     });
   }
+
   latestArtifact(slug: string, agent: RegistryAgent): RegistryArtifact {
     const versions = this.listVersions(slug);
     const artifact = versions[0]?.artifacts.find((item) => item.agent === agent);
@@ -382,14 +679,23 @@ export class RegistryStore {
     const now = new Date().toISOString();
     const tag = registryTagSchema.parse({
       tag_id: id("tag_"), slug: input.slug, label: input.label, active: true,
-      revision: 1, created_at: now, updated_at: now
+      revision: 1, usageCount: 0, created_at: now, updated_at: now
     });
     this.tags.set(tag.tag_id, tag);
     return structuredClone(tag);
   }
 
   listTags(): RegistryTag[] {
-    return [...this.tags.values()].map((tag) => structuredClone(tag));
+    const usageBySlug = new Map<string, number>();
+    for (const state of this.skills.values()) {
+      for (const slug of state.detail.tags) {
+        usageBySlug.set(slug, (usageBySlug.get(slug) ?? 0) + 1);
+      }
+    }
+    return [...this.tags.values()].map((tag) => structuredClone({
+      ...tag,
+      usageCount: usageBySlug.get(tag.slug) ?? 0
+    }));
   }
 
   updateTag(tagId: string, input: {
@@ -554,10 +860,10 @@ export class RegistryStore {
       if (skill === undefined || skill.status !== "published") {
         throw new ServerDomainError(422, "WORKFLOW_SKILL_INVALID", "workflow references an unpublished skill", { slug });
       }
-      if (!skill.adapters.includes(workflow.default_agent)) {
+      if (!skill.agents.some((a) => a.agent === workflow.default_agent)) {
         throw new ServerDomainError(422, "WORKFLOW_ADAPTER_INCOMPATIBLE", "skill does not support workflow agent", { slug });
       }
-      if (skill.ir?.profiles[workflow.profile]?.enabled !== true) {
+      if (skill.ir.profiles[workflow.profile]?.enabled !== true) {
         throw new ServerDomainError(422, "WORKFLOW_PROFILE_INCOMPATIBLE", "skill does not support workflow profile", { slug });
       }
     }

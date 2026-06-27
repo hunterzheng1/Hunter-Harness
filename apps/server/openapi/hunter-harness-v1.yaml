@@ -205,6 +205,13 @@ paths:
       responses:
         "200": { description: Canonical Skill detail }
         default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Skill and its draft, versions, and artifacts deleted }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/versions:
     get:
       operationId: listSkillVersions
@@ -222,6 +229,49 @@ paths:
       operationId: downloadSkillArtifact
       responses:
         "200": { description: Approved adapter ZIP with SHA-256 headers }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/draft:
+    post:
+      operationId: uploadSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Skill draft created or updated from uploaded files }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft:
+    get:
+      operationId: getSkillDraft
+      responses:
+        "200": { description: Unpublished Skill draft with source files and checks }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: discardSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Skill draft discarded }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/checks:
+    post:
+      operationId: runSkillDraftChecks
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Programmatic Skill draft check results }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/publish:
+    post:
+      operationId: publishSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Skill draft promoted to a new published version }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/diff:
+    get:
+      operationId: diffSkillDraft
+      responses:
+        "200": { description: Published vs draft source file diff }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skill-artifacts:
     get:

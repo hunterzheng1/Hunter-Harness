@@ -91,20 +91,31 @@ function skillStatusLabel(status: RegistrySkillDetail["status"], t: ReturnType<t
 function localSkillFromIr(ir: SkillIr, fileName: string): RegistrySkillDetail {
   const slug = tagSlug(ir.name || fileName.replace(/\.[^.]+$/, "")) || "uploaded-skill";
   const now = new Date().toISOString();
+  const agentList = Object.keys(ir.adapters).filter((key) => ["claude-code", "codex", "generic", "mcp"].includes(key)) as RegistryAgent[];
   return {
     skill_id: "skl_local_" + slug,
     slug,
     name: ir.name || slug,
     description: ir.description,
-    category: "tooling",
     tags: ["uploaded"],
     status: "draft",
     latest_version: ir.version,
-    adapters: Object.keys(ir.adapters ?? {}).filter((key) => ["claude-code", "codex", "generic", "mcp"].includes(key)) as RegistryAgent[],
+    defaultAgent: agentList.includes("claude-code") ? "claude-code" : null,
+    agents: agentList.map((agent) => ({
+      agent,
+      enabled: true,
+      isDefault: agent === "claude-code",
+      installTarget: ".claude/skills/" + slug,
+      latestVersion: agent === "claude-code" ? ir.version : null,
+      draftVersion: null,
+      sourcePackagePath: null
+    })),
     revision: 1,
     created_at: now,
     updated_at: now,
-    ir
+    ir,
+    sourceFiles: [],
+    examples: []
   };
 }
 
@@ -916,7 +927,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     const needle = search.trim().toLowerCase();
     return (needle === "" || `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase().includes(needle)) &&
       (selectedTags.length === 0 || selectedTags.every((tag) => skill.tags.includes(tag))) &&
-      (agent === "" || skill.adapters.includes(agent as RegistryAgent)) &&
+      (agent === "" || skill.agents.some((a) => a.agent === agent)) &&
       (status === "" || skillStatusGroup(skill.status) === status);
   });
   const pageSize = 6;
@@ -925,7 +936,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const pageItems = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const publishedCount = (skills ?? []).filter((skill) => skill.status === "published").length;
   const unpublishedCount = (skills ?? []).length - publishedCount;
-  const configuredAgentCount = new Set((skills ?? []).flatMap((skill) => skill.adapters)).size;
+  const configuredAgentCount = new Set((skills ?? []).flatMap((skill) => skill.agents.map((a) => a.agent))).size;
   const usedSkillCount = new Set(workflows.flatMap((workflow) => workflow.skill_slugs)).size;
 
   function toggleTag(slug: string): void {
@@ -1001,7 +1012,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
               <div className="skill-row-with-actions" key={skill.skill_id}>
                 <Link className="skill-row" href={`/skills/${skill.slug}`}>
                   <div className="skill-row-main"><strong className="skill-row-name">{skill.name}</strong><p className="skill-row-desc" title={displayValue(skill.description, t.skillDetail)}>{displayValue(skill.description, t.skillDetail)}</p><div className="tag-row">{skill.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></div>
-                  <div className="skill-meta"><span className="meta-pill meta-pill-version">v{skill.latest_version ?? "0.0.0"}</span><span className="skill-meta-cell"><strong>{skill.adapters.length}</strong>{t.skills.adapters}</span><span className="skill-meta-cell"><strong>{usageCount}</strong>{t.skills.workflowsPl}</span><span className="skill-meta-cell" title={`${t.skills.updated} ${skill.updated_at.slice(0, 10)}`}>{skill.updated_at.slice(0, 10)}</span><span className={`status ${skill.status === "published" ? "status-published" : "status-draft"}`}>{skillStatusLabel(skill.status, t.skills)}</span></div>
+                  <div className="skill-meta"><span className="meta-pill meta-pill-version">v{skill.latest_version ?? "0.0.0"}</span><span className="skill-meta-cell"><strong>{skill.agents.length}</strong>{t.skills.adapters}</span><span className="skill-meta-cell"><strong>{usageCount}</strong>{t.skills.workflowsPl}</span><span className="skill-meta-cell" title={`${t.skills.updated} ${skill.updated_at.slice(0, 10)}`}>{skill.updated_at.slice(0, 10)}</span><span className={`status ${skill.status === "published" ? "status-published" : "status-draft"}`}>{skillStatusLabel(skill.status, t.skills)}</span></div>
                 </Link>
                 <button type="button" className="skill-delete-button" aria-label={t.common.delete} title={t.common.delete} onClick={(event) => { event.preventDefault(); event.stopPropagation(); deleteSkill(skill); }}>×</button>
               </div>
@@ -1085,7 +1096,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       const localSkill = loadLocalSkills().find((item) => item.slug === skillId);
       if (localSkill !== undefined) {
         setSkill(localSkill);
-        setVersions(localSkill.ir === null ? [] : [{ skill_slug: localSkill.slug, version: localSkill.latest_version ?? "0.0.0", ir: localSkill.ir, artifacts: [], source_proposal_id: null, created_at: localSkill.updated_at }]);
+        setVersions([{ skill_slug: localSkill.slug, version: localSkill.latest_version ?? "0.0.0", ir: localSkill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: localSkill.updated_at }]);
         setTags([]);
         setError(null);
         return;
@@ -1271,7 +1282,7 @@ export function WorkflowRegistry({ api: apiValue }: { api?: HunterApi }) {
     `${workflow.name} ${workflow.key} ${workflow.profile}`.toLowerCase().includes(workflowNeedle));
   const skillNeedle = skillQuery.trim().toLowerCase();
   const filteredLibrarySkills = skills.filter((skill) => skillNeedle === "" ||
-    `${skill.name} ${skill.description} ${skill.category}`.toLowerCase().includes(skillNeedle));
+    `${skill.name} ${skill.description} ${skill.ir.kind}`.toLowerCase().includes(skillNeedle));
 
   async function refresh(preferId?: string): Promise<void> {
     try {
@@ -1327,10 +1338,10 @@ export function WorkflowRegistry({ api: apiValue }: { api?: HunterApi }) {
           <div className="form-grid"><label>{t.workflows.name}<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>{t.workflows.key}<input value={form.key} onChange={(event) => setForm({ ...form, key: event.target.value })} /></label><label className="span-2">{t.workflows.description2}<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Profile<input value={form.profile} onChange={(event) => setForm({ ...form, profile: event.target.value })} /></label><label>{t.workflows.defaultAgent}<select value={form.default_agent} onChange={(event) => setForm({ ...form, default_agent: event.target.value as RegistryAgent })}><option value="claude-code">Claude Code</option></select></label></div>
           <div className="panel-title"><h3>{t.workflows.orderedSkillBinding}</h3><span>{t.workflows.directSaveAudit}</span></div>
           <ol className="binding-list">{form.skill_slugs.map((slug, index) => <li key={slug}><span className="sequence">{String(index + 1).padStart(2, "0")}</span><strong>{slug}</strong><div><button className="icon-button" aria-label={`move-up ${slug}`} onClick={() => move(index, -1)}>↑</button><button className="icon-button" aria-label={`move-down ${slug}`} onClick={() => move(index, 1)}>↓</button><button className="icon-button danger" aria-label={`remove ${slug}`} onClick={() => setForm({ ...form, skill_slugs: form.skill_slugs.filter((item) => item !== slug) })}>×</button></div></li>)}</ol>
-          <label>{t.workflows.addPublishedSkill}<select value="" onChange={(event) => event.target.value !== "" && setForm({ ...form, skill_slugs: [...form.skill_slugs, event.target.value] })}><option value="">{t.workflows.selectSkill}</option>{skills.filter((skill) => !form.skill_slugs.includes(skill.slug) && skill.adapters.includes(form.default_agent) && skill.ir?.profiles[form.profile]?.enabled).map((skill) => <option value={skill.slug} key={skill.skill_id}>{skill.name}</option>)}</select></label>
+          <label>{t.workflows.addPublishedSkill}<select value="" onChange={(event) => event.target.value !== "" && setForm({ ...form, skill_slugs: [...form.skill_slugs, event.target.value] })}><option value="">{t.workflows.selectSkill}</option>{skills.filter((skill) => !form.skill_slugs.includes(skill.slug) && skill.agents.some((a) => a.agent === form.default_agent) && skill.ir?.profiles[form.profile]?.enabled).map((skill) => <option value={skill.slug} key={skill.skill_id}>{skill.name}</option>)}</select></label>
           <div className="actions"><button disabled={!form.name || !form.key || !form.description} onClick={() => void save()}>{t.workflows.save}</button>{revision === null ? null : <button className="secondary danger" onClick={() => void remove()}>{t.workflows.archiveDelete}</button>}</div>
         </div>
-        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder={t.workflows.availablePlaceholder} /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.category} /></div>)}</div>
+        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder={t.workflows.availablePlaceholder} /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.ir.kind} /></div>)}</div>
       </div>
       {error === null ? null : <div className="notice danger">{error}</div>}
     </section>

@@ -3,11 +3,13 @@ import { Buffer } from "node:buffer";
 import {
   canonicalJson,
   fileOperationSchema,
+  publishSkillRequestSchema,
   registryAgentSchema,
   registrySlugSchema,
   registryWorkflowMutationSchema,
   skillIrSchema,
-  type FileOperation
+  type FileOperation,
+  type SourceFile
 } from "@hunter-harness/contracts";
 import {
   classifyFile,
@@ -24,6 +26,8 @@ import Fastify, {
   type FastifyRequest
 } from "fastify";
 import { z, ZodError } from "zod";
+import multipart from "@fastify/multipart";
+import AdmZip from "adm-zip";
 
 import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
@@ -158,6 +162,7 @@ function routeRequestId(request: FastifyRequest): string {
 }
 
 function mutationBodyHash(body: unknown): string {
+  if (body === undefined || body === null) return sha256Bytes("");
   return sha256Bytes(Buffer.isBuffer(body) ? body : canonicalJson(body));
 }
 
@@ -171,6 +176,26 @@ function operationSource(operation: FileOperation): string {
 
 function operationSize(operation: FileOperation): number {
   return "size_bytes" in operation ? operation.size_bytes : 0;
+}
+
+// 上传路径安全正则 — 与 RegistryStore.DANGEROUS_PATH / checker DANGEROUS_PATH 保持一致
+// （含 ^\\ 分支以拦截 UNC 前缀，避免与 store 层校验产生维护歧义）
+const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
+
+function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buffer }>): SourceFile[] {
+  if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
+    const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
+    const files: SourceFile[] = [];
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      if (DANGEROUS_PATH.test(entry.entryName)) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "zip slip detected: " + entry.entryName);
+      }
+      files.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
+    }
+    return files;
+  }
+  return collected.map((c) => ({ path: c.path, content: c.buffer.toString("utf8") }));
 }
 
 async function authenticated(
@@ -188,7 +213,8 @@ async function mutation(
   repository: ServerRepository,
   actor: Actor,
   requestId: string,
-  action: () => Promise<MutationResult>
+  action: () => Promise<MutationResult>,
+  bodyHashOverride?: string
 ): Promise<MutationResult> {
   const idempotency = request.headers["idempotency-key"];
   if (typeof idempotency !== "string" || !z.uuid().safeParse(idempotency).success) {
@@ -200,7 +226,7 @@ async function mutation(
   }
   const method = request.method.toUpperCase();
   const path = request.routeOptions.url ?? request.url.split("?")[0] ?? request.url;
-  const bodyHash = mutationBodyHash(request.body);
+  const bodyHash = bodyHashOverride ?? mutationBodyHash(request.body);
   const lockInput = {
     actorId: actor.actorId,
     method,
@@ -257,6 +283,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     { parseAs: "buffer" },
     (_request, body, done) => done(null, body)
   );
+  await app.register(multipart, {
+    limits: { fileSize: config.maxFileBytes, files: config.maxUploadFiles }
+  });
 
   app.setErrorHandler((error, request, reply) => {
     let status = 500;
@@ -825,7 +854,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return {
       items: registry.listSkills({
         search: query.search,
-        category: query.category,
         tag: query.tag,
         agent: query.agent,
         status: query.status
@@ -883,6 +911,105 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       .header("ETag", artifact.content_sha256)
       .header("X-Request-Id", requestId);
     return Buffer.from(bytes);
+  });
+
+  app.post("/api/v1/skills/draft", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const collected: Array<{ path: string; buffer: Buffer }> = [];
+    for await (const part of request.parts()) {
+      if (part.type !== "file") continue;
+      collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
+    }
+    const files = resolveUploadFiles(collected);
+    const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = await registry.uploadDraft({ files, actorId: actor.actorId });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null,
+        action: draft.revision === 1 ? "skill.draft.created" : "skill.draft.updated",
+        targetId: draft.slug, requestId,
+        details: { slug: draft.slug, draft_version: draft.draftVersion, revision: draft.revision }
+      });
+      return { statusCode: 201, body: draft };
+    }, bodyHash);
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/skills/:slug/draft", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const draft = registry.getDraft(slug);
+    if (draft === undefined) throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found");
+    reply.header("X-Request-Id", requestId);
+    return { ...draft, request_id: requestId };
+  });
+
+  app.delete("/api/v1/skills/:slug/draft", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const body = z.object({ revision: z.number().int().positive() }).strict().parse(request.body);
+      await registry.deleteDraft(slug, body.revision);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.draft.discarded",
+        targetId: slug, requestId, details: { slug }
+      });
+      return { statusCode: 200, body: { slug, discarded: true } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/skills/:slug/draft/checks", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const checks = await registry.runChecks({ slug, checkedAt: new Date().toISOString() });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.draft.checked",
+        targetId: slug, requestId, details: { slug, red: checks.summary.red }
+      });
+      return { statusCode: 200, body: checks };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/skills/:slug/publish", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const body = publishSkillRequestSchema.parse(request.body);
+      const version = await registry.publish({
+        slug, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.published",
+        targetId: slug, requestId, details: { slug, version: version.version }
+      });
+      return { statusCode: 200, body: version };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/skills/:slug/diff", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const diff = registry.diffDraft(slug);
+    reply.header("X-Request-Id", requestId);
+    return { items: diff, request_id: requestId };
+  });
+
+  app.delete("/api/v1/skills/:slug", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      await registry.deleteSkill({ slug, actorId: actor.actorId });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.deleted",
+        targetId: slug, requestId, details: { slug }
+      });
+      return { statusCode: 200, body: { slug, deleted: true } };
+    });
+    return send(reply, requestId, result);
   });
 
   app.get("/api/v1/skill-proposals", async (request, reply) => {

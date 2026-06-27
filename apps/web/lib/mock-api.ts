@@ -195,15 +195,25 @@ const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) =>
   slug: skill.name,
   name: skill.name,
   description: skill.description,
-  category: skill.kind,
   tags: skill.kind === "governance" ? ["review"] : ["bootstrap"],
   status: "published",
   latest_version: skill.version,
-  adapters: skill.adapters,
+  defaultAgent: skill.adapters.some((a) => a === "claude-code") ? "claude-code" : null,
+  agents: skill.adapters.map((agent) => ({
+    agent: agent as RegistryAgent,
+    enabled: true,
+    isDefault: agent === "claude-code",
+    installTarget: ".claude/skills/" + skill.name,
+    latestVersion: agent === "claude-code" ? skill.version : null,
+    draftVersion: null,
+    sourcePackagePath: null
+  })),
   revision: 1,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z",
-  ir: toIr(skill)
+  ir: toIr(skill),
+  sourceFiles: [],
+  examples: []
 }));
 
 const SAP_FIELD_MAPPER_IR: SkillIr = {
@@ -232,20 +242,25 @@ MOCK_SKILLS.push({
   slug: sapFieldMapper.slug,
   name: sapFieldMapper.slug,
   description: SAP_FIELD_MAPPER_IR.description,
-  category: "tooling",
   tags: ["sap", "source-package"],
   status: "published",
   latest_version: SAP_FIELD_MAPPER_IR.version,
-  adapters: ["claude-code", "codex"],
+  defaultAgent: "claude-code",
+  agents: [
+    { agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/" + sapFieldMapper.slug, latestVersion: SAP_FIELD_MAPPER_IR.version, draftVersion: null, sourcePackagePath: null },
+    { agent: "codex", enabled: true, isDefault: false, installTarget: ".harness/generated/codex/" + sapFieldMapper.slug, latestVersion: null, draftVersion: null, sourcePackagePath: null }
+  ],
   revision: 1,
   created_at: "2026-06-25T00:00:00Z",
   updated_at: "2026-06-25T00:00:00Z",
-  ir: SAP_FIELD_MAPPER_IR
+  ir: SAP_FIELD_MAPPER_IR,
+  sourceFiles: [],
+  examples: []
 });
 
 const MOCK_TAGS: RegistryTag[] = [
-  { tag_id: "tag_demo_bootstrap", slug: "bootstrap", label: "Bootstrap", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
-  { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
+  { tag_id: "tag_demo_bootstrap", slug: "bootstrap", label: "Bootstrap", active: true, revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" },
+  { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
 ];
 
 const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
@@ -330,8 +345,7 @@ export class MockApiClient implements HunterApi {
 
   async listSkillVersions(slug: string): Promise<RegistrySkillVersion[]> {
     const skill = await this.getSkill(slug);
-    if (skill.ir === null) throw new ApiClientError(500, "DEMO_SKILL_IR_MISSING", "Demo Skill IR is missing.");
-    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", ir: skill.ir, artifacts: [], source_proposal_id: null, created_at: skill.updated_at }]);
+    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", ir: skill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: skill.updated_at }]);
   }
 
   async getSkillAdapterPreview(slug: string, agent: RegistryAgent) {

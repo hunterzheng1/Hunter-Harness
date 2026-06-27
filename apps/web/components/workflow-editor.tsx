@@ -153,9 +153,9 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
 
   const needle = skillQuery.trim().toLowerCase();
   const availableSkills = skills.filter((s) =>
-    !form.skill_slugs.includes(s.slug) && s.adapters.includes(form.default_agent as RegistryAgent) &&
+    !form.skill_slugs.includes(s.slug) && s.agents.some((a) => a.agent === form.default_agent) &&
     s.ir?.profiles[form.profile]?.enabled &&
-    (needle === "" || `${s.name} ${s.description} ${s.category}`.toLowerCase().includes(needle))
+    (needle === "" || `${s.name} ${s.description} ${s.ir.kind}`.toLowerCase().includes(needle))
   );
 
   const boundSkills = form.skill_slugs.map((slug) => skills.find((s) => s.slug === slug) ?? null);
@@ -234,7 +234,7 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
                   <div className="card-body">
                     <strong>{skill?.name ?? form.skill_slugs[index]}</strong>
                     <div className="card-meta">
-                      {skill && <Status value={skill.category} />}
+                      {skill && <Status value={skill.ir.kind} />}
                       <span>{skill?.latest_version ?? "—"}</span>
                     </div>
                   </div>
@@ -266,9 +266,9 @@ export function WorkflowEditor({ api: apiValue, workflowId }: { api?: HunterApi;
                   <div className="library-item-info">
                     <strong>{s.name}</strong>
                     <div className="library-item-meta">
-                      <Status value={s.category} />
+                      <Status value={s.ir.kind} />
                       <code>v{s.latest_version}</code>
-                      <span>{s.adapters.length} {t.skills.adapters}</span>
+                      <span>{s.agents.length} {t.skills.adapters}</span>
                     </div>
                   </div>
                   <button className="icon-btn icon-btn-add" type="button" onClick={() => addSkill(s.slug)} aria-label={t.workflows.addSkill} title={t.workflows.addSkill}>
