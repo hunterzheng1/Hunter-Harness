@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { HttpHunterApi, buildUploadFormData } from "./api.js";
+import { HttpHunterApi, buildUploadFormData } from "../lib/api.js";
 
 function resMock(body: unknown, ok = true, status = 200): Response {
   return {

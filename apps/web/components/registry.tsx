@@ -473,6 +473,8 @@ function AgentCheckPanel({
   const [publishVersion, setPublishVersion] = useState("");
   const [publishNote, setPublishNote] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<File[] | null>(null);
 
   useEffect(() => {
     setChecksResult(draft?.checks ?? null);
@@ -527,7 +529,7 @@ function AgentCheckPanel({
       setPublishVersion("");
       setPublishNote("");
       onPublished();
-    } catch (reason) { setError(apiError(reason, t)); setPublishing(false); }
+    } catch (reason) { setError(apiError(reason, t)); }
   }
 
   async function upload(files: File[]): Promise<void> {
@@ -538,10 +540,28 @@ function AgentCheckPanel({
     } catch (reason) { setError(apiError(reason, t)); }
   }
 
+  async function discard(): Promise<void> {
+    setError(null);
+    try {
+      await required(api, "discardSkillDraft")(slug, draft?.revision ?? 0);
+      setDiscarding(false);
+      onPublished();
+    } catch (reason) { setError(apiError(reason, t)); }
+  }
+
+  async function confirmOverwrite(): Promise<void> {
+    if (pendingUpload === null) return;
+    const files = pendingUpload;
+    setPendingUpload(null);
+    await upload(files);
+  }
+
   function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
     const files = event.target.files;
     if (files === null || files.length === 0) return;
-    void upload(Array.from(files));
+    const list = Array.from(files);
+    if (draft !== null) setPendingUpload(list);
+    else void upload(list);
   }
 
   return <div className="check-publish-layout">
@@ -556,6 +576,7 @@ function AgentCheckPanel({
           <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
+          <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
           {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
         </>}
       </div>
@@ -627,12 +648,41 @@ function AgentCheckPanel({
         </div>
       </div>
     </div>}
+    {!discarding ? null : <div className="modal-backdrop" role="presentation" onClick={() => setDiscarding(false)}>
+      <div className="publish-modal" role="dialog" aria-modal="true" aria-labelledby="discard-modal-title" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-title">
+          <h2 id="discard-modal-title">{sd.discardAction}</h2>
+          <button type="button" className="icon-button" aria-label={sd.close} onClick={() => setDiscarding(false)}>×</button>
+        </div>
+        <p>{sd.discardConfirm}</p>
+        <div className="publish-modal-footer">
+          <div className="editable-card-actions">
+            <button type="button" onClick={() => void discard()}>{sd.confirmDiscard}</button>
+            <button type="button" className="secondary" onClick={() => setDiscarding(false)}>{sd.cancelEdit}</button>
+          </div>
+        </div>
+      </div>
+    </div>}
+    {pendingUpload === null ? null : <div className="modal-backdrop" role="presentation" onClick={() => setPendingUpload(null)}>
+      <div className="publish-modal" role="dialog" aria-modal="true" aria-labelledby="overwrite-modal-title" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-title">
+          <h2 id="overwrite-modal-title">{sd.overwriteConfirmTitle}</h2>
+          <button type="button" className="icon-button" aria-label={sd.close} onClick={() => setPendingUpload(null)}>×</button>
+        </div>
+        <p>{sd.overwriteConfirm}</p>
+        <div className="publish-modal-footer">
+          <div className="editable-card-actions">
+            <button type="button" onClick={() => void confirmOverwrite()}>{sd.overwriteConfirmAction}</button>
+            <button type="button" className="secondary" onClick={() => setPendingUpload(null)}>{sd.cancelEdit}</button>
+          </div>
+        </div>
+      </div>
+    </div>}
     {error === null ? null : <div className="notice danger">{error}</div>}
   </div>;
 }
 
-function AgentConfigsOverview({ agents, defaultAgent, t }: { agents: readonly AgentSkillConfig[]; defaultAgent: RegistryAgent | null; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
-  void defaultAgent;
+function AgentConfigsOverview({ agents, t }: { agents: readonly AgentSkillConfig[]; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
   if (agents.length === 0) return <span className="muted-inline">{t.noneShort}</span>;
   return <article className="system-config-card system-config-card-wide">
     <span className="config-card-label">{t.adapters}</span>
@@ -1152,7 +1202,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       </div> : null}
 
       {activeTab === "definition" && sourceSkill === undefined && skill.ir !== null ? <div className="detail-grid system-config-layout">
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<AgentConfigsOverview agents={skill.agents} defaultAgent={skill.defaultAgent} t={t.skillDetail} />} /></article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<AgentConfigsOverview agents={skill.agents} t={t.skillDetail} />} /></article>
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview ir={skill.ir} t={t.skillDetail} /></article>
       </div> : null}
 

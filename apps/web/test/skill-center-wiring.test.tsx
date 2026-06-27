@@ -263,4 +263,78 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     await waitFor(() => expect(client.runSkillDraftChecks).toHaveBeenCalledWith("wiring-skill"));
     expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
   });
+
+  it("点丢弃按钮调 discardSkillDraft(slug, revision) 并刷新（API-023）", async () => {
+    const discardSkillDraft = vi.fn(async () => ({ slug: "wiring-skill", discarded: true }));
+    const listSkillVersions = vi.fn(async () => versions);
+    const client = api({ discardSkillDraft, listSkillVersions, getSkillDraft: vi.fn(async () => draft) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /丢弃草稿|discard draft/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /确认丢弃|confirm discard/i }));
+    await waitFor(() => expect(discardSkillDraft).toHaveBeenCalledWith("wiring-skill", draft.revision));
+    await waitFor(() => expect(listSkillVersions).toHaveBeenCalledTimes(2));
+  });
+
+  it("已有草稿时上传先弹覆盖确认，确认后才调 uploadSkillDraft（#6）", async () => {
+    const uploadSkillDraft = vi.fn(async () => draft);
+    const client = api({ uploadSkillDraft, getSkillDraft: vi.fn(async () => draft) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    const input = screen.getByLabelText(/上传技能|upload skill/i);
+    fireEvent.change(input, { target: { files: [new File(["x"], "SKILL.md")] } });
+    expect(uploadSkillDraft).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /覆盖并上传|overwrite and upload/i }));
+    await waitFor(() => expect(uploadSkillDraft).toHaveBeenCalledTimes(1));
+  });
+
+  it("publish 失败时弹窗保持开放且保留已输入版本号（#7）", async () => {
+    const publishSkillDraft = vi.fn(async () => { throw new ApiClientError(409, "VERSION_NOT_FORWARD", "stale"); });
+    const client = api({ publishSkillDraft, getSkillDraft: vi.fn(async () => draft) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^发布$|^publish$/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/新版本号|new version/i), { target: { value: "1.3.0" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /确认发布|confirm publish/i }));
+    await waitFor(() => expect(publishSkillDraft).toHaveBeenCalledWith("wiring-skill", expect.objectContaining({ version: "1.3.0" })));
+    const openDialog = await screen.findByRole("dialog");
+    expect(within(openDialog).getByLabelText(/新版本号|new version/i)).toHaveValue("1.3.0");
+  });
+
+  it("definition Tab 渲染 AgentConfigsOverview 显示 agents（API-026）", async () => {
+    render(<SkillDetail api={api()} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /系统配置|system config/i }));
+    const agentChips = await screen.findAllByText("claude-code");
+    expect(agentChips.some((el) => el.closest(".default-agent-actions") !== null)).toBe(true);
+  });
+
+  it("diff 401 显友好提示（401 全路径，INT-004 扩展）", async () => {
+    const diffSkillDraft = vi.fn(async () => { throw new ApiClientError(401, "AUTH_REQUIRED", "no token"); });
+    const client = api({ diffSkillDraft, getSkillDraft: vi.fn(async () => draftWithoutChecks) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /版本差异|version diff/i }));
+    await waitFor(() => expect(diffSkillDraft).toHaveBeenCalledWith("wiring-skill"));
+    expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
+  });
+
+  it("publish 401 显友好提示（401 全路径）", async () => {
+    const publishSkillDraft = vi.fn(async () => { throw new ApiClientError(401, "AUTH_REQUIRED", "no token"); });
+    const client = api({ publishSkillDraft, getSkillDraft: vi.fn(async () => draft) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^发布$|^publish$/i }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /确认发布|confirm publish/i }));
+    await waitFor(() => expect(publishSkillDraft).toHaveBeenCalled());
+    expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
+  });
 });

@@ -327,17 +327,14 @@ function demoReadOnly(): never {
   throw new ApiClientError(403, "DEMO_READ_ONLY", "Demo mode is read-only and did not write server state.");
 }
 
-type DemoCheckLike = { id: string; label: string; status: "green" | "yellow" | "red"; message: string; filePath: string | null; fixable: boolean };
-type DemoDiffLike = { path: string; status: "modified" | "added" | "removed"; publishedContent: string | null; draftContent: string | null };
-
-function demoChecksToResult(checks: readonly DemoCheckLike[]): SkillCheckResult {
+function demoChecksToResult(checks: readonly SkillCheckItem[]): SkillCheckResult {
   const items: SkillCheckItem[] = checks.map((c) => ({
     id: c.id,
     label: c.label,
     status: c.status,
     message: c.message,
-    filePath: c.filePath ?? null,
-    fixable: c.fixable ?? false
+    filePath: c.filePath,
+    fixable: c.fixable
   }));
   return {
     items,
@@ -350,7 +347,7 @@ function demoChecksToResult(checks: readonly DemoCheckLike[]): SkillCheckResult 
   };
 }
 
-function demoDiffToFiles(diffFiles: readonly DemoDiffLike[] | undefined): SkillDiffFile[] {
+function demoDiffToFiles(diffFiles: readonly SkillDiffFile[] | undefined): SkillDiffFile[] {
   return (diffFiles ?? []).map((d) => ({
     path: d.path,
     status: d.status,
