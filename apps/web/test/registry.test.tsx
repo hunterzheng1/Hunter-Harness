@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SkillDetail, SkillRegistry, WorkflowRegistry } from "../components/registry";
@@ -150,5 +150,45 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.change(screen.getByLabelText(/描述|Description/i), { target: { value: "Default workflow" } });
     fireEvent.click(screen.getByRole("button", { name: /保存|Save/i }));
     await waitFor(() => expect(createWorkflow).toHaveBeenCalledTimes(1));
+  });
+
+  it("uploads a skill draft via the API as FormData and refreshes the list", async () => {
+    const uploadSkillDraft = vi.fn(async () => ({
+      slug: "harness-review",
+      sourceFiles: [],
+      ir,
+      examples: [],
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-21T00:00:00Z",
+      updated_at: "2026-06-21T00:00:00Z"
+    }));
+    const listSkills = vi.fn(async () => [skill]);
+    render(<SkillRegistry api={api({ uploadSkillDraft, listSkills })} />);
+    await screen.findByText("harness-review");
+    const input = screen.getByLabelText(/选择文件|choose file/i);
+    fireEvent.change(input, { target: { files: [new File([JSON.stringify(ir)], "skill.json")] } });
+    const uploadButton = await screen.findByRole("button", { name: /添加为未发布|add as unpublished/i });
+    await waitFor(() => expect(uploadButton).not.toBeDisabled());
+    fireEvent.click(uploadButton);
+    await waitFor(() => expect(uploadSkillDraft).toHaveBeenCalledTimes(1));
+    const fd = (uploadSkillDraft.mock.calls as unknown as [FormData][])[0]?.[0];
+    expect(fd).toBeInstanceOf(FormData);
+    expect(fd?.getAll("file")).toHaveLength(1);
+    expect(listSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it("deletes a skill via the API and refreshes the list", async () => {
+    const deleteSkill = vi.fn(async () => ({ slug: "harness-review", deleted: true }));
+    const listSkills = vi.fn(async () => [skill]);
+    render(<SkillRegistry api={api({ deleteSkill, listSkills })} />);
+    await screen.findByText("harness-review");
+    fireEvent.click(screen.getByRole("button", { name: /^删除$|^delete$/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^删除$|^delete$/i }));
+    await waitFor(() => expect(deleteSkill).toHaveBeenCalledWith("harness-review"));
+    expect(listSkills).toHaveBeenCalledTimes(2);
   });
 });

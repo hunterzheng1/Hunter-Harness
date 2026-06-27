@@ -15,7 +15,7 @@ import Link from "next/link";
 import { type ChangeEvent, useEffect, useMemo, useState } from "react";
 import { parse as parseYaml } from "yaml";
 
-import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
+import { ApiClientError, browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
 import type { DemoAgent, DemoAgentConfig, DemoAgentDiffFile, DemoAgentVersion, DemoUsageExample } from "../lib/demo-skills/types";
 import { findDemoSourceSkill } from "../lib/demo-skills/sap-field-mapper";
 import { useI18n } from "../lib/i18n";
@@ -61,62 +61,12 @@ function tagSlug(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-const localSkillStorageKey = "hunter-harness-local-skills";
-
-function loadLocalSkills(): RegistrySkillDetail[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(localSkillStorageKey);
-    if (raw === null) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed as RegistrySkillDetail[] : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveLocalSkills(skills: RegistrySkillDetail[]): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(localSkillStorageKey, JSON.stringify(skills));
-}
-
 function skillStatusGroup(status: RegistrySkillDetail["status"]): "published" | "unpublished" {
   return status === "published" ? "published" : "unpublished";
 }
 
 function skillStatusLabel(status: RegistrySkillDetail["status"], t: ReturnType<typeof useI18n>["t"]["skills"]): string {
   return skillStatusGroup(status) === "published" ? t.statusPublished : t.statusUnpublished;
-}
-
-function localSkillFromIr(ir: SkillIr, fileName: string): RegistrySkillDetail {
-  const slug = tagSlug(ir.name || fileName.replace(/\.[^.]+$/, "")) || "uploaded-skill";
-  const now = new Date().toISOString();
-  const agentList = Object.keys(ir.adapters).filter((key) => ["claude-code", "codex", "generic", "mcp"].includes(key)) as RegistryAgent[];
-  return {
-    skill_id: "skl_local_" + slug,
-    slug,
-    name: ir.name || slug,
-    description: ir.description,
-    tags: ["uploaded"],
-    status: "draft",
-    latest_version: ir.version,
-    defaultAgent: agentList.includes("claude-code") ? "claude-code" : null,
-    agents: agentList.map((agent) => ({
-      agent,
-      enabled: true,
-      isDefault: agent === "claude-code",
-      installTarget: ".claude/skills/" + slug,
-      latestVersion: agent === "claude-code" ? ir.version : null,
-      draftVersion: null,
-      sourcePackagePath: null
-    })),
-    revision: 1,
-    created_at: now,
-    updated_at: now,
-    ir,
-    sourceFiles: [],
-    examples: []
-  };
 }
 
 function chipTone(value: string, index: number): string {
@@ -908,9 +858,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
         required(api, "listTags")(),
         required(api, "listWorkflows")()
       ]);
-      const localSkills = loadLocalSkills();
-      const remoteSlugs = new Set(nextSkills.map((skill) => skill.slug));
-      setSkills([...nextSkills, ...localSkills.filter((skill) => !remoteSlugs.has(skill.slug))]);
+      setSkills(nextSkills);
       setTags(nextTags);
       setWorkflows(nextWorkflows);
       setError(null);
@@ -945,16 +893,13 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
 
   async function submitUpload(): Promise<void> {
     if (upload === null || upload.length === 0) return;
+    const files = upload;
     try {
-      const { ir, sourceName } = await parseSkillFile(upload);
-      const localSkill = localSkillFromIr(ir, sourceName);
-      setSkills((current) => {
-        const withoutSame = (current ?? []).filter((skill) => skill.slug !== localSkill.slug);
-        const next = [localSkill, ...withoutSame];
-        saveLocalSkills(next.filter((skill) => skill.skill_id.startsWith("skl_local_")));
-        return next;
-      });
-      setMessage(t.skills.uploadedAsDraft.replace("{name}", localSkill.name));
+      const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files));
+      await refresh();
+      let previewName = draft.slug;
+      try { previewName = (await parseSkillFile(files)).ir.name || draft.slug; } catch { /* optional client-side preview; backend re-parses authoritatively */ }
+      setMessage(t.skills.uploadedAsDraft.replace("{name}", previewName));
       setUpload(null);
     } catch (reason) { setError(apiError(reason, t)); }
   }
@@ -963,15 +908,14 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     setDeleteModal(skill);
   }
 
-  function confirmDelete(): void {
+  async function confirmDelete(): Promise<void> {
     if (deleteModal === null) return;
-    setSkills((current) => {
-      const next = (current ?? []).filter((item) => item.slug !== deleteModal.slug);
-      saveLocalSkills(next.filter((item) => item.skill_id.startsWith("skl_local_")));
-      return next;
-    });
-    setMessage(t.skills.deletedSkill.replace("{name}", deleteModal.name));
-    setDeleteModal(null);
+    try {
+      await required(api, "deleteSkill")(deleteModal.slug);
+      await refresh();
+      setMessage(t.skills.deletedSkill.replace("{name}", deleteModal.name));
+      setDeleteModal(null);
+    } catch (reason) { setError(apiError(reason, t)); }
   }
 
   function cancelDelete(): void {
@@ -1059,7 +1003,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
             <p>{t.skills.deleteConfirm.replace("{name}", deleteModal.name)}</p>
             <div className="modal-actions">
               <button type="button" className="secondary" onClick={cancelDelete}>{t.common.cancel}</button>
-              <button type="button" className="danger" onClick={confirmDelete}>{t.common.delete}</button>
+              <button type="button" className="danger" onClick={() => void confirmDelete()}>{t.common.delete}</button>
             </div>
           </div>
         </div>
@@ -1093,14 +1037,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       setSkill(detail); setVersions(history); setTags(allTags);
       setError(null);
     } catch (reason) {
-      const localSkill = loadLocalSkills().find((item) => item.slug === skillId);
-      if (localSkill !== undefined) {
-        setSkill(localSkill);
-        setVersions([{ skill_slug: localSkill.slug, version: localSkill.latest_version ?? "0.0.0", ir: localSkill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: localSkill.updated_at }]);
-        setTags([]);
-        setError(null);
-        return;
-      }
       setError(apiError(reason, t));
     }
   }
