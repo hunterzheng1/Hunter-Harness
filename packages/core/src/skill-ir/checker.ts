@@ -12,6 +12,13 @@ import { compareSemver } from "./semver.js";
 
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 const DANGEROUS_CAPABILITY = /^Bash\(/;
+const DANGEROUS_CMD = /rm\s+-rf|drop\s+table|curl\s+|wget\s+|sudo\s+/;
+const AGENT_PATHS: Record<string, string> = {
+  "claude-code": ".claude/skills",
+  "codex": ".codex/skills",
+  "cursor": ".cursor/skills",
+  "generic": "./"
+};
 
 export function checkSkill(input: {
   ir: SkillIr;
@@ -24,6 +31,16 @@ export function checkSkill(input: {
   const items: SkillCheckItem[] = [];
 
   items.push({ id: "ENTRY_IR", label: "IR 入口可识别", status: "green", message: "Skill IR 入口已识别", filePath: null, fixable: false });
+
+  const hasSkillMd = sourceFiles.some((f) => f.path === "SKILL.md" || f.path.endsWith("/SKILL.md"));
+  items.push({
+    id: "ENTRY_SKILL_MD",
+    label: "SKILL.md 入口存在",
+    status: hasSkillMd ? "green" : "red",
+    message: hasSkillMd ? "SKILL.md 入口文件存在" : "缺少 SKILL.md 入口文件",
+    filePath: null,
+    fixable: false
+  });
 
   const schemaParse = skillIrSchema.safeParse(ir);
   items.push({
@@ -55,12 +72,13 @@ export function checkSkill(input: {
     fixable: false
   });
 
-  const descriptionOk = ir.description.trim().length > 0;
+  const descLen = ir.description.trim().length;
+  const descStatus = descLen === 0 ? "yellow" : (descLen > 2000 ? "red" : (descLen > 500 ? "yellow" : "green"));
   items.push({
     id: "DESCRIPTION",
     label: "描述完整",
-    status: descriptionOk ? "green" : "yellow",
-    message: descriptionOk ? "描述非空" : "描述为空",
+    status: descStatus,
+    message: descLen === 0 ? "描述为空" : "描述非空 length=" + descLen + (descLen > 500 ? "（超长）" : ""),
     filePath: null,
     fixable: false
   });
@@ -81,11 +99,17 @@ export function checkSkill(input: {
 
   const caps = ir.allowed_capabilities ?? [];
   const dangerousCap = caps.find((c) => DANGEROUS_CAPABILITY.test(c));
+  const instrText = (ir.instructions ?? []).join("\n");
+  const dangerousCmd = DANGEROUS_CMD.test(instrText + "\n" + caps.join("\n"));
+  const hasNetworkInInstr = /https?:\/\//.test(instrText);
+  const hasNetworkCap = caps.some((c) => c.startsWith("network"));
+  const networkUndeclared = hasNetworkInInstr && !hasNetworkCap;
+  const permStatus = dangerousCmd ? "red" : ((dangerousCap || networkUndeclared) ? "yellow" : "green");
   items.push({
     id: "PERMISSIONS",
     label: "权限声明",
-    status: dangerousCap ? "yellow" : "green",
-    message: dangerousCap ? "危险能力: " + dangerousCap : "无可疑能力",
+    status: permStatus,
+    message: dangerousCmd ? "危险命令" : (networkUndeclared ? "网络访问未声明" : (dangerousCap ? "危险能力: " + dangerousCap : "无可疑能力")),
     filePath: null,
     fixable: true
   });
@@ -107,12 +131,14 @@ export function checkSkill(input: {
     fixable: false
   });
 
-  const claudeEnabled = ir.adapters["claude-code"]?.enabled === true;
+  const enabledAgents = Object.entries(ir.adapters).filter(([, v]) => v?.enabled === true).map(([k]) => k);
+  const missingPath = enabledAgents.find((a) => !(a in AGENT_PATHS));
+  const agentStatus = enabledAgents.length === 0 ? "yellow" : (missingPath ? "red" : "green");
   items.push({
     id: "AGENT_TARGET",
-    label: "Agent 目标",
-    status: claudeEnabled ? "green" : "yellow",
-    message: claudeEnabled ? "claude-code → .claude/skills/<slug>" : "未启用 claude-code",
+    label: "Agent 目标路径",
+    status: agentStatus,
+    message: enabledAgents.length === 0 ? "未启用任何 Agent" : (missingPath ? "无路径映射: " + missingPath : enabledAgents.map((a) => a + "→" + AGENT_PATHS[a]).join(", ")),
     filePath: null,
     fixable: false
   });

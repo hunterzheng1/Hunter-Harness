@@ -85,4 +85,42 @@ describe("checkSkill", () => {
     });
     expect(r.items.find((i) => i.id === "DESCRIPTION")?.status).toBe("yellow");
   });
+
+  it("flags ENTRY_SKILL_MD green when SKILL.md present (UT-001)", () => {
+    const r = checkSkill({ ir: baseIr, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "ENTRY_SKILL_MD")?.status).toBe("green");
+  });
+
+  it("flags ENTRY_SKILL_MD red when SKILL.md missing (UT-002)", () => {
+    const r = checkSkill({ ir: baseIr, sourceFiles: [{ path: "skill.yaml", content: "x" }], latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "ENTRY_SKILL_MD")?.status).toBe("red");
+  });
+
+  it("flags DESCRIPTION yellow when description > 500 chars (UT-006)", () => {
+    const r = checkSkill({ ir: { ...baseIr, description: "x".repeat(600) }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "DESCRIPTION")?.status).toBe("yellow");
+  });
+
+  it("flags DESCRIPTION red when description > 2000 chars (UT-007)", () => {
+    const r = checkSkill({ ir: { ...baseIr, description: "x".repeat(2100) }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "DESCRIPTION")?.status).toBe("red");
+  });
+
+  it("flags PERMISSIONS red when dangerous command rm -rf in instructions (UT-009)", () => {
+    const r = checkSkill({ ir: { ...baseIr, instructions: ["run rm -rf /"] }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    expect(r.items.find((i) => i.id === "PERMISSIONS")?.status).toBe("red");
+  });
+
+  it("flags PERMISSIONS yellow when network access undeclared (UT-011)", () => {
+    const r = checkSkill({ ir: { ...baseIr, instructions: ["fetch https://example.com"] }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const perm = r.items.find((i) => i.id === "PERMISSIONS");
+    expect(perm?.status === "yellow" || perm?.status === "red").toBe(true);
+  });
+
+  it("AGENT_TARGET maps codex agent path (UT-014)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { codex: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).not.toBe("red");
+    expect(agent?.message).toContain("codex");
+  });
 });
