@@ -1,4 +1,5 @@
 import {
+  registrySlugSchema,
   skillIrSchema,
   type SkillCheckItem,
   type SkillCheckResult,
@@ -44,20 +45,22 @@ export function checkSkill(input: {
     fixable: false
   });
 
+  const namingOk = registrySlugSchema.safeParse(ir.name).success;
   items.push({
     id: "NAMING",
     label: "命名规范",
-    status: "green",
-    message: "slug=" + ir.name + " 符合 kebab-case",
+    status: namingOk ? "green" : "red",
+    message: namingOk ? "slug=" + ir.name + " 符合 kebab-case" : "slug=" + ir.name + " 非 kebab-case",
     filePath: null,
     fixable: false
   });
 
+  const descriptionOk = ir.description.trim().length > 0;
   items.push({
     id: "DESCRIPTION",
     label: "描述完整",
-    status: "green",
-    message: "描述非空",
+    status: descriptionOk ? "green" : "yellow",
+    message: descriptionOk ? "描述非空" : "描述为空",
     filePath: null,
     fixable: false
   });

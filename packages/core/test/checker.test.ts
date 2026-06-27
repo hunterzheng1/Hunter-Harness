@@ -63,4 +63,26 @@ describe("checkSkill", () => {
     expect(r.summary.green + r.summary.yellow + r.summary.red).toBe(r.items.length);
     expect(r.summary.red).toBeGreaterThan(0);
   });
+
+  it("flags NAMING non-green when ir.name is not kebab-case (UT-014)", () => {
+    const r = checkSkill({
+      ir: { ...baseIr, name: "Harness_X" },
+      sourceFiles: baseFiles,
+      latestVersion: null,
+      compilerVersion: "1",
+      checkedAt: "t"
+    });
+    expect(r.items.find((i) => i.id === "NAMING")?.status).not.toBe("green");
+  });
+
+  it("flags DESCRIPTION yellow when ir.description is empty (UT-015)", () => {
+    const r = checkSkill({
+      ir: { ...baseIr, description: "" },
+      sourceFiles: baseFiles,
+      latestVersion: null,
+      compilerVersion: "1",
+      checkedAt: "t"
+    });
+    expect(r.items.find((i) => i.id === "DESCRIPTION")?.status).toBe("yellow");
+  });
 });

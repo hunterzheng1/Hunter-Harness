@@ -198,7 +198,8 @@ export class RegistryStore {
       };
       this.compilerVersion = value.compilerVersion;
       for (const [key, raw] of value.skills) {
-        this.skills.set(key, this.migrateSkillState(raw));
+        const state = this.migrateSkillState(raw);
+        if (state !== null) this.skills.set(key, state);
       }
       for (const [key, state] of value.proposals) this.proposals.set(key, state);
       for (const [key, raw] of value.tags) this.tags.set(key, migrateTag(raw));
@@ -232,11 +233,18 @@ export class RegistryStore {
     });
   }
 
-  private migrateSkillState(raw: unknown): SkillState {
-    const obj = (raw ?? {}) as Record<string, unknown>;
-    const detail = migrateSkillDetail(obj.detail);
-    const versions = Array.isArray(obj.versions) ? obj.versions.map(migrateSkillVersion) : [];
-    return { detail, versions };
+  private migrateSkillState(raw: unknown): SkillState | null {
+    try {
+      const obj = (raw ?? {}) as Record<string, unknown>;
+      const detail = migrateSkillDetail(obj.detail);
+      const versions = Array.isArray(obj.versions) ? obj.versions.map(migrateSkillVersion) : [];
+      return { detail, versions };
+    } catch (error) {
+      // 损坏 skill（如旧 snapshot 的 ir:null）无法迁移为合法 detail — 跳过该条目并记录警告，
+      // 避免单个损坏条目阻塞整体 initialize（与旧数据兼容迁移的不报错语义一致）
+      console.warn("[registry] skipping corrupt skill during migration:", (error as Error).message);
+      return null;
+    }
   }
 
   listSkills(query: {

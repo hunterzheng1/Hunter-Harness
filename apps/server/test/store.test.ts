@@ -103,6 +103,25 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
       const store = newStore();
       await expect(store.uploadDraft({ files: [{ path: "skill.yaml", content: ":bad" }], actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
     });
+
+    it("rejects unsafe file path with SKILL_VALIDATION_FAILED (UT-037)", async () => {
+      const store = newStore();
+      await expect(store.uploadDraft({
+        files: [{ path: "../escape.md", content: "x" }],
+        actorId: "owner"
+      })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+    });
+
+    it("rejects workflow package with WORKFLOW_PACKAGE_NOT_SUPPORTED (UT-038)", async () => {
+      const store = newStore();
+      await expect(store.uploadDraft({
+        files: [
+          { path: "workflow.yaml", content: "name: w" },
+          { path: "skills/foo.md", content: "x" }
+        ],
+        actorId: "owner"
+      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_NOT_SUPPORTED" });
+    });
   });
 
   describe("runChecks (task 11)", () => {
@@ -208,6 +227,32 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
     it("listSkills returns empty without category param", () => {
       const store = newStore();
       expect(store.listSkills()).toEqual([]);
+    });
+
+    it("skips corrupt skill with ir:null during migration instead of crashing initialize (YELLOW-2)", async () => {
+      const p = new MemoryPersistence();
+      p.snapshot = {
+        schemaVersion: 1,
+        compilerVersion: "1.0.0",
+        skills: [["harness-corrupt", {
+          detail: {
+            skill_id: "skl_1", slug: "harness-corrupt", name: "harness-corrupt", description: "d",
+            tags: [], status: "published", latest_version: "1.0.0",
+            agents: [{ agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/harness-corrupt", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
+            defaultAgent: "claude-code",
+            revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z",
+            ir: null
+          },
+          versions: []
+        }]],
+        proposals: [],
+        tags: [],
+        workflows: [],
+        projectBindings: []
+      };
+      const store = newStore(p);
+      await store.initialize();
+      expect(() => store.getSkill("harness-corrupt")).toThrow();
     });
   });
 });

@@ -178,13 +178,17 @@ function operationSize(operation: FileOperation): number {
   return "size_bytes" in operation ? operation.size_bytes : 0;
 }
 
+// 上传路径安全正则 — 与 RegistryStore.DANGEROUS_PATH / checker DANGEROUS_PATH 保持一致
+// （含 ^\\ 分支以拦截 UNC 前缀，避免与 store 层校验产生维护歧义）
+const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
+
 function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buffer }>): SourceFile[] {
   if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
     const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
     const files: SourceFile[] = [];
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
-      if (entry.entryName.includes("..") || /^(\/|[A-Za-z]:)/.test(entry.entryName)) {
+      if (DANGEROUS_PATH.test(entry.entryName)) {
         throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "zip slip detected: " + entry.entryName);
       }
       files.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
@@ -280,7 +284,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     (_request, body, done) => done(null, body)
   );
   await app.register(multipart, {
-    limits: { fileSize: config.maxFileBytes, files: 100 }
+    limits: { fileSize: config.maxFileBytes, files: config.maxUploadFiles }
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -920,7 +924,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = await registry.uploadDraft({ files, actorId: actor.actorId });
-      await registry.persist();
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null,
         action: draft.revision === 1 ? "skill.draft.created" : "skill.draft.updated",
@@ -961,7 +964,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
       const checks = await registry.runChecks({ slug, checkedAt: new Date().toISOString() });
-      await registry.persist();
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.checked",
         targetId: slug, requestId, details: { slug, red: checks.summary.red }
