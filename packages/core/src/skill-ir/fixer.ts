@@ -66,16 +66,18 @@ export function buildFixPatch(input: {
 
   const namingCheck = targetProgram.find((i) => i.id === "NAMING");
   if (namingCheck !== undefined && namingCheck.status !== "green") {
-    if (!registrySlugSchema.safeParse(ir.name).success) {
-      fixedIr.name = slugify(ir.name);
+    const slugged = slugify(ir.name);
+    const canAutoFix = !registrySlugSchema.safeParse(ir.name).success && registrySlugSchema.safeParse(slugged).success;
+    if (canAutoFix) {
+      fixedIr.name = slugged;
     }
     items.push({
       checkId: "NAMING",
-      action: "auto",
+      action: canAutoFix ? "auto" : "suggest",
       label: namingCheck.label,
-      affectedPaths: ["skill-ir.json"],
-      riskDelta: "changes ir.name (affects published name)",
-      message: `name ${ir.name} → ${fixedIr.name}`
+      affectedPaths: canAutoFix ? ["skill-ir.json"] : [],
+      riskDelta: canAutoFix ? "changes ir.name (affects published name)" : "name cannot be auto-slugified (non-ASCII or empty); manual rename required",
+      message: canAutoFix ? `name ${ir.name} → ${fixedIr.name}` : `name ${ir.name} cannot be auto-fixed`
     });
   }
 
@@ -83,10 +85,10 @@ export function buildFixPatch(input: {
   if (permCheck !== undefined && permCheck.status !== "green") {
     const caps = [...(fixedIr.allowed_capabilities ?? [])];
     const instrText = (fixedIr.instructions ?? []).join("\n");
-    const hasNetworkInInstr = /https?:\/\//.test(instrText);
+    const hasNetworkInInstr = /https?:\/\//i.test(instrText);
     const hasNetworkCap = caps.some((c) => c.startsWith("network"));
     const networkUndeclared = hasNetworkInInstr && !hasNetworkCap;
-    const dangerousCap = caps.some((c) => /^Bash\(/.test(c));
+    const dangerousCap = caps.some((c) => /^Bash\(/i.test(c));
     const dangerousCmd = /rm\s+-rf|drop\s+table|curl\s+|wget\s+|sudo\s+/i.test(instrText + "\n" + caps.join("\n"));
     let riskDelta: string | null = null;
     if (networkUndeclared && !caps.includes("network")) caps.push("network");

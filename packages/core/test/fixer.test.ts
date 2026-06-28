@@ -38,6 +38,10 @@ describe("buildFixPatch", () => {
     expect(versionItem?.action).toBe("auto");
     expect(plan.fixedIr.version).toBe("1.0.1");
     expect(plan.mergedFiles).toHaveLength(1);
+    expect(plan.mergedFiles[0]?.path).toBe("skill-ir.json");
+    expect(plan.mergedFiles[0]?.status).toBe("modified");
+    expect(plan.mergedFiles[0]?.publishedContent).toMatch(/"version"\s*:\s*"1.0.0"/);
+    expect(plan.mergedFiles[0]?.draftContent).toMatch(/"version"\s*:\s*"1.0.1"/);
   });
 
   it("slugifies NAMING when not kebab (auto)", () => {
@@ -45,6 +49,14 @@ describe("buildFixPatch", () => {
     const plan = buildFixPatch({ ir, checks: checksOf([{ id: "NAMING", fixable: true, status: "red" }]), aiChecks: null, latestVersion: null, checkIds: null });
     expect(plan.fixedIr.name).toBe("my-skill");
     expect(plan.items.find((i) => i.checkId === "NAMING")?.action).toBe("auto");
+  });
+
+  it("degrades NAMING to suggest when slugify yields invalid (non-ASCII)", () => {
+    const ir = makeIr({ name: "纯中文" });
+    const plan = buildFixPatch({ ir, checks: checksOf([{ id: "NAMING", fixable: true, status: "red" }]), aiChecks: null, latestVersion: null, checkIds: null });
+    const naming = plan.items.find((i) => i.checkId === "NAMING");
+    expect(naming?.action).toBe("suggest");
+    expect(plan.fixedIr.name).toBe("纯中文");
   });
 
   it("adds network capability for PERMISSIONS networkUndeclared (confirm)", () => {
