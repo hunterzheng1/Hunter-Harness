@@ -14,6 +14,7 @@ import {
   registryWorkflowMutationSchema,
   registryWorkflowSchema,
   skillIrSchema,
+  skillUsageExampleSchema,
   type AiConfigState,
   type AiProviderConfig,
   type AgentSkillConfig,
@@ -31,6 +32,7 @@ import {
   type SkillCheckResult,
   type SkillDiffFile,
   type SkillIr,
+  type SkillUsageExample,
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
@@ -171,6 +173,18 @@ function zipArtifact(ir: SkillIr, compilerVersion: string): Uint8Array {
 }
 
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
+
+function parseSuggestedStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) {
+    throw new Error("suggestedContent must be a JSON array of non-empty strings");
+  }
+  for (const item of raw) {
+    if (typeof item !== "string" || item.length === 0) {
+      throw new Error("suggestedContent array items must be non-empty strings");
+    }
+  }
+  return raw as string[];
+}
 
 export class RegistryStore {
   private readonly skills = new Map<string, SkillState>();
@@ -451,6 +465,102 @@ export class RegistryStore {
       updated_at: now
     }) as DraftState;
     this.drafts.set(slug, cleared);
+    await this.persist();
+    return structuredClone(cleared);
+  }
+
+  // 持久化 AI 生成的发布变更信息到 draft.releaseNote（§5.3；AI 生成有成本，持久化避免刷新丢失）
+  async setDraftReleaseNote(input: {
+    slug: string;
+    releaseNote: string;
+    generatedAt: string;
+  }): Promise<DraftState> {
+    const draft = this.drafts.get(input.slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
+    }
+    const updated: DraftState = { ...draft, releaseNote: input.releaseNote, updated_at: input.generatedAt };
+    this.drafts.set(input.slug, updated);
+    await this.persist();
+    return structuredClone(updated);
+  }
+
+  // 采纳 AI 修复建议：按 appliesTo 白名单写入 draft.ir / draft.examples 对应字段，
+  // 校验写入后内容不含敏感信息，清 aiChecks（建议已采纳，待重新 check），revision+1（§6.3 第4步/§3.6）。
+  // 可写白名单：examples(→draft.examples) / allowed_capabilities / instructions / description(→ir 字段)。
+  // tags 与 null 为展示型建议（无对应可写 draft 字段，tag 绑定走 bindTag 独立流程），不可采纳 → 422。
+  async applyFixSuggestion(input: {
+    slug: string;
+    checkId: string;
+    suggestedContent: string;
+    appliesTo: string | null;
+    actorId: string;
+  }): Promise<DraftState> {
+    const draft = this.drafts.get(input.slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
+    }
+    const WRITABLE_APPLIES_TO = ["examples", "allowed_capabilities", "instructions", "description"] as const;
+    if (input.appliesTo === null || !(WRITABLE_APPLIES_TO as readonly string[]).includes(input.appliesTo)) {
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "appliesTo is not a writable target", { appliesTo: input.appliesTo });
+    }
+    const target = input.appliesTo as typeof WRITABLE_APPLIES_TO[number];
+    const fixedIr: SkillIr = structuredClone(draft.ir);
+    let fixedExamples: SkillUsageExample[] = structuredClone(draft.examples);
+    if (target === "description") {
+      if (input.suggestedContent.length === 0) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for description must be non-empty", { appliesTo: target });
+      }
+      fixedIr.description = input.suggestedContent;
+    } else if (target === "examples") {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(input.suggestedContent);
+      } catch {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
+      }
+      const result = skillUsageExampleSchema.array().safeParse(parsed);
+      if (!result.success) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
+      }
+      fixedExamples = result.data;
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(input.suggestedContent);
+      } catch {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", `suggestedContent for ${target} must be a JSON array of strings`, { appliesTo: target });
+      }
+      let arr: string[];
+      try {
+        arr = parseSuggestedStringArray(parsed);
+      } catch (error) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", (error as Error).message, { appliesTo: target });
+      }
+      if (target === "instructions") {
+        fixedIr.instructions = arr;
+      } else {
+        fixedIr.allowed_capabilities = arr;
+      }
+    }
+    const fileMap: Record<string, string> = {};
+    for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
+    fileMap["skill-ir.json"] = canonicalJson(fixedIr);
+    fileMap["examples.json"] = JSON.stringify(fixedExamples);
+    const findings = scanSensitiveFiles(fileMap);
+    if (findings.blocked) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "applied suggestion contains sensitive content", { finding_count: findings.findings.length });
+    }
+    const now = new Date().toISOString();
+    const cleared = draftStateSchema.parse({
+      ...draft,
+      ir: fixedIr,
+      examples: fixedExamples,
+      aiChecks: null,
+      revision: draft.revision + 1,
+      updated_at: now
+    }) as DraftState;
+    this.drafts.set(input.slug, cleared);
     await this.persist();
     return structuredClone(cleared);
   }

@@ -397,3 +397,126 @@ describe("RegistryStore fix (task 7-8)", () => {
     await expect(store.applyDraftFix("harness-x", null)).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
   });
 });
+
+describe("RegistryStore AI content generation (T7-T8)", () => {
+  // 建一个带 aiChecks（含 fixable 项）的 draft，供 applyFixSuggestion 采纳用例复用
+  async function setupDraftWithAiChecks(persistence?: RegistryPersistence): Promise<RegistryStore> {
+    const store = newStore(persistence);
+    await store.uploadDraft({ files, actorId: "owner" });
+    await store.setDraftAiChecks({
+      slug: "harness-x",
+      aiChecks: {
+        items: [{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", filePath: null, fixable: true }],
+        summary: { green: 0, yellow: 1, red: 0 },
+        checkedAt: "2026-06-29T00:00:00Z"
+      },
+      checkedAt: "2026-06-29T00:00:00Z"
+    });
+    return store;
+  }
+
+  it("setDraftReleaseNote writes releaseNote + persists (UT-011)", async () => {
+    const p = new MemoryPersistence();
+    const store = newStore(p);
+    await store.uploadDraft({ files, actorId: "owner" });
+    const updated = await store.setDraftReleaseNote({ slug: "harness-x", releaseNote: "AI: 新增 X 功能", generatedAt: "2026-06-29T00:00:00.000Z" });
+    expect(updated.releaseNote).toBe("AI: 新增 X 功能");
+    expect(updated.updated_at).toBe("2026-06-29T00:00:00.000Z");
+    const reloaded = newStore(p);
+    await reloaded.initialize();
+    expect(reloaded.getDraft("harness-x")?.releaseNote).toBe("AI: 新增 X 功能");
+  });
+
+  it("setDraftReleaseNote throws DRAFT_NOT_FOUND (UT-011)", async () => {
+    const store = newStore();
+    await expect(store.setDraftReleaseNote({ slug: "nope", releaseNote: "x", generatedAt: "t" })).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
+  });
+
+  it("applyFixSuggestion appliesTo=description writes ir.description + clears aiChecks + revision+1 (UT-013)", async () => {
+    const store = await setupDraftWithAiChecks();
+    const before = store.getDraft("harness-x");
+    const r = await store.applyFixSuggestion({ slug: "harness-x", checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description", actorId: "owner" });
+    expect(r.ir.description).toBe("更清晰的描述");
+    expect(r.aiChecks).toBeNull();
+    expect(r.revision).toBe((before?.revision ?? 0) + 1);
+  });
+
+  it("applyFixSuggestion appliesTo=examples writes draft.examples (SkillUsageExample[]) (UT-012)", async () => {
+    const store = await setupDraftWithAiChecks();
+    const examples = [{ title: "示例1", description: "演示", request: "做 X", result: "得到 Y" }];
+    const r = await store.applyFixSuggestion({ slug: "harness-x", checkId: "AI_USAGE_EXAMPLES", suggestedContent: JSON.stringify(examples), appliesTo: "examples", actorId: "owner" });
+    expect(r.examples).toHaveLength(1);
+    expect(r.examples[0]?.title).toBe("示例1");
+    expect(r.examples[0]?.files).toEqual([]);
+  });
+
+  it("applyFixSuggestion appliesTo=instructions writes ir.instructions (UT-014)", async () => {
+    const store = await setupDraftWithAiChecks();
+    const r = await store.applyFixSuggestion({ slug: "harness-x", checkId: "AI_INSTR", suggestedContent: JSON.stringify(["步骤1", "步骤2"]), appliesTo: "instructions", actorId: "owner" });
+    expect(r.ir.instructions).toEqual(["步骤1", "步骤2"]);
+  });
+
+  it("applyFixSuggestion appliesTo=allowed_capabilities writes ir.allowed_capabilities (UT-014)", async () => {
+    const store = await setupDraftWithAiChecks();
+    const r = await store.applyFixSuggestion({ slug: "harness-x", checkId: "AI_CAP", suggestedContent: JSON.stringify(["read-files"]), appliesTo: "allowed_capabilities", actorId: "owner" });
+    expect(r.ir.allowed_capabilities).toEqual(["read-files"]);
+  });
+
+  it("applyFixSuggestion non-writable appliesTo (tags) → 422 (UT-015)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "t", appliesTo: "tags", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion null appliesTo → 422 (UT-015)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "t", appliesTo: null, actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion invalid appliesTo string → 422 (UT-015)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "t", appliesTo: "ir.secret", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion examples bad JSON → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "not json", appliesTo: "examples", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion examples wrong shape → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: JSON.stringify([{ wrong: "shape" }]), appliesTo: "examples", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion instructions non-string item → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: JSON.stringify([123]), appliesTo: "instructions", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion empty description → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion sensitive content blocked → 422 SENSITIVE_CONTENT_BLOCKED (UT-017)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
+  });
+
+  it("applyFixSuggestion persists + clears aiChecks + revision+1 (UT-018)", async () => {
+    const p = new MemoryPersistence();
+    const store = await setupDraftWithAiChecks(p);
+    const before = store.getDraft("harness-x");
+    const r = await store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "新描述", appliesTo: "description", actorId: "owner" });
+    expect(r.aiChecks).toBeNull();
+    expect(r.revision).toBe((before?.revision ?? 0) + 1);
+    const reloaded = newStore(p);
+    await reloaded.initialize();
+    expect(reloaded.getDraft("harness-x")?.aiChecks).toBeNull();
+    expect(reloaded.getDraft("harness-x")?.ir.description).toBe("新描述");
+  });
+
+  it("applyFixSuggestion DRAFT_NOT_FOUND 404 (UT-018)", async () => {
+    const store = newStore();
+    await expect(store.applyFixSuggestion({ slug: "nope", checkId: "x", suggestedContent: "d", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
+  });
+});
