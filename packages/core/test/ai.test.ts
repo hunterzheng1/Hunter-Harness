@@ -74,6 +74,49 @@ describe("parseAiCheckResult", () => {
     const r = parseAiCheckResult(JSON.stringify({ foo: "bar" }));
     expect(r.items[0].id).toBe("AI_PARSE_FAILED");
   });
+
+  it("strips markdown fence (```json ... ```)", () => {
+    const raw = "```json\n" + JSON.stringify({
+      items: [{ id: "AI_X", label: "x", status: "green", message: "ok", filePath: null, fixable: false }],
+      summary: { green: 1, yellow: 0, red: 0 },
+      checkedAt: "2026-06-28T00:00:00Z"
+    }) + "\n```";
+    const r = parseAiCheckResult(raw);
+    expect(r.items[0]?.id).toBe("AI_X");
+  });
+
+  it("extracts JSON from leading/trailing prose text", () => {
+    const raw = "Here is the result:\n" + JSON.stringify({
+      items: [{ id: "AI_Y", label: "y", status: "yellow", message: "warn", filePath: null, fixable: false }],
+      summary: { green: 0, yellow: 1, red: 0 },
+      checkedAt: "2026-06-28T00:00:00Z"
+    }) + "\nDone.";
+    const r = parseAiCheckResult(raw);
+    expect(r.items[0]?.id).toBe("AI_Y");
+  });
+
+  it("fills missing checkedAt with current time", () => {
+    const raw = JSON.stringify({
+      items: [{ id: "AI_Z", label: "z", status: "green", message: "ok", filePath: null, fixable: false }],
+      summary: { green: 1, yellow: 0, red: 0 }
+    });
+    const r = parseAiCheckResult(raw);
+    expect(r.items[0]?.id).toBe("AI_Z");
+    expect(r.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("tolerates extra fields (LLM may add model/tokens)", () => {
+    const raw = JSON.stringify({
+      items: [{ id: "AI_X", label: "x", status: "green", message: "ok", filePath: null, fixable: false, extra: 1 }],
+      summary: { green: 1, yellow: 0, red: 0 },
+      checkedAt: "2026-06-28T00:00:00Z",
+      model: "deepseek-v4-pro",
+      tokens: 100
+    });
+    const r = parseAiCheckResult(raw);
+    expect(r.items[0]?.id).toBe("AI_X");
+    expect(r.summary.green).toBe(1);
+  });
 });
 
 describe("DeepSeekLlmClient", () => {

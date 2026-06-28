@@ -51,7 +51,7 @@ export const skillCheckItemSchema = z.object({
   message: z.string(),
   filePath: z.string().nullable(),
   fixable: z.boolean()
-}).strict();
+}).strip();
 
 export const skillCheckResultSchema = z.object({
   items: z.array(skillCheckItemSchema),
@@ -59,9 +59,9 @@ export const skillCheckResultSchema = z.object({
     green: z.number().int(),
     yellow: z.number().int(),
     red: z.number().int()
-  }).strict(),
+  }).strip(),
   checkedAt: z.string()
-}).strict();
+}).strip();
 
 export const draftStateSchema = z.object({
   slug: z.string(),

@@ -144,6 +144,21 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
     }
   }
 
+  async function remove(): Promise<void> {
+    if (selected === undefined) return;
+    if (!window.confirm(t.aiConfig.deleteConfirm.replace("{provider}", selected.label))) return;
+    setError(null);
+    try {
+      await required(api, "deleteAiProvider")(selected.provider_id);
+      const remaining = providers.filter((p) => p.provider_id !== selected.provider_id);
+      setProviders(remaining);
+      setDefaultProvider((cur) => cur === selected.provider_id ? null : cur);
+      setSelectedId(remaining[0]?.provider_id ?? NEW_PROVIDER_ID);
+    } catch (reason) {
+      setError(apiError(reason, t));
+    }
+  }
+
   return <section className="stack governance-page">
     <header className="page-heading command-hero">
       <div>
@@ -181,6 +196,7 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
         <div className="actions">
           <button type="button" onClick={() => void testConnection()} disabled={testing || isNew}>{testing ? t.aiConfig.loading : t.aiConfig.testConnection}</button>
           <button type="button" className="secondary" onClick={() => void save()} disabled={saving}>{t.common.save}</button>
+          {!isNew ? <button type="button" className="secondary" onClick={() => void remove()}>{t.common.delete}</button> : null}
         </div>
       </article>
 

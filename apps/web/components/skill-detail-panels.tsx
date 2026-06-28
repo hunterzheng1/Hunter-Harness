@@ -246,7 +246,7 @@ function AgentCheckPanel({
     try {
       const result = await required(api, "runSkillAiChecks")(slug);
       setAiChecksResult(result);
-    } catch (reason) { setError(apiError(reason, t)); }
+    } catch (reason) { setError(sd.aiCheckFailed + " " + apiError(reason, t)); }
     finally { setAiChecking(false); }
   }
 
@@ -314,6 +314,7 @@ function AgentCheckPanel({
         {draft === null ? null : <>
           <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
           <button type="button" className="secondary prominent-action" disabled={aiChecking} onClick={() => void runAiChecks()}>{aiChecking ? sd.aiCheckRunning : sd.aiCheckAction}</button>
+          {aiChecksResult !== null && aiChecksResult.items.length > 0 ? <span className="status">{sd.aiChecksLabel}</span> : null}
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
