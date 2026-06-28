@@ -87,6 +87,14 @@ const draftChecks = {
   checkedAt: "2026-06-21T00:00:00Z"
 };
 
+const draftAiChecks = {
+  items: [
+    { id: "AI_TRIGGER_QUALITY", label: "AI 触发质量", status: "green" as const, message: "AI ok", filePath: null, fixable: false }
+  ],
+  summary: { green: 1, yellow: 0, red: 0 },
+  checkedAt: "2026-06-21T00:00:00Z"
+};
+
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
     listSkills: vi.fn(async () => [skill]),
@@ -239,5 +247,19 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
     await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review"));
     expect(await screen.findByText("Entry check")).toBeInTheDocument();
+  });
+
+  it("runs AI checks via the API and merges with program checks (INT-002)", async () => {
+    const runSkillDraftChecks = vi.fn(async () => draftChecks);
+    const runSkillAiChecks = vi.fn(async () => draftAiChecks);
+    render(<SkillDetail api={api({ runSkillDraftChecks, runSkillAiChecks, getSkillDraft: vi.fn(async () => ({ ...draft, checks: null, aiChecks: null })) })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
+    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review"));
+    fireEvent.click(screen.getByRole("button", { name: /^AI 检查$|^AI check$/i }));
+    await waitFor(() => expect(runSkillAiChecks).toHaveBeenCalledWith("harness-review"));
+    expect(await screen.findByText("AI 触发质量")).toBeInTheDocument();
+    expect(screen.getByText("Entry check")).toBeInTheDocument();
   });
 });
