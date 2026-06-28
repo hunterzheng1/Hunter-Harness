@@ -281,6 +281,28 @@ paths:
       responses:
         "200": { description: Updated skill draft after applying fix }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/release-note:generate:
+    post:
+      operationId: generateSkillDraftReleaseNote
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: AI-generated release note persisted to draft.releaseNote (degraded on AI failure) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/fix-suggestions:
+    post:
+      operationId: fetchSkillDraftFixSuggestions
+      responses:
+        "200": { description: AI-generated fix suggestions as a read-only FixPlan preview }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/apply-fix-suggestion:
+    post:
+      operationId: applySkillDraftFixSuggestion
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Updated skill draft after applying an AI fix suggestion }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers:
     get:
       operationId: listAiProviders
