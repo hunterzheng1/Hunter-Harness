@@ -292,3 +292,30 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => {
+  it("ai-checks 真实调用返回合法 SkillCheckResult 且无明文 key", async () => {
+    if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
+    const repository = new MemoryRepository();
+    await repository.createActorWithToken({ actorId: "actor_real", token });
+    // 不传 aiLlmClientFactory → 默认 createLlmClient（真实 DeepSeekLlmClient）；不传 config → 默认 secret file
+    const realApp = await createServer({ repository, storage: new MemoryArtifactStorage() });
+    try {
+      const h = (extra: Record<string, string> = {}) => ({ authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra });
+      const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { schema_version: 1, provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, api_key_env: "secret-file", is_default: true }, headers: h() });
+      expect(pc.statusCode).toBe(201);
+      const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
+      const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...h(), ...up.headers } });
+      expect(upRes.statusCode).toBe(201);
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(Array.isArray(body.items)).toBe(true);
+      expect(body.items.length).toBeGreaterThan(0);
+      expect(body.summary).toBeDefined();
+      expect(JSON.stringify(body)).not.toContain("sk-");
+    } finally {
+      await realApp.close();
+    }
+  }, 60000);
+});
