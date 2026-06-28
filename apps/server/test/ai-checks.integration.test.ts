@@ -355,6 +355,80 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       expect(JSON.stringify(res.json())).not.toContain("apiKey");
     });
   });
+
+  // T10 fix-suggestions（只读预览，不 persist；复用本 describe 的 AI beforeEach + 设置）
+  describe("fix-suggestions (T10)", () => {
+    async function setAiChecks(items: Array<{ id: string; label: string; status: "green" | "yellow" | "red"; message: string; fixable: boolean }>): Promise<void> {
+      llmFn = async () => ({
+        content: JSON.stringify({ items: items.map((i) => ({ ...i, filePath: null })), summary: { green: 0, yellow: items.length, red: 0 }, checkedAt: new Date().toISOString() }),
+        usage: { requests: 1, tokens: 20 }
+      });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(200);
+    }
+
+    it("API-007 200 + items 带 suggestedContent/explanation/appliesTo + audit", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
+      llmFn = async () => ({ content: JSON.stringify({ suggestedContent: '[{"title":"ex","description":"d","request":"r","result":"res"}]', explanation: "补充一个示例", appliesTo: "examples" }), usage: { requests: 1, tokens: 40 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toHaveLength(1);
+      expect(res.json().items[0].suggestedContent).toBeDefined();
+      expect(res.json().items[0].appliesTo).toBe("examples");
+      expect(res.json().items[0].explanation).toBe("补充一个示例");
+      expect(res.json().items[0].action).toBe("suggest");
+      expect(res.json().summary.suggestCount).toBe(1);
+      expect(await auditActions()).toContain("skill.draft.fix-suggestion.generated");
+    });
+
+    it("API-008 无 aiChecks → 空 items FixPlan", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toEqual([]);
+      expect(res.json().summary.suggestCount).toBe(0);
+    });
+
+    it("API-009 checkIds 过滤（只返回指定项）", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      await setAiChecks([
+        { id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "补示例", fixable: true },
+        { id: "AI_TRIGGER_QUALITY", label: "触发质量", status: "yellow", message: "改触发", fixable: true }
+      ]);
+      llmFn = async () => ({ content: JSON.stringify({ suggestedContent: "x", explanation: "y", appliesTo: "description" }), usage: { requests: 1, tokens: 10 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: ["AI_USAGE_EXAMPLES"] }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toHaveLength(1);
+      expect(res.json().items[0].checkId).toBe("AI_USAGE_EXAMPLES");
+    });
+
+    it("API-010 AI_TIMEOUT 降级回退 message-only（不 500）", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
+      llmFn = async () => { throw new Error("ETIMEDOUT"); };
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().items).toHaveLength(1);
+      expect(res.json().items[0].suggestedContent).toBeUndefined();
+      expect(res.json().items[0].message).toBe("建议补充示例");
+    });
+
+    it("API-011 no-key-leak", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
+      llmFn = async () => ({ content: JSON.stringify({ suggestedContent: "新描述", explanation: "改描述", appliesTo: "description" }), usage: { requests: 1, tokens: 10 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.stringify(res.json())).not.toContain("sk-");
+      expect(JSON.stringify(res.json())).not.toContain("apiKey");
+    });
+  });
 });
 
 describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => {

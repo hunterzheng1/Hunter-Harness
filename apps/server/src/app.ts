@@ -10,21 +10,25 @@ import {
   skillIrSchema,
   type AiProviderConfig,
   type FileOperation,
+  type FixPlanItem,
   type SkillCheckResult,
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
   buildAiCheckPrompt,
+  buildFixSuggestionPrompt,
   buildReleaseNotePrompt,
   classifyFile,
   decidePush,
   parseAiCheckResult,
+  parseFixSuggestionResult,
   parseReleaseNote,
   scanSensitiveFiles,
   sha256Bytes,
   uuidV7,
   type BootstrapBundle,
   type FindingOverride,
+  type FixSuggestionParse,
   type LlmClient
 } from "@hunter-harness/core";
 import Fastify, {
@@ -1507,6 +1511,67 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       }
     });
     return send(reply, requestId, result);
+  });
+
+  // AI 生成修复内容（§6.3 第4步）：对 draft.aiChecks.fixable 项逐项调 LLM 生成
+  // {suggestedContent,explanation,appliesTo}，组装 FixPlan（只读预览，不 persist；采纳走 apply-fix-suggestion）。
+  // 无 aiChecks → 空 FixPlan；LLM 失败/解析失败 → 该项降级 message-only（不 500，不阻断）。
+  app.post("/api/v1/skills/:slug/draft/fix-suggestions", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const body = (request.body ?? {}) as { checkIds?: string[] | null };
+    const checkIds = body.checkIds ?? null;
+    const draft = registry.getDraft(slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+    }
+    const emptySummary = { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 };
+    if (draft.aiChecks === null) {
+      // 无 aiChecks → 空 FixPlan（提示先跑 ai-checks；只读预览不 422）
+      return send(reply, requestId, { statusCode: 200, body: { items: [], mergedFiles: [], summary: emptySummary } });
+    }
+    const resolved = await resolveLlmClient(null);
+    if (resolved === null) {
+      throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
+    }
+    const fixableItems = draft.aiChecks.items.filter((i) => i.fixable && (checkIds === null || checkIds.includes(i.id)));
+    const generatedAt = new Date().toISOString();
+    const items: FixPlanItem[] = [];
+    for (const ci of fixableItems) {
+      const prompt = buildFixSuggestionPrompt({ checkItem: ci, ir: draft.ir, sourceFiles: draft.sourceFiles });
+      let parsed: FixSuggestionParse | null = null;
+      try {
+        const res = await resolved.client.analyze(prompt);
+        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        parsed = parseFixSuggestionResult(res.content);
+      } catch {
+        // LLM 失败 → 降级 message-only（不 500）
+        parsed = null;
+      }
+      const item: FixPlanItem = {
+        checkId: ci.id,
+        action: "suggest",
+        label: ci.label,
+        affectedPaths: [],
+        riskDelta: null,
+        message: ci.message
+      };
+      if (parsed !== null) {
+        item.suggestedContent = parsed.suggestedContent;
+        item.explanation = parsed.explanation;
+        item.appliesTo = parsed.appliesTo;
+        item.generatedAt = generatedAt;
+      }
+      items.push(item);
+    }
+    await writeAudit(repository, {
+      actorId: actor.actorId, projectId: null, action: "skill.draft.fix-suggestion.generated",
+      targetId: slug, requestId, details: { slug, count: items.length }
+    });
+    return send(reply, requestId, {
+      statusCode: 200,
+      body: { items, mergedFiles: [], summary: { ...emptySummary, suggestCount: items.length } }
+    });
   });
 
   app.post("/api/v1/skills/:slug/draft/fix-preview", async (request, reply) => {
