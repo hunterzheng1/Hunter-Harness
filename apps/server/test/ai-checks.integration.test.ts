@@ -291,6 +291,70 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: { "x-request-id": uuidV7() } });
     expect(res.statusCode).toBe(401);
   });
+
+  // T9 release-note:generate（复用本 describe 的 AI beforeEach + FakeLlmClient/provider/secret 设置）
+  describe("release-note:generate (T9)", () => {
+    it("API-001 200 + persist draft.releaseNote + audit", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      llmFn = async () => ({ content: "本次新增 X 功能，修改 SKILL.md", usage: { requests: 1, tokens: 30 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().releaseNote).toBe("本次新增 X 功能，修改 SKILL.md");
+      expect(res.json().generatedAt).toBeDefined();
+      // persist 落盘到 draft.releaseNote
+      const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft", headers: headers() });
+      expect(draft.statusCode).toBe(200);
+      expect(draft.json().releaseNote).toBe("本次新增 X 功能，修改 SKILL.md");
+      expect(await auditActions()).toContain("skill.draft.release-note.generated");
+    });
+
+    it("API-002 AI_NOT_CONFIGURED 422（无默认 provider）", async () => {
+      await uploadDraft();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error.code).toBe("AI_NOT_CONFIGURED");
+    });
+
+    it("API-003 AI_TIMEOUT 降级 200 degraded:true", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      llmFn = async () => { throw new Error("ETIMEDOUT"); };
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().degraded).toBe(true);
+      expect(res.json().reason).toBe("AI_TIMEOUT");
+      expect(res.json().releaseNote).toBeNull();
+    });
+
+    it("API-004 AI_PARSE_FAILED 降级（空内容）", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      llmFn = async () => ({ content: "   \n  ", usage: { requests: 1, tokens: 5 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().degraded).toBe(true);
+      expect(res.json().reason).toBe("AI_PARSE_FAILED");
+      expect(res.json().releaseNote).toBeNull();
+    });
+
+    it("API-005 DRAFT_NOT_FOUND 404", async () => {
+      await createDefaultProvider();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error.code).toBe("DRAFT_NOT_FOUND");
+    });
+
+    it("API-006 no-key-leak（响应 body 无 sk-/apiKey）", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      llmFn = async () => ({ content: "release note text", usage: { requests: 1, tokens: 5 } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.stringify(res.json())).not.toContain("sk-");
+      expect(JSON.stringify(res.json())).not.toContain("apiKey");
+    });
+  });
 });
 
 describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => {

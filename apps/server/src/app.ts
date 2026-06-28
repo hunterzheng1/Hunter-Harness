@@ -15,9 +15,11 @@ import {
 } from "@hunter-harness/contracts";
 import {
   buildAiCheckPrompt,
+  buildReleaseNotePrompt,
   classifyFile,
   decidePush,
   parseAiCheckResult,
+  parseReleaseNote,
   scanSensitiveFiles,
   sha256Bytes,
   uuidV7,
@@ -1455,6 +1457,54 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: slug, requestId, details: { slug, red: aiChecks.summary.red }
       });
       return { statusCode: 200, body: aiChecks };
+    });
+    return send(reply, requestId, result);
+  });
+
+  // AI 生成发布变更信息（§5.3）：读 diffDraft + ir → LLM 生成 releaseNote → 持久化 draft.releaseNote + audit。
+  // 持久化 = mutation（走 Idempotency-Key+lock，与 ai-checks 一致；避免重复 LLM 花费）。
+  // 失败降级 AI_TIMEOUT/AI_PARSE_FAILED（200 degraded:true，不 500，不阻塞发布；前端提示手填）。
+  app.post("/api/v1/skills/:slug/draft/release-note:generate", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = registry.getDraft(slug);
+      if (draft === undefined) {
+        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+      }
+      const resolved = await resolveLlmClient(null);
+      if (resolved === null) {
+        throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
+      }
+      const diff = registry.diffDraft(slug);
+      const prompt = buildReleaseNotePrompt({ ir: draft.ir, diff });
+      const generatedAt = new Date().toISOString();
+      try {
+        const res = await resolved.client.analyze(prompt);
+        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        const releaseNote = parseReleaseNote(res.content);
+        if (releaseNote === null) {
+          // LLM 返回空/不可解析 → 降级 AI_PARSE_FAILED（不 500，不阻塞发布；前端提示手填）
+          await writeAudit(repository, {
+            actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
+            targetId: slug, requestId, details: { slug, degraded: true, reason: "AI_PARSE_FAILED" }
+          });
+          return { statusCode: 200, body: { releaseNote: null, degraded: true, reason: "AI_PARSE_FAILED", generatedAt } };
+        }
+        await registry.setDraftReleaseNote({ slug, releaseNote, generatedAt });
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
+          targetId: slug, requestId, details: { slug, degraded: false }
+        });
+        return { statusCode: 200, body: { releaseNote, generatedAt } };
+      } catch (err) {
+        // LLM 超时/网络错 → 降级 AI_TIMEOUT（不 500，不阻塞发布；err.message 只进 audit 不进响应，防 key 泄露）
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
+          targetId: slug, requestId, details: { slug, degraded: true, reason: "AI_TIMEOUT", error: err instanceof Error ? err.message : "unknown" }
+        });
+        return { statusCode: 200, body: { releaseNote: null, degraded: true, reason: "AI_TIMEOUT", generatedAt } };
+      }
     });
     return send(reply, requestId, result);
   });
