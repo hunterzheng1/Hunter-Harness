@@ -175,4 +175,34 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(pubRes.statusCode).toBe(200);
     expect(pubRes.json().version).toBe("1.0.1");
   });
+
+  it("apply-fix is idempotent by Idempotency-Key (API-009)", async () => {
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    const key = uuidV7();
+    const body = { checkIds: null };
+    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
+    expect(first.statusCode).toBe(200);
+    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
+    expect(second.statusCode).toBe(200);
+    expect(second.json().revision).toBe(first.json().revision);
+  });
+
+  it("apply-fix rejects without auth (API-012)", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("apply-fix writes audit event skill.draft.fix-applied (API-008)", async () => {
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: headers() });
+    expect(res.statusCode).toBe(200);
+    const events = await repository.listAuditEvents();
+    expect(events.some((e) => e.action === "skill.draft.fix-applied")).toBe(true);
+  });
 });
