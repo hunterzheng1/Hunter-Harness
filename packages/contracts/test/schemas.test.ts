@@ -14,6 +14,8 @@ import {
   checkStatusSchema,
   draftStateSchema,
   filePolicySchema,
+  fixActionSchema,
+  fixPlanSchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
   projectConfigSchema,
@@ -419,5 +421,37 @@ describe("OpenAPI v1", () => {
       "/api/v1/artifacts/{artifact_id}/manifest",
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}"
     ]));
+  });
+});
+
+describe("fix plan schemas", () => {
+  it("accepts a valid fix plan", () => {
+    const plan = {
+      items: [{
+        checkId: "VERSION",
+        action: "auto",
+        label: "版本前进",
+        affectedPaths: ["skill-ir.json"],
+        riskDelta: null,
+        message: "1.0.0 → 1.0.1"
+      }],
+      mergedFiles: [{ path: "skill-ir.json", status: "modified", publishedContent: "{}", draftContent: "{}\n" }],
+      summary: { autoCount: 1, confirmCount: 0, suggestCount: 0, changedFiles: 1, changedLines: 1 }
+    };
+    expect(fixPlanSchema.parse(plan).items).toHaveLength(1);
+  });
+
+  it("rejects invalid action", () => {
+    expect(() => fixActionSchema.parse("auto-magic")).toThrow();
+  });
+
+  it("rejects extra fields on fixPlan (strict)", () => {
+    const plan = {
+      items: [],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 },
+      extra: true
+    };
+    expect(() => fixPlanSchema.parse(plan)).toThrow();
   });
 });

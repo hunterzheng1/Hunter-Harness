@@ -354,3 +354,46 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
     });
   });
 });
+
+describe("RegistryStore fix (task 7-8)", () => {
+  it("buildDraftFix returns patch without persisting", async () => {
+    const store = newStore();
+    await store.uploadDraft({ files, actorId: "owner" });
+    await store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" });
+    await store.uploadDraft({ files, actorId: "owner" });
+    await store.runChecks({ slug: "harness-x", checkedAt: "2026-06-28T00:00:00Z" });
+    const before = store.getDraft("harness-x");
+    const plan = await store.buildDraftFix("harness-x", null);
+    expect(plan.summary.autoCount).toBeGreaterThan(0);
+    expect(plan.mergedFiles.length).toBeGreaterThanOrEqual(1);
+    expect(store.getDraft("harness-x")).toEqual(before);
+  });
+
+  it("applyDraftFix updates ir, bumps revision, clears checks/aiChecks", async () => {
+    const store = newStore();
+    await store.uploadDraft({ files, actorId: "owner" });
+    await store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" });
+    await store.uploadDraft({ files, actorId: "owner" });
+    await store.runChecks({ slug: "harness-x", checkedAt: "2026-06-28T00:00:00Z" });
+    const before = store.getDraft("harness-x");
+    expect(before?.checks).not.toBeNull();
+    const after = await store.applyDraftFix("harness-x", null);
+    expect(after.revision).toBe((before?.revision ?? 0) + 1);
+    expect(after.checks).toBeNull();
+    expect(after.aiChecks).toBeNull();
+    expect(after.ir.version).toBe("1.0.1");
+  });
+
+  it("applyDraftFix throws DRAFT_NOT_FOUND when no draft", async () => {
+    const store = newStore();
+    await expect(store.applyDraftFix("missing", null)).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
+  });
+
+  it("applyDraftFix blocks on sensitive fixed ir", async () => {
+    const store = newStore();
+    const secretIr: SkillIr = { ...ir, instructions: ["-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"] };
+    await store.upsertDraft({ slug: "harness-x", sourceFiles: files, ir: secretIr, draftVersion: "0.1.0" });
+    await store.runChecks({ slug: "harness-x", checkedAt: "2026-06-28T00:00:00Z" });
+    await expect(store.applyDraftFix("harness-x", null)).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
+  });
+});

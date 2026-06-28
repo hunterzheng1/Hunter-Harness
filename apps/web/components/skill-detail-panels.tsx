@@ -3,6 +3,7 @@
 import type {
   AgentSkillConfig,
   DraftState,
+  FixPlan,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
@@ -196,6 +197,10 @@ function AgentCheckPanel({
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<File[] | null>(null);
+  const [fixPlan, setFixPlan] = useState<FixPlan | null>(null);
+  const [fixing, setFixing] = useState(false);
+  const [fixPreviewRun, setFixPreviewRun] = useState(false);
+  const [fixCheckIds, setFixCheckIds] = useState<string[] | null>(null);
 
   useEffect(() => {
     setChecksResult(draft?.checks ?? null);
@@ -295,6 +300,30 @@ function AgentCheckPanel({
     await upload(files);
   }
 
+  async function previewFix(checkIds: string[] | null): Promise<void> {
+    setFixing(true);
+    setError(null);
+    try {
+      const plan = await required(api, "previewSkillFix")(slug, checkIds);
+      setFixPlan(plan);
+      setFixCheckIds(checkIds);
+      setFixPreviewRun(true);
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setFixing(false); }
+  }
+
+  async function applyFix(checkIds: string[] | null): Promise<void> {
+    setFixing(true);
+    setError(null);
+    try {
+      await required(api, "applySkillFix")(slug, checkIds);
+      setFixPlan(null);
+      setFixPreviewRun(false);
+      onPublished();
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setFixing(false); }
+  }
+
   function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
     const files = event.target.files;
     if (files === null || files.length === 0) return;
@@ -316,6 +345,7 @@ function AgentCheckPanel({
           <button type="button" className="secondary prominent-action" disabled={aiChecking} onClick={() => void runAiChecks()}>{aiChecking ? sd.aiCheckRunning : sd.aiCheckAction}</button>
           {aiChecksResult !== null && aiChecksResult.items.length > 0 ? <span className="status">{sd.aiChecksLabel}</span> : null}
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
+          <button type="button" className="secondary prominent-action" disabled={fixing} onClick={() => void previewFix(null)}>{sd.oneClickFix}</button>
           <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
           {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
@@ -334,8 +364,29 @@ function AgentCheckPanel({
       {selectedChecks.map((check) => <article className="check-row" key={check.id}>
         <CheckLight status={check.status} />
         <div><strong>{check.label}</strong><p>{check.message}</p>{check.filePath === null ? null : <code>{check.filePath}</code>}</div>
-        {check.fixable ? <button type="button" className="secondary">{sd.applyFix}</button> : null}
+        {check.fixable ? <button type="button" className="secondary" disabled={fixing} onClick={() => void previewFix([check.id])}>{sd.applyFix}</button> : null}
       </article>)}
+    </div>}
+    {!fixPreviewRun || fixPlan === null ? null : fixPlan.items.length === 0 ? <Empty>{sd.fixEmpty}</Empty> : <div className="version-diff-workbench fix-preview-workbench">
+      <aside className="version-file-tree">
+        <div className="version-file-tree-title">{sd.fixPreview}</div>
+        {fixPlan.items.map((item) => <div className="check-row" key={item.checkId}>
+          <span className={`fix-action fix-action-${item.action}`}>{item.action}</span>
+          <div><strong>{item.label}</strong><p>{item.message}</p>{item.riskDelta === null ? null : <small className="risk">{sd.riskDelta}: {item.riskDelta}</small>}</div>
+        </div>)}
+      </aside>
+      <div className="version-diff-pane">
+        <div className="diff-column-title"><span>{sd.currentPublishedVersion}</span></div>
+        <pre>{(fixPlan.mergedFiles[0]?.publishedContent ?? "").split("\n").map((line, index) => <span className="diff-line diff-line-old" key={`fix-old-${index}`}>{line || " "}</span>)}</pre>
+      </div>
+      <div className="version-diff-pane">
+        <div className="diff-column-title"><span>{sd.stagedDraftVersion}</span></div>
+        <pre>{(fixPlan.mergedFiles[0]?.draftContent ?? "").split("\n").map((line, index) => <span className="diff-line diff-line-new" key={`fix-new-${index}`}>{line || " "}</span>)}</pre>
+      </div>
+      <div className="publish-modal-footer">
+        <button type="button" disabled={fixing} onClick={() => void applyFix(fixCheckIds)}>{sd.applyFix}</button>
+        <button type="button" className="secondary" onClick={() => { setFixPlan(null); setFixPreviewRun(false); }}>{sd.cancelEdit}</button>
+      </div>
     </div>}
     {!diffRun ? null : diffFiles.length === 0 ? <Empty>{sd.diffNoChange}</Empty> : <div className="version-diff-workbench">
       <aside className="version-file-tree">

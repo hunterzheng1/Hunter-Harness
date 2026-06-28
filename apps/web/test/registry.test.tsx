@@ -262,4 +262,25 @@ describe("governed workflow and Skill Center", () => {
     expect(await screen.findByText("AI 触发质量")).toBeInTheDocument();
     expect(screen.getByText("Entry check")).toBeInTheDocument();
   });
+
+  it("applyFix button triggers fix preview via the API (INT-004)", async () => {
+    const previewSkillFix = vi.fn(async () => ({
+      items: [{ checkId: "c2", action: "confirm" as const, label: "Secret scan", affectedPaths: ["skill-ir.json"], riskDelta: null, message: "narrowed" }],
+      mergedFiles: [{ path: "skill-ir.json", status: "modified" as const, publishedContent: "{}", draftContent: "{}\n" }],
+      summary: { autoCount: 0, confirmCount: 1, suggestCount: 0, changedFiles: 1, changedLines: 1 }
+    }));
+    const applySkillFix = vi.fn(async () => ({ ...draft, checks: null, aiChecks: null, revision: 2 }));
+    render(<SkillDetail api={api({
+      runSkillDraftChecks: vi.fn(async () => draftChecks),
+      previewSkillFix, applySkillFix,
+      getSkillDraft: vi.fn(async () => ({ ...draft, checks: null }))
+    })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
+    await waitFor(() => expect(screen.getByText("Secret scan")).toBeInTheDocument());
+    const applyFixBtn = await screen.findByRole("button", { name: /应用修复|apply fix/i });
+    fireEvent.click(applyFixBtn);
+    await waitFor(() => expect(previewSkillFix).toHaveBeenCalledWith("harness-review", ["c2"]));
+  });
 });

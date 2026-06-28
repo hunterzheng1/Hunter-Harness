@@ -30,6 +30,7 @@ export * from "./skill-ir/overlay.js";
 export * from "./skill-ir/extract.js";
 export * from "./skill-ir/checker.js";
 export * from "./skill-ir/diff.js";
+export * from "./skill-ir/fixer.js";
 export * from "./skill-ir/semver.js";
 export * from "./transaction/journal.js";
 export * from "./transaction/recovery.js";

@@ -12,7 +12,8 @@ import type {
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
-  SkillIr
+  SkillIr,
+  FixPlan
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills, workflowOrder } from "./catalog";
@@ -637,6 +638,12 @@ export class MockApiClient implements HunterApi {
       summary: { green: 1, yellow: 0, red: 0 },
       checkedAt: new Date().toISOString()
     });
+  }
+  async previewSkillFix(): Promise<FixPlan> {
+    return delay({ items: [], mergedFiles: [], summary: { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 } });
+  }
+  async applySkillFix(slug: string): Promise<DraftState> {
+    return this.getSkillDraft(slug);
   }
 }
 

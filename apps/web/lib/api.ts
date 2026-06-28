@@ -4,6 +4,7 @@ import {
   type DashboardOverview,
   type DraftState,
   type FileOperation,
+  type FixPlan,
   type PublishSkillRequest,
   type RegistryAgent,
   type RegistryArtifact,
@@ -171,6 +172,8 @@ export interface HunterApi {
   testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
   getAiUsage?(): Promise<{ requests: number; tokens: number }>;
   runSkillAiChecks?(slug: string): Promise<SkillCheckResult>;
+  previewSkillFix?(slug: string, checkIds: string[] | null): Promise<FixPlan>;
+  applySkillFix?(slug: string, checkIds: string[] | null): Promise<DraftState>;
 }
 
 export class ApiClientError extends Error {
@@ -651,6 +654,12 @@ export class HttpHunterApi implements HunterApi {
   }
   async runSkillAiChecks(slug: string): Promise<SkillCheckResult> {
     return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/ai-checks", {});
+  }
+  async previewSkillFix(slug: string, checkIds: string[] | null): Promise<FixPlan> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/fix-preview", { checkIds });
+  }
+  async applySkillFix(slug: string, checkIds: string[] | null): Promise<DraftState> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/apply-fix", { checkIds });
   }
 }
 

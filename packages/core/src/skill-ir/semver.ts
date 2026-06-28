@@ -7,3 +7,8 @@ export function compareSemver(left: string, right: string): number {
   }
   return 0;
 }
+
+export function bumpPatch(version: string): string {
+  const parts = version.split(".").map(Number);
+  return (parts[0] ?? 0) + "." + (parts[1] ?? 0) + "." + ((parts[2] ?? 0) + 1);
+}

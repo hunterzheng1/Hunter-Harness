@@ -70,7 +70,7 @@ export function checkSkill(input: {
     status: namingOk ? "green" : "red",
     message: namingOk ? "slug=" + ir.name + " 符合 kebab-case" : "slug=" + ir.name + " 非 kebab-case",
     filePath: null,
-    fixable: false
+    fixable: true
   });
 
   const descLen = ir.description.trim().length;
@@ -154,7 +154,7 @@ export function checkSkill(input: {
     status: versionStatus,
     message: "ir.version=" + ir.version + " latest=" + (latest ?? "none"),
     filePath: null,
-    fixable: false
+    fixable: true
   });
 
   const summary = {

@@ -1459,6 +1459,29 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
+  app.post("/api/v1/skills/:slug/draft/fix-preview", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const { checkIds } = (request.body ?? {}) as { checkIds?: string[] | null };
+    const plan = await registry.buildDraftFix(slug, checkIds ?? null);
+    return send(reply, requestId, { statusCode: 200, body: { items: plan.items, mergedFiles: plan.mergedFiles, summary: plan.summary } });
+  });
+
+  app.post("/api/v1/skills/:slug/draft/apply-fix", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const { checkIds } = (request.body ?? {}) as { checkIds?: string[] | null };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = await registry.applyDraftFix(slug, checkIds ?? null);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.draft.fix-applied",
+        targetId: slug, requestId, details: { slug, checkIds: checkIds ?? "all" }
+      });
+      return { statusCode: 200, body: draft };
+    });
+    return send(reply, requestId, result);
+  });
+
   await app.ready();
   return app;
 }

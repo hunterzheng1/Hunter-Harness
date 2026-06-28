@@ -18,6 +18,7 @@ import {
   type AiProviderConfig,
   type AgentSkillConfig,
   type DraftState,
+  type FixPlan,
   type RegistryAgent,
   type RegistryArtifact,
   type RegistryProjectWorkflowBinding,
@@ -33,6 +34,8 @@ import {
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
+  buildFixPatch,
+  bumpPatch,
   checkSkill,
   compareSemver,
   compileSkill,
@@ -84,11 +87,6 @@ function agentsFor(ir: SkillIr, latestVersion: string | null): AgentSkillConfig[
 
 function defaultAgentOf(ir: SkillIr): RegistryAgent | null {
   return ir.adapters["claude-code"]?.enabled === true ? "claude-code" : null;
-}
-
-function bumpPatch(version: string): string {
-  const parts = version.split(".").map(Number);
-  return (parts[0] ?? 0) + "." + (parts[1] ?? 0) + "." + ((parts[2] ?? 0) + 1);
 }
 
 function migrateSkillDetail(raw: unknown): RegistrySkillDetail {
@@ -405,6 +403,56 @@ export class RegistryStore {
     this.drafts.set(input.slug, updated);
     await this.persist();
     return structuredClone(updated);
+  }
+
+  async buildDraftFix(slug: string, checkIds: string[] | null): Promise<FixPlan & { fixedIr: SkillIr }> {
+    const draft = this.drafts.get(slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+    }
+    const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
+    const { items, mergedFiles, summary, fixedIr } = buildFixPatch({
+      ir: draft.ir,
+      checks: draft.checks,
+      aiChecks: draft.aiChecks,
+      latestVersion,
+      checkIds
+    });
+    return { items, mergedFiles, summary, fixedIr };
+  }
+
+  async applyDraftFix(slug: string, checkIds: string[] | null): Promise<DraftState> {
+    const draft = this.drafts.get(slug);
+    if (draft === undefined) {
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+    }
+    const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
+    const { fixedIr } = buildFixPatch({
+      ir: draft.ir,
+      checks: draft.checks,
+      aiChecks: draft.aiChecks,
+      latestVersion,
+      checkIds
+    });
+    const fileMap: Record<string, string> = {};
+    for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
+    fileMap["skill-ir.json"] = canonicalJson(fixedIr);
+    const findings = scanSensitiveFiles(fileMap);
+    if (findings.blocked) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "fixed ir contains sensitive content", { finding_count: findings.findings.length });
+    }
+    const now = new Date().toISOString();
+    const cleared = draftStateSchema.parse({
+      ...draft,
+      ir: fixedIr,
+      checks: null,
+      aiChecks: null,
+      revision: draft.revision + 1,
+      updated_at: now
+    }) as DraftState;
+    this.drafts.set(slug, cleared);
+    await this.persist();
+    return structuredClone(cleared);
   }
 
   async publish(input: {

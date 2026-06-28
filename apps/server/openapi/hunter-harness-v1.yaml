@@ -267,6 +267,20 @@ paths:
       responses:
         "200": { description: AI Skill draft check results written to draft.aiChecks }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/fix-preview:
+    post:
+      operationId: previewSkillDraftFix
+      responses:
+        "200": { description: Fix plan preview without persisting }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/apply-fix:
+    post:
+      operationId: applySkillDraftFix
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Updated skill draft after applying fix }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers:
     get:
       operationId: listAiProviders

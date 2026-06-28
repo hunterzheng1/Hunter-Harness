@@ -135,4 +135,44 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("VERSION_NOT_FORWARD");
   });
+
+  it("upload → check → fix-preview → apply-fix → re-check → publish end-to-end (INT-001)", async () => {
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+
+    // 新 draft：ir.version=1.0.0, latest=1.0.0 → VERSION red fixable
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    expect(checksRes.statusCode).toBe(200);
+    const versionCheck = checksRes.json().items.find((i: { id: string }) => i.id === "VERSION");
+    expect(versionCheck.status).toBe("red");
+    expect(versionCheck.fixable).toBe(true);
+
+    // fix-preview：只读，返回 patch 不含 fixedIr，不改 draft
+    const previewRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/fix-preview", payload: { checkIds: null }, headers: headers() });
+    expect(previewRes.statusCode).toBe(200);
+    const plan = previewRes.json();
+    expect(plan.summary.autoCount).toBeGreaterThan(0);
+    expect(plan.mergedFiles.length).toBeGreaterThanOrEqual(1);
+    expect(plan).not.toHaveProperty("fixedIr");
+
+    // apply-fix：mutation+audit，更新 ir，清 checks
+    const applyRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: headers() });
+    expect(applyRes.statusCode).toBe(200);
+    const draft = applyRes.json();
+    expect(draft.ir.version).toBe("1.0.1");
+    expect(draft.checks).toBeNull();
+
+    // re-check：VERSION green（ir.version=1.0.1 > latest 1.0.0）
+    const recheckRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    expect(recheckRes.statusCode).toBe(200);
+    const reVersion = recheckRes.json().items.find((i: { id: string }) => i.id === "VERSION");
+    expect(reVersion.status).toBe("green");
+
+    // publish 1.0.1 成功（版本前进）
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.1" }, headers: headers() });
+    expect(pubRes.statusCode).toBe(200);
+    expect(pubRes.json().version).toBe("1.0.1");
+  });
 });
