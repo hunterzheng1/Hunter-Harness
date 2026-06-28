@@ -80,3 +80,40 @@ function degrade(checkedAt: string): SkillCheckResult {
     checkedAt
   };
 }
+
+// #1 AI 生成发布变更信息：解析 LLM 纯文本 release note；空/失败返回 null（路由层据 null 降级，不抛错）
+export function parseReleaseNote(raw: string): string | null {
+  const trimmed = raw.trim();
+  // 剥离任意语言标识的 markdown 围栏（```lang ... ``` 或 ``` ... ```）；stripMarkdownFence 只剥 json，release note 是纯文本需剥任意 lang
+  const fence = /^```[a-zA-Z]*\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  const text = (fence === null ? trimmed : (fence[1] ?? "")).trim();
+  return text.length === 0 ? null : text;
+}
+
+// #2 appliesTo 白名单（与 contracts/src/fix.ts fixPlanItemSchema.appliesTo 对齐）
+const FIX_APPLIES_TO_WHITELIST = ["examples", "allowed_capabilities", "instructions", "description", "tags"] as const;
+
+export type FixAppliesTo = (typeof FIX_APPLIES_TO_WHITELIST)[number];
+
+export interface FixSuggestionParse {
+  suggestedContent: string;
+  explanation: string;
+  appliesTo: FixAppliesTo | null;
+}
+
+// #2 AI 生成修复内容：解析 LLM JSON {suggestedContent,explanation,appliesTo}；appliesTo 非白名单归 null；失败返回 null（路由层降级回退 message-only）
+export function parseFixSuggestionResult(raw: string): FixSuggestionParse | null {
+  try {
+    const text = stripMarkdownFence(raw);
+    const jsonText = extractJsonObject(text);
+    if (jsonText === null) return null;
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    if (typeof parsed.suggestedContent !== "string" || typeof parsed.explanation !== "string") return null;
+    const appliesTo = typeof parsed.appliesTo === "string" && (FIX_APPLIES_TO_WHITELIST as readonly string[]).includes(parsed.appliesTo)
+      ? (parsed.appliesTo as FixAppliesTo)
+      : null;
+    return { suggestedContent: parsed.suggestedContent, explanation: parsed.explanation, appliesTo };
+  } catch {
+    return null;
+  }
+}

@@ -15,6 +15,7 @@ import {
   draftStateSchema,
   filePolicySchema,
   fixActionSchema,
+  fixPlanItemSchema,
   fixPlanSchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
@@ -453,5 +454,46 @@ describe("fix plan schemas", () => {
       extra: true
     };
     expect(() => fixPlanSchema.parse(plan)).toThrow();
+  });
+
+  it("fixPlanItem accepts optional AI suggestion fields", () => {
+    const item = {
+      checkId: "AI_USAGE_EXAMPLES",
+      action: "suggest",
+      label: "使用示例",
+      affectedPaths: [],
+      riskDelta: null,
+      message: "缺少示例",
+      suggestedContent: '[{"title":"t","description":"d","request":"r","result":"s"}]',
+      explanation: "补充一个使用示例",
+      appliesTo: "examples",
+      generatedAt: "2026-06-29T00:00:00.000Z"
+    };
+    expect(fixPlanItemSchema.safeParse(item).success).toBe(true);
+  });
+
+  it("fixPlanItem accepts legacy item without AI suggestion fields", () => {
+    const legacy = {
+      checkId: "VERSION",
+      action: "auto",
+      label: "版本",
+      affectedPaths: ["skill-ir.json"],
+      riskDelta: null,
+      message: "bump"
+    };
+    expect(fixPlanItemSchema.safeParse(legacy).success).toBe(true);
+  });
+
+  it("fixPlanItem rejects non-whitelist appliesTo", () => {
+    const item = {
+      checkId: "x",
+      action: "suggest",
+      label: "l",
+      affectedPaths: [],
+      riskDelta: null,
+      message: "m",
+      appliesTo: "ir.secret"
+    };
+    expect(fixPlanItemSchema.safeParse(item).success).toBe(false);
   });
 });

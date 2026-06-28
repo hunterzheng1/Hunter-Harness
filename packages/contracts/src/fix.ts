@@ -10,7 +10,12 @@ export const fixPlanItemSchema = z.object({
   label: z.string(),
   affectedPaths: z.array(z.string()),
   riskDelta: z.string().nullable(),
-  message: z.string()
+  message: z.string(),
+  // AI 内容生成切片：fix-suggestions 端点填充（fixer.buildFixPatch 填的 item 不带，向后兼容）
+  suggestedContent: z.string().nullable().optional(),
+  explanation: z.string().nullable().optional(),
+  appliesTo: z.enum(["examples", "allowed_capabilities", "instructions", "description", "tags"]).nullable().optional(),
+  generatedAt: z.string().nullable().optional()
 }).strict();
 
 export const fixPlanSchema = z.object({
