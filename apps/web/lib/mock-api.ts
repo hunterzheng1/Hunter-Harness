@@ -645,6 +645,17 @@ export class MockApiClient implements HunterApi {
   async applySkillFix(slug: string): Promise<DraftState> {
     return this.getSkillDraft(slug);
   }
+  async generateReleaseNote(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
+    void slug;
+    return delay({ releaseNote: "AI 生成的发布说明（demo）", generatedAt: "2026-06-29T00:00:00.000Z" });
+  }
+  async fetchFixSuggestions(slug: string, checkIds: string[] | null): Promise<FixPlan> {
+    void slug; void checkIds;
+    return delay({ items: [], mergedFiles: [], summary: { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 } });
+  }
+  async applyFixSuggestion(slug: string): Promise<DraftState> {
+    return this.getSkillDraft(slug);
+  }
 }
 
 export const mockApi = new MockApiClient();

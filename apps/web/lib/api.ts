@@ -174,6 +174,9 @@ export interface HunterApi {
   runSkillAiChecks?(slug: string): Promise<SkillCheckResult>;
   previewSkillFix?(slug: string, checkIds: string[] | null): Promise<FixPlan>;
   applySkillFix?(slug: string, checkIds: string[] | null): Promise<DraftState>;
+  generateReleaseNote?(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }>;
+  fetchFixSuggestions?(slug: string, checkIds: string[] | null): Promise<FixPlan>;
+  applyFixSuggestion?(slug: string, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState>;
 }
 
 export class ApiClientError extends Error {
@@ -660,6 +663,15 @@ export class HttpHunterApi implements HunterApi {
   }
   async applySkillFix(slug: string, checkIds: string[] | null): Promise<DraftState> {
     return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/apply-fix", { checkIds });
+  }
+  async generateReleaseNote(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/release-note:generate", {});
+  }
+  async fetchFixSuggestions(slug: string, checkIds: string[] | null): Promise<FixPlan> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/fix-suggestions", { checkIds });
+  }
+  async applyFixSuggestion(slug: string, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/apply-fix-suggestion", input);
   }
 }
 
