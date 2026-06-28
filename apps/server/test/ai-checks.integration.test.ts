@@ -429,6 +429,70 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       expect(JSON.stringify(res.json())).not.toContain("apiKey");
     });
   });
+
+  // T11 apply-fix-suggestion（mutation 四件套+applyFixSuggestion+audit；复用本 describe 的 AI beforeEach）
+  describe("apply-fix-suggestion (T11)", () => {
+    it("API-012 200 + 写 ir + 清 aiChecks + revision+1 + audit", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      // 设 aiChecks（含 fixable 项），验证采纳后被清空
+      llmFn = async () => ({ content: JSON.stringify({ items: [{ id: "AI_DESC", label: "描述质量", status: "yellow", message: "描述不清", filePath: null, fixable: true }], summary: { green: 0, yellow: 1, red: 0 }, checkedAt: new Date().toISOString() }), usage: { requests: 1, tokens: 20 } });
+      const ac = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+      expect(ac.statusCode).toBe(200);
+      const before = (await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft", headers: headers() })).json();
+      expect(before.aiChecks).not.toBeNull();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description" }, headers: headers() });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ir.description).toBe("更清晰的描述");
+      expect(res.json().aiChecks).toBeNull();
+      expect(res.json().revision).toBe(before.revision + 1);
+      expect(await auditActions()).toContain("skill.draft.fix-suggestion.applied");
+    });
+
+    it("API-013 幂等四件套（同 key 同 body 200 相同响应，同 key 异 body 409）", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      const key = uuidV7();
+      const body = { checkId: "AI_DESC", suggestedContent: "desc A", appliesTo: "description" };
+      const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
+      expect(first.statusCode).toBe(200);
+      const firstRev = first.json().revision;
+      const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
+      expect(second.statusCode).toBe(200);
+      expect(second.json().revision).toBe(firstRev);
+      const third = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "desc B", appliesTo: "description" }, headers: headers({ "idempotency-key": key }) });
+      expect(third.statusCode).toBe(409);
+      expect(third.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
+    });
+
+    it("API-014 appliesTo 白名单外 → 422 SKILL_VALIDATION_FAILED", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "ir.secret" }, headers: headers() });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error.code).toBe("SKILL_VALIDATION_FAILED");
+    });
+
+    it("API-015 scanSensitive blocked → 422 SENSITIVE_CONTENT_BLOCKED", async () => {
+      await createDefaultProvider();
+      await uploadDraft();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", appliesTo: "description" }, headers: headers() });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error.code).toBe("SENSITIVE_CONTENT_BLOCKED");
+    });
+
+    it("API-016 401 未认证", async () => {
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("API-017 DRAFT_NOT_FOUND 404", async () => {
+      await createDefaultProvider();
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: headers() });
+      expect(res.statusCode).toBe(404);
+      expect(res.json().error.code).toBe("DRAFT_NOT_FOUND");
+    });
+  });
 });
 
 describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => {

@@ -1574,6 +1574,33 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
+  // AI 修复建议采纳（§6.3 第4步/§3.6）：mutation 四件套 → applyFixSuggestion（白名单+写 ir/examples+scanSensitive+清 aiChecks+revision+1）→ audit。
+  // appliesTo 可写白名单由 store 层强制（examples/allowed_capabilities/instructions/description；tags/null/非法 → 422 SKILL_VALIDATION_FAILED）。
+  app.post("/api/v1/skills/:slug/draft/apply-fix-suggestion", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const body = z.object({
+      checkId: z.string().min(1),
+      suggestedContent: z.string(),
+      appliesTo: z.string().nullable()
+    }).strict().parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = await registry.applyFixSuggestion({
+        slug,
+        checkId: body.checkId,
+        suggestedContent: body.suggestedContent,
+        appliesTo: body.appliesTo,
+        actorId: actor.actorId
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.draft.fix-suggestion.applied",
+        targetId: slug, requestId, details: { slug, checkId: body.checkId, appliesTo: body.appliesTo }
+      });
+      return { statusCode: 200, body: draft };
+    });
+    return send(reply, requestId, result);
+  });
+
   app.post("/api/v1/skills/:slug/draft/fix-preview", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
