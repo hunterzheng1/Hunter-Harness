@@ -16,7 +16,8 @@ import { sha256Bytes, sha256File } from "../fs/hash.js";
 import {
   extractManagedBlock,
   removeManagedBlock,
-  upsertManagedBlock
+  upsertManagedBlock,
+  upsertManagedBlockById
 } from "../managed/managed-block.js";
 import { classifyFile, decideUpdate } from "../policy/file-policy.js";
 import { uuidV7 } from "../project/uuid-v7.js";
@@ -316,7 +317,12 @@ export async function updateProject(options: UpdateProjectOptions) {
           equivalent = finalContent === sourceContent;
         } else if (incoming !== null) {
           const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
-          finalContent = upsertManagedBlock(targetContent ?? "", incomingBlock);
+          const blockId = operation.operation === "add" || operation.operation === "modify"
+            ? operation.block_id
+            : undefined;
+          finalContent = blockId !== undefined
+            ? upsertManagedBlockById(targetContent ?? "", blockId, incomingBlock)
+            : upsertManagedBlock(targetContent ?? "", incomingBlock);
           equivalent = finalContent === targetContent;
         }
       } else if (operation.operation === "delete" && sourceContent === null) {

@@ -363,4 +363,61 @@ describe("hunter-harness update", () => {
       join(root, ".harness/state/baseline/manifest.json"), "utf8"
     )).toBe(baselineBefore);
   });
+
+  it("applies managed-block modify with block_id to AGENTS.md as per-id block (T11)", async () => {
+    const existing = "# Project agents\n\nexisting content\n";
+    await seedBaseline({ "AGENTS.md": existing });
+    const blockBody = "<!-- harness: adapter=codex source_ir_hash=sha256:abc compiler_version=1.0.0 -->\n# harness-review\ncodex skill body";
+    const manifest = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(existing),
+      content_sha256: sha256Bytes(blockBody),
+      size_bytes: Buffer.byteLength(blockBody),
+      block_id: "harness-skill-harness-review"
+    }]);
+    const fetch = fetchFor(manifest, { [sha256Bytes(blockBody)]: blockBody });
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    })).toBe(0);
+    const result = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(result).toContain("<!-- hunter-harness:start id=harness-skill-harness-review -->");
+    expect(result).toContain("<!-- hunter-harness:end id=harness-skill-harness-review -->");
+    expect(result).toContain("# Project agents");
+    expect(result).toContain("codex skill body");
+  });
+
+  it("applies managed-block modify without block_id using legacy marker (T11)", async () => {
+    const existing = "# Project agents\n\nexisting\n";
+    await seedBaseline({ "AGENTS.md": existing });
+    const blockBody = "managed block content";
+    const manifest = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(existing),
+      content_sha256: sha256Bytes(blockBody),
+      size_bytes: Buffer.byteLength(blockBody)
+    }]);
+    const fetch = fetchFor(manifest, { [sha256Bytes(blockBody)]: blockBody });
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    })).toBe(0);
+    const result = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(result).toContain("<!-- hunter-harness:start -->");
+    expect(result).toContain("<!-- hunter-harness:end -->");
+    expect(result).not.toContain("id=harness-skill");
+    expect(result).toContain("# Project agents");
+  });
 });
