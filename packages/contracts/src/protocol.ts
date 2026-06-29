@@ -17,7 +17,8 @@ export const addOperationSchema = z.object({
   operation: z.literal("add"),
   path: relativePathSchema,
   content_sha256: sha256Schema,
-  size_bytes: z.number().int().nonnegative()
+  size_bytes: z.number().int().nonnegative(),
+  block_id: z.string().optional()
 }).strict();
 
 export const modifyOperationSchema = z.object({
@@ -26,7 +27,8 @@ export const modifyOperationSchema = z.object({
   path: relativePathSchema,
   base_content_sha256: sha256Schema,
   content_sha256: sha256Schema,
-  size_bytes: z.number().int().nonnegative()
+  size_bytes: z.number().int().nonnegative(),
+  block_id: z.string().optional()
 }).strict();
 
 export const deleteOperationSchema = z.object({

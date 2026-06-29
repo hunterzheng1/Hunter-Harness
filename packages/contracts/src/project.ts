@@ -10,6 +10,7 @@ const httpsUrlSchema = z.url().refine(
 export const adapterNameSchema = z.enum([
   "claude-code",
   "codex",
+  "cursor",
   "generic",
   "mcp"
 ]);

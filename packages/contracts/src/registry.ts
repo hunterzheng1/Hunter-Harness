@@ -3,7 +3,7 @@ import { z } from "zod";
 import { sha256Schema } from "./protocol.js";
 import { skillIrSchema } from "./skill-ir.js";
 
-export const registryAgentSchema = z.enum(["claude-code", "codex", "generic", "mcp"]);
+export const registryAgentSchema = z.enum(["claude-code", "codex", "cursor", "generic", "mcp"]);
 export const registrySkillStatusSchema = z.enum([
   "draft",
   "pending_review",

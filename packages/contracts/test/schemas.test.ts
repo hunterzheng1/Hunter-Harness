@@ -5,6 +5,8 @@ import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 
 import {
+  adapterNameSchema,
+  addOperationSchema,
   agentSkillConfigSchema,
   aiConfigStateSchema,
   aiProviderConfigSchema,
@@ -13,12 +15,14 @@ import {
   canonicalJson,
   checkStatusSchema,
   draftStateSchema,
+  fileOperationSchema,
   filePolicySchema,
   fixActionSchema,
   fixPlanItemSchema,
   fixPlanSchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
+  modifyOperationSchema,
   projectConfigSchema,
   publishSkillRequestSchema,
   registryAgentSchema,
@@ -495,5 +499,71 @@ describe("fix plan schemas", () => {
       appliesTo: "ir.secret"
     };
     expect(fixPlanItemSchema.safeParse(item).success).toBe(false);
+  });
+});
+
+describe("cursor adapter + managed-block block_id (T1)", () => {
+  it("cursor is a valid registry agent and adapter name", () => {
+    expect(registryAgentSchema.safeParse("cursor").success).toBe(true);
+    expect(adapterNameSchema.safeParse("cursor").success).toBe(true);
+  });
+
+  it("modify op accepts optional block_id for managed-block install", () => {
+    const result = modifyOperationSchema.safeParse({
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: "sha256:" + "a".repeat(64),
+      content_sha256: "sha256:" + "b".repeat(64),
+      size_bytes: 10,
+      block_id: "harness-skill-x"
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.block_id).toBe("harness-skill-x");
+    }
+  });
+
+  it("modify op without block_id still valid (backward compat)", () => {
+    const result = modifyOperationSchema.safeParse({
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: "sha256:" + "a".repeat(64),
+      content_sha256: "sha256:" + "b".repeat(64),
+      size_bytes: 10
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("add op accepts optional block_id", () => {
+    const result = addOperationSchema.safeParse({
+      operation: "add",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      content_sha256: "sha256:" + "b".repeat(64),
+      size_bytes: 10,
+      block_id: "harness-skill-y"
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.block_id).toBe("harness-skill-y");
+    }
+  });
+
+  it("fileOperation union dispatches modify with block_id", () => {
+    const result = fileOperationSchema.safeParse({
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: "sha256:" + "a".repeat(64),
+      content_sha256: "sha256:" + "b".repeat(64),
+      size_bytes: 10,
+      block_id: "harness-skill-z"
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.data.operation === "modify") {
+      expect(result.data.block_id).toBe("harness-skill-z");
+    }
   });
 });
