@@ -283,4 +283,38 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(applyFixBtn);
     await waitFor(() => expect(previewSkillFix).toHaveBeenCalledWith("harness-review", ["c2"]));
   });
+
+  it("AI generate button fills release note textarea (T15 #1)", async () => {
+    const generateReleaseNote = vi.fn(async () => ({
+      releaseNote: "AI: 新增触发质量检查与发布校验",
+      generatedAt: "2026-06-29T00:00:00Z"
+    }));
+    render(<SkillDetail api={api({ generateReleaseNote })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    const publishBtn = await screen.findByRole("button", { name: /^发布$|^Publish$/i });
+    fireEvent.click(publishBtn);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^AI 生成$|^AI generate$/i }));
+    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review"));
+    expect(await screen.findByDisplayValue("AI: 新增触发质量检查与发布校验")).toBeInTheDocument();
+  });
+
+  it("AI generate degraded shows aiGenerateFailed notice (T15 #1)", async () => {
+    const generateReleaseNote = vi.fn(async () => ({
+      releaseNote: null,
+      generatedAt: "2026-06-29T00:00:00Z",
+      degraded: true,
+      reason: "AI_TIMEOUT"
+    }));
+    render(<SkillDetail api={api({ generateReleaseNote })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    const publishBtn = await screen.findByRole("button", { name: /^发布$|^Publish$/i });
+    fireEvent.click(publishBtn);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^AI 生成$|^AI generate$/i }));
+    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review"));
+    expect(await screen.findByText(/AI 生成失败|AI generation failed/i)).toBeInTheDocument();
+  });
 });

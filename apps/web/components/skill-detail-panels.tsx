@@ -201,6 +201,7 @@ function AgentCheckPanel({
   const [fixing, setFixing] = useState(false);
   const [fixPreviewRun, setFixPreviewRun] = useState(false);
   const [fixCheckIds, setFixCheckIds] = useState<string[] | null>(null);
+  const [generatingReleaseNote, setGeneratingReleaseNote] = useState(false);
 
   useEffect(() => {
     setChecksResult(draft?.checks ?? null);
@@ -324,6 +325,23 @@ function AgentCheckPanel({
     finally { setFixing(false); }
   }
 
+  async function aiGenerateReleaseNote(): Promise<void> {
+    setGeneratingReleaseNote(true);
+    setError(null);
+    try {
+      const result = await required(api, "generateReleaseNote")(slug);
+      if (result.releaseNote === null || result.degraded === true) {
+        setError(sd.aiGenerateFailed);
+      } else {
+        setPublishNote(result.releaseNote);
+      }
+    } catch {
+      setError(sd.aiGenerateFailed);
+    } finally {
+      setGeneratingReleaseNote(false);
+    }
+  }
+
   function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
     const files = event.target.files;
     if (files === null || files.length === 0) return;
@@ -427,10 +445,15 @@ function AgentCheckPanel({
           <article className="summary-added"><strong>{stats.addedFiles}</strong><span>{sd.addedFiles}</span></article>
           <article className="summary-lines"><strong>{stats.changedLines}</strong><span>{sd.changedLines}</span></article>
         </div>
-        <label className="release-note-editor publish-note-field">
-          <span className="publish-note-heading"><span className="config-card-label">{sd.releaseNote}</span></span>
-          <textarea value={resolvedPublishNote} onChange={(event) => setPublishNote(event.target.value)} />
-        </label>
+        <div className="publish-note-field">
+          <div className="publish-note-heading">
+            <span className="config-card-label">{sd.releaseNote}</span>
+            <button type="button" className="secondary" disabled={generatingReleaseNote} onClick={() => void aiGenerateReleaseNote()}>{sd.aiGenerate}</button>
+          </div>
+          <label className="release-note-editor">
+            <textarea value={resolvedPublishNote} onChange={(event) => setPublishNote(event.target.value)} aria-label={sd.releaseNote} />
+          </label>
+        </div>
         <div className="publish-modal-footer">
           <span>{sd.publishModalHint}</span>
           <div className="editable-card-actions">
