@@ -313,6 +313,9 @@ describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => 
       expect(Array.isArray(body.items)).toBe(true);
       expect(body.items.length).toBeGreaterThan(0);
       expect(body.summary).toBeDefined();
+      // 加强断言：弱断言（items.length>0）无法区分「真实 green 成功」与「LLM 失败/解析失败降级 yellow」——二者都过。
+      // 真实调用成功时不得出现降级项 AI_TIMEOUT / AI_PARSE_FAILED（仅 LLM 抛错/非法 JSON 时才注入）。
+      expect(body.items.some((i: { id: string }) => i.id === "AI_TIMEOUT" || i.id === "AI_PARSE_FAILED")).toBe(false);
       expect(JSON.stringify(body)).not.toContain("sk-");
     } finally {
       await realApp.close();
