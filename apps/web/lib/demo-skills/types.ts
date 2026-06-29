@@ -1,6 +1,6 @@
 import type { RegistryAgent, SkillCheckItem, SkillDiffFile } from "@hunter-harness/contracts";
 
-export type DemoAgent = RegistryAgent | "cursor";
+export type DemoAgent = RegistryAgent;
 
 export interface DemoSourceFile {
   path: string;

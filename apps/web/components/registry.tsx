@@ -58,10 +58,6 @@ function skillStatusLabel(status: RegistrySkillDetail["status"], t: ReturnType<t
 
 type SkillDetailTab = "source" | "examples" | "definition" | "checks" | "versions" | "governance";
 
-function isRegistryAgent(agent: DemoAgent): agent is RegistryAgent {
-  return agent === "claude-code" || agent === "codex" || agent === "generic" || agent === "mcp";
-}
-
 const SKILL_IR_ENTRY_PATTERN = /(^|\/)(skill\.ya?ml|skill\.json|hunter-skill-ir\.json)$/i;
 
 async function parseSkillFile(input: File | FileList | File[]): Promise<{ ir: SkillIr; sourceName: string }> {
@@ -206,7 +202,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
 
       <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
         <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t.skills.searchPlaceholder} /></label>
-        <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="generic">Generic</option><option value="mcp">MCP</option></select></label>
+        <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="generic">Generic</option><option value="mcp">MCP</option></select></label>
         <label>{t.skills.status}<select value={status} onChange={(event) => setStatus(event.target.value as "" | "published" | "unpublished")}><option value="">{t.common.all}</option><option value="published">{t.skills.statusPublished}</option><option value="unpublished">{t.skills.statusUnpublished}</option></select></label>
         <div className="tag-filter-panel">
           <span>{t.skills.tag}</span>
@@ -340,7 +336,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   }
   async function download(): Promise<void> {
     try {
-      if (!isRegistryAgent(agent)) throw new Error("demo-only agent download is not wired to the API yet");
       const artifact = await required(api, "downloadSkillArtifact")(skillId, agent);
       const url = URL.createObjectURL(artifact.blob);
       const anchor = document.createElement("a"); anchor.href = url; anchor.download = artifact.filename; anchor.click();

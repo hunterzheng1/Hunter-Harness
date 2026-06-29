@@ -1,5 +1,5 @@
 export type ProfileId = "general" | "java" | "node" | "python" | "docs" | "personal-automation";
-export type AdapterId = "claude-code" | "codex" | "generic" | "mcp";
+export type AdapterId = "claude-code" | "codex" | "cursor" | "generic" | "mcp";
 
 export interface BootstrapSkill {
   name: string;
@@ -25,7 +25,7 @@ export const profiles: ReadonlyArray<{ id: ProfileId; label: string; description
   { id: "personal-automation", label: "Personal automation", description: "Bootstrap optimizer coverage for personal automation skills." }
 ];
 
-const allAdapters: AdapterId[] = ["claude-code", "codex", "generic", "mcp"];
+const allAdapters: AdapterId[] = ["claude-code", "codex", "cursor", "generic", "mcp"];
 const coreProfiles: ProfileId[] = ["general", "java"];
 
 function skill(

@@ -407,4 +407,21 @@ describe("governed workflow and Skill Center", () => {
     expect(await screen.findByText(/补示例/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
   });
+
+  it("agent filter exposes cursor option (T17)", async () => {
+    render(<SkillRegistry api={api()} />);
+    await screen.findByText("harness-review");
+    expect(screen.getByRole("option", { name: /^Cursor$/i })).toBeInTheDocument();
+  });
+
+  it("cursor download is wired to the API, not demo-only (T17)", async () => {
+    const downloadSkillArtifact = vi.fn(async () => ({ blob: new Blob([]), hash: "sha256:abc", filename: "cursor.zip" }));
+    render(<SkillDetail api={api({ downloadSkillArtifact })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    const agentSelect = screen.getByRole("combobox");
+    fireEvent.change(agentSelect, { target: { value: "cursor" } });
+    const downloadBtn = screen.getByRole("button", { name: /下载|download/i });
+    fireEvent.click(downloadBtn);
+    await waitFor(() => expect(downloadSkillArtifact).toHaveBeenCalledWith("harness-review", "cursor"));
+  });
 });
