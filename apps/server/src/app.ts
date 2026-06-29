@@ -1539,7 +1539,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const items: FixPlanItem[] = [];
     for (const ci of fixableItems) {
       const prompt = buildFixSuggestionPrompt({ checkItem: ci, ir: draft.ir, sourceFiles: draft.sourceFiles });
-      let parsed: FixSuggestionParse | null = null;
+      let parsed: FixSuggestionParse | null;
       try {
         const res = await resolved.client.analyze(prompt);
         await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
