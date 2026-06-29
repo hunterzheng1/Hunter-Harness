@@ -1,10 +1,11 @@
 import {
   canonicalJson,
+  type RegistryAgent,
   type SkillIr
 } from "@hunter-harness/contracts";
 
 import { sha256Bytes } from "../fs/hash.js";
-import { renderClaudeCodeSkill } from "./adapters/claude-code.js";
+import { ADAPTERS } from "./adapters/index.js";
 import {
   mergeSkillIr,
   type SkillOverlay
@@ -13,7 +14,7 @@ import {
 export interface CompileSkillOptions {
   profile: string;
   projectOverride?: SkillOverlay;
-  adapter: "claude-code" | "codex" | "generic" | "mcp";
+  adapter: RegistryAgent;
   compilerVersion: string;
 }
 
@@ -25,39 +26,16 @@ export interface CompiledSkill {
   adapter: string;
 }
 
-function placeholder(skill: SkillIr, adapter: string, hash: string): string {
-  return [
-    "# Adapter contract placeholder",
-    "",
-    "Skill: " + skill.name,
-    "Adapter: " + adapter,
-    "Source IR: " + hash,
-    "",
-    "This output reserves the validated adapter contract. It is not an executable skill."
-  ].join("\n") + "\n";
-}
-
 export function compileSkill(
   source: SkillIr,
   options: CompileSkillOptions
 ): CompiledSkill {
   const merged = mergeSkillIr(source, options);
   const sourceIrHash = sha256Bytes(canonicalJson(merged));
-  if (options.adapter === "claude-code") {
-    return {
-      path: ".claude/skills/" + merged.name + "/SKILL.md",
-      content: renderClaudeCodeSkill(merged, sourceIrHash, options.compilerVersion),
-      sourceIrHash,
-      compilerVersion: options.compilerVersion,
-      adapter: options.adapter
-    };
-  }
-  const directory = options.adapter === "codex"
-    ? ".harness/generated/codex/"
-    : ".harness/generated/" + options.adapter + "/";
+  const descriptor = ADAPTERS[options.adapter];
   return {
-    path: directory + merged.name + ".md",
-    content: placeholder(merged, options.adapter, sourceIrHash),
+    path: descriptor.targetPath(merged),
+    content: descriptor.render(merged, sourceIrHash, options.compilerVersion),
     sourceIrHash,
     compilerVersion: options.compilerVersion,
     adapter: options.adapter

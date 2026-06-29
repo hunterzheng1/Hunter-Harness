@@ -4,10 +4,14 @@ import { describe, expect, it } from "vitest";
 
 import type { SkillIr } from "@hunter-harness/contracts";
 import {
+  ADAPTERS,
   compileSkill,
   loadBootstrapBundle,
   mergeSkillIr,
-  normalizeSkillIr
+  normalizeSkillIr,
+  renderCodexSkill,
+  renderCursorSkill,
+  renderGenericSkill
 } from "../src/index.js";
 
 const baseSkill: SkillIr = {
@@ -36,7 +40,11 @@ const baseSkill: SkillIr = {
         triggers: ["claude review"],
         required_context: [".harness/context-index.json"]
       }
-    }
+    },
+    "codex": { enabled: true },
+    "cursor": { enabled: true },
+    "generic": { enabled: true },
+    "mcp": { enabled: true }
   },
   version: "1.0.0",
   instructions: ["Inspect the diff.", "Report evidence."],
@@ -145,5 +153,91 @@ describe("Skill IR compiler", () => {
       expect(compiled.content).not.toMatch(/\.javadev|\.planning|javadev-env|harness-env/);
       expect(compiled.content).not.toMatch(/git (add|commit|push|pull|merge)/i);
     }
+  });
+});
+
+describe("adapter registry + real renders (T3-T7)", () => {
+  it("ADAPTERS has 5 adapters with correct installable flags", () => {
+    expect(ADAPTERS).toBeDefined();
+    expect(Object.keys(ADAPTERS).sort()).toEqual(["claude-code", "codex", "cursor", "generic", "mcp"]);
+    expect(ADAPTERS.mcp.installable).toBe(false);
+    expect(ADAPTERS["claude-code"].installable).toBe(true);
+    expect(ADAPTERS.codex.installable).toBe(true);
+    expect(ADAPTERS.cursor.installable).toBe(true);
+    expect(ADAPTERS.generic.installable).toBe(true);
+  });
+
+  it("codex descriptor: managed_block + per-id blockId + AGENTS.md target", () => {
+    expect(ADAPTERS).toBeDefined();
+    expect(ADAPTERS.codex.installMode).toBe("managed_block");
+    expect(ADAPTERS.codex.blockId?.(baseSkill)).toBe("harness-skill-harness-review");
+    expect(ADAPTERS.codex.targetPath(baseSkill)).toBe("AGENTS.md");
+  });
+
+  it("codex render produces block body with harness header", () => {
+    expect(typeof renderCodexSkill).toBe("function");
+    const out = renderCodexSkill(baseSkill, "sha256:abc", "1.0.0");
+    expect(out).toContain("<!-- harness: adapter=codex source_ir_hash=sha256:abc compiler_version=1.0.0 -->");
+    expect(out).toContain("# harness-review");
+    expect(out).toContain("## Forbidden actions");
+    expect(out).toContain("## Instructions");
+  });
+
+  it("cursor render produces MDC frontmatter", () => {
+    expect(typeof renderCursorSkill).toBe("function");
+    const out = renderCursorSkill(baseSkill, "sha256:abc", "1.0.0");
+    expect(out).toContain("description:");
+    expect(out).toContain("globs: []");
+    expect(out).toContain("alwaysApply: false");
+    expect(out).toContain("adapter: cursor");
+    expect(out).toContain("source_ir_hash: sha256:abc");
+  });
+
+  it("generic render has adapter:generic frontmatter", () => {
+    expect(typeof renderGenericSkill).toBe("function");
+    const out = renderGenericSkill(baseSkill, "sha256:abc", "1.0.0");
+    expect(out).toContain("adapter: generic");
+    expect(out).toContain("source_ir_hash: sha256:abc");
+  });
+
+  it("compileSkill codex -> AGENTS.md", () => {
+    const compiled = compileSkill(baseSkill, { profile: "java", adapter: "codex", compilerVersion: "1.0.0" });
+    expect(compiled.path).toBe("AGENTS.md");
+    expect(compiled.content).toContain("<!-- harness: adapter=codex");
+    expect(compiled.adapter).toBe("codex");
+  });
+
+  it("compileSkill cursor -> .cursor/rules/<name>.mdc", () => {
+    const compiled = compileSkill(baseSkill, { profile: "java", adapter: "cursor", compilerVersion: "1.0.0" });
+    expect(compiled.path).toBe(".cursor/rules/harness-review.mdc");
+    expect(compiled.content).toContain("adapter: cursor");
+  });
+
+  it("compileSkill generic -> .agent-skills/<name>.md", () => {
+    const compiled = compileSkill(baseSkill, { profile: "java", adapter: "generic", compilerVersion: "1.0.0" });
+    expect(compiled.path).toBe(".agent-skills/harness-review.md");
+    expect(compiled.content).toContain("adapter: generic");
+  });
+
+  it("compileSkill mcp -> placeholder stub (installable=false)", () => {
+    const compiled = compileSkill(baseSkill, { profile: "java", adapter: "mcp", compilerVersion: "1.0.0" });
+    expect(compiled.path).toBe(".harness/generated/mcp/harness-review.md");
+    expect(compiled.content).toContain("placeholder");
+  });
+
+  it("compileSkill is deterministic across all adapters", () => {
+    const adapters = ["claude-code", "codex", "cursor", "generic", "mcp"] as const;
+    for (const agent of adapters) {
+      const a = compileSkill(baseSkill, { profile: "java", adapter: agent, compilerVersion: "1.0.0" });
+      const b = compileSkill(baseSkill, { profile: "java", adapter: agent, compilerVersion: "1.0.0" });
+      expect(a).toEqual(b);
+    }
+  });
+
+  it("render tolerates missing instructions (fallback empty array)", () => {
+    expect(typeof renderCodexSkill).toBe("function");
+    const noInstr: SkillIr = { ...baseSkill, instructions: undefined };
+    const out = renderCodexSkill(noInstr, "sha256:abc", "1.0.0");
+    expect(out).toContain("## Instructions");
   });
 });

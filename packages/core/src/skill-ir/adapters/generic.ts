@@ -2,7 +2,7 @@ import type { SkillIr } from "@hunter-harness/contracts";
 
 import { section } from "./shared.js";
 
-export function renderClaudeCodeSkill(
+export function renderGenericSkill(
   skill: SkillIr,
   sourceIrHash: string,
   compilerVersion: string
@@ -12,13 +12,12 @@ export function renderClaudeCodeSkill(
     "name: " + skill.name,
     "description: " + JSON.stringify(skill.description),
     "version: " + skill.version,
-    "adapter: claude-code",
+    "adapter: generic",
     "source_ir_hash: " + sourceIrHash,
     "compiler_version: " + compilerVersion,
     "---"
   ].join("\n");
-  const parts = [
-    frontmatter,
+  const body = [
     "# " + skill.name,
     skill.description,
     section("Triggers", skill.triggers),
@@ -28,7 +27,7 @@ export function renderClaudeCodeSkill(
     section("Forbidden actions", skill.forbidden_actions)
   ];
   if (skill.allowed_capabilities !== undefined) {
-    parts.push(section("Allowed capabilities", skill.allowed_capabilities));
+    body.push(section("Allowed capabilities", skill.allowed_capabilities));
   }
-  return parts.join("\n\n") + "\n";
+  return [frontmatter, ...body].join("\n\n") + "\n";
 }

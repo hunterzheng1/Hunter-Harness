@@ -2,23 +2,13 @@ import type { SkillIr } from "@hunter-harness/contracts";
 
 import { section } from "./shared.js";
 
-export function renderClaudeCodeSkill(
+export function renderCodexSkill(
   skill: SkillIr,
   sourceIrHash: string,
   compilerVersion: string
 ): string {
-  const frontmatter = [
-    "---",
-    "name: " + skill.name,
-    "description: " + JSON.stringify(skill.description),
-    "version: " + skill.version,
-    "adapter: claude-code",
-    "source_ir_hash: " + sourceIrHash,
-    "compiler_version: " + compilerVersion,
-    "---"
-  ].join("\n");
-  const parts = [
-    frontmatter,
+  const header = `<!-- harness: adapter=codex source_ir_hash=${sourceIrHash} compiler_version=${compilerVersion} -->`;
+  const body = [
     "# " + skill.name,
     skill.description,
     section("Triggers", skill.triggers),
@@ -28,7 +18,7 @@ export function renderClaudeCodeSkill(
     section("Forbidden actions", skill.forbidden_actions)
   ];
   if (skill.allowed_capabilities !== undefined) {
-    parts.push(section("Allowed capabilities", skill.allowed_capabilities));
+    body.push(section("Allowed capabilities", skill.allowed_capabilities));
   }
-  return parts.join("\n\n") + "\n";
+  return [header, ...body].join("\n\n") + "\n";
 }
