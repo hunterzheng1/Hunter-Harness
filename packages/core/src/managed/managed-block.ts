@@ -60,3 +60,27 @@ export function removeManagedBlock(original: string): string {
   const after = original.slice(end).replace(/^(?:\r?\n){1,2}/, "");
   return before + after;
 }
+
+function escapeRe(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const startById = (id: string): string => `<!-- hunter-harness:start id=${id} -->`;
+const endById = (id: string): string => `<!-- hunter-harness:end id=${id} -->`;
+
+export function upsertManagedBlockById(
+  original: string,
+  id: string,
+  content: string
+): string {
+  const newline = original.includes("\r\n") ? "\r\n" : "\n";
+  const block = startById(id) + newline + content + newline + endById(id);
+  const re = new RegExp(escapeRe(startById(id)) + "[\\s\\S]*?" + escapeRe(endById(id)));
+  if (re.test(original)) {
+    return original.replace(re, block);
+  }
+  const separator = original.length === 0
+    ? ""
+    : (original.endsWith(newline) ? newline : newline + newline);
+  return original + separator + block + newline;
+}
