@@ -222,7 +222,7 @@ paths:
     get:
       operationId: previewSkillAdapter
       responses:
-        "200": { description: Verified published adapter output preview }
+        "200": { description: Verified published adapter output preview for any installable adapter (claude-code/codex/cursor/generic); mcp returns 422 ADAPTER_NOT_IMPLEMENTED }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/artifacts/{agent}/download:
     get:
@@ -351,7 +351,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Skill draft promoted to a new published version }
+        "200": { description: Skill draft promoted to a new published version with one artifact per enabled installable adapter (claude-code/codex/cursor/generic; mcp excluded as placeholder) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/diff:
     get:
