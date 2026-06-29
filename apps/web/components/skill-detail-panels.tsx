@@ -4,6 +4,7 @@ import type {
   AgentSkillConfig,
   DraftState,
   FixPlan,
+  FixPlanItem,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
@@ -169,6 +170,22 @@ function checkStatusCopy(status: "green" | "yellow" | "red", t: ReturnType<typeo
   return { title: t.checkFailed, description: t.checkFailedDescription };
 }
 
+const SUGGEST_APPLICABLE: readonly string[] = ["examples", "allowed_capabilities", "instructions", "description"];
+
+function canAdoptSuggestion(appliesTo: FixPlanItem["appliesTo"]): boolean {
+  return appliesTo !== null && appliesTo !== undefined && SUGGEST_APPLICABLE.includes(appliesTo);
+}
+
+function appliesToLabel(appliesTo: NonNullable<FixPlanItem["appliesTo"]>, sd: ReturnType<typeof useI18n>["t"]["skillDetail"]): string {
+  switch (appliesTo) {
+    case "examples": return sd.appliesToExamples;
+    case "allowed_capabilities": return sd.appliesToAllowedCapabilities;
+    case "instructions": return sd.appliesToInstructions;
+    case "description": return sd.appliesToDescription;
+    case "tags": return sd.appliesToTags;
+  }
+}
+
 function AgentCheckPanel({
   api,
   slug,
@@ -202,6 +219,9 @@ function AgentCheckPanel({
   const [fixPreviewRun, setFixPreviewRun] = useState(false);
   const [fixCheckIds, setFixCheckIds] = useState<string[] | null>(null);
   const [generatingReleaseNote, setGeneratingReleaseNote] = useState(false);
+  const [fixSuggestions, setFixSuggestions] = useState<FixPlan | null>(null);
+  const [fixSuggestionRun, setFixSuggestionRun] = useState(false);
+  const [adoptingSuggestion, setAdoptingSuggestion] = useState(false);
 
   useEffect(() => {
     setChecksResult(draft?.checks ?? null);
@@ -342,6 +362,31 @@ function AgentCheckPanel({
     }
   }
 
+  async function fetchFixSuggestions(): Promise<void> {
+    setFixSuggestionRun(true);
+    setError(null);
+    try {
+      const plan = await required(api, "fetchFixSuggestions")(slug, null);
+      setFixSuggestions(plan);
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setFixSuggestionRun(false); }
+  }
+
+  async function adoptFixSuggestion(item: FixPlanItem): Promise<void> {
+    setAdoptingSuggestion(true);
+    setError(null);
+    try {
+      await required(api, "applyFixSuggestion")(slug, {
+        checkId: item.checkId,
+        suggestedContent: item.suggestedContent ?? "",
+        appliesTo: item.appliesTo ?? null
+      });
+      setFixSuggestions(null);
+      onPublished();
+    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setAdoptingSuggestion(false); }
+  }
+
   function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
     const files = event.target.files;
     if (files === null || files.length === 0) return;
@@ -364,6 +409,7 @@ function AgentCheckPanel({
           {aiChecksResult !== null && aiChecksResult.items.length > 0 ? <span className="status">{sd.aiChecksLabel}</span> : null}
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className="secondary prominent-action" disabled={fixing} onClick={() => void previewFix(null)}>{sd.oneClickFix}</button>
+          <button type="button" className="secondary prominent-action" disabled={fixSuggestionRun} onClick={() => void fetchFixSuggestions()}>{sd.aiFixSuggestion}</button>
           <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
           {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
@@ -405,6 +451,17 @@ function AgentCheckPanel({
         <button type="button" disabled={fixing} onClick={() => void applyFix(fixCheckIds)}>{sd.applyFix}</button>
         <button type="button" className="secondary" onClick={() => { setFixPlan(null); setFixPreviewRun(false); }}>{sd.cancelEdit}</button>
       </div>
+    </div>}
+    {fixSuggestions === null ? null : fixSuggestions.items.length === 0 ? <Empty>{sd.fixEmpty}</Empty> : <div className="fix-suggestion-list">
+      {fixSuggestions.items.map((item) => <article className="fix-suggestion-row" key={item.checkId}>
+        <div><strong>{item.label}</strong><p>{item.message}</p></div>
+        {item.suggestedContent === null || item.suggestedContent === undefined ? null : <div className="fix-suggestion-body">
+          <pre>{item.suggestedContent}</pre>
+          {item.explanation === null || item.explanation === undefined ? null : <p className="fix-suggestion-explanation"><span className="config-card-label">{sd.suggestionExplanation}</span> {item.explanation}</p>}
+          {item.appliesTo === null || item.appliesTo === undefined ? null : <span className="fix-suggestion-target">{appliesToLabel(item.appliesTo, sd)}</span>}
+          {canAdoptSuggestion(item.appliesTo) ? <button type="button" className="secondary" disabled={adoptingSuggestion} onClick={() => void adoptFixSuggestion(item)}>{sd.adoptSuggestion}</button> : null}
+        </div>}
+      </article>)}
     </div>}
     {!diffRun ? null : diffFiles.length === 0 ? <Empty>{sd.diffNoChange}</Empty> : <div className="version-diff-workbench">
       <aside className="version-file-tree">

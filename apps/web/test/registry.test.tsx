@@ -317,4 +317,58 @@ describe("governed workflow and Skill Center", () => {
     await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review"));
     expect(await screen.findByText(/AI 生成失败|AI generation failed/i)).toBeInTheDocument();
   });
+
+  it("AI fix suggestions fetch and render (T16 #2)", async () => {
+    const fetchFixSuggestions = vi.fn(async () => ({
+      items: [{
+        checkId: "AI_USAGE_EXAMPLES", action: "suggest" as const, label: "示例补充", affectedPaths: [], riskDelta: null, message: "缺少示例",
+        suggestedContent: '[{"what":"用例","input":"i","output":"o"}]', explanation: "补一个使用示例", appliesTo: "examples" as const, generatedAt: "2026-06-29T00:00:00Z"
+      }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    render(<SkillDetail api={api({ fetchFixSuggestions })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    expect(await screen.findByText(/补一个使用示例/)).toBeInTheDocument();
+  });
+
+  it("adopt suggestion calls applyFixSuggestion (T16 #2)", async () => {
+    const fetchFixSuggestions = vi.fn(async () => ({
+      items: [{
+        checkId: "AI_USAGE_EXAMPLES", action: "suggest" as const, label: "示例补充", affectedPaths: [], riskDelta: null, message: "缺",
+        suggestedContent: '[{"what":"w"}]', explanation: "e", appliesTo: "examples" as const, generatedAt: "t"
+      }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    const applyFixSuggestion = vi.fn(async () => ({ ...draft, revision: 2 }));
+    render(<SkillDetail api={api({ fetchFixSuggestions, applyFixSuggestion })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    fireEvent.click(await screen.findByRole("button", { name: /^采纳$|^Adopt$/i }));
+    await waitFor(() => expect(applyFixSuggestion).toHaveBeenCalledWith("harness-review", { checkId: "AI_USAGE_EXAMPLES", suggestedContent: '[{"what":"w"}]', appliesTo: "examples" }));
+  });
+
+  it("appliesTo=null suggestion renders without adopt button (T16 #2)", async () => {
+    const fetchFixSuggestions = vi.fn(async () => ({
+      items: [{
+        checkId: "AI_X", action: "suggest" as const, label: "只读建议", affectedPaths: [], riskDelta: null, message: "m",
+        suggestedContent: "建议内容", explanation: "只展示不采纳", appliesTo: null, generatedAt: "t"
+      }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    render(<SkillDetail api={api({ fetchFixSuggestions })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    expect(await screen.findByText(/只展示不采纳/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
+  });
 });
