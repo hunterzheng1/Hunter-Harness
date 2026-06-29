@@ -183,4 +183,21 @@ describe("hunter-harness initialization", () => {
     expect(secondClaude.match(/hunter-harness:start/g)).toHaveLength(1);
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("# User Agents");
   });
+
+  it("initializes with cursor adapter and compiles real .cursor/rules files (INT-002)", async () => {
+    const code = await run([
+      "--adapter", "cursor",
+      "--profile", "java",
+      "--non-interactive",
+      "--yes"
+    ]);
+    expect(code).toBe(0);
+    const cursorSkill = await readFile(
+      join(root, ".cursor", "rules", "harness-review.mdc"),
+      "utf8"
+    );
+    expect(cursorSkill).toContain("adapter: cursor");
+    expect(cursorSkill).not.toContain("Adapter contract placeholder");
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
+  });
 });

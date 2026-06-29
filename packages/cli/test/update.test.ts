@@ -420,4 +420,131 @@ describe("hunter-harness update", () => {
     expect(result).not.toContain("id=harness-skill");
     expect(result).toContain("# Project agents");
   });
+
+  it("applies multi-adapter artifacts to their target paths in one transaction (INT-004)", async () => {
+    const agentsExisting = "# Project agents\n\nexisting\n";
+    await seedBaseline({ "AGENTS.md": agentsExisting });
+    const cursorBody = "---\nadapter: cursor\n---\ncursor body\n";
+    const genericBody = "---\nadapter: generic\n---\ngeneric body\n";
+    const codexBlock = "<!-- harness: adapter=codex source_ir_hash=sha256:abc compiler_version=1.0.0 -->\ncodex skill body";
+    const manifest = artifact([
+      { operation: "add", path: ".cursor/rules/harness-review.mdc", file_kind: "user_editable", content_sha256: sha256Bytes(cursorBody), size_bytes: Buffer.byteLength(cursorBody) },
+      { operation: "add", path: ".agent-skills/harness-review.md", file_kind: "user_editable", content_sha256: sha256Bytes(genericBody), size_bytes: Buffer.byteLength(genericBody) },
+      { operation: "modify", path: "AGENTS.md", file_kind: "user_editable", base_content_sha256: sha256Bytes(agentsExisting), content_sha256: sha256Bytes(codexBlock), size_bytes: Buffer.byteLength(codexBlock), block_id: "harness-skill-harness-review" }
+    ]);
+    const fetch = fetchFor(manifest, {
+      [sha256Bytes(cursorBody)]: cursorBody,
+      [sha256Bytes(genericBody)]: genericBody,
+      [sha256Bytes(codexBlock)]: codexBlock
+    });
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    })).toBe(0);
+    expect(await readFile(join(root, ".cursor/rules/harness-review.mdc"), "utf8")).toBe(cursorBody);
+    expect(await readFile(join(root, ".agent-skills/harness-review.md"), "utf8")).toBe(genericBody);
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agents).toContain("harness-skill-harness-review");
+    expect(agents).toContain("codex skill body");
+    expect(agents).toContain("# Project agents");
+  });
+
+  it("repeated managed-block modify with same block id replaces without duplication (INT-005)", async () => {
+    const existing = "# Project agents\n\nexisting\n";
+    await seedBaseline({ "AGENTS.md": existing });
+    const bodyV1 = "codex skill body v1";
+    const manifest1 = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(existing),
+      content_sha256: sha256Bytes(bodyV1),
+      size_bytes: Buffer.byteLength(bodyV1),
+      block_id: "harness-skill-harness-review"
+    }], "pv_1", "art_1");
+    await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest1, { [sha256Bytes(bodyV1)]: bodyV1 }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+    const afterFirst = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(afterFirst.match(/hunter-harness:start id=harness-skill-harness-review/g)).toHaveLength(1);
+    const bodyV2 = "codex skill body v2";
+    const manifest2 = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(bodyV1),
+      content_sha256: sha256Bytes(bodyV2),
+      size_bytes: Buffer.byteLength(bodyV2),
+      block_id: "harness-skill-harness-review"
+    }], "pv_2", "art_2");
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest2, { [sha256Bytes(bodyV2)]: bodyV2 }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    })).toBe(0);
+    const afterSecond = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(afterSecond.match(/hunter-harness:start id=harness-skill-harness-review/g)).toHaveLength(1);
+    expect(afterSecond).toContain("v2");
+    expect(afterSecond).not.toContain("v1");
+  });
+
+  it("applies two managed-block ops with different block ids to the same AGENTS.md (INT-006)", async () => {
+    const existing = "# Project agents\n\nexisting\n";
+    await seedBaseline({ "AGENTS.md": existing });
+    const bodyA = "skill A body";
+    const manifestA = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(existing),
+      content_sha256: sha256Bytes(bodyA),
+      size_bytes: Buffer.byteLength(bodyA),
+      block_id: "harness-skill-skill-a"
+    }], "pv_1", "art_a");
+    await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifestA, { [sha256Bytes(bodyA)]: bodyA }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+    const bodyB = "skill B body";
+    const manifestB = artifact([{
+      operation: "modify",
+      path: "AGENTS.md",
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(bodyA),
+      content_sha256: sha256Bytes(bodyB),
+      size_bytes: Buffer.byteLength(bodyB),
+      block_id: "harness-skill-skill-b"
+    }], "pv_2", "art_b");
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifestB, { [sha256Bytes(bodyB)]: bodyB }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: () => undefined,
+      stderr: () => undefined
+    })).toBe(0);
+    const result = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(result).toContain("harness-skill-skill-a");
+    expect(result).toContain("harness-skill-skill-b");
+    expect(result).toContain("skill A body");
+    expect(result).toContain("skill B body");
+    expect(result).toContain("# Project agents");
+    expect(result.match(/hunter-harness:start id=harness-skill/g)).toHaveLength(2);
+  });
 });
