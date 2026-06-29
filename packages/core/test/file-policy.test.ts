@@ -18,7 +18,9 @@ describe("file policy matrix", () => {
     [".harness/generated/codex/review.md", "generated_cache", "never"],
     [".harness/cache/server-artifacts/a", "generated_cache", "never"],
     [".codegraph/index.db", "external_unmanaged", "never"],
-    ["src/index.ts", "external_unmanaged", "never"]
+    ["src/index.ts", "external_unmanaged", "never"],
+    [".cursor/rules/harness-general.mdc", "user_editable", "diff-proposal"],
+    [".agent-skills/harness-review.md", "user_editable", "diff-proposal"]
   ])("classifies %s uniquely", (path, kind, pushPolicy) => {
     const policy = classifyFile(path);
     expect(policy.file_kind).toBe(kind);

@@ -94,6 +94,9 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".claude/rules/") || under(path, ".claude/skills/harness-")) {
     return USER_DIFF;
   }
+  if (under(path, ".cursor/rules/") || under(path, ".agent-skills/")) {
+    return USER_DIFF;
+  }
   if (under(path, ".harness/knowledge/project-local/")) {
     return PROJECT_LOCAL;
   }
