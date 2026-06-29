@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import AdmZip from "adm-zip";
 
 import { sha256Bytes } from "@hunter-harness/core";
 import type { SkillIr, SourceFile } from "@hunter-harness/contracts";
@@ -19,6 +20,17 @@ const ir: SkillIr = {
   profiles: { general: { enabled: true } },
   adapters: { "claude-code": { enabled: true } },
   version: "1.0.0"
+};
+
+// 簇8 多 adapter fixture：enable 4 个 installable adapter，验 buildArtifacts 多制品（API-001）
+const irMultiAdapter: SkillIr = {
+  ...ir,
+  adapters: {
+    "claude-code": { enabled: true },
+    codex: { enabled: true },
+    cursor: { enabled: true },
+    generic: { enabled: true }
+  }
 };
 
 const skillYaml = `name: harness-x
@@ -533,5 +545,84 @@ describe("RegistryStore AI content generation (T7-T8)", () => {
   it("applyFixSuggestion DRAFT_NOT_FOUND 404 (UT-018)", async () => {
     const store = newStore();
     await expect(store.applyFixSuggestion({ slug: "nope", checkId: "x", suggestedContent: "d", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
+  });
+});
+
+describe("buildArtifacts + publish multi + adapterPreview (T12-14)", () => {
+  async function publishMulti(): Promise<RegistryStore> {
+    const store = newStore();
+    await store.upsertDraft({ slug: "harness-x", sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" });
+    return store;
+  }
+
+  it("publish produces 4 artifacts (claude-code/codex/cursor/generic) for multi-adapter IR (API-001)", async () => {
+    const store = newStore();
+    await store.upsertDraft({ slug: "harness-x", sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    const v = await store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" });
+    expect(v.artifacts.map((a) => a.agent)).toEqual(["claude-code", "codex", "cursor", "generic"]);
+    // 每个制品的 content_sha256 与存储 blob 一致（独立 zip）
+    for (const artifact of v.artifacts) {
+      const bytes = await store.artifactBytes(artifact);
+      expect(sha256Bytes(bytes)).toBe(artifact.content_sha256);
+    }
+  });
+
+  it("cursor artifact manifest has target_path .cursor/rules/<slug>.mdc + install_mode file (API-002)", async () => {
+    const store = await publishMulti();
+    const versions = store.listVersions("harness-x");
+    const cursorArt = versions[0]?.artifacts.find((a) => a.agent === "cursor");
+    if (cursorArt === undefined) throw new Error("cursor artifact missing");
+    const bytes = await store.artifactBytes(cursorArt);
+    const zip = new AdmZip(Buffer.from(bytes));
+    const manifestEntry = zip.getEntry("hunter-skill.json");
+    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
+    expect(manifest.schema_version).toBe(2);
+    expect(manifest.agent).toBe("cursor");
+    expect(manifest.target_path).toBe(".cursor/rules/harness-x.mdc");
+    expect(manifest.install_mode).toBe("file");
+    expect(manifest.block_id).toBeUndefined();
+  });
+
+  it("codex artifact manifest has install_mode managed_block + block_id harness-skill-<slug> (UT-015)", async () => {
+    const store = await publishMulti();
+    const versions = store.listVersions("harness-x");
+    const codexArt = versions[0]?.artifacts.find((a) => a.agent === "codex");
+    if (codexArt === undefined) throw new Error("codex artifact missing");
+    const bytes = await store.artifactBytes(codexArt);
+    const zip = new AdmZip(Buffer.from(bytes));
+    const manifestEntry = zip.getEntry("hunter-skill.json");
+    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
+    expect(manifest.agent).toBe("codex");
+    expect(manifest.target_path).toBe("AGENTS.md");
+    expect(manifest.install_mode).toBe("managed_block");
+    expect(manifest.block_id).toBe("harness-skill-harness-x");
+    // zip 内目标文件名 = AGENTS.md（codex file-target），block 体含 harness 头
+    const bodyEntry = zip.getEntry("AGENTS.md");
+    if (bodyEntry === null) throw new Error("AGENTS.md missing");
+    const body = bodyEntry.getData().toString("utf8");
+    expect(body).toContain("<!-- harness: adapter=codex");
+  });
+
+  it("adapterPreview codex/cursor/generic returns compiled output (API-005~007)", async () => {
+    const store = await publishMulti();
+    const codex = store.adapterPreview("harness-x", "codex");
+    expect(codex.path).toBe("AGENTS.md");
+    expect(codex.content).toContain("<!-- harness: adapter=codex");
+    const cursor = store.adapterPreview("harness-x", "cursor");
+    expect(cursor.path).toBe(".cursor/rules/harness-x.mdc");
+    expect(cursor.content).toContain("adapter: cursor");
+    const generic = store.adapterPreview("harness-x", "generic");
+    expect(generic.path).toBe(".agent-skills/harness-x.md");
+    expect(generic.content).toContain("adapter: generic");
+  });
+
+  it("adapterPreview mcp throws 422 ADAPTER_NOT_IMPLEMENTED (API-008)", async () => {
+    const store = await publishMulti();
+    let caught: unknown = null;
+    try { store.adapterPreview("harness-x", "mcp"); } catch (e) { caught = e; }
+    expect(caught).toMatchObject({ code: "ADAPTER_NOT_IMPLEMENTED", status: 422 });
   });
 });

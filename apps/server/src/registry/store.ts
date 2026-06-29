@@ -36,6 +36,7 @@ import {
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
+  ADAPTERS,
   buildFixPatch,
   bumpPatch,
   checkSkill,
@@ -153,27 +154,47 @@ function requireForwardVersion(existing: SkillState | undefined, version: string
   }
 }
 
-function zipArtifact(ir: SkillIr, compilerVersion: string): Uint8Array {
+interface BuiltArtifact {
+  agent: RegistryAgent;
+  bytes: Uint8Array;
+}
+
+// 簇8：遍历 installable 且 IR enabled 的 adapter，每 adapter compileSkill + zip（目标文件 + hunter-skill.json manifest）。
+// 取交集（installable && ir.adapters[agent].enabled）：尊重 IR adapter 选择 + 向后兼容只 enable claude-code 的旧 skill（仍产 1 制品，现有 publish 测试不破坏）。
+// mcp installable=false 跳过；未 enable 的 adapter 跳过。manifest schema_version:2 含 install_mode/block_id（zip 内元数据，无 contracts schema 约束，skill-cli 读不 parse schema）。
+function buildArtifacts(ir: SkillIr, compilerVersion: string): BuiltArtifact[] {
   const profile = Object.entries(ir.profiles).find(([, value]) => value.enabled)?.[0];
   if (profile === undefined) {
     throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled profile");
   }
-  const output = compileSkill(ir, {
-    adapter: "claude-code",
-    profile,
-    compilerVersion
-  });
-  const zip = new AdmZip();
-  zip.addFile("SKILL.md", Buffer.from(output.content, "utf8"));
-  zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify({
-    schema_version: 1,
-    slug: ir.name,
-    version: ir.version,
-    agent: "claude-code",
-    source_ir_sha256: output.sourceIrHash,
-    target_path: output.path
-  }, null, 2) + "\n", "utf8"));
-  return zip.toBuffer();
+  const built: BuiltArtifact[] = [];
+  for (const agent of Object.keys(ADAPTERS) as RegistryAgent[]) {
+    const descriptor = ADAPTERS[agent];
+    if (!descriptor.installable) continue;
+    if (ir.adapters[agent]?.enabled !== true) continue;
+    const output = compileSkill(ir, { adapter: agent, profile, compilerVersion });
+    const filename = output.path.split("/").pop();
+    if (filename === undefined || filename === "") {
+      throw new ServerDomainError(500, "ARTIFACT_BUILD_FAILED", "compiled skill path has no filename");
+    }
+    const manifest: Record<string, unknown> = {
+      schema_version: 2,
+      slug: ir.name,
+      version: ir.version,
+      agent,
+      source_ir_sha256: output.sourceIrHash,
+      target_path: output.path,
+      install_mode: descriptor.installMode
+    };
+    if (descriptor.blockId !== undefined) {
+      manifest.block_id = descriptor.blockId(ir);
+    }
+    const zip = new AdmZip();
+    zip.addFile(filename, Buffer.from(output.content, "utf8"));
+    zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8"));
+    built.push({ agent, bytes: zip.toBuffer() });
+  }
+  return built;
 }
 
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
@@ -603,25 +624,28 @@ export class RegistryStore {
         finding_count: findings.findings.length
       });
     }
-    const bytes = zipArtifact(ir, this.compilerVersion);
-    const hash = sha256Bytes(bytes);
-    await this.storage.putBlob(hash, bytes);
+    const built = buildArtifacts(ir, this.compilerVersion);
     const createdAt = new Date().toISOString();
-    const artifact = {
-      artifact_id: id("ska_"),
-      skill_slug: input.slug,
-      version: input.version,
-      agent: "claude-code" as const,
-      content_sha256: hash,
-      size_bytes: bytes.byteLength,
-      source_proposal_id: null,
-      created_at: createdAt
-    } satisfies RegistryArtifact;
+    const artifacts: RegistryArtifact[] = [];
+    for (const item of built) {
+      const hash = sha256Bytes(item.bytes);
+      await this.storage.putBlob(hash, item.bytes);
+      artifacts.push({
+        artifact_id: id("ska_"),
+        skill_slug: input.slug,
+        version: input.version,
+        agent: item.agent,
+        content_sha256: hash,
+        size_bytes: item.bytes.byteLength,
+        source_proposal_id: null,
+        created_at: createdAt
+      } satisfies RegistryArtifact);
+    }
     const version: RegistrySkillVersion = {
       skill_slug: input.slug,
       version: input.version,
       ir,
-      artifacts: [artifact],
+      artifacts,
       source_proposal_id: null,
       sourceFiles: draft.sourceFiles,
       examples: draft.examples,
@@ -838,10 +862,14 @@ export class RegistryStore {
       });
     }
     try {
-      zipArtifact(ir, this.compilerVersion);
+      // 簇8：zipArtifact→buildArtifacts 适配；多 adapter 模型下"可编译"= 至少一个 installable adapter enabled 且 compileSkill 成功
+      const built = buildArtifacts(ir, this.compilerVersion);
+      if (built.length === 0) {
+        throw new Error("skill has no enabled installable adapter");
+      }
       validation.claude_compilable = true;
     } catch (error) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "Claude Code adapter validation failed", {
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill adapter validation failed", {
         reason: error instanceof Error ? error.message : "unknown"
       });
     }
@@ -913,24 +941,27 @@ export class RegistryStore {
   ): Promise<RegistryArtifact[]> {
     const existing = this.skills.get(ir.name);
     requireForwardVersion(existing, ir.version);
-    const bytes = zipArtifact(ir, this.compilerVersion);
-    const hash = sha256Bytes(bytes);
-    await this.storage.putBlob(hash, bytes);
-    const artifact = {
-      artifact_id: id("ska_"),
-      skill_slug: ir.name,
-      version: ir.version,
-      agent: "claude-code" as const,
-      content_sha256: hash,
-      size_bytes: bytes.byteLength,
-      source_proposal_id: proposalId ?? "skp_bootstrap",
-      created_at: createdAt
-    } satisfies RegistryArtifact;
+    const built = buildArtifacts(ir, this.compilerVersion);
+    const artifacts: RegistryArtifact[] = [];
+    for (const item of built) {
+      const hash = sha256Bytes(item.bytes);
+      await this.storage.putBlob(hash, item.bytes);
+      artifacts.push({
+        artifact_id: id("ska_"),
+        skill_slug: ir.name,
+        version: ir.version,
+        agent: item.agent,
+        content_sha256: hash,
+        size_bytes: item.bytes.byteLength,
+        source_proposal_id: proposalId ?? "skp_bootstrap",
+        created_at: createdAt
+      } satisfies RegistryArtifact);
+    }
     const version: RegistrySkillVersion = {
       skill_slug: ir.name,
       version: ir.version,
       ir,
-      artifacts: [artifact],
+      artifacts,
       source_proposal_id: proposalId,
       sourceFiles: [],
       examples: [],
@@ -969,12 +1000,13 @@ export class RegistryStore {
       });
     }
     this.invalidateTagUsageCache();
-    return [artifact];
+    return artifacts;
   }
 
   adapterPreview(slug: string, agent: RegistryAgent) {
-    if (agent !== "claude-code") {
-      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "this adapter is contract-only in MVP");
+    // 簇8：去 claude-code 硬闸门，改按 ADAPTERS[agent].installable 判定；mcp installable=false → 422 ADAPTER_NOT_IMPLEMENTED
+    if (!ADAPTERS[agent].installable) {
+      throw new ServerDomainError(422, "ADAPTER_NOT_IMPLEMENTED", `adapter ${agent} is not yet implemented`);
     }
     const ir = this.getSkill(slug).ir;
     const profile = Object.entries(ir.profiles).find(([, value]) => value.enabled)?.[0];
