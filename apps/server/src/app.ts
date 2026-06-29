@@ -1467,6 +1467,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
 
   // AI 生成发布变更信息（§5.3）：读 diffDraft + ir → LLM 生成 releaseNote → 持久化 draft.releaseNote + audit。
   // 持久化 = mutation（走 Idempotency-Key+lock，与 ai-checks 一致；避免重复 LLM 花费）。
+  // ⚠️ LLM 调用在 mutation 锁内（持有可达 60s）——权衡：Idempotency-Key 防重复花费，draft 流程并发低可接受；
+  //    后续可评估"先 analyze 再进 mutation 持久化"以缩短锁持有（review YELLOW #1，当前不阻塞）。
   // 失败降级 AI_TIMEOUT/AI_PARSE_FAILED（200 degraded:true，不 500，不阻塞发布；前端提示手填）。
   app.post("/api/v1/skills/:slug/draft/release-note:generate", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
