@@ -7,7 +7,11 @@ export default tseslint.config(
       "**/dist/**",
       "**/.next/**",
       "**/coverage/**",
-      "requirements/**"
+      "requirements/**",
+      // gitignored 本机目录（AI 工具 / harness 本地件），非仓库代码，不参与 lint
+      ".claude/**",
+      ".harness/**",
+      ".codegraph/**"
     ]
   },
   eslint.configs.recommended,
