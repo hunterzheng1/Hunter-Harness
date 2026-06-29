@@ -524,3 +524,74 @@ describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => 
     }
   }, 60000);
 });
+
+describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_INT_REAL=1)", () => {
+  async function bootstrapRealApp() {
+    const repository = new MemoryRepository();
+    await repository.createActorWithToken({ actorId: "actor_real", token });
+    const realApp = await createServer({ repository, storage: new MemoryArtifactStorage() });
+    const h = (extra: Record<string, string> = {}): Record<string, string> => ({ authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra });
+    const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: providerPayload, headers: h() });
+    expect(pc.statusCode).toBe(201);
+    const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
+    const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...h(), ...up.headers } });
+    expect(upRes.statusCode).toBe(201);
+    return { realApp, h };
+  }
+
+  it("release-note:generate 真实调用返回非空 releaseNote 且无明文 key (INT-001)", async () => {
+    if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
+    const { realApp, h } = await bootstrapRealApp();
+    try {
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: h() });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(typeof body.releaseNote).toBe("string");
+      expect(body.releaseNote.length).toBeGreaterThan(0);
+      expect(JSON.stringify(body)).not.toContain("sk-");
+    } finally {
+      await realApp.close();
+    }
+  }, 60000);
+
+  it("fix-suggestions 真实调用返回非空 items 且 appliesTo 白名单 (INT-002)", async () => {
+    if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
+    const { realApp, h } = await bootstrapRealApp();
+    try {
+      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: h() });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(Array.isArray(body.items)).toBe(true);
+      expect(body.items.length).toBeGreaterThan(0);
+      for (const item of body.items as Array<{ suggestedContent: string | null; appliesTo: string | null }>) {
+        if (item.suggestedContent !== null && item.suggestedContent !== undefined) {
+          expect(item.suggestedContent.length).toBeGreaterThan(0);
+          expect([null, "examples", "allowed_capabilities", "instructions", "description", "tags"]).toContain(item.appliesTo);
+        }
+      }
+      expect(JSON.stringify(body)).not.toContain("sk-");
+    } finally {
+      await realApp.close();
+    }
+  }, 60000);
+
+  it("apply-fix-suggestion 端到端采纳写 ir 清 aiChecks (INT-003)", async () => {
+    if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
+    const { realApp, h } = await bootstrapRealApp();
+    try {
+      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
+      const suggRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: h() });
+      expect(suggRes.statusCode).toBe(200);
+      const adoptable = (suggRes.json().items as Array<{ checkId: string; suggestedContent: string | null; appliesTo: string | null }>).find((i) => i.suggestedContent !== null && i.suggestedContent !== undefined && ["examples", "allowed_capabilities", "instructions", "description"].includes(i.appliesTo ?? ""));
+      if (adoptable === undefined) { return; }
+      const applyRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: adoptable.checkId, suggestedContent: adoptable.suggestedContent, appliesTo: adoptable.appliesTo }, headers: h() });
+      expect(applyRes.statusCode).toBe(200);
+      const applied = applyRes.json();
+      expect(applied.aiChecks).toBeNull();
+      expect(JSON.stringify(applied)).not.toContain("sk-");
+    } finally {
+      await realApp.close();
+    }
+  }, 60000);
+});
