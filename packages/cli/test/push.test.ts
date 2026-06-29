@@ -277,5 +277,6 @@ describe("hunter-harness push", () => {
     expect(secondPaths[0]).toBe(
       "/api/v1/proposal-sessions/ups_resume/blobs:query"
     );
-  });
+    // 全量并行负载下该用例会被拖过 5s 默认超时（单独跑 684ms 通过），给 30s 余量防 flaky
+  }, 30000);
 });
