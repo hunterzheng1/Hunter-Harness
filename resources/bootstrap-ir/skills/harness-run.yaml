@@ -12,6 +12,7 @@ profiles:
 adapters:
   claude-code: { enabled: true }
   codex: { enabled: true }
+  cursor: { enabled: true }
   generic: { enabled: true }
   mcp: { enabled: true }
 version: 1.0.0
