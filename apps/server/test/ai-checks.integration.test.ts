@@ -574,7 +574,7 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     } finally {
       await realApp.close();
     }
-  }, 60000);
+  }, 180000);
 
   it("apply-fix-suggestion 端到端采纳写 ir 清 aiChecks (INT-003)", async () => {
     if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
@@ -593,5 +593,5 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     } finally {
       await realApp.close();
     }
-  }, 60000);
+  }, 180000);
 });

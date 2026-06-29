@@ -497,6 +497,21 @@ describe("RegistryStore AI content generation (T7-T8)", () => {
     await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
   });
 
+  it("applyFixSuggestion empty examples array → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "[]", appliesTo: "examples", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion empty instructions array → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "[]", appliesTo: "instructions", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
+  it("applyFixSuggestion empty allowed_capabilities array → 422 (UT-016)", async () => {
+    const store = await setupDraftWithAiChecks();
+    await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "[]", appliesTo: "allowed_capabilities", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+  });
+
   it("applyFixSuggestion sensitive content blocked → 422 SENSITIVE_CONTENT_BLOCKED (UT-017)", async () => {
     const store = await setupDraftWithAiChecks();
     await expect(store.applyFixSuggestion({ slug: "harness-x", checkId: "x", suggestedContent: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", appliesTo: "description", actorId: "owner" })).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });

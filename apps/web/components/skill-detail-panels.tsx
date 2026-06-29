@@ -172,8 +172,21 @@ function checkStatusCopy(status: "green" | "yellow" | "red", t: ReturnType<typeo
 
 const SUGGEST_APPLICABLE: readonly string[] = ["examples", "allowed_capabilities", "instructions", "description"];
 
-function canAdoptSuggestion(appliesTo: FixPlanItem["appliesTo"]): boolean {
-  return appliesTo !== null && appliesTo !== undefined && SUGGEST_APPLICABLE.includes(appliesTo);
+function canAdoptSuggestion(item: FixPlanItem): boolean {
+  if (item.appliesTo === null || item.appliesTo === undefined) return false;
+  if (!SUGGEST_APPLICABLE.includes(item.appliesTo)) return false;
+  if (typeof item.suggestedContent !== "string" || item.suggestedContent.length === 0) return false;
+  // 数组类字段（examples/allowed_capabilities/instructions）：LLM 返回空数组 "[]" 会清空字段 → 不显示采纳按钮。
+  // 与 store.applyFixSuggestion 的空数组 422 纵深对齐；description 是标量，跳过 JSON 解析。
+  if (item.appliesTo !== "description") {
+    try {
+      const parsed: unknown = JSON.parse(item.suggestedContent);
+      if (!Array.isArray(parsed) || parsed.length === 0) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 function appliesToLabel(appliesTo: NonNullable<FixPlanItem["appliesTo"]>, sd: ReturnType<typeof useI18n>["t"]["skillDetail"]): string {
@@ -459,7 +472,7 @@ function AgentCheckPanel({
           <pre>{item.suggestedContent}</pre>
           {item.explanation === null || item.explanation === undefined ? null : <p className="fix-suggestion-explanation"><span className="config-card-label">{sd.suggestionExplanation}</span> {item.explanation}</p>}
           {item.appliesTo === null || item.appliesTo === undefined ? null : <span className="fix-suggestion-target">{appliesToLabel(item.appliesTo, sd)}</span>}
-          {canAdoptSuggestion(item.appliesTo) ? <button type="button" className="secondary" disabled={adoptingSuggestion} onClick={() => void adoptFixSuggestion(item)}>{sd.adoptSuggestion}</button> : null}
+          {canAdoptSuggestion(item) ? <button type="button" className="secondary" disabled={adoptingSuggestion} onClick={() => void adoptFixSuggestion(item)}>{sd.adoptSuggestion}</button> : null}
         </div>}
       </article>)}
     </div>}

@@ -53,6 +53,10 @@ import { ServerDomainError } from "../repositories/interfaces.js";
 import type { ArtifactStorage } from "../storage/interface.js";
 import type { RegistryPersistence } from "./persistence.js";
 
+// applyFixSuggestion 可写白名单（examples/allowed_capabilities/instructions/description）；
+// tags/null 为展示型建议不可写 → 422。与 output-parser FIX_APPLIES_TO_WHITELIST（5 值含 tags，解析白名单）语义不同，不可合并。
+const WRITABLE_APPLIES_TO = ["examples", "allowed_capabilities", "instructions", "description"] as const;
+
 interface SkillState {
   detail: RegistrySkillDetail;
   versions: RegistrySkillVersion[];
@@ -500,7 +504,6 @@ export class RegistryStore {
     if (draft === undefined) {
       throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug });
     }
-    const WRITABLE_APPLIES_TO = ["examples", "allowed_capabilities", "instructions", "description"] as const;
     if (input.appliesTo === null || !(WRITABLE_APPLIES_TO as readonly string[]).includes(input.appliesTo)) {
       throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "appliesTo is not a writable target", { appliesTo: input.appliesTo });
     }
@@ -523,6 +526,9 @@ export class RegistryStore {
       if (!result.success) {
         throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
       }
+      if (result.data.length === 0) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a non-empty array", { appliesTo: target });
+      }
       fixedExamples = result.data;
     } else {
       let parsed: unknown;
@@ -536,6 +542,9 @@ export class RegistryStore {
         arr = parseSuggestedStringArray(parsed);
       } catch (error) {
         throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", (error as Error).message, { appliesTo: target });
+      }
+      if (arr.length === 0) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", `suggestedContent for ${target} must be a non-empty array of strings`, { appliesTo: target });
       }
       if (target === "instructions") {
         fixedIr.instructions = arr;

@@ -218,6 +218,11 @@ function operationSize(operation: FileOperation): number {
 // （含 ^\\ 分支以拦截 UNC 前缀，避免与 store 层校验产生维护歧义）
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 
+// fix-suggestions 路由的空 FixPlan summary（无 aiChecks / LLM 全降级时返回）。
+// Object.freeze 防御：模块级共享常量，避免未来有路径在 send 前变异 summary 字段造成跨请求别名污染
+// （与同文件 WRITABLE_APPLIES_TO 的 as const 不可变风格对齐）。
+const emptySummary = Object.freeze({ autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 });
+
 function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buffer }>): SourceFile[] {
   if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
     const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
@@ -1527,7 +1532,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     if (draft === undefined) {
       throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
     }
-    const emptySummary = { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 };
     if (draft.aiChecks === null) {
       // 无 aiChecks → 空 FixPlan（提示先跑 ai-checks；只读预览不 422）
       return send(reply, requestId, { statusCode: 200, body: { items: [], mergedFiles: [], summary: emptySummary } });

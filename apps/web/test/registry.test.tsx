@@ -371,4 +371,40 @@ describe("governed workflow and Skill Center", () => {
     expect(await screen.findByText(/只展示不采纳/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
   });
+
+  it("canAdoptSuggestion 空串 suggestedContent 不显示采纳按钮（appliesTo 可写）(UT-020)", async () => {
+    const fetchFixSuggestions = vi.fn(async () => ({
+      items: [{
+        checkId: "AI_DESC", action: "suggest" as const, label: "描述建议", affectedPaths: [], riskDelta: null, message: "描述为空",
+        suggestedContent: "", explanation: "补描述", appliesTo: "description" as const, generatedAt: "t"
+      }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    render(<SkillDetail api={api({ fetchFixSuggestions })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    expect(await screen.findByText(/补描述/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
+  });
+
+  it("canAdoptSuggestion 空数组 suggestedContent 不显示采纳按钮（appliesTo=examples）(UT-020)", async () => {
+    const fetchFixSuggestions = vi.fn(async () => ({
+      items: [{
+        checkId: "AI_USAGE_EXAMPLES", action: "suggest" as const, label: "示例建议", affectedPaths: [], riskDelta: null, message: "示例为空",
+        suggestedContent: "[]", explanation: "补示例", appliesTo: "examples" as const, generatedAt: "t"
+      }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    render(<SkillDetail api={api({ fetchFixSuggestions })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    expect(await screen.findByText(/补示例/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
+  });
 });
