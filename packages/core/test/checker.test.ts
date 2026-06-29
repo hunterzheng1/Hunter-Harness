@@ -158,4 +158,28 @@ describe("checkSkill", () => {
     const r = checkSkill({ ir: { ...baseIr, adapters: {} }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
     expect(r.items.find((i) => i.id === "AGENT_TARGET")?.status).toBe("yellow");
   });
+
+  it("AGENT_TARGET reports codex→AGENTS.md as file-target (T9 UT-021/023)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { codex: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).toBe("green");
+    expect(agent?.message).toContain("codex→AGENTS.md");
+    expect(agent?.message).toContain("file");
+  });
+
+  it("AGENT_TARGET reports cursor→.cursor/rules and generic→.agent-skills as dir-target (T9 UT-022)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { cursor: { enabled: true }, generic: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).toBe("green");
+    expect(agent?.message).toContain("cursor→.cursor/rules");
+    expect(agent?.message).toContain("generic→.agent-skills");
+    expect(agent?.message).toContain("dir");
+  });
+
+  it("AGENT_TARGET reports mcp→.harness/generated/mcp (T9 UT-022b)", () => {
+    const r = checkSkill({ ir: { ...baseIr, adapters: { mcp: { enabled: true } } }, sourceFiles: baseFiles, latestVersion: null, compilerVersion: "1", checkedAt: "t" });
+    const agent = r.items.find((i) => i.id === "AGENT_TARGET");
+    expect(agent?.status).toBe("green");
+    expect(agent?.message).toContain("mcp→.harness/generated/mcp");
+  });
 });

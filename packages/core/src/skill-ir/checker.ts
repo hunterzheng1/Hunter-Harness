@@ -15,11 +15,12 @@ const DANGEROUS_CAPABILITY = /^Bash\(/;
 const DANGEROUS_CMD = /rm\s+-rf|drop\s+table|curl\s+|wget\s+|sudo\s+/i;
 const AGENT_PATHS: Record<string, string> = {
   "claude-code": ".claude/skills",
-  "codex": ".codex/skills",
-  "cursor": ".cursor/skills",
-  "generic": "./",
-  "mcp": ".mcp/skills"
+  "codex": "AGENTS.md",
+  "cursor": ".cursor/rules",
+  "generic": ".agent-skills",
+  "mcp": ".harness/generated/mcp"
 };
+const FILE_TARGET_AGENTS = new Set(["codex"]);
 
 export function checkSkill(input: {
   ir: SkillIr;
@@ -139,7 +140,7 @@ export function checkSkill(input: {
     id: "AGENT_TARGET",
     label: "Agent 目标路径",
     status: agentStatus,
-    message: enabledAgents.length === 0 ? "未启用任何 Agent" : (missingPath ? "无路径映射: " + missingPath : enabledAgents.map((a) => a + "→" + AGENT_PATHS[a]).join(", ")),
+    message: enabledAgents.length === 0 ? "未启用任何 Agent" : (missingPath ? "无路径映射: " + missingPath : enabledAgents.map((a) => a + "→" + AGENT_PATHS[a] + (FILE_TARGET_AGENTS.has(a) ? " (file)" : " (dir)")).join(", ")),
     filePath: null,
     fixable: false
   });
