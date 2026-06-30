@@ -11,3 +11,4 @@ export * from "./protocol.js";
 export * from "./dashboard.js";
 export * from "./registry.js";
 export * from "./skill-ir.js";
+export * from "./workflow-package.js";

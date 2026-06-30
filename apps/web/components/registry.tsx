@@ -162,8 +162,21 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     if (upload === null || upload.length === 0) return;
     const files = upload;
     try {
+      // 边界分流（T18）：文件夹含 workflow.yaml → 工作流包端点；否则 → skill draft。
+      // zip 模式前端不解压，走 skill draft，后端检测 workflow 包会抛 WORKFLOW_PACKAGE_REDIRECT 由用户导向 /workflows。
       // 列表页上传无 per-agent 选择器；默认落到 claude-code（主 installable adapter）。
       // 详情页 AgentContextSelector 可为其他 agent 单独建立草稿。
+      const hasWorkflowYaml = files.some((f) => {
+        const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? f.name;
+        return /(^|\/)workflow\.ya?ml$/i.test(rel);
+      });
+      if (hasWorkflowYaml) {
+        const draft = await required(api, "uploadWorkflowPackage")(buildUploadFormData(files));
+        await refresh();
+        setMessage(t.skills.uploadedAsDraft.replace("{name}", draft.key));
+        setUpload(null);
+        return;
+      }
       const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files), "claude-code");
       await refresh();
       let previewName = draft.slug;

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SkillDetail } from "../components/registry";
+import { WorkflowCenter } from "../components/workflow-center";
 import { ApiClientError } from "../lib/api";
 import type { HunterApi } from "../lib/api";
 import type {
@@ -364,5 +365,21 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     const setDefaultBtn = await screen.findByRole("button", { name: /设为默认.*Codex|Set default.*Codex/i });
     fireEvent.click(setDefaultBtn);
     await waitFor(() => expect(setDefaultAgent).toHaveBeenCalledWith("wiring-skill", "codex", multiSkill.revision));
+  });
+});
+
+describe("workflow center 前端接线（T19）", () => {
+  function wpApi(overrides: Partial<HunterApi> = {}): HunterApi {
+    return {
+      listWorkflowPackages: vi.fn(async () => []),
+      listWorkflowPackageVersions: vi.fn(async () => []),
+      ...overrides
+    } as unknown as HunterApi;
+  }
+
+  it("WorkflowCenter 挂载并调用 listWorkflowPackages", async () => {
+    const a = wpApi();
+    render(<WorkflowCenter api={a} />);
+    await waitFor(() => expect(a.listWorkflowPackages).toHaveBeenCalledTimes(1));
   });
 });

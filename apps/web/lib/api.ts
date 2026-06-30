@@ -18,7 +18,11 @@ import {
   type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
-  type SkillIr
+  type SkillIr,
+  type PublishWorkflowPackageRequest,
+  type WorkflowPackage,
+  type WorkflowPackageDraftState,
+  type WorkflowPackageVersion
 } from "@hunter-harness/contracts";
 
 import type { WebFileKind } from "./file-policy";
@@ -162,6 +166,15 @@ export interface HunterApi {
   diffSkillDraft?(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]>;
   setDefaultAgent?(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail>;
   deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
+  uploadWorkflowPackage?(form: FormData): Promise<WorkflowPackageDraftState>;
+  getWorkflowPackageDraft?(key: string): Promise<WorkflowPackageDraftState>;
+  discardWorkflowPackageDraft?(key: string, revision: number): Promise<{ key: string; discarded: boolean }>;
+  runWorkflowPackageChecks?(key: string): Promise<SkillCheckResult>;
+  publishWorkflowPackage?(key: string, req: PublishWorkflowPackageRequest): Promise<WorkflowPackageVersion>;
+  diffWorkflowPackageDraft?(key: string): Promise<SkillDiffFile[]>;
+  listWorkflowPackages?(): Promise<WorkflowPackage[]>;
+  getWorkflowPackage?(key: string): Promise<WorkflowPackage>;
+  listWorkflowPackageVersions?(key: string): Promise<WorkflowPackageVersion[]>;
   listAiProviders?(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }>;
   createAiProvider?(input: {
     provider_id: string; label: string; base_url: string; model: string;
@@ -641,6 +654,37 @@ export class HttpHunterApi implements HunterApi {
 
   async deleteSkill(slug: string): Promise<{ slug: string; deleted: boolean }> {
     return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug), {});
+  }
+
+  async uploadWorkflowPackage(form: FormData): Promise<WorkflowPackageDraftState> {
+    return this.multipartRequest<WorkflowPackageDraftState>("/api/v1/workflow-packages", form);
+  }
+  async getWorkflowPackageDraft(key: string): Promise<WorkflowPackageDraftState> {
+    return this.request("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft");
+  }
+  async discardWorkflowPackageDraft(key: string, revision: number): Promise<{ key: string; discarded: boolean }> {
+    return this.request("DELETE", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft", { revision });
+  }
+  async runWorkflowPackageChecks(key: string): Promise<SkillCheckResult> {
+    return this.request("POST", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft/checks", {});
+  }
+  async publishWorkflowPackage(key: string, req: PublishWorkflowPackageRequest): Promise<WorkflowPackageVersion> {
+    return this.request("POST", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/publish", req);
+  }
+  async diffWorkflowPackageDraft(key: string): Promise<SkillDiffFile[]> {
+    const result = await this.request<{ items: SkillDiffFile[] }>("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft/diff");
+    return result.items;
+  }
+  async listWorkflowPackages(): Promise<WorkflowPackage[]> {
+    const result = await this.request<{ items: WorkflowPackage[] }>("GET", "/api/v1/workflow-packages");
+    return result.items;
+  }
+  async getWorkflowPackage(key: string): Promise<WorkflowPackage> {
+    return this.request("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key));
+  }
+  async listWorkflowPackageVersions(key: string): Promise<WorkflowPackageVersion[]> {
+    const result = await this.request<{ items: WorkflowPackageVersion[] }>("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/versions");
+    return result.items;
   }
 
   async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {

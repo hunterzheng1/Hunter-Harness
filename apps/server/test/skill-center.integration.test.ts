@@ -1,5 +1,6 @@
 import type { SkillIr } from "@hunter-harness/contracts";
 import { uuidV7 } from "@hunter-harness/core";
+import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createServer } from "../src/app.js";
@@ -73,6 +74,21 @@ function multipart(files: Array<{ path: string; content: string }>): {
   }
   body += `--${boundary}--\r\n`;
   return { payload: body, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
+// workflow package 上传走单个 ZIP（resolveUploadFiles zip 分支保留 entryName 含目录）；
+// 多 file part 模式下 fastify part.filename 会截断目录（skills/foo.md→foo.md），破坏边界判断与共享资源路径。
+function multipartZip(entries: Array<{ path: string; content: string }>): {
+  payload: Buffer;
+  headers: Record<string, string>;
+} {
+  const zip = new AdmZip();
+  for (const e of entries) zip.addFile(e.path, Buffer.from(e.content));
+  const zipBuffer = zip.toBuffer();
+  const boundary = "----wp-zip-boundary";
+  const pre = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="package.zip"\r\nContent-Type: application/zip\r\n\r\n`);
+  const post = Buffer.from(`\r\n--${boundary}--\r\n`);
+  return { payload: Buffer.concat([pre, zipBuffer, post]), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
 
 describe("skill-center end-to-end (tasks 14-17)", () => {
@@ -381,5 +397,99 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     });
     expect(codexProposal.statusCode).toBe(201);
     expect(codexProposal.json().requestedAgent).toBe("codex");
+  });
+});
+
+describe("workflow package end-to-end (T13+T15, API-001~008, INT-001~002, INT-004)", () => {
+  let repository: MemoryRepository;
+  let app: Awaited<ReturnType<typeof createServer>>;
+
+  beforeEach(async () => {
+    repository = new MemoryRepository();
+    await repository.createActorWithToken({ actorId: "actor_owner", token });
+    app = await createServer({ repository, storage: new MemoryArtifactStorage() });
+  });
+  afterEach(async () => app.close());
+
+  function headers(extra: Record<string, string> = {}): Record<string, string> {
+    return { authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra };
+  }
+
+  const wpYaml = `key: release-flow
+name: Release Flow
+description: End-to-end release workflow
+profile: general
+skills:
+  - slug: harness-sync
+    ref: "1.0.0"
+agents:
+  - path: agents/release.md
+    ref: main
+protocols: []
+templates: []
+execution_order:
+  - harness-sync
+strategy: sequential
+`;
+
+  async function uploadWp(files: Array<{ path: string; content: string }>): Promise<number> {
+    const up = multipartZip(files);
+    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    return res.statusCode;
+  }
+
+  it("upload → draft → checks → diff → publish → list → versions (API-001~006, INT-001)", async () => {
+    expect(await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# Release agent" }])).toBe(201);
+
+    const draftRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/draft", headers: headers() });
+    expect(draftRes.statusCode).toBe(200);
+
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/draft/checks", payload: {}, headers: headers() });
+    expect(checksRes.statusCode).toBe(200);
+
+    const diffRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/draft/diff", headers: headers() });
+    expect(diffRes.statusCode).toBe(200);
+
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.0", releaseNote: "init" }, headers: headers() });
+    expect(pubRes.statusCode).toBe(200);
+    expect(pubRes.json().version).toBe("1.0.0");
+
+    const listRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages", headers: headers() });
+    expect(listRes.statusCode).toBe(200);
+    expect(listRes.json().items).toHaveLength(1);
+
+    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/versions", headers: headers() });
+    expect(verRes.statusCode).toBe(200);
+    expect(verRes.json().items.map((v: { version: string }) => v.version)).toEqual(["1.0.0"]);
+  });
+
+  it("version sequence after re-publish (INT-004)", async () => {
+    await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# a" }]);
+    await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# b" }]);
+    await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.1" }, headers: headers() });
+    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/versions", headers: headers() });
+    expect(verRes.json().items.map((v: { version: string }) => v.version)).toEqual(["1.0.1", "1.0.0"]);
+  });
+
+  it("upload without workflow.yaml → 422 WORKFLOW_MANIFEST_MISSING (API-007)", async () => {
+    const up = multipartZip([{ path: "agents/release.md", content: "# x" }]);
+    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("WORKFLOW_MANIFEST_MISSING");
+  });
+
+  it("upload without token → 401 (API-008)", async () => {
+    const up = multipart([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# x" }]);
+    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: up.headers });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("uploadDraft boundary redirects workflow package zip (INT-002)", async () => {
+    const up = multipartZip([{ path: "workflow.yaml", content: "name: w" }, { path: "skills/foo.md", content: "x" }]);
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("WORKFLOW_PACKAGE_REDIRECT");
+    expect(res.json().error.details.redirect).toBe("workflow-packages");
   });
 });
