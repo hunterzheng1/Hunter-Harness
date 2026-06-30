@@ -5,6 +5,7 @@ import type {
   DraftState,
   FixPlan,
   FixPlanItem,
+  RegistryAgent,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
@@ -22,6 +23,7 @@ import {
   FilePreview,
   SourceFileTree,
   ValueChips,
+  agentLabel,
   apiError,
   diffStats,
   displayValue,
@@ -199,15 +201,52 @@ function appliesToLabel(appliesTo: NonNullable<FixPlanItem["appliesTo"]>, sd: Re
   }
 }
 
+function AgentContextSelector({
+  agents,
+  currentAgent,
+  defaultAgent,
+  onSelect,
+  onSetDefault,
+  settingDefault,
+  t
+}: {
+  agents: readonly AgentSkillConfig[];
+  currentAgent: RegistryAgent;
+  defaultAgent: RegistryAgent | null;
+  onSelect: (agent: RegistryAgent) => void;
+  onSetDefault?: (agent: RegistryAgent) => void;
+  settingDefault?: boolean;
+  t: ReturnType<typeof useI18n>["t"]["skillDetail"];
+}) {
+  if (agents.length === 0) return null;
+  const current = agents.find((a) => a.agent === currentAgent) ?? agents[0];
+  if (current === undefined) return null;
+  const fallbackSource = current.sourcePackagePath !== null && current.sourcePackagePath.startsWith("fallback:");
+  const multiAgent = agents.length > 1;
+  const canSetDefault = onSetDefault !== undefined && multiAgent && defaultAgent !== null && currentAgent !== defaultAgent;
+  return <div className="agent-context-selector">
+    <label className="agent-context-select">
+      <span>{t.currentAgent}</span>
+      <select value={currentAgent} onChange={(event) => onSelect(event.target.value as RegistryAgent)}>
+        {agents.map((a) => <option value={a.agent} key={a.agent}>{agentLabel(a.agent)}{a.agent === defaultAgent ? ` · ${t.defaultAgent}` : ""}</option>)}
+      </select>
+    </label>
+    {canSetDefault ? <button type="button" className="secondary" disabled={settingDefault === true} onClick={() => onSetDefault?.(currentAgent)}>{t.setDefault} · {agentLabel(currentAgent)}</button> : null}
+    {fallbackSource ? <span className="agent-fallback-badge">{t.agentFallbackNote}</span> : null}
+  </div>;
+}
+
 function AgentCheckPanel({
   api,
   slug,
+  currentAgent,
   draft,
   onPublished,
   t
 }: {
   api: HunterApi;
   slug: string;
+  currentAgent: RegistryAgent;
   draft: DraftState | null;
   onPublished: () => void;
   t: ReturnType<typeof useI18n>["t"];
@@ -273,7 +312,7 @@ function AgentCheckPanel({
     setChecking(true);
     setError(null);
     try {
-      const result = await required(api, "runSkillDraftChecks")(slug);
+      const result = await required(api, "runSkillDraftChecks")(slug, currentAgent);
       setChecksResult(result);
     } catch (reason) { setError(apiError(reason, t)); }
     finally { setChecking(false); }
@@ -283,7 +322,7 @@ function AgentCheckPanel({
     setAiChecking(true);
     setError(null);
     try {
-      const result = await required(api, "runSkillAiChecks")(slug);
+      const result = await required(api, "runSkillAiChecks")(slug, currentAgent);
       setAiChecksResult(result);
     } catch (reason) { setError(sd.aiCheckFailed + " " + apiError(reason, t)); }
     finally { setAiChecking(false); }
@@ -292,7 +331,7 @@ function AgentCheckPanel({
   async function runDiff(): Promise<void> {
     setError(null);
     try {
-      const files = await required(api, "diffSkillDraft")(slug);
+      const files = await required(api, "diffSkillDraft")(slug, currentAgent);
       setDiffFiles(files);
       setSelectedFile(0);
       setDiffRun(true);
@@ -302,7 +341,7 @@ function AgentCheckPanel({
   async function publish(): Promise<void> {
     setError(null);
     try {
-      await required(api, "publishSkillDraft")(slug, { version: resolvedPublishVersion, releaseNote: resolvedPublishNote });
+      await required(api, "publishSkillDraft")(slug, currentAgent, { version: resolvedPublishVersion, releaseNote: resolvedPublishNote });
       setPublishing(false);
       setPublishVersion("");
       setPublishNote("");
@@ -313,7 +352,7 @@ function AgentCheckPanel({
   async function upload(files: File[]): Promise<void> {
     setError(null);
     try {
-      await required(api, "uploadSkillDraft")(buildUploadFormData(files));
+      await required(api, "uploadSkillDraft")(buildUploadFormData(files), currentAgent);
       onPublished();
     } catch (reason) { setError(apiError(reason, t)); }
   }
@@ -321,7 +360,7 @@ function AgentCheckPanel({
   async function discard(): Promise<void> {
     setError(null);
     try {
-      await required(api, "discardSkillDraft")(slug, draft?.revision ?? 0);
+      await required(api, "discardSkillDraft")(slug, currentAgent, draft?.revision ?? 0);
       setDiscarding(false);
       onPublished();
     } catch (reason) { setError(apiError(reason, t)); }
@@ -338,7 +377,7 @@ function AgentCheckPanel({
     setFixing(true);
     setError(null);
     try {
-      const plan = await required(api, "previewSkillFix")(slug, checkIds);
+      const plan = await required(api, "previewSkillFix")(slug, currentAgent, checkIds);
       setFixPlan(plan);
       setFixCheckIds(checkIds);
       setFixPreviewRun(true);
@@ -350,7 +389,7 @@ function AgentCheckPanel({
     setFixing(true);
     setError(null);
     try {
-      await required(api, "applySkillFix")(slug, checkIds);
+      await required(api, "applySkillFix")(slug, currentAgent, checkIds);
       setFixPlan(null);
       setFixPreviewRun(false);
       onPublished();
@@ -362,7 +401,7 @@ function AgentCheckPanel({
     setGeneratingReleaseNote(true);
     setError(null);
     try {
-      const result = await required(api, "generateReleaseNote")(slug);
+      const result = await required(api, "generateReleaseNote")(slug, currentAgent);
       if (result.releaseNote === null || result.degraded === true) {
         setError(sd.aiGenerateFailed);
       } else {
@@ -379,7 +418,7 @@ function AgentCheckPanel({
     setFixSuggestionRun(true);
     setError(null);
     try {
-      const plan = await required(api, "fetchFixSuggestions")(slug, null);
+      const plan = await required(api, "fetchFixSuggestions")(slug, currentAgent, null);
       setFixSuggestions(plan);
     } catch (reason) { setError(apiError(reason, t)); }
     finally { setFixSuggestionRun(false); }
@@ -389,7 +428,7 @@ function AgentCheckPanel({
     setAdoptingSuggestion(true);
     setError(null);
     try {
-      await required(api, "applyFixSuggestion")(slug, {
+      await required(api, "applyFixSuggestion")(slug, currentAgent, {
         checkId: item.checkId,
         suggestedContent: item.suggestedContent ?? "",
         appliesTo: item.appliesTo ?? null
@@ -584,15 +623,18 @@ function AgentConfigsOverview({ agents, t }: { agents: readonly AgentSkillConfig
 
 function VersionHistoryPanel({
   versions,
+  currentAgent,
   t
 }: {
   versions: readonly RegistrySkillVersion[];
+  currentAgent: RegistryAgent;
   t: ReturnType<typeof useI18n>["t"]["skillDetail"];
 }) {
-  const [selectedVersion, setSelectedVersion] = useState(versions[0]?.version ?? "");
-  const [selectedVersionFile, setSelectedVersionFile] = useState(versions[0]?.sourceFiles[0]?.path ?? "");
-  if (versions.length === 0) return <Empty>{t.noVersionHistory}</Empty>;
-  const current = versions.find((v) => v.version === selectedVersion) ?? versions[0];
+  const agentVersions = versions.filter((v) => v.agent === currentAgent);
+  const [selectedVersion, setSelectedVersion] = useState(agentVersions[0]?.version ?? "");
+  const [selectedVersionFile, setSelectedVersionFile] = useState(agentVersions[0]?.sourceFiles[0]?.path ?? "");
+  if (agentVersions.length === 0) return <Empty>{t.noVersionHistory}</Empty>;
+  const current = agentVersions.find((v) => v.version === selectedVersion) ?? agentVersions[0];
   if (current === undefined) return <Empty>{t.noVersionHistory}</Empty>;
   const sourceFiles = current.sourceFiles;
   const activeFile = sourceFiles.find((f) => f.path === selectedVersionFile) ?? sourceFiles[0];
@@ -605,7 +647,7 @@ function VersionHistoryPanel({
   return <div className="version-history-workbench">
     <aside className="version-history-list">
       <div className="version-file-tree-title">{t.versionHistory}</div>
-      {versions.map((v) => <button type="button" className={v.version === current.version ? "selected" : ""} key={v.version} onClick={() => selectVersion(v.version, v.sourceFiles[0]?.path ?? "")}>
+      {agentVersions.map((v) => <button type="button" className={v.version === current.version ? "selected" : ""} key={v.version} onClick={() => selectVersion(v.version, v.sourceFiles[0]?.path ?? "")}>
         <strong>v{v.version}</strong>
         <span>{new Date(v.created_at).toLocaleString()}</span>
         <small>{v.source_proposal_id ?? "bootstrap"}</small>
@@ -637,6 +679,7 @@ function VersionHistoryPanel({
 export {
   AgentCheckPanel,
   AgentConfigsOverview,
+  AgentContextSelector,
   ContractSecurityOverview,
   SkillConfigOverview,
   VersionHistoryPanel

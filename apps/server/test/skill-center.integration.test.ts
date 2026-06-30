@@ -96,11 +96,12 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     };
   }
 
-  async function uploadDraft(files: Array<{ path: string; content: string }>): Promise<void> {
+  // per-agent upload：?agent=<agent> 为必填查询参数（API-001）；harness-x 用 claude-code，harness-cursor 用 cursor/claude-code。
+  async function uploadDraft(files: Array<{ path: string; content: string }>, agent: string = "claude-code"): Promise<void> {
     const up = multipart(files);
     const res = await app.inject({
       method: "POST",
-      url: "/api/v1/skills/draft",
+      url: `/api/v1/skills/draft?agent=${agent}`,
       payload: up.payload,
       headers: { ...headers(), ...up.headers }
     });
@@ -110,14 +111,14 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   it("upload → check → diff → publish → download end-to-end", async () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-x" }]);
 
-    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
     expect(checksRes.json().items.length).toBeGreaterThan(0);
 
-    const diffRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-x/diff", headers: headers() });
+    const diffRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-x/draft/claude-code/diff", headers: headers() });
     expect(diffRes.statusCode).toBe(200);
 
-    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0", releaseNote: "init" }, headers: headers() });
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0", releaseNote: "init" }, headers: headers() });
     expect(pubRes.statusCode).toBe(200);
     expect(pubRes.json().version).toBe("1.0.0");
 
@@ -135,16 +136,16 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
     const key = uuidV7();
     const body = { version: "1.0.0" };
-    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: body, headers: headers({ "idempotency-key": key }) });
+    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: body, headers: headers({ "idempotency-key": key }) });
     expect(first.statusCode).toBe(200);
-    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: body, headers: headers({ "idempotency-key": key }) });
+    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: body, headers: headers({ "idempotency-key": key }) });
     expect(second.statusCode).toBe(200);
     expect(second.json().version).toBe("1.0.0");
   });
 
   it("delete skill then GET returns 404", async () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
     const delRes = await app.inject({ method: "DELETE", url: "/api/v1/skills/harness-x", headers: headers() });
     expect(delRes.statusCode).toBe(200);
     const after = await app.inject({ method: "GET", url: "/api/v1/skills/harness-x", headers: headers() });
@@ -157,35 +158,42 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
       { path: "skill.yaml", content: skillYaml },
       { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }
     ]);
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("SENSITIVE_CONTENT_BLOCKED");
   });
 
-  it("publish rejects non-forward version", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "0.9.0" }, headers: headers() });
+  it("upload rejects missing agent query param (API-006)", async () => {
+    const up = multipart([{ path: "skill.yaml", content: skillYaml }]);
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(422);
-    expect(res.json().error.code).toBe("VERSION_NOT_FORWARD");
+    expect(res.json().error.code).toBe("VALIDATION_FAILED");
   });
 
-  it("upload → check → fix-preview → apply-fix → re-check → publish end-to-end (INT-001)", async () => {
+  it("publish rejects non-forward version", async () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "0.9.0" }, headers: headers() });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe("SKILL_VERSION_NOT_FORWARD");
+  });
+
+  it("upload → check → fix-preview → apply-fix → re-check → publish end-to-end (INT-004)", async () => {
+    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
 
     // 新 draft：ir.version=1.0.0, latest=1.0.0 → VERSION red fixable
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
 
-    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
     const versionCheck = checksRes.json().items.find((i: { id: string }) => i.id === "VERSION");
     expect(versionCheck.status).toBe("red");
     expect(versionCheck.fixable).toBe(true);
 
     // fix-preview：只读，返回 patch 不含 fixedIr，不改 draft
-    const previewRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/fix-preview", payload: { checkIds: null }, headers: headers() });
+    const previewRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/fix-preview", payload: { checkIds: null }, headers: headers() });
     expect(previewRes.statusCode).toBe(200);
     const plan = previewRes.json();
     expect(plan.summary.autoCount).toBeGreaterThan(0);
@@ -193,79 +201,79 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(plan).not.toHaveProperty("fixedIr");
 
     // apply-fix：mutation+audit，更新 ir，清 checks
-    const applyRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: headers() });
+    const applyRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: { checkIds: null }, headers: headers() });
     expect(applyRes.statusCode).toBe(200);
     const draft = applyRes.json();
     expect(draft.ir.version).toBe("1.0.1");
     expect(draft.checks).toBeNull();
 
     // re-check：VERSION green（ir.version=1.0.1 > latest 1.0.0）
-    const recheckRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    const recheckRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(recheckRes.statusCode).toBe(200);
     const reVersion = recheckRes.json().items.find((i: { id: string }) => i.id === "VERSION");
     expect(reVersion.status).toBe("green");
 
     // publish 1.0.1 成功（版本前进）
-    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.1" }, headers: headers() });
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.1" }, headers: headers() });
     expect(pubRes.statusCode).toBe(200);
     expect(pubRes.json().version).toBe("1.0.1");
   });
 
   it("apply-fix is idempotent by Idempotency-Key (API-009)", async () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     const key = uuidV7();
     const body = { checkIds: null };
-    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
+    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
     expect(first.statusCode).toBe(200);
-    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
+    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: body, headers: headers({ "idempotency-key": key }) });
     expect(second.statusCode).toBe(200);
     expect(second.json().revision).toBe(first.json().revision);
   });
 
   it("apply-fix rejects without auth (API-012)", async () => {
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: { checkIds: null }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
     expect(res.statusCode).toBe(401);
   });
 
   it("apply-fix writes audit event skill.draft.fix-applied (API-008)", async () => {
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
     await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
-    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/checks", payload: {}, headers: headers() });
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/apply-fix", payload: { checkIds: null }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: { checkIds: null }, headers: headers() });
     expect(res.statusCode).toBe(200);
     const events = await repository.listAuditEvents();
     expect(events.some((e) => e.action === "skill.draft.fix-applied")).toBe(true);
   });
 
-  it("upload → check → publish → download cursor end-to-end + multi-agent latestVersion (INT-101 / API-103 / API-104)", async () => {
+  it("upload → check → publish → download cursor end-to-end + per-agent latestVersion (INT-101 / API-104)", async () => {
     const up = multipart([
       { path: "skill.yaml", content: cursorYaml },
       { path: "SKILL.md", content: "# harness-cursor" }
     ]);
     const uploadRes = await app.inject({
-      method: "POST", url: "/api/v1/skills/draft", payload: up.payload,
+      method: "POST", url: "/api/v1/skills/draft?agent=cursor", payload: up.payload,
       headers: { ...headers(), ...up.headers }
     });
     expect(uploadRes.statusCode).toBe(201);
 
-    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/checks", payload: {}, headers: headers() });
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
 
-    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/publish", payload: { version: "1.0.0", releaseNote: "cursor" }, headers: headers() });
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0", releaseNote: "cursor" }, headers: headers() });
     expect(pubRes.statusCode).toBe(200);
     expect(pubRes.json().version).toBe("1.0.0");
 
-    // API-103: publish 后 GET /skills/{slug}，agents[].latestVersion 各 enabled installable 填值
+    // per-agent publish：只前进 cursor 的 latestVersion；claude-code（默认 agent，无自有版本，默认不 fallback）保持 null
     const skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
     expect(skillRes.statusCode).toBe(200);
     const skill = skillRes.json();
     const byAgent = new Map(skill.agents.map((a: { agent: string }) => [a.agent, a]));
-    expect(byAgent.get("claude-code")?.latestVersion).toBe("1.0.0");
     expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("claude-code")?.latestVersion).toBe(null);
     expect(byAgent.get("cursor")?.installTarget).toBe(".cursor/rules/harness-cursor.mdc");
 
     // API-104 + INT-101: GET /skills/{slug}/artifacts/cursor/download → 200 + cursor zip + X-Content-SHA256
@@ -273,6 +281,84 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(dlRes.statusCode).toBe(200);
     expect(dlRes.headers["content-type"]).toBe("application/zip");
     expect(dlRes.headers["x-content-sha256"]).toBeDefined();
+  });
+
+  it("per-agent publish is independent across agents (INT-001)", async () => {
+    // 发布 cursor@1.0.0
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "cursor");
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/checks", payload: {}, headers: headers() });
+    const cursorPub = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() });
+    expect(cursorPub.statusCode).toBe(200);
+    expect(cursorPub.json().agent).toBe("cursor");
+
+    let skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
+    let byAgent = new Map(skillRes.json().agents.map((a: { agent: string }) => [a.agent, a]));
+    expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0");
+    // claude-code 无自有版本；default=claude-code 自身不 fallback → null（未受 cursor publish 影响）
+    expect(byAgent.get("claude-code")?.latestVersion).toBe(null);
+
+    // 发布 claude-code@1.0.1 — cursor 必须保持 1.0.0 不变
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "claude-code");
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/checks", payload: {}, headers: headers() });
+    const ccPub = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/publish", payload: { version: "1.0.1" }, headers: headers() });
+    expect(ccPub.statusCode).toBe(200);
+    expect(ccPub.json().agent).toBe("claude-code");
+
+    skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
+    byAgent = new Map(skillRes.json().agents.map((a: { agent: string }) => [a.agent, a]));
+    expect(byAgent.get("claude-code")?.latestVersion).toBe("1.0.1");
+    expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0"); // cursor 不受 claude-code publish 影响
+  });
+
+  it("PATCH /skills/:slug/default-agent switches default agent (API-010 / API-012 / API-013)", async () => {
+    // 前置：发布 harness-cursor cursor@1.0.0（default 自动推断为 claude-code）
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "cursor");
+    await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() });
+
+    const skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
+    const revision = skillRes.json().revision;
+
+    // API-010: 200 — 切换默认 agent 到 cursor
+    const ok = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/skills/harness-cursor/default-agent",
+      payload: { defaultAgent: "cursor", revision },
+      headers: headers()
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().defaultAgent).toBe("cursor");
+    expect(ok.json().agents.find((a: { agent: string }) => a.agent === "cursor")?.isDefault).toBe(true);
+
+    // API-012: 422 AGENT_NOT_ENABLED — codex 在 cursorYaml IR 未 enabled
+    const newRevision = ok.json().revision;
+    const notEnabled = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/skills/harness-cursor/default-agent",
+      payload: { defaultAgent: "codex", revision: newRevision },
+      headers: headers()
+    });
+    expect(notEnabled.statusCode).toBe(422);
+    expect(notEnabled.json().error.code).toBe("AGENT_NOT_ENABLED");
+
+    // API-013: 409 REVISION_CONFLICT — 旧 revision
+    const stale = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/skills/harness-cursor/default-agent",
+      payload: { defaultAgent: "cursor", revision },
+      headers: headers()
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error.code).toBe("REVISION_CONFLICT");
+  });
+
+  it("PATCH /skills/:slug/default-agent rejects without auth (API-014)", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/skills/harness-cursor/default-agent",
+      payload: { defaultAgent: "cursor", revision: 1 },
+      headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() }
+    });
+    expect(res.statusCode).toBe(401);
   });
 
   it("POST /skill-proposals agent=cursor creates proposal (API-101); agent=codex passes gate (API-102 修正: codex installable=true)", async () => {

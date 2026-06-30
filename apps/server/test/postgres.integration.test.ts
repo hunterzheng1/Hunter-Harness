@@ -131,6 +131,7 @@ postgresDescribe("PostgreSQL repository integration", () => {
   // 簇C INT-005：PG 路径 store.initialize 反序列化——publish 多 agent skill → PG save → 新 store initialize →
   // artifacts metadata + per-agent latestVersion 一致。artifact blob 不在 PG（memory storage 跨实例不共享），
   // 仅验 metadata 数量/agent；latestVersion 来自 snapshot.detail.agents（agentsFor 写入）。
+  // per-agent publish：每个 agent 各 upsertDraft + publish 1.0.0（独立版本序列），各产 1 version 记录(artifacts[1])。
   it("INT-005: publish multi-agent skill → PG save → reload initialize preserves artifacts + per-agent latestVersion", async () => {
     const ir: SkillIr = {
       name: "harness-pg-multi", kind: "tooling", description: "pg multi-agent",
@@ -150,8 +151,10 @@ postgresDescribe("PostgreSQL repository integration", () => {
     ].join("\n") }];
     const persistence = new PostgresRegistryPersistence(pool);
     const store = new RegistryStore(new MemoryArtifactStorage(), persistence);
-    await store.upsertDraft({ slug: "harness-pg-multi", sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.publish({ slug: "harness-pg-multi", version: "1.0.0", actorId: "actor_pg" });
+    for (const agent of ["claude-code", "cursor", "codex"] as const) {
+      await store.upsertDraft({ slug: "harness-pg-multi", agent, sourceFiles: files, ir, draftVersion: "0.1.0" });
+      await store.publish({ slug: "harness-pg-multi", agent, version: "1.0.0", actorId: "actor_pg" });
+    }
     const store2 = new RegistryStore(new MemoryArtifactStorage(), persistence);
     await store2.initialize();
     const skill = store2.getSkill("harness-pg-multi");
@@ -159,8 +162,9 @@ postgresDescribe("PostgreSQL repository integration", () => {
     expect(skill.agents.find((a) => a.agent === "cursor")?.latestVersion).toBe("1.0.0");
     expect(skill.agents.find((a) => a.agent === "codex")?.latestVersion).toBe("1.0.0");
     const versions = store2.listVersions("harness-pg-multi");
-    expect(versions[0]?.artifacts.length).toBe(3);
-    expect(versions[0]?.artifacts.map((a) => a.agent).sort()).toEqual(["claude-code", "codex", "cursor"]);
+    // per-agent：3 个 agent 各 1 version 记录（artifacts[1]），共 3 artifact
+    expect(versions.length).toBe(3);
+    expect(versions.flatMap((v) => v.artifacts).map((a) => a.agent).sort()).toEqual(["claude-code", "codex", "cursor"]);
   });
 
   // 簇C COM-002/003：PG 路径旧 snapshot（schemaVersion:1，无 aiConfig/aiUsage，adapters 为字符串数组即 agents 无 draftVersion）
@@ -198,5 +202,43 @@ postgresDescribe("PostgreSQL repository integration", () => {
     expect(skill.agents[0]?.agent).toBe("claude-code");
     expect(skill.agents[0]?.latestVersion).toBe("1.0.0");
     expect(skill).not.toHaveProperty("category");
+  });
+
+  // COM-004: per-agent nested drafts (v3 snapshot) PG jsonb round-trip。
+  // UT-031 验 memory 路径 drafts[slug][agent] 嵌套序列化结构；此用例验 PG jsonb 持久化 + 新 store initialize 保持嵌套。
+  it("COM-004: per-agent nested drafts (v3 snapshot) round-trip through PG jsonb", async () => {
+    const ir: SkillIr = {
+      name: "harness-pg-drafts", kind: "tooling", description: "pg drafts nested",
+      triggers: ["run"], inputs: [], outputs: ["out"],
+      forbidden_actions: [], required_context: [],
+      profiles: { general: { enabled: true } },
+      adapters: { "claude-code": { enabled: true }, cursor: { enabled: true } },
+      version: "1.0.0"
+    };
+    const files: SourceFile[] = [{ path: "skill.yaml", content: [
+      "name: harness-pg-drafts", "kind: tooling", "description: pg drafts nested",
+      'triggers: ["run"]', "inputs: []", 'outputs: ["out"]',
+      "forbidden_actions: [automatic_git_write]", "required_context: [AGENTS.md]",
+      "profiles: { general: { enabled: true } }",
+      "adapters: { claude-code: { enabled: true }, cursor: { enabled: true } }",
+      'version: "1.0.0"'
+    ].join("\n") }];
+    const persistence = new PostgresRegistryPersistence(pool);
+    const store = new RegistryStore(new MemoryArtifactStorage(), persistence);
+    // 建 per-agent drafts（不 publish）— drafts[slug][agent] 嵌套结构
+    await store.upsertDraft({ slug: "harness-pg-drafts", agent: "claude-code", sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-pg-drafts", agent: "cursor", sourceFiles: files, ir, draftVersion: "0.2.0" });
+    // reload：新 store 实例从 PG 加载 snapshot
+    const store2 = new RegistryStore(new MemoryArtifactStorage(), persistence);
+    await store2.initialize();
+    // 验证 drafts[slug][agent] 嵌套结构 round-trip 保留
+    const ccDraft = store2.getDraft("harness-pg-drafts", "claude-code");
+    const cursorDraft = store2.getDraft("harness-pg-drafts", "cursor");
+    expect(ccDraft).toBeDefined();
+    expect(ccDraft?.agent).toBe("claude-code");
+    expect(ccDraft?.draftVersion).toBe("0.1.0");
+    expect(cursorDraft).toBeDefined();
+    expect(cursorDraft?.agent).toBe("cursor");
+    expect(cursorDraft?.draftVersion).toBe("0.2.0");
   });
 });

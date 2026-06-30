@@ -39,8 +39,8 @@ export const agentSkillConfigSchema = z.object({
   enabled: z.boolean(),
   isDefault: z.boolean(),
   installTarget: z.string(),
-  // MVP per-agent 同步版本：publish 时同一 version 写入所有 enabled installable agent 的 latestVersion（见 server store.agentsFor）。
-  // 完整 per-agent 独立 draft 留后续切片；draftVersion 暂未启用，保持 null。
+  // per-agent 独立版本已启用：每个 agent 持独立 latestVersion/draftVersion/draft 文件包；
+  // publish 只前进当前 agent 的 latestVersion，不影响其他 agent（见 server store.agentsFor/publish）。
   latestVersion: registrySemverSchema.nullable(),
   draftVersion: registrySemverSchema.nullable(),
   sourcePackagePath: z.string().nullable()
@@ -67,6 +67,7 @@ export const skillCheckResultSchema = z.object({
 
 export const draftStateSchema = z.object({
   slug: z.string(),
+  agent: registryAgentSchema,
   sourceFiles: z.array(sourceFileSchema),
   ir: skillIrSchema,
   examples: z.array(skillUsageExampleSchema).default([]),
@@ -82,6 +83,11 @@ export const draftStateSchema = z.object({
 export const publishSkillRequestSchema = z.object({
   version: registrySemverSchema,
   releaseNote: z.string().optional()
+}).strict();
+
+export const setDefaultAgentRequestSchema = z.object({
+  defaultAgent: registryAgentSchema,
+  revision: z.number().int().positive()
 }).strict();
 
 export const skillDiffFileSchema = z.object({
@@ -113,6 +119,7 @@ export const registryArtifactSchema = z.object({
 export const registrySkillVersionSchema = z.object({
   skill_slug: registrySlugSchema,
   version: registrySemverSchema,
+  agent: registryAgentSchema,
   ir: skillIrSchema,
   artifacts: z.array(registryArtifactSchema),
   source_proposal_id: z.string().regex(/^skp_/).nullable(),
@@ -214,4 +221,5 @@ export type SkillCheckItem = z.infer<typeof skillCheckItemSchema>;
 export type SkillCheckResult = z.infer<typeof skillCheckResultSchema>;
 export type DraftState = z.infer<typeof draftStateSchema>;
 export type PublishSkillRequest = z.infer<typeof publishSkillRequestSchema>;
+export type SetDefaultAgentRequest = z.infer<typeof setDefaultAgentRequestSchema>;
 export type SkillDiffFile = z.infer<typeof skillDiffFileSchema>;

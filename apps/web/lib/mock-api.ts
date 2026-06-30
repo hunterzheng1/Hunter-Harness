@@ -13,7 +13,8 @@ import type {
   SkillCheckResult,
   SkillDiffFile,
   SkillIr,
-  FixPlan
+  FixPlan,
+  PublishSkillRequest
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills, workflowOrder } from "./catalog";
@@ -383,9 +384,10 @@ export class MockApiClient implements HunterApi {
     return delay(clone(skill));
   }
 
-  async listSkillVersions(slug: string): Promise<RegistrySkillVersion[]> {
+  async listSkillVersions(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]> {
     const skill = await this.getSkill(slug);
-    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", ir: skill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: skill.updated_at }]);
+    const versionAgent = agent ?? skill.defaultAgent ?? skill.agents[0]?.agent ?? "claude-code";
+    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", agent: versionAgent, ir: skill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: skill.updated_at }]);
   }
 
   async getSkillAdapterPreview(slug: string, agent: RegistryAgent) {
@@ -576,20 +578,24 @@ export class MockApiClient implements HunterApi {
     });
   }
 
-  async uploadSkillDraft(): Promise<DraftState> { return demoReadOnly(); }
+  async uploadSkillDraft(form: FormData, agent: RegistryAgent): Promise<DraftState> {
+    void form; void agent;
+    return demoReadOnly();
+  }
 
-  async getSkillDraft(slug: string): Promise<DraftState> {
+  async getSkillDraft(slug: string, agent: RegistryAgent): Promise<DraftState> {
     const src = findDemoSourceSkill(slug);
     if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
-    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
-    if (agent === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
+    const agentCfg = src.agents.find((a) => a.agent === agent) ?? src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    if (agentCfg === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
     return delay({
       slug: src.slug,
+      agent,
       sourceFiles: src.source.files.map((f) => ({ path: f.path, content: f.content })),
       ir: SAP_FIELD_MAPPER_IR,
       examples: src.examples.map((e) => ({ title: e.title, description: e.description, request: e.request, result: e.result, files: e.files ? [...e.files] : [] })),
-      draftVersion: agent.draftVersion?.version ?? null,
-      checks: demoChecksToResult(agent.checks),
+      draftVersion: agentCfg.draftVersion?.version ?? null,
+      checks: demoChecksToResult(agentCfg.checks),
       aiChecks: null,
       releaseNote: null,
       revision: 1,
@@ -598,23 +604,41 @@ export class MockApiClient implements HunterApi {
     });
   }
 
-  async discardSkillDraft(): Promise<{ slug: string; discarded: boolean }> { return demoReadOnly(); }
-
-  async runSkillDraftChecks(slug: string): Promise<SkillCheckResult> {
-    const src = findDemoSourceSkill(slug);
-    if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
-    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
-    if (agent === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
-    return delay(demoChecksToResult(agent.checks));
+  async discardSkillDraft(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }> {
+    void slug; void agent; void revision;
+    return demoReadOnly();
   }
 
-  async publishSkillDraft(): Promise<RegistrySkillVersion> { return demoReadOnly(); }
-
-  async diffSkillDraft(slug: string): Promise<SkillDiffFile[]> {
+  async runSkillDraftChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
     const src = findDemoSourceSkill(slug);
     if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
-    const agent = src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
-    return delay(demoDiffToFiles(agent?.diffFiles));
+    const agentCfg = src.agents.find((a) => a.agent === agent) ?? src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    if (agentCfg === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo agent not found.");
+    return delay(demoChecksToResult(agentCfg.checks));
+  }
+
+  async publishSkillDraft(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion> {
+    void slug; void agent; void req;
+    return demoReadOnly();
+  }
+
+  async diffSkillDraft(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]> {
+    const src = findDemoSourceSkill(slug);
+    if (src === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo draft not found.");
+    const agentCfg = src.agents.find((a) => a.agent === agent) ?? src.agents.find((a) => a.agent === src.defaultAgent) ?? src.agents[0];
+    return delay(demoDiffToFiles(agentCfg?.diffFiles));
+  }
+
+  async setDefaultAgent(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail> {
+    const skill = MOCK_SKILLS.find((item) => item.slug === slug);
+    if (skill === undefined) throw new ApiClientError(404, "SKILL_NOT_FOUND", "Demo Skill not found.");
+    if (revision !== skill.revision) throw new ApiClientError(409, "REVISION_CONFLICT", "Demo skill revision mismatch.");
+    const cfg = skill.agents.find((a) => a.agent === agent);
+    if (cfg === undefined || !cfg.enabled) throw new ApiClientError(422, "VALIDATION_FAILED", "Agent is not enabled for this skill.");
+    skill.defaultAgent = agent;
+    for (const a of skill.agents) a.isDefault = a.agent === agent;
+    skill.updated_at = new Date().toISOString();
+    return delay(clone(skill));
   }
 
   async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
@@ -631,30 +655,31 @@ export class MockApiClient implements HunterApi {
   async getAiUsage(): Promise<{ requests: number; tokens: number }> {
     return delay({ requests: 128, tokens: 1842000 });
   }
-  async runSkillAiChecks(slug: string): Promise<SkillCheckResult> {
-    void slug;
+  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
+    void slug; void agent;
     return delay({
       items: [{ id: "AI_TRIGGER_QUALITY", label: "AI 触发质量", status: "green", message: "AI 检查通过（demo）", filePath: null, fixable: false }],
       summary: { green: 1, yellow: 0, red: 0 },
       checkedAt: new Date().toISOString()
     });
   }
-  async previewSkillFix(): Promise<FixPlan> {
+  async previewSkillFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
+    void slug; void agent; void checkIds;
     return delay({ items: [], mergedFiles: [], summary: { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 } });
   }
-  async applySkillFix(slug: string): Promise<DraftState> {
-    return this.getSkillDraft(slug);
+  async applySkillFix(slug: string, agent: RegistryAgent): Promise<DraftState> {
+    return this.getSkillDraft(slug, agent);
   }
-  async generateReleaseNote(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
-    void slug;
+  async generateReleaseNote(slug: string, agent: RegistryAgent): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
+    void slug; void agent;
     return delay({ releaseNote: "AI 生成的发布说明（demo）", generatedAt: "2026-06-29T00:00:00.000Z" });
   }
-  async fetchFixSuggestions(slug: string, checkIds: string[] | null): Promise<FixPlan> {
-    void slug; void checkIds;
+  async fetchFixSuggestions(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
+    void slug; void agent; void checkIds;
     return delay({ items: [], mergedFiles: [], summary: { autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 } });
   }
-  async applyFixSuggestion(slug: string): Promise<DraftState> {
-    return this.getSkillDraft(slug);
+  async applyFixSuggestion(slug: string, agent: RegistryAgent): Promise<DraftState> {
+    return this.getSkillDraft(slug, agent);
   }
 }
 

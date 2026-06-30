@@ -304,6 +304,9 @@ async function runUpload(
   }
   const { serverUrl, token } = configuration(options, dependencies.env);
   const ir = await findSkillIr(resolve(dependencies.cwd, sourceValue));
+  // #6 迁移预留：当前 upload 走 legacy POST /api/v1/skill-proposals（createProposal 链路，body 含 agent 作为 requestedAgent）。
+  // 后续 #6 切片改走 per-agent draft 上传：POST /api/v1/skills/:slug/draft?agent=<agent>
+  // （skill-center-per-agent-version 解锁的新路由），届时 upload 直建 per-agent draft 而非 proposal。本 change 仅预留注释，不迁移。
   const response = await request(dependencies.fetch, `${serverUrl}/api/v1/skill-proposals`, token, {
     method: "POST",
     body: JSON.stringify({ schema_version: 1, skill_ir: ir, agent: options.agent })

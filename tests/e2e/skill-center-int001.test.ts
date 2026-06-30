@@ -47,17 +47,17 @@ describe("INT-001 skill center 真实后端端到端", () => {
     try {
       // 1. 上传 skill 包（multipart FormData + Idempotency-Key + Bearer token，真实 HTTP）
       const file = new File([SKILL_YAML], "skill.yaml", { type: "text/yaml" });
-      const draft = await api.uploadSkillDraft(buildUploadFormData([file]));
+      const draft = await api.uploadSkillDraft(buildUploadFormData([file]), "claude-code");
       expect(draft.slug).toBe("harness-int001-test");
       expect(draft.draftVersion).toBe("0.1.0");
 
       // 2. 检查（POST /draft/checks）
-      const checks = await api.runSkillDraftChecks(draft.slug);
+      const checks = await api.runSkillDraftChecks(draft.slug, "claude-code");
       expect(checks.summary).toBeDefined();
       expect(Array.isArray(checks.items)).toBe(true);
 
       // 3. 发布（POST /publish，version 1.0.0 > latest null）
-      const published = await api.publishSkillDraft(draft.slug, {
+      const published = await api.publishSkillDraft(draft.slug, "claude-code", {
         version: "1.0.0",
         releaseNote: "int001 e2e"
       });

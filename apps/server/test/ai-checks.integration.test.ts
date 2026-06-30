@@ -102,7 +102,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
 
   async function uploadDraft(): Promise<void> {
     const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(201);
   }
 
@@ -215,13 +215,13 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
   it("API-009/017 ai-checks 成功（mock 合法 JSON）+ audit skill.draft.ai-checked", async () => {
     await createDefaultProvider();
     await uploadDraft();
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
     expect(res.statusCode).toBe(200);
     expect(res.json().items[0].id).toBe("AI_TRIGGER_QUALITY");
     expect(res.json().summary.green).toBe(1);
     expect(await auditActions()).toContain("skill.draft.ai-checked");
     // 写入 draft.aiChecks
-    const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft", headers: headers() });
+    const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft/claude-code", headers: headers() });
     expect(draft.json().aiChecks).not.toBeNull();
     expect(JSON.stringify(res.json())).not.toContain("sk-");
   });
@@ -230,9 +230,9 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     await createDefaultProvider();
     await uploadDraft();
     const key = uuidV7();
-    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers({ "idempotency-key": key }) });
+    const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers({ "idempotency-key": key }) });
     expect(first.statusCode).toBe(200);
-    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers({ "idempotency-key": key }) });
+    const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers({ "idempotency-key": key }) });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toEqual(first.json());
   });
@@ -240,7 +240,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
   it("API-011 ai-checks 无 Idempotency-Key → 400", async () => {
     await createDefaultProvider();
     await uploadDraft();
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: { authorization: "Bearer " + token, "x-request-id": uuidV7() } });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: { authorization: "Bearer " + token, "x-request-id": uuidV7() } });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("VALIDATION_FAILED");
   });
@@ -255,14 +255,14 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
 
   it("API-013 ai-checks draft 不存在 → 404", async () => {
     await createDefaultProvider();
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/no-such/draft/ai-checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/no-such/draft/claude-code/ai-checks", payload: {}, headers: headers() });
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("DRAFT_NOT_FOUND");
   });
 
   it("API-014 ai-checks 未配置 AI（无 default provider）→ 422", async () => {
     await uploadDraft();
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("AI_NOT_CONFIGURED");
   });
@@ -271,7 +271,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     await createDefaultProvider();
     await uploadDraft();
     llmFn = async () => { throw new Error("ETIMEDOUT"); };
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
     expect(res.statusCode).toBe(200);
     expect(res.json().items[0].id).toBe("AI_TIMEOUT");
     expect(res.json().summary.yellow).toBe(1);
@@ -281,7 +281,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     await createDefaultProvider();
     await uploadDraft();
     llmFn = async () => ({ content: "not valid json {", usage: { requests: 1, tokens: 5 } });
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
     expect(res.statusCode).toBe(200);
     expect(res.json().items[0].id).toBe("AI_PARSE_FAILED");
     expect(res.json().summary.yellow).toBe(1);
@@ -298,12 +298,12 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await createDefaultProvider();
       await uploadDraft();
       llmFn = async () => ({ content: "本次新增 X 功能，修改 SKILL.md", usage: { requests: 1, tokens: 30 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().releaseNote).toBe("本次新增 X 功能，修改 SKILL.md");
       expect(res.json().generatedAt).toBeDefined();
       // persist 落盘到 draft.releaseNote
-      const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft", headers: headers() });
+      const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft/claude-code", headers: headers() });
       expect(draft.statusCode).toBe(200);
       expect(draft.json().releaseNote).toBe("本次新增 X 功能，修改 SKILL.md");
       expect(await auditActions()).toContain("skill.draft.release-note.generated");
@@ -311,7 +311,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
 
     it("API-002 AI_NOT_CONFIGURED 422（无默认 provider）", async () => {
       await uploadDraft();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(422);
       expect(res.json().error.code).toBe("AI_NOT_CONFIGURED");
     });
@@ -320,7 +320,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await createDefaultProvider();
       await uploadDraft();
       llmFn = async () => { throw new Error("ETIMEDOUT"); };
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().degraded).toBe(true);
       expect(res.json().reason).toBe("AI_TIMEOUT");
@@ -331,7 +331,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await createDefaultProvider();
       await uploadDraft();
       llmFn = async () => ({ content: "   \n  ", usage: { requests: 1, tokens: 5 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().degraded).toBe(true);
       expect(res.json().reason).toBe("AI_PARSE_FAILED");
@@ -340,7 +340,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
 
     it("API-005 DRAFT_NOT_FOUND 404", async () => {
       await createDefaultProvider();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(404);
       expect(res.json().error.code).toBe("DRAFT_NOT_FOUND");
     });
@@ -349,7 +349,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await createDefaultProvider();
       await uploadDraft();
       llmFn = async () => ({ content: "release note text", usage: { requests: 1, tokens: 5 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(JSON.stringify(res.json())).not.toContain("sk-");
       expect(JSON.stringify(res.json())).not.toContain("apiKey");
@@ -363,7 +363,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
         content: JSON.stringify({ items: items.map((i) => ({ ...i, filePath: null })), summary: { green: 0, yellow: items.length, red: 0 }, checkedAt: new Date().toISOString() }),
         usage: { requests: 1, tokens: 20 }
       });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
       expect(res.statusCode).toBe(200);
     }
 
@@ -372,7 +372,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await uploadDraft();
       await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
       llmFn = async () => ({ content: JSON.stringify({ suggestedContent: '[{"title":"ex","description":"d","request":"r","result":"res"}]', explanation: "补充一个示例", appliesTo: "examples" }), usage: { requests: 1, tokens: 40 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().items).toHaveLength(1);
       expect(res.json().items[0].suggestedContent).toBeDefined();
@@ -386,7 +386,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     it("API-008 无 aiChecks → 空 items FixPlan", async () => {
       await createDefaultProvider();
       await uploadDraft();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().items).toEqual([]);
       expect(res.json().summary.suggestCount).toBe(0);
@@ -400,7 +400,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
         { id: "AI_TRIGGER_QUALITY", label: "触发质量", status: "yellow", message: "改触发", fixable: true }
       ]);
       llmFn = async () => ({ content: JSON.stringify({ suggestedContent: "x", explanation: "y", appliesTo: "description" }), usage: { requests: 1, tokens: 10 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: ["AI_USAGE_EXAMPLES"] }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: ["AI_USAGE_EXAMPLES"] }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().items).toHaveLength(1);
       expect(res.json().items[0].checkId).toBe("AI_USAGE_EXAMPLES");
@@ -411,7 +411,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await uploadDraft();
       await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
       llmFn = async () => { throw new Error("ETIMEDOUT"); };
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().items).toHaveLength(1);
       expect(res.json().items[0].suggestedContent).toBeUndefined();
@@ -423,7 +423,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await uploadDraft();
       await setAiChecks([{ id: "AI_USAGE_EXAMPLES", label: "缺少示例", status: "yellow", message: "建议补充示例", fixable: true }]);
       llmFn = async () => ({ content: JSON.stringify({ suggestedContent: "新描述", explanation: "改描述", appliesTo: "description" }), usage: { requests: 1, tokens: 10 } });
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(JSON.stringify(res.json())).not.toContain("sk-");
       expect(JSON.stringify(res.json())).not.toContain("apiKey");
@@ -437,11 +437,11 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await uploadDraft();
       // 设 aiChecks（含 fixable 项），验证采纳后被清空
       llmFn = async () => ({ content: JSON.stringify({ items: [{ id: "AI_DESC", label: "描述质量", status: "yellow", message: "描述不清", filePath: null, fixable: true }], summary: { green: 0, yellow: 1, red: 0 }, checkedAt: new Date().toISOString() }), usage: { requests: 1, tokens: 20 } });
-      const ac = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: headers() });
+      const ac = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
       expect(ac.statusCode).toBe(200);
-      const before = (await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft", headers: headers() })).json();
+      const before = (await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft/claude-code", headers: headers() })).json();
       expect(before.aiChecks).not.toBeNull();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description" }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description" }, headers: headers() });
       expect(res.statusCode).toBe(200);
       expect(res.json().ir.description).toBe("更清晰的描述");
       expect(res.json().aiChecks).toBeNull();
@@ -454,13 +454,13 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       await uploadDraft();
       const key = uuidV7();
       const body = { checkId: "AI_DESC", suggestedContent: "desc A", appliesTo: "description" };
-      const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
+      const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
       expect(first.statusCode).toBe(200);
       const firstRev = first.json().revision;
-      const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
+      const second = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: body, headers: headers({ "idempotency-key": key }) });
       expect(second.statusCode).toBe(200);
       expect(second.json().revision).toBe(firstRev);
-      const third = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "desc B", appliesTo: "description" }, headers: headers({ "idempotency-key": key }) });
+      const third = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "desc B", appliesTo: "description" }, headers: headers({ "idempotency-key": key }) });
       expect(third.statusCode).toBe(409);
       expect(third.json().error.code).toBe("IDEMPOTENCY_KEY_REUSED");
     });
@@ -468,7 +468,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     it("API-014 appliesTo 白名单外 → 422 SKILL_VALIDATION_FAILED", async () => {
       await createDefaultProvider();
       await uploadDraft();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "ir.secret" }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "ir.secret" }, headers: headers() });
       expect(res.statusCode).toBe(422);
       expect(res.json().error.code).toBe("SKILL_VALIDATION_FAILED");
     });
@@ -476,19 +476,19 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     it("API-015 scanSensitive blocked → 422 SENSITIVE_CONTENT_BLOCKED", async () => {
       await createDefaultProvider();
       await uploadDraft();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", appliesTo: "description" }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", appliesTo: "description" }, headers: headers() });
       expect(res.statusCode).toBe(422);
       expect(res.json().error.code).toBe("SENSITIVE_CONTENT_BLOCKED");
     });
 
     it("API-016 401 未认证", async () => {
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: { "x-request-id": uuidV7(), "idempotency-key": uuidV7() } });
       expect(res.statusCode).toBe(401);
     });
 
     it("API-017 DRAFT_NOT_FOUND 404", async () => {
       await createDefaultProvider();
-      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: headers() });
+      const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "x", appliesTo: "description" }, headers: headers() });
       expect(res.statusCode).toBe(404);
       expect(res.json().error.code).toBe("DRAFT_NOT_FOUND");
     });
@@ -507,9 +507,9 @@ describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => 
       const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { schema_version: 1, provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, api_key_env: "secret-file", is_default: true }, headers: h() });
       expect(pc.statusCode).toBe(201);
       const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
-      const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...h(), ...up.headers } });
+      const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...h(), ...up.headers } });
       expect(upRes.statusCode).toBe(201);
-      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: h() });
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(Array.isArray(body.items)).toBe(true);
@@ -534,7 +534,7 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: providerPayload, headers: h() });
     expect(pc.statusCode).toBe(201);
     const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
-    const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...h(), ...up.headers } });
+    const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...h(), ...up.headers } });
     expect(upRes.statusCode).toBe(201);
     return { realApp, h };
   }
@@ -543,7 +543,7 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
     const { realApp, h } = await bootstrapRealApp();
     try {
-      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/release-note:generate", payload: {}, headers: h() });
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/release-note:generate", payload: {}, headers: h() });
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(typeof body.releaseNote).toBe("string");
@@ -558,8 +558,8 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
     const { realApp, h } = await bootstrapRealApp();
     try {
-      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
-      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: h() });
+      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: h() });
+      const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: h() });
       expect(res.statusCode).toBe(200);
       const body = res.json();
       expect(Array.isArray(body.items)).toBe(true);
@@ -580,12 +580,12 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }
     const { realApp, h } = await bootstrapRealApp();
     try {
-      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/ai-checks", payload: {}, headers: h() });
-      const suggRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/fix-suggestions", payload: { checkIds: null }, headers: h() });
+      await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: h() });
+      const suggRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/fix-suggestions", payload: { checkIds: null }, headers: h() });
       expect(suggRes.statusCode).toBe(200);
       const adoptable = (suggRes.json().items as Array<{ checkId: string; suggestedContent: string | null; appliesTo: string | null }>).find((i) => i.suggestedContent !== null && i.suggestedContent !== undefined && ["examples", "allowed_capabilities", "instructions", "description"].includes(i.appliesTo ?? ""));
       if (adoptable === undefined) { return; }
-      const applyRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/apply-fix-suggestion", payload: { checkId: adoptable.checkId, suggestedContent: adoptable.suggestedContent, appliesTo: adoptable.appliesTo }, headers: h() });
+      const applyRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: adoptable.checkId, suggestedContent: adoptable.suggestedContent, appliesTo: adoptable.appliesTo }, headers: h() });
       expect(applyRes.statusCode).toBe(200);
       const applied = applyRes.json();
       expect(applied.aiChecks).toBeNull();

@@ -66,6 +66,7 @@ const workflow = {
 
 const draft = {
   slug: skill.slug,
+  agent: "claude-code" as const,
   sourceFiles: [],
   ir,
   examples: [],
@@ -102,6 +103,7 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
     listSkillVersions: vi.fn(async () => [{
       skill_slug: skill.slug,
       version: "1.1.0",
+      agent: "claude-code" as const,
       ir,
       artifacts: [],
       source_proposal_id: "skp_review",
@@ -126,6 +128,7 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
     publishSkillDraft: vi.fn(async () => ({
       skill_slug: skill.slug,
       version: "1.2.0",
+      agent: "claude-code" as const,
       ir,
       artifacts: [],
       source_proposal_id: "skp_new",
@@ -201,6 +204,7 @@ describe("governed workflow and Skill Center", () => {
   it("uploads a skill draft via the API as FormData and refreshes the list", async () => {
     const uploadSkillDraft = vi.fn(async () => ({
       slug: "harness-review",
+      agent: "claude-code" as const,
       sourceFiles: [],
       ir,
       examples: [],
@@ -245,7 +249,7 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
-    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review"));
+    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review", "claude-code"));
     expect(await screen.findByText("Entry check")).toBeInTheDocument();
   });
 
@@ -256,9 +260,9 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
-    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review"));
+    await waitFor(() => expect(runSkillDraftChecks).toHaveBeenCalledWith("harness-review", "claude-code"));
     fireEvent.click(screen.getByRole("button", { name: /^AI 检查$|^AI check$/i }));
-    await waitFor(() => expect(runSkillAiChecks).toHaveBeenCalledWith("harness-review"));
+    await waitFor(() => expect(runSkillAiChecks).toHaveBeenCalledWith("harness-review", "claude-code"));
     expect(await screen.findByText("AI 触发质量")).toBeInTheDocument();
     expect(screen.getByText("Entry check")).toBeInTheDocument();
   });
@@ -281,7 +285,7 @@ describe("governed workflow and Skill Center", () => {
     await waitFor(() => expect(screen.getByText("Secret scan")).toBeInTheDocument());
     const applyFixBtn = await screen.findByRole("button", { name: /应用修复|apply fix/i });
     fireEvent.click(applyFixBtn);
-    await waitFor(() => expect(previewSkillFix).toHaveBeenCalledWith("harness-review", ["c2"]));
+    await waitFor(() => expect(previewSkillFix).toHaveBeenCalledWith("harness-review", "claude-code", ["c2"]));
   });
 
   it("AI generate button fills release note textarea (T15 #1)", async () => {
@@ -296,7 +300,7 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(publishBtn);
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /^AI 生成$|^AI generate$/i }));
-    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review"));
+    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review", "claude-code"));
     expect(await screen.findByDisplayValue("AI: 新增触发质量检查与发布校验")).toBeInTheDocument();
   });
 
@@ -314,7 +318,7 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(publishBtn);
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /^AI 生成$|^AI generate$/i }));
-    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review"));
+    await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review", "claude-code"));
     expect(await screen.findByText(/AI 生成失败|AI generation failed/i)).toBeInTheDocument();
   });
 
@@ -331,7 +335,7 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
-    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", "claude-code", null));
     expect(await screen.findByText(/补一个使用示例/)).toBeInTheDocument();
   });
 
@@ -349,9 +353,9 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
-    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", "claude-code", null));
     fireEvent.click(await screen.findByRole("button", { name: /^采纳$|^Adopt$/i }));
-    await waitFor(() => expect(applyFixSuggestion).toHaveBeenCalledWith("harness-review", { checkId: "AI_USAGE_EXAMPLES", suggestedContent: '[{"what":"w"}]', appliesTo: "examples" }));
+    await waitFor(() => expect(applyFixSuggestion).toHaveBeenCalledWith("harness-review", "claude-code", { checkId: "AI_USAGE_EXAMPLES", suggestedContent: '[{"what":"w"}]', appliesTo: "examples" }));
   });
 
   it("appliesTo=null suggestion renders without adopt button (T16 #2)", async () => {
@@ -367,7 +371,7 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
-    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", "claude-code", null));
     expect(await screen.findByText(/只展示不采纳/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
   });
@@ -385,7 +389,7 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
-    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", "claude-code", null));
     expect(await screen.findByText(/补描述/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
   });
@@ -403,7 +407,7 @@ describe("governed workflow and Skill Center", () => {
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(await screen.findByRole("button", { name: /^AI 修复建议$|^AI fix suggestion$/i }));
-    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", null));
+    await waitFor(() => expect(fetchFixSuggestions).toHaveBeenCalledWith("harness-review", "claude-code", null));
     expect(await screen.findByText(/补示例/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^采纳$|^Adopt$/i })).not.toBeInTheDocument();
   });

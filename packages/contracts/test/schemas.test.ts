@@ -33,6 +33,7 @@ import {
   registrySkillVersionSchema,
   registryTagSchema,
   registryWorkflowSchema,
+  setDefaultAgentRequestSchema,
   skillCheckItemSchema,
   skillCheckResultSchema,
   skillDiffFileSchema,
@@ -287,6 +288,7 @@ describe("skill-center schemas", () => {
   it("draftState requires ir/sourceFiles/revision and defaults examples", () => {
     const d = draftStateSchema.parse({
       slug: "harness-x",
+      agent: "claude-code",
       sourceFiles: [{ path: "SKILL.md", content: "..." }],
       ir: validIr,
       draftVersion: "0.1.0",
@@ -340,7 +342,7 @@ describe("skill-center schemas", () => {
 
   it("version has sourceFiles/examples/changeNote and nullable source_proposal_id", () => {
     const v = registrySkillVersionSchema.parse({
-      skill_slug: "harness-x", version: "1.0.0", ir: validIr, artifacts: [],
+      skill_slug: "harness-x", version: "1.0.0", agent: "claude-code", ir: validIr, artifacts: [],
       source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null,
       created_at: "2026-06-26T00:00:00Z"
     });
@@ -391,6 +393,7 @@ describe("skill-center schemas", () => {
   it("draftState defaults aiChecks to null (separate from program checks)", () => {
     const d = draftStateSchema.parse({
       slug: "harness-x",
+      agent: "claude-code",
       sourceFiles: [{ path: "SKILL.md", content: "..." }],
       ir: validIr,
       draftVersion: "0.1.0",
@@ -401,6 +404,42 @@ describe("skill-center schemas", () => {
       updated_at: "2026-06-26T00:00:00Z"
     });
     expect(d.aiChecks).toBeNull();
+  });
+
+  it("draftState requires agent field (per-agent version)", () => {
+    const base = {
+      slug: "harness-x",
+      sourceFiles: [{ path: "SKILL.md", content: "..." }],
+      ir: validIr,
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z"
+    };
+    expect(draftStateSchema.safeParse(base).success).toBe(false);
+    expect(draftStateSchema.safeParse({ ...base, agent: "cursor" }).success).toBe(true);
+    expect(draftStateSchema.parse({ ...base, agent: "cursor" }).agent).toBe("cursor");
+  });
+
+  it("registrySkillVersion requires agent field (per-agent version)", () => {
+    const base = {
+      skill_slug: "harness-x", version: "1.0.0", ir: validIr, artifacts: [],
+      source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null,
+      created_at: "2026-06-26T00:00:00Z"
+    };
+    expect(registrySkillVersionSchema.safeParse(base).success).toBe(false);
+    expect(registrySkillVersionSchema.safeParse({ ...base, agent: "claude-code" }).success).toBe(true);
+    expect(registrySkillVersionSchema.parse({ ...base, agent: "claude-code" }).agent).toBe("claude-code");
+  });
+
+  it("setDefaultAgentRequest requires defaultAgent + positive revision (strict)", () => {
+    expect(setDefaultAgentRequestSchema.parse({ defaultAgent: "cursor", revision: 1 }).defaultAgent).toBe("cursor");
+    expect(setDefaultAgentRequestSchema.safeParse({ defaultAgent: "cursor", revision: 0 }).success).toBe(false);
+    expect(setDefaultAgentRequestSchema.safeParse({ defaultAgent: "invalid", revision: 1 }).success).toBe(false);
+    expect(setDefaultAgentRequestSchema.safeParse({ revision: 1 }).success).toBe(false);
+    expect(() => setDefaultAgentRequestSchema.parse({ defaultAgent: "cursor", revision: 1, extra: 1 })).toThrow();
   });
 });
 

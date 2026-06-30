@@ -48,12 +48,12 @@ describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
     return { url: call[0], init: call[1] };
   }
 
-  it("uploadSkillDraft: POST /skills/draft multipart + Idempotency-Key + Authorization + 无 Content-Type", async () => {
+  it("uploadSkillDraft: POST /skills/draft?agent= multipart + Idempotency-Key + Authorization + 无 Content-Type", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ slug: "s", draftVersion: "0.1.0" }));
     const fd = buildUploadFormData([new File(["x"], "SKILL.md")]);
-    await api.uploadSkillDraft(fd);
+    await api.uploadSkillDraft(fd, "claude-code");
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/draft");
+    expect(url).toBe("http://srv/api/v1/skills/draft?agent=claude-code");
     expect(init.method).toBe("POST");
     const headers = init.headers as Headers;
     expect(headers.get("Authorization")).toBe("Bearer tok");
@@ -62,46 +62,46 @@ describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
     expect(init.body).toBeInstanceOf(FormData);
   });
 
-  it("getSkillDraft: GET /skills/:slug/draft", async () => {
+  it("getSkillDraft: GET /skills/:slug/draft/:agent", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ slug: "s", draftVersion: "0.1.0" }));
-    await api.getSkillDraft("s");
+    await api.getSkillDraft("s", "claude-code");
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/s/draft");
+    expect(url).toBe("http://srv/api/v1/skills/s/draft/claude-code");
     expect(init.method).toBe("GET");
   });
 
-  it("discardSkillDraft: DELETE /draft body {revision}", async () => {
+  it("discardSkillDraft: DELETE /draft/:agent body {revision}", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ slug: "s", discarded: true }));
-    await api.discardSkillDraft("s", 3);
+    await api.discardSkillDraft("s", "claude-code", 3);
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/s/draft");
+    expect(url).toBe("http://srv/api/v1/skills/s/draft/claude-code");
     expect(init.method).toBe("DELETE");
     expect(init.body).toBe(JSON.stringify({ revision: 3 }));
   });
 
-  it("runSkillDraftChecks: POST /draft/checks 带 Idempotency-Key", async () => {
+  it("runSkillDraftChecks: POST /draft/:agent/checks 带 Idempotency-Key", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ items: [], summary: { green: 0, yellow: 0, red: 0 }, checkedAt: "" }));
-    await api.runSkillDraftChecks("s");
+    await api.runSkillDraftChecks("s", "claude-code");
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/s/draft/checks");
+    expect(url).toBe("http://srv/api/v1/skills/s/draft/claude-code/checks");
     expect(init.method).toBe("POST");
     expect(typeof (init.headers as Headers).get("Idempotency-Key")).toBe("string");
   });
 
-  it("publishSkillDraft: POST /publish body PublishSkillRequest", async () => {
+  it("publishSkillDraft: POST /draft/:agent/publish body PublishSkillRequest", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ skill_slug: "s", version: "0.1.0" }));
-    await api.publishSkillDraft("s", { version: "0.1.0", releaseNote: "n" });
+    await api.publishSkillDraft("s", "claude-code", { version: "0.1.0", releaseNote: "n" });
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/s/publish");
+    expect(url).toBe("http://srv/api/v1/skills/s/draft/claude-code/publish");
     expect(init.method).toBe("POST");
     expect(init.body).toBe(JSON.stringify({ version: "0.1.0", releaseNote: "n" }));
   });
 
-  it("diffSkillDraft: GET /diff 取 .items + null content 透传", async () => {
+  it("diffSkillDraft: GET /draft/:agent/diff 取 .items + null content 透传", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ items: [{ path: "a.md", status: "added", publishedContent: null, draftContent: "x" }] }));
-    const r = await api.diffSkillDraft("s");
+    const r = await api.diffSkillDraft("s", "claude-code");
     const { url, init } = await lastCall();
-    expect(url).toBe("http://srv/api/v1/skills/s/diff");
+    expect(url).toBe("http://srv/api/v1/skills/s/draft/claude-code/diff");
     expect(init.method).toBe("GET");
     expect(r).toHaveLength(1);
     expect(r[0]?.path).toBe("a.md");
@@ -123,7 +123,7 @@ describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
       tokenProvider: () => null,
       fetch: fetchMock as unknown as typeof globalThis.fetch
     });
-    await expect(apiNoToken.uploadSkillDraft(buildUploadFormData([new File(["x"], "a")]))).rejects.toMatchObject({
+    await expect(apiNoToken.uploadSkillDraft(buildUploadFormData([new File(["x"], "a")]), "claude-code")).rejects.toMatchObject({
       status: 401,
       code: "AUTH_REQUIRED"
     });
@@ -131,14 +131,23 @@ describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
 
   it("diffSkillDraft: 后端 DRAFT_NOT_FOUND 抛 ApiClientError", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ error: { code: "DRAFT_NOT_FOUND", message: "no draft" } }, false, 404));
-    await expect(api.diffSkillDraft("s")).rejects.toMatchObject({ status: 404, code: "DRAFT_NOT_FOUND" });
+    await expect(api.diffSkillDraft("s", "claude-code")).rejects.toMatchObject({ status: 404, code: "DRAFT_NOT_FOUND" });
   });
 
   it("publishSkillDraft: 后端 VERSION_NOT_FORWARD 抛 ApiClientError", async () => {
     fetchMock.mockResolvedValueOnce(resMock({ error: { code: "VERSION_NOT_FORWARD", message: "stale" } }, false, 409));
-    await expect(api.publishSkillDraft("s", { version: "0.0.1" })).rejects.toMatchObject({
+    await expect(api.publishSkillDraft("s", "claude-code", { version: "0.0.1" })).rejects.toMatchObject({
       status: 409,
       code: "VERSION_NOT_FORWARD"
     });
+  });
+
+  it("setDefaultAgent: PATCH /skills/:slug/default-agent body {defaultAgent, revision}", async () => {
+    fetchMock.mockResolvedValueOnce(resMock({}));
+    await api.setDefaultAgent("s", "cursor", 1);
+    const { url, init } = await lastCall();
+    expect(url).toBe("http://srv/api/v1/skills/s/default-agent");
+    expect(init.method).toBe("PATCH");
+    expect(init.body).toBe(JSON.stringify({ defaultAgent: "cursor", revision: 1 }));
   });
 });
