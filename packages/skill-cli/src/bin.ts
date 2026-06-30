@@ -4,18 +4,18 @@ import {
   access,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
   writeFile
 } from "node:fs/promises";
-import { dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { skillIrSchema, type RegistryAgent, type SkillIr } from "@hunter-harness/contracts";
+import { type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
-import { parse as parseYaml } from "yaml";
 
 export interface SkillCliDependencies {
   cwd?: string;
@@ -44,8 +44,10 @@ interface InstallManifest {
   installed_at: string;
 }
 
-// 簇B：skill-cli 独立 install/upload 白名单（cursor 解锁；codex/generic/mcp 不支持独立 install）。
-// 与 server createProposal 的 installable gate 不同——CLI 侧仅放开已验证可独立安装的 adapter。
+// skill-cli 独立 upload 白名单：建 per-agent draft（低风险），扩 codex/generic（#1 后有真 render + per-agent version）。
+// mcp 仍不支持（installable=false，不参与 upload/install）。
+const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "generic"]);
+// skill-cli 独立 install 白名单：install 链路 codex/generic 未验证，维持 claude-code/cursor。
 const INSTALLABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor"]);
 
 class CliFailure extends Error {
@@ -80,6 +82,8 @@ async function request(
   token: string,
   init: RequestInit = {}
 ): Promise<Response> {
+  // FormData body（multipart 上传）由 fetch 自动生成 boundary + content-type，不可手动设 application/json。
+  const isFormData = init.body instanceof FormData;
   let response: Response;
   try {
     response = await fetch(url, {
@@ -89,7 +93,7 @@ async function request(
         "x-request-id": randomUUID(),
         ...(init.method === undefined || init.method === "GET" ? {} : {
           "idempotency-key": randomUUID(),
-          "content-type": "application/json"
+          ...(isFormData ? {} : { "content-type": "application/json" })
         }),
         ...init.headers
       }
@@ -260,38 +264,45 @@ async function runInstall(
   dependencies.stdout(JSON.stringify({ ok: true, action: existing === null ? "installed" : "updated", slug, version: metadata.version }) + "\n");
 }
 
-async function findSkillIr(source: string): Promise<SkillIr> {
+// readSourceFiles：读 skill 源（目录递归 / ZIP 解包 / 单文件）为 SourceFile[]（{path, content}）。
+// path 用相对路径（目录/ZIP 内，正斜杠），与 Web buildUploadFormData 的 filename 协议对齐——server part.filename 取此。
+// IR 解析交给 server uploadDraft（store 内 findSkillIr），CLI 不重复解析，避免与 server schema 双重维护。
+async function readSourceFiles(source: string): Promise<SourceFile[]> {
   const sourceStat = await stat(source).catch(() => null);
   if (sourceStat === null) throw new CliFailure(3, "SOURCE_NOT_FOUND", "skill source does not exist");
-  let content: string;
-  let extension: string;
   if (sourceStat.isDirectory()) {
-    const candidates = ["skill.yaml", "skill.yml", "skill.json", "hunter-skill-ir.json"];
-    const found = (await Promise.all(candidates.map(async (name) =>
-      await fileExists(join(source, name)) ? join(source, name) : null
-    ))).find((value) => value !== null);
-    if (found === undefined) throw new CliFailure(7, "SKILL_IR_MISSING", "directory has no canonical Skill IR file");
-    content = await readFile(found, "utf8");
-    extension = extname(found);
-  } else if (extname(source).toLowerCase() === ".zip") {
+    const files: SourceFile[] = [];
+    const walk = async (dir: string, rel: string): Promise<void> => {
+      const entries = await readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        const relPath = rel === "" ? entry.name : rel + "/" + entry.name;
+        if (entry.isDirectory()) {
+          await walk(full, relPath);
+        } else {
+          files.push({ path: relPath, content: await readFile(full, "utf8") });
+        }
+      }
+    };
+    await walk(source, "");
+    if (files.length === 0) throw new CliFailure(7, "SKILL_IR_MISSING", "directory has no skill files");
+    return files;
+  }
+  if (extname(source).toLowerCase() === ".zip") {
     const zip = new AdmZip(source);
-    const entry = zip.getEntries().find((item) =>
-      !item.isDirectory && /(^|\/)(skill\.ya?ml|skill\.json|hunter-skill-ir\.json)$/i.test(item.entryName)
-    );
-    if (entry === undefined || entry.entryName.includes("..")) {
-      throw new CliFailure(7, "SKILL_IR_MISSING", "ZIP has no safe canonical Skill IR file");
+    const files: SourceFile[] = [];
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      // zip-slip 防御：与 server resolveUploadFiles DANGEROUS_PATH 对齐（.. / 绝对路径 / UNC 前缀）
+      if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
+        throw new CliFailure(7, "SKILL_IR_INVALID", "zip contains unsafe path: " + entry.entryName);
+      }
+      files.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
     }
-    content = entry.getData().toString("utf8");
-    extension = extname(entry.entryName);
-  } else {
-    content = await readFile(source, "utf8");
-    extension = extname(source);
+    if (files.length === 0) throw new CliFailure(7, "SKILL_IR_MISSING", "zip has no files");
+    return files;
   }
-  try {
-    return skillIrSchema.parse(extension.toLowerCase() === ".json" ? JSON.parse(content) : parseYaml(content));
-  } catch {
-    throw new CliFailure(7, "SKILL_IR_INVALID", "canonical Skill IR failed schema validation");
-  }
+  return [{ path: basename(source), content: await readFile(source, "utf8") }];
 }
 
 async function runUpload(
@@ -299,20 +310,32 @@ async function runUpload(
   options: CommonOptions,
   dependencies: Required<SkillCliDependencies>
 ): Promise<void> {
-  if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
-    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports claude-code and cursor only");
+  if (!UPLOADABLE_AGENTS.has(options.agent as RegistryAgent)) {
+    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports claude-code, cursor, codex and generic only");
   }
   const { serverUrl, token } = configuration(options, dependencies.env);
-  const ir = await findSkillIr(resolve(dependencies.cwd, sourceValue));
-  // #6 迁移预留：当前 upload 走 legacy POST /api/v1/skill-proposals（createProposal 链路，body 含 agent 作为 requestedAgent）。
-  // 后续 #6 切片改走 per-agent draft 上传：POST /api/v1/skills/:slug/draft?agent=<agent>
-  // （skill-center-per-agent-version 解锁的新路由），届时 upload 直建 per-agent draft 而非 proposal。本 change 仅预留注释，不迁移。
-  const response = await request(dependencies.fetch, `${serverUrl}/api/v1/skill-proposals`, token, {
-    method: "POST",
-    body: JSON.stringify({ schema_version: 1, skill_ir: ir, agent: options.agent })
-  });
-  const body = await response.json() as Record<string, unknown>;
-  dependencies.stdout(JSON.stringify({ ok: true, action: "proposal-created", ...body }) + "\n");
+  const files = await readSourceFiles(resolve(dependencies.cwd, sourceValue));
+  // multipart：每文件一个 "file" part，filename=相对路径；agent 走 query param。
+  // 与 Web buildUploadFormData + server POST /api/v1/skills/draft?agent=<agent> 协议对齐。
+  // slug 不在 URL——server uploadDraft 内部从 ir.name 取并在响应 DraftState 返回。
+  const form = new FormData();
+  for (const file of files) {
+    form.append("file", new Blob([file.content]), file.path);
+  }
+  const response = await request(
+    dependencies.fetch,
+    `${serverUrl}/api/v1/skills/draft?agent=${encodeURIComponent(options.agent)}`,
+    token,
+    { method: "POST", body: form }
+  );
+  const draft = await response.json() as {
+    slug: string; agent: string; draftVersion: string | null; revision: number;
+  };
+  dependencies.stdout(JSON.stringify({
+    ok: true, action: "draft-created",
+    slug: draft.slug, agent: draft.agent,
+    draftVersion: draft.draftVersion, revision: draft.revision
+  }) + "\n");
 }
 
 export async function runSkillCli(

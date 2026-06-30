@@ -38,6 +38,59 @@ function zipBytesCursor(content = "# harness-sync\n"): Buffer {
   return zip.toBuffer();
 }
 
+// draft 端点 mock 响应（CLI runUpload 只取 slug/agent/draftVersion/revision，其余字段仅占位以贴近真实 DraftState）
+function draftResponse(slug: string, agent: string, revision = 1, draftVersion = "0.1.0"): Response {
+  return Response.json({
+    slug, agent, draftVersion, revision,
+    sourceFiles: [], ir: { name: slug }, examples: [],
+    checks: null, aiChecks: null, releaseNote: null,
+    created_at: "2026-07-01T00:00:00.000Z", updated_at: "2026-07-01T00:00:00.000Z"
+  }, { status: 201 });
+}
+
+// 解析 multipart FormData：验证文件数 + filename（相对路径，server part.filename 取此）+ filename↔content 精确对应。
+// getAll 返回 Blob[]（不带 name），无法按 filename 取 content；故序列化整个 form 为 multipart 文本，
+// 按 boundary 分块解析 filename→content 映射，避免依赖 part 顺序（AdmZip getEntries 顺序与 addFile 不同）。
+async function expectUploadParts(
+  form: FormData,
+  expected: Array<{ filename: string; contentContains: string }>
+): Promise<void> {
+  const blobs = form.getAll("file") as Blob[];
+  expect(blobs).toHaveLength(expected.length);
+  const multipartText = await new Response(form).text();
+  const boundary = /--([^\r\n]+)/.exec(multipartText)?.[1];
+  expect(boundary).toBeDefined();
+  const byName = new Map<string, string>();
+  for (const block of multipartText.split("--" + (boundary ?? ""))) {
+    const fn = /filename="([^"]*)"/.exec(block)?.[1];
+    if (fn === undefined) continue;
+    const body = block.split("\r\n\r\n").slice(1).join("\r\n\r\n").replace(/\r\n$/, "");
+    byName.set(fn, body);
+  }
+  for (const e of expected) {
+    expect(byName.has(e.filename)).toBe(true);
+    expect(byName.get(e.filename) ?? "").toContain(e.contentContains);
+  }
+}
+
+// 写一个 claude-code enabled 的 skill.yaml 源目录（upload fixture）
+async function writeSkillSource(source: string, name = "harness-candidate"): Promise<void> {
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "skill.yaml"), [
+    `name: ${name}`,
+    "kind: tooling",
+    `description: ${name} skill`,
+    `triggers: [${name}]`,
+    "inputs: []",
+    "outputs: [report]",
+    "forbidden_actions: [automatic_git_write]",
+    "required_context: [AGENTS.md]",
+    "profiles: { general: { enabled: true } }",
+    "adapters: { claude-code: { enabled: true } }",
+    "version: 1.0.0"
+  ].join("\n"));
+}
+
 describe("@hunter-harness/skill-cli", () => {
   it("prints help with a successful exit code", async () => {
     const output: string[] = [];
@@ -104,35 +157,36 @@ describe("@hunter-harness/skill-cli", () => {
     expect(exitCode).toBe(5);
     expect(await readFile(join(target, "SKILL.md"), "utf8")).toBe("local unmanaged skill\n");
   });
-  it("uploads a directory as a review proposal and exposes no publish command", async () => {
+  it("uploads a directory to the per-agent draft endpoint as multipart (INT-102)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-upload-"));
     const source = join(cwd, "candidate");
-    await mkdir(source);
-    await writeFile(join(source, "skill.yaml"), [
-      "name: harness-candidate",
-      "kind: tooling",
-      "description: Candidate skill",
-      "triggers: [candidate]",
-      "inputs: []",
-      "outputs: [report]",
-      "forbidden_actions: [automatic_git_write]",
-      "required_context: [AGENTS.md]",
-      "profiles: { general: { enabled: true } }",
-      "adapters: { claude-code: { enabled: true } }",
-      "version: 1.0.0"
-    ].join("\n"));
-    const fetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+    await writeSkillSource(source);
+    const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
-      const body = JSON.parse(String(init?.body));
-      expect(body.skill_ir.name).toBe("harness-candidate");
-      return Response.json({ proposal_id: "skp_candidate", status: "pending_review" }, { status: 201 });
+      const url = String(input);
+      expect(url).toContain("/api/v1/skills/draft");
+      expect(url).toContain("agent=claude-code");
+      expect(init?.body).toBeInstanceOf(FormData);
+      await expectUploadParts(init?.body as FormData, [
+        { filename: "skill.yaml", contentContains: "name: harness-candidate" }
+      ]);
+      return draftResponse("harness-candidate", "claude-code");
     });
+    const output: string[] = [];
     expect(await runSkillCli([
       "node", "skill-cli", "upload", source,
       "--agent", "claude-code", "--server-url", "https://harness.example",
       "--token-env", "HH_SKILL_TOKEN", "--json"
-    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+    ], { cwd, env: tokenEnv, fetch, stdout: (v) => output.push(v), stderr: () => undefined })).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const result = JSON.parse(output.join(""));
+    expect(result).toMatchObject({
+      ok: true, action: "draft-created",
+      slug: "harness-candidate", agent: "claude-code",
+      draftVersion: "0.1.0", revision: 1
+    });
 
+    // D2：本期不加 CLI publish 子命令（留给 Web 或后续切片）
     expect(await runSkillCli(["node", "skill-cli", "publish"], {
       cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined
     })).toBe(3);
@@ -168,10 +222,10 @@ describe("@hunter-harness/skill-cli", () => {
     expect(manifest.files).toHaveProperty("harness-sync.mdc");
   });
 
-  it("uploads with agent=cursor passthrough to /skill-proposals (INT-103)", async () => {
+  it("uploads with agent=cursor to the per-agent draft endpoint (INT-103)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-cursor-upload-"));
     const source = join(cwd, "candidate");
-    await mkdir(source);
+    await mkdir(source, { recursive: true });
     await writeFile(join(source, "skill.yaml"), [
       "name: harness-candidate",
       "kind: tooling",
@@ -185,17 +239,152 @@ describe("@hunter-harness/skill-cli", () => {
       "adapters: { cursor: { enabled: true } }",
       "version: 1.0.0"
     ].join("\n"));
-    const fetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+    const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
-      const body = JSON.parse(String(init?.body));
-      expect(body.agent).toBe("cursor");
-      return Response.json({ proposal_id: "skp_cursor", status: "pending_review" }, { status: 201 });
+      const url = String(input);
+      expect(url).toContain("/api/v1/skills/draft");
+      expect(url).toContain("agent=cursor");
+      expect(init?.body).toBeInstanceOf(FormData);
+      await expectUploadParts(init?.body as FormData, [
+        { filename: "skill.yaml", contentContains: "name: harness-candidate" }
+      ]);
+      return draftResponse("harness-candidate", "cursor");
     });
     expect(await runSkillCli([
       "node", "skill-cli", "upload", source,
       "--agent", "cursor", "--server-url", "https://harness.example",
       "--token-env", "HH_SKILL_TOKEN", "--json"
     ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads with agent=codex to the draft endpoint (UT-003 upload 白名单扩展)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-codex-upload-"));
+    const source = join(cwd, "candidate");
+    await writeSkillSource(source);
+    const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(String(input)).toContain("agent=codex");
+      expect(init?.body).toBeInstanceOf(FormData);
+      return draftResponse("harness-candidate", "codex");
+    });
+    expect(await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "codex", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN", "--json"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uploads with agent=generic to the draft endpoint (UT-004 upload 白名单扩展)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-generic-upload-"));
+    const source = join(cwd, "candidate");
+    await writeSkillSource(source);
+    const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(String(input)).toContain("agent=generic");
+      expect(init?.body).toBeInstanceOf(FormData);
+      return draftResponse("harness-candidate", "generic");
+    });
+    expect(await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "generic", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN", "--json"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects upload with unsupported agent (mcp) ADAPTER_UNSUPPORTED exit 3 without calling server (UT-005)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-mcp-upload-"));
+    const source = join(cwd, "candidate");
+    await writeSkillSource(source);
+    const fetch = vi.fn();
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "mcp", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined });
+    expect(exitCode).toBe(3);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("uploads a ZIP source unpacked as multipart file parts preserving relative paths (UT-011)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-zip-upload-"));
+    const zip = new AdmZip();
+    zip.addFile("skill.yaml", Buffer.from("name: harness-zipped\nkind: tooling\n"));
+    zip.addFile("references/guide.md", Buffer.from("# guide\n"));
+    const source = join(cwd, "skill.zip");
+    await writeFile(source, zip.toBuffer());
+    const fetch = vi.fn(async (_input: string | URL, init?: RequestInit) => {
+      expect(init?.body).toBeInstanceOf(FormData);
+      await expectUploadParts(init?.body as FormData, [
+        { filename: "skill.yaml", contentContains: "name: harness-zipped" },
+        { filename: "references/guide.md", contentContains: "# guide" }
+      ]);
+      return draftResponse("harness-zipped", "claude-code");
+    });
+    expect(await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "claude-code", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN", "--json"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+  });
+
+  it("uploads a directory with nested files preserving relative paths (UT-010 目录递归)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-dir-nested-"));
+    const source = join(cwd, "candidate");
+    await mkdir(join(source, "references"), { recursive: true });
+    await writeFile(join(source, "skill.yaml"), "name: harness-nested\nkind: tooling\n");
+    await writeFile(join(source, "references", "guide.md"), "# nested guide\n");
+    const fetch = vi.fn(async () => draftResponse("harness-nested", "claude-code"));
+    expect(await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "claude-code", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN", "--json"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [, init] = fetch.mock.calls[0] as [string | URL, RequestInit];
+    expect(init.body).toBeInstanceOf(FormData);
+    await expectUploadParts(init.body as FormData, [
+      { filename: "skill.yaml", contentContains: "name: harness-nested" },
+      { filename: "references/guide.md", contentContains: "# nested guide" }
+    ]);
+  });
+
+  it("propagates server SENSITIVE_CONTENT_BLOCKED as CliFailure exit 4 (UT-021)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-sensitive-"));
+    const source = join(cwd, "candidate");
+    await writeSkillSource(source);
+    const fetch = vi.fn(async () => Response.json(
+      { error: { code: "SENSITIVE_CONTENT_BLOCKED", message: "skill contains sensitive content" } },
+      { status: 422 }
+    ));
+    const stderr: string[] = [];
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "upload", source,
+      "--agent", "claude-code", "--server-url", "https://harness.example",
+      "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: (v) => stderr.push(v) });
+    expect(exitCode).toBe(4);
+    expect(stderr.join("")).toContain("SENSITIVE_CONTENT_BLOCKED");
+  });
+
+  it("propagates server SKILL_VALIDATION_FAILED and WORKFLOW_PACKAGE_REDIRECT as exit 4 (UT-022/023)", async () => {
+    for (const code of ["SKILL_VALIDATION_FAILED", "WORKFLOW_PACKAGE_REDIRECT"] as const) {
+      const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-" + code.toLowerCase() + "-"));
+      const source = join(cwd, "candidate");
+      await writeSkillSource(source);
+      const fetch = vi.fn(async () => Response.json(
+        { error: { code, message: code } },
+        { status: 422 }
+      ));
+      const stderr: string[] = [];
+      const exitCode = await runSkillCli([
+        "node", "skill-cli", "upload", source,
+        "--agent", "claude-code", "--server-url", "https://harness.example",
+        "--token-env", "HH_SKILL_TOKEN"
+      ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: (v) => stderr.push(v) });
+      expect(exitCode).toBe(4);
+      expect(stderr.join("")).toContain(code);
+    }
   });
 
   it("rejects install with unsupported agent (codex) ADAPTER_UNSUPPORTED exit 3 (白名单边界回归)", async () => {
