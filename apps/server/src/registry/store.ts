@@ -159,6 +159,9 @@ interface BuiltArtifact {
   bytes: Uint8Array;
 }
 
+// zip 内 hunter-skill.json manifest 的 schema 版本（zip 元数据，无 contracts schema 约束，skill-cli 不 parse 该字段；Y-8 去魔法值）
+const MANIFEST_SCHEMA_VERSION = 2;
+
 // 簇8：遍历 installable 且 IR enabled 的 adapter，每 adapter compileSkill + zip（目标文件 + hunter-skill.json manifest）。
 // 取交集（installable && ir.adapters[agent].enabled）：尊重 IR adapter 选择 + 向后兼容只 enable claude-code 的旧 skill（仍产 1 制品，现有 publish 测试不破坏）。
 // mcp installable=false 跳过；未 enable 的 adapter 跳过。manifest schema_version:2 含 install_mode/block_id（zip 内元数据，无 contracts schema 约束，skill-cli 读不 parse schema）。
@@ -178,7 +181,7 @@ function buildArtifacts(ir: SkillIr, compilerVersion: string): BuiltArtifact[] {
       throw new ServerDomainError(500, "ARTIFACT_BUILD_FAILED", "compiled skill path has no filename");
     }
     const manifest: Record<string, unknown> = {
-      schema_version: 2,
+      schema_version: MANIFEST_SCHEMA_VERSION,
       slug: ir.name,
       version: ir.version,
       agent,
@@ -625,8 +628,16 @@ export class RegistryStore {
       });
     }
     const built = buildArtifacts(ir, this.compilerVersion);
+    if (built.length === 0) {
+      // Y-3：与 createProposal 一致——IR 无任何 installable adapter enabled（如仅 mcp）时拒绝发布，
+      // 避免静默发布 0 制品 version（不可安装）。
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
+    }
     const createdAt = new Date().toISOString();
     const artifacts: RegistryArtifact[] = [];
+    // Y-2：多制品 blob 按 content_sha256 写入 ArtifactStorage（memory/local，content-addressed，无 PG blob 实现）；
+    // 任一 putBlob 失败则抛出 → version 不入 skills Map、persist() 不执行，孤立 blob 可 GC（无数据损坏）。
+    // 元数据持久化走 persist() 的单条 snapshot save（PG: 单行 jsonb ON CONFLICT，天然原子），不经逐条 SQL 事务。
     for (const item of built) {
       const hash = sha256Bytes(item.bytes);
       await this.storage.putBlob(hash, item.bytes);
@@ -942,7 +953,13 @@ export class RegistryStore {
     const existing = this.skills.get(ir.name);
     requireForwardVersion(existing, ir.version);
     const built = buildArtifacts(ir, this.compilerVersion);
+    if (built.length === 0) {
+      // Y-3：与 createProposal/publish 一致——IR 无任何 installable adapter enabled 时拒绝发布。
+      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
+    }
     const artifacts: RegistryArtifact[] = [];
+    // Y-2：多制品 blob 按 content_sha256 写入 ArtifactStorage（content-addressed，无 PG blob 实现）；
+    // 任一 putBlob 失败则抛出 → version 不入 skills Map、persist() 不执行，孤立 blob 可 GC。persist() 单条 snapshot save 原子。
     for (const item of built) {
       const hash = sha256Bytes(item.bytes);
       await this.storage.putBlob(hash, item.bytes);

@@ -2,6 +2,9 @@ import type { SkillIr } from "@hunter-harness/contracts";
 
 import { section } from "./shared.js";
 
+/**
+ * 渲染 generic adapter 产出：.agent-skills/<name>.md（agent-neutral markdown frontmatter + 章节，任何 agent 读到均可执行）。
+ */
 export function renderGenericSkill(
   skill: SkillIr,
   sourceIrHash: string,

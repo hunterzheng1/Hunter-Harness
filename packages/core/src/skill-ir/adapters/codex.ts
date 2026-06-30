@@ -2,6 +2,10 @@ import type { SkillIr } from "@hunter-harness/contracts";
 
 import { section } from "./shared.js";
 
+/**
+ * 渲染 codex adapter 产出：AGENTS.md managed block 体（Codex-flavored markdown + harness 头注释）。
+ * 安装时由 upsertManagedBlockById 按 blockId=`harness-skill-<name>` 插入 AGENTS.md，block 外内容不动。
+ */
 export function renderCodexSkill(
   skill: SkillIr,
   sourceIrHash: string,

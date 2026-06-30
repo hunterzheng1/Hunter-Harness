@@ -18,7 +18,7 @@ export const addOperationSchema = z.object({
   path: relativePathSchema,
   content_sha256: sha256Schema,
   size_bytes: z.number().int().nonnegative(),
-  block_id: z.string().optional()
+  block_id: z.string().optional() // Y-1 per-id managed block（COM-005 决策 B：前向兼容，当前 CLI 已接受；旧 CLI 反向拒绝分支不可达，不实现 MANIFEST_PROTOCOL_UNSUPPORTED）
 }).strict();
 
 export const modifyOperationSchema = z.object({
@@ -28,7 +28,7 @@ export const modifyOperationSchema = z.object({
   base_content_sha256: sha256Schema,
   content_sha256: sha256Schema,
   size_bytes: z.number().int().nonnegative(),
-  block_id: z.string().optional()
+  block_id: z.string().optional() // Y-1 per-id managed block（COM-005 决策 B：前向兼容，当前 CLI 已接受；旧 CLI 反向拒绝分支不可达，不实现 MANIFEST_PROTOCOL_UNSUPPORTED）
 }).strict();
 
 export const deleteOperationSchema = z.object({

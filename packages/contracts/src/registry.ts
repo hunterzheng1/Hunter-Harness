@@ -92,6 +92,8 @@ export const skillDiffFileSchema = z.object({
 export const registryValidationSchema = z.object({
   schema_valid: z.boolean(),
   sensitive_findings: z.number().int().nonnegative(),
+  // Y-4：语义已扩展为"任一 installable adapter 可编译"（非仅 claude-code；store.ts createProposal/publish 验 buildArtifacts.length>0）。
+  // 字段名保留以维持已发布契约稳定（schemas.test.ts 引用，改名=破坏性）。
   claude_compilable: z.boolean()
 }).strict();
 

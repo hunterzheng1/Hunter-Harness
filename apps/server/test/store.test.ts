@@ -625,4 +625,23 @@ describe("buildArtifacts + publish multi + adapterPreview (T12-14)", () => {
     try { store.adapterPreview("harness-x", "mcp"); } catch (e) { caught = e; }
     expect(caught).toMatchObject({ code: "ADAPTER_NOT_IMPLEMENTED", status: 422 });
   });
+
+  // Y-3：IR 仅 enable mcp（installable=false）→ buildArtifacts 返回空数组。
+  // createProposal 已有空检查（store.ts createProposal built.length===0 → SKILL_VALIDATION_FAILED）；
+  // publish/publishIr 应一致拒绝，避免静默发布 0 制品 version（不可安装）。
+  const irMcpOnly: SkillIr = { ...ir, adapters: { mcp: { enabled: true } } };
+
+  it("publish rejects mcp-only IR with 422 SKILL_VALIDATION_FAILED (Y-3)", async () => {
+    const store = newStore();
+    await store.upsertDraft({ slug: "harness-x", sourceFiles: files, ir: irMcpOnly, draftVersion: "0.1.0" });
+    await expect(store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" }))
+      .rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED", status: 422 });
+  });
+
+  it("createProposal rejects mcp-only IR with 422 SKILL_VALIDATION_FAILED (Y-3 已有分支补覆盖)", () => {
+    const store = newStore();
+    let caught: unknown = null;
+    try { store.createProposal({ ir: irMcpOnly, actorId: "owner", agent: "claude-code" }); } catch (e) { caught = e; }
+    expect(caught).toMatchObject({ code: "SKILL_VALIDATION_FAILED", status: 422 });
+  });
 });

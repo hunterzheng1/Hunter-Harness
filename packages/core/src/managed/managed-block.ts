@@ -68,6 +68,11 @@ function escapeRe(value: string): string {
 const startById = (id: string): string => `<!-- hunter-harness:start id=${id} -->`;
 const endById = (id: string): string => `<!-- hunter-harness:end id=${id} -->`;
 
+/**
+ * 按 id 插入/替换 per-id managed block（marker `<!-- hunter-harness:start id=<id> -->` ... `<!-- hunter-harness:end id=<id> -->`）。
+ * 同 id block 存在则替换（幂等），否则追加；与无 id 的 {@link upsertManagedBlock} 因 id 后缀互不冲突，可在同一文件共存。
+ * 用于 AGENTS.md 的 per-skill block（codex adapter 安装，blockId=`harness-skill-<name>`）。
+ */
 export function upsertManagedBlockById(
   original: string,
   id: string,

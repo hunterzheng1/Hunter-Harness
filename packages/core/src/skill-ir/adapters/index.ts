@@ -26,6 +26,11 @@ function mcpPlaceholder(skill: SkillIr, sourceIrHash: string): string {
   ].join("\n") + "\n";
 }
 
+/**
+ * Adapter 注册表——compileSkill/buildArtifacts/checker 的单一真相源。
+ * 每项声明 {id, render, targetPath, installMode, blockId?, installable}；
+ * installable=false（mcp）= placeholder，server adapterPreview 抛 422 ADAPTER_NOT_IMPLEMENTED。
+ */
 export const ADAPTERS: Record<RegistryAgent, AdapterDescriptor> = {
   "claude-code": {
     id: "claude-code",

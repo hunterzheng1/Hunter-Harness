@@ -2,6 +2,9 @@ import type { SkillIr } from "@hunter-harness/contracts";
 
 import { section } from "./shared.js";
 
+/**
+ * 渲染 cursor adapter 产出：.cursor/rules/<name>.mdc（MDC YAML frontmatter + 章节 body）。
+ */
 export function renderCursorSkill(
   skill: SkillIr,
   sourceIrHash: string,
