@@ -140,6 +140,36 @@ const publishedVersion: RegistrySkillVersion = {
   created_at: "2026-06-26T00:00:00Z"
 };
 
+const v100Version: RegistrySkillVersion = {
+  skill_slug: "wiring-skill",
+  version: "1.0.0",
+  agent: "claude-code",
+  ir,
+  artifacts: [],
+  source_proposal_id: "skp_w0",
+  sourceFiles: [{ path: "SKILL.md", content: "# v1.0.0 published" }],
+  examples: [],
+  changeNote: "Bootstrap",
+  created_at: "2026-06-20T00:00:00Z"
+};
+
+const v120Version: RegistrySkillVersion = {
+  skill_slug: "wiring-skill",
+  version: "1.2.0",
+  agent: "claude-code",
+  ir,
+  artifacts: [],
+  source_proposal_id: "skp_w1",
+  sourceFiles: [{ path: "SKILL.md", content: "# v1.2.0 published" }],
+  examples: [],
+  changeNote: "First publish",
+  created_at: "2026-06-21T00:00:00Z"
+};
+
+// 倒序由 VersionHistoryPanel 内部 sort(created_at desc) 保证；fixture 按时序正序构造，与 server 返回顺序无关
+const multiVersions: RegistrySkillVersion[] = [v120Version, publishedVersion];
+const threeVersions: RegistrySkillVersion[] = [v100Version, v120Version, publishedVersion];
+
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
     getSkill: vi.fn(async () => skill),
@@ -233,15 +263,126 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledTimes(2));
   });
 
-  it("versions Tab 调 listSkillVersions 展示版本列表与选中版本内容（API-018/019）", async () => {
+  it("versions Tab 调 listSkillVersions 展示版本列表与选中版本 vs 上一版本 diff（API-018/019/UT-001/UT-003）", async () => {
+    const client = api({ listSkillVersions: vi.fn(async () => multiVersions) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
+    await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledWith("wiring-skill", "claude-code"));
+    // 默认选中最新 v1.3.0，previous=v1.2.0 → releaseNote + diff 双栏 + diffStats
+    expect(await screen.findByText("Published from draft")).toBeInTheDocument();
+    expect(screen.getAllByText(/1\.3\.0/).length).toBeGreaterThan(0);
+    expect(screen.getByText("# v1.2.0 published")).toBeInTheDocument();
+    expect(screen.getByText("# v1.3.0 published")).toBeInTheDocument();
+    expect(screen.getByText(/变更文件|changed files/i)).toBeInTheDocument();
+  });
+
+  it("选中首版本展示初始版本空状态（UT-004/COM-002）", async () => {
     const client = api({ listSkillVersions: vi.fn(async () => versions) });
     render(<SkillDetail api={client} skillId="wiring-skill" />);
     await screen.findByRole("heading", { name: "wiring-skill" });
     fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
     await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledWith("wiring-skill", "claude-code"));
-    expect(await screen.findByText("First publish")).toBeInTheDocument();
-    expect(screen.getAllByText(/1\.2\.0/).length).toBeGreaterThan(0);
-    expect(screen.getByText("SKILL.md")).toBeInTheDocument();
+    expect(await screen.findByText(/初始版本|initial version/i)).toBeInTheDocument();
+    expect(screen.queryByText("# v1.2.0 published")).not.toBeInTheDocument();
+  });
+
+  it("切换版本 diff 重新计算（UT-005）", async () => {
+    const client = api({ listSkillVersions: vi.fn(async () => threeVersions) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
+    // 默认选中 v1.3.0，previous=v1.2.0
+    expect(await screen.findByText("# v1.3.0 published")).toBeInTheDocument();
+    expect(screen.getByText("# v1.2.0 published")).toBeInTheDocument();
+    // 切换到 v1.2.0 → previous=v1.0.0
+    fireEvent.click(screen.getByRole("button", { name: /v1\.2\.0/ }));
+    expect(await screen.findByText("# v1.0.0 published")).toBeInTheDocument();
+    expect(screen.queryByText("# v1.3.0 published")).not.toBeInTheDocument();
+  });
+
+  it("版本 diff 文件树切换显示对应文件 published/draft（UT-002）", async () => {
+    const prevMulti: RegistrySkillVersion = {
+      skill_slug: "wiring-skill",
+      version: "1.0.0",
+      agent: "claude-code",
+      ir,
+      artifacts: [],
+      source_proposal_id: "skp_m0",
+      sourceFiles: [
+        { path: "SKILL.md", content: "# old skill" },
+        { path: "reference.md", content: "ref v1" }
+      ],
+      examples: [],
+      changeNote: "multi prev",
+      created_at: "2026-06-20T00:00:00Z"
+    };
+    const currMulti: RegistrySkillVersion = {
+      skill_slug: "wiring-skill",
+      version: "1.1.0",
+      agent: "claude-code",
+      ir,
+      artifacts: [],
+      source_proposal_id: "skp_m1",
+      sourceFiles: [
+        { path: "SKILL.md", content: "# new skill" },
+        { path: "reference.md", content: "ref v2" }
+      ],
+      examples: [],
+      changeNote: "multi curr",
+      created_at: "2026-06-22T00:00:00Z"
+    };
+    const client = api({ listSkillVersions: vi.fn(async () => [prevMulti, currMulti]) });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
+    // 默认选中 v1.1.0，diff 含 SKILL.md + reference.md（均 modified），默认显示 SKILL.md
+    expect(await screen.findByText("# old skill")).toBeInTheDocument();
+    expect(screen.getByText("# new skill")).toBeInTheDocument();
+    // 切换到 reference.md
+    fireEvent.click(screen.getByRole("button", { name: /reference\.md/ }));
+    expect(await screen.findByText("ref v1")).toBeInTheDocument();
+    expect(screen.getByText("ref v2")).toBeInTheDocument();
+    expect(screen.queryByText("# old skill")).not.toBeInTheDocument();
+  });
+
+  it("per-agent 过滤：仅当前 agent 版本参与 diff（UT-006）", async () => {
+    const cursorSkill: RegistrySkillDetail = {
+      ...skill,
+      defaultAgent: "cursor",
+      agents: [{ agent: "cursor", enabled: true, isDefault: true, installTarget: ".claude/skills/wiring-skill", latestVersion: "1.1.0", draftVersion: null, sourcePackagePath: null }]
+    };
+    const cursorV100: RegistrySkillVersion = {
+      skill_slug: "wiring-skill", version: "1.0.0", agent: "cursor", ir, artifacts: [],
+      source_proposal_id: "skp_c0",
+      sourceFiles: [{ path: "SKILL.md", content: "# cursor v1.0.0" }],
+      examples: [], changeNote: "cursor first", created_at: "2026-06-20T00:00:00Z"
+    };
+    const cursorV110: RegistrySkillVersion = {
+      skill_slug: "wiring-skill", version: "1.1.0", agent: "cursor", ir, artifacts: [],
+      source_proposal_id: "skp_c1",
+      sourceFiles: [{ path: "SKILL.md", content: "# cursor v1.1.0" }],
+      examples: [], changeNote: "cursor second", created_at: "2026-06-22T00:00:00Z"
+    };
+    const ccV999: RegistrySkillVersion = {
+      skill_slug: "wiring-skill", version: "9.9.9", agent: "claude-code", ir, artifacts: [],
+      source_proposal_id: "skp_cc9",
+      sourceFiles: [{ path: "SKILL.md", content: "# cc v9.9.9" }],
+      examples: [], changeNote: "cc other", created_at: "2026-06-25T00:00:00Z"
+    };
+    const client = api({
+      getSkill: vi.fn(async () => cursorSkill),
+      listSkillVersions: vi.fn(async () => [cursorV100, cursorV110, ccV999]),
+      getSkillDraft: vi.fn(async () => draft)
+    });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
+    // currentAgent 同步到 cursor 后，仅 cursor 版本参与 diff（cc v9.9.9 被过滤）
+    expect(await screen.findByText("# cursor v1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("# cursor v1.1.0")).toBeInTheDocument();
+    expect(screen.queryByText("# cc v9.9.9")).not.toBeInTheDocument();
+    expect(screen.queryByText(/v9\.9\.9/)).not.toBeInTheDocument();
   });
 
   it("草稿不存在时 checks Tab 显空态 + 上传入口（API-028/COM-005）", async () => {

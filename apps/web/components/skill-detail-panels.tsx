@@ -20,11 +20,10 @@ import {
   CheckLight,
   Empty,
   EnabledTargets,
-  FilePreview,
-  SourceFileTree,
   ValueChips,
   agentLabel,
   apiError,
+  computeDiff,
   diffStats,
   displayValue,
   nextPatchVersion,
@@ -644,24 +643,33 @@ function VersionHistoryPanel({
   currentAgent: RegistryAgent;
   t: ReturnType<typeof useI18n>["t"]["skillDetail"];
 }) {
-  const agentVersions = versions.filter((v) => v.agent === currentAgent);
+  // 按 created_at 倒序（最新在前）；previous = 倒序下一个 = 时序上一版本。
+  // 显式 sort 防御 server 返回顺序不确定（设计文档「已有倒序」在此前置为强约束）。
+  const agentVersions = versions
+    .filter((v) => v.agent === currentAgent)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
   const [selectedVersion, setSelectedVersion] = useState(agentVersions[0]?.version ?? "");
-  const [selectedVersionFile, setSelectedVersionFile] = useState(agentVersions[0]?.sourceFiles[0]?.path ?? "");
+  const [selectedDiffFile, setSelectedDiffFile] = useState(0);
   if (agentVersions.length === 0) return <Empty>{t.noVersionHistory}</Empty>;
-  const current = agentVersions.find((v) => v.version === selectedVersion) ?? agentVersions[0];
+  const currentIndex = agentVersions.findIndex((v) => v.version === selectedVersion);
+  const current = currentIndex >= 0 ? agentVersions[currentIndex] : agentVersions[0];
   if (current === undefined) return <Empty>{t.noVersionHistory}</Empty>;
-  const sourceFiles = current.sourceFiles;
-  const activeFile = sourceFiles.find((f) => f.path === selectedVersionFile) ?? sourceFiles[0];
+  const previous = currentIndex >= 0 ? agentVersions[currentIndex + 1] : undefined;
+  const diffFiles = previous === undefined ? [] : computeDiff(previous.sourceFiles, current.sourceFiles);
+  const stats = diffStats(diffFiles);
+  const activeDiffFile = diffFiles[selectedDiffFile] ?? diffFiles[0];
+  const publishedLines = (activeDiffFile?.publishedContent ?? "").split("\n");
+  const draftLines = (activeDiffFile?.draftContent ?? "").split("\n");
 
-  function selectVersion(version: string, firstFilePath: string): void {
+  function selectVersion(version: string): void {
     setSelectedVersion(version);
-    setSelectedVersionFile(firstFilePath);
+    setSelectedDiffFile(0);
   }
 
   return <div className="version-history-workbench">
     <aside className="version-history-list">
       <div className="version-file-tree-title">{t.versionHistory}</div>
-      {agentVersions.map((v) => <button type="button" className={v.version === current.version ? "selected" : ""} key={v.version} onClick={() => selectVersion(v.version, v.sourceFiles[0]?.path ?? "")}>
+      {agentVersions.map((v) => <button type="button" className={v.version === current.version ? "selected" : ""} key={v.version} onClick={() => selectVersion(v.version)}>
         <strong>v{v.version}</strong>
         <span>{new Date(v.created_at).toLocaleString()}</span>
         <small>{v.source_proposal_id ?? "bootstrap"}</small>
@@ -675,10 +683,34 @@ function VersionHistoryPanel({
         </div>
         <p>{current.changeNote ?? t.defaultReleaseNote}</p>
       </article>
-      {sourceFiles.length === 0 ? <Empty>{t.noVersionDiff}</Empty> : <div className="source-package-grid">
-        <SourceFileTree files={sourceFiles} selectedPath={activeFile?.path ?? ""} onSelect={setSelectedVersionFile} />
-        {activeFile === undefined ? null : <FilePreview key={activeFile.path} path={activeFile.path} content={activeFile.content} showRaw={t.showRaw} showRendered={t.showRendered} />}
-      </div>}
+      {previous === undefined
+        ? <Empty>{t.initialVersion}</Empty>
+        : diffFiles.length === 0
+          ? <Empty>{t.noVersionDiff}</Empty>
+          : <div className="version-diff-workbench">
+            <div className="version-diff-stats">
+              <span><strong>{stats.addedFiles}</strong>{t.addedFiles}</span>
+              <span><strong>{stats.modifiedFiles}</strong>{t.modifiedFiles}</span>
+              <span><strong>{stats.removedFiles}</strong>{t.removedFiles}</span>
+              <span><strong>{stats.changedLines}</strong>{t.changedLines}</span>
+            </div>
+            <aside className="version-file-tree">
+              <div className="version-file-tree-title">{t.changedFiles}</div>
+              {diffFiles.map((file, index) => <button type="button" className={index === selectedDiffFile ? "selected" : ""} key={file.path} onClick={() => setSelectedDiffFile(index)}>
+                <span className={`file-change-dot file-change-${file.status}`} />
+                <span>{file.path}</span>
+                <small>{t.diffStatus[file.status]}</small>
+              </button>)}
+            </aside>
+            <div className="version-diff-pane">
+              <div className="diff-column-title"><span>{t.previousVersion}</span></div>
+              <pre>{publishedLines.map((line, index) => <span className={line !== (draftLines[index] ?? "") ? "diff-line diff-line-old" : "diff-line"} key={`old-${index}`}>{line || " "}</span>)}</pre>
+            </div>
+            <div className="version-diff-pane">
+              <div className="diff-column-title"><span>{t.selectedVersion}</span></div>
+              <pre>{draftLines.map((line, index) => <span className={line !== (publishedLines[index] ?? "") ? "diff-line diff-line-new" : "diff-line"} key={`new-${index}`}>{line || " "}</span>)}</pre>
+            </div>
+          </div>}
       {current.examples.length === 0 ? null : <div className="usage-example-grid">
         {current.examples.map((example, index) => <article className="usage-example-card" key={example.title}>
           <span className="config-card-label">{t.exampleLabel.replace("{index}", String(index + 1).padStart(2, "0"))}</span>

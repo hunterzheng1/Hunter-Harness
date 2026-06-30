@@ -215,8 +215,15 @@ paths:
   /api/v1/skills/{slug}/versions:
     get:
       operationId: listSkillVersions
+      parameters:
+        - name: agent
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/RegistryAgent"
+          description: Filter versions by agent; when omitted all versions are returned. An invalid agent returns 422 VALIDATION_FAILED.
       responses:
-        "200": { description: Published Skill versions }
+        "200": { description: Published Skill versions, optionally filtered by agent }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/adapter-preview/{agent}:
     get:

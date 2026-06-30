@@ -1,6 +1,6 @@
 "use client";
 
-import type { SkillDiffFile, SkillIr } from "@hunter-harness/contracts";
+import type { SkillDiffFile, SkillIr, SourceFile } from "@hunter-harness/contracts";
 import { useState } from "react";
 
 import { ApiClientError, type HunterApi } from "../lib/api";
@@ -235,6 +235,30 @@ function diffStats(files: readonly SkillDiffFile[]): { changedFiles: number; add
   }, { changedFiles: 0, addedFiles: 0, modifiedFiles: 0, removedFiles: 0, changedLines: 0 });
 }
 
+// 与 packages/core/src/skill-ir/diff.ts 的 computeDiff 逻辑一致。
+// web 端本地实现：apps/web import @hunter-harness/core 会触发 next build webpack 打包 core/dist（含 node: scheme，浏览器端 webpack 不兼容）。
+// 改 core 端 computeDiff 需同步此副本；对等测试见 apps/web/test/compute-diff-parity.test.tsx。
+function computeDiff(published: SourceFile[], draft: SourceFile[]): SkillDiffFile[] {
+  const pubMap = new Map<string, string>();
+  for (const f of published) pubMap.set(f.path, f.content);
+  const draftMap = new Map<string, string>();
+  for (const f of draft) draftMap.set(f.path, f.content);
+  const result: SkillDiffFile[] = [];
+  const paths = new Set<string>([...pubMap.keys(), ...draftMap.keys()]);
+  for (const path of paths) {
+    const pubContent = pubMap.get(path);
+    const draftContent = draftMap.get(path);
+    if (pubContent === undefined && draftContent !== undefined) {
+      result.push({ path, status: "added", publishedContent: null, draftContent });
+    } else if (pubContent !== undefined && draftContent === undefined) {
+      result.push({ path, status: "removed", publishedContent: pubContent, draftContent: null });
+    } else if (pubContent !== undefined && draftContent !== undefined && pubContent !== draftContent) {
+      result.push({ path, status: "modified", publishedContent: pubContent, draftContent });
+    }
+  }
+  return result;
+}
+
 interface SourceTreeNode {
   files: string[];
   directories: Map<string, SourceTreeNode>;
@@ -311,5 +335,6 @@ export {
   nextPatchVersion,
   shiftPatchVersion,
   diffStats,
+  computeDiff,
   SourceFileTree
 };
