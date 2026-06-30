@@ -255,8 +255,9 @@ describe("governed workflow and Skill Center", () => {
 
   it("runs AI checks via the API and merges with program checks (INT-002)", async () => {
     const runSkillDraftChecks = vi.fn(async () => draftChecks);
-    const runSkillAiChecks = vi.fn(async () => draftAiChecks);
-    render(<SkillDetail api={api({ runSkillDraftChecks, runSkillAiChecks, getSkillDraft: vi.fn(async () => ({ ...draft, checks: null, aiChecks: null })) })} skillId="harness-review" />);
+    const runSkillAiChecks = vi.fn(async () => ({ jobId: "test-job", status: "pending" }));
+    const getAiJob = vi.fn(async () => ({ jobId: "test-job", status: "completed" as const, result: draftAiChecks, error: null, createdAt: "x", expiresAt: "x" }));
+    render(<SkillDetail api={api({ runSkillDraftChecks, runSkillAiChecks, getAiJob, getSkillDraft: vi.fn(async () => ({ ...draft, checks: null, aiChecks: null })) })} skillId="harness-review" />);
     await screen.findByRole("heading", { name: "harness-review" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));

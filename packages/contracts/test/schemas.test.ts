@@ -10,6 +10,7 @@ import {
   agentSkillConfigSchema,
   aiConfigStateSchema,
   aiProviderConfigSchema,
+  aiQuotaUsageSchema,
   apiErrorEnvelopeSchema,
   artifactManifestSchema,
   canonicalJson,
@@ -256,6 +257,20 @@ describe("skill-center schemas", () => {
     draftVersion: null,
     sourcePackagePath: null
   };
+  const validProviderCfg = {
+    provider_id: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    enabled: true,
+    is_default: true,
+    api_key_env: "secret-file",
+    revision: 1,
+    daily_request_limit: 1000,
+    daily_token_limit: 500000,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z"
+  };
 
   it("checkStatus accepts green/yellow/red and rejects others", () => {
     expect(checkStatusSchema.parse("green")).toBe("green");
@@ -374,8 +389,20 @@ describe("skill-center schemas", () => {
     expect(() => registryTagSchema.parse({ ...t, usageCount: -1 })).toThrow();
   });
 
-  it("aiProviderConfig parses valid (no key) and rejects apiKey extra", () => {
-    const cfg = {
+  it("aiProviderConfig parses valid with quota (no key) and rejects apiKey extra", () => {
+    expect(aiProviderConfigSchema.parse(validProviderCfg)).toEqual(validProviderCfg);
+    expect(() => aiProviderConfigSchema.parse({ ...validProviderCfg, apiKey: "sk-xxx" })).toThrow();
+  });
+
+  it("aiProviderConfig accepts null quota (explicit unlimited)", () => {
+    const cfg = { ...validProviderCfg, daily_request_limit: null, daily_token_limit: null };
+    const parsed = aiProviderConfigSchema.parse(cfg);
+    expect(parsed.daily_request_limit).toBeNull();
+    expect(parsed.daily_token_limit).toBeNull();
+  });
+
+  it("aiProviderConfig defaults quota to null when missing (legacy migration COM-002)", () => {
+    const legacy = {
       provider_id: "deepseek",
       label: "DeepSeek",
       base_url: "https://api.deepseek.com",
@@ -387,13 +414,42 @@ describe("skill-center schemas", () => {
       created_at: "2026-06-28T00:00:00Z",
       updated_at: "2026-06-28T00:00:00Z"
     };
-    expect(aiProviderConfigSchema.parse(cfg)).toEqual(cfg);
-    expect(() => aiProviderConfigSchema.parse({ ...cfg, apiKey: "sk-xxx" })).toThrow();
+    const parsed = aiProviderConfigSchema.parse(legacy);
+    expect(parsed.daily_request_limit).toBeNull();
+    expect(parsed.daily_token_limit).toBeNull();
+  });
+
+  it("aiProviderConfig rejects negative or non-integer quota", () => {
+    expect(() => aiProviderConfigSchema.parse({ ...validProviderCfg, daily_request_limit: -1 })).toThrow();
+    expect(() => aiProviderConfigSchema.parse({ ...validProviderCfg, daily_token_limit: 1.5 })).toThrow();
+  });
+
+  it("aiQuotaUsageSchema parses provider_id/date/requests/tokens and is strict", () => {
+    const u = { provider_id: "deepseek", date: "2026-07-01", requests: 10, tokens: 500 };
+    expect(aiQuotaUsageSchema.parse(u)).toEqual(u);
+    expect(() => aiQuotaUsageSchema.parse({ ...u, extra: 1 })).toThrow();
+    expect(() => aiQuotaUsageSchema.parse({ provider_id: "x", date: "2026-07-01", requests: -1, tokens: 0 })).toThrow();
   });
 
   it("aiConfigState has nullable defaultProvider and providers array", () => {
     expect(aiConfigStateSchema.parse({ defaultProvider: null, providers: [] }).defaultProvider).toBeNull();
     expect(aiConfigStateSchema.parse({ defaultProvider: "deepseek", providers: [] }).providers).toEqual([]);
+  });
+
+  it("aiConfigState defaults usage to [] and accepts usage array", () => {
+    expect(aiConfigStateSchema.parse({ defaultProvider: null, providers: [] }).usage).toEqual([]);
+    const state = aiConfigStateSchema.parse({
+      defaultProvider: "deepseek",
+      providers: [],
+      usage: [{ provider_id: "deepseek", date: "2026-07-01", requests: 5, tokens: 100 }]
+    });
+    expect(state.usage).toHaveLength(1);
+    expect(state.usage[0]?.requests).toBe(5);
+  });
+
+  it("aiConfigState legacy data without usage migrates to [] (COM-001)", () => {
+    const legacy = { defaultProvider: "deepseek", providers: [] };
+    expect(aiConfigStateSchema.parse(legacy).usage).toEqual([]);
   });
 
   it("draftState defaults aiChecks to null (separate from program checks)", () => {

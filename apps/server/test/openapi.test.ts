@@ -68,6 +68,7 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/ai-config/providers/{provider_id}",
       "/api/v1/ai-config/providers/{provider_id}/test",
       "/api/v1/ai-config/usage",
+      "/api/v1/ai-jobs/{jobId}",
       "/health"
     ].sort());
     const operationIds = Object.values(document.paths).flatMap((path) =>

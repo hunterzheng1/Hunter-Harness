@@ -322,8 +322,22 @@ function AgentCheckPanel({
     setAiChecking(true);
     setError(null);
     try {
-      const result = await required(api, "runSkillAiChecks")(slug, currentAgent);
-      setAiChecksResult(result);
+      // 异步 AI 检查（§3.3）：POST 启动 job → 轮询 GET /ai-jobs/:id 至 completed/failed。
+      // 轮询 100ms（设计建议 2s，实现选 100ms 平衡反馈速度与 server 负载；job 状态查询是内存操作不调 LLM）。
+      const start = await required(api, "runSkillAiChecks")(slug, currentAgent);
+      for (let i = 0; i < 120; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const job = await required(api, "getAiJob")(start.jobId);
+        if (job.status === "completed" && job.result !== null) {
+          setAiChecksResult(job.result);
+          return;
+        }
+        if (job.status === "failed") {
+          setError(sd.aiCheckFailed + " " + (job.error ?? "AI 检查失败"));
+          return;
+        }
+      }
+      setError(sd.aiCheckFailed + " 轮询超时");
     } catch (reason) { setError(sd.aiCheckFailed + " " + apiError(reason, t)); }
     finally { setAiChecking(false); }
   }

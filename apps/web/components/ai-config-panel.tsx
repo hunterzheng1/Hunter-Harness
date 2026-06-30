@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import type { AiProviderConfig } from "@hunter-harness/contracts";
+import type { AiProviderConfig, AiQuotaUsage } from "@hunter-harness/contracts";
 import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
@@ -33,11 +33,14 @@ interface ProviderDraft {
   enabled: boolean;
   api_key_env: string;
   is_default: boolean;
+  daily_request_limit: number | null;
+  daily_token_limit: number | null;
 }
 
 const emptyDraft: ProviderDraft = {
   provider_id: "", label: "", base_url: "https://", model: "",
-  enabled: true, api_key_env: "secret-file", is_default: false
+  enabled: true, api_key_env: "secret-file", is_default: false,
+  daily_request_limit: null, daily_token_limit: null
 };
 
 export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
@@ -46,7 +49,7 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
   const [providers, setProviders] = useState<AiProviderConfig[]>([]);
   const [defaultProvider, setDefaultProvider] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string>("");
-  const [usage, setUsage] = useState<{ requests: number; tokens: number }>({ requests: 0, tokens: 0 });
+  const [usage, setUsage] = useState<AiQuotaUsage[]>([]);
   const [draft, setDraft] = useState<ProviderDraft>(emptyDraft);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +60,11 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
   const selected = providers.find((p) => p.provider_id === selectedId);
   const isNew = selectedId === NEW_PROVIDER_ID;
   const enabledCount = providers.filter((p) => p.enabled).length;
-  const tokenText = useMemo(() => new Intl.NumberFormat().format(usage.tokens), [usage.tokens]);
+  const today = new Date().toISOString().slice(0, 10);
+  const todayUsage = usage.filter((u) => u.date === today);
+  const totalRequests = todayUsage.reduce((sum, u) => sum + u.requests, 0);
+  const totalTokens = todayUsage.reduce((sum, u) => sum + u.tokens, 0);
+  const tokenText = useMemo(() => new Intl.NumberFormat().format(totalTokens), [totalTokens]);
 
   async function refresh(): Promise<void> {
     setLoading(true);
@@ -87,7 +94,9 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
       setDraft({
         provider_id: selected.provider_id, label: selected.label, base_url: selected.base_url,
         model: selected.model, enabled: selected.enabled, api_key_env: selected.api_key_env,
-        is_default: selected.is_default
+        is_default: selected.is_default,
+        daily_request_limit: selected.daily_request_limit,
+        daily_token_limit: selected.daily_token_limit
       });
       setTestResult(null);
     }
@@ -123,7 +132,9 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
         const created = await required(api, "createAiProvider")({
           provider_id: draft.provider_id, label: draft.label, base_url: draft.base_url,
           model: draft.model, enabled: draft.enabled, api_key_env: draft.api_key_env,
-          ...(draft.is_default ? { is_default: true } : {})
+          ...(draft.is_default ? { is_default: true } : {}),
+          daily_request_limit: draft.daily_request_limit,
+          daily_token_limit: draft.daily_token_limit
         });
         setProviders((cur) => [...cur.filter((p) => p.provider_id !== created.provider_id), created]);
         if (draft.is_default) setDefaultProvider(created.provider_id);
@@ -132,7 +143,9 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
       } else if (selected !== undefined) {
         const updated = await required(api, "updateAiProvider")(selected.provider_id, selected.revision, {
           label: draft.label, base_url: draft.base_url, model: draft.model,
-          enabled: draft.enabled, api_key_env: draft.api_key_env
+          enabled: draft.enabled, api_key_env: draft.api_key_env,
+          daily_request_limit: draft.daily_request_limit,
+          daily_token_limit: draft.daily_token_limit
         });
         setProviders((cur) => cur.map((p) => p.provider_id === updated.provider_id ? updated : p));
         setTestResult(t.aiConfig.saveSuccess.replace("{provider}", updated.label));
@@ -192,6 +205,8 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
           <label>{t.aiConfig.apiKeyEnv}<input value={draft.api_key_env} onChange={(e) => setField("api_key_env", e.target.value)} /></label>
           <label>{t.aiConfig.enabled}<select value={draft.enabled ? "yes" : "no"} onChange={(e) => setField("enabled", e.target.value === "yes")}><option value="yes">{t.common.yes}</option><option value="no">{t.common.no}</option></select></label>
           <label>{t.aiConfig.isDefault}<select value={draft.is_default ? "yes" : "no"} onChange={(e) => setField("is_default", e.target.value === "yes")}><option value="yes">{t.common.yes}</option><option value="no">{t.common.no}</option></select></label>
+          <label>{t.aiConfig.dailyRequestLimit}<input type="number" min={0} value={draft.daily_request_limit ?? ""} onChange={(e) => setField("daily_request_limit", e.target.value === "" ? null : Number(e.target.value))} placeholder={t.aiConfig.unlimited} /></label>
+          <label>{t.aiConfig.dailyTokenLimit}<input type="number" min={0} value={draft.daily_token_limit ?? ""} onChange={(e) => setField("daily_token_limit", e.target.value === "" ? null : Number(e.target.value))} placeholder={t.aiConfig.unlimited} /></label>
         </div>
         <div className="actions">
           <button type="button" onClick={() => void testConnection()} disabled={testing || isNew}>{testing ? t.aiConfig.loading : t.aiConfig.testConnection}</button>
@@ -204,9 +219,21 @@ export function AiConfigPanel({ api: apiValue }: { api?: HunterApi } = {}) {
         <div className="panel-title"><h2>{t.aiConfig.usageStats}</h2><span>{t.aiConfig.thisMonth}</span></div>
         <div className="skill-stat-grid">
           <article><strong>{enabledCount}</strong><span>{t.aiConfig.enabledProviders}</span></article>
-          <article><strong>{usage.requests}</strong><span>{t.aiConfig.requests}</span></article>
+          <article><strong>{totalRequests}</strong><span>{t.aiConfig.requests}</span></article>
           <article><strong>{tokenText}</strong><span>{t.aiConfig.tokens}</span></article>
         </div>
+        {todayUsage.length > 0 ? (
+          <ul className="usage-by-provider">
+            {todayUsage.map((u) => {
+              const p = providers.find((pr) => pr.provider_id === u.provider_id);
+              const reqLimit = p?.daily_request_limit ?? null;
+              const tokLimit = p?.daily_token_limit ?? null;
+              return (
+                <li key={u.provider_id}>{u.provider_id}: {u.requests}{reqLimit !== null ? `/${reqLimit}` : ""} {t.aiConfig.requests} · {new Intl.NumberFormat().format(u.tokens)}{tokLimit !== null ? `/${new Intl.NumberFormat().format(tokLimit)}` : ""} {t.aiConfig.tokens}</li>
+              );
+            })}
+          </ul>
+        ) : null}
       </article>
     </div>}
 

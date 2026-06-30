@@ -11,18 +11,19 @@ import type { HunterApi } from "../lib/api";
 const mockProvider: AiProviderConfig = {
   provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com",
   model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file",
-  revision: 1, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z"
+  revision: 1, daily_request_limit: null, daily_token_limit: null,
+  created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z"
 };
 
 function makeApi(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
     listAiProviders: vi.fn(async () => ({ items: [mockProvider], default_provider: "deepseek" })),
-    getAiUsage: vi.fn(async () => ({ requests: 10, tokens: 500 })),
+    getAiUsage: vi.fn(async () => [{ provider_id: "deepseek", date: "2026-07-01", requests: 10, tokens: 500 }]),
     testAiProvider: vi.fn(async () => ({ provider_id: "deepseek", ok: true, model: "deepseek-v4-pro" })),
     createAiProvider: vi.fn(async (input: Record<string, unknown>) => ({ ...mockProvider, ...input, revision: 1 })),
     updateAiProvider: vi.fn(async (id: string, rev: number, patch: Record<string, unknown>) => ({ ...mockProvider, ...patch, provider_id: id, revision: rev + 1 })),
     deleteAiProvider: vi.fn(async () => ({ provider_id: "deepseek", deleted: true })),
-    runSkillAiChecks: vi.fn(async () => ({ items: [], summary: { green: 0, yellow: 0, red: 0 }, checkedAt: "x" })),
+    runSkillAiChecks: vi.fn(async () => ({ jobId: "test-job", status: "pending" })),
     ...overrides
   } as unknown as HunterApi;
 }

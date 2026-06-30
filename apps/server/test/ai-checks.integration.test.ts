@@ -116,6 +116,25 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     return events.map((e) => e.action);
   }
 
+  // 轮询 GET /ai-jobs/:id 直到 completed/failed（异步 ai-checks 测试）
+  async function pollJob(jobId: string, maxTries = 30): Promise<{
+    status: string;
+    result: { items: { id: string }[]; summary: { green: number; yellow: number; red: number } } | null;
+    error: string | null;
+  }> {
+    for (let i = 0; i < maxTries; i++) {
+      const r = await app.inject({ method: "GET", url: `/api/v1/ai-jobs/${jobId}`, headers: headers() });
+      const body = r.json() as {
+        status: string;
+        result: { items: { id: string }[]; summary: { green: number; yellow: number; red: number } } | null;
+        error: string | null;
+      };
+      if (body.status === "completed" || body.status === "failed") return body;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`job ${jobId} did not settle in ${maxTries} tries`);
+  }
+
   it("API-001 GET /ai-config/providers 返回列表，无 key 字段（API-018 无明文 key）", async () => {
     await createDefaultProvider();
     const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() });
@@ -208,22 +227,28 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     await app.inject({ method: "POST", url: "/api/v1/ai-config/providers/deepseek/test", payload: {}, headers: headers() });
     const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/usage", headers: headers() });
     expect(res.statusCode).toBe(200);
-    expect(res.json().requests).toBeGreaterThanOrEqual(1);
-    expect(res.json().tokens).toBeGreaterThanOrEqual(0);
+    const usage = res.json().usage as Array<{ provider_id: string; requests: number; tokens: number }>;
+    const deepseek = usage.find((u) => u.provider_id === "deepseek");
+    expect(deepseek?.requests).toBeGreaterThanOrEqual(1);
+    expect(deepseek?.tokens).toBeGreaterThanOrEqual(0);
   });
 
-  it("API-009/017 ai-checks 成功（mock 合法 JSON）+ audit skill.draft.ai-checked", async () => {
+  it("API-009/017 ai-checks 异步 job 成功 + audit skill.draft.ai-checked", async () => {
     await createDefaultProvider();
     await uploadDraft();
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().items[0].id).toBe("AI_TRIGGER_QUALITY");
-    expect(res.json().summary.green).toBe(1);
+    const start = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
+    expect(start.statusCode).toBe(200);
+    expect(start.json().status).toBe("pending");
+    expect(start.json().jobId).toBeDefined();
+    const job = await pollJob(start.json().jobId);
+    expect(job.status).toBe("completed");
+    expect(job.result?.items[0]?.id).toBe("AI_TRIGGER_QUALITY");
+    expect(job.result?.summary.green).toBe(1);
     expect(await auditActions()).toContain("skill.draft.ai-checked");
     // 写入 draft.aiChecks
     const draft = await app.inject({ method: "GET", url: "/api/v1/skills/harness-ai/draft/claude-code", headers: headers() });
     expect(draft.json().aiChecks).not.toBeNull();
-    expect(JSON.stringify(res.json())).not.toContain("sk-");
+    expect(JSON.stringify(job)).not.toContain("sk-");
   });
 
   it("API-010 ai-checks 同 Idempotency-Key 重复返回相同结果", async () => {
@@ -267,24 +292,77 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     expect(res.json().error.code).toBe("AI_NOT_CONFIGURED");
   });
 
-  it("API-015 ai-checks LLM 超时/网络错 → 降级 AI_TIMEOUT yellow（不 500）", async () => {
+  it("API-015 ai-checks LLM 超时/网络错 → job.failed（不 500，INT-003）", async () => {
     await createDefaultProvider();
     await uploadDraft();
     llmFn = async () => { throw new Error("ETIMEDOUT"); };
-    const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().items[0].id).toBe("AI_TIMEOUT");
-    expect(res.json().summary.yellow).toBe(1);
+    const start = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
+    expect(start.statusCode).toBe(200);
+    const job = await pollJob(start.json().jobId);
+    expect(job.status).toBe("failed");
+    expect(job.error).toBe("ETIMEDOUT");
   });
 
-  it("API-016 ai-checks LLM 非法 JSON → 降级 AI_PARSE_FAILED yellow", async () => {
+  it("API-016 ai-checks LLM 非法 JSON → 降级 AI_PARSE_FAILED yellow（job.completed）", async () => {
     await createDefaultProvider();
     await uploadDraft();
     llmFn = async () => ({ content: "not valid json {", usage: { requests: 1, tokens: 5 } });
+    const start = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
+    expect(start.statusCode).toBe(200);
+    const job = await pollJob(start.json().jobId);
+    expect(job.status).toBe("completed");
+    expect(job.result?.items[0]?.id).toBe("AI_PARSE_FAILED");
+    expect(job.result?.summary.yellow).toBe(1);
+  });
+
+  it("API-002 GET /ai-jobs/:id 轮询 job 状态", async () => {
+    await createDefaultProvider();
+    await uploadDraft();
+    const start = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
+    const jobId = start.json().jobId;
+    const r = await app.inject({ method: "GET", url: `/api/v1/ai-jobs/${jobId}`, headers: headers() });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().jobId).toBe(jobId);
+    expect(["pending", "running", "completed", "failed"]).toContain(r.json().status);
+  });
+
+  it("API-005 GET /ai-jobs/unknown → 404 JOB_NOT_FOUND", async () => {
+    const r = await app.inject({ method: "GET", url: "/api/v1/ai-jobs/aijob_unknown", headers: headers() });
+    expect(r.statusCode).toBe(404);
+    expect(r.json().error.code).toBe("JOB_NOT_FOUND");
+  });
+
+  it("API-006 ai-checks 配额超限 → 429 QUOTA_EXCEEDED 不调 LLM（INT-002）", async () => {
+    await createDefaultProvider();
+    await uploadDraft();
+    // PATCH 设 daily_request_limit=0 → 任何 request 超限
+    const created = (await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items[0];
+    const patched = await app.inject({
+      method: "PATCH", url: "/api/v1/ai-config/providers/deepseek",
+      payload: { schema_version: 1, revision: created.revision, daily_request_limit: 0 },
+      headers: headers()
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json().daily_request_limit).toBe(0);
+    let llmCalled = false;
+    llmFn = async () => { llmCalled = true; return { content: validAiJson, usage: { requests: 1, tokens: 1 } }; };
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: headers() });
+    expect(res.statusCode).toBe(429);
+    expect(res.json().error.code).toBe("QUOTA_EXCEEDED");
+    expect(llmCalled).toBe(false);
+  });
+
+  it("API-010 PATCH 设 provider 配额 daily_request_limit/daily_token_limit", async () => {
+    await createDefaultProvider();
+    const created = (await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items[0];
+    const res = await app.inject({
+      method: "PATCH", url: "/api/v1/ai-config/providers/deepseek",
+      payload: { schema_version: 1, revision: created.revision, daily_request_limit: 1000, daily_token_limit: 500000 },
+      headers: headers()
+    });
     expect(res.statusCode).toBe(200);
-    expect(res.json().items[0].id).toBe("AI_PARSE_FAILED");
-    expect(res.json().summary.yellow).toBe(1);
+    expect(res.json().daily_request_limit).toBe(1000);
+    expect(res.json().daily_token_limit).toBe(500000);
   });
 
   it("API-019 auth 401（无 token）", async () => {
