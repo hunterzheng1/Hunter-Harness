@@ -436,6 +436,66 @@ paths:
       responses:
         "200": { description: Tag removed from Skill }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages:
+    post:
+      operationId: uploadWorkflowPackage
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: Workflow package draft created or updated from uploaded ZIP }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      operationId: listWorkflowPackages
+      responses:
+        "200": { description: List of published workflow packages }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}:
+    get:
+      operationId: getWorkflowPackage
+      responses:
+        "200": { description: Published workflow package detail }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}/draft:
+    get:
+      operationId: getWorkflowPackageDraft
+      responses:
+        "200": { description: Unpublished workflow package draft with manifest and checks }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: discardWorkflowPackageDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Workflow package draft discarded }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}/draft/checks:
+    post:
+      operationId: runWorkflowPackageChecks
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Workflow package draft check results }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}/publish:
+    post:
+      operationId: publishWorkflowPackage
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Published workflow package version with artifacts }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}/draft/diff:
+    get:
+      operationId: diffWorkflowPackageDraft
+      responses:
+        "200": { description: Diff files between published and draft workflow package }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-packages/{key}/versions:
+    get:
+      operationId: listWorkflowPackageVersions
+      responses:
+        "200": { description: Published workflow package version sequence }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/workflows:
     get:
       operationId: listWorkflows

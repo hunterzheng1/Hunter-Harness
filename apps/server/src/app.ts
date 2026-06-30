@@ -4,6 +4,7 @@ import {
   canonicalJson,
   fileOperationSchema,
   publishSkillRequestSchema,
+  publishWorkflowPackageRequestSchema,
   registryAgentSchema,
   registrySlugSchema,
   registryWorkflowMutationSchema,
@@ -1321,6 +1322,114 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   });
 
   // ---- AI 配置 + AI 检查（§12.9 / §6.2）----
+
+  // ---- Workflow package 路由（T13；独立 /workflow-packages 端点，与清单 /workflows 并存；上传走 multipart ZIP）----
+  app.post("/api/v1/workflow-packages", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const collected: Array<{ path: string; buffer: Buffer }> = [];
+    for await (const part of request.parts()) {
+      if (part.type !== "file") continue;
+      collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
+    }
+    const files = resolveUploadFiles(collected);
+    const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const draft = await registry.uploadWorkflowPackage({ files, actorId: actor.actorId });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null,
+        action: draft.revision === 1 ? "workflow.package.draft.created" : "workflow.package.draft.updated",
+        targetId: draft.key, requestId,
+        details: { key: draft.key, draft_version: draft.draftVersion, revision: draft.revision }
+      });
+      return { statusCode: 201, body: draft };
+    }, bodyHash);
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/workflow-packages", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const items = registry.listWorkflowPackages();
+    reply.header("X-Request-Id", requestId);
+    return { items, request_id: requestId };
+  });
+
+  app.get("/api/v1/workflow-packages/:key", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const pkg = registry.getWorkflowPackage(key);
+    reply.header("X-Request-Id", requestId);
+    return { ...pkg, request_id: requestId };
+  });
+
+  app.get("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const draft = registry.getWorkflowPackageDraft(key);
+    reply.header("X-Request-Id", requestId);
+    return { ...draft, request_id: requestId };
+  });
+
+  app.delete("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const body = z.object({ revision: z.number().int().positive() }).strict().parse(request.body);
+      await registry.discardWorkflowPackageDraft(key, body.revision);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.discarded",
+        targetId: key, requestId, details: { key }
+      });
+      return { statusCode: 200, body: { key, discarded: true } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/workflow-packages/:key/draft/checks", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const checks = await registry.runWorkflowPackageChecks({ key, checkedAt: new Date().toISOString() });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.checked",
+        targetId: key, requestId, details: { key, red: checks.summary.red }
+      });
+      return { statusCode: 200, body: checks };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/workflow-packages/:key/publish", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const body = publishWorkflowPackageRequestSchema.parse(request.body);
+      const version = await registry.publishWorkflowPackage(key, {
+        version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.package.published",
+        targetId: key, requestId, details: { key, version: version.version }
+      });
+      return { statusCode: 200, body: version };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/workflow-packages/:key/draft/diff", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const diff = registry.diffWorkflowPackageDraft(key);
+    reply.header("X-Request-Id", requestId);
+    return { items: diff, request_id: requestId };
+  });
+
+  app.get("/api/v1/workflow-packages/:key/versions", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { key } = request.params as { key: string };
+    const versions = registry.listWorkflowPackageVersions(key);
+    reply.header("X-Request-Id", requestId);
+    return { items: versions, request_id: requestId };
+  });
 
   app.get("/api/v1/ai-config/providers", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);

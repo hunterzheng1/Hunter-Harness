@@ -13,7 +13,10 @@ import type {
   SkillCheckResult,
   SkillDiffFile,
   SkillIr,
-  FixPlan
+  FixPlan,
+  WorkflowPackage,
+  WorkflowPackageDraftState,
+  WorkflowPackageVersion
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills, workflowOrder } from "./catalog";
@@ -618,6 +621,17 @@ export class MockApiClient implements HunterApi {
   }
 
   async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
+
+  // workflow package：demo 模式禁写（mutation 走 demoReadOnly），get 返回空/404（无 mock 数据；真实模式调 /workflow-packages）。
+  async uploadWorkflowPackage(): Promise<WorkflowPackageDraftState> { return demoReadOnly(); }
+  async getWorkflowPackageDraft(): Promise<WorkflowPackageDraftState> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
+  async discardWorkflowPackageDraft(): Promise<{ key: string; discarded: boolean }> { return demoReadOnly(); }
+  async runWorkflowPackageChecks(): Promise<SkillCheckResult> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
+  async publishWorkflowPackage(): Promise<WorkflowPackageVersion> { return demoReadOnly(); }
+  async diffWorkflowPackageDraft(): Promise<SkillDiffFile[]> { return []; }
+  async listWorkflowPackages(): Promise<WorkflowPackage[]> { return []; }
+  async getWorkflowPackage(): Promise<WorkflowPackage> { throw new ApiClientError(404, "PACKAGE_NOT_FOUND", "Demo workflow package not found."); }
+  async listWorkflowPackageVersions(): Promise<WorkflowPackageVersion[]> { return []; }
 
   async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {
     return delay({ items: clone(MOCK_AI_PROVIDERS), default_provider: "deepseek" });

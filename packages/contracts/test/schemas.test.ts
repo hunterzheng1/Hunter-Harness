@@ -38,7 +38,12 @@ import {
   skillDiffFileSchema,
   skillIrSchema,
   skillUsageExampleSchema,
-  sourceFileSchema
+  sourceFileSchema,
+  publishWorkflowPackageRequestSchema,
+  workflowPackageDraftStateSchema,
+  workflowPackageManifestSchema,
+  workflowPackageSchema,
+  workflowPackageVersionSchema
 } from "../src/index.js";
 
 describe("shared contracts", () => {
@@ -565,5 +570,93 @@ describe("cursor adapter + managed-block block_id (T1)", () => {
     if (result.success && result.data.operation === "modify") {
       expect(result.data.block_id).toBe("harness-skill-z");
     }
+  });
+});
+
+describe("workflow package schemas", () => {
+  const validManifest = {
+    key: "release-flow",
+    name: "Release Flow",
+    description: "End-to-end release workflow",
+    profile: "general",
+    skills: [{ slug: "harness-sync", ref: "1.0.0" }],
+    agents: [{ path: "agents/release.md", ref: "main" }],
+    protocols: [{ path: "protocols/review.md", ref: "main" }],
+    templates: [{ path: "templates/report.md", ref: "main" }],
+    execution_order: ["harness-sync"],
+    strategy: "sequential"
+  };
+
+  it("manifest parses skills/agents/protocols/templates refs + execution_order + strategy", () => {
+    const m = workflowPackageManifestSchema.parse(validManifest);
+    expect(m.strategy).toBe("sequential");
+    expect(m.execution_order).toEqual(["harness-sync"]);
+    expect(m.skills[0].slug).toBe("harness-sync");
+    expect(m.agents[0].path).toBe("agents/release.md");
+  });
+
+  it("manifest rejects invalid strategy", () => {
+    expect(() => workflowPackageManifestSchema.parse({ ...validManifest, strategy: "teleport" })).toThrow();
+  });
+
+  it("manifest rejects extra fields (strict)", () => {
+    expect(() => workflowPackageManifestSchema.parse({ ...validManifest, extra: 1 })).toThrow();
+  });
+
+  it("draftState requires key/manifest/sourceFiles/revision and accepts nullable checks", () => {
+    const d = workflowPackageDraftStateSchema.parse({
+      key: "release-flow",
+      manifest: validManifest,
+      sourceFiles: [{ path: "workflow.yaml", content: "key: release-flow" }],
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z"
+    });
+    expect(d.checks).toBeNull();
+    expect(d.revision).toBe(1);
+  });
+
+  it("version carries manifest + artifacts + nullable changeNote", () => {
+    const v = workflowPackageVersionSchema.parse({
+      package_key: "release-flow",
+      version: "1.0.0",
+      manifest: validManifest,
+      artifacts: [{
+        artifact_id: "wfa_1",
+        package_key: "release-flow",
+        version: "1.0.0",
+        content_sha256: "sha256:" + "a".repeat(64),
+        size_bytes: 10,
+        created_at: "2026-06-30T00:00:00Z"
+      }],
+      sourceFiles: [],
+      changeNote: null,
+      created_at: "2026-06-30T00:00:00Z"
+    });
+    expect(v.artifacts).toHaveLength(1);
+    expect(v.changeNote).toBeNull();
+  });
+
+  it("package has package_id/key/manifest/latestVersion/revision and rejects extras", () => {
+    const p = workflowPackageSchema.parse({
+      package_id: "wfp_1",
+      key: "release-flow",
+      manifest: validManifest,
+      latestVersion: "1.0.0",
+      revision: 1,
+      created_at: "2026-06-30T00:00:00Z",
+      updated_at: "2026-06-30T00:00:00Z"
+    });
+    expect(p.latestVersion).toBe("1.0.0");
+    expect(() => workflowPackageSchema.parse({ ...p, extra: 1 })).toThrow();
+  });
+
+  it("publishWorkflowPackageRequest requires version and accepts optional releaseNote", () => {
+    expect(() => publishWorkflowPackageRequestSchema.parse({})).toThrow();
+    expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0" }).releaseNote).toBeUndefined();
+    expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0", releaseNote: "init" }).releaseNote).toBe("init");
   });
 });

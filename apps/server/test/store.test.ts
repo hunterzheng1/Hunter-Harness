@@ -124,7 +124,7 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
       })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
     });
 
-    it("rejects workflow package with WORKFLOW_PACKAGE_NOT_SUPPORTED (UT-038)", async () => {
+    it("redirects workflow package to workflow center (UT-020, workflow.yaml + skills/)", async () => {
       const store = newStore();
       await expect(store.uploadDraft({
         files: [
@@ -132,7 +132,18 @@ describe("RegistryStore skill-center (tasks 8-13)", () => {
           { path: "skills/foo.md", content: "x" }
         ],
         actorId: "owner"
-      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_NOT_SUPPORTED" });
+      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT", details: { redirect: "workflow-packages" } });
+    });
+
+    it("redirects workflow package with agents/ dir (UT-022)", async () => {
+      const store = newStore();
+      await expect(store.uploadDraft({
+        files: [
+          { path: "workflow.yaml", content: "name: w" },
+          { path: "agents/a.md", content: "x" }
+        ],
+        actorId: "owner"
+      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT" });
     });
   });
 
@@ -692,5 +703,67 @@ describe("multi-agent publish + createProposal gate (skill-center-multi-agent-pu
     let caught: unknown = null;
     try { store.createProposal({ ir: irCursorOnly, actorId: "owner", agent: "claude-code" }); } catch (e) { caught = e; }
     expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
+  });
+});
+
+describe("RegistryStore workflow package boundary + persistence (UT-021, UT-030~031)", () => {
+  const wpYaml = `key: release-flow
+name: Release Flow
+description: End-to-end release workflow
+profile: general
+skills:
+  - slug: harness-sync
+    ref: "1.0.0"
+agents:
+  - path: agents/release.md
+    ref: main
+protocols: []
+templates: []
+execution_order:
+  - harness-sync
+strategy: sequential
+`;
+  const wpFiles: SourceFile[] = [
+    { path: "workflow.yaml", content: wpYaml },
+    { path: "agents/release.md", content: "# Release agent" }
+  ];
+
+  it("uploadDraft single skill goes to skill draft, not redirect (UT-021)", async () => {
+    const store = newStore();
+    const draft = await store.uploadDraft({ files, actorId: "owner" });
+    expect(draft.slug).toBe("harness-x");
+  });
+
+  it("old snapshot without workflowPackages migrates to empty (UT-030)", async () => {
+    const p = new MemoryPersistence();
+    p.snapshot = {
+      compilerVersion: "1.0.0",
+      skills: [], proposals: [], tags: [], workflows: [], drafts: []
+    };
+    const store = newStore(p);
+    await store.initialize();
+    expect(store.listWorkflowPackages()).toEqual([]);
+  });
+
+  it("persist serializes workflowPackages + drafts (UT-031)", async () => {
+    const p = new MemoryPersistence();
+    const store = newStore(p);
+    await store.uploadWorkflowPackage({ files: wpFiles, actorId: "owner" });
+    await store.publishWorkflowPackage("release-flow", { version: "1.0.0", actorId: "owner" });
+    const snap = p.snapshot as { workflowPackages: unknown[]; workflowPackageDrafts: unknown[] };
+    expect(Array.isArray(snap.workflowPackages)).toBe(true);
+    expect(snap.workflowPackages.length).toBe(1);
+  });
+
+  it("workflow package survives reload round-trip", async () => {
+    const p = new MemoryPersistence();
+    let store = newStore(p);
+    await store.uploadWorkflowPackage({ files: wpFiles, actorId: "owner" });
+    await store.publishWorkflowPackage("release-flow", { version: "1.0.0", actorId: "owner" });
+    store = newStore(p);
+    await store.initialize();
+    const pkg = store.getWorkflowPackage("release-flow");
+    expect(pkg?.latestVersion).toBe("1.0.0");
+    expect(store.listWorkflowPackageVersions("release-flow").map((v) => v.version)).toEqual(["1.0.0"]);
   });
 });
