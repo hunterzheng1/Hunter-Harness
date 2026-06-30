@@ -6,6 +6,7 @@ export * from "./errors.js";
 export * from "./file-policy.js";
 export * from "./fix.js";
 export * from "./knowledge.js";
+export * from "./mcp-contract.js";
 export * from "./project.js";
 export * from "./protocol.js";
 export * from "./dashboard.js";

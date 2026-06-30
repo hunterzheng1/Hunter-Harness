@@ -4,6 +4,7 @@ import { renderClaudeCodeSkill } from "./claude-code.js";
 import { renderCodexSkill } from "./codex.js";
 import { renderCursorSkill } from "./cursor.js";
 import { renderGenericSkill } from "./generic.js";
+import { renderMcpContract } from "./mcp.js";
 
 export interface AdapterDescriptor {
   id: RegistryAgent;
@@ -14,22 +15,10 @@ export interface AdapterDescriptor {
   installable: boolean;
 }
 
-function mcpPlaceholder(skill: SkillIr, sourceIrHash: string): string {
-  return [
-    "# Adapter contract placeholder",
-    "",
-    "Skill: " + skill.name,
-    "Adapter: mcp",
-    "Source IR: " + sourceIrHash,
-    "",
-    "This output reserves the validated adapter contract. It is not an executable skill."
-  ].join("\n") + "\n";
-}
-
 /**
  * Adapter 注册表——compileSkill/buildArtifacts/checker 的单一真相源。
  * 每项声明 {id, render, targetPath, installMode, blockId?, installable}；
- * installable=false（mcp）= placeholder，server adapterPreview 抛 422 ADAPTER_NOT_IMPLEMENTED。
+ * installable=false（mcp）= contract-only（产出 MCP tool 契约 JSON），server adapterPreview 抛 422 ADAPTER_NOT_IMPLEMENTED。
  */
 export const ADAPTERS: Record<RegistryAgent, AdapterDescriptor> = {
   "claude-code": {
@@ -63,8 +52,8 @@ export const ADAPTERS: Record<RegistryAgent, AdapterDescriptor> = {
   },
   "mcp": {
     id: "mcp",
-    render: (skill, sourceIrHash) => mcpPlaceholder(skill, sourceIrHash),
-    targetPath: (skill) => `.harness/generated/mcp/${skill.name}.md`,
+    render: renderMcpContract,
+    targetPath: (skill) => `.harness/generated/mcp/${skill.name}.json`,
     installMode: "file",
     installable: false
   }

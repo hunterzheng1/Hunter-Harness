@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SkillIr, SourceFile } from "@hunter-harness/contracts";
-import { checkSkill } from "../src/index.js";
+import { ADAPTERS, checkSkill } from "../src/index.js";
 
 const baseIr: SkillIr = {
   name: "harness-x",
@@ -181,5 +181,10 @@ describe("checkSkill", () => {
     const agent = r.items.find((i) => i.id === "AGENT_TARGET");
     expect(agent?.status).toBe("green");
     expect(agent?.message).toContain("mcp→.harness/generated/mcp");
+  });
+
+  it("mcp target path is .json (UT-020)", () => {
+    expect(ADAPTERS.mcp.targetPath(baseIr)).toBe(".harness/generated/mcp/harness-x.json");
+    expect(ADAPTERS.mcp.targetPath(baseIr).endsWith(".json")).toBe(true);
   });
 });

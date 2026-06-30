@@ -22,6 +22,7 @@ import {
   fixPlanSchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
+  mcpToolContractSchema,
   modifyOperationSchema,
   projectConfigSchema,
   publishSkillRequestSchema,
@@ -697,5 +698,42 @@ describe("workflow package schemas", () => {
     expect(() => publishWorkflowPackageRequestSchema.parse({})).toThrow();
     expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0" }).releaseNote).toBeUndefined();
     expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0", releaseNote: "init" }).releaseNote).toBe("init");
+  });
+});
+
+describe("mcp tool contract schema (UT-010~012)", () => {
+  const validContract = {
+    tool_name: "harness-foo",
+    description: "foo tool",
+    input_schema: {
+      type: "object",
+      properties: { doc: { type: "string" } },
+      required: ["doc"]
+    }
+  };
+
+  it("round-trips a valid mcp tool contract (UT-010)", () => {
+    const parsed = mcpToolContractSchema.parse(validContract);
+    expect(parsed.tool_name).toBe("harness-foo");
+    expect(parsed.description).toBe("foo tool");
+    expect(parsed.input_schema).toEqual(validContract.input_schema);
+  });
+
+  it("rejects contract missing tool_name (UT-011)", () => {
+    expect(mcpToolContractSchema.safeParse({
+      description: "foo tool",
+      input_schema: { type: "object", properties: {}, required: [] }
+    }).success).toBe(false);
+  });
+
+  it("rejects contract missing input_schema (UT-012)", () => {
+    expect(mcpToolContractSchema.safeParse({
+      tool_name: "harness-foo",
+      description: "foo tool"
+    }).success).toBe(false);
+  });
+
+  it("rejects unknown fields (strict)", () => {
+    expect(mcpToolContractSchema.safeParse({ ...validContract, extra: 1 }).success).toBe(false);
   });
 });
