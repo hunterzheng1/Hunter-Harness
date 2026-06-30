@@ -11,7 +11,8 @@ import {
   normalizeSkillIr,
   renderCodexSkill,
   renderCursorSkill,
-  renderGenericSkill
+  renderGenericSkill,
+  renderMcpContract
 } from "../src/index.js";
 
 const baseSkill: SkillIr = {
@@ -219,10 +220,28 @@ describe("adapter registry + real renders (T3-T7)", () => {
     expect(compiled.content).toContain("adapter: generic");
   });
 
-  it("compileSkill mcp -> placeholder stub (installable=false)", () => {
+  it("compileSkill mcp -> contract JSON (installable=false) (INT-001)", () => {
     const compiled = compileSkill(baseSkill, { profile: "java", adapter: "mcp", compilerVersion: "1.0.0" });
-    expect(compiled.path).toBe(".harness/generated/mcp/harness-review.md");
-    expect(compiled.content).toContain("placeholder");
+    expect(compiled.path).toBe(".harness/generated/mcp/harness-review.json");
+    expect(compiled.adapter).toBe("mcp");
+    const parsed = JSON.parse(compiled.content) as {
+      tool_name: string;
+      description: string;
+      input_schema: { type: string; properties: Record<string, unknown>; required: string[] };
+      source_ir_hash: string;
+      compiler_version: string;
+      adapter: string;
+    };
+    expect(parsed.tool_name).toBe("harness-review");
+    expect(parsed.description).toBe(baseSkill.description);
+    expect(parsed.input_schema).toEqual({
+      type: "object",
+      properties: { change_ref: { type: "string" } },
+      required: ["change_ref"]
+    });
+    expect(parsed.source_ir_hash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(parsed.compiler_version).toBe("1.0.0");
+    expect(parsed.adapter).toBe("mcp");
   });
 
   it("compileSkill is deterministic across all adapters", () => {
@@ -239,5 +258,45 @@ describe("adapter registry + real renders (T3-T7)", () => {
     const noInstr: SkillIr = { ...baseSkill, instructions: undefined };
     const out = renderCodexSkill(noInstr, "sha256:abc", "1.0.0");
     expect(out).toContain("## Instructions");
+  });
+});
+
+describe("mcp render (UT-001~005)", () => {
+  it("derives tool_name from skill.name (UT-001)", () => {
+    const out = renderMcpContract(baseSkill, "sha256:abc", "1.0.0");
+    const parsed = JSON.parse(out) as { tool_name: string };
+    expect(parsed.tool_name).toBe(baseSkill.name);
+  });
+
+  it("derives description from skill.description (UT-002)", () => {
+    const out = renderMcpContract(baseSkill, "sha256:abc", "1.0.0");
+    const parsed = JSON.parse(out) as { description: string };
+    expect(parsed.description).toBe(baseSkill.description);
+  });
+
+  it("derives input_schema from skill.inputs (UT-003)", () => {
+    const skill: SkillIr = { ...baseSkill, inputs: ["doc", "path"] };
+    const out = renderMcpContract(skill, "sha256:abc", "1.0.0");
+    const parsed = JSON.parse(out) as { input_schema: { type: string; properties: Record<string, unknown>; required: string[] } };
+    expect(parsed.input_schema).toEqual({
+      type: "object",
+      properties: { doc: { type: "string" }, path: { type: "string" } },
+      required: ["doc", "path"]
+    });
+  });
+
+  it("includes harness metadata (source_ir_hash/compiler_version/adapter) (UT-004)", () => {
+    const out = renderMcpContract(baseSkill, "sha256:abc", "1.0.0");
+    const parsed = JSON.parse(out) as { source_ir_hash: string; compiler_version: string; adapter: string };
+    expect(parsed.source_ir_hash).toBe("sha256:abc");
+    expect(parsed.compiler_version).toBe("1.0.0");
+    expect(parsed.adapter).toBe("mcp");
+  });
+
+  it("handles empty inputs (UT-005)", () => {
+    const skill: SkillIr = { ...baseSkill, inputs: [] };
+    const out = renderMcpContract(skill, "sha256:abc", "1.0.0");
+    const parsed = JSON.parse(out) as { input_schema: { type: string; properties: Record<string, unknown>; required: string[] } };
+    expect(parsed.input_schema).toEqual({ type: "object", properties: {}, required: [] });
   });
 });

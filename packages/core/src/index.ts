@@ -29,6 +29,7 @@ export * from "./skill-ir/adapters/index.js";
 export * from "./skill-ir/adapters/codex.js";
 export * from "./skill-ir/adapters/cursor.js";
 export * from "./skill-ir/adapters/generic.js";
+export * from "./skill-ir/adapters/mcp.js";
 export * from "./skill-ir/normalize.js";
 export * from "./skill-ir/overlay.js";
 export * from "./skill-ir/extract.js";

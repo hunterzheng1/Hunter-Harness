@@ -45,7 +45,7 @@ describe("bootstrap bundle cursor overlay (T16)", () => {
     }
   });
 
-  it("every seed compiles all 5 adapters (mcp placeholder, others real) (INT-001 smoke)", async () => {
+  it("every seed compiles all 5 adapters (mcp contract JSON, others real) (INT-001 smoke)", async () => {
     const bundle = await loadBootstrapBundle(bootstrapRoot);
     const agents = ["claude-code", "codex", "cursor", "generic", "mcp"] as const;
     for (const ir of bundle.skills) {
@@ -58,7 +58,10 @@ describe("bootstrap bundle cursor overlay (T16)", () => {
         });
         expect(compiled.adapter).toBe(agent);
         if (agent === "mcp") {
-          expect(compiled.content).toContain("Adapter contract placeholder");
+          expect(compiled.path).toBe(`.harness/generated/mcp/${ir.name}.json`);
+          const parsed = JSON.parse(compiled.content) as { tool_name: string; adapter: string };
+          expect(parsed.tool_name).toBe(ir.name);
+          expect(parsed.adapter).toBe("mcp");
         } else {
           expect(compiled.content).not.toContain("Adapter contract placeholder");
         }
