@@ -15,6 +15,7 @@ import {
   type RegistryTag,
   type RegistryWorkflow,
   type RegistryWorkflowMutation,
+  type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
   type SkillIr
@@ -136,7 +137,7 @@ export interface HunterApi {
   listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
   listSkillArtifacts?(): Promise<RegistryArtifact[]>;
   getSkill?(slug: string): Promise<RegistrySkillDetail>;
-  listSkillVersions?(slug: string): Promise<RegistrySkillVersion[]>;
+  listSkillVersions?(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]>;
   getSkillAdapterPreview?(slug: string, agent: RegistryAgent): Promise<{ path: string; content: string; sourceIrHash: string; compilerVersion: string; adapter: string }>;
   listSkillProposals?(status?: string): Promise<RegistrySkillProposal[]>;
   createSkillProposal?(ir: SkillIr, agent: RegistryAgent): Promise<RegistrySkillProposal>;
@@ -153,12 +154,13 @@ export interface HunterApi {
   deleteWorkflow?(workflowId: string, revision: number): Promise<void>;
   getProjectWorkflowBinding?(projectId: string): Promise<RegistryProjectWorkflowBinding | null>;
   bindProjectWorkflow?(projectId: string, workflowId: string, revision: number | null): Promise<RegistryProjectWorkflowBinding>;
-  uploadSkillDraft?(form: FormData): Promise<DraftState>;
-  getSkillDraft?(slug: string): Promise<DraftState>;
-  discardSkillDraft?(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }>;
-  runSkillDraftChecks?(slug: string): Promise<SkillCheckResult>;
-  publishSkillDraft?(slug: string, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
-  diffSkillDraft?(slug: string): Promise<SkillDiffFile[]>;
+  uploadSkillDraft?(form: FormData, agent: RegistryAgent): Promise<DraftState>;
+  getSkillDraft?(slug: string, agent: RegistryAgent): Promise<DraftState>;
+  discardSkillDraft?(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }>;
+  runSkillDraftChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
+  publishSkillDraft?(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
+  diffSkillDraft?(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]>;
+  setDefaultAgent?(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail>;
   deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
   listAiProviders?(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }>;
   createAiProvider?(input: {
@@ -171,12 +173,12 @@ export interface HunterApi {
   deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
   testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
   getAiUsage?(): Promise<{ requests: number; tokens: number }>;
-  runSkillAiChecks?(slug: string): Promise<SkillCheckResult>;
-  previewSkillFix?(slug: string, checkIds: string[] | null): Promise<FixPlan>;
-  applySkillFix?(slug: string, checkIds: string[] | null): Promise<DraftState>;
-  generateReleaseNote?(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }>;
-  fetchFixSuggestions?(slug: string, checkIds: string[] | null): Promise<FixPlan>;
-  applyFixSuggestion?(slug: string, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState>;
+  runSkillAiChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
+  previewSkillFix?(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan>;
+  applySkillFix?(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<DraftState>;
+  generateReleaseNote?(slug: string, agent: RegistryAgent): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }>;
+  fetchFixSuggestions?(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan>;
+  applyFixSuggestion?(slug: string, agent: RegistryAgent, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState>;
 }
 
 export class ApiClientError extends Error {
@@ -454,10 +456,10 @@ export class HttpHunterApi implements HunterApi {
     return this.request("GET", "/api/v1/skills/" + encodeURIComponent(slug));
   }
 
-  async listSkillVersions(slug: string): Promise<RegistrySkillVersion[]> {
-    const result = await this.request<{ items: RegistrySkillVersion[] }>(
-      "GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/versions"
-    );
+  async listSkillVersions(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]> {
+    const base = "/api/v1/skills/" + encodeURIComponent(slug) + "/versions";
+    const path = agent === undefined ? base : base + "?agent=" + encodeURIComponent(agent);
+    const result = await this.request<{ items: RegistrySkillVersion[] }>("GET", path);
     return result.items;
   }
 
@@ -603,29 +605,38 @@ export class HttpHunterApi implements HunterApi {
     return payload;
   }
 
-  async uploadSkillDraft(form: FormData): Promise<DraftState> {
-    return this.multipartRequest<DraftState>("/api/v1/skills/draft", form);
+  private draftPath(slug: string, agent: RegistryAgent, suffix = ""): string {
+    return "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/" + encodeURIComponent(agent) + suffix;
   }
 
-  async getSkillDraft(slug: string): Promise<DraftState> {
-    return this.request("GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft");
+  async uploadSkillDraft(form: FormData, agent: RegistryAgent): Promise<DraftState> {
+    return this.multipartRequest<DraftState>("/api/v1/skills/draft?agent=" + encodeURIComponent(agent), form);
   }
 
-  async discardSkillDraft(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }> {
-    return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft", { revision });
+  async getSkillDraft(slug: string, agent: RegistryAgent): Promise<DraftState> {
+    return this.request("GET", this.draftPath(slug, agent));
   }
 
-  async runSkillDraftChecks(slug: string): Promise<SkillCheckResult> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/checks", {});
+  async discardSkillDraft(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }> {
+    return this.request("DELETE", this.draftPath(slug, agent), { revision });
   }
 
-  async publishSkillDraft(slug: string, req: PublishSkillRequest): Promise<RegistrySkillVersion> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/publish", req);
+  async runSkillDraftChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
+    return this.request("POST", this.draftPath(slug, agent, "/checks"), {});
   }
 
-  async diffSkillDraft(slug: string): Promise<SkillDiffFile[]> {
-    const result = await this.request<{ items: SkillDiffFile[] }>("GET", "/api/v1/skills/" + encodeURIComponent(slug) + "/diff");
+  async publishSkillDraft(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion> {
+    return this.request("POST", this.draftPath(slug, agent, "/publish"), req);
+  }
+
+  async diffSkillDraft(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]> {
+    const result = await this.request<{ items: SkillDiffFile[] }>("GET", this.draftPath(slug, agent, "/diff"));
     return result.items;
+  }
+
+  async setDefaultAgent(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail> {
+    const body: SetDefaultAgentRequest = { defaultAgent: agent, revision };
+    return this.request("PATCH", "/api/v1/skills/" + encodeURIComponent(slug) + "/default-agent", body);
   }
 
   async deleteSkill(slug: string): Promise<{ slug: string; deleted: boolean }> {
@@ -655,23 +666,23 @@ export class HttpHunterApi implements HunterApi {
   async getAiUsage(): Promise<{ requests: number; tokens: number }> {
     return this.request("GET", "/api/v1/ai-config/usage");
   }
-  async runSkillAiChecks(slug: string): Promise<SkillCheckResult> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/ai-checks", {});
+  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
+    return this.request("POST", this.draftPath(slug, agent, "/ai-checks"), {});
   }
-  async previewSkillFix(slug: string, checkIds: string[] | null): Promise<FixPlan> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/fix-preview", { checkIds });
+  async previewSkillFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
+    return this.request("POST", this.draftPath(slug, agent, "/fix-preview"), { checkIds });
   }
-  async applySkillFix(slug: string, checkIds: string[] | null): Promise<DraftState> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/apply-fix", { checkIds });
+  async applySkillFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<DraftState> {
+    return this.request("POST", this.draftPath(slug, agent, "/apply-fix"), { checkIds });
   }
-  async generateReleaseNote(slug: string): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/release-note:generate", {});
+  async generateReleaseNote(slug: string, agent: RegistryAgent): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }> {
+    return this.request("POST", this.draftPath(slug, agent, "/release-note:generate"), {});
   }
-  async fetchFixSuggestions(slug: string, checkIds: string[] | null): Promise<FixPlan> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/fix-suggestions", { checkIds });
+  async fetchFixSuggestions(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
+    return this.request("POST", this.draftPath(slug, agent, "/fix-suggestions"), { checkIds });
   }
-  async applyFixSuggestion(slug: string, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState> {
-    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/draft/apply-fix-suggestion", input);
+  async applyFixSuggestion(slug: string, agent: RegistryAgent, input: { checkId: string; suggestedContent: string; appliesTo: string | null }): Promise<DraftState> {
+    return this.request("POST", this.draftPath(slug, agent, "/apply-fix-suggestion"), input);
   }
 }
 

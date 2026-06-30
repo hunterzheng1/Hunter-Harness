@@ -90,6 +90,7 @@ const runtimeChecks: SkillCheckResult = {
 
 const draft: DraftState = {
   slug: "wiring-skill",
+  agent: "claude-code",
   sourceFiles: [{ path: "SKILL.md", content: "# Wiring Skill\n\nDraft source." }],
   ir,
   examples: skill.examples,
@@ -114,6 +115,7 @@ const versions: RegistrySkillVersion[] = [
   {
     skill_slug: "wiring-skill",
     version: "1.2.0",
+    agent: "claude-code",
     ir,
     artifacts: [],
     source_proposal_id: "skp_w1",
@@ -127,6 +129,7 @@ const versions: RegistrySkillVersion[] = [
 const publishedVersion: RegistrySkillVersion = {
   skill_slug: "wiring-skill",
   version: "1.3.0",
+  agent: "claude-code",
   ir,
   artifacts: [],
   source_proposal_id: "skp_w2",
@@ -185,7 +188,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     expect(screen.queryByText("Runtime scan")).not.toBeInTheDocument();
     const checkButton = screen.getByRole("button", { name: /^检查$|^check$/i });
     fireEvent.click(checkButton);
-    await waitFor(() => expect(client.runSkillDraftChecks).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(client.runSkillDraftChecks).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     // 检查结果项渲染（含运行后新增的 Runtime scan）
     expect(await screen.findByText("Runtime scan")).toBeInTheDocument();
     expect(await screen.findByText("Entry check")).toBeInTheDocument();
@@ -198,7 +201,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     const diffButton = screen.getByRole("button", { name: /版本差异|version diff/i });
     fireEvent.click(diffButton);
-    await waitFor(() => expect(client.diffSkillDraft).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(client.diffSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     // 三个差异文件路径均渲染（含 publishedContent=null 的 added 与 draftContent=null 的 removed）
     expect(await screen.findByText("new-file.md")).toBeInTheDocument();
     expect(await screen.findByText("gone.md")).toBeInTheDocument();
@@ -210,7 +213,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     await screen.findByRole("heading", { name: "wiring-skill" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /版本差异|version diff/i }));
-    await waitFor(() => expect(client.diffSkillDraft).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(client.diffSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     expect(await screen.findByText(/无差异|no difference/i)).toBeInTheDocument();
   });
 
@@ -224,7 +227,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     fireEvent.change(within(dialog).getByLabelText(/新版本号|new version/i), { target: { value: "1.3.0" } });
     fireEvent.change(within(dialog).getByLabelText(/变更信息|change note/i), { target: { value: "release text" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /确认发布|confirm publish/i }));
-    await waitFor(() => expect(client.publishSkillDraft).toHaveBeenCalledWith("wiring-skill", { version: "1.3.0", releaseNote: "release text" }));
+    await waitFor(() => expect(client.publishSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code", { version: "1.3.0", releaseNote: "release text" }));
     // 发布后刷新版本记录
     await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledTimes(2));
   });
@@ -234,7 +237,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     render(<SkillDetail api={client} skillId="wiring-skill" />);
     await screen.findByRole("heading", { name: "wiring-skill" });
     fireEvent.click(screen.getByRole("tab", { name: /版本记录|version history/i }));
-    await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(client.listSkillVersions).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     expect(await screen.findByText("First publish")).toBeInTheDocument();
     expect(screen.getAllByText(/1\.2\.0/).length).toBeGreaterThan(0);
     expect(screen.getByText("SKILL.md")).toBeInTheDocument();
@@ -261,7 +264,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     await screen.findByRole("heading", { name: "wiring-skill" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
-    await waitFor(() => expect(client.runSkillDraftChecks).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(client.runSkillDraftChecks).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
   });
 
@@ -275,7 +278,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     fireEvent.click(await screen.findByRole("button", { name: /丢弃草稿|discard draft/i }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /确认丢弃|confirm discard/i }));
-    await waitFor(() => expect(discardSkillDraft).toHaveBeenCalledWith("wiring-skill", draft.revision));
+    await waitFor(() => expect(discardSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code", draft.revision));
     await waitFor(() => expect(listSkillVersions).toHaveBeenCalledTimes(2));
   });
 
@@ -303,7 +306,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText(/新版本号|new version/i), { target: { value: "1.3.0" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /确认发布|confirm publish/i }));
-    await waitFor(() => expect(publishSkillDraft).toHaveBeenCalledWith("wiring-skill", expect.objectContaining({ version: "1.3.0" })));
+    await waitFor(() => expect(publishSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code", expect.objectContaining({ version: "1.3.0" })));
     const openDialog = await screen.findByRole("dialog");
     expect(within(openDialog).getByLabelText(/新版本号|new version/i)).toHaveValue("1.3.0");
   });
@@ -323,7 +326,7 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     await screen.findByRole("heading", { name: "wiring-skill" });
     fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
     fireEvent.click(screen.getByRole("button", { name: /版本差异|version diff/i }));
-    await waitFor(() => expect(diffSkillDraft).toHaveBeenCalledWith("wiring-skill"));
+    await waitFor(() => expect(diffSkillDraft).toHaveBeenCalledWith("wiring-skill", "claude-code"));
     expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
   });
 
@@ -337,5 +340,29 @@ describe("skill-center 前端接线端到端（mock API）", () => {
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: /确认发布|confirm publish/i }));
     await waitFor(() => expect(publishSkillDraft).toHaveBeenCalled());
     expect(await screen.findByText(/需要认证|authentication required/i)).toBeInTheDocument();
+  });
+
+  it("AgentContextSelector 渲染 agents、切换触发 getSkillDraft(agent)、set as default 调 setDefaultAgent（T27）", async () => {
+    const multiSkill: RegistrySkillDetail = {
+      ...skill,
+      agents: [
+        { agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/wiring-skill", latestVersion: "1.2.0", draftVersion: null, sourcePackagePath: null },
+        { agent: "codex", enabled: true, isDefault: false, installTarget: ".harness/generated/codex/wiring-skill", latestVersion: null, draftVersion: null, sourcePackagePath: null }
+      ]
+    };
+    const setDefaultAgent = vi.fn(async () => multiSkill);
+    const getSkillDraft = vi.fn(async () => draft);
+    const listSkillVersions = vi.fn(async () => versions);
+    const client = api({ getSkill: vi.fn(async () => multiSkill), setDefaultAgent, getSkillDraft, listSkillVersions });
+    render(<SkillDetail api={client} skillId="wiring-skill" />);
+    await screen.findByRole("heading", { name: "wiring-skill" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    const agentSelect = screen.getByRole("combobox", { name: /当前 Agent|Current Agent/i });
+    expect(agentSelect.querySelectorAll("option")).toHaveLength(2);
+    fireEvent.change(agentSelect, { target: { value: "codex" } });
+    await waitFor(() => expect(getSkillDraft).toHaveBeenCalledWith("wiring-skill", "codex"));
+    const setDefaultBtn = await screen.findByRole("button", { name: /设为默认.*Codex|Set default.*Codex/i });
+    fireEvent.click(setDefaultBtn);
+    await waitFor(() => expect(setDefaultAgent).toHaveBeenCalledWith("wiring-skill", "codex", multiSkill.revision));
   });
 });

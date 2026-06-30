@@ -235,73 +235,136 @@ paths:
       operationId: uploadSkillDraft
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
+        - name: agent
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/RegistryAgent"
       responses:
-        "201": { description: Skill draft created or updated from uploaded files }
+        "201": { description: Per-agent Skill draft created or updated from uploaded files for the specified agent }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft:
+  /api/v1/skills/{slug}/draft/{agent}:
     get:
       operationId: getSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
       responses:
-        "200": { description: Unpublished Skill draft with source files and checks }
+        "200": { description: Unpublished per-agent Skill draft with source files and checks }
         default: { $ref: "#/components/responses/Error" }
     delete:
       operationId: discardSkillDraft
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Skill draft discarded }
+        "200": { description: Per-agent Skill draft discarded }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/checks:
+  /api/v1/skills/{slug}/draft/{agent}/checks:
     post:
       operationId: runSkillDraftChecks
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Programmatic Skill draft check results }
+        "200": { description: Programmatic per-agent Skill draft check results }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/ai-checks:
+  /api/v1/skills/{slug}/draft/{agent}/ai-checks:
     post:
       operationId: runSkillDraftAiChecks
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: AI Skill draft check results written to draft.aiChecks }
+        "200": { description: AI per-agent Skill draft check results written to draft.aiChecks }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/fix-preview:
+  /api/v1/skills/{slug}/draft/{agent}/fix-preview:
     post:
       operationId: previewSkillDraftFix
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
       responses:
         "200": { description: Fix plan preview without persisting }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/apply-fix:
+  /api/v1/skills/{slug}/draft/{agent}/apply-fix:
     post:
       operationId: applySkillDraftFix
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Updated skill draft after applying fix }
+        "200": { description: Updated per-agent skill draft after applying fix }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/release-note:generate:
+  /api/v1/skills/{slug}/draft/{agent}/release-note:generate:
     post:
       operationId: generateSkillDraftReleaseNote
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: AI-generated release note persisted to draft.releaseNote (degraded on AI failure) }
+        "200": { description: AI-generated release note persisted to per-agent draft.releaseNote (degraded on AI failure) }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/fix-suggestions:
+  /api/v1/skills/{slug}/draft/{agent}/fix-suggestions:
     post:
       operationId: fetchSkillDraftFixSuggestions
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
       responses:
         "200": { description: AI-generated fix suggestions as a read-only FixPlan preview }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/draft/apply-fix-suggestion:
+  /api/v1/skills/{slug}/draft/{agent}/apply-fix-suggestion:
     post:
       operationId: applySkillDraftFixSuggestion
       parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Updated skill draft after applying an AI fix suggestion }
+        "200": { description: Updated per-agent skill draft after applying an AI fix suggestion }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/{agent}/publish:
+    post:
+      operationId: publishSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Per-agent Skill draft promoted to a new published version with one artifact for the specified agent }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/draft/{agent}/diff:
+    get:
+      operationId: diffSkillDraft
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/Agent"
+      responses:
+        "200": { description: Published vs per-agent draft source file diff }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/default-agent:
+    patch:
+      operationId: setSkillDefaultAgent
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetDefaultAgentRequest"
+      responses:
+        "200": { description: Skill default agent switched with optimistic revision }
+        "401": { description: Auth required }
+        "422": { description: Agent not enabled for this skill (AGENT_NOT_ENABLED) or request body validation failed }
+        "409": { description: Skill revision conflict (REVISION_CONFLICT) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers:
     get:
@@ -344,20 +407,6 @@ paths:
       operationId: getAiUsage
       responses:
         "200": { description: Cumulative AI usage statistics }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/publish:
-    post:
-      operationId: publishSkillDraft
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200": { description: Skill draft promoted to a new published version with one artifact per enabled installable adapter (claude-code/codex/cursor/generic; mcp excluded as placeholder) }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skills/{slug}/diff:
-    get:
-      operationId: diffSkillDraft
-      responses:
-        "200": { description: Published vs draft source file diff }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skill-artifacts:
     get:
@@ -547,6 +596,18 @@ components:
         minimum: 1
         maximum: 100
         default: 50
+    SkillSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+    Agent:
+      name: agent
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/RegistryAgent"
   schemas:
     DashboardOverview:
       type: object
@@ -639,6 +700,21 @@ components:
               format: uuid
             details:
               type: object
+    RegistryAgent:
+      type: string
+      enum: ["claude-code", "codex", "cursor", "generic", "mcp"]
+    SetDefaultAgentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - defaultAgent
+        - revision
+      properties:
+        defaultAgent:
+          $ref: "#/components/schemas/RegistryAgent"
+        revision:
+          type: integer
+          minimum: 1
   responses:
     Error:
       description: Standard error envelope

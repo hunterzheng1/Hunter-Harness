@@ -13,7 +13,7 @@ import type {
 } from "@hunter-harness/contracts";
 import JSZip from "jszip";
 import Link from "next/link";
-import { type ChangeEvent, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { parse as parseYaml } from "yaml";
 
 import { browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
@@ -25,6 +25,7 @@ import { DemoSystemConfig } from "./demo-system-config";
 import {
   AgentCheckPanel,
   AgentConfigsOverview,
+  AgentContextSelector,
   ContractSecurityOverview,
   SkillConfigOverview,
   VersionHistoryPanel
@@ -161,7 +162,9 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     if (upload === null || upload.length === 0) return;
     const files = upload;
     try {
-      const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files));
+      // 列表页上传无 per-agent 选择器；默认落到 claude-code（主 installable adapter）。
+      // 详情页 AgentContextSelector 可为其他 agent 单独建立草稿。
+      const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files), "claude-code");
       await refresh();
       let previewName = draft.slug;
       try { previewName = (await parseSkillFile(files)).ir.name || draft.slug; } catch { /* optional client-side preview; backend re-parses authoritatively */ }
@@ -286,19 +289,22 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [proposals] = useState<RegistrySkillProposal[]>([]);
   const [tags, setTags] = useState<RegistryTag[]>([]);
   const [agent, setAgent] = useState<DemoAgent>("claude-code");
+  const [currentAgent, setCurrentAgent] = useState<RegistryAgent>("claude-code");
   const [selectedTag, setSelectedTag] = useState("");
   const [draft, setDraft] = useState("");
   const [demoDefaultAgent, setDemoDefaultAgent] = useState<DemoAgent | null>(null);
+  const [settingDefault, setSettingDefault] = useState(false);
   const [sourcePath, setSourcePath] = useState("SKILL.md");
   const [activeTab, setActiveTab] = useState<SkillDetailTab>("source");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [skillDraft, setSkillDraft] = useState<DraftState | null>(null);
+  const userTouchedRef = useRef(false);
 
-  async function refresh(): Promise<void> {
+  async function refresh(forAgent: RegistryAgent = currentAgent): Promise<void> {
     try {
       const [detail, history, allTags] = await Promise.all([
-        required(api, "getSkill")(skillId), required(api, "listSkillVersions")(skillId),
+        required(api, "getSkill")(skillId), required(api, "listSkillVersions")(skillId, forAgent),
         required(api, "listTags")()
       ]);
       setSkill(detail); setVersions(history); setTags(allTags);
@@ -308,12 +314,47 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     }
   }
 
-  async function refreshDraft(): Promise<void> {
+  async function refreshVersions(forAgent: RegistryAgent = currentAgent): Promise<void> {
     try {
-      const d = await required(api, "getSkillDraft")(skillId);
+      const history = await required(api, "listSkillVersions")(skillId, forAgent);
+      setVersions(history);
+    } catch (reason) {
+      setError(apiError(reason, t));
+    }
+  }
+
+  async function refreshDraft(forAgent: RegistryAgent = currentAgent): Promise<void> {
+    try {
+      const d = await required(api, "getSkillDraft")(skillId, forAgent);
       setSkillDraft(d);
     } catch {
       setSkillDraft(null);
+    }
+  }
+
+  function selectCurrentAgent(next: RegistryAgent): void {
+    userTouchedRef.current = true;
+    setCurrentAgent(next);
+    setSkillDraft(null);
+    void refreshDraft(next);
+    void refreshVersions(next);
+  }
+
+  async function setDefaultAgentHandler(next: RegistryAgent): Promise<void> {
+    if (skill === null) return;
+    if (process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true") {
+      setDemoDefaultAgent(next);
+      return;
+    }
+    try {
+      setSettingDefault(true);
+      const updated = await required(api, "setDefaultAgent")(skillId, next, skill.revision);
+      setSkill(updated);
+      setMessage(t.skillDetail.defaultAgentUpdated);
+    } catch (reason) {
+      setError(apiError(reason, t));
+    } finally {
+      setSettingDefault(false);
     }
   }
 
@@ -323,11 +364,24 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   }
 
   useEffect(() => {
-    const stored = globalThis.localStorage?.getItem("hunter-harness-default-agent") as DemoAgent | null;
-    if (stored === "claude-code" || stored === "cursor" || stored === "codex" || stored === "generic" || stored === "mcp") setAgent(stored);
-    void refresh();
-    void refreshDraft();
+    userTouchedRef.current = false;
+    setCurrentAgent("claude-code");
+    const stored = globalThis.localStorage?.getItem("hunter-harness-default-agent");
+    if (stored === "claude-code" || stored === "cursor" || stored === "codex" || stored === "generic" || stored === "mcp") setAgent(stored as DemoAgent);
+    void refresh("claude-code");
+    void refreshDraft("claude-code");
   }, [api, skillId]);
+
+  useEffect(() => {
+    if (skill === null || userTouchedRef.current) return;
+    const def = skill.defaultAgent ?? skill.agents.find((a) => a.enabled)?.agent ?? "claude-code";
+    if (def !== currentAgent) {
+      setCurrentAgent(def);
+      setSkillDraft(null);
+      void refreshDraft(def);
+      void refreshVersions(def);
+    }
+  }, [skill]);
 
   useEffect(() => { setSourcePath("SKILL.md"); }, [skillId]);
   const command = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent}`;
@@ -381,6 +435,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     ? findDemoSourceSkill(skill.slug)
     : undefined;
   const activeDefaultAgent = demoDefaultAgent ?? sourceSkill?.defaultAgent;
+  const effectiveDefault = demoDefaultAgent ?? skill.defaultAgent;
   const selectedAgent = sourceSkill?.agents.find((item) => item.agent === agent);
   const defaultAgent = sourceSkill?.agents.find((item) => item.agent === activeDefaultAgent);
   const fallback = selectedAgent !== undefined && selectedAgent.configured === false && defaultAgent !== undefined;
@@ -465,13 +520,15 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       </div> : null}
 
       {activeTab === "checks" ? <article className="panel">
-        <div className="panel-title"><h2>{t.skillDetail.checkPublish}</h2><span>{selectedAgent?.label ?? agentLabel(agent)}</span></div>
-        <AgentCheckPanel api={api} slug={skillId} draft={skillDraft} onPublished={handlePublished} t={t} />
+        <div className="panel-title"><h2>{t.skillDetail.checkPublish}</h2><span>{agentLabel(currentAgent)}</span></div>
+        <AgentContextSelector agents={skill.agents} currentAgent={currentAgent} defaultAgent={effectiveDefault} onSelect={selectCurrentAgent} onSetDefault={setDefaultAgentHandler} settingDefault={settingDefault} t={t.skillDetail} />
+        <AgentCheckPanel key={currentAgent} api={api} slug={skillId} currentAgent={currentAgent} draft={skillDraft} onPublished={handlePublished} t={t} />
       </article> : null}
 
       {activeTab === "versions" ? <article className="panel">
-        <div className="panel-title"><h2>{t.skillDetail.versionHistory}</h2><span>{versions.length}</span></div>
-        <VersionHistoryPanel versions={versions} t={t.skillDetail} />
+        <div className="panel-title"><h2>{t.skillDetail.versionHistory}</h2><span>{agentLabel(currentAgent)}</span></div>
+        <AgentContextSelector agents={skill.agents} currentAgent={currentAgent} defaultAgent={effectiveDefault} onSelect={selectCurrentAgent} onSetDefault={setDefaultAgentHandler} settingDefault={settingDefault} t={t.skillDetail} />
+        <VersionHistoryPanel key={currentAgent} versions={versions} currentAgent={currentAgent} t={t.skillDetail} />
       </article> : null}
 
       {activeTab === "governance" ? <>

@@ -7,6 +7,7 @@ import {
   registryAgentSchema,
   registrySlugSchema,
   registryWorkflowMutationSchema,
+  setDefaultAgentRequestSchema,
   skillIrSchema,
   type AiProviderConfig,
   type FileOperation,
@@ -976,87 +977,135 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
 
   app.post("/api/v1/skills/draft", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    const agentResult = registryAgentSchema.safeParse(query.agent);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent query param is required and must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const collected: Array<{ path: string; buffer: Buffer }> = [];
     for await (const part of request.parts()) {
       if (part.type !== "file") continue;
       collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
     }
     const files = resolveUploadFiles(collected);
-    const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
+    // agent 计入 bodyHash：同 Idempotency-Key 换 agent 应判为 IDEMPOTENCY_KEY_REUSED 而非命中缓存
+    const bodyHash = sha256Bytes(canonicalJson({ agent, files: files.map((f) => ({ path: f.path, content: f.content })) }));
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = await registry.uploadDraft({ files, actorId: actor.actorId });
+      const draft = await registry.uploadDraft({ files, actorId: actor.actorId, agent });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null,
         action: draft.revision === 1 ? "skill.draft.created" : "skill.draft.updated",
         targetId: draft.slug, requestId,
-        details: { slug: draft.slug, draft_version: draft.draftVersion, revision: draft.revision }
+        details: { slug: draft.slug, agent, draft_version: draft.draftVersion, revision: draft.revision }
       });
       return { statusCode: 201, body: draft };
     }, bodyHash);
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/skills/:slug/draft", async (request, reply) => {
+  app.get("/api/v1/skills/:slug/draft/:agent", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
-    const draft = registry.getDraft(slug);
-    if (draft === undefined) throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found");
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const draft = registry.getDraft(slug, agentResult.data);
+    if (draft === undefined) throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent: agentResult.data });
     reply.header("X-Request-Id", requestId);
     return { ...draft, request_id: requestId };
   });
 
-  app.delete("/api/v1/skills/:slug/draft", async (request, reply) => {
+  app.delete("/api/v1/skills/:slug/draft/:agent", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = z.object({ revision: z.number().int().positive() }).strict().parse(request.body);
-      await registry.deleteDraft(slug, body.revision);
+      await registry.deleteDraft(slug, agent, body.revision);
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.discarded",
-        targetId: slug, requestId, details: { slug }
+        targetId: slug, requestId, details: { slug, agent }
       });
-      return { statusCode: 200, body: { slug, discarded: true } };
+      return { statusCode: 200, body: { slug, agent, discarded: true } };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/skills/:slug/draft/checks", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const checks = await registry.runChecks({ slug, checkedAt: new Date().toISOString() });
+      const checks = await registry.runChecks({ slug, agent, checkedAt: new Date().toISOString() });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.checked",
-        targetId: slug, requestId, details: { slug, red: checks.summary.red }
+        targetId: slug, requestId, details: { slug, agent, red: checks.summary.red }
       });
       return { statusCode: 200, body: checks };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/skills/:slug/publish", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/publish", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = publishSkillRequestSchema.parse(request.body);
       const version = await registry.publish({
-        slug, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
+        slug, agent, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
       });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.published",
-        targetId: slug, requestId, details: { slug, version: version.version }
+        targetId: slug, requestId, details: { slug, agent, version: version.version }
       });
       return { statusCode: 200, body: version };
     });
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/skills/:slug/diff", async (request, reply) => {
+  app.get("/api/v1/skills/:slug/draft/:agent/diff", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
-    const diff = registry.diffDraft(slug);
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const diff = registry.diffDraft(slug, agentResult.data);
     reply.header("X-Request-Id", requestId);
     return { items: diff, request_id: requestId };
+  });
+
+  // 切换默认 agent（§3.4）：mutation 四件套 → setDefaultAgent（校验 enabled + revision 乐观并发 + 重算 agents）→ audit。
+  // 422 AGENT_NOT_ENABLED / 409 REVISION_CONFLICT / 404 SKILL_NOT_FOUND 由 store 层抛 ServerDomainError，错误处理器映射。
+  app.patch("/api/v1/skills/:slug/default-agent", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const body = setDefaultAgentRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const detail = await registry.setDefaultAgent(slug, body.defaultAgent, body.revision);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "skill.default-agent.changed",
+        targetId: slug, requestId,
+        details: { slug, defaultAgent: body.defaultAgent, revision: detail.revision }
+      });
+      return { statusCode: 200, body: detail };
+    });
+    return send(reply, requestId, result);
   });
 
   app.delete("/api/v1/skills/:slug", async (request, reply) => {
@@ -1419,13 +1468,18 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { ...usage, request_id: requestId };
   });
 
-  app.post("/api/v1/skills/:slug/draft/ai-checks", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/ai-checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = registry.getDraft(slug);
+      const draft = registry.getDraft(slug, agent);
       if (draft === undefined) {
-        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
       }
       const resolved = await resolveLlmClient(null);
       if (resolved === null) {
@@ -1452,18 +1506,18 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           summary: { green: 0, yellow: 1, red: 0 },
           checkedAt
         };
-        await registry.setDraftAiChecks({ slug, aiChecks: degraded, checkedAt });
+        await registry.setDraftAiChecks({ slug, agent, aiChecks: degraded, checkedAt });
         await writeAudit(repository, {
           actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
-          targetId: slug, requestId, details: { slug, degraded: true }
+          targetId: slug, requestId, details: { slug, agent, degraded: true }
         });
         return { statusCode: 200, body: degraded };
       }
       const aiChecks = parseAiCheckResult(content);
-      await registry.setDraftAiChecks({ slug, aiChecks, checkedAt });
+      await registry.setDraftAiChecks({ slug, agent, aiChecks, checkedAt });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
-        targetId: slug, requestId, details: { slug, red: aiChecks.summary.red }
+        targetId: slug, requestId, details: { slug, agent, red: aiChecks.summary.red }
       });
       return { statusCode: 200, body: aiChecks };
     });
@@ -1475,19 +1529,24 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   // ⚠️ LLM 调用在 mutation 锁内（持有可达 60s）——权衡：Idempotency-Key 防重复花费，draft 流程并发低可接受；
   //    后续可评估"先 analyze 再进 mutation 持久化"以缩短锁持有（review YELLOW #1，当前不阻塞）。
   // 失败降级 AI_TIMEOUT/AI_PARSE_FAILED（200 degraded:true，不 500，不阻塞发布；前端提示手填）。
-  app.post("/api/v1/skills/:slug/draft/release-note:generate", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/release-note:generate", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = registry.getDraft(slug);
+      const draft = registry.getDraft(slug, agent);
       if (draft === undefined) {
-        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
       }
       const resolved = await resolveLlmClient(null);
       if (resolved === null) {
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
       }
-      const diff = registry.diffDraft(slug);
+      const diff = registry.diffDraft(slug, agent);
       const prompt = buildReleaseNotePrompt({ ir: draft.ir, diff });
       const generatedAt = new Date().toISOString();
       try {
@@ -1498,21 +1557,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           // LLM 返回空/不可解析 → 降级 AI_PARSE_FAILED（不 500，不阻塞发布；前端提示手填）
           await writeAudit(repository, {
             actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
-            targetId: slug, requestId, details: { slug, degraded: true, reason: "AI_PARSE_FAILED" }
+            targetId: slug, requestId, details: { slug, agent, degraded: true, reason: "AI_PARSE_FAILED" }
           });
           return { statusCode: 200, body: { releaseNote: null, degraded: true, reason: "AI_PARSE_FAILED", generatedAt } };
         }
-        await registry.setDraftReleaseNote({ slug, releaseNote, generatedAt });
+        await registry.setDraftReleaseNote({ slug, agent, releaseNote, generatedAt });
         await writeAudit(repository, {
           actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
-          targetId: slug, requestId, details: { slug, degraded: false }
+          targetId: slug, requestId, details: { slug, agent, degraded: false }
         });
         return { statusCode: 200, body: { releaseNote, generatedAt } };
       } catch (err) {
         // LLM 超时/网络错 → 降级 AI_TIMEOUT（不 500，不阻塞发布；err.message 只进 audit 不进响应，防 key 泄露）
         await writeAudit(repository, {
           actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
-          targetId: slug, requestId, details: { slug, degraded: true, reason: "AI_TIMEOUT", error: err instanceof Error ? err.message : "unknown" }
+          targetId: slug, requestId, details: { slug, agent, degraded: true, reason: "AI_TIMEOUT", error: err instanceof Error ? err.message : "unknown" }
         });
         return { statusCode: 200, body: { releaseNote: null, degraded: true, reason: "AI_TIMEOUT", generatedAt } };
       }
@@ -1523,14 +1582,19 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   // AI 生成修复内容（§6.3 第4步）：对 draft.aiChecks.fixable 项逐项调 LLM 生成
   // {suggestedContent,explanation,appliesTo}，组装 FixPlan（只读预览，不 persist；采纳走 apply-fix-suggestion）。
   // 无 aiChecks → 空 FixPlan；LLM 失败/解析失败 → 该项降级 message-only（不 500，不阻断）。
-  app.post("/api/v1/skills/:slug/draft/fix-suggestions", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/fix-suggestions", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const body = (request.body ?? {}) as { checkIds?: string[] | null };
     const checkIds = body.checkIds ?? null;
-    const draft = registry.getDraft(slug);
+    const draft = registry.getDraft(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug });
+      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
     }
     if (draft.aiChecks === null) {
       // 无 aiChecks → 空 FixPlan（提示先跑 ai-checks；只读预览不 422）
@@ -1572,7 +1636,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     }
     await writeAudit(repository, {
       actorId: actor.actorId, projectId: null, action: "skill.draft.fix-suggestion.generated",
-      targetId: slug, requestId, details: { slug, count: items.length }
+      targetId: slug, requestId, details: { slug, agent, count: items.length }
     });
     return send(reply, requestId, {
       statusCode: 200,
@@ -1582,9 +1646,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
 
   // AI 修复建议采纳（§6.3 第4步/§3.6）：mutation 四件套 → applyFixSuggestion（白名单+写 ir/examples+scanSensitive+清 aiChecks+revision+1）→ audit。
   // appliesTo 可写白名单由 store 层强制（examples/allowed_capabilities/instructions/description；tags/null/非法 → 422 SKILL_VALIDATION_FAILED）。
-  app.post("/api/v1/skills/:slug/draft/apply-fix-suggestion", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/apply-fix-suggestion", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const body = z.object({
       checkId: z.string().min(1),
       suggestedContent: z.string(),
@@ -1593,6 +1662,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = await registry.applyFixSuggestion({
         slug,
+        agent,
         checkId: body.checkId,
         suggestedContent: body.suggestedContent,
         appliesTo: body.appliesTo,
@@ -1600,30 +1670,40 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.fix-suggestion.applied",
-        targetId: slug, requestId, details: { slug, checkId: body.checkId, appliesTo: body.appliesTo }
+        targetId: slug, requestId, details: { slug, agent, checkId: body.checkId, appliesTo: body.appliesTo }
       });
       return { statusCode: 200, body: draft };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/skills/:slug/draft/fix-preview", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/fix-preview", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const { checkIds } = (request.body ?? {}) as { checkIds?: string[] | null };
-    const plan = await registry.buildDraftFix(slug, checkIds ?? null);
+    const plan = await registry.buildDraftFix(slug, agent, checkIds ?? null);
     return send(reply, requestId, { statusCode: 200, body: { items: plan.items, mergedFiles: plan.mergedFiles, summary: plan.summary } });
   });
 
-  app.post("/api/v1/skills/:slug/draft/apply-fix", async (request, reply) => {
+  app.post("/api/v1/skills/:slug/draft/:agent/apply-fix", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { slug } = request.params as { slug: string };
+    const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
+    const agentResult = registryAgentSchema.safeParse(agentValue);
+    if (!agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
+    }
+    const agent = agentResult.data;
     const { checkIds } = (request.body ?? {}) as { checkIds?: string[] | null };
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = await registry.applyDraftFix(slug, checkIds ?? null);
+      const draft = await registry.applyDraftFix(slug, agent, checkIds ?? null);
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "skill.draft.fix-applied",
-        targetId: slug, requestId, details: { slug, checkIds: checkIds ?? "all" }
+        targetId: slug, requestId, details: { slug, agent, checkIds: checkIds ?? "all" }
       });
       return { statusCode: 200, body: draft };
     });
