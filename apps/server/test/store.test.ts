@@ -638,10 +638,59 @@ describe("buildArtifacts + publish multi + adapterPreview (T12-14)", () => {
       .rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED", status: 422 });
   });
 
-  it("createProposal rejects mcp-only IR with 422 SKILL_VALIDATION_FAILED (Y-3 已有分支补覆盖)", () => {
+  it("createProposal rejects mcp-only IR (claude-code not enabled) with 422 ADAPTER_NOT_INSTALLABLE (Y-3 语义保留，gate 增强)", () => {
     const store = newStore();
     let caught: unknown = null;
     try { store.createProposal({ ir: irMcpOnly, actorId: "owner", agent: "claude-code" }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "SKILL_VALIDATION_FAILED", status: 422 });
+    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
+  });
+});
+
+describe("multi-agent publish + createProposal gate (skill-center-multi-agent-publish 簇A)", () => {
+  // 实际 ADAPTERS（packages/core/src/skill-ir/adapters/index.ts:34）：claude-code/codex/cursor/generic installable=true，mcp=false。
+  // design/test-scenarios 原 UT-103/104 假设 codex/generic installable=false → 422，与实际 ADAPTERS 不符（过时，归档 skill-ir-real-adapters 已升生产），
+  // 此处按代码事实修正：codex/generic installable=true → createProposal 通过；mcp installable=false → 422。
+  it("publish fills latestVersion for every enabled installable agent + correct installTarget (UT-101)", async () => {
+    const store = newStore();
+    await store.upsertDraft({ slug: "harness-x", sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.publish({ slug: "harness-x", version: "1.0.0", actorId: "owner" });
+    const skill = store.getSkill("harness-x");
+    const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
+    expect(byAgent.get("claude-code")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("codex")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("generic")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("mcp")).toBeUndefined();
+    expect(skill.defaultAgent).toBe("claude-code");
+    expect(byAgent.get("cursor")?.installTarget).toBe(".cursor/rules/harness-x.mdc");
+    expect(byAgent.get("codex")?.installTarget).toBe("AGENTS.md");
+  });
+
+  it("createProposal agent=cursor passes gate (UT-102)", () => {
+    const store = newStore();
+    const proposal = store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: "cursor" });
+    expect(proposal.requestedAgent).toBe("cursor");
+    expect(proposal.status).toBe("pending_review");
+  });
+
+  it("createProposal agent=codex passes gate (UT-103, 修正原 422 假设)", () => {
+    const store = newStore();
+    const proposal = store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: "codex" });
+    expect(proposal.requestedAgent).toBe("codex");
+  });
+
+  it("createProposal agent=mcp rejected 422 ADAPTER_NOT_INSTALLABLE (UT-104, installable=false 回归)", () => {
+    const store = newStore();
+    let caught: unknown = null;
+    try { store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: "mcp" }); } catch (e) { caught = e; }
+    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
+  });
+
+  it("createProposal agent=claude-code on cursor-only IR rejected 422 (UT-105, enabled 检查 RED)", () => {
+    const irCursorOnly: SkillIr = { ...ir, adapters: { cursor: { enabled: true } } };
+    const store = newStore();
+    let caught: unknown = null;
+    try { store.createProposal({ ir: irCursorOnly, actorId: "owner", agent: "claude-code" }); } catch (e) { caught = e; }
+    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
   });
 });

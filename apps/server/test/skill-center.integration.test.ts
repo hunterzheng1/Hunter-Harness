@@ -1,3 +1,4 @@
+import type { SkillIr } from "@hunter-harness/contracts";
 import { uuidV7 } from "@hunter-harness/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -23,6 +24,40 @@ adapters:
     enabled: true
 version: "1.0.0"
 `;
+
+const cursorYaml = `name: harness-cursor
+kind: governance
+description: demo skill cursor
+triggers: ["run"]
+inputs: ["ctx"]
+outputs: ["out"]
+forbidden_actions: ["automatic_git_write"]
+required_context: ["AGENTS.md"]
+profiles:
+  general:
+    enabled: true
+adapters:
+  claude-code:
+    enabled: true
+  cursor:
+    enabled: true
+version: "1.0.0"
+`;
+
+// createProposal 入参 IR：enable claude-code + cursor + codex（验 cursor/codex installable=true 均通过 gate）
+const proposalIr: SkillIr = {
+  name: "harness-proposal",
+  kind: "governance",
+  description: "demo skill proposal",
+  triggers: ["run"],
+  inputs: ["ctx"],
+  outputs: ["out"],
+  forbidden_actions: ["automatic_git_write"],
+  required_context: ["AGENTS.md"],
+  profiles: { general: { enabled: true } },
+  adapters: { "claude-code": { enabled: true }, cursor: { enabled: true }, codex: { enabled: true } },
+  version: "1.0.0"
+};
 
 function multipart(files: Array<{ path: string; content: string }>): {
   payload: string;
@@ -204,5 +239,61 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(res.statusCode).toBe(200);
     const events = await repository.listAuditEvents();
     expect(events.some((e) => e.action === "skill.draft.fix-applied")).toBe(true);
+  });
+
+  it("upload → check → publish → download cursor end-to-end + multi-agent latestVersion (INT-101 / API-103 / API-104)", async () => {
+    const up = multipart([
+      { path: "skill.yaml", content: cursorYaml },
+      { path: "SKILL.md", content: "# harness-cursor" }
+    ]);
+    const uploadRes = await app.inject({
+      method: "POST", url: "/api/v1/skills/draft", payload: up.payload,
+      headers: { ...headers(), ...up.headers }
+    });
+    expect(uploadRes.statusCode).toBe(201);
+
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/checks", payload: {}, headers: headers() });
+    expect(checksRes.statusCode).toBe(200);
+
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/publish", payload: { version: "1.0.0", releaseNote: "cursor" }, headers: headers() });
+    expect(pubRes.statusCode).toBe(200);
+    expect(pubRes.json().version).toBe("1.0.0");
+
+    // API-103: publish 后 GET /skills/{slug}，agents[].latestVersion 各 enabled installable 填值
+    const skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
+    expect(skillRes.statusCode).toBe(200);
+    const skill = skillRes.json();
+    const byAgent = new Map(skill.agents.map((a: { agent: string }) => [a.agent, a]));
+    expect(byAgent.get("claude-code")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0");
+    expect(byAgent.get("cursor")?.installTarget).toBe(".cursor/rules/harness-cursor.mdc");
+
+    // API-104 + INT-101: GET /skills/{slug}/artifacts/cursor/download → 200 + cursor zip + X-Content-SHA256
+    const dlRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/artifacts/cursor/download", headers: headers() });
+    expect(dlRes.statusCode).toBe(200);
+    expect(dlRes.headers["content-type"]).toBe("application/zip");
+    expect(dlRes.headers["x-content-sha256"]).toBeDefined();
+  });
+
+  it("POST /skill-proposals agent=cursor creates proposal (API-101); agent=codex passes gate (API-102 修正: codex installable=true)", async () => {
+    // API-101: cursor createProposal → 201
+    const cursorProposal = await app.inject({
+      method: "POST", url: "/api/v1/skill-proposals",
+      payload: { schema_version: 1, skill_ir: proposalIr, agent: "cursor" },
+      headers: headers()
+    });
+    expect(cursorProposal.statusCode).toBe(201);
+    expect(cursorProposal.json().requestedAgent).toBe("cursor");
+    expect(cursorProposal.json().status).toBe("pending_review");
+
+    // API-102 (修正): codex installable=true + IR enabled → 201 通过
+    // (test-scenarios §2 原"422 ADAPTER_NOT_INSTALLABLE"过时，与 §1 UT-103 同步为 codex 通过)
+    const codexProposal = await app.inject({
+      method: "POST", url: "/api/v1/skill-proposals",
+      payload: { schema_version: 1, skill_ir: proposalIr, agent: "codex" },
+      headers: headers()
+    });
+    expect(codexProposal.statusCode).toBe(201);
+    expect(codexProposal.json().requestedAgent).toBe("codex");
   });
 });

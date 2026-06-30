@@ -75,18 +75,19 @@ function id(prefix: string): string {
 }
 
 function agentsFor(ir: SkillIr, latestVersion: string | null): AgentSkillConfig[] {
-  return Object.entries(ir.adapters)
-    .filter(([, value]) => value.enabled)
-    .map(([key]) => key)
-    .filter((key): key is RegistryAgent =>
-      key === "claude-code" || key === "codex" || key === "generic" || key === "mcp"
-    )
+  // 簇A：遍历 ADAPTERS（单一真相源）取 installable 且 IR enabled 的 agent。
+  // 同步填 latestVersion（MVP per-agent 同步版本——同一 version 写入所有 enabled installable agent；
+  // draft 仍 skill 级单草稿，draftVersion 暂未启用，留后续 per-agent 切片）。
+  // installTarget 对齐 ADAPTERS.targetPath（修正原硬编码 .claude/skills/ 对非 claude-code 错误）。
+  // 修正：原 type filter `claude-code||codex||generic||mcp` 漏 cursor，改用 Object.keys(ADAPTERS) 自然覆盖全部 RegistryAgent。
+  return (Object.keys(ADAPTERS) as RegistryAgent[])
+    .filter((agent) => ADAPTERS[agent].installable && ir.adapters[agent]?.enabled === true)
     .map((agent) => ({
       agent,
       enabled: true,
       isDefault: agent === "claude-code",
-      installTarget: ".claude/skills/" + ir.name,
-      latestVersion: agent === "claude-code" ? latestVersion : null,
+      installTarget: ADAPTERS[agent].targetPath(ir),
+      latestVersion,
       draftVersion: null,
       sourcePackagePath: null
     }));
@@ -855,8 +856,11 @@ export class RegistryStore {
   }
 
   createProposal(input: { ir: SkillIr; actorId: string; agent: RegistryAgent }): ProposalState {
-    if (input.agent !== "claude-code") {
-      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "only the verified Claude Code adapter can be published in MVP");
+    // 簇A：放开 claude-code 硬编码 gate → installable && IR enabled 白名单。
+    // cursor/codex/generic installable=true 且 IR enabled → 通过；mcp installable=false → 422；
+    // agent 在 IR 未 enable → 422（避免为未启用 agent 建 proposal）。buildArtifacts 仍做"至少 1 制品"校验。
+    if (!ADAPTERS[input.agent].installable || input.ir.adapters[input.agent]?.enabled !== true) {
+      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "agent is not installable or not enabled for this skill");
     }
     const ir = skillIrSchema.parse(input.ir);
     const existing = this.skills.get(ir.name);

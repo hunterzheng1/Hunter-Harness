@@ -39,6 +39,8 @@ export const agentSkillConfigSchema = z.object({
   enabled: z.boolean(),
   isDefault: z.boolean(),
   installTarget: z.string(),
+  // MVP per-agent 同步版本：publish 时同一 version 写入所有 enabled installable agent 的 latestVersion（见 server store.agentsFor）。
+  // 完整 per-agent 独立 draft 留后续切片；draftVersion 暂未启用，保持 null。
   latestVersion: registrySemverSchema.nullable(),
   draftVersion: registrySemverSchema.nullable(),
   sourcePackagePath: z.string().nullable()

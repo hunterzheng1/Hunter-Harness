@@ -1,12 +1,15 @@
 import { fileURLToPath } from "node:url";
 
 import { sha256Bytes, uuidV7 } from "@hunter-harness/core";
+import type { SkillIr, SourceFile } from "@hunter-harness/contracts";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { runMigrations } from "../src/repositories/migrate.js";
 import { PostgresRepository } from "../src/repositories/postgres.js";
 import { PostgresRegistryPersistence } from "../src/registry/persistence.js";
+import { RegistryStore } from "../src/registry/store.js";
+import { MemoryArtifactStorage } from "../src/storage/memory.js";
 
 const databaseUrl = process.env.HUNTER_HARNESS_TEST_DATABASE_URL;
 const postgresDescribe = databaseUrl === undefined ? describe.skip : describe;
@@ -123,5 +126,77 @@ postgresDescribe("PostgreSQL repository integration", () => {
     };
     await persistence.save(snapshot);
     await expect(new PostgresRegistryPersistence(pool).load()).resolves.toEqual(snapshot);
+  });
+
+  // 簇C INT-005：PG 路径 store.initialize 反序列化——publish 多 agent skill → PG save → 新 store initialize →
+  // artifacts metadata + per-agent latestVersion 一致。artifact blob 不在 PG（memory storage 跨实例不共享），
+  // 仅验 metadata 数量/agent；latestVersion 来自 snapshot.detail.agents（agentsFor 写入）。
+  it("INT-005: publish multi-agent skill → PG save → reload initialize preserves artifacts + per-agent latestVersion", async () => {
+    const ir: SkillIr = {
+      name: "harness-pg-multi", kind: "tooling", description: "pg multi-agent",
+      triggers: ["run"], inputs: [], outputs: ["out"],
+      forbidden_actions: [], required_context: [],
+      profiles: { general: { enabled: true } },
+      adapters: { "claude-code": { enabled: true }, cursor: { enabled: true }, codex: { enabled: true } },
+      version: "1.0.0"
+    };
+    const files: SourceFile[] = [{ path: "skill.yaml", content: [
+      "name: harness-pg-multi", "kind: tooling", "description: pg multi-agent",
+      'triggers: ["run"]', "inputs: []", 'outputs: ["out"]',
+      "forbidden_actions: [automatic_git_write]", "required_context: [AGENTS.md]",
+      "profiles: { general: { enabled: true } }",
+      "adapters: { claude-code: { enabled: true }, cursor: { enabled: true }, codex: { enabled: true } }",
+      'version: "1.0.0"'
+    ].join("\n") }];
+    const persistence = new PostgresRegistryPersistence(pool);
+    const store = new RegistryStore(new MemoryArtifactStorage(), persistence);
+    await store.upsertDraft({ slug: "harness-pg-multi", sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.publish({ slug: "harness-pg-multi", version: "1.0.0", actorId: "actor_pg" });
+    const store2 = new RegistryStore(new MemoryArtifactStorage(), persistence);
+    await store2.initialize();
+    const skill = store2.getSkill("harness-pg-multi");
+    expect(skill.latest_version).toBe("1.0.0");
+    expect(skill.agents.find((a) => a.agent === "cursor")?.latestVersion).toBe("1.0.0");
+    expect(skill.agents.find((a) => a.agent === "codex")?.latestVersion).toBe("1.0.0");
+    const versions = store2.listVersions("harness-pg-multi");
+    expect(versions[0]?.artifacts.length).toBe(3);
+    expect(versions[0]?.artifacts.map((a) => a.agent).sort()).toEqual(["claude-code", "codex", "cursor"]);
+  });
+
+  // 簇C COM-002/003：PG 路径旧 snapshot（schemaVersion:1，无 aiConfig/aiUsage，adapters 为字符串数组即 agents 无 draftVersion）
+  // 经 migrateSkillDetail 兜底不崩 + 默认值正确。memory 路径同逻辑已由 store.test.ts 覆盖，此处验 PG jsonb 往返 + migrate。
+  it("COM-002/003: legacy PG snapshot (no aiConfig, string adapters) initialize without crash + defaults", async () => {
+    const legacySnapshot = {
+      schemaVersion: 1,
+      compilerVersion: "1.0.0",
+      skills: [["harness-pg-legacy", {
+        detail: {
+          skill_id: "skl_pg_legacy", slug: "harness-pg-legacy", name: "harness-pg-legacy", description: "legacy",
+          category: "governance", tags: [], status: "published", latest_version: "1.0.0",
+          adapters: ["claude-code"], revision: 1,
+          created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z",
+          ir: {
+            name: "harness-pg-legacy", kind: "tooling", description: "legacy",
+            triggers: ["run"], inputs: [], outputs: ["out"],
+            forbidden_actions: [], required_context: [],
+            profiles: { general: { enabled: true } },
+            adapters: { "claude-code": { enabled: true } },
+            version: "1.0.0"
+          }
+        },
+        versions: []
+      }]],
+      proposals: [], tags: [], workflows: [], projectBindings: []
+    };
+    const persistence = new PostgresRegistryPersistence(pool);
+    await persistence.save(legacySnapshot);
+    const store = new RegistryStore(new MemoryArtifactStorage(), persistence);
+    await store.initialize();
+    const skill = store.getSkill("harness-pg-legacy");
+    expect(skill.latest_version).toBe("1.0.0");
+    expect(skill.agents).toHaveLength(1);
+    expect(skill.agents[0]?.agent).toBe("claude-code");
+    expect(skill.agents[0]?.latestVersion).toBe("1.0.0");
+    expect(skill).not.toHaveProperty("category");
   });
 });

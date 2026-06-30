@@ -12,7 +12,7 @@ import {
 import { dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { skillIrSchema, type SkillIr } from "@hunter-harness/contracts";
+import { skillIrSchema, type RegistryAgent, type SkillIr } from "@hunter-harness/contracts";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
 import { parse as parseYaml } from "yaml";
@@ -37,12 +37,16 @@ interface InstallManifest {
   schema_version: 1;
   slug: string;
   version: string;
-  agent: "claude-code";
+  agent: RegistryAgent;
   source_url: string;
   artifact_sha256: string;
   files: Record<string, string>;
   installed_at: string;
 }
+
+// 簇B：skill-cli 独立 install/upload 白名单（cursor 解锁；codex/generic/mcp 不支持独立 install）。
+// 与 server createProposal 的 installable gate 不同——CLI 侧仅放开已验证可独立安装的 adapter。
+const INSTALLABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor"]);
 
 class CliFailure extends Error {
   constructor(readonly exitCode: number, readonly code: string, message: string) {
@@ -142,7 +146,8 @@ async function atomicInstall(input: {
   await mkdir(temporary, { recursive: true });
   try {
     for (const file of input.files) {
-      if (file.name.includes("..") || file.name.startsWith("/") || file.name.includes("\\")) {
+      // 按路径片段判断 ".."，与 target_path 校验一致，避免误伤含 ".." 的合法文件名（如 notes..v1.md）。
+      if (file.name.split(/[/\\]/).some((seg) => seg === "..") || file.name.startsWith("/") || file.name.includes("\\")) {
         throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path");
       }
       const destination = join(temporary, file.name);
@@ -171,13 +176,13 @@ async function runInstall(
   if (!/^harness-[a-z0-9-]+$/.test(slug)) {
     throw new CliFailure(3, "SKILL_SLUG_INVALID", "skill slug is invalid");
   }
-  if (options.agent !== "claude-code") {
-    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install currently supports claude-code only");
+  if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
+    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install supports claude-code and cursor only");
   }
   const { serverUrl, token } = configuration(options, dependencies.env);
   const response = await request(
     dependencies.fetch,
-    `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/claude-code/download`,
+    `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/${encodeURIComponent(options.agent)}/download`,
     token
   );
   const bytes = new Uint8Array(await response.arrayBuffer());
@@ -188,22 +193,45 @@ async function runInstall(
   }
   const zip = new AdmZip(Buffer.from(bytes));
   const metadataEntry = zip.getEntry("hunter-skill.json");
-  const skillEntry = zip.getEntry("SKILL.md");
-  if (metadataEntry === null || skillEntry === null || metadataEntry.isDirectory || skillEntry.isDirectory) {
+  if (metadataEntry === null || metadataEntry.isDirectory) {
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
   }
   const metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as {
-    slug: string; version: string; agent: string;
+    slug: string; version: string; agent: string; target_path: string;
   };
-  if (metadata.slug !== slug || metadata.agent !== "claude-code") {
+  // 簇B：identity 校验 agent 与请求一致；target_path 提供 filename + 安装目录（对齐 server buildArtifacts 产出）。
+  if (
+    metadata.slug !== slug ||
+    metadata.agent !== options.agent ||
+    typeof metadata.target_path !== "string" ||
+    metadata.target_path.length === 0
+  ) {
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact identity does not match request");
   }
-  const target = join(dependencies.cwd, ".claude", "skills", slug);
+  // 文件名从 target_path 取（cursor=<slug>.mdc, claude-code=SKILL.md）；拦截绝对路径/.. 防逃逸。
+  // 按路径片段判断 ".."，避免误伤含 ".." 的合法文件名（如 notes..v1.md）。
+  if (
+    metadata.target_path.split(/[/\\]/).some((seg) => seg === "..") ||
+    /^[a-zA-Z]:/.test(metadata.target_path) ||
+    metadata.target_path.startsWith("/")
+  ) {
+    throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path is unsafe");
+  }
+  const filename = metadata.target_path.split(/[/\\]/).at(-1);
+  if (filename === undefined || filename === "") {
+    throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path has no filename");
+  }
+  const skillEntry = zip.getEntry(filename);
+  if (skillEntry === null || skillEntry.isDirectory) {
+    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
+  }
+  const target = join(dependencies.cwd, dirname(metadata.target_path));
+  const skillFilePath = join(target, filename);
   const manifestPath = join(
     dependencies.cwd, ".harness", "state", "local", "skill-installs", slug + ".json"
   );
   const existing = await readManifest(manifestPath);
-  if (existing === null && await fileExists(target) && options.force !== true) {
+  if (existing === null && await fileExists(skillFilePath) && options.force !== true) {
     throw new CliFailure(5, "LOCAL_SKILL_UNMANAGED", "target skill already exists without a trusted install manifest; use --force to confirm overwrite");
   }
   if (existing !== null && await isDirty(target, existing) && options.force !== true) {
@@ -214,15 +242,15 @@ async function runInstall(
     return;
   }
   const skillBytes = skillEntry.getData();
-  await atomicInstall({ target, files: [{ name: "SKILL.md", bytes: skillBytes }] });
+  await atomicInstall({ target, files: [{ name: filename, bytes: skillBytes }] });
   const manifest: InstallManifest = {
     schema_version: 1,
     slug,
     version: metadata.version,
-    agent: "claude-code",
+    agent: options.agent as RegistryAgent,
     source_url: serverUrl,
     artifact_sha256: actualArtifactHash,
-    files: { "SKILL.md": sha256(skillBytes) },
+    files: { [filename]: sha256(skillBytes) },
     installed_at: new Date().toISOString()
   };
   await mkdir(dirname(manifestPath), { recursive: true });
@@ -271,8 +299,8 @@ async function runUpload(
   options: CommonOptions,
   dependencies: Required<SkillCliDependencies>
 ): Promise<void> {
-  if (options.agent !== "claude-code") {
-    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload validation currently targets claude-code only");
+  if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
+    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports claude-code and cursor only");
   }
   const { serverUrl, token } = configuration(options, dependencies.env);
   const ir = await findSkillIr(resolve(dependencies.cwd, sourceValue));
