@@ -114,9 +114,9 @@ describe("AI provider config-store (簇 C, 任务 9)", () => {
     expect(store.getDefaultProvider()).toBeNull();
   });
 
-  it("getUsage 初始为 0", () => {
+  it("getUsage 初始为空数组（per-provider per-day）", () => {
     const store = newStore();
-    expect(store.getUsage()).toEqual({ requests: 0, tokens: 0 });
+    expect(store.getUsage()).toEqual([]);
   });
 
   it("COM-002/003 旧 snapshot 无 aiConfig → initialize 默认空不崩", async () => {
@@ -130,7 +130,7 @@ describe("AI provider config-store (簇 C, 任务 9)", () => {
     await store.initialize();
     expect(store.listProviders()).toHaveLength(0);
     expect(store.getDefaultProvider()).toBeNull();
-    expect(store.getUsage()).toEqual({ requests: 0, tokens: 0 });
+    expect(store.getUsage()).toEqual([]);
   });
 
   it("COM-004 新 snapshot 含 aiConfig/aiUsage 往返一致", async () => {
@@ -211,5 +211,154 @@ describe("AI secret-loader (簇 C, 任务 8)", () => {
     } finally {
       await fs.rm(file, { force: true });
     }
+  });
+});
+
+describe("AI quota + per-provider per-day usage (簇 B-2)", () => {
+  const baseProviderCfg = {
+    provider_id: "deepseek" as const,
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    enabled: true,
+    is_default: false,
+    api_key_env: "secret-file",
+    revision: 1,
+    daily_request_limit: null as number | null,
+    daily_token_limit: null as number | null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z"
+  };
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  it("QUOTA-001 未超限累加 per-provider per-day (UT-010/020)", async () => {
+    const store = newStore();
+    await store.upsertProvider({ ...baseProviderInput, daily_request_limit: 100 });
+    await store.recordUsage({ provider_id: "deepseek", requests: 50, tokens: 100 });
+    await store.recordUsage({ provider_id: "deepseek", requests: 30, tokens: 200 });
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek");
+    expect(u?.requests).toBe(80);
+    expect(u?.tokens).toBe(300);
+    expect(u?.date).toBe(today());
+  });
+
+  it("QUOTA-002 超 requests 限 → 429 QUOTA_EXCEEDED 不累加 (UT-011)", async () => {
+    const store = newStore();
+    await store.upsertProvider({ ...baseProviderInput, daily_request_limit: 100 });
+    await store.recordUsage({ provider_id: "deepseek", requests: 90, tokens: 0 });
+    await expect(store.recordUsage({ provider_id: "deepseek", requests: 20, tokens: 0 }))
+      .rejects.toMatchObject({ code: "QUOTA_EXCEEDED", status: 429 });
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek");
+    expect(u?.requests).toBe(90);
+  });
+
+  it("QUOTA-003 超 tokens 限 → 429 (UT-012)", async () => {
+    const store = newStore();
+    await store.upsertProvider({ ...baseProviderInput, daily_token_limit: 1000 });
+    await store.recordUsage({ provider_id: "deepseek", requests: 1, tokens: 900 });
+    await expect(store.recordUsage({ provider_id: "deepseek", requests: 1, tokens: 200 }))
+      .rejects.toMatchObject({ code: "QUOTA_EXCEEDED", status: 429 });
+  });
+
+  it("QUOTA-004 limit=null 不限 (UT-013)", async () => {
+    const store = newStore();
+    await store.upsertProvider({ ...baseProviderInput, daily_request_limit: null, daily_token_limit: null });
+    await store.recordUsage({ provider_id: "deepseek", requests: 99999, tokens: 99999 });
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek");
+    expect(u?.requests).toBe(99999);
+  });
+
+  it("QUOTA-005 不传 quota 默认 null 不限", async () => {
+    const store = newStore();
+    await store.upsertProvider(baseProviderInput);
+    await store.recordUsage({ provider_id: "deepseek", requests: 99999, tokens: 99999 });
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek");
+    expect(u?.requests).toBe(99999);
+  });
+
+  it("QUOTA-006 per-provider 独立 A 超 B 不超 (UT-015/021)", async () => {
+    const store = newStore();
+    await store.upsertProvider({ ...baseProviderInput, provider_id: "A", daily_request_limit: 100 });
+    await store.upsertProvider({ ...baseProviderInput, provider_id: "B", daily_request_limit: 100 });
+    await store.recordUsage({ provider_id: "A", requests: 95, tokens: 0 });
+    await store.recordUsage({ provider_id: "B", requests: 10, tokens: 0 });
+    await expect(store.recordUsage({ provider_id: "A", requests: 10, tokens: 0 }))
+      .rejects.toMatchObject({ code: "QUOTA_EXCEEDED" });
+    const uB = store.getUsage().find((x) => x.provider_id === "B");
+    expect(uB?.requests).toBe(10);
+  });
+
+  it("QUOTA-007 recordUsage 未知 provider → 404 PROVIDER_NOT_FOUND", async () => {
+    const store = newStore();
+    await expect(store.recordUsage({ provider_id: "nope", requests: 1, tokens: 1 }))
+      .rejects.toMatchObject({ code: "PROVIDER_NOT_FOUND", status: 404 });
+  });
+
+  it("QUOTA-008 per-day 滚动 新 date 从 0 (UT-014)", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-07-01T12:00:00Z"));
+      const store = newStore();
+      await store.upsertProvider({ ...baseProviderInput, daily_request_limit: 100 });
+      await store.recordUsage({ provider_id: "deepseek", requests: 90, tokens: 0 });
+      vi.setSystemTime(new Date("2026-07-02T12:00:00Z"));
+      await store.recordUsage({ provider_id: "deepseek", requests: 50, tokens: 0 });
+      const usage = store.getUsage();
+      const day1 = usage.find((u) => u.date === "2026-07-01");
+      const day2 = usage.find((u) => u.date === "2026-07-02");
+      expect(day1?.requests).toBe(90);
+      expect(day2?.requests).toBe(50);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("COM-001 旧全局 aiUsage 迁移到默认 provider 当日条目 (UT-022)", async () => {
+    const p = new MemoryPersistence();
+    p.snapshot = {
+      schemaVersion: 3, compilerVersion: "1.0.0",
+      skills: [], proposals: [], tags: [], workflows: [], projectBindings: [], drafts: [],
+      aiConfig: { defaultProvider: "deepseek", providers: [baseProviderCfg], usage: [] },
+      aiUsage: { requests: 100, tokens: 500 }
+    };
+    const store = newStore(p);
+    await store.initialize();
+    const usage = store.getUsage();
+    expect(usage).toHaveLength(1);
+    expect(usage[0]?.provider_id).toBe("deepseek");
+    expect(usage[0]?.requests).toBe(100);
+    expect(usage[0]?.tokens).toBe(500);
+    expect(usage[0]?.date).toBe(today());
+  });
+
+  it("COM-001b 无默认 provider 不迁移 usage 为空", async () => {
+    const p = new MemoryPersistence();
+    p.snapshot = {
+      schemaVersion: 3, compilerVersion: "1.0.0",
+      skills: [], proposals: [], tags: [], workflows: [], projectBindings: [], drafts: [],
+      aiConfig: { defaultProvider: null, providers: [], usage: [] },
+      aiUsage: { requests: 100, tokens: 500 }
+    };
+    const store = newStore(p);
+    await store.initialize();
+    expect(store.getUsage()).toEqual([]);
+  });
+
+  it("COM-001c 已有 usage 不重复迁移旧 aiUsage", async () => {
+    const p = new MemoryPersistence();
+    p.snapshot = {
+      schemaVersion: 3, compilerVersion: "1.0.0",
+      skills: [], proposals: [], tags: [], workflows: [], projectBindings: [], drafts: [],
+      aiConfig: {
+        defaultProvider: "deepseek", providers: [baseProviderCfg],
+        usage: [{ provider_id: "deepseek", date: today(), requests: 30, tokens: 40 }]
+      },
+      aiUsage: { requests: 100, tokens: 500 }
+    };
+    const store = newStore(p);
+    await store.initialize();
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek");
+    expect(u?.requests).toBe(30);
+    expect(u?.tokens).toBe(40);
   });
 });

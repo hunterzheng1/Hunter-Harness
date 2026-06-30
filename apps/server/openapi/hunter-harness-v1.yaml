@@ -279,7 +279,7 @@ paths:
         - $ref: "#/components/parameters/Agent"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: AI per-agent Skill draft check results written to draft.aiChecks }
+        "200": { description: "Starts async AI check job; returns jobId with status pending. Poll GET /api/v1/ai-jobs/{jobId} for result. 429 QUOTA_EXCEEDED if daily limit reached" }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/draft/{agent}/fix-preview:
     post:
@@ -377,7 +377,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "201": { description: AI provider created }
+        "201": { description: AI provider created with optional daily_request_limit/daily_token_limit quota (null=unlimited) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers/{provider_id}:
     patch:
@@ -385,7 +385,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: AI provider updated }
+        "200": { description: AI provider updated (label/base_url/model/enabled/api_key_env/daily_request_limit/daily_token_limit) }
         default: { $ref: "#/components/responses/Error" }
     delete:
       operationId: deleteAiProvider
@@ -406,7 +406,19 @@ paths:
     get:
       operationId: getAiUsage
       responses:
-        "200": { description: Cumulative AI usage statistics }
+        "200": { description: Per-provider per-day AI quota usage statistics (UTC date roll) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-jobs/{jobId}:
+    get:
+      operationId: getAiJob
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Async AI job state (pending/running/completed/failed); completed carries SkillCheckResult in result, failed carries error message }
+        "404": { description: Job not found or expired (JOB_NOT_FOUND) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skill-artifacts:
     get:

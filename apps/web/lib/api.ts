@@ -1,6 +1,7 @@
 import {
   canonicalJson,
   type AiProviderConfig,
+  type AiQuotaUsage,
   type DashboardOverview,
   type DraftState,
   type FileOperation,
@@ -26,6 +27,16 @@ import {
 } from "@hunter-harness/contracts";
 
 import type { WebFileKind } from "./file-policy";
+
+// 异步 AI 检查 job 状态（GET /api/v1/ai-jobs/:id 响应；与 server AiJobStore 对齐）
+export interface AiJobState {
+  jobId: string;
+  status: "pending" | "running" | "completed" | "failed";
+  result: SkillCheckResult | null;
+  error: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface ProjectSummary {
   project_id: string;
@@ -179,14 +190,17 @@ export interface HunterApi {
   createAiProvider?(input: {
     provider_id: string; label: string; base_url: string; model: string;
     enabled: boolean; api_key_env: string; is_default?: boolean;
+    daily_request_limit?: number | null; daily_token_limit?: number | null;
   }): Promise<AiProviderConfig>;
   updateAiProvider?(providerId: string, revision: number, patch: {
     label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
+    daily_request_limit?: number | null; daily_token_limit?: number | null;
   }): Promise<AiProviderConfig>;
   deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
   testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
-  getAiUsage?(): Promise<{ requests: number; tokens: number }>;
-  runSkillAiChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
+  getAiUsage?(): Promise<AiQuotaUsage[]>;
+  runSkillAiChecks?(slug: string, agent: RegistryAgent): Promise<{ jobId: string; status: string }>;
+  getAiJob?(jobId: string): Promise<AiJobState>;
   previewSkillFix?(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan>;
   applySkillFix?(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<DraftState>;
   generateReleaseNote?(slug: string, agent: RegistryAgent): Promise<{ releaseNote: string | null; generatedAt: string; degraded?: boolean; reason?: string }>;
@@ -693,11 +707,13 @@ export class HttpHunterApi implements HunterApi {
   async createAiProvider(input: {
     provider_id: string; label: string; base_url: string; model: string;
     enabled: boolean; api_key_env: string; is_default?: boolean;
+    daily_request_limit?: number | null; daily_token_limit?: number | null;
   }): Promise<AiProviderConfig> {
     return this.request("POST", "/api/v1/ai-config/providers", { schema_version: 1, ...input });
   }
   async updateAiProvider(providerId: string, revision: number, patch: {
     label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
+    daily_request_limit?: number | null; daily_token_limit?: number | null;
   }): Promise<AiProviderConfig> {
     return this.request("PATCH", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), { schema_version: 1, revision, ...patch });
   }
@@ -707,11 +723,15 @@ export class HttpHunterApi implements HunterApi {
   async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
     return this.request("POST", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId) + "/test", {});
   }
-  async getAiUsage(): Promise<{ requests: number; tokens: number }> {
-    return this.request("GET", "/api/v1/ai-config/usage");
+  async getAiUsage(): Promise<AiQuotaUsage[]> {
+    const res = await this.request<{ usage: AiQuotaUsage[] }>("GET", "/api/v1/ai-config/usage");
+    return res.usage;
   }
-  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
+  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<{ jobId: string; status: string }> {
     return this.request("POST", this.draftPath(slug, agent, "/ai-checks"), {});
+  }
+  async getAiJob(jobId: string): Promise<AiJobState> {
+    return this.request("GET", "/api/v1/ai-jobs/" + encodeURIComponent(jobId));
   }
   async previewSkillFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
     return this.request("POST", this.draftPath(slug, agent, "/fix-preview"), { checkIds });

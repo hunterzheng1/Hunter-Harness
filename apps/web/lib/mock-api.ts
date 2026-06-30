@@ -1,5 +1,6 @@
 import type {
   AiProviderConfig,
+  AiQuotaUsage,
   DashboardOverview,
   DraftState,
   RegistryAgent,
@@ -24,6 +25,7 @@ import { bootstrapSkills, workflowOrder } from "./catalog";
 import { findDemoSourceSkill, sapFieldMapper } from "./demo-skills/sap-field-mapper";
 import { ApiClientError } from "./api";
 import type {
+  AiJobState,
   HunterApi,
   ProjectSummary,
   ProjectDetailModel,
@@ -288,8 +290,8 @@ const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
 }];
 
 const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
-  { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z" },
-  { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z" }
+  { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, daily_request_limit: 1000, daily_token_limit: 500000, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z" },
+  { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, daily_request_limit: null, daily_token_limit: null, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z" }
 ];
 
 const MOCK_DASHBOARD: DashboardOverview = {
@@ -666,15 +668,29 @@ export class MockApiClient implements HunterApi {
   async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
     return delay({ provider_id: providerId, ok: true, model: "deepseek-v4-pro" });
   }
-  async getAiUsage(): Promise<{ requests: number; tokens: number }> {
-    return delay({ requests: 128, tokens: 1842000 });
+  async getAiUsage(): Promise<AiQuotaUsage[]> {
+    return delay([
+      { provider_id: "deepseek", date: new Date().toISOString().slice(0, 10), requests: 128, tokens: 1842000 }
+    ]);
   }
-  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<SkillCheckResult> {
+  async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<{ jobId: string; status: string }> {
     void slug; void agent;
+    return delay({ jobId: "demo-ai-job", status: "pending" });
+  }
+  async getAiJob(jobId: string): Promise<AiJobState> {
+    void jobId;
+    const now = new Date();
     return delay({
-      items: [{ id: "AI_TRIGGER_QUALITY", label: "AI 触发质量", status: "green", message: "AI 检查通过（demo）", filePath: null, fixable: false }],
-      summary: { green: 1, yellow: 0, red: 0 },
-      checkedAt: new Date().toISOString()
+      jobId,
+      status: "completed",
+      result: {
+        items: [{ id: "AI_TRIGGER_QUALITY", label: "AI 触发质量", status: "green", message: "AI 检查通过（demo）", filePath: null, fixable: false }],
+        summary: { green: 1, yellow: 0, red: 0 },
+        checkedAt: now.toISOString()
+      },
+      error: null,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString()
     });
   }
   async previewSkillFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {

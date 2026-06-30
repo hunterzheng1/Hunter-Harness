@@ -13,7 +13,6 @@ import {
   type AiProviderConfig,
   type FileOperation,
   type FixPlanItem,
-  type SkillCheckResult,
   type SourceFile
 } from "@hunter-harness/contracts";
 import {
@@ -42,6 +41,7 @@ import { z, ZodError } from "zod";
 import multipart from "@fastify/multipart";
 import AdmZip from "adm-zip";
 
+import { AiJobStore } from "./ai/ai-job-store.js";
 import { createLlmClient } from "./ai/llm-factory.js";
 import { loadAiSecret } from "./ai/secret-loader.js";
 import { writeAudit } from "./audit/audit.js";
@@ -175,7 +175,9 @@ const aiProviderCreateSchema = z.object({
   model: z.string().min(1),
   enabled: z.boolean(),
   api_key_env: z.string().min(1),
-  is_default: z.boolean().optional()
+  is_default: z.boolean().optional(),
+  daily_request_limit: z.number().int().nonnegative().nullable().optional(),
+  daily_token_limit: z.number().int().nonnegative().nullable().optional()
 }).strict();
 
 const aiProviderUpdateSchema = z.object({
@@ -185,7 +187,9 @@ const aiProviderUpdateSchema = z.object({
   base_url: z.url().optional(),
   model: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
-  api_key_env: z.string().min(1).optional()
+  api_key_env: z.string().min(1).optional(),
+  daily_request_limit: z.number().int().nonnegative().nullable().optional(),
+  daily_token_limit: z.number().int().nonnegative().nullable().optional()
 }).strict();
 
 function routeRequestId(request: FastifyRequest): string {
@@ -317,6 +321,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   const { repository, storage } = options;
   const registry = new RegistryStore(storage, options.registryPersistence);
   await registry.initialize(options.bootstrapBundle);
+  // 异步 AI 检查 job 队列（§3.2 内存单例，TTL 1h 惰性过期；MVP 单进程，重启丢失）
+  const aiJobStore = new AiJobStore();
   // AI LlmClient 装配（§12.9）：按 defaultProvider 或指定 provider + secret file key 构造 DeepSeek 客户端。
   // 无配置/无 key/未启用 → null（路由层返回 AI_NOT_CONFIGURED）；key 只内存用，不写 store/log/响应。
   const llmFactory = options.aiLlmClientFactory ?? createLlmClient;
@@ -1503,7 +1509,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         model: body.model,
         enabled: body.enabled,
         api_key_env: body.api_key_env,
-        ...(body.is_default === undefined ? {} : { is_default: body.is_default })
+        ...(body.is_default === undefined ? {} : { is_default: body.is_default }),
+        ...(body.daily_request_limit === undefined ? {} : { daily_request_limit: body.daily_request_limit }),
+        ...(body.daily_token_limit === undefined ? {} : { daily_token_limit: body.daily_token_limit })
       });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "ai.provider.created",
@@ -1520,12 +1528,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { providerId } = request.params as { providerId: string };
     const body = aiProviderUpdateSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const patch: { label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string } = {};
+      const patch: { label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string; daily_request_limit?: number | null; daily_token_limit?: number | null } = {};
       if (body.label !== undefined) patch.label = body.label;
       if (body.base_url !== undefined) patch.base_url = body.base_url;
       if (body.model !== undefined) patch.model = body.model;
       if (body.enabled !== undefined) patch.enabled = body.enabled;
       if (body.api_key_env !== undefined) patch.api_key_env = body.api_key_env;
+      if (body.daily_request_limit !== undefined) patch.daily_request_limit = body.daily_request_limit;
+      if (body.daily_token_limit !== undefined) patch.daily_token_limit = body.daily_token_limit;
       const provider = await registry.updateProvider(providerId, body.revision, patch);
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "ai.provider.updated",
@@ -1561,7 +1571,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       }
       try {
         const res = await resolved.client.analyze({ system: "Reply with the single word: ok", user: "ping" });
-        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({ provider_id: providerId, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
         return { statusCode: 200, body: { provider_id: providerId, ok: true, model: resolved.provider.model } };
       } catch (err) {
         return { statusCode: 200, body: { provider_id: providerId, ok: false, error: err instanceof Error ? err.message : "unknown" } };
@@ -1574,9 +1584,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { requestId } = await authenticated(request, repository);
     const usage = registry.getUsage();
     reply.header("X-Request-Id", requestId);
-    return { ...usage, request_id: requestId };
+    return { usage, request_id: requestId };
   });
 
+  // 异步 AI 检查（§3.3）：POST 启动后台 job 返回 jobId + status:pending；前端轮询 GET /ai-jobs/:id。
+  // mutation 锁内创建 job（Idempotency-Key 防重复 POST 返回同 jobId）；job 后台执行在锁外。
+  // 同步阶段：验证 draft + resolveLlmClient + checkQuota 预检（超限 429 不调 LLM，INT-002）。
+  // job 后台：buildAiCheckPrompt → analyze → recordUsage → parseAiCheckResult → setDraftAiChecks + audit。
+  // LLM 抛错 → job.failed（draft.aiChecks 不写 degraded，前端轮询 failed 提示，INT-003）。
   app.post("/api/v1/skills/:slug/draft/:agent/ai-checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1594,43 +1609,46 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (resolved === null) {
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
       }
-      const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
-      const checkedAt = new Date().toISOString();
-      let content: string;
-      try {
+      // 配额预检（INT-002）：已达 daily_limit → 429 不调 LLM。
+      registry.checkQuota({ provider_id: resolved.provider.provider_id, requests: 1, tokens: 0 });
+      const jobId = `aijob_${uuidV7()}`;
+      aiJobStore.startJob(jobId, async () => {
+        const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
+        const checkedAt = new Date().toISOString();
         const res = await resolved.client.analyze(prompt);
-        content = res.content;
-        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
-      } catch (err) {
-        // LLM 超时/网络错 → 降级 AI_TIMEOUT yellow（不 500，不阻塞 draft）
-        const degraded: SkillCheckResult = {
-          items: [{
-            id: "AI_TIMEOUT",
-            label: "AI 分析请求失败",
-            status: "yellow",
-            message: err instanceof Error ? err.message : "AI analysis request failed",
-            filePath: null,
-            fixable: false
-          }],
-          summary: { green: 0, yellow: 1, red: 0 },
-          checkedAt
-        };
-        await registry.setDraftAiChecks({ slug, agent, aiChecks: degraded, checkedAt });
+        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        const aiChecks = parseAiCheckResult(res.content);
+        await registry.setDraftAiChecks({ slug, agent, aiChecks, checkedAt });
         await writeAudit(repository, {
           actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
-          targetId: slug, requestId, details: { slug, agent, degraded: true }
+          targetId: slug, requestId, details: { slug, agent, red: aiChecks.summary.red }
         });
-        return { statusCode: 200, body: degraded };
-      }
-      const aiChecks = parseAiCheckResult(content);
-      await registry.setDraftAiChecks({ slug, agent, aiChecks, checkedAt });
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "skill.draft.ai-checked",
-        targetId: slug, requestId, details: { slug, agent, red: aiChecks.summary.red }
+        return aiChecks;
       });
-      return { statusCode: 200, body: aiChecks };
+      return { statusCode: 200, body: { jobId, status: "pending" } };
     });
     return send(reply, requestId, result);
+  });
+
+  // 轮询 job 状态（§3.3）：completed 含 result；过期/不存在 404 JOB_NOT_FOUND。
+  app.get("/api/v1/ai-jobs/:jobId", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { jobId } = request.params as { jobId: string };
+    const job = aiJobStore.getJob(jobId);
+    if (job === undefined) {
+      throw new ServerDomainError(404, "JOB_NOT_FOUND", "ai job not found or expired", { jobId });
+    }
+    return send(reply, requestId, {
+      statusCode: 200,
+      body: {
+        jobId: job.jobId,
+        status: job.status,
+        result: job.result,
+        error: job.error,
+        createdAt: job.createdAt,
+        expiresAt: job.expiresAt
+      }
+    });
   });
 
   // AI 生成发布变更信息（§5.3）：读 diffDraft + ir → LLM 生成 releaseNote → 持久化 draft.releaseNote + audit。
@@ -1660,7 +1678,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       const generatedAt = new Date().toISOString();
       try {
         const res = await resolved.client.analyze(prompt);
-        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
         const releaseNote = parseReleaseNote(res.content);
         if (releaseNote === null) {
           // LLM 返回空/不可解析 → 降级 AI_PARSE_FAILED（不 500，不阻塞发布；前端提示手填）
@@ -1721,7 +1739,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       let parsed: FixSuggestionParse | null;
       try {
         const res = await resolved.client.analyze(prompt);
-        await registry.recordUsage({ requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
         parsed = parseFixSuggestionResult(res.content);
       } catch {
         // LLM 失败 → 降级 message-only（不 500）

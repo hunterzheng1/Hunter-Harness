@@ -20,6 +20,7 @@ import {
   workflowPackageVersionSchema,
   type AiConfigState,
   type AiProviderConfig,
+  type AiQuotaUsage,
   type AgentSkillConfig,
   type DraftState,
   type FixPlan,
@@ -282,8 +283,7 @@ export class RegistryStore {
   private readonly workflowPackageStore: WorkflowPackageStore;
   private compilerVersion = "1.0.0";
   private tagUsageCache: Map<string, number> | null = null;
-  private aiConfig: AiConfigState = { defaultProvider: null, providers: [] };
-  private aiUsage: { requests: number; tokens: number } = { requests: 0, tokens: 0 };
+  private aiConfig: AiConfigState = { defaultProvider: null, providers: [], usage: [] };
 
   constructor(
     private readonly storage: ArtifactStorage,
@@ -397,12 +397,19 @@ export class RegistryStore {
         if (parsed.success) this.workflowPackageDrafts.set(key, parsed.data);
       }
       const aiCfg = aiConfigStateSchema.safeParse(value.aiConfig);
-      this.aiConfig = aiCfg.success ? aiCfg.data : { defaultProvider: null, providers: [] };
+      this.aiConfig = aiCfg.success ? aiCfg.data : { defaultProvider: null, providers: [], usage: [] };
+      // COM-001：旧全局 aiUsage {requests,tokens} 迁移到默认 provider 当日条目（仅当 usage 为空且 defaultProvider 存在；已有 usage 不重复迁移）
       const usageRaw = value.aiUsage as { requests?: number; tokens?: number } | undefined;
-      this.aiUsage = {
-        requests: typeof usageRaw?.requests === "number" ? usageRaw.requests : 0,
-        tokens: typeof usageRaw?.tokens === "number" ? usageRaw.tokens : 0
-      };
+      const legacyRequests = typeof usageRaw?.requests === "number" ? usageRaw.requests : 0;
+      const legacyTokens = typeof usageRaw?.tokens === "number" ? usageRaw.tokens : 0;
+      if (this.aiConfig.usage.length === 0 && (legacyRequests > 0 || legacyTokens > 0) && this.aiConfig.defaultProvider !== null) {
+        this.aiConfig.usage.push({
+          provider_id: this.aiConfig.defaultProvider,
+          date: new Date().toISOString().slice(0, 10),
+          requests: legacyRequests,
+          tokens: legacyTokens
+        });
+      }
       return;
     }
     if (bundle === undefined) return;
@@ -429,8 +436,7 @@ export class RegistryStore {
       drafts: [...this.drafts.entries()].map(([slug, m]) => [slug, [...m.entries()]] as [string, [RegistryAgent, DraftState][]]),
       workflowPackages: [...this.workflowPackages.entries()].map(([key, state]) => [key, { package: state.package, versions: state.versions }]),
       workflowPackageDrafts: [...this.workflowPackageDrafts.entries()],
-      aiConfig: this.aiConfig,
-      aiUsage: this.aiUsage
+      aiConfig: this.aiConfig
     });
   }
 
@@ -972,6 +978,8 @@ export class RegistryStore {
     enabled: boolean;
     api_key_env: string;
     is_default?: boolean;
+    daily_request_limit?: number | null;
+    daily_token_limit?: number | null;
   }): Promise<AiProviderConfig> {
     const now = new Date().toISOString();
     const existing = this.aiConfig.providers.find((item) => item.provider_id === input.provider_id);
@@ -986,6 +994,8 @@ export class RegistryStore {
         is_default: false,
         api_key_env: input.api_key_env,
         revision: 1,
+        daily_request_limit: input.daily_request_limit ?? null,
+        daily_token_limit: input.daily_token_limit ?? null,
         created_at: now,
         updated_at: now
       });
@@ -998,6 +1008,8 @@ export class RegistryStore {
         model: input.model,
         enabled: input.enabled,
         api_key_env: input.api_key_env,
+        daily_request_limit: input.daily_request_limit !== undefined ? input.daily_request_limit : existing.daily_request_limit,
+        daily_token_limit: input.daily_token_limit !== undefined ? input.daily_token_limit : existing.daily_token_limit,
         revision: existing.revision + 1,
         updated_at: now
       });
@@ -1014,7 +1026,7 @@ export class RegistryStore {
   async updateProvider(
     providerId: string,
     revision: number,
-    patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env">>
+    patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env" | "daily_request_limit" | "daily_token_limit">>
   ): Promise<AiProviderConfig> {
     const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === providerId);
     if (idx === -1) {
@@ -1068,14 +1080,48 @@ export class RegistryStore {
     }
   }
 
-  getUsage(): { requests: number; tokens: number } {
-    return { ...this.aiUsage };
+  getUsage(): AiQuotaUsage[] {
+    return structuredClone(this.aiConfig.usage);
   }
 
-  async recordUsage(usage: { requests: number; tokens: number }): Promise<void> {
-    this.aiUsage.requests += usage.requests;
-    this.aiUsage.tokens += usage.tokens;
+  // per-provider per-day 累加，前置 checkQuota 超限抛 429 QUOTA_EXCEEDED（不累加）。
+  async recordUsage(input: { provider_id: string; requests: number; tokens: number }): Promise<void> {
+    this.checkQuota(input);
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.aiConfig.usage.find((u) => u.provider_id === input.provider_id && u.date === today);
+    if (entry === undefined) {
+      this.aiConfig.usage.push({
+        provider_id: input.provider_id,
+        date: today,
+        requests: input.requests,
+        tokens: input.tokens
+      });
+    } else {
+      entry.requests += input.requests;
+      entry.tokens += input.tokens;
+    }
     await this.persist();
+  }
+
+  checkQuota(input: { provider_id: string; requests: number; tokens: number }): void {
+    const provider = this.aiConfig.providers.find((p) => p.provider_id === input.provider_id);
+    if (provider === undefined) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: input.provider_id });
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const entry = this.aiConfig.usage.find((u) => u.provider_id === input.provider_id && u.date === today);
+    const usedRequests = entry?.requests ?? 0;
+    const usedTokens = entry?.tokens ?? 0;
+    if (provider.daily_request_limit !== null && usedRequests + input.requests > provider.daily_request_limit) {
+      throw new ServerDomainError(429, "QUOTA_EXCEEDED", "daily request limit exceeded", {
+        provider_id: input.provider_id, used: usedRequests, limit: provider.daily_request_limit, requested: input.requests
+      });
+    }
+    if (provider.daily_token_limit !== null && usedTokens + input.tokens > provider.daily_token_limit) {
+      throw new ServerDomainError(429, "QUOTA_EXCEEDED", "daily token limit exceeded", {
+        provider_id: input.provider_id, used: usedTokens, limit: provider.daily_token_limit, requested: input.tokens
+      });
+    }
   }
 
   createProposal(input: { ir: SkillIr; actorId: string; agent: RegistryAgent }): ProposalState {
