@@ -326,6 +326,39 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0"); // cursor 不受 claude-code publish 影响
   });
 
+  it("GET /skills/:slug/versions?agent= filters by agent; invalid agent → 422 (API-001)", async () => {
+    // 前置：跨 2 agent 发布 3 版本（cursor 1.0.0/1.0.1 + claude-code 1.0.0）
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cursor v1.0.0" }], "cursor");
+    expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() })).statusCode).toBe(200);
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cursor v1.0.1" }], "cursor");
+    expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.1" }, headers: headers() })).statusCode).toBe(200);
+    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cc v1.0.0" }], "claude-code");
+    expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() })).statusCode).toBe(200);
+
+    // 无 agent → 全部 3 版本
+    const allRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/versions", headers: headers() });
+    expect(allRes.statusCode).toBe(200);
+    expect(allRes.json().items).toHaveLength(3);
+
+    // ?agent=cursor → 仅 cursor 2 版本
+    const cursorRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/versions?agent=cursor", headers: headers() });
+    expect(cursorRes.statusCode).toBe(200);
+    const cursorItems = cursorRes.json().items;
+    expect(cursorItems).toHaveLength(2);
+    expect(cursorItems.every((v: { agent: string }) => v.agent === "cursor")).toBe(true);
+
+    // ?agent=claude-code → 仅 claude-code 1 版本
+    const ccRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/versions?agent=claude-code", headers: headers() });
+    expect(ccRes.statusCode).toBe(200);
+    expect(ccRes.json().items).toHaveLength(1);
+    expect(ccRes.json().items[0].agent).toBe("claude-code");
+
+    // ?agent=<invalid> → 422 VALIDATION_FAILED
+    const badRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/versions?agent=not-a-real-agent", headers: headers() });
+    expect(badRes.statusCode).toBe(422);
+    expect(badRes.json().error.code).toBe("VALIDATION_FAILED");
+  });
+
   it("PATCH /skills/:slug/default-agent switches default agent (API-010 / API-012 / API-013)", async () => {
     // 前置：发布 harness-cursor cursor@1.0.0（default 自动推断为 claude-code）
     await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "cursor");

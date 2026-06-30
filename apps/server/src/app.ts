@@ -949,8 +949,16 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   app.get("/api/v1/skills/:slug/versions", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
+    // agent 可选过滤：未传 → 返回全部版本；传了则按 agent 过滤（store.listVersions 支持）。
+    // 修复 #1 路由缺口：原实现 registry.listVersions(slug) 丢弃 ?agent= query，前端被迫客户端补偿。
+    const query = request.query as Record<string, string | undefined>;
+    const agentResult = registryAgentSchema.safeParse(query.agent);
+    if (query.agent !== undefined && !agentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent query param must be a valid registry agent");
+    }
+    const agent = agentResult.success ? agentResult.data : undefined;
     reply.header("X-Request-Id", requestId);
-    return { items: registry.listVersions(slug), request_id: requestId };
+    return { items: registry.listVersions(slug, agent), request_id: requestId };
   });
 
   app.get("/api/v1/skills/:slug/artifacts/:agent/download", async (request, reply) => {
