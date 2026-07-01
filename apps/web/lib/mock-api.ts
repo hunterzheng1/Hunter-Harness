@@ -668,6 +668,9 @@ export class MockApiClient implements HunterApi {
   async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
     return delay({ provider_id: providerId, ok: true, model: "deepseek-v4-pro" });
   }
+  async setAiProviderKey(providerId: string): Promise<{ provider_id: string; key_set: boolean }> {
+    return delay({ provider_id: providerId, key_set: true });
+  }
   async getAiUsage(): Promise<AiQuotaUsage[]> {
     return delay([
       { provider_id: "deepseek", date: new Date().toISOString().slice(0, 10), requests: 128, tokens: 1842000 }

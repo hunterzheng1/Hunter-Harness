@@ -43,7 +43,7 @@ import AdmZip from "adm-zip";
 
 import { MemoryAiJobStore, type AiJobStore } from "./ai/ai-job-store.js";
 import { createLlmClient } from "./ai/llm-factory.js";
-import { loadAiSecret } from "./ai/secret-loader.js";
+import { loadAiSecret, writeAiSecret } from "./ai/secret-loader.js";
 import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
@@ -1594,6 +1594,35 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       } catch (err) {
         return { statusCode: 200, body: { provider_id: providerId, ok: false, error: err instanceof Error ? err.message : "unknown" } };
       }
+    });
+    return send(reply, requestId, result);
+  });
+
+  // 写入 provider API key 到 secret file（不进 DB/日志/响应；只写文件 + 审计 key-set 事件）。
+  app.post("/api/v1/ai-config/providers/:providerId/key", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { providerId } = request.params as { providerId: string };
+    const body = z.object({
+      api_key: z.string().min(1),
+      base_url: z.string().optional(),
+      model: z.string().optional()
+    }).parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const provider = registry.listProviders().find((p) => p.provider_id === providerId);
+      if (provider === undefined) {
+        throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+      }
+      await writeAiSecret(config.aiSecretFile, providerId, {
+        apiKey: body.api_key,
+        ...(body.base_url !== undefined ? { baseUrl: body.base_url } : {}),
+        ...(body.model !== undefined ? { model: body.model } : {})
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "ai.provider.key-set",
+        targetId: providerId, requestId,
+        details: { provider_id: providerId }
+      });
+      return { statusCode: 200, body: { provider_id: providerId, key_set: true } };
     });
     return send(reply, requestId, result);
   });

@@ -26,6 +26,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-hunter_harness}
       POSTGRES_USER: ${POSTGRES_USER:-hunter_harness}
       ARTIFACT_ROOT: /var/lib/hunter-harness/artifacts
+      HUNTER_HARNESS_AI_SECRET_FILE: /var/lib/hunter-harness/secrets/ai-providers.json
       HUNTER_HARNESS_BOOTSTRAP_ACTOR: ${HUNTER_HARNESS_BOOTSTRAP_ACTOR:-actor_owner}
       HUNTER_HARNESS_BOOTSTRAP_NAME: ${HUNTER_HARNESS_BOOTSTRAP_NAME:-Owner}
     entrypoint:
@@ -39,6 +40,7 @@ services:
       - postgres_password
     volumes:
       - artifact-data:/var/lib/hunter-harness/artifacts
+      - ai-secrets:/var/lib/hunter-harness/secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,6 +74,7 @@ services:
 volumes:
   postgres-data:
   artifact-data:
+  ai-secrets:
 
 secrets:
   postgres_password:

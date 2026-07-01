@@ -198,6 +198,7 @@ export interface HunterApi {
   }): Promise<AiProviderConfig>;
   deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
   testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
+  setAiProviderKey?(providerId: string, key: { api_key: string; base_url?: string; model?: string }): Promise<{ provider_id: string; key_set: boolean }>;
   getAiUsage?(): Promise<AiQuotaUsage[]>;
   runSkillAiChecks?(slug: string, agent: RegistryAgent): Promise<{ jobId: string; status: string }>;
   getAiJob?(jobId: string): Promise<AiJobState>;
@@ -722,6 +723,9 @@ export class HttpHunterApi implements HunterApi {
   }
   async testAiProvider(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }> {
     return this.request("POST", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId) + "/test", {});
+  }
+  async setAiProviderKey(providerId: string, key: { api_key: string; base_url?: string; model?: string }): Promise<{ provider_id: string; key_set: boolean }> {
+    return this.request("POST", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId) + "/key", key);
   }
   async getAiUsage(): Promise<AiQuotaUsage[]> {
     const res = await this.request<{ usage: AiQuotaUsage[] }>("GET", "/api/v1/ai-config/usage");
