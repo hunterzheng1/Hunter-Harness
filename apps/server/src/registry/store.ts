@@ -57,7 +57,7 @@ import {
 } from "@hunter-harness/core";
 import AdmZip from "adm-zip";
 
-import { ServerDomainError } from "../repositories/interfaces.js";
+import { ServerDomainError, type TransactionRepository } from "../repositories/interfaces.js";
 import type { ArtifactStorage } from "../storage/interface.js";
 import type { RegistryPersistence } from "./persistence.js";
 import { WorkflowPackageStore, type WorkflowPackageState } from "./workflow-package-store.js";
@@ -423,7 +423,7 @@ export class RegistryStore {
     await this.persist();
   }
 
-  async persist(): Promise<void> {
+  async persist(tx?: TransactionRepository): Promise<void> {
     await this.persistence?.save({
       schemaVersion: 3,
       compilerVersion: this.compilerVersion,
@@ -437,7 +437,7 @@ export class RegistryStore {
       workflowPackages: [...this.workflowPackages.entries()].map(([key, state]) => [key, { package: state.package, versions: state.versions }]),
       workflowPackageDrafts: [...this.workflowPackageDrafts.entries()],
       aiConfig: this.aiConfig
-    });
+    }, tx);
   }
 
   private migrateSkillState(raw: unknown): SkillState | null {
@@ -779,7 +779,7 @@ export class RegistryStore {
     version: string;
     releaseNote?: string | null;
     actorId: string;
-  }): Promise<RegistrySkillVersion> {
+  }, tx?: TransactionRepository): Promise<RegistrySkillVersion> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
       throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
@@ -867,7 +867,7 @@ export class RegistryStore {
       });
     }
     this.invalidateTagUsageCache();
-    await this.persist();
+    await this.persist(tx);
     return structuredClone(version);
   }
 
@@ -1221,7 +1221,8 @@ export class RegistryStore {
 
   // per-agent publishIr：按指定 agent 产 1 制品 + 写 version（含 agent）+ 前进该 agent latestVersion。
   // 其他 agent 不动；detail.agents 经 agentsFor 重算（fallback 按新 latestVersion 状态）。
-  private async publishIr(
+  // 改 public 便于未来 proposal 路径事务化（prod-readiness-2）；本次 draft→publish 路由不直接调（用 publish）。
+  async publishIr(
     ir: SkillIr,
     proposalId: string | null,
     createdAt: string,

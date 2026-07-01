@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { registryAgentSchema, skillCheckResultSchema } from "./registry.js";
+
 // AI 供应商配置（不含 key 值；key 走 secret file/env，由 api_key_env 指示读取来源）
 // daily_*_limit: null = 不限；缺失时默认 null（兼容旧 provider 无 quota 字段，COM-002）
 export const aiProviderConfigSchema = z.object({
@@ -34,3 +36,17 @@ export const aiConfigStateSchema = z.object({
 export type AiProviderConfig = z.infer<typeof aiProviderConfigSchema>;
 export type AiQuotaUsage = z.infer<typeof aiQuotaUsageSchema>;
 export type AiConfigState = z.infer<typeof aiConfigStateSchema>;
+
+// 异步 AI 检查 job 状态（GET /api/v1/ai-jobs/:id 响应；与 server AiJobStore 对齐）。
+// slug + agent 为 dedup key：同 slug+agent 重复启动 job 返已有 jobId（治 R2 并发限制）。
+export const aiJobStateSchema = z.object({
+  jobId: z.string(),
+  slug: z.string(),
+  agent: registryAgentSchema,
+  status: z.enum(["pending", "running", "completed", "failed"]),
+  result: skillCheckResultSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  expiresAt: z.iso.datetime()
+}).strict();
+export type AiJobState = z.infer<typeof aiJobStateSchema>;
