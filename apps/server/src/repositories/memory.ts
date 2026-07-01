@@ -10,7 +10,8 @@ import type {
   ProposalRecord,
   ProposalSessionRecord,
   ReviewRecord,
-  ServerRepository
+  ServerRepository,
+  TransactionRepository
 } from "./interfaces.js";
 import { ServerDomainError } from "./interfaces.js";
 
@@ -417,6 +418,24 @@ export class MemoryRepository implements ServerRepository {
     };
     this.auditEvents.push(stored);
     return stored;
+  }
+
+  // memory 无真事务语义：no-op 壳，串行执行 fn 并警告（PG fallback 用）。
+  // tx 传 this——MemoryRepository 即 ServerRepository 视图（in-memory 写无回滚）。
+  async withTransaction<T>(fn: (tx: TransactionRepository) => Promise<T>): Promise<T> {
+    console.warn("[memory] withTransaction no-op");
+    return fn(this);
+  }
+
+  // memory 模式 registry 真相在 RegistryStore 内存 Map（不走 DB）；
+  // save/loadRegistryState 满足 ServerRepository 接口契约，存进程内（不持久，重启丢）。
+  private registryState: unknown = null;
+  async saveRegistryState(snapshot: unknown): Promise<void> {
+    this.registryState = snapshot;
+  }
+
+  async loadRegistryState(): Promise<unknown | null> {
+    return this.registryState;
   }
 
   async listAuditEvents(input?: { actorId: string; limit: number }): Promise<AuditEvent[]> {

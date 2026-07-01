@@ -1,7 +1,7 @@
-import type { ServerRepository } from "../repositories/interfaces.js";
+import type { TransactionRepository } from "../repositories/interfaces.js";
 
 export async function writeAudit(
-  repository: ServerRepository,
+  repository: TransactionRepository,
   input: {
     actorId: string;
     projectId: string | null;

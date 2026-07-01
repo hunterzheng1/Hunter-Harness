@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Hunter Harness API
-  version: 1.0.0
+  version: 1.1.0
 servers:
   - url: https://harness.example.com
 security:
@@ -424,7 +424,21 @@ paths:
           required: true
           schema: { type: string }
       responses:
-        "200": { description: Async AI job state (pending/running/completed/failed); completed carries SkillCheckResult in result, failed carries error message }
+        "200":
+          description: Async AI job state (pending/running/completed/failed); completed carries SkillCheckResult in result, failed carries error message. slug+agent are dedup key (R2).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  slug: { type: string, description: dedup key part 1 }
+                  agent: { type: string, enum: [claude-code, codex, cursor, generic, mcp] }
+                  status: { type: string, enum: [pending, running, completed, failed] }
+                  result: { description: SkillCheckResult or null }
+                  error: { type: string, nullable: true }
+                  createdAt: { type: string, format: date-time }
+                  expiresAt: { type: string, format: date-time }
         "404": { description: Job not found or expired (JOB_NOT_FOUND) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skill-artifacts:

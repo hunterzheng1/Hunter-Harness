@@ -114,7 +114,23 @@ export interface IdempotencyRecord {
   response: unknown;
 }
 
-export interface ServerRepository {
+// 事务内可用的 ServerRepository 子集视图（PgTransactionRepository 绑定 PoolClient 实现走 client）。
+// publish 路由 withTransaction 内的 writeAudit / persist / idempotency 通过此接口。
+export interface TransactionRepository {
+  appendAudit(event: Omit<AuditEvent, "eventId" | "createdAt">): Promise<AuditEvent>;
+  saveRegistryState(snapshot: unknown): Promise<void>;
+  loadRegistryState(): Promise<unknown | null>;
+  getIdempotency(input: {
+    actorId: string;
+    method: string;
+    path: string;
+    key: string;
+  }): Promise<IdempotencyRecord | null>;
+  putIdempotency(record: IdempotencyRecord): Promise<void>;
+}
+
+export interface ServerRepository extends TransactionRepository {
+  withTransaction<T>(fn: (tx: TransactionRepository) => Promise<T>): Promise<T>;
   acquireIdempotencyLock(input: {
     actorId: string;
     method: string;
@@ -167,16 +183,8 @@ export interface ServerRepository {
     limit: number;
     cursor: string | null;
   }): Promise<{ items: ArtifactRecord[]; nextCursor: string | null }>;
-  appendAudit(event: Omit<AuditEvent, "eventId" | "createdAt">): Promise<AuditEvent>;
   listAuditEvents(input: {
     actorId: string;
     limit: number;
   }): Promise<AuditEvent[]>;
-  getIdempotency(input: {
-    actorId: string;
-    method: string;
-    path: string;
-    key: string;
-  }): Promise<IdempotencyRecord | null>;
-  putIdempotency(record: IdempotencyRecord): Promise<void>;
 }

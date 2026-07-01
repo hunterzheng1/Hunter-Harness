@@ -1,20 +1,21 @@
-import type { SkillCheckResult } from "@hunter-harness/contracts";
+import type { AiJobState, RegistryAgent, SkillCheckResult } from "@hunter-harness/contracts";
+import { uuidV7 } from "@hunter-harness/core";
 
-// 异步 AI 检查 job 状态。MVP 单进程内存队列，不依赖外部 job store（Redis 等 deferred）。
-export type AiJobStatus = "pending" | "running" | "completed" | "failed";
+export type AiJobStatus = AiJobState["status"];
 
-export interface AiJobState {
-  jobId: string;
-  status: AiJobStatus;
-  result: SkillCheckResult | null;
-  error: string | null;
-  createdAt: string;
-  expiresAt: string;
+// AiJobStore 抽象：多实例共享持久化（PG ai_jobs）+ memory fallback。
+// startJob(slug,agent,fn) dedup：同 slug+agent active job 返已有（治 R2 并发限制）。
+// recoverOrphans：进程重启后清理卡住的 running/pending（治 R3，PG 实现才需）。
+export interface AiJobStore {
+  startJob(slug: string, agent: RegistryAgent, fn: () => Promise<SkillCheckResult>): Promise<AiJobState>;
+  getJob(jobId: string): Promise<AiJobState | undefined>;
+  cleanupExpired(): Promise<void>;
+  recoverOrphans(): Promise<void>;
 }
 
-// 内存 job 队列：Map<jobId, AiJobState> + TTL（惰性过期：getJob 检查 expiresAt，过期则删除并返回 undefined）。
-// 单进程非持久——重启丢失。适用于 MVP 同步 30s 超时改异步的过渡方案。
-export class AiJobStore {
+// memory 单进程实现（fallback）：Map + TTL 惰性过期。重启丢失（PG 实现才持久化）。
+// 适用于无 PG 环境的 MVP / 测试；生产多实例用 PgAiJobStore。
+export class MemoryAiJobStore implements AiJobStore {
   private readonly jobs = new Map<string, AiJobState>();
   private readonly ttlMs: number;
 
@@ -22,11 +23,18 @@ export class AiJobStore {
     this.ttlMs = ttlMs;
   }
 
-  // 启动后台 job：立即设 running 并返回，fn 异步执行完成设 completed/failed。
-  startJob(jobId: string, fn: () => Promise<SkillCheckResult>): AiJobState {
+  // dedup: 同 (slug,agent) 有 active job 返已有；否则新建 jobId + 后台 fn。
+  async startJob(slug: string, agent: RegistryAgent, fn: () => Promise<SkillCheckResult>): Promise<AiJobState> {
+    const existing = this.findActive(slug, agent);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const jobId = `aijob_${uuidV7()}`;
     const now = new Date();
     const job: AiJobState = {
       jobId,
+      slug,
+      agent,
       status: "running",
       result: null,
       error: null,
@@ -52,8 +60,21 @@ export class AiJobStore {
     return job;
   }
 
+  // 查 active (running) job by (slug, agent)；过期先惰性删除。
+  private findActive(slug: string, agent: RegistryAgent): AiJobState | undefined {
+    for (const job of this.jobs.values()) {
+      if (job.slug === slug && job.agent === agent && job.status === "running") {
+        if (new Date(job.expiresAt).getTime() > Date.now()) {
+          return job;
+        }
+        this.jobs.delete(job.jobId);
+      }
+    }
+    return undefined;
+  }
+
   // 取 job 状态；过期（expiresAt <= now）惰性删除返回 undefined，路由层映射 404 JOB_NOT_FOUND。
-  getJob(jobId: string): AiJobState | undefined {
+  async getJob(jobId: string): Promise<AiJobState | undefined> {
     const job = this.jobs.get(jobId);
     if (job === undefined) return undefined;
     if (new Date(job.expiresAt).getTime() <= Date.now()) {
@@ -61,5 +82,19 @@ export class AiJobStore {
       return undefined;
     }
     return job;
+  }
+
+  async cleanupExpired(): Promise<void> {
+    const now = Date.now();
+    for (const [jobId, job] of this.jobs) {
+      if (new Date(job.expiresAt).getTime() <= now) {
+        this.jobs.delete(jobId);
+      }
+    }
+  }
+
+  // memory 无孤儿（进程重启丢失，无持久 running 态）。PG 实现才需启动恢复。
+  async recoverOrphans(): Promise<void> {
+    // no-op
   }
 }

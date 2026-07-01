@@ -5,6 +5,7 @@ import { Pool } from "pg";
 
 import { createServer } from "./app.js";
 import { loadBootstrapBundle } from "@hunter-harness/core";
+import { PgAiJobStore } from "./ai/ai-job-store-pg.js";
 import { PostgresRegistryPersistence } from "./registry/persistence.js";
 import { runMigrations } from "./repositories/migrate.js";
 import { PostgresRepository } from "./repositories/postgres.js";
@@ -58,6 +59,7 @@ const app = await createServer({
   storage: new LocalArtifactStorage(artifactRoot),
   bootstrapBundle,
   registryPersistence: new PostgresRegistryPersistence(pool),
+  aiJobStore: new PgAiJobStore(pool),
   logger: true
 });
 const port = Number(process.env.PORT ?? "3001");

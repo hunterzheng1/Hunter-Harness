@@ -9,6 +9,7 @@ import {
   addOperationSchema,
   agentSkillConfigSchema,
   aiConfigStateSchema,
+  aiJobStateSchema,
   aiProviderConfigSchema,
   aiQuotaUsageSchema,
   apiErrorEnvelopeSchema,
@@ -502,6 +503,59 @@ describe("skill-center schemas", () => {
     expect(setDefaultAgentRequestSchema.safeParse({ defaultAgent: "invalid", revision: 1 }).success).toBe(false);
     expect(setDefaultAgentRequestSchema.safeParse({ revision: 1 }).success).toBe(false);
     expect(() => setDefaultAgentRequestSchema.parse({ defaultAgent: "cursor", revision: 1, extra: 1 })).toThrow();
+  });
+});
+
+describe("aiJobState schema (dedup key: slug+agent)", () => {
+  const validAiJob = {
+    jobId: "aijob_1",
+    slug: "harness-review",
+    agent: "claude-code",
+    status: "running",
+    result: null,
+    error: null,
+    createdAt: "2026-07-01T00:00:00Z",
+    expiresAt: "2026-07-01T01:00:00Z"
+  };
+
+  it("parses valid AiJobState with slug+agent", () => {
+    const parsed = aiJobStateSchema.parse(validAiJob);
+    expect(parsed.slug).toBe("harness-review");
+    expect(parsed.agent).toBe("claude-code");
+    expect(parsed.status).toBe("running");
+  });
+
+  it("rejects missing slug (dedup key required)", () => {
+    const { slug, ...withoutSlug } = validAiJob;
+    void slug;
+    expect(aiJobStateSchema.safeParse(withoutSlug).success).toBe(false);
+  });
+
+  it("rejects missing agent (dedup key required)", () => {
+    const { agent, ...withoutAgent } = validAiJob;
+    void agent;
+    expect(aiJobStateSchema.safeParse(withoutAgent).success).toBe(false);
+  });
+
+  it("rejects invalid agent (must be registry agent)", () => {
+    expect(aiJobStateSchema.safeParse({ ...validAiJob, agent: "unknown-agent" }).success).toBe(false);
+  });
+
+  it("rejects unknown fields (strict)", () => {
+    expect(() => aiJobStateSchema.parse({ ...validAiJob, extra: 1 })).toThrow();
+  });
+
+  it("accepts completed status with SkillCheckResult", () => {
+    const completed = {
+      ...validAiJob,
+      status: "completed",
+      result: {
+        items: [],
+        summary: { green: 0, yellow: 0, red: 0 },
+        checkedAt: "2026-07-01T00:00:00Z"
+      }
+    };
+    expect(aiJobStateSchema.parse(completed).status).toBe("completed");
   });
 });
 

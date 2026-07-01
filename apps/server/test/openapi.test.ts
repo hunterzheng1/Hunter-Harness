@@ -76,4 +76,24 @@ describe("OpenAPI v1 contract", () => {
     );
     expect(new Set(operationIds).size).toBe(operationIds.length);
   });
+
+  it("ai-jobs GET 200 response schema includes slug+agent dedup key (Y9)", async () => {
+    const document = parseYaml(await readFile(
+      new URL("../openapi/hunter-harness-v1.yaml", import.meta.url),
+      "utf8"
+    )) as {
+      paths: Record<string, Record<string, {
+        responses: Record<string, {
+          content?: { "application/json"?: { schema?: { properties?: Record<string, { enum?: string[] }> } } };
+        }>;
+      }>>;
+    };
+    const schema = document.paths["/api/v1/ai-jobs/{jobId}"]?.get?.responses["200"]
+      ?.content?.["application/json"]?.schema;
+    const props = Object.keys(schema?.properties ?? {});
+    expect(props).toEqual(expect.arrayContaining([
+      "jobId", "slug", "agent", "status", "result", "error", "createdAt", "expiresAt"
+    ]));
+    expect(schema?.properties?.agent?.enum).toEqual(["claude-code", "codex", "cursor", "generic", "mcp"]);
+  });
 });

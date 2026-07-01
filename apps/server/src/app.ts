@@ -41,7 +41,7 @@ import { z, ZodError } from "zod";
 import multipart from "@fastify/multipart";
 import AdmZip from "adm-zip";
 
-import { AiJobStore } from "./ai/ai-job-store.js";
+import { MemoryAiJobStore, type AiJobStore } from "./ai/ai-job-store.js";
 import { createLlmClient } from "./ai/llm-factory.js";
 import { loadAiSecret } from "./ai/secret-loader.js";
 import { writeAudit } from "./audit/audit.js";
@@ -65,6 +65,8 @@ export interface CreateServerOptions {
   logger?: boolean;
   bootstrapBundle?: BootstrapBundle;
   registryPersistence?: RegistryPersistence;
+  // AiJobStore 注入（PG 环境传 PgAiJobStore 多实例共享 + 启动 recoverOrphans；缺省 MemoryAiJobStore 单进程 fallback）
+  aiJobStore?: AiJobStore;
   // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
   aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient;
 }
@@ -321,8 +323,10 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   const { repository, storage } = options;
   const registry = new RegistryStore(storage, options.registryPersistence);
   await registry.initialize(options.bootstrapBundle);
-  // 异步 AI 检查 job 队列（§3.2 内存单例，TTL 1h 惰性过期；MVP 单进程，重启丢失）
-  const aiJobStore = new AiJobStore();
+  // AiJobStore 注入（§3.2）：PG 环境传 PgAiJobStore 多实例共享；缺省 MemoryAiJobStore 单进程 fallback。
+  const aiJobStore = options.aiJobStore ?? new MemoryAiJobStore();
+  // R3：启动时清理孤儿 running/pending job（PG 实现标 failed 释放 partial unique index；memory no-op）。
+  await aiJobStore.recoverOrphans();
   // AI LlmClient 装配（§12.9）：按 defaultProvider 或指定 provider + secret file key 构造 DeepSeek 客户端。
   // 无配置/无 key/未启用 → null（路由层返回 AI_NOT_CONFIGURED）；key 只内存用，不写 store/log/响应。
   const llmFactory = options.aiLlmClientFactory ?? createLlmClient;
@@ -1081,12 +1085,18 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = publishSkillRequestSchema.parse(request.body);
-      const version = await registry.publish({
-        slug, agent, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
-      });
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "skill.published",
-        targetId: slug, requestId, details: { slug, agent, version: version.version }
+      // R3 事务化：publish（含内部 persist(tx)）+ writeAudit(tx) 包入 withTransaction，
+      // audit 与 registry_state 原子（治 R3）。memory fallback withTransaction no-op（串行无真回滚）；
+      // PG 失败 → registry_state/audit 都不写 + version 不持久（in-memory 污染风险 design §3.5 接受，重启从 registry_state 恢复）。
+      const version = await repository.withTransaction(async (tx) => {
+        const v = await registry.publish({
+          slug, agent, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
+        }, tx);
+        await writeAudit(tx, {
+          actorId: actor.actorId, projectId: null, action: "skill.published",
+          targetId: slug, requestId, details: { slug, agent, version: v.version }
+        });
+        return v;
       });
       return { statusCode: 200, body: version };
     });
@@ -1619,8 +1629,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       }
       // 配额预检（INT-002）：已达 daily_limit → 429 不调 LLM。
       registry.checkQuota({ provider_id: resolved.provider.provider_id, requests: 1, tokens: 0 });
-      const jobId = `aijob_${uuidV7()}`;
-      aiJobStore.startJob(jobId, async () => {
+      // AiJobStore.startJob(slug,agent,fn) dedup：同 slug+agent active job 返已有 jobId（治 R2）。
+      const job = await aiJobStore.startJob(slug, agent, async () => {
         const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
         const checkedAt = new Date().toISOString();
         const res = await resolved.client.analyze(prompt);
@@ -1633,7 +1643,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         });
         return aiChecks;
       });
-      return { statusCode: 200, body: { jobId, status: "pending" } };
+      return { statusCode: 200, body: { jobId: job.jobId, status: "pending" } };
     });
     return send(reply, requestId, result);
   });
@@ -1642,7 +1652,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   app.get("/api/v1/ai-jobs/:jobId", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { jobId } = request.params as { jobId: string };
-    const job = aiJobStore.getJob(jobId);
+    const job = await aiJobStore.getJob(jobId);
     if (job === undefined) {
       throw new ServerDomainError(404, "JOB_NOT_FOUND", "ai job not found or expired", { jobId });
     }
@@ -1650,6 +1660,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       statusCode: 200,
       body: {
         jobId: job.jobId,
+        slug: job.slug,
+        agent: job.agent,
         status: job.status,
         result: job.result,
         error: job.error,

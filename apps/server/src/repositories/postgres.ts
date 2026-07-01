@@ -13,9 +13,11 @@ import type {
   ProposalRecord,
   ProposalSessionRecord,
   ReviewRecord,
-  ServerRepository
+  ServerRepository,
+  TransactionRepository
 } from "./interfaces.js";
 import { ServerDomainError } from "./interfaces.js";
+import { PgTransactionRepository } from "./transaction-repository.js";
 
 function id(prefix: string): string {
   return prefix + randomUUID().replaceAll("-", "");
@@ -742,5 +744,30 @@ export class PostgresRepository implements ServerRepository {
         JSON.stringify(record.response)
       ]
     );
+  }
+
+  // 事务边界：fn 收到 PgTransactionRepository（绑定 PoolClient，SQL 走 client）。
+  // publish 路由用它包 publish+persist+writeAudit，确保 audit 与 registry_state 原子（治 R3）。
+  async withTransaction<T>(fn: (tx: TransactionRepository) => Promise<T>): Promise<T> {
+    return this.transaction(async (client) => fn(new PgTransactionRepository(client)));
+  }
+
+  // 非事务路径的 registry_state 读写（接口契约；实际非事务 persist 由 PostgresRegistryPersistence 直接走 pool，
+  // 事务内 persist 走 PgTransactionRepository.saveRegistryState）。
+  async saveRegistryState(snapshot: unknown): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO registry_state(state_id, snapshot, updated_at)
+       VALUES ('canonical', $1::jsonb, now())
+       ON CONFLICT (state_id) DO UPDATE
+       SET snapshot = EXCLUDED.snapshot, updated_at = now()`,
+      [JSON.stringify(snapshot)]
+    );
+  }
+
+  async loadRegistryState(): Promise<unknown | null> {
+    const result = await this.pool.query(
+      "SELECT snapshot FROM registry_state WHERE state_id = 'canonical'"
+    );
+    return result.rowCount === 0 ? null : result.rows[0]?.snapshot ?? null;
   }
 }
