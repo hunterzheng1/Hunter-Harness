@@ -78,6 +78,7 @@ $RECYCLE.BIN/
 tmp/
 temp/
 .worktrees/
+.playwright-mcp/
 /packages/cli/resources/
 
 # ===== 本机部署/调试产物 =====
