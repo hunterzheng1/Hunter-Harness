@@ -315,13 +315,12 @@ export function AiConfigPanel() {
         return;
       }
       // update 分支：遇 REVISION_CONFLICT 自动 refresh 最新 revision 重试一次（乐观锁冲突兜底）
-      const applyUpdate = async (rev: number): Promise<AiProviderConfig> => {
+      const applyUpdate = async (rev: number): Promise<void> => {
         const updated = await api.updateAiProvider?.(editing.provider_id, rev, payload);
         if (updated !== undefined) {
           setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, updated.revision); return m; });
           patch(editing.provider_id, () => ({ ...toDraft(updated), keySet: nextKeySet }));
         }
-        return updated;
       };
       const rev = revisions.get(editing.provider_id) ?? 1;
       try {
