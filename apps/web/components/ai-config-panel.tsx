@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { browserApi, type HunterApi } from "../lib/api";
+import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
 import { mockApi } from "../lib/mock-api";
 import type { AiProviderConfig, AiProviderWithKeySet, AiQuotaUsage } from "@hunter-harness/contracts";
 import { useI18n } from "../lib/i18n";
@@ -298,14 +298,7 @@ export function AiConfigPanel() {
     const payload = editing.apiKey !== "" ? { ...base, api_key: editing.apiKey } : base;
     const nextKeySet = editing.apiKey !== "" ? true : editing.keySet;
     try {
-      if (revisions.has(editing.provider_id)) {
-        const rev = revisions.get(editing.provider_id) ?? 1;
-        const updated = await api.updateAiProvider?.(editing.provider_id, rev, payload);
-        if (updated !== undefined) {
-          setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, updated.revision); return m; });
-          patch(editing.provider_id, () => ({ ...toDraft(updated), keySet: nextKeySet }));
-        }
-      } else {
+      if (!revisions.has(editing.provider_id)) {
         const created = await api.createAiProvider?.({
           provider_id: editing.provider_id,
           label: editing.label,
@@ -316,6 +309,32 @@ export function AiConfigPanel() {
         if (created !== undefined) {
           setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, created.revision); return m; });
           patch(editing.provider_id, () => ({ ...toDraft(created), keySet: nextKeySet }));
+        }
+        setToast({ msg: t.aiConfig.saveSuccess.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
+        setEditingId(null);
+        return;
+      }
+      // update 分支：遇 REVISION_CONFLICT 自动 refresh 最新 revision 重试一次（乐观锁冲突兜底）
+      const applyUpdate = async (rev: number): Promise<AiProviderConfig> => {
+        const updated = await api.updateAiProvider?.(editing.provider_id, rev, payload);
+        if (updated !== undefined) {
+          setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, updated.revision); return m; });
+          patch(editing.provider_id, () => ({ ...toDraft(updated), keySet: nextKeySet }));
+        }
+        return updated;
+      };
+      const rev = revisions.get(editing.provider_id) ?? 1;
+      try {
+        await applyUpdate(rev);
+      } catch (err) {
+        if (err instanceof ApiClientError && err.code === "REVISION_CONFLICT") {
+          // 本地 revision 落后（如 setEnabledExclusive 联动未同步本地），拉最新 revision 重试一次
+          const fresh = await api.listAiProviders?.();
+          const freshProvider = fresh?.items.find((p) => p.provider_id === editing.provider_id);
+          if (freshProvider === undefined) throw err;
+          await applyUpdate(freshProvider.revision);
+        } else {
+          throw err;
         }
       }
       setToast({ msg: t.aiConfig.saveSuccess.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
