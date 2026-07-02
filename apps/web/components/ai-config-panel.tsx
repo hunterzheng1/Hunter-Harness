@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
 import { mockApi } from "../lib/mock-api";
@@ -143,6 +143,9 @@ export function AiConfigPanel() {
   const { t } = useI18n();
   const [providers, setProviders] = useState<ProviderDraft[]>([]);
   const [revisions, setRevisions] = useState<Map<string, number>>(new Map());
+  const revisionsRef = useRef<Map<string, number>>(new Map());
+  // Keep ref in sync with state so async closures always read latest revision
+  useEffect(() => { revisionsRef.current = revisions; }, [revisions]);
   const [usage, setUsage] = useState<UsageRecord[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [usageProviderId, setUsageProviderId] = useState<string | null>(null);
@@ -219,7 +222,7 @@ export function AiConfigPanel() {
           }
         }
       };
-      const rev = revisions.get(id) ?? 1;
+      const rev = revisionsRef.current.get(id) ?? 1;
       try {
         await doUpdate(rev);
       } catch (err) {
@@ -312,7 +315,7 @@ export function AiConfigPanel() {
     const payload = editing.apiKey !== "" ? { ...base, api_key: editing.apiKey } : base;
     const nextKeySet = editing.apiKey !== "" ? true : editing.keySet;
     try {
-      if (!revisions.has(editing.provider_id)) {
+      if (!revisionsRef.current.has(editing.provider_id)) {
         const created = await api.createAiProvider?.({
           provider_id: editing.provider_id,
           label: editing.label,
@@ -336,7 +339,7 @@ export function AiConfigPanel() {
           patch(editing.provider_id, () => ({ ...toDraft(updated), keySet: nextKeySet }));
         }
       };
-      const rev = revisions.get(editing.provider_id) ?? 1;
+      const rev = revisionsRef.current.get(editing.provider_id) ?? 1;
       try {
         await applyUpdate(rev);
       } catch (err) {
@@ -369,7 +372,7 @@ export function AiConfigPanel() {
           setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
         }
       };
-      const rev = revisions.get(id) ?? 1;
+      const rev = revisionsRef.current.get(id) ?? 1;
       try {
         await doUpdate(rev);
       } catch (err) {
