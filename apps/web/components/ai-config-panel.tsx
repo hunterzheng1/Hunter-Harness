@@ -2,9 +2,15 @@
 
 import { useEffect, useState } from "react";
 
-import { browserApi } from "../lib/api";
+import { browserApi, type HunterApi } from "../lib/api";
+import { mockApi } from "../lib/mock-api";
 import type { AiProviderConfig, AiProviderWithKeySet, AiQuotaUsage } from "@hunter-harness/contracts";
 import { useI18n } from "../lib/i18n";
+
+// demo 模式（NEXT_PUBLIC_HUNTER_HARNESS_DEMO=true）用 MockApiClient，不调真治理 API
+function resolveApi(): HunterApi {
+  return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
+}
 
 // ── 纯前端 UI 版本（先设计，功能后续接入） ───────────────────
 // 列表态：单选互斥启用 + toast 反馈 + 用量弹窗
@@ -145,7 +151,7 @@ export function AiConfigPanel() {
   const [toast, setToast] = useState<Toast | null>(null);
 
   useEffect(() => {
-    const api = browserApi();
+    const api = resolveApi();
     Promise.all([
       api.listAiProviders?.() ?? Promise.resolve({ items: [] as AiProviderWithKeySet[], default_provider: null }),
       api.getAiUsage?.() ?? Promise.resolve([] as AiQuotaUsage[])
@@ -153,7 +159,12 @@ export function AiConfigPanel() {
       setProviders(list.items.map(toDraft));
       setRevisions(new Map(list.items.map((p) => [p.provider_id, p.revision])));
       setUsage(u.map(toUsageRecord));
-    }).catch(() => setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" }));
+    }).catch(() => {
+      // 加载失败（未配 token / 服务器不可达）静默降级为空列表，不弹 danger toast——
+      // token 缺失是预期状态（用户尚未配置），非错误；用户主动操作失败才提示
+      setProviders([]);
+      setUsage([]);
+    });
   }, [t]);
 
   useEffect(() => {
@@ -181,11 +192,11 @@ export function AiConfigPanel() {
     const prev = providers;
     setProviders(next);
     try {
-      const api = browserApi();
+      const api = resolveApi();
       await api.reorderAiProviders?.(next.map((p) => p.provider_id));
     } catch {
       setProviders(prev);
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -197,7 +208,7 @@ export function AiConfigPanel() {
     const prev = providers;
     patch(id, (cur) => ({ ...cur, enabled: newEnabled }));
     try {
-      const api = browserApi();
+      const api = resolveApi();
       const rev = revisions.get(id) ?? 1;
       const updated = await api.updateAiProvider?.(id, rev, { enabled: newEnabled });
       if (updated !== undefined) {
@@ -209,7 +220,7 @@ export function AiConfigPanel() {
       }
     } catch {
       setProviders(prev);
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -227,7 +238,7 @@ export function AiConfigPanel() {
     if (copy.models[0] !== undefined) copy.selectedModelId = copy.models[0].id;
     const payload = fromDraft(copy);
     try {
-      const api = browserApi();
+      const api = resolveApi();
       const created = await api.createAiProvider?.({
         provider_id: copy.provider_id,
         label: copy.label,
@@ -241,22 +252,22 @@ export function AiConfigPanel() {
       }
       setToast({ msg: t.aiConfig.duplicated.replace("{provider}", src.label), tone: "success" });
     } catch {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
   async function testConnection(id: string): Promise<void> {
     const p = providers.find((x) => x.provider_id === id);
     try {
-      const api = browserApi();
+      const api = resolveApi();
       const res = await api.testAiProvider?.(id);
       if (res?.ok === true) {
         setToast({ msg: t.aiConfig.testPassed.replace("{provider}", p?.label ?? ""), tone: "success" });
       } else {
-        setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+        setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
       }
     } catch {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -264,13 +275,13 @@ export function AiConfigPanel() {
     const target = providers.find((p) => p.provider_id === id);
     if (target === undefined) return;
     try {
-      const api = browserApi();
+      const api = resolveApi();
       await api.deleteAiProvider?.(id);
       setProviders((cur) => cur.filter((p) => p.provider_id !== id));
       setConfirmDeleteId(null);
       setToast({ msg: t.aiConfig.deletedNotice.replace("{provider}", target.label), tone: "info" });
     } catch {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -282,7 +293,7 @@ export function AiConfigPanel() {
 
   async function saveDetail(): Promise<void> {
     if (editing === null) return;
-    const api = browserApi();
+    const api = resolveApi();
     const base = fromDraft(editing);
     const payload = editing.apiKey !== "" ? { ...base, api_key: editing.apiKey } : base;
     const nextKeySet = editing.apiKey !== "" ? true : editing.keySet;
@@ -318,7 +329,7 @@ export function AiConfigPanel() {
     const prev = providers;
     patch(id, (cur) => ({ ...cur, selectedModelId: mid }));
     try {
-      const api = browserApi();
+      const api = resolveApi();
       const rev = revisions.get(id) ?? 1;
       const updated = await api.updateAiProvider?.(id, rev, { selected_model_id: mid });
       if (updated !== undefined) {
@@ -326,7 +337,7 @@ export function AiConfigPanel() {
       }
     } catch {
       setProviders(prev);
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -469,11 +480,12 @@ function ProviderRow(props: ProviderRowProps) {
       >⋮⋮</span>
       <span className={`service-dot ${p.enabled ? "operational" : "disabled"}`} />
       <div className="provider-row-main">
-        <strong>{p.label || p.provider_id}</strong>
+        <div className="provider-row-title">
+          <strong>{p.label || p.provider_id}</strong>
+          <span className={`key-badge ${p.keySet ? "set" : "not-set"}`}>{p.keySet ? t.aiConfig.keySet : t.aiConfig.keyNotSet}</span>
+        </div>
         <small>{p.note || p.base_url}</small>
       </div>
-
-      <span className={`key-badge ${p.keySet ? "set" : "not-set"}`}>{p.keySet ? t.aiConfig.keySet : t.aiConfig.keyNotSet}</span>
 
       <label className="provider-model-select">
         <select value={selectedModel?.id ?? ""} onChange={(e) => props.onSelectModel(e.target.value)} disabled={p.models.length === 0}>

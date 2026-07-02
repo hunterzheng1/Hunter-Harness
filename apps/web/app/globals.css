@@ -3889,6 +3889,27 @@ tbody tr:last-child td {
   color: var(--muted); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.provider-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.provider-row-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-badge {
+  flex-shrink: 0;
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 10.5px; font-weight: 700;
+  white-space: nowrap;
+}
+.key-badge.set {
+  color: var(--success);
+  background: var(--success-bg);
+  border: 1px solid color-mix(in srgb, var(--success) 40%, var(--line));
+}
+.key-badge.not-set {
+  color: var(--muted-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+}
+.api-key-input .key-badge { margin-left: auto; }
 
 .provider-model-select { display: grid; }
 .provider-model-select select {
