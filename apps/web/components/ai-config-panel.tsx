@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { browserApi } from "../lib/api";
-import type { AiProviderConfig, AiQuotaUsage } from "@hunter-harness/contracts";
+import type { AiProviderConfig, AiProviderWithKeySet, AiQuotaUsage } from "@hunter-harness/contracts";
 import { useI18n } from "../lib/i18n";
 
 // ── 纯前端 UI 版本（先设计，功能后续接入） ───────────────────
@@ -28,6 +28,7 @@ interface ProviderDraft {
   note: string; // 备注
   website: string; // 官网链接
   apiKey: string; // API Key（前端占位，实际走 secret file）
+  keySet: boolean; // 后端 secret file 是否已设置（GET /providers key_set，不回看真实 key）
   base_url: string; // 请求地址
   api_format: ApiFormat; // API 格式
   enabled: boolean; // 单选互斥：同时只一个 enabled
@@ -60,7 +61,7 @@ function emptyModel(): ProviderModel {
 function emptyProvider(id: string): ProviderDraft {
   const m = emptyModel();
   return {
-    provider_id: id, label: "", note: "", website: "https://", apiKey: "",
+    provider_id: id, label: "", note: "", website: "https://", apiKey: "", keySet: false,
     base_url: "https://", api_format: "openai", enabled: false, models: [m], selectedModelId: m.id,
   };
 }
@@ -69,13 +70,14 @@ const API_FORMATS: ApiFormat[] = ["openai", "anthropic", "custom"];
 const DEFAULT_API_KEY_ENV = "secret-file";
 
 // ── 后端 AiProviderConfig（snake_case）↔ 前端 ProviderDraft（camelCase）转换 ──
-function toDraft(p: AiProviderConfig): ProviderDraft {
+function toDraft(p: AiProviderConfig & { key_set?: boolean }): ProviderDraft {
   return {
     provider_id: p.provider_id,
     label: p.label,
     note: p.note,
     website: p.website,
     apiKey: "",
+    keySet: p.key_set ?? false,
     base_url: p.base_url,
     api_format: p.api_format,
     enabled: p.enabled,
@@ -145,7 +147,7 @@ export function AiConfigPanel() {
   useEffect(() => {
     const api = browserApi();
     Promise.all([
-      api.listAiProviders?.() ?? Promise.resolve({ items: [] as AiProviderConfig[], default_provider: null }),
+      api.listAiProviders?.() ?? Promise.resolve({ items: [] as AiProviderWithKeySet[], default_provider: null }),
       api.getAiUsage?.() ?? Promise.resolve([] as AiQuotaUsage[])
     ]).then(([list, u]) => {
       setProviders(list.items.map(toDraft));
@@ -230,7 +232,7 @@ export function AiConfigPanel() {
         provider_id: copy.provider_id,
         label: copy.label,
         enabled: copy.enabled,
-        api_key_env: "secret-file",
+        api_key_env: DEFAULT_API_KEY_ENV,
         ...payload
       });
       setProviders((cur) => [...cur, created ? toDraft(created) : copy]);
@@ -281,14 +283,16 @@ export function AiConfigPanel() {
   async function saveDetail(): Promise<void> {
     if (editing === null) return;
     const api = browserApi();
-    const payload = fromDraft(editing);
+    const base = fromDraft(editing);
+    const payload = editing.apiKey !== "" ? { ...base, api_key: editing.apiKey } : base;
+    const nextKeySet = editing.apiKey !== "" ? true : editing.keySet;
     try {
       if (revisions.has(editing.provider_id)) {
         const rev = revisions.get(editing.provider_id) ?? 1;
         const updated = await api.updateAiProvider?.(editing.provider_id, rev, payload);
         if (updated !== undefined) {
           setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, updated.revision); return m; });
-          patch(editing.provider_id, () => toDraft(updated));
+          patch(editing.provider_id, () => ({ ...toDraft(updated), keySet: nextKeySet }));
         }
       } else {
         const created = await api.createAiProvider?.({
@@ -300,32 +304,13 @@ export function AiConfigPanel() {
         });
         if (created !== undefined) {
           setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, created.revision); return m; });
-          patch(editing.provider_id, () => toDraft(created));
+          patch(editing.provider_id, () => ({ ...toDraft(created), keySet: nextKeySet }));
         }
       }
       setToast({ msg: t.aiConfig.saveSuccess.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
       setEditingId(null);
     } catch {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
-    }
-  }
-
-  async function saveKey(): Promise<void> {
-    if (editing === null) return;
-    if (editing.apiKey === "") {
-      setToast({ msg: t.aiConfig.keyEmpty, tone: "danger" });
-      return;
-    }
-    const api = browserApi();
-    if (typeof api.setAiProviderKey !== "function") {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
-      return;
-    }
-    try {
-      await api.setAiProviderKey(editing.provider_id, { api_key: editing.apiKey });
-      setToast({ msg: t.aiConfig.keySaved.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
-    } catch {
-      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      setToast({ msg: t.aiConfig.saveFailed, tone: "danger" });
     }
   }
 
@@ -354,7 +339,6 @@ export function AiConfigPanel() {
           onChange={(fn) => patch(editing.provider_id, fn)}
           onBack={() => setEditingId(null)}
           onSave={saveDetail}
-          onSaveKey={saveKey}
         />
         <ToastView toast={toast} />
       </>
@@ -489,6 +473,8 @@ function ProviderRow(props: ProviderRowProps) {
         <small>{p.note || p.base_url}</small>
       </div>
 
+      <span className={`key-badge ${p.keySet ? "set" : "not-set"}`}>{p.keySet ? t.aiConfig.keySet : t.aiConfig.keyNotSet}</span>
+
       <label className="provider-model-select">
         <select value={selectedModel?.id ?? ""} onChange={(e) => props.onSelectModel(e.target.value)} disabled={p.models.length === 0}>
           {p.models.length === 0 ? <option value="">{t.aiConfig.noModels}</option> : null}
@@ -526,7 +512,6 @@ interface ProviderDetailProps {
   onChange: (fn: (p: ProviderDraft) => ProviderDraft) => void;
   onBack: () => void;
   onSave: () => void;
-  onSaveKey: () => void;
 }
 
 function ProviderDetail(props: ProviderDetailProps) {
@@ -589,7 +574,7 @@ function ProviderDetail(props: ProviderDetailProps) {
                 <div className="api-key-input">
                   <input type={showKey ? "text" : "password"} value={p.apiKey} onChange={(e) => setField("apiKey", e.target.value)} placeholder={t.aiConfig.apiKeyPlaceholder} />
                   <button type="button" className="icon-action" onClick={() => setShowKey((v) => !v)} aria-label={t.aiConfig.toggleKey}>{showKey ? "🙈" : "👁"}</button>
-                  <button type="button" className="icon-action save-key-btn" onClick={props.onSaveKey} title={t.aiConfig.saveKey}>{t.aiConfig.saveKey}</button>
+                  <span className={`key-badge ${p.keySet ? "set" : "not-set"}`}>{p.keySet ? t.aiConfig.keySet : t.aiConfig.keyNotSet}</span>
                 </div>
               </label>
               <p className="span-2 api-key-hint">{t.aiConfig.apiKeyHint}</p>

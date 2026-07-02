@@ -1,5 +1,6 @@
 import type {
   AiProviderConfig,
+  AiProviderWithKeySet,
   AiQuotaUsage,
   DashboardOverview,
   DraftState,
@@ -659,8 +660,8 @@ export class MockApiClient implements HunterApi {
   async getWorkflowPackage(): Promise<WorkflowPackage> { throw new ApiClientError(404, "PACKAGE_NOT_FOUND", "Demo workflow package not found."); }
   async listWorkflowPackageVersions(): Promise<WorkflowPackageVersion[]> { return []; }
 
-  async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {
-    return delay({ items: clone(MOCK_AI_PROVIDERS), default_provider: "deepseek" });
+  async listAiProviders(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }> {
+    return delay({ items: clone(MOCK_AI_PROVIDERS).map((p) => ({ ...p, key_set: p.provider_id === "deepseek" })), default_provider: "deepseek" });
   }
   async createAiProvider(): Promise<AiProviderConfig> { return demoReadOnly(); }
   async updateAiProvider(): Promise<AiProviderConfig> { return demoReadOnly(); }

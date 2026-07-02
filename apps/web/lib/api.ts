@@ -2,6 +2,7 @@ import {
   canonicalJson,
   type AiProviderApiFormat,
   type AiProviderConfig,
+  type AiProviderWithKeySet,
   type AiQuotaUsage,
   type ProviderModel,
   type DashboardOverview,
@@ -188,19 +189,21 @@ export interface HunterApi {
   listWorkflowPackages?(): Promise<WorkflowPackage[]>;
   getWorkflowPackage?(key: string): Promise<WorkflowPackage>;
   listWorkflowPackageVersions?(key: string): Promise<WorkflowPackageVersion[]>;
-  listAiProviders?(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }>;
+  listAiProviders?(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }>;
   createAiProvider?(input: {
     provider_id: string; label: string; base_url: string; model: string;
     enabled: boolean; api_key_env: string; is_default?: boolean;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
     models?: ProviderModel[]; api_format?: AiProviderApiFormat;
     note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
+    api_key?: string;
   }): Promise<AiProviderConfig>;
   updateAiProvider?(providerId: string, revision: number, patch: {
     label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
     models?: ProviderModel[]; api_format?: AiProviderApiFormat;
     note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
+    api_key?: string;
   }): Promise<AiProviderConfig>;
   reorderAiProviders?(providerIds: string[]): Promise<{ provider_ids: string[] }>;
   deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
@@ -709,7 +712,7 @@ export class HttpHunterApi implements HunterApi {
     return result.items;
   }
 
-  async listAiProviders(): Promise<{ items: AiProviderConfig[]; default_provider: string | null }> {
+  async listAiProviders(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }> {
     return this.request("GET", "/api/v1/ai-config/providers");
   }
   async createAiProvider(input: {
@@ -718,6 +721,7 @@ export class HttpHunterApi implements HunterApi {
     daily_request_limit?: number | null; daily_token_limit?: number | null;
     models?: ProviderModel[]; api_format?: AiProviderApiFormat;
     note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
+    api_key?: string;
   }): Promise<AiProviderConfig> {
     return this.request("POST", "/api/v1/ai-config/providers", { schema_version: 1, ...input });
   }
@@ -726,6 +730,7 @@ export class HttpHunterApi implements HunterApi {
     daily_request_limit?: number | null; daily_token_limit?: number | null;
     models?: ProviderModel[]; api_format?: AiProviderApiFormat;
     note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
+    api_key?: string;
   }): Promise<AiProviderConfig> {
     return this.request("PATCH", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), { schema_version: 1, revision, ...patch });
   }

@@ -13,6 +13,7 @@ import {
   aiProviderApiFormatSchema,
   aiProviderConfigSchema,
   aiProviderReorderRequestSchema,
+  aiProviderWithKeySetSchema,
   aiQuotaUsageSchema,
   providerModelSchema,
   apiErrorEnvelopeSchema,
@@ -610,6 +611,37 @@ describe("skill-center schemas", () => {
     expect(setDefaultAgentRequestSchema.safeParse({ defaultAgent: "invalid", revision: 1 }).success).toBe(false);
     expect(setDefaultAgentRequestSchema.safeParse({ revision: 1 }).success).toBe(false);
     expect(() => setDefaultAgentRequestSchema.parse({ defaultAgent: "cursor", revision: 1, extra: 1 })).toThrow();
+  });
+});
+
+describe("aiProviderWithKeySet schema (key_set 响应字段)", () => {
+  const validWithKeySet = {
+    provider_id: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    enabled: true,
+    is_default: true,
+    api_key_env: "secret-file",
+    revision: 1,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    key_set: true
+  };
+
+  it("parses valid provider with key_set (U-01)", () => {
+    const parsed = aiProviderWithKeySetSchema.parse(validWithKeySet);
+    expect(parsed.key_set).toBe(true);
+  });
+
+  it("rejects missing key_set (U-02)", () => {
+    const { key_set, ...withoutKeySet } = validWithKeySet;
+    void key_set;
+    expect(aiProviderWithKeySetSchema.safeParse(withoutKeySet).success).toBe(false);
+  });
+
+  it("rejects non-boolean key_set (U-03)", () => {
+    expect(aiProviderWithKeySetSchema.safeParse({ ...validWithKeySet, key_set: "yes" }).success).toBe(false);
   });
 });
 

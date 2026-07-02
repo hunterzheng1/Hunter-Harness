@@ -194,7 +194,8 @@ const aiProviderCreateSchema = z.object({
   note: z.string().optional(),
   website: z.string().optional(),
   selected_model_id: z.string().nullable().optional(),
-  sort_order: z.number().int().nonnegative().optional()
+  sort_order: z.number().int().nonnegative().optional(),
+  api_key: z.string().optional()
 }).strict();
 
 const aiProviderUpdateSchema = z.object({
@@ -212,7 +213,8 @@ const aiProviderUpdateSchema = z.object({
   note: z.string().optional(),
   website: z.string().optional(),
   selected_model_id: z.string().nullable().optional(),
-  sort_order: z.number().int().nonnegative().optional()
+  sort_order: z.number().int().nonnegative().optional(),
+  api_key: z.string().optional()
 }).strict();
 
 function routeRequestId(request: FastifyRequest): string {
@@ -1536,9 +1538,13 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { requestId } = await authenticated(request, repository);
     const providers = registry.listProviders();
     const defaultProvider = registry.getDefaultProvider();
+    const items = await Promise.all(providers.map(async (p) => ({
+      ...p,
+      key_set: (await loadAiSecret(config.aiSecretFile, p.provider_id)) !== null
+    })));
     reply.header("X-Request-Id", requestId);
     return {
-      items: providers,
+      items,
       default_provider: defaultProvider?.provider_id ?? null,
       request_id: requestId
     };
@@ -1570,6 +1576,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: provider.provider_id, requestId,
         details: { provider_id: provider.provider_id, label: provider.label, revision: provider.revision }
       });
+      if (body.api_key !== undefined && body.api_key !== "") {
+        await writeAiSecret(config.aiSecretFile, body.provider_id, { apiKey: body.api_key });
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "ai.provider.key-set",
+          targetId: provider.provider_id, requestId,
+          details: { provider_id: provider.provider_id }
+        });
+      }
       return { statusCode: 201, body: provider };
     });
     return send(reply, requestId, result);
@@ -1607,6 +1621,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: providerId, requestId,
         details: { provider_id: provider.provider_id, revision: provider.revision, exclusive_disabled: exclusiveDisabled }
       });
+      if (body.api_key !== undefined && body.api_key !== "") {
+        await writeAiSecret(config.aiSecretFile, providerId, { apiKey: body.api_key });
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "ai.provider.key-set",
+          targetId: providerId, requestId,
+          details: { provider_id: providerId }
+        });
+      }
       return { statusCode: 200, body: provider };
     });
     return send(reply, requestId, result);
