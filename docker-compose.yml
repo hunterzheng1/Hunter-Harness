@@ -22,6 +22,7 @@ services:
       context: .
       dockerfile: apps/server/Dockerfile
     restart: unless-stopped
+    user: "0:0"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-hunter_harness}
       POSTGRES_USER: ${POSTGRES_USER:-hunter_harness}
@@ -35,7 +36,10 @@ services:
       - |
         POSTGRES_PASSWORD_ENCODED="$$(node -e "process.stdout.write(encodeURIComponent(require('fs').readFileSync('/run/secrets/postgres_password','utf8').trim()))")"
         export DATABASE_URL="postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD_ENCODED}@postgres:5432/$${POSTGRES_DB}"
-        exec node apps/server/dist/main.js
+        mkdir -p /var/lib/hunter-harness/artifacts /var/lib/hunter-harness/secrets
+        chown -R node:node /var/lib/hunter-harness/artifacts /var/lib/hunter-harness/secrets
+        chmod 700 /var/lib/hunter-harness/secrets
+        exec setpriv --reuid=1000 --regid=1000 --clear-groups node apps/server/dist/main.js
     secrets:
       - postgres_password
     volumes:
