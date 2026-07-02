@@ -582,7 +582,7 @@ describe("RegistryStore persist nested drafts (UT-031)", () => {
     await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.2.0" });
     await store.persist();
     const snap = p.snapshot as { schemaVersion: number; drafts: Array<[string, Array<[string, unknown]>]> };
-    expect(snap.schemaVersion).toBe(3);
+    expect(snap.schemaVersion).toBe(4);
     const entry = snap.drafts.find(([s]) => s === "harness-x");
     expect(entry).toBeDefined();
     const inner = entry?.[1] ?? [];

@@ -290,8 +290,8 @@ const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
 }];
 
 const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
-  { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, daily_request_limit: 1000, daily_token_limit: 500000, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z" },
-  { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, daily_request_limit: null, daily_token_limit: null, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z" }
+  { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, daily_request_limit: 1000, daily_token_limit: 500000, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z", models: [{ id: "ds-chat", display_model: "DeepSeek Chat", request_model: "deepseek-chat", input_cost: 0.27, output_cost: 1.1, cache_hit_cost: 0.07, cache_create_cost: 0.27 }, { id: "ds-reasoner", display_model: "DeepSeek Reasoner", request_model: "deepseek-reasoner", input_cost: 0.55, output_cost: 2.19, cache_hit_cost: 0.14, cache_create_cost: 0.55 }], api_format: "openai", note: "主力供应商", website: "https://platform.deepseek.com", selected_model_id: "ds-chat", sort_order: 0 },
+  { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, daily_request_limit: null, daily_token_limit: null, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z", models: [{ id: "o4o", display_model: "GPT-4o", request_model: "gpt-4o", input_cost: 2.5, output_cost: 10, cache_hit_cost: 1.25, cache_create_cost: 0 }], api_format: "openai", note: "", website: "https://platform.openai.com", selected_model_id: "o4o", sort_order: 1 }
 ];
 
 const MOCK_DASHBOARD: DashboardOverview = {
@@ -672,10 +672,13 @@ export class MockApiClient implements HunterApi {
     return delay({ provider_id: providerId, key_set: true });
   }
   async getAiUsage(): Promise<AiQuotaUsage[]> {
+    const today = new Date().toISOString().slice(0, 10);
     return delay([
-      { provider_id: "deepseek", date: new Date().toISOString().slice(0, 10), requests: 128, tokens: 1842000 }
+      { provider_id: "deepseek", date: today, model: "deepseek-chat", requests: 128, tokens: 1842000, input_tokens: 1200000, output_tokens: 642000, cache_hit_tokens: 50000, cost: 1.01 },
+      { provider_id: "deepseek", date: today, model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cost: 0.58 }
     ]);
   }
+  async reorderAiProviders(): Promise<{ provider_ids: string[] }> { return demoReadOnly(); }
   async runSkillAiChecks(slug: string, agent: RegistryAgent): Promise<{ jobId: string; status: string }> {
     void slug; void agent;
     return delay({ jobId: "demo-ai-job", status: "pending" });

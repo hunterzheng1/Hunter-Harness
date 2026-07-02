@@ -573,6 +573,151 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
   });
 });
 
+describe("AI multi-model + reorder + per-model usage API (簇 D, 任务 7)", () => {
+  let repository: MemoryRepository;
+  let app: Awaited<ReturnType<typeof createServer>>;
+  let secretFile: string;
+  let llmFn: (p: LlmPrompt) => Promise<LlmResponse>;
+
+  beforeEach(async () => {
+    repository = new MemoryRepository();
+    await repository.createActorWithToken({ actorId: "actor_ai", token });
+    secretFile = path.join(os.tmpdir(), `hh-ai-multi-${process.pid}.json`);
+    await fs.writeFile(secretFile, JSON.stringify({ deepseek: { apiKey: "sk-test-123" } }), "utf8");
+    llmFn = async () => ({ content: "ok", usage: { requests: 1, tokens: 50, input_tokens: 30, output_tokens: 20 } });
+    app = await createServer({
+      repository,
+      storage: new MemoryArtifactStorage(),
+      config: { aiSecretFile: secretFile },
+      aiLlmClientFactory: () => new FakeLlmClient((p) => llmFn(p))
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    await fs.rm(secretFile, { force: true });
+  });
+
+  function headers(extra: Record<string, string> = {}): Record<string, string> {
+    return { authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra };
+  }
+
+  const multiModelPayload = {
+    schema_version: 1,
+    provider_id: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-v4-pro",
+    enabled: true,
+    api_key_env: "secret-file",
+    is_default: true,
+    api_format: "openai",
+    selected_model_id: "m1",
+    models: [
+      { id: "m1", display_model: "v4-pro", request_model: "deepseek-v4-pro", input_cost: 1, output_cost: 2, cache_hit_cost: 0.1, cache_create_cost: 0.5 },
+      { id: "m2", display_model: "v4-lite", request_model: "deepseek-v4-lite", input_cost: 0.5, output_cost: 1, cache_hit_cost: 0.05, cache_create_cost: 0.25 }
+    ]
+  };
+
+  async function getProvider(id: string): Promise<{ revision: number }> {
+    const list = (await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items as Array<{ provider_id: string; revision: number }>;
+    return list.find((p) => p.provider_id === id) as { revision: number };
+  }
+
+  it("API-01 PATCH /providers/:id 含 models[] → 200 + 返回多模型", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { schema_version: 1, provider_id: "deepseek", label: "D", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, api_key_env: "secret-file", is_default: true }, headers: headers() });
+    const created = await getProvider("deepseek");
+    const res = await app.inject({
+      method: "PATCH", url: "/api/v1/ai-config/providers/deepseek",
+      payload: { schema_version: 1, revision: created.revision, models: multiModelPayload.models, api_format: "openai", selected_model_id: "m1", note: "n", website: "w" },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.models).toHaveLength(2);
+    expect(body.models[0].id).toBe("m1");
+    expect(body.api_format).toBe("openai");
+    expect(body.selected_model_id).toBe("m1");
+    expect(body.note).toBe("n");
+  });
+
+  it("API-02 POST /providers/reorder → 200 + listProviders 顺序变 + audit reordered", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "a", is_default: false, sort_order: 0 }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "b", is_default: false, sort_order: 1 }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "c", is_default: false, sort_order: 2 }, headers: headers() });
+    const res = await app.inject({
+      method: "POST", url: "/api/v1/ai-config/providers/reorder",
+      payload: { schema_version: 1, provider_ids: ["c", "a", "b"] },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(200);
+    const list = ((await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items as Array<{ provider_id: string }>).map((p) => p.provider_id);
+    expect(list).toEqual(["c", "a", "b"]);
+    const actions = await repository.listAuditEvents({ actorId: "actor_ai", limit: 100 });
+    expect(actions.some((e) => e.action === "ai.provider.reordered")).toBe(true);
+  });
+
+  it("API-03 POST /providers/:id/test 用 selected model → 200 ok:true + model=selected request_model", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: multiModelPayload, headers: headers() });
+    const created = await getProvider("deepseek");
+    await app.inject({ method: "PATCH", url: "/api/v1/ai-config/providers/deepseek", payload: { schema_version: 1, revision: created.revision, selected_model_id: "m2" }, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/ai-config/providers/deepseek/test", payload: {}, headers: headers() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().ok).toBe(true);
+    expect(res.json().model).toBe("deepseek-v4-lite");
+  });
+
+  it("API-04 PATCH enabled=true → 其他 provider enabled=false（单选互斥）", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "a", is_default: true, enabled: true }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "b", is_default: false, enabled: true }, headers: headers() });
+    const bCreated = await getProvider("b");
+    const res = await app.inject({ method: "PATCH", url: "/api/v1/ai-config/providers/b", payload: { schema_version: 1, revision: bCreated.revision, enabled: true }, headers: headers() });
+    expect(res.statusCode).toBe(200);
+    const list = ((await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items as Array<{ provider_id: string; enabled: boolean }>);
+    expect(list.find((p) => p.provider_id === "b")?.enabled).toBe(true);
+    expect(list.find((p) => p.provider_id === "a")?.enabled).toBe(false);
+  });
+
+  it("API-05 GET /ai-config/usage 返回 per-model 维度（含 model/input_tokens/cost）；API-09 同模式覆盖 test/ai-checks/release-note/fix-suggestions 端点", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: multiModelPayload, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers/deepseek/test", payload: {}, headers: headers() });
+    const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/usage", headers: headers() });
+    expect(res.statusCode).toBe(200);
+    const usage = res.json().usage;
+    expect(usage).toHaveLength(1);
+    expect(usage[0].model).toBe("deepseek-v4-pro");
+    expect(usage[0].input_tokens).toBe(30);
+    expect(usage[0].output_tokens).toBe(20);
+    // cost = 30/1e6*1 (input) + 20/1e6*2 (output) + 0 = 0.00007
+    expect(usage[0].cost).toBeCloseTo(0.00007, 9);
+  });
+
+  it("API-07 api_format=anthropic 的 provider test → 422 ADAPTER_NOT_IMPLEMENTED", async () => {
+    // 用真实 createLlmClient（不传 mock factory）：anthropic → null → resolveLlmClient 抛 422 ADAPTER_NOT_IMPLEMENTED
+    const app2 = await createServer({
+      repository,
+      storage: new MemoryArtifactStorage(),
+      config: { aiSecretFile: secretFile }
+    });
+    try {
+      await app2.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, api_format: "anthropic" }, headers: headers() });
+      const res = await app2.inject({ method: "POST", url: "/api/v1/ai-config/providers/deepseek/test", payload: {}, headers: headers() });
+      expect(res.statusCode).toBe(422);
+      expect(res.json().error.code).toBe("ADAPTER_NOT_IMPLEMENTED");
+    } finally {
+      await app2.close();
+    }
+  });
+
+  it("API-08 reorder providerIds 不全 → 422 VALIDATION_FAILED", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "a", is_default: false }, headers: headers() });
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...multiModelPayload, provider_id: "b", is_default: false }, headers: headers() });
+    const res = await app.inject({ method: "POST", url: "/api/v1/ai-config/providers/reorder", payload: { schema_version: 1, provider_ids: ["a"] }, headers: headers() });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.code).toBe("VALIDATION_FAILED");
+  });
+});
+
 describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => {
   it("ai-checks 真实调用返回合法 SkillCheckResult 且无明文 key", async () => {
     if (process.env.HUNTER_HARNESS_AI_INT_REAL !== "1") { return; }

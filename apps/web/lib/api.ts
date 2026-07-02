@@ -1,7 +1,9 @@
 import {
   canonicalJson,
+  type AiProviderApiFormat,
   type AiProviderConfig,
   type AiQuotaUsage,
+  type ProviderModel,
   type DashboardOverview,
   type DraftState,
   type FileOperation,
@@ -191,11 +193,16 @@ export interface HunterApi {
     provider_id: string; label: string; base_url: string; model: string;
     enabled: boolean; api_key_env: string; is_default?: boolean;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
+    models?: ProviderModel[]; api_format?: AiProviderApiFormat;
+    note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
   }): Promise<AiProviderConfig>;
   updateAiProvider?(providerId: string, revision: number, patch: {
     label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
+    models?: ProviderModel[]; api_format?: AiProviderApiFormat;
+    note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
   }): Promise<AiProviderConfig>;
+  reorderAiProviders?(providerIds: string[]): Promise<{ provider_ids: string[] }>;
   deleteAiProvider?(providerId: string): Promise<{ provider_id: string; deleted: boolean }>;
   testAiProvider?(providerId: string): Promise<{ provider_id: string; ok: boolean; model?: string; error?: string }>;
   setAiProviderKey?(providerId: string, key: { api_key: string; base_url?: string; model?: string }): Promise<{ provider_id: string; key_set: boolean }>;
@@ -709,14 +716,21 @@ export class HttpHunterApi implements HunterApi {
     provider_id: string; label: string; base_url: string; model: string;
     enabled: boolean; api_key_env: string; is_default?: boolean;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
+    models?: ProviderModel[]; api_format?: AiProviderApiFormat;
+    note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
   }): Promise<AiProviderConfig> {
     return this.request("POST", "/api/v1/ai-config/providers", { schema_version: 1, ...input });
   }
   async updateAiProvider(providerId: string, revision: number, patch: {
     label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string;
     daily_request_limit?: number | null; daily_token_limit?: number | null;
+    models?: ProviderModel[]; api_format?: AiProviderApiFormat;
+    note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
   }): Promise<AiProviderConfig> {
     return this.request("PATCH", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), { schema_version: 1, revision, ...patch });
+  }
+  async reorderAiProviders(providerIds: string[]): Promise<{ provider_ids: string[] }> {
+    return this.request("POST", "/api/v1/ai-config/providers/reorder", { schema_version: 1, provider_ids: providerIds });
   }
   async deleteAiProvider(providerId: string): Promise<{ provider_id: string; deleted: boolean }> {
     return this.request("DELETE", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), {});

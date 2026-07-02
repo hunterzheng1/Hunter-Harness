@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { browserApi } from "../lib/api";
+import type { AiProviderConfig, AiQuotaUsage } from "@hunter-harness/contracts";
 import { useI18n } from "../lib/i18n";
 
 // ── 纯前端 UI 版本（先设计，功能后续接入） ───────────────────
@@ -64,69 +65,93 @@ function emptyProvider(id: string): ProviderDraft {
   };
 }
 
-const SAMPLE_PROVIDERS: ProviderDraft[] = [
-  {
-    provider_id: "deepseek", label: "DeepSeek",
-    note: "主力供应商，用于 AI 检查与变更信息生成。",
-    website: "https://platform.deepseek.com", apiKey: "",
-    base_url: "https://api.deepseek.com", api_format: "openai", enabled: true,
-    models: [
-      { id: "ds-chat", displayModel: "DeepSeek Chat", requestModel: "deepseek-chat", inputCost: 0.27, outputCost: 1.1, cacheHitCost: 0.07, cacheCreateCost: 0.27 },
-      { id: "ds-reasoner", displayModel: "DeepSeek Reasoner", requestModel: "deepseek-reasoner", inputCost: 0.55, outputCost: 2.19, cacheHitCost: 0.14, cacheCreateCost: 0.55 },
-    ],
-    selectedModelId: "ds-chat",
-  },
-  {
-    provider_id: "openai", label: "OpenAI",
-    note: "备用供应商，gpt-4o 系列用于跨模型对照。",
-    website: "https://platform.openai.com", apiKey: "",
-    base_url: "https://api.openai.com/v1", api_format: "openai", enabled: false,
-    models: [
-      { id: "o4o", displayModel: "GPT-4o", requestModel: "gpt-4o", inputCost: 2.5, outputCost: 10, cacheHitCost: 1.25, cacheCreateCost: 0 },
-      { id: "o4o-mini", displayModel: "GPT-4o mini", requestModel: "gpt-4o-mini", inputCost: 0.15, outputCost: 0.6, cacheHitCost: 0.075, cacheCreateCost: 0 },
-    ],
-    selectedModelId: "o4o",
-  },
-  {
-    provider_id: "anthropic", label: "Anthropic",
-    note: "Claude 系列适配，API 格式走 anthropic 原生。",
-    website: "https://console.anthropic.com", apiKey: "",
-    base_url: "https://api.anthropic.com", api_format: "anthropic", enabled: false,
-    models: [
-      { id: "sonnet", displayModel: "Claude Sonnet 4.6", requestModel: "claude-sonnet-4-6", inputCost: 3, outputCost: 15, cacheHitCost: 0.3, cacheCreateCost: 3.75 },
-    ],
-    selectedModelId: "sonnet",
-  },
-];
-
-const SAMPLE_USAGE: UsageRecord[] = [
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-25", requests: 38, inputTokens: 280000, outputTokens: 160000, cacheHitTokens: 40000, cost: 0.27 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-26", requests: 45, inputTokens: 310000, outputTokens: 175000, cacheHitTokens: 42000, cost: 0.29 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-27", requests: 52, inputTokens: 360000, outputTokens: 200000, cacheHitTokens: 48000, cost: 0.34 },
-  { provider_id: "deepseek", model: "deepseek-reasoner", date: "2026-06-27", requests: 12, inputTokens: 180000, outputTokens: 220000, cacheHitTokens: 0, cost: 0.58 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-28", requests: 61, inputTokens: 420000, outputTokens: 240000, cacheHitTokens: 55000, cost: 0.41 },
-  { provider_id: "deepseek", model: "deepseek-reasoner", date: "2026-06-28", requests: 18, inputTokens: 220000, outputTokens: 280000, cacheHitTokens: 0, cost: 0.72 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-29", requests: 48, inputTokens: 330000, outputTokens: 185000, cacheHitTokens: 46000, cost: 0.31 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-06-30", requests: 57, inputTokens: 390000, outputTokens: 215000, cacheHitTokens: 51000, cost: 0.37 },
-  { provider_id: "deepseek", model: "deepseek-reasoner", date: "2026-06-30", requests: 15, inputTokens: 200000, outputTokens: 250000, cacheHitTokens: 0, cost: 0.65 },
-  { provider_id: "deepseek", model: "deepseek-chat", date: "2026-07-01", requests: 33, inputTokens: 240000, outputTokens: 140000, cacheHitTokens: 38000, cost: 0.23 },
-  { provider_id: "openai", model: "gpt-4o", date: "2026-06-27", requests: 8, inputTokens: 95000, outputTokens: 42000, cacheHitTokens: 12000, cost: 0.65 },
-  { provider_id: "openai", model: "gpt-4o", date: "2026-06-29", requests: 11, inputTokens: 130000, outputTokens: 58000, cacheHitTokens: 15000, cost: 0.89 },
-  { provider_id: "openai", model: "gpt-4o", date: "2026-07-01", requests: 6, inputTokens: 72000, outputTokens: 31000, cacheHitTokens: 9000, cost: 0.48 },
-];
-
 const API_FORMATS: ApiFormat[] = ["openai", "anthropic", "custom"];
+
+// ── 后端 AiProviderConfig（snake_case）↔ 前端 ProviderDraft（camelCase）转换 ──
+function toDraft(p: AiProviderConfig): ProviderDraft {
+  return {
+    provider_id: p.provider_id,
+    label: p.label,
+    note: p.note,
+    website: p.website,
+    apiKey: "",
+    base_url: p.base_url,
+    api_format: p.api_format,
+    enabled: p.enabled,
+    models: p.models.map((m) => ({
+      id: m.id,
+      displayModel: m.display_model,
+      requestModel: m.request_model,
+      inputCost: m.input_cost,
+      outputCost: m.output_cost,
+      cacheHitCost: m.cache_hit_cost,
+      cacheCreateCost: m.cache_create_cost
+    })),
+    selectedModelId: p.selected_model_id ?? p.models[0]?.id ?? ""
+  };
+}
+
+function fromDraft(d: ProviderDraft): {
+  models: Array<{ id: string; display_model: string; request_model: string; input_cost: number; output_cost: number; cache_hit_cost: number; cache_create_cost: number }>;
+  api_format: ApiFormat;
+  note: string;
+  website: string;
+  base_url: string;
+  model: string;
+  selected_model_id: string | null;
+} {
+  const selected = d.models.find((m) => m.id === d.selectedModelId) ?? d.models[0];
+  return {
+    models: d.models.map((m) => ({
+      id: m.id, display_model: m.displayModel, request_model: m.requestModel,
+      input_cost: m.inputCost, output_cost: m.outputCost, cache_hit_cost: m.cacheHitCost, cache_create_cost: m.cacheCreateCost
+    })),
+    api_format: d.api_format,
+    note: d.note,
+    website: d.website,
+    base_url: d.base_url,
+    model: selected?.requestModel ?? "",
+    selected_model_id: d.selectedModelId || null
+  };
+}
+
+function toUsageRecord(u: AiQuotaUsage): UsageRecord {
+  return {
+    provider_id: u.provider_id,
+    model: u.model,
+    date: u.date,
+    requests: u.requests,
+    inputTokens: u.input_tokens,
+    outputTokens: u.output_tokens,
+    cacheHitTokens: u.cache_hit_tokens,
+    cost: u.cost
+  };
+}
 
 const fmt = (n: number): string => new Intl.NumberFormat("en-US").format(n);
 
 export function AiConfigPanel() {
   const { t } = useI18n();
-  const [providers, setProviders] = useState<ProviderDraft[]>(SAMPLE_PROVIDERS);
+  const [providers, setProviders] = useState<ProviderDraft[]>([]);
+  const [revisions, setRevisions] = useState<Map<string, number>>(new Map());
+  const [usage, setUsage] = useState<UsageRecord[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [usageProviderId, setUsageProviderId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+
+  useEffect(() => {
+    const api = browserApi();
+    Promise.all([
+      api.listAiProviders?.() ?? Promise.resolve({ items: [] as AiProviderConfig[], default_provider: null }),
+      api.getAiUsage?.() ?? Promise.resolve([] as AiQuotaUsage[])
+    ]).then(([list, u]) => {
+      setProviders(list.items.map(toDraft));
+      setRevisions(new Map(list.items.map((p) => [p.provider_id, p.revision])));
+      setUsage(u.map(toUsageRecord));
+    }).catch(() => setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" }));
+  }, [t]);
 
   useEffect(() => {
     if (toast === null) return;
@@ -141,23 +166,44 @@ export function AiConfigPanel() {
     setProviders((cur) => cur.map((p) => (p.provider_id === id ? fn(p) : p)));
   }
 
-  function reorder(draggedId: string, targetId: string): void {
+  async function reorder(draggedId: string, targetId: string): Promise<void> {
     if (draggedId === targetId) return;
-    setProviders((cur) => {
-      const from = cur.findIndex((p) => p.provider_id === draggedId);
-      const to = cur.findIndex((p) => p.provider_id === targetId);
-      if (from === -1 || to === -1) return cur;
-      const next = [...cur];
-      const [moved] = next.splice(from, 1);
-      if (moved === undefined) return cur;
-      next.splice(to, 0, moved);
-      return next;
-    });
+    const from = providers.findIndex((p) => p.provider_id === draggedId);
+    const to = providers.findIndex((p) => p.provider_id === targetId);
+    if (from === -1 || to === -1) return;
+    const next = [...providers];
+    const [moved] = next.splice(from, 1);
+    if (moved === undefined) return;
+    next.splice(to, 0, moved);
+    setProviders(next);
+    try {
+      const api = browserApi();
+      await api.reorderAiProviders?.(next.map((p) => p.provider_id));
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
-  // 单选互斥：启用该 provider 时关闭所有其他；点已启用的则关闭它
-  function toggleEnabled(id: string): void {
-    setProviders((cur) => cur.map((p) => (p.provider_id === id ? { ...p, enabled: !p.enabled } : { ...p, enabled: false })));
+  // 单选互斥：后端 PATCH enabled=true 时联动其他 false（API-04）；前端乐观更新 + 失败回滚由 toast 提示
+  async function toggleEnabled(id: string): Promise<void> {
+    const target = providers.find((p) => p.provider_id === id);
+    if (target === undefined) return;
+    const newEnabled = !target.enabled;
+    patch(id, (cur) => ({ ...cur, enabled: newEnabled }));
+    try {
+      const api = browserApi();
+      const rev = revisions.get(id) ?? 1;
+      const updated = await api.updateAiProvider?.(id, rev, { enabled: newEnabled });
+      if (updated !== undefined) {
+        setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
+        // 后端单选：其他 provider enabled=false 同步本地
+        if (newEnabled) {
+          setProviders((cur) => cur.map((p) => (p.provider_id === id ? p : { ...p, enabled: false })));
+        }
+      }
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
   function duplicate(id: string): void {
@@ -176,17 +222,33 @@ export function AiConfigPanel() {
     setToast({ msg: t.aiConfig.duplicated.replace("{provider}", src.label), tone: "success" });
   }
 
-  function testConnection(id: string): void {
+  async function testConnection(id: string): Promise<void> {
     const p = providers.find((x) => x.provider_id === id);
-    setToast({ msg: t.aiConfig.testPassed.replace("{provider}", p?.label ?? ""), tone: "success" });
+    try {
+      const api = browserApi();
+      const res = await api.testAiProvider?.(id);
+      if (res?.ok === true) {
+        setToast({ msg: t.aiConfig.testPassed.replace("{provider}", p?.label ?? ""), tone: "success" });
+      } else {
+        setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+      }
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
-  function remove(id: string): void {
+  async function remove(id: string): Promise<void> {
     const target = providers.find((p) => p.provider_id === id);
     if (target === undefined) return;
-    setProviders((cur) => cur.filter((p) => p.provider_id !== id));
-    setConfirmDeleteId(null);
-    setToast({ msg: t.aiConfig.deletedNotice.replace("{provider}", target.label), tone: "info" });
+    try {
+      const api = browserApi();
+      await api.deleteAiProvider?.(id);
+      setProviders((cur) => cur.filter((p) => p.provider_id !== id));
+      setConfirmDeleteId(null);
+      setToast({ msg: t.aiConfig.deletedNotice.replace("{provider}", target.label), tone: "info" });
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
   function addProvider(): void {
@@ -195,10 +257,36 @@ export function AiConfigPanel() {
     setEditingId(id);
   }
 
-  function saveDetail(): void {
+  async function saveDetail(): Promise<void> {
     if (editing === null) return;
-    setToast({ msg: t.aiConfig.saveSuccess.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
-    setEditingId(null);
+    const api = browserApi();
+    const payload = fromDraft(editing);
+    try {
+      if (revisions.has(editing.provider_id)) {
+        const rev = revisions.get(editing.provider_id) ?? 1;
+        const updated = await api.updateAiProvider?.(editing.provider_id, rev, payload);
+        if (updated !== undefined) {
+          setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, updated.revision); return m; });
+          patch(editing.provider_id, () => toDraft(updated));
+        }
+      } else {
+        const created = await api.createAiProvider?.({
+          provider_id: editing.provider_id,
+          label: editing.label,
+          enabled: editing.enabled,
+          api_key_env: "secret-file",
+          ...payload
+        });
+        if (created !== undefined) {
+          setRevisions((cur) => { const m = new Map(cur); m.set(editing.provider_id, created.revision); return m; });
+          patch(editing.provider_id, () => toDraft(created));
+        }
+      }
+      setToast({ msg: t.aiConfig.saveSuccess.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
+      setEditingId(null);
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
   async function saveKey(): Promise<void> {
@@ -215,6 +303,20 @@ export function AiConfigPanel() {
     try {
       await api.setAiProviderKey(editing.provider_id, { api_key: editing.apiKey });
       setToast({ msg: t.aiConfig.keySaved.replace("{provider}", editing.label || editing.provider_id), tone: "success" });
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
+  }
+
+  async function selectModel(id: string, mid: string): Promise<void> {
+    patch(id, (cur) => ({ ...cur, selectedModelId: mid }));
+    try {
+      const api = browserApi();
+      const rev = revisions.get(id) ?? 1;
+      const updated = await api.updateAiProvider?.(id, rev, { selected_model_id: mid });
+      if (updated !== undefined) {
+        setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
+      }
     } catch {
       setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
     }
@@ -270,15 +372,15 @@ export function AiConfigPanel() {
                 isDragging={draggingId === p.provider_id}
                 onDragStart={() => setDraggingId(p.provider_id)}
                 onDrop={() => {
-                  if (draggingId !== null) reorder(draggingId, p.provider_id);
+                  if (draggingId !== null) void reorder(draggingId, p.provider_id);
                   setDraggingId(null);
                 }}
                 onDragEnd={() => setDraggingId(null)}
-                onToggleEnabled={() => toggleEnabled(p.provider_id)}
-                onSelectModel={(mid) => patch(p.provider_id, (cur) => ({ ...cur, selectedModelId: mid }))}
+                onToggleEnabled={() => void toggleEnabled(p.provider_id)}
+                onSelectModel={(mid) => void selectModel(p.provider_id, mid)}
                 onEdit={() => setEditingId(p.provider_id)}
                 onDuplicate={() => duplicate(p.provider_id)}
-                onTest={() => testConnection(p.provider_id)}
+                onTest={() => void testConnection(p.provider_id)}
                 onUsage={() => setUsageProviderId(p.provider_id)}
                 onDelete={() => setConfirmDeleteId(p.provider_id)}
               />
@@ -290,7 +392,7 @@ export function AiConfigPanel() {
       {usageProvider !== null ? (
         <UsageModal
           provider={usageProvider}
-          records={SAMPLE_USAGE.filter((r) => r.provider_id === usageProvider.provider_id)}
+          records={usage.filter((r) => r.provider_id === usageProvider.provider_id)}
           t={t}
           onClose={() => setUsageProviderId(null)}
         />
@@ -303,7 +405,7 @@ export function AiConfigPanel() {
             <p>{t.aiConfig.deleteHint}</p>
             <div className="modal-actions">
               <button type="button" onClick={() => setConfirmDeleteId(null)}>{t.common.cancel}</button>
-              <button type="button" className="danger" onClick={() => remove(confirmTarget.provider_id)}>{t.common.delete}</button>
+              <button type="button" className="danger" onClick={() => void remove(confirmTarget.provider_id)}>{t.common.delete}</button>
             </div>
           </div>
         </div>

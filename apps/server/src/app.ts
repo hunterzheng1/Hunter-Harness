@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 
 import {
+  aiProviderReorderRequestSchema,
   canonicalJson,
   fileOperationSchema,
   publishSkillRequestSchema,
@@ -68,7 +69,7 @@ export interface CreateServerOptions {
   // AiJobStore 注入（PG 环境传 PgAiJobStore 多实例共享 + 启动 recoverOrphans；缺省 MemoryAiJobStore 单进程 fallback）
   aiJobStore?: AiJobStore;
   // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
-  aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient;
+  aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient | null;
 }
 
 interface MutationResult {
@@ -179,7 +180,21 @@ const aiProviderCreateSchema = z.object({
   api_key_env: z.string().min(1),
   is_default: z.boolean().optional(),
   daily_request_limit: z.number().int().nonnegative().nullable().optional(),
-  daily_token_limit: z.number().int().nonnegative().nullable().optional()
+  daily_token_limit: z.number().int().nonnegative().nullable().optional(),
+  models: z.array(z.object({
+    id: z.string().min(1),
+    display_model: z.string().min(1),
+    request_model: z.string().min(1),
+    input_cost: z.number().nonnegative().default(0),
+    output_cost: z.number().nonnegative().default(0),
+    cache_hit_cost: z.number().nonnegative().default(0),
+    cache_create_cost: z.number().nonnegative().default(0)
+  }).strict()).optional(),
+  api_format: z.enum(["openai", "anthropic", "custom"]).optional(),
+  note: z.string().optional(),
+  website: z.string().optional(),
+  selected_model_id: z.string().nullable().optional(),
+  sort_order: z.number().int().nonnegative().optional()
 }).strict();
 
 const aiProviderUpdateSchema = z.object({
@@ -191,7 +206,21 @@ const aiProviderUpdateSchema = z.object({
   enabled: z.boolean().optional(),
   api_key_env: z.string().min(1).optional(),
   daily_request_limit: z.number().int().nonnegative().nullable().optional(),
-  daily_token_limit: z.number().int().nonnegative().nullable().optional()
+  daily_token_limit: z.number().int().nonnegative().nullable().optional(),
+  models: z.array(z.object({
+    id: z.string().min(1),
+    display_model: z.string().min(1),
+    request_model: z.string().min(1),
+    input_cost: z.number().nonnegative().default(0),
+    output_cost: z.number().nonnegative().default(0),
+    cache_hit_cost: z.number().nonnegative().default(0),
+    cache_create_cost: z.number().nonnegative().default(0)
+  }).strict()).optional(),
+  api_format: z.enum(["openai", "anthropic", "custom"]).optional(),
+  note: z.string().optional(),
+  website: z.string().optional(),
+  selected_model_id: z.string().nullable().optional(),
+  sort_order: z.number().int().nonnegative().optional()
 }).strict();
 
 function routeRequestId(request: FastifyRequest): string {
@@ -345,7 +374,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       base_url: secret.baseUrl ?? provider.base_url,
       model: secret.model ?? provider.model
     };
-    return { client: llmFactory(merged, secret.apiKey), provider };
+    const client = llmFactory(merged, secret.apiKey);
+    if (client === null) {
+      // api_format=anthropic|custom 暂无 client 实现 → 422 ADAPTER_NOT_IMPLEMENTED（区别于无配置 AI_NOT_CONFIGURED）
+      throw new ServerDomainError(422, "ADAPTER_NOT_IMPLEMENTED", "ai provider api_format not supported", {
+        provider_id: provider.provider_id, api_format: provider.api_format
+      });
+    }
+    return { client, provider };
   };
   const app = Fastify({
     logger: options.logger ?? false,
@@ -1529,7 +1565,13 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         api_key_env: body.api_key_env,
         ...(body.is_default === undefined ? {} : { is_default: body.is_default }),
         ...(body.daily_request_limit === undefined ? {} : { daily_request_limit: body.daily_request_limit }),
-        ...(body.daily_token_limit === undefined ? {} : { daily_token_limit: body.daily_token_limit })
+        ...(body.daily_token_limit === undefined ? {} : { daily_token_limit: body.daily_token_limit }),
+        ...(body.models === undefined ? {} : { models: body.models }),
+        ...(body.api_format === undefined ? {} : { api_format: body.api_format }),
+        ...(body.note === undefined ? {} : { note: body.note }),
+        ...(body.website === undefined ? {} : { website: body.website }),
+        ...(body.selected_model_id === undefined ? {} : { selected_model_id: body.selected_model_id }),
+        ...(body.sort_order === undefined ? {} : { sort_order: body.sort_order })
       });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "ai.provider.created",
@@ -1546,7 +1588,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { providerId } = request.params as { providerId: string };
     const body = aiProviderUpdateSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const patch: { label?: string; base_url?: string; model?: string; enabled?: boolean; api_key_env?: string; daily_request_limit?: number | null; daily_token_limit?: number | null } = {};
+      const patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env" | "daily_request_limit" | "daily_token_limit" | "models" | "api_format" | "note" | "website" | "selected_model_id" | "sort_order">> = {};
       if (body.label !== undefined) patch.label = body.label;
       if (body.base_url !== undefined) patch.base_url = body.base_url;
       if (body.model !== undefined) patch.model = body.model;
@@ -1554,7 +1596,17 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (body.api_key_env !== undefined) patch.api_key_env = body.api_key_env;
       if (body.daily_request_limit !== undefined) patch.daily_request_limit = body.daily_request_limit;
       if (body.daily_token_limit !== undefined) patch.daily_token_limit = body.daily_token_limit;
+      if (body.models !== undefined) patch.models = body.models;
+      if (body.api_format !== undefined) patch.api_format = body.api_format;
+      if (body.note !== undefined) patch.note = body.note;
+      if (body.website !== undefined) patch.website = body.website;
+      if (body.selected_model_id !== undefined) patch.selected_model_id = body.selected_model_id;
+      if (body.sort_order !== undefined) patch.sort_order = body.sort_order;
       const provider = await registry.updateProvider(providerId, body.revision, patch);
+      // enabled 单选互斥：enabled=true 时该 provider true、其他 false（一次请求保证，API-04）
+      if (body.enabled === true) {
+        await registry.setEnabledExclusive(providerId);
+      }
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "ai.provider.updated",
         targetId: providerId, requestId,
@@ -1587,10 +1639,18 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (resolved === null) {
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "ai provider not configured or missing secret", { provider_id: providerId });
       }
+      const requestModel = resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model;
       try {
         const res = await resolved.client.analyze({ system: "Reply with the single word: ok", user: "ping" });
-        await registry.recordUsage({ provider_id: providerId, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
-        return { statusCode: 200, body: { provider_id: providerId, ok: true, model: resolved.provider.model } };
+        await registry.recordUsage({
+          provider_id: providerId,
+          model: requestModel,
+          requests: res.usage?.requests ?? 1,
+          input_tokens: res.usage?.input_tokens ?? 0,
+          output_tokens: res.usage?.output_tokens ?? 0,
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+        });
+        return { statusCode: 200, body: { provider_id: providerId, ok: true, model: requestModel } };
       } catch (err) {
         return { statusCode: 200, body: { provider_id: providerId, ok: false, error: err instanceof Error ? err.message : "unknown" } };
       }
@@ -1634,6 +1694,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { usage, request_id: requestId };
   });
 
+  // 拖拽重排 providers：body {schema_version:1, provider_ids} 有序完整列表；不全/多余 422 VALIDATION_FAILED（store.reorderProviders 校验）。
+  app.post("/api/v1/ai-config/providers/reorder", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = aiProviderReorderRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      await registry.reorderProviders(body.provider_ids);
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "ai.provider.reordered",
+        targetId: body.provider_ids[0] ?? "", requestId, details: { provider_ids: body.provider_ids }
+      });
+      return { statusCode: 200, body: { provider_ids: body.provider_ids } };
+    });
+    return send(reply, requestId, result);
+  });
+
   // 异步 AI 检查（§3.3）：POST 启动后台 job 返回 jobId + status:pending；前端轮询 GET /ai-jobs/:id。
   // mutation 锁内创建 job（Idempotency-Key 防重复 POST 返回同 jobId）；job 后台执行在锁外。
   // 同步阶段：验证 draft + resolveLlmClient + checkQuota 预检（超限 429 不调 LLM，INT-002）。
@@ -1663,7 +1738,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
         const checkedAt = new Date().toISOString();
         const res = await resolved.client.analyze(prompt);
-        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({
+          provider_id: resolved.provider.provider_id,
+          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          requests: res.usage?.requests ?? 1,
+          input_tokens: res.usage?.input_tokens ?? 0,
+          output_tokens: res.usage?.output_tokens ?? 0,
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+        });
         const aiChecks = parseAiCheckResult(res.content);
         await registry.setDraftAiChecks({ slug, agent, aiChecks, checkedAt });
         await writeAudit(repository, {
@@ -1727,7 +1809,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       const generatedAt = new Date().toISOString();
       try {
         const res = await resolved.client.analyze(prompt);
-        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({
+          provider_id: resolved.provider.provider_id,
+          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          requests: res.usage?.requests ?? 1,
+          input_tokens: res.usage?.input_tokens ?? 0,
+          output_tokens: res.usage?.output_tokens ?? 0,
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+        });
         const releaseNote = parseReleaseNote(res.content);
         if (releaseNote === null) {
           // LLM 返回空/不可解析 → 降级 AI_PARSE_FAILED（不 500，不阻塞发布；前端提示手填）
@@ -1788,7 +1877,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       let parsed: FixSuggestionParse | null;
       try {
         const res = await resolved.client.analyze(prompt);
-        await registry.recordUsage({ provider_id: resolved.provider.provider_id, requests: res.usage?.requests ?? 1, tokens: res.usage?.tokens ?? 0 });
+        await registry.recordUsage({
+          provider_id: resolved.provider.provider_id,
+          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          requests: res.usage?.requests ?? 1,
+          input_tokens: res.usage?.input_tokens ?? 0,
+          output_tokens: res.usage?.output_tokens ?? 0,
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+        });
         parsed = parseFixSuggestionResult(res.content);
       } catch {
         // LLM 失败 → 降级 message-only（不 500）

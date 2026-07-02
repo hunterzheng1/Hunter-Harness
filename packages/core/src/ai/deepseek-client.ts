@@ -64,7 +64,13 @@ export class DeepSeekLlmClient implements LlmClient {
         const completionTokens = data.usage?.completion_tokens ?? 0;
         return {
           content,
-          usage: { requests: 1, tokens: promptTokens + completionTokens }
+          usage: {
+            requests: 1,
+            tokens: promptTokens + completionTokens,
+            input_tokens: promptTokens,
+            output_tokens: completionTokens,
+            cache_hit_tokens: 0
+          }
         };
       } catch (err) {
         lastError = err;
