@@ -1138,6 +1138,9 @@ export class RegistryStore {
     const today = new Date().toISOString().slice(0, 10);
     const provider = this.aiConfig.providers.find((p) => p.provider_id === input.provider_id);
     const modelCfg = model !== "" ? provider?.models.find((m) => m.request_model === model) : undefined;
+    if (model !== "" && modelCfg === undefined) {
+      console.warn("[registry] recordUsage model not found in provider.models, cost=0:", model);
+    }
     const cost = modelCfg
       ? (inputTokens / 1e6) * modelCfg.input_cost
         + (outputTokens / 1e6) * modelCfg.output_cost

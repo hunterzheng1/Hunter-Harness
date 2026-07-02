@@ -66,6 +66,7 @@ function emptyProvider(id: string): ProviderDraft {
 }
 
 const API_FORMATS: ApiFormat[] = ["openai", "anthropic", "custom"];
+const DEFAULT_API_KEY_ENV = "secret-file";
 
 // ── 后端 AiProviderConfig（snake_case）↔ 前端 ProviderDraft（camelCase）转换 ──
 function toDraft(p: AiProviderConfig): ProviderDraft {
@@ -175,11 +176,13 @@ export function AiConfigPanel() {
     const [moved] = next.splice(from, 1);
     if (moved === undefined) return;
     next.splice(to, 0, moved);
+    const prev = providers;
     setProviders(next);
     try {
       const api = browserApi();
       await api.reorderAiProviders?.(next.map((p) => p.provider_id));
     } catch {
+      setProviders(prev);
       setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
     }
   }
@@ -189,6 +192,7 @@ export function AiConfigPanel() {
     const target = providers.find((p) => p.provider_id === id);
     if (target === undefined) return;
     const newEnabled = !target.enabled;
+    const prev = providers;
     patch(id, (cur) => ({ ...cur, enabled: newEnabled }));
     try {
       const api = browserApi();
@@ -202,6 +206,7 @@ export function AiConfigPanel() {
         }
       }
     } catch {
+      setProviders(prev);
       setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
     }
   }
@@ -290,7 +295,7 @@ export function AiConfigPanel() {
           provider_id: editing.provider_id,
           label: editing.label,
           enabled: editing.enabled,
-          api_key_env: "secret-file",
+          api_key_env: DEFAULT_API_KEY_ENV,
           ...payload
         });
         if (created !== undefined) {
@@ -325,6 +330,7 @@ export function AiConfigPanel() {
   }
 
   async function selectModel(id: string, mid: string): Promise<void> {
+    const prev = providers;
     patch(id, (cur) => ({ ...cur, selectedModelId: mid }));
     try {
       const api = browserApi();
@@ -334,6 +340,7 @@ export function AiConfigPanel() {
         setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
       }
     } catch {
+      setProviders(prev);
       setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
     }
   }

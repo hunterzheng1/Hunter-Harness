@@ -4,6 +4,7 @@ import {
   aiProviderReorderRequestSchema,
   canonicalJson,
   fileOperationSchema,
+  providerModelSchema,
   publishSkillRequestSchema,
   publishWorkflowPackageRequestSchema,
   registryAgentSchema,
@@ -170,6 +171,13 @@ const projectWorkflowBindingSchema = z.object({
   revision: z.number().int().positive().nullable()
 }).strict();
 
+// 解析 provider 当前 selected model 的 request_model（fallback models[0] → provider.model）；test/ai-checks/release-note/fix-suggestions 共用（Y3 去重）。
+function resolveRequestModel(provider: AiProviderConfig): string {
+  return provider.models.find((m) => m.id === provider.selected_model_id)?.request_model
+    ?? provider.models[0]?.request_model
+    ?? provider.model;
+}
+
 const aiProviderCreateSchema = z.object({
   schema_version: z.literal(1),
   provider_id: z.string().min(1),
@@ -181,15 +189,7 @@ const aiProviderCreateSchema = z.object({
   is_default: z.boolean().optional(),
   daily_request_limit: z.number().int().nonnegative().nullable().optional(),
   daily_token_limit: z.number().int().nonnegative().nullable().optional(),
-  models: z.array(z.object({
-    id: z.string().min(1),
-    display_model: z.string().min(1),
-    request_model: z.string().min(1),
-    input_cost: z.number().nonnegative().default(0),
-    output_cost: z.number().nonnegative().default(0),
-    cache_hit_cost: z.number().nonnegative().default(0),
-    cache_create_cost: z.number().nonnegative().default(0)
-  }).strict()).optional(),
+  models: z.array(providerModelSchema).optional(),
   api_format: z.enum(["openai", "anthropic", "custom"]).optional(),
   note: z.string().optional(),
   website: z.string().optional(),
@@ -207,15 +207,7 @@ const aiProviderUpdateSchema = z.object({
   api_key_env: z.string().min(1).optional(),
   daily_request_limit: z.number().int().nonnegative().nullable().optional(),
   daily_token_limit: z.number().int().nonnegative().nullable().optional(),
-  models: z.array(z.object({
-    id: z.string().min(1),
-    display_model: z.string().min(1),
-    request_model: z.string().min(1),
-    input_cost: z.number().nonnegative().default(0),
-    output_cost: z.number().nonnegative().default(0),
-    cache_hit_cost: z.number().nonnegative().default(0),
-    cache_create_cost: z.number().nonnegative().default(0)
-  }).strict()).optional(),
+  models: z.array(providerModelSchema).optional(),
   api_format: z.enum(["openai", "anthropic", "custom"]).optional(),
   note: z.string().optional(),
   website: z.string().optional(),
@@ -1604,13 +1596,16 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (body.sort_order !== undefined) patch.sort_order = body.sort_order;
       const provider = await registry.updateProvider(providerId, body.revision, patch);
       // enabled 单选互斥：enabled=true 时该 provider true、其他 false（一次请求保证，API-04）
+      let exclusiveDisabled: string[] = [];
       if (body.enabled === true) {
+        const before = await registry.listProviders();
+        exclusiveDisabled = before.filter((p) => p.enabled && p.provider_id !== providerId).map((p) => p.provider_id);
         await registry.setEnabledExclusive(providerId);
       }
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null, action: "ai.provider.updated",
         targetId: providerId, requestId,
-        details: { provider_id: provider.provider_id, revision: provider.revision }
+        details: { provider_id: provider.provider_id, revision: provider.revision, exclusive_disabled: exclusiveDisabled }
       });
       return { statusCode: 200, body: provider };
     });
@@ -1639,7 +1634,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (resolved === null) {
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "ai provider not configured or missing secret", { provider_id: providerId });
       }
-      const requestModel = resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model;
+      const requestModel = resolveRequestModel(resolved.provider);
       try {
         const res = await resolved.client.analyze({ system: "Reply with the single word: ok", user: "ping" });
         await registry.recordUsage({
@@ -1741,7 +1736,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         const res = await resolved.client.analyze(prompt);
         await registry.recordUsage({
           provider_id: resolved.provider.provider_id,
-          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          model: resolveRequestModel(resolved.provider),
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
@@ -1813,7 +1808,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         const res = await resolved.client.analyze(prompt);
         await registry.recordUsage({
           provider_id: resolved.provider.provider_id,
-          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          model: resolveRequestModel(resolved.provider),
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
@@ -1882,7 +1877,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         const res = await resolved.client.analyze(prompt);
         await registry.recordUsage({
           provider_id: resolved.provider.provider_id,
-          model: resolved.provider.models.find((m) => m.id === resolved.provider.selected_model_id)?.request_model ?? resolved.provider.models[0]?.request_model ?? resolved.provider.model,
+          model: resolveRequestModel(resolved.provider),
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
