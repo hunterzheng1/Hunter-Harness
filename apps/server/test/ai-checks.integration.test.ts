@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/app.js";
 import { MemoryRepository } from "../src/repositories/memory.js";
 import { MemoryArtifactStorage } from "../src/storage/memory.js";
+import { loadAiSecret } from "../src/ai/secret-loader.js";
 
 const token = "ai-checks-owner-token";
 
@@ -220,6 +221,93 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     const testRes = await app.inject({ method: "POST", url: "/api/v1/ai-config/providers/openai/test", payload: {}, headers: headers() });
     expect(testRes.statusCode).toBe(422);
     expect(testRes.json().error.code).toBe("AI_NOT_CONFIGURED");
+  });
+
+  it("API-KEY-01 POST /providers 含 api_key → 写 secret file + audit key-set (API-01)", async () => {
+    const res = await app.inject({
+      method: "POST", url: "/api/v1/ai-config/providers",
+      payload: { ...providerPayload, provider_id: "openai", is_default: false, api_key: "sk-inline-01" },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(201);
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret?.apiKey).toBe("sk-inline-01");
+    expect(await auditActions()).toContain("ai.provider.key-set");
+  });
+
+  it("API-KEY-02 PATCH /providers/:id 含 api_key → 写 secret + audit key-set (API-02)", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...providerPayload, provider_id: "openai", is_default: false }, headers: headers() });
+    const created = (await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items.find((p: { provider_id: string }) => p.provider_id === "openai") as { revision: number };
+    const res = await app.inject({
+      method: "PATCH", url: "/api/v1/ai-config/providers/openai",
+      payload: { schema_version: 1, revision: created.revision, api_key: "sk-inline-02" },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(200);
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret?.apiKey).toBe("sk-inline-02");
+    expect(await auditActions()).toContain("ai.provider.key-set");
+  });
+
+  it("API-KEY-03 GET /providers key_set=true（有 secret）(API-03)", async () => {
+    await createDefaultProvider();
+    const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() });
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as Array<{ provider_id: string; key_set?: boolean }>;
+    const deepseek = items.find((p) => p.provider_id === "deepseek");
+    expect(deepseek?.key_set).toBe(true);
+  });
+
+  it("API-KEY-04 GET /providers key_set=false（无 secret，旧 provider 运行时算）(API-04/D-01)", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...providerPayload, provider_id: "openai", is_default: false }, headers: headers() });
+    const res = await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() });
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as Array<{ provider_id: string; key_set?: boolean }>;
+    const openai = items.find((p) => p.provider_id === "openai");
+    expect(openai?.key_set).toBe(false);
+  });
+
+  it("API-KEY-05 POST /providers 无 api_key → 不写 secret (API-05)", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...providerPayload, provider_id: "openai", is_default: false }, headers: headers() });
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret).toBeNull();
+    expect(await auditActions()).not.toContain("ai.provider.key-set");
+  });
+
+  it("API-KEY-06 PATCH /providers/:id 无 api_key → secret 不改 (API-06)", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...providerPayload, provider_id: "openai", is_default: false, api_key: "sk-orig" }, headers: headers() });
+    const created = (await app.inject({ method: "GET", url: "/api/v1/ai-config/providers", headers: headers() })).json().items.find((p: { provider_id: string }) => p.provider_id === "openai") as { revision: number };
+    await app.inject({
+      method: "PATCH", url: "/api/v1/ai-config/providers/openai",
+      payload: { schema_version: 1, revision: created.revision, label: "OpenAI Renamed" },
+      headers: headers()
+    });
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret?.apiKey).toBe("sk-orig");
+  });
+
+  it("API-KEY-07 POST /providers api_key 空串 → 不写 secret (API-07)", async () => {
+    const res = await app.inject({
+      method: "POST", url: "/api/v1/ai-config/providers",
+      payload: { ...providerPayload, provider_id: "openai", is_default: false, api_key: "" },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(201);
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret).toBeNull();
+  });
+
+  it("D-02 POST /providers/:id/key 端点向后兼容仍可用 → 200 + key_set:true", async () => {
+    await app.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { ...providerPayload, provider_id: "openai", is_default: false }, headers: headers() });
+    const res = await app.inject({
+      method: "POST", url: "/api/v1/ai-config/providers/openai/key",
+      payload: { api_key: "sk-compat" },
+      headers: headers()
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().key_set).toBe(true);
+    const secret = await loadAiSecret(secretFile, "openai");
+    expect(secret?.apiKey).toBe("sk-compat");
   });
 
   it("API-008 GET /ai-config/usage 返回统计", async () => {

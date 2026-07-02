@@ -43,7 +43,7 @@ const { api } = vi.hoisted(() => {
     { provider_id: "deepseek", date: "2026-07-01", model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cache_create_tokens: 0, cost: 0.58 }
   ];
   const api = {
-    listAiProviders: vi.fn(async () => ({ items: mockProviders.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m })) })), default_provider: "deepseek" })),
+    listAiProviders: vi.fn(async () => ({ items: mockProviders.map((p) => ({ ...p, key_set: p.provider_id === "deepseek", models: p.models.map((m) => ({ ...m })) })), default_provider: "deepseek" })),
     createAiProvider: vi.fn(async (input: Record<string, unknown>) => ({ is_default: false, daily_request_limit: null, daily_token_limit: null, created_at: "2026-07-02T00:00:00Z", updated_at: "2026-07-02T00:00:00Z", models: [], api_format: "openai", note: "", website: "", selected_model_id: null, sort_order: 0, ...input, revision: 1 } as unknown as AiProviderConfig)),
     updateAiProvider: vi.fn(async (id: string, rev: number, patch: Record<string, unknown>) => {
       const base = mockProviders.find((p) => p.provider_id === id) ?? mockProviders[0];
@@ -140,12 +140,74 @@ describe("AiConfigPanel 接后端 API (T11, I-01~I-06)", () => {
     await waitFor(() => expect(screen.getAllByRole("button", { name: ENABLED }).length).toBe(1));
   });
 
-  it("I-06 保存 Key → setAiProviderKey 调用 + toast", async () => {
+  it("I-KEY-01 新建 provider 填 apiKey 保存 → createAiProvider payload 含 api_key (I-01)", async () => {
+    await renderLoaded();
+    fireEvent.click(screen.getByRole("button", { name: ADD_PROVIDER }));
+    fireEvent.change(screen.getByPlaceholderText(/供应商名称|Provider name/i), { target: { value: "NewProvider" } });
+    fireEvent.change(screen.getByPlaceholderText(/^sk-\.\.\.$/i), { target: { value: "sk-new-01" } });
+    fireEvent.click(screen.getByRole("button", { name: /^保存$|^Save$/ }));
+    await waitFor(() => expect(api.createAiProvider).toHaveBeenCalledTimes(1));
+    const [input] = api.createAiProvider.mock.calls[0] ?? [];
+    expect(input).toHaveProperty("api_key", "sk-new-01");
+  });
+
+  it("I-KEY-02 编辑已有 provider 填 apiKey 保存 → updateAiProvider patch 含 api_key (I-02)", async () => {
     await renderLoaded();
     fireEvent.click(btn(EDIT));
-    fireEvent.change(screen.queryAllByPlaceholderText(/sk-|API key/i)[0] ?? screen.getByDisplayValue(""), { target: { value: "sk-test-123" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存 Key|Save key/i }));
-    await waitFor(() => expect(api.setAiProviderKey).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByPlaceholderText(/^sk-\.\.\.$/i), { target: { value: "sk-edit-02" } });
+    fireEvent.click(screen.getByRole("button", { name: /^保存$|^Save$/ }));
+    await waitFor(() => expect(api.updateAiProvider).toHaveBeenCalledTimes(1));
+    const [, , patch] = api.updateAiProvider.mock.calls[0] ?? [];
+    expect(patch).toHaveProperty("api_key", "sk-edit-02");
+  });
+
+  it("I-KEY-03 列表态显示'已设置'徽标（keySet=true）(I-03)", async () => {
+    await renderLoaded();
+    expect(screen.getAllByText(/^已设置$|^Key set$/i).length).toBeGreaterThan(0);
+  });
+
+  it("I-KEY-04 列表态显示'未设置'徽标（keySet=false）(I-04)", async () => {
+    await renderLoaded();
+    expect(screen.getAllByText(/^未设置$|^Key not set$/i).length).toBeGreaterThan(0);
+  });
+
+  it("I-KEY-05 详情态无'保存 Key'按钮 (I-05)", async () => {
+    await renderLoaded();
+    fireEvent.click(btn(EDIT));
+    expect(screen.queryByRole("button", { name: /保存 Key|Save key/i })).toBeNull();
+  });
+
+  it("I-KEY-06 saveDetail 失败 → toast saveFailed（非 keySaveFailed）(I-06)", async () => {
+    await renderLoaded();
+    vi.mocked(api.updateAiProvider).mockRejectedValueOnce(new Error("fail"));
+    fireEvent.click(btn(EDIT));
+    fireEvent.click(screen.getByRole("button", { name: /^保存$|^Save$/ }));
+    await waitFor(() => expect(screen.getByRole("status")).toBeInTheDocument());
+    const toast = screen.getByRole("status");
+    expect(toast).toHaveTextContent(/保存失败|Save failed/i);
+    expect(toast).not.toHaveTextContent(/保存 Key 失败|Failed to save key/i);
+  });
+
+  it("I-KEY-07 眼睛 toggle 显示输入值 (I-07)", async () => {
+    await renderLoaded();
+    fireEvent.click(btn(EDIT));
+    const keyInput = screen.getByPlaceholderText(/^sk-\.\.\.$/i) as HTMLInputElement;
+    fireEvent.change(keyInput, { target: { value: "sk-visible-07" } });
+    expect(keyInput.type).toBe("password");
+    fireEvent.click(screen.getByRole("button", { name: /显示\/隐藏 Key|Show\/hide key/i }));
+    expect(keyInput.type).toBe("text");
+  });
+
+  it("I-KEY-08 新建 provider 填 apiKey 保存成功 → 列表态该 provider 显示'已设置'徽标（keySet 乐观更新 false→true，Y6）", async () => {
+    await renderLoaded();
+    const beforeSet = screen.getAllByText(/^已设置$|^Key set$/i).length;
+    fireEvent.click(screen.getByRole("button", { name: ADD_PROVIDER }));
+    fireEvent.change(screen.getByPlaceholderText(/供应商名称|Provider name/i), { target: { value: "NewKeySetProvider" } });
+    fireEvent.change(screen.getByPlaceholderText(/^sk-\.\.\.$/i), { target: { value: "sk-keyset-08" } });
+    fireEvent.click(screen.getByRole("button", { name: /^保存$|^Save$/ }));
+    await waitFor(() => expect(api.createAiProvider).toHaveBeenCalledTimes(1));
+    // 保存成功后回到列表态，新建 provider 因 apiKey 非空 → nextKeySet 乐观更新为 true → 显示"已设置"徽标
+    await waitFor(() => expect(screen.getAllByText(/^已设置$|^Key set$/i).length).toBe(beforeSet + 1));
   });
 
   it("复制供应商调 createAiProvider 持久化 + 生成副本", async () => {
