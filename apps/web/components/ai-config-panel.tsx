@@ -206,7 +206,7 @@ export function AiConfigPanel() {
     }
   }
 
-  function duplicate(id: string): void {
+  async function duplicate(id: string): Promise<void> {
     const src = providers.find((p) => p.provider_id === id);
     if (src === undefined) return;
     const newId = `${id}-copy-${uid()}`;
@@ -218,8 +218,24 @@ export function AiConfigPanel() {
       models: src.models.map((m) => ({ ...m, id: uid() })),
     };
     if (copy.models[0] !== undefined) copy.selectedModelId = copy.models[0].id;
-    setProviders((cur) => [...cur, copy]);
-    setToast({ msg: t.aiConfig.duplicated.replace("{provider}", src.label), tone: "success" });
+    const payload = fromDraft(copy);
+    try {
+      const api = browserApi();
+      const created = await api.createAiProvider?.({
+        provider_id: copy.provider_id,
+        label: copy.label,
+        enabled: copy.enabled,
+        api_key_env: "secret-file",
+        ...payload
+      });
+      setProviders((cur) => [...cur, created ? toDraft(created) : copy]);
+      if (created !== undefined) {
+        setRevisions((cur) => { const m = new Map(cur); m.set(created.provider_id, created.revision); return m; });
+      }
+      setToast({ msg: t.aiConfig.duplicated.replace("{provider}", src.label), tone: "success" });
+    } catch {
+      setToast({ msg: t.aiConfig.keySaveFailed, tone: "danger" });
+    }
   }
 
   async function testConnection(id: string): Promise<void> {

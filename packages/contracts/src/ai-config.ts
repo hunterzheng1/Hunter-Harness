@@ -45,7 +45,7 @@ export const aiProviderConfigSchema = z.object({
 }).strict();
 
 // per-provider per-model per-day 用量（date 为 UTC date，滚动重置；COM-001 旧全局 aiUsage 迁移到默认 provider 当日条目）
-// tokens = input + output（兼容旧字段）；model/input_tokens/output_tokens/cache_hit_tokens/cost 为 per-model 扩展，默认 ""/0 兼容旧条目
+// tokens = input + output（兼容旧字段）；model/input_tokens/output_tokens/cache_hit_tokens/cache_create_tokens/cost 为 per-model 扩展，默认 ""/0 兼容旧条目
 export const aiQuotaUsageSchema = z.object({
   provider_id: z.string(),
   date: z.string(),
@@ -55,6 +55,7 @@ export const aiQuotaUsageSchema = z.object({
   input_tokens: z.number().int().nonnegative().default(0),
   output_tokens: z.number().int().nonnegative().default(0),
   cache_hit_tokens: z.number().int().nonnegative().default(0),
+  cache_create_tokens: z.number().int().nonnegative().default(0),
   cost: z.number().nonnegative().default(0)
 }).strict();
 

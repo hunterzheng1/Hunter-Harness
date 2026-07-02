@@ -1648,7 +1648,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
-          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0,
+          cache_create_tokens: res.usage?.cache_create_tokens ?? 0
         });
         return { statusCode: 200, body: { provider_id: providerId, ok: true, model: requestModel } };
       } catch (err) {
@@ -1744,7 +1745,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
-          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0,
+          cache_create_tokens: res.usage?.cache_create_tokens ?? 0
         });
         const aiChecks = parseAiCheckResult(res.content);
         await registry.setDraftAiChecks({ slug, agent, aiChecks, checkedAt });
@@ -1815,7 +1817,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
-          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0,
+          cache_create_tokens: res.usage?.cache_create_tokens ?? 0
         });
         const releaseNote = parseReleaseNote(res.content);
         if (releaseNote === null) {
@@ -1883,7 +1886,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           requests: res.usage?.requests ?? 1,
           input_tokens: res.usage?.input_tokens ?? 0,
           output_tokens: res.usage?.output_tokens ?? 0,
-          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0
+          cache_hit_tokens: res.usage?.cache_hit_tokens ?? 0,
+          cache_create_tokens: res.usage?.cache_create_tokens ?? 0
         });
         parsed = parseFixSuggestionResult(res.content);
       } catch {

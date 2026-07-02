@@ -427,6 +427,17 @@ describe("AI multi-model + reorder + migration (簇 D, 任务 2-6)", () => {
     expect(u?.cost).toBeCloseTo(3, 6);
   });
 
+  it("U-07c recordUsage cost 计入 cache_create_cost（4 项成本）", async () => {
+    const store = newStore();
+    await store.upsertProvider(multiModelInput);
+    await store.recordUsage({ provider_id: "deepseek", model: "deepseek-v4-pro", requests: 1, input_tokens: 1000000, output_tokens: 1000000, cache_hit_tokens: 1000000, cache_create_tokens: 1000000 });
+    const u = store.getUsage().find((x) => x.provider_id === "deepseek" && x.model === "deepseek-v4-pro");
+    // m1: input_cost=1, output_cost=2, cache_hit_cost=0.1, cache_create_cost=0.5
+    // cost = 1 + 2 + 0.1 + 0.5 = 3.6（4 项成本全计入）
+    expect(u?.cost).toBeCloseTo(3.6, 6);
+    expect(u?.cache_create_tokens).toBe(1000000);
+  });
+
   it("U-07b recordUsage per-model 独立累加（不同 model 不同条目）", async () => {
     const store = newStore();
     await store.upsertProvider(multiModelInput);

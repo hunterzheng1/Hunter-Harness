@@ -452,6 +452,7 @@ describe("skill-center schemas", () => {
       input_tokens: 300,
       output_tokens: 200,
       cache_hit_tokens: 0,
+      cache_create_tokens: 0,
       cost: 0.0007
     };
     expect(aiQuotaUsageSchema.parse(u)).toEqual(u);
@@ -514,11 +515,13 @@ describe("skill-center schemas", () => {
     });
     expect(parsed.model).toBe("deepseek-v4-pro");
     expect(parsed.input_tokens).toBe(300);
+    expect(parsed.cache_create_tokens).toBe(0);
     expect(parsed.cost).toBe(0.0007);
     // 旧条目（无 per-model 字段）默认 ""/0
     const legacy = aiQuotaUsageSchema.parse({ provider_id: "x", date: "2026-07-01", requests: 1, tokens: 10 });
     expect(legacy.model).toBe("");
     expect(legacy.input_tokens).toBe(0);
+    expect(legacy.cache_create_tokens).toBe(0);
     expect(legacy.cost).toBe(0);
   });
 

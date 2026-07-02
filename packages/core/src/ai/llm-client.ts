@@ -7,8 +7,8 @@ export interface LlmPrompt {
 
 export interface LlmResponse {
   content: string;
-  // usage: requests/tokens 总数（向后兼容）；input_tokens/output_tokens/cache_hit_tokens 为 per-model 拆分（可选，供 recordUsage 精确算 cost）。
-  usage?: { requests: number; tokens: number; input_tokens?: number; output_tokens?: number; cache_hit_tokens?: number };
+  // usage: requests/tokens 总数（向后兼容）；input_tokens/output_tokens/cache_hit_tokens/cache_create_tokens 为 per-model 拆分（可选，供 recordUsage 精确算 cost）。
+  usage?: { requests: number; tokens: number; input_tokens?: number; output_tokens?: number; cache_hit_tokens?: number; cache_create_tokens?: number };
 }
 
 export interface LlmClient {

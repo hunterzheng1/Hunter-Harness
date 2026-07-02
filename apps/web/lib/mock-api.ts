@@ -674,8 +674,8 @@ export class MockApiClient implements HunterApi {
   async getAiUsage(): Promise<AiQuotaUsage[]> {
     const today = new Date().toISOString().slice(0, 10);
     return delay([
-      { provider_id: "deepseek", date: today, model: "deepseek-chat", requests: 128, tokens: 1842000, input_tokens: 1200000, output_tokens: 642000, cache_hit_tokens: 50000, cost: 1.01 },
-      { provider_id: "deepseek", date: today, model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cost: 0.58 }
+      { provider_id: "deepseek", date: today, model: "deepseek-chat", requests: 128, tokens: 1842000, input_tokens: 1200000, output_tokens: 642000, cache_hit_tokens: 50000, cache_create_tokens: 0, cost: 1.01 },
+      { provider_id: "deepseek", date: today, model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cache_create_tokens: 0, cost: 0.58 }
     ]);
   }
   async reorderAiProviders(): Promise<{ provider_ids: string[] }> { return demoReadOnly(); }

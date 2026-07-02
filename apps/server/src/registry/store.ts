@@ -421,6 +421,7 @@ export class RegistryStore {
           input_tokens: 0,
           output_tokens: 0,
           cache_hit_tokens: 0,
+          cache_create_tokens: 0,
           cost: 0
         });
       }
@@ -1125,11 +1126,13 @@ export class RegistryStore {
     input_tokens?: number;
     output_tokens?: number;
     cache_hit_tokens?: number;
+    cache_create_tokens?: number;
   }): Promise<void> {
     const model = input.model ?? "";
     const inputTokens = input.input_tokens ?? 0;
     const outputTokens = input.output_tokens ?? 0;
     const cacheHitTokens = input.cache_hit_tokens ?? 0;
+    const cacheCreateTokens = input.cache_create_tokens ?? 0;
     const tokens = input.tokens ?? (inputTokens + outputTokens);
     this.checkQuota({ provider_id: input.provider_id, requests: input.requests, tokens });
     const today = new Date().toISOString().slice(0, 10);
@@ -1139,6 +1142,7 @@ export class RegistryStore {
       ? (inputTokens / 1e6) * modelCfg.input_cost
         + (outputTokens / 1e6) * modelCfg.output_cost
         + (cacheHitTokens / 1e6) * modelCfg.cache_hit_cost
+        + (cacheCreateTokens / 1e6) * modelCfg.cache_create_cost
       : 0;
     const entry = this.aiConfig.usage.find(
       (u) => u.provider_id === input.provider_id && u.model === model && u.date === today
@@ -1153,6 +1157,7 @@ export class RegistryStore {
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cache_hit_tokens: cacheHitTokens,
+        cache_create_tokens: cacheCreateTokens,
         cost
       });
     } else {
@@ -1161,6 +1166,7 @@ export class RegistryStore {
       entry.input_tokens += inputTokens;
       entry.output_tokens += outputTokens;
       entry.cache_hit_tokens += cacheHitTokens;
+      entry.cache_create_tokens += cacheCreateTokens;
       entry.cost += cost;
     }
     await this.persist();

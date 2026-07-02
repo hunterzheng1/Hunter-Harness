@@ -39,12 +39,12 @@ const { api } = vi.hoisted(() => {
     }
   ];
   const mockUsage: AiQuotaUsage[] = [
-    { provider_id: "deepseek", date: "2026-07-01", model: "deepseek-chat", requests: 38, tokens: 440000, input_tokens: 280000, output_tokens: 160000, cache_hit_tokens: 40000, cost: 0.27 },
-    { provider_id: "deepseek", date: "2026-07-01", model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cost: 0.58 }
+    { provider_id: "deepseek", date: "2026-07-01", model: "deepseek-chat", requests: 38, tokens: 440000, input_tokens: 280000, output_tokens: 160000, cache_hit_tokens: 40000, cache_create_tokens: 0, cost: 0.27 },
+    { provider_id: "deepseek", date: "2026-07-01", model: "deepseek-reasoner", requests: 12, tokens: 400000, input_tokens: 180000, output_tokens: 220000, cache_hit_tokens: 0, cache_create_tokens: 0, cost: 0.58 }
   ];
   const api = {
     listAiProviders: vi.fn(async () => ({ items: mockProviders.map((p) => ({ ...p, models: p.models.map((m) => ({ ...m })) })), default_provider: "deepseek" })),
-    createAiProvider: vi.fn(async (input: Record<string, unknown>) => ({ ...input, revision: 1, is_default: false, daily_request_limit: null, daily_token_limit: null, created_at: "2026-07-02T00:00:00Z", updated_at: "2026-07-02T00:00:00Z", models: [], api_format: "openai", note: "", website: "", selected_model_id: null, sort_order: 0 } as unknown as AiProviderConfig)),
+    createAiProvider: vi.fn(async (input: Record<string, unknown>) => ({ is_default: false, daily_request_limit: null, daily_token_limit: null, created_at: "2026-07-02T00:00:00Z", updated_at: "2026-07-02T00:00:00Z", models: [], api_format: "openai", note: "", website: "", selected_model_id: null, sort_order: 0, ...input, revision: 1 } as unknown as AiProviderConfig)),
     updateAiProvider: vi.fn(async (id: string, rev: number, patch: Record<string, unknown>) => {
       const base = mockProviders.find((p) => p.provider_id === id) ?? mockProviders[0];
       return { ...base, ...patch, revision: rev + 1 } as AiProviderConfig;
@@ -148,10 +148,11 @@ describe("AiConfigPanel 接后端 API (T11, I-01~I-06)", () => {
     await waitFor(() => expect(api.setAiProviderKey).toHaveBeenCalledTimes(1));
   });
 
-  it("复制供应商弹 toast 并生成副本（本地）", async () => {
+  it("复制供应商调 createAiProvider 持久化 + 生成副本", async () => {
     await renderLoaded();
     fireEvent.click(btn(DUPLICATE));
-    expect(screen.getByText(/DeepSeek 副本/i)).toBeInTheDocument();
+    await waitFor(() => expect(api.createAiProvider).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText(/DeepSeek 副本/i)).toBeInTheDocument());
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 

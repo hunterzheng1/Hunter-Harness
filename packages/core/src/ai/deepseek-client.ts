@@ -69,7 +69,8 @@ export class DeepSeekLlmClient implements LlmClient {
             tokens: promptTokens + completionTokens,
             input_tokens: promptTokens,
             output_tokens: completionTokens,
-            cache_hit_tokens: 0
+            cache_hit_tokens: 0,
+          cache_create_tokens: 0
           }
         };
       } catch (err) {
