@@ -10,8 +10,11 @@ import {
   agentSkillConfigSchema,
   aiConfigStateSchema,
   aiJobStateSchema,
+  aiProviderApiFormatSchema,
   aiProviderConfigSchema,
+  aiProviderReorderRequestSchema,
   aiQuotaUsageSchema,
+  providerModelSchema,
   apiErrorEnvelopeSchema,
   artifactManifestSchema,
   canonicalJson,
@@ -270,7 +273,21 @@ describe("skill-center schemas", () => {
     daily_request_limit: 1000,
     daily_token_limit: 500000,
     created_at: "2026-06-28T00:00:00Z",
-    updated_at: "2026-06-28T00:00:00Z"
+    updated_at: "2026-06-28T00:00:00Z",
+    models: [{
+      id: "m1",
+      display_model: "deepseek-v4-pro",
+      request_model: "deepseek-v4-pro",
+      input_cost: 1,
+      output_cost: 2,
+      cache_hit_cost: 0.1,
+      cache_create_cost: 0.5
+    }],
+    api_format: "openai",
+    note: "",
+    website: "https://deepseek.com",
+    selected_model_id: "m1",
+    sort_order: 0
   };
 
   it("checkStatus accepts green/yellow/red and rejects others", () => {
@@ -426,10 +443,100 @@ describe("skill-center schemas", () => {
   });
 
   it("aiQuotaUsageSchema parses provider_id/date/requests/tokens and is strict", () => {
-    const u = { provider_id: "deepseek", date: "2026-07-01", requests: 10, tokens: 500 };
+    const u = {
+      provider_id: "deepseek",
+      date: "2026-07-01",
+      requests: 10,
+      tokens: 500,
+      model: "deepseek-v4-pro",
+      input_tokens: 300,
+      output_tokens: 200,
+      cache_hit_tokens: 0,
+      cache_create_tokens: 0,
+      cost: 0.0007
+    };
     expect(aiQuotaUsageSchema.parse(u)).toEqual(u);
     expect(() => aiQuotaUsageSchema.parse({ ...u, extra: 1 })).toThrow();
     expect(() => aiQuotaUsageSchema.parse({ provider_id: "x", date: "2026-07-01", requests: -1, tokens: 0 })).toThrow();
+  });
+
+  it("providerModelSchema parses valid model with costs and defaults missing costs to 0 (U-01)", () => {
+    const m = providerModelSchema.parse({
+      id: "m1", display_model: "v4", request_model: "v4",
+      input_cost: 1, output_cost: 2, cache_hit_cost: 0.1, cache_create_cost: 0.5
+    });
+    expect(m.input_cost).toBe(1);
+    // 缺省成本字段默认 0（迁移生成条目兼容）
+    const partial = providerModelSchema.parse({ id: "m2", display_model: "v4-lite", request_model: "v4-lite" });
+    expect(partial.input_cost).toBe(0);
+    expect(partial.output_cost).toBe(0);
+    expect(() => providerModelSchema.parse({ id: "m3", display_model: "x", request_model: "x", extra: 1 })).toThrow();
+  });
+
+  it("aiProviderConfig accepts multi-model fields (U-02)", () => {
+    const parsed = aiProviderConfigSchema.parse(validProviderCfg);
+    expect(parsed.models).toHaveLength(1);
+    expect(parsed.models[0]?.id).toBe("m1");
+    expect(parsed.api_format).toBe("openai");
+    expect(parsed.note).toBe("");
+    expect(parsed.website).toBe("https://deepseek.com");
+    expect(parsed.selected_model_id).toBe("m1");
+    expect(parsed.sort_order).toBe(0);
+  });
+
+  it("aiProviderConfig legacy without models defaults to []/openai/null/0 (U-03 contracts)", () => {
+    const legacy = {
+      provider_id: "deepseek",
+      label: "DeepSeek",
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-pro",
+      enabled: true,
+      is_default: true,
+      api_key_env: "secret-file",
+      revision: 1,
+      created_at: "2026-06-28T00:00:00Z",
+      updated_at: "2026-06-28T00:00:00Z"
+    };
+    const parsed = aiProviderConfigSchema.parse(legacy);
+    expect(parsed.models).toEqual([]);
+    expect(parsed.api_format).toBe("openai");
+    expect(parsed.selected_model_id).toBeNull();
+    expect(parsed.sort_order).toBe(0);
+  });
+
+  it("aiProviderConfig rejects invalid api_format (U-02b)", () => {
+    expect(() => aiProviderConfigSchema.parse({ ...validProviderCfg, api_format: "gemini" })).toThrow();
+  });
+
+  it("aiQuotaUsage per-model fields parse with defaults (U-04)", () => {
+    const parsed = aiQuotaUsageSchema.parse({
+      provider_id: "deepseek", date: "2026-07-01", requests: 10, tokens: 500,
+      model: "deepseek-v4-pro", input_tokens: 300, output_tokens: 200, cache_hit_tokens: 0, cost: 0.0007
+    });
+    expect(parsed.model).toBe("deepseek-v4-pro");
+    expect(parsed.input_tokens).toBe(300);
+    expect(parsed.cache_create_tokens).toBe(0);
+    expect(parsed.cost).toBe(0.0007);
+    // 旧条目（无 per-model 字段）默认 ""/0
+    const legacy = aiQuotaUsageSchema.parse({ provider_id: "x", date: "2026-07-01", requests: 1, tokens: 10 });
+    expect(legacy.model).toBe("");
+    expect(legacy.input_tokens).toBe(0);
+    expect(legacy.cache_create_tokens).toBe(0);
+    expect(legacy.cost).toBe(0);
+  });
+
+  it("aiProviderReorderRequest requires non-empty provider_ids array (U-reorder)", () => {
+    expect(aiProviderReorderRequestSchema.parse({ schema_version: 1, provider_ids: ["a", "b"] }).provider_ids).toEqual(["a", "b"]);
+    expect(() => aiProviderReorderRequestSchema.parse({ schema_version: 1, provider_ids: [] })).toThrow();
+    expect(() => aiProviderReorderRequestSchema.parse({ schema_version: 1, provider_ids: ["", "b"] })).toThrow();
+    expect(() => aiProviderReorderRequestSchema.parse({ schema_version: 1, provider_ids: ["a"], extra: 1 })).toThrow();
+  });
+
+  it("aiProviderApiFormatSchema accepts openai/anthropic/custom only", () => {
+    expect(aiProviderApiFormatSchema.parse("openai")).toBe("openai");
+    expect(aiProviderApiFormatSchema.parse("anthropic")).toBe("anthropic");
+    expect(aiProviderApiFormatSchema.parse("custom")).toBe("custom");
+    expect(aiProviderApiFormatSchema.safeParse("gemini").success).toBe(false);
   });
 
   it("aiConfigState has nullable defaultProvider and providers array", () => {

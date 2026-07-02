@@ -19,8 +19,10 @@ import {
   workflowPackageSchema,
   workflowPackageVersionSchema,
   type AiConfigState,
+  type AiProviderApiFormat,
   type AiProviderConfig,
   type AiQuotaUsage,
+  type ProviderModel,
   type AgentSkillConfig,
   type DraftState,
   type FixPlan,
@@ -324,6 +326,7 @@ export class RegistryStore {
     const snapshot = await this.persistence?.load();
     if (snapshot !== null && snapshot !== undefined) {
       const value = snapshot as {
+        schemaVersion?: number;
         compilerVersion: string;
         skills: Array<[string, unknown]>;
         proposals: Array<[string, ProposalState]>;
@@ -396,7 +399,13 @@ export class RegistryStore {
         const parsed = workflowPackageDraftStateSchema.safeParse(raw);
         if (parsed.success) this.workflowPackageDrafts.set(key, parsed.data);
       }
-      const aiCfg = aiConfigStateSchema.safeParse(value.aiConfig);
+      // AI config 反序列化：schemaVersion < 4 时 migrate 每个 provider（旧单 model → models[] + selected_model_id）
+      const aiCfgRaw = value.aiConfig as { providers?: unknown[]; defaultProvider?: string | null; usage?: unknown[] } | undefined;
+      if (aiCfgRaw !== undefined && (value.schemaVersion ?? 0) < 4) {
+        const providersRaw = Array.isArray(aiCfgRaw.providers) ? aiCfgRaw.providers : [];
+        aiCfgRaw.providers = providersRaw.map((p, idx) => this.migrateProvider(p, idx));
+      }
+      const aiCfg = aiConfigStateSchema.safeParse(aiCfgRaw);
       this.aiConfig = aiCfg.success ? aiCfg.data : { defaultProvider: null, providers: [], usage: [] };
       // COM-001：旧全局 aiUsage {requests,tokens} 迁移到默认 provider 当日条目（仅当 usage 为空且 defaultProvider 存在；已有 usage 不重复迁移）
       const usageRaw = value.aiUsage as { requests?: number; tokens?: number } | undefined;
@@ -406,8 +415,14 @@ export class RegistryStore {
         this.aiConfig.usage.push({
           provider_id: this.aiConfig.defaultProvider,
           date: new Date().toISOString().slice(0, 10),
+          model: "",
           requests: legacyRequests,
-          tokens: legacyTokens
+          tokens: legacyTokens,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_hit_tokens: 0,
+          cache_create_tokens: 0,
+          cost: 0
         });
       }
       return;
@@ -425,7 +440,7 @@ export class RegistryStore {
 
   async persist(tx?: TransactionRepository): Promise<void> {
     await this.persistence?.save({
-      schemaVersion: 3,
+      schemaVersion: 4,
       compilerVersion: this.compilerVersion,
       skills: [...this.skills.entries()],
       proposals: [...this.proposals.entries()],
@@ -957,7 +972,7 @@ export class RegistryStore {
   // ---- AI provider 配置（§12.9；key 不进 store，只存 provider 元数据 + 用量）----
 
   listProviders(): AiProviderConfig[] {
-    return structuredClone(this.aiConfig.providers);
+    return structuredClone([...this.aiConfig.providers].sort((a, b) => a.sort_order - b.sort_order));
   }
 
   getProvider(providerId: string): AiProviderConfig | undefined {
@@ -980,9 +995,23 @@ export class RegistryStore {
     is_default?: boolean;
     daily_request_limit?: number | null;
     daily_token_limit?: number | null;
+    models?: ProviderModel[];
+    api_format?: AiProviderApiFormat;
+    note?: string;
+    website?: string;
+    selected_model_id?: string | null;
+    sort_order?: number;
   }): Promise<AiProviderConfig> {
     const now = new Date().toISOString();
     const existing = this.aiConfig.providers.find((item) => item.provider_id === input.provider_id);
+    const extra = {
+      ...(input.models !== undefined ? { models: input.models } : {}),
+      ...(input.api_format !== undefined ? { api_format: input.api_format } : {}),
+      ...(input.note !== undefined ? { note: input.note } : {}),
+      ...(input.website !== undefined ? { website: input.website } : {}),
+      ...(input.selected_model_id !== undefined ? { selected_model_id: input.selected_model_id } : {}),
+      ...(input.sort_order !== undefined ? { sort_order: input.sort_order } : {})
+    };
     let provider: AiProviderConfig;
     if (existing === undefined) {
       provider = aiProviderConfigSchema.parse({
@@ -997,7 +1026,8 @@ export class RegistryStore {
         daily_request_limit: input.daily_request_limit ?? null,
         daily_token_limit: input.daily_token_limit ?? null,
         created_at: now,
-        updated_at: now
+        updated_at: now,
+        ...extra
       });
       this.aiConfig.providers.push(provider);
     } else {
@@ -1011,7 +1041,8 @@ export class RegistryStore {
         daily_request_limit: input.daily_request_limit !== undefined ? input.daily_request_limit : existing.daily_request_limit,
         daily_token_limit: input.daily_token_limit !== undefined ? input.daily_token_limit : existing.daily_token_limit,
         revision: existing.revision + 1,
-        updated_at: now
+        updated_at: now,
+        ...extra
       });
       const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === input.provider_id);
       if (idx !== -1) this.aiConfig.providers[idx] = provider;
@@ -1026,7 +1057,7 @@ export class RegistryStore {
   async updateProvider(
     providerId: string,
     revision: number,
-    patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env" | "daily_request_limit" | "daily_token_limit">>
+    patch: Partial<Pick<AiProviderConfig, "label" | "base_url" | "model" | "enabled" | "api_key_env" | "daily_request_limit" | "daily_token_limit" | "models" | "api_format" | "note" | "website" | "selected_model_id" | "sort_order">>
   ): Promise<AiProviderConfig> {
     const idx = this.aiConfig.providers.findIndex((item) => item.provider_id === providerId);
     if (idx === -1) {
@@ -1084,21 +1115,62 @@ export class RegistryStore {
     return structuredClone(this.aiConfig.usage);
   }
 
-  // per-provider per-day 累加，前置 checkQuota 超限抛 429 QUOTA_EXCEEDED（不累加）。
-  async recordUsage(input: { provider_id: string; requests: number; tokens: number }): Promise<void> {
-    this.checkQuota(input);
+  // per-provider per-model per-day 累加；cost 基于 provider.models 成本 × tokens；前置 checkQuota 超限抛 429 QUOTA_EXCEEDED（不累加）。
+  // 向后兼容：model/input_tokens/output_tokens/cache_hit_tokens 可选（旧调用传 tokens 总数，model="" cost=0）；
+  // 新调用（app.ts）传 per-model 拆分以算精确 cost。tokens 缺省时 = input_tokens + output_tokens。
+  async recordUsage(input: {
+    provider_id: string;
+    model?: string;
+    requests: number;
+    tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_hit_tokens?: number;
+    cache_create_tokens?: number;
+  }): Promise<void> {
+    const model = input.model ?? "";
+    const inputTokens = input.input_tokens ?? 0;
+    const outputTokens = input.output_tokens ?? 0;
+    const cacheHitTokens = input.cache_hit_tokens ?? 0;
+    const cacheCreateTokens = input.cache_create_tokens ?? 0;
+    const tokens = input.tokens ?? (inputTokens + outputTokens);
+    this.checkQuota({ provider_id: input.provider_id, requests: input.requests, tokens });
     const today = new Date().toISOString().slice(0, 10);
-    const entry = this.aiConfig.usage.find((u) => u.provider_id === input.provider_id && u.date === today);
+    const provider = this.aiConfig.providers.find((p) => p.provider_id === input.provider_id);
+    const modelCfg = model !== "" ? provider?.models.find((m) => m.request_model === model) : undefined;
+    if (model !== "" && modelCfg === undefined) {
+      console.warn("[registry] recordUsage model not found in provider.models, cost=0:", model);
+    }
+    const cost = modelCfg
+      ? (inputTokens / 1e6) * modelCfg.input_cost
+        + (outputTokens / 1e6) * modelCfg.output_cost
+        + (cacheHitTokens / 1e6) * modelCfg.cache_hit_cost
+        + (cacheCreateTokens / 1e6) * modelCfg.cache_create_cost
+      : 0;
+    const entry = this.aiConfig.usage.find(
+      (u) => u.provider_id === input.provider_id && u.model === model && u.date === today
+    );
     if (entry === undefined) {
       this.aiConfig.usage.push({
         provider_id: input.provider_id,
         date: today,
+        model,
         requests: input.requests,
-        tokens: input.tokens
+        tokens,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_hit_tokens: cacheHitTokens,
+        cache_create_tokens: cacheCreateTokens,
+        cost
       });
     } else {
       entry.requests += input.requests;
-      entry.tokens += input.tokens;
+      entry.tokens += tokens;
+      entry.input_tokens += inputTokens;
+      entry.output_tokens += outputTokens;
+      entry.cache_hit_tokens += cacheHitTokens;
+      entry.cache_create_tokens += cacheCreateTokens;
+      entry.cost += cost;
     }
     await this.persist();
   }
@@ -1109,9 +1181,10 @@ export class RegistryStore {
       throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: input.provider_id });
     }
     const today = new Date().toISOString().slice(0, 10);
-    const entry = this.aiConfig.usage.find((u) => u.provider_id === input.provider_id && u.date === today);
-    const usedRequests = entry?.requests ?? 0;
-    const usedTokens = entry?.tokens ?? 0;
+    // 配额 per-provider：聚合当日所有 model 条目（per-model usage → provider 维度限额）
+    const entries = this.aiConfig.usage.filter((u) => u.provider_id === input.provider_id && u.date === today);
+    const usedRequests = entries.reduce((sum, u) => sum + u.requests, 0);
+    const usedTokens = entries.reduce((sum, u) => sum + u.tokens, 0);
     if (provider.daily_request_limit !== null && usedRequests + input.requests > provider.daily_request_limit) {
       throw new ServerDomainError(429, "QUOTA_EXCEEDED", "daily request limit exceeded", {
         provider_id: input.provider_id, used: usedRequests, limit: provider.daily_request_limit, requested: input.requests
@@ -1122,6 +1195,56 @@ export class RegistryStore {
         provider_id: input.provider_id, used: usedTokens, limit: provider.daily_token_limit, requested: input.tokens
       });
     }
+  }
+
+  // 拖拽重排 providers：providerIds 必须覆盖所有现有 providers（不多不少），否则 422 VALIDATION_FAILED；更新 sort_order = index。
+  async reorderProviders(providerIds: string[]): Promise<void> {
+    const existingIds = this.aiConfig.providers.map((p) => p.provider_id);
+    const idSet = new Set(providerIds);
+    if (providerIds.length !== existingIds.length || existingIds.some((id) => !idSet.has(id))) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "provider_ids must cover all providers exactly", {
+        provided: providerIds.length, existing: existingIds.length
+      });
+    }
+    const byId = new Map(this.aiConfig.providers.map((p) => [p.provider_id, p]));
+    this.aiConfig.providers = providerIds.map((id, idx) => {
+      const p = byId.get(id);
+      if (p === undefined) throw new ServerDomainError(422, "VALIDATION_FAILED", "unknown provider_id: " + id);
+      return { ...p, sort_order: idx };
+    });
+    await this.persist();
+  }
+
+  // enabled 单选互斥：该 provider enabled=true，其他 enabled=false（一次 persist 保证原子；API-04 单选语义）。
+  async setEnabledExclusive(providerId: string): Promise<void> {
+    const exists = this.aiConfig.providers.some((p) => p.provider_id === providerId);
+    if (!exists) {
+      throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
+    }
+    for (const p of this.aiConfig.providers) {
+      p.enabled = p.provider_id === providerId;
+    }
+    await this.persist();
+  }
+
+  // 旧 snapshot（schemaVersion < 4）单 model provider 迁移到 models[]：从 model 生成 models[0] + selected_model_id。
+  // 已有 models 的 provider 不重复迁移（D-03）。返回未 parse 对象，由 aiConfigStateSchema 统一校验。
+  private migrateProvider(raw: unknown, index: number): unknown {
+    if (raw === null || typeof raw !== "object") return raw;
+    const p = raw as Record<string, unknown>;
+    if (p.models !== undefined) return p;
+    const model = typeof p.model === "string" ? p.model : "";
+    const providerId = typeof p.provider_id === "string" ? p.provider_id : "unknown";
+    const id = providerId + "_m0";
+    return {
+      ...p,
+      models: [{ id, display_model: model, request_model: model, input_cost: 0, output_cost: 0, cache_hit_cost: 0, cache_create_cost: 0 }],
+      api_format: "openai",
+      note: "",
+      website: "",
+      selected_model_id: id,
+      sort_order: index
+    };
   }
 
   createProposal(input: { ir: SkillIr; actorId: string; agent: RegistryAgent }): ProposalState {
