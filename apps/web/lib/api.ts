@@ -222,12 +222,14 @@ export interface HunterApi {
 export class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly details: unknown;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, details?: unknown) {
     super(redact(message));
     this.name = "ApiClientError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -302,13 +304,14 @@ export class HttpHunterApi implements HunterApi {
       throw new ApiClientError(0, "NETWORK_ERROR", "Unable to reach the governance server while requesting " + path + ".");
     }
     const payload = await response.json() as {
-      error?: { code?: string; message?: string };
+      error?: { code?: string; message?: string; details?: unknown };
     } & T;
     if (!response.ok) {
       throw new ApiClientError(
         response.status,
         payload.error?.code ?? "HTTP_ERROR",
-        payload.error?.message ?? "Governance request failed."
+        payload.error?.message ?? "Governance request failed.",
+        payload.error?.details
       );
     }
     return payload;
@@ -732,7 +735,19 @@ export class HttpHunterApi implements HunterApi {
     note?: string; website?: string; selected_model_id?: string | null; sort_order?: number;
     api_key?: string;
   }): Promise<AiProviderConfig> {
-    return this.request("PATCH", "/api/v1/ai-config/providers/" + encodeURIComponent(providerId), { schema_version: 1, revision, ...patch });
+    const path = "/api/v1/ai-config/providers/" + encodeURIComponent(providerId);
+    const body = { schema_version: 1, revision, ...patch };
+    try {
+      return await this.request("PATCH", path, body);
+    } catch (err) {
+      const expected = err instanceof ApiClientError && err.code === "REVISION_CONFLICT"
+        && err.details !== null && typeof err.details === "object"
+        && typeof (err.details as { expected?: unknown }).expected === "number"
+        ? (err.details as { expected: number }).expected
+        : null;
+      if (expected === null || expected === revision) throw err;
+      return this.request("PATCH", path, { ...body, revision: expected });
+    }
   }
   async reorderAiProviders(providerIds: string[]): Promise<{ provider_ids: string[] }> {
     return this.request("POST", "/api/v1/ai-config/providers/reorder", { schema_version: 1, provider_ids: providerIds });
