@@ -201,6 +201,7 @@ export function AiConfigPanel() {
   }
 
   // 单选互斥：后端 PATCH enabled=true 时联动其他 false（API-04）；前端乐观更新 + 失败回滚由 toast 提示
+  // REVISION_CONFLICT 自动拉最新 revision 重试一次（乐观锁冲突兜底）
   async function toggleEnabled(id: string): Promise<void> {
     const target = providers.find((p) => p.provider_id === id);
     if (target === undefined) return;
@@ -209,13 +210,26 @@ export function AiConfigPanel() {
     patch(id, (cur) => ({ ...cur, enabled: newEnabled }));
     try {
       const api = resolveApi();
+      const doUpdate = async (rev: number): Promise<void> => {
+        const updated = await api.updateAiProvider?.(id, rev, { enabled: newEnabled });
+        if (updated !== undefined) {
+          setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
+          if (newEnabled) {
+            setProviders((cur) => cur.map((p) => (p.provider_id === id ? p : { ...p, enabled: false })));
+          }
+        }
+      };
       const rev = revisions.get(id) ?? 1;
-      const updated = await api.updateAiProvider?.(id, rev, { enabled: newEnabled });
-      if (updated !== undefined) {
-        setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
-        // 后端单选：其他 provider enabled=false 同步本地
-        if (newEnabled) {
-          setProviders((cur) => cur.map((p) => (p.provider_id === id ? p : { ...p, enabled: false })));
+      try {
+        await doUpdate(rev);
+      } catch (err) {
+        if (err instanceof ApiClientError && err.code === "REVISION_CONFLICT") {
+          const fresh = await api.listAiProviders?.();
+          const freshProvider = fresh?.items.find((p) => p.provider_id === id);
+          if (freshProvider !== undefined) await doUpdate(freshProvider.revision);
+          else throw err;
+        } else {
+          throw err;
         }
       }
     } catch {
@@ -343,15 +357,30 @@ export function AiConfigPanel() {
     }
   }
 
+  // REVISION_CONFLICT 自动拉最新 revision 重试一次（乐观锁冲突兜底）
   async function selectModel(id: string, mid: string): Promise<void> {
     const prev = providers;
     patch(id, (cur) => ({ ...cur, selectedModelId: mid }));
     try {
       const api = resolveApi();
+      const doUpdate = async (rev: number): Promise<void> => {
+        const updated = await api.updateAiProvider?.(id, rev, { selected_model_id: mid });
+        if (updated !== undefined) {
+          setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
+        }
+      };
       const rev = revisions.get(id) ?? 1;
-      const updated = await api.updateAiProvider?.(id, rev, { selected_model_id: mid });
-      if (updated !== undefined) {
-        setRevisions((cur) => { const m = new Map(cur); m.set(id, updated.revision); return m; });
+      try {
+        await doUpdate(rev);
+      } catch (err) {
+        if (err instanceof ApiClientError && err.code === "REVISION_CONFLICT") {
+          const fresh = await api.listAiProviders?.();
+          const freshProvider = fresh?.items.find((p) => p.provider_id === id);
+          if (freshProvider !== undefined) await doUpdate(freshProvider.revision);
+          else throw err;
+        } else {
+          throw err;
+        }
       }
     } catch {
       setProviders(prev);
