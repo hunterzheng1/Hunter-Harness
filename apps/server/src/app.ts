@@ -1608,7 +1608,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (body.website !== undefined) patch.website = body.website;
       if (body.selected_model_id !== undefined) patch.selected_model_id = body.selected_model_id;
       if (body.sort_order !== undefined) patch.sort_order = body.sort_order;
-      const provider = await registry.updateProvider(providerId, body.revision, patch);
+      let provider: AiProviderConfig;
+      try {
+        provider = await registry.updateProvider(providerId, body.revision, patch);
+      } catch (err) {
+        // UI tabs can issue rapid sequential PATCH requests while holding a stale revision.
+        // Treat AI provider config updates as last-write-wins: on optimistic-lock conflict,
+        // retry once with the server's current revision so older browser bundles are also safe.
+        if (err instanceof ServerDomainError && err.code === "REVISION_CONFLICT") {
+          const current = registry.listProviders().find((p) => p.provider_id === providerId);
+          if (current === undefined) throw err;
+          provider = await registry.updateProvider(providerId, current.revision, patch);
+        } else {
+          throw err;
+        }
+      }
       // enabled 单选互斥：enabled=true 时该 provider true、其他 false（一次请求保证，API-04）
       let exclusiveDisabled: string[] = [];
       if (body.enabled === true) {
