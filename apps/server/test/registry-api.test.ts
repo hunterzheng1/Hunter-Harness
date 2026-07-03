@@ -1,32 +1,54 @@
-import { uuidV7, type BootstrapBundle } from "@hunter-harness/core";
+import { uuidV7 } from "@hunter-harness/core";
+import type { SourceFile } from "@hunter-harness/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createServer } from "../src/app.js";
 import { MemoryRepository } from "../src/repositories/memory.js";
 import { MemoryArtifactStorage } from "../src/storage/memory.js";
+import type { BootstrapBundle } from "../src/registry/store.js";
+
+// 新模型：上传源文件（SKILL.md 含 frontmatter）是 skill 唯一源；canonical Skill IR 已删除。
+// frontmatter 字段（name/description/kind/triggers/...）由 skillFrontmatterSchema 松校验，name 必填。
+function skillMd(opts: { name: string; version: string; description?: string; kind?: string }): string {
+  const description = opts.description ?? "Synchronize governed project context.";
+  const kind = opts.kind ?? "workflow";
+  return `---
+name: ${opts.name}
+description: ${description}
+kind: ${kind}
+triggers: ["sync context"]
+inputs: ["project_root"]
+outputs: ["sync_report"]
+forbidden_actions: ["automatic_git_write"]
+required_context: ["AGENTS.md"]
+version: "${opts.version}"
+---
+
+# ${opts.name}
+Inspect before changing context.
+`;
+}
+
+// cursor entry（.mdc）：createProposal 验证闸门 buildArtifacts 遍历所有 installable agent，
+// 需每个 agent 的 entry（claude-code/codex/generic 用 SKILL.md，cursor 用 .mdc）；与 store.test.ts filesMulti 同模式。
+function cursorMdc(name: string, version: string): string {
+  return `---
+name: ${name}
+description: cursor rule for ${name}
+version: "${version}"
+adapter: cursor
+---
+cursor rule body
+`;
+}
+
+const bootstrapSourceFiles: SourceFile[] = [{ path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.0.0" }) }];
 
 const bundle: BootstrapBundle = {
   registryVersion: "test-registry",
   compilerVersion: "1.0.0",
-  bundleHash: "sha256:" + "a".repeat(64),
-  skills: [{
-    name: "harness-sync",
-    kind: "workflow",
-    description: "Synchronize governed project context.",
-    triggers: ["sync context"],
-    inputs: ["project_root"],
-    outputs: ["sync_report"],
-    forbidden_actions: ["automatic_git_write"],
-    required_context: ["AGENTS.md"],
-    profiles: { general: { enabled: true } },
-    adapters: { "claude-code": { enabled: true } },
-    version: "1.0.0",
-    instructions: ["Inspect before changing context."]
-  }]
+  skills: [{ slug: "harness-sync", version: "1.0.0", sourceFiles: bootstrapSourceFiles }]
 };
-
-const bootstrapSkill = bundle.skills.at(0);
-if (bootstrapSkill === undefined) throw new Error("test bootstrap bundle must contain a Skill");
 
 describe("/api/v1 Skill Registry and direct workflow metadata", () => {
   const token = "registry-owner-token";
@@ -101,13 +123,17 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     ]));
   });
 
-  it("publishes Skill IR and its Claude artifact only after owner review", async () => {
-    const proposedIr = { ...bootstrapSkill, version: "1.1.0", description: "Updated safely." };
+  it("publishes a reviewed Skill from source files and its Claude artifact only after owner review", async () => {
+    // 新模型：proposal 上传 source_files（SKILL.md frontmatter 驱动），不再 POST skill_ir。
+    const proposedFiles: SourceFile[] = [
+      { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.1.0", description: "Updated safely." }) },
+      { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "1.1.0") }
+    ];
     const proposal = await app.inject({
       method: "POST",
       url: "/api/v1/skill-proposals",
       headers: headers(),
-      payload: { schema_version: 1, skill_ir: proposedIr, agent: "claude-code" }
+      payload: { schema_version: 1, source_files: proposedFiles, slug: "harness-sync", version: "1.1.0", agent: "claude-code" }
     });
     expect(proposal.statusCode).toBe(201);
     expect(proposal.json()).toMatchObject({ status: "pending_review", skill_slug: "harness-sync" });
@@ -142,18 +168,20 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
       url: "/api/v1/skills/harness-sync",
       headers: headers()
     });
+    // description 从已批准 proposal 的 SKILL.md frontmatter 派生
     expect(detail.json()).toMatchObject({ latest_version: "1.1.0", description: "Updated safely." });
   });
+
   it("rejects non-monotonic Skill versions before creating a proposal", async () => {
+    const lowFiles: SourceFile[] = [
+      { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "0.9.0" }) },
+      { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "0.9.0") }
+    ];
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/skill-proposals",
       headers: headers(),
-      payload: {
-        schema_version: 1,
-        skill_ir: { ...bootstrapSkill, version: "0.9.0" },
-        agent: "claude-code"
-      }
+      payload: { schema_version: 1, source_files: lowFiles, slug: "harness-sync", version: "0.9.0", agent: "claude-code" }
     });
 
     expect(response.statusCode).toBe(409);

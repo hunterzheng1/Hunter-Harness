@@ -1,4 +1,4 @@
-import type { SkillIr } from "@hunter-harness/contracts";
+import type { SourceFile } from "@hunter-harness/contracts";
 import { uuidV7 } from "@hunter-harness/core";
 import AdmZip from "adm-zip";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,56 +9,61 @@ import { MemoryArtifactStorage } from "../src/storage/memory.js";
 
 const token = "skill-center-owner-token";
 
-const skillYaml = `name: harness-x
+// 新模型：上传源文件（SKILL.md 含 frontmatter）是 skill 唯一源；canonical Skill IR 已删除。
+// frontmatter name 派生 slug；description/kind/triggers/... 由 skillFrontmatterSchema 松校验。
+function skillMd(name: string, version = "1.0.0", description = "demo skill"): string {
+  return `---
+name: ${name}
+description: ${description}
 kind: governance
-description: demo skill
 triggers: ["run"]
 inputs: ["ctx"]
 outputs: ["out"]
 forbidden_actions: ["automatic_git_write"]
 required_context: ["AGENTS.md"]
-profiles:
-  general:
-    enabled: true
-adapters:
-  claude-code:
-    enabled: true
-version: "1.0.0"
-`;
+version: "${version}"
+---
 
-const cursorYaml = `name: harness-cursor
-kind: governance
-description: demo skill cursor
-triggers: ["run"]
-inputs: ["ctx"]
-outputs: ["out"]
-forbidden_actions: ["automatic_git_write"]
-required_context: ["AGENTS.md"]
-profiles:
-  general:
-    enabled: true
-adapters:
-  claude-code:
-    enabled: true
-  cursor:
-    enabled: true
-version: "1.0.0"
+# ${name}
+demo skill body
 `;
+}
 
-// createProposal 入参 IR：enable claude-code + cursor + codex（验 cursor/codex installable=true 均通过 gate）
-const proposalIr: SkillIr = {
-  name: "harness-proposal",
-  kind: "governance",
-  description: "demo skill proposal",
-  triggers: ["run"],
-  inputs: ["ctx"],
-  outputs: ["out"],
-  forbidden_actions: ["automatic_git_write"],
-  required_context: ["AGENTS.md"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true }, cursor: { enabled: true }, codex: { enabled: true } },
-  version: "1.0.0"
-};
+// cursor entry（.mdc）：cursor agent 的 entry 文件（findEntryFile 对 cursor 找 *.mdc）。
+function cursorMdc(name: string, version = "1.0.0"): string {
+  return `---
+name: ${name}
+description: cursor rule for ${name}
+version: "${version}"
+adapter: cursor
+---
+cursor rule body
+`;
+}
+
+// harness-x：单 agent（claude-code）fixture
+const filesX: SourceFile[] = [{ path: "SKILL.md", content: skillMd("harness-x") }];
+// harness-cursor：多 agent fixture（claude-code 用 SKILL.md，cursor 用 .mdc）
+const cursorFiles: SourceFile[] = [
+  { path: "SKILL.md", content: skillMd("harness-cursor") },
+  { path: "harness-cursor.mdc", content: cursorMdc("harness-cursor") }
+];
+// harness-proposal：createProposal fixture（cursor/codex 等 installable agent 均需各自 entry 通过 buildArtifacts 闸门）
+const proposalFiles: SourceFile[] = [
+  { path: "SKILL.md", content: skillMd("harness-proposal") },
+  { path: "harness-proposal.mdc", content: cursorMdc("harness-proposal") }
+];
+
+// 从 draft JSON 的 sourceFiles entry frontmatter 提取字段（取代旧 draft.ir.* 断言）
+function frontmatterField(draft: { sourceFiles?: Array<{ path: string; content: string }> } | undefined, field: string): string | undefined {
+  const entry = draft?.sourceFiles?.find((f) => f.path === "SKILL.md");
+  if (entry === undefined) return undefined;
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(entry.content);
+  if (m === null) return undefined;
+  const fm = m[1] ?? "";
+  const line = fm.split("\n").find((l) => l.startsWith(field + ":"));
+  return line?.slice((field + ":").length).trim().replace(/^["']|["']$/g, "");
+}
 
 function multipart(files: Array<{ path: string; content: string }>): {
   payload: string;
@@ -125,7 +130,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   }
 
   it("upload → check → diff → publish → download end-to-end", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-x" }]);
+    await uploadDraft(filesX);
 
     const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
@@ -149,7 +154,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("idempotent publish by Idempotency-Key returns the same result", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     const key = uuidV7();
     const body = { version: "1.0.0" };
     const first = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: body, headers: headers({ "idempotency-key": key }) });
@@ -160,7 +165,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("delete skill then GET returns 404", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
     const delRes = await app.inject({ method: "DELETE", url: "/api/v1/skills/harness-x", headers: headers() });
     expect(delRes.statusCode).toBe(200);
@@ -171,7 +176,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
 
   it("upload rejects sensitive high-risk content", async () => {
     const up = multipart([
-      { path: "skill.yaml", content: skillYaml },
+      { path: "SKILL.md", content: skillMd("harness-x") },
       { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }
     ]);
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
@@ -180,27 +185,27 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("upload rejects missing agent query param (API-006)", async () => {
-    const up = multipart([{ path: "skill.yaml", content: skillYaml }]);
+    const up = multipart(filesX);
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("VALIDATION_FAILED");
   });
 
   it("publish rejects non-forward version", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "0.9.0" }, headers: headers() });
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe("SKILL_VERSION_NOT_FORWARD");
   });
 
   it("upload → check → fix-preview → apply-fix → re-check → publish end-to-end (INT-004)", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
 
-    // 新 draft：ir.version=1.0.0, latest=1.0.0 → VERSION red fixable
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    // 新 draft：frontmatter version=1.0.0, latest=1.0.0 → VERSION red fixable
+    await uploadDraft(filesX);
 
     const checksRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
@@ -216,14 +221,15 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(plan.mergedFiles.length).toBeGreaterThanOrEqual(1);
     expect(plan).not.toHaveProperty("fixedIr");
 
-    // apply-fix：mutation+audit，更新 ir，清 checks
+    // apply-fix：mutation+audit，更新 frontmatter version，清 checks
     const applyRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: { checkIds: null }, headers: headers() });
     expect(applyRes.statusCode).toBe(200);
     const draft = applyRes.json();
-    expect(draft.ir.version).toBe("1.0.1");
+    // 新模型：version 写入 SKILL.md frontmatter（非 ir.version）
+    expect(frontmatterField(draft, "version")).toBe("1.0.1");
     expect(draft.checks).toBeNull();
 
-    // re-check：VERSION green（ir.version=1.0.1 > latest 1.0.0）
+    // re-check：VERSION green（frontmatter version=1.0.1 > latest 1.0.0）
     const recheckRes = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     expect(recheckRes.statusCode).toBe(200);
     const reVersion = recheckRes.json().items.find((i: { id: string }) => i.id === "VERSION");
@@ -236,9 +242,9 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("apply-fix is idempotent by Idempotency-Key (API-009)", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     const key = uuidV7();
     const body = { checkIds: null };
@@ -255,9 +261,9 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("apply-fix writes audit event skill.draft.fix-applied (API-008)", async () => {
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() });
-    await uploadDraft([{ path: "skill.yaml", content: skillYaml }]);
+    await uploadDraft(filesX);
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/checks", payload: {}, headers: headers() });
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-x/draft/claude-code/apply-fix", payload: { checkIds: null }, headers: headers() });
     expect(res.statusCode).toBe(200);
@@ -266,10 +272,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("upload → check → publish → download cursor end-to-end + per-agent latestVersion (INT-101 / API-104)", async () => {
-    const up = multipart([
-      { path: "skill.yaml", content: cursorYaml },
-      { path: "SKILL.md", content: "# harness-cursor" }
-    ]);
+    const up = multipart(cursorFiles);
     const uploadRes = await app.inject({
       method: "POST", url: "/api/v1/skills/draft?agent=cursor", payload: up.payload,
       headers: { ...headers(), ...up.headers }
@@ -301,7 +304,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
 
   it("per-agent publish is independent across agents (INT-001)", async () => {
     // 发布 cursor@1.0.0
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "cursor");
+    await uploadDraft(cursorFiles, "cursor");
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/checks", payload: {}, headers: headers() });
     const cursorPub = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() });
     expect(cursorPub.statusCode).toBe(200);
@@ -314,7 +317,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(byAgent.get("claude-code")?.latestVersion).toBe(null);
 
     // 发布 claude-code@1.0.1 — cursor 必须保持 1.0.0 不变
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "claude-code");
+    await uploadDraft(cursorFiles, "claude-code");
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/checks", payload: {}, headers: headers() });
     const ccPub = await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/publish", payload: { version: "1.0.1" }, headers: headers() });
     expect(ccPub.statusCode).toBe(200);
@@ -328,11 +331,11 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
 
   it("GET /skills/:slug/versions?agent= filters by agent; invalid agent → 422 (API-001)", async () => {
     // 前置：跨 2 agent 发布 3 版本（cursor 1.0.0/1.0.1 + claude-code 1.0.0）
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cursor v1.0.0" }], "cursor");
+    await uploadDraft(cursorFiles, "cursor");
     expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() })).statusCode).toBe(200);
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cursor v1.0.1" }], "cursor");
+    await uploadDraft(cursorFiles, "cursor");
     expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.1" }, headers: headers() })).statusCode).toBe(200);
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# cc v1.0.0" }], "claude-code");
+    await uploadDraft(cursorFiles, "claude-code");
     expect((await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/claude-code/publish", payload: { version: "1.0.0" }, headers: headers() })).statusCode).toBe(200);
 
     // 无 agent → 全部 3 版本
@@ -361,7 +364,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
 
   it("PATCH /skills/:slug/default-agent switches default agent (API-010 / API-012 / API-013)", async () => {
     // 前置：发布 harness-cursor cursor@1.0.0（default 自动推断为 claude-code）
-    await uploadDraft([{ path: "skill.yaml", content: cursorYaml }, { path: "SKILL.md", content: "# harness-cursor" }], "cursor");
+    await uploadDraft(cursorFiles, "cursor");
     await app.inject({ method: "POST", url: "/api/v1/skills/harness-cursor/draft/cursor/publish", payload: { version: "1.0.0" }, headers: headers() });
 
     const skillRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor", headers: headers() });
@@ -378,12 +381,12 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(ok.json().defaultAgent).toBe("cursor");
     expect(ok.json().agents.find((a: { agent: string }) => a.agent === "cursor")?.isDefault).toBe(true);
 
-    // API-012: 422 AGENT_NOT_ENABLED — codex 在 cursorYaml IR 未 enabled
+    // API-012: 422 AGENT_NOT_ENABLED — 新模型所有 installable agent 均 enabled；仅 mcp（非 installable）触发
     const newRevision = ok.json().revision;
     const notEnabled = await app.inject({
       method: "PATCH",
       url: "/api/v1/skills/harness-cursor/default-agent",
-      payload: { defaultAgent: "codex", revision: newRevision },
+      payload: { defaultAgent: "mcp", revision: newRevision },
       headers: headers()
     });
     expect(notEnabled.statusCode).toBe(422);
@@ -411,21 +414,21 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
   });
 
   it("POST /skill-proposals agent=cursor creates proposal (API-101); agent=codex passes gate (API-102 修正: codex installable=true)", async () => {
+    // 新模型：proposal 上传 source_files（SKILL.md + .mdc frontmatter），不再 POST skill_ir
     // API-101: cursor createProposal → 201
     const cursorProposal = await app.inject({
       method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, skill_ir: proposalIr, agent: "cursor" },
+      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "cursor" },
       headers: headers()
     });
     expect(cursorProposal.statusCode).toBe(201);
     expect(cursorProposal.json().requestedAgent).toBe("cursor");
     expect(cursorProposal.json().status).toBe("pending_review");
 
-    // API-102 (修正): codex installable=true + IR enabled → 201 通过
-    // (test-scenarios §2 原"422 ADAPTER_NOT_INSTALLABLE"过时，与 §1 UT-103 同步为 codex 通过)
+    // API-102 (修正): codex installable=true → 201 通过
     const codexProposal = await app.inject({
       method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, skill_ir: proposalIr, agent: "codex" },
+      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "codex" },
       headers: headers()
     });
     expect(codexProposal.statusCode).toBe(201);

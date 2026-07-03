@@ -11,22 +11,34 @@ import { loadAiSecret } from "../src/ai/secret-loader.js";
 
 const token = "ai-checks-owner-token";
 
-const skillYaml = `name: harness-ai
-kind: governance
+// 新模型：上传源文件（SKILL.md 含 frontmatter）是 skill 唯一源；canonical Skill IR 已删除。
+// frontmatter name 派生 slug（harness-ai）；description/kind/triggers/... 由 skillFrontmatterSchema 松校验。
+const skillMd = `---
+name: harness-ai
 description: ai test skill
+kind: governance
 triggers: ["run"]
 inputs: ["ctx"]
 outputs: ["out"]
 forbidden_actions: ["automatic_git_write"]
 required_context: ["AGENTS.md"]
-profiles:
-  general:
-    enabled: true
-adapters:
-  claude-code:
-    enabled: true
 version: "1.0.0"
+---
+
+# harness-ai
+ai test skill body
 `;
+
+// 从 draft JSON 的 sourceFiles entry frontmatter 提取字段（取代旧 draft.ir.* 断言）
+function frontmatterField(draft: { sourceFiles?: Array<{ path: string; content: string }> } | undefined, field: string): string | undefined {
+  const entry = draft?.sourceFiles?.find((f) => f.path === "SKILL.md");
+  if (entry === undefined) return undefined;
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(entry.content);
+  if (m === null) return undefined;
+  const fm = m[1] ?? "";
+  const line = fm.split("\n").find((l) => l.startsWith(field + ":"));
+  return line?.slice((field + ":").length).trim().replace(/^["']|["']$/g, "");
+}
 
 function multipart(files: Array<{ path: string; content: string }>): {
   payload: string;
@@ -102,7 +114,7 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
   }
 
   async function uploadDraft(): Promise<void> {
-    const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
+    const up = multipart([{ path: "SKILL.md", content: skillMd }]);
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(201);
   }
@@ -171,15 +183,16 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
     expect(await auditActions()).toContain("ai.provider.updated");
   });
 
-  it("API-004 PATCH 旧 revision → 409 REVISION_CONFLICT", async () => {
+  it("API-004 PATCH 旧 revision → 200 last-write-wins（ce68deb 路由层容忍 stale revision，重试当前 revision）", async () => {
     await createDefaultProvider();
     const res = await app.inject({
       method: "PATCH", url: "/api/v1/ai-config/providers/deepseek",
       payload: { schema_version: 1, revision: 999, label: "x" },
       headers: headers()
     });
-    expect(res.statusCode).toBe(409);
-    expect(res.json().error.code).toBe("REVISION_CONFLICT");
+    // 路由层捕获 store REVISION_CONFLICT 后用当前 revision 重试（last-write-wins）；store 层 409 由 ai-config.test.ts UT-012 覆盖
+    expect(res.statusCode).toBe(200);
+    expect(res.json().label).toBe("x");
   });
 
   it("API-005 DELETE + audit ai.provider.deleted", async () => {
@@ -609,7 +622,8 @@ describe("AI config + ai-checks API (簇 D, 任务 11/13)", () => {
       expect(before.aiChecks).not.toBeNull();
       const res = await app.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/apply-fix-suggestion", payload: { checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description" }, headers: headers() });
       expect(res.statusCode).toBe(200);
-      expect(res.json().ir.description).toBe("更清晰的描述");
+      // 新模型：description 写入 SKILL.md frontmatter（非 ir.description）
+      expect(frontmatterField(res.json(), "description")).toBe("更清晰的描述");
       expect(res.json().aiChecks).toBeNull();
       expect(res.json().revision).toBe(before.revision + 1);
       expect(await auditActions()).toContain("skill.draft.fix-suggestion.applied");
@@ -817,7 +831,7 @@ describe("INT-003 真实 DeepSeek 调用 (HUNTER_HARNESS_AI_INT_REAL=1)", () => 
       const h = (extra: Record<string, string> = {}) => ({ authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra });
       const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: { schema_version: 1, provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, api_key_env: "secret-file", is_default: true }, headers: h() });
       expect(pc.statusCode).toBe(201);
-      const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
+      const up = multipart([{ path: "SKILL.md", content: skillMd }]);
       const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...h(), ...up.headers } });
       expect(upRes.statusCode).toBe(201);
       const res = await realApp.inject({ method: "POST", url: "/api/v1/skills/harness-ai/draft/claude-code/ai-checks", payload: {}, headers: h() });
@@ -844,7 +858,7 @@ describe("INT 真实 DeepSeek release-note/fix-suggestions (HUNTER_HARNESS_AI_IN
     const h = (extra: Record<string, string> = {}): Record<string, string> => ({ authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra });
     const pc = await realApp.inject({ method: "POST", url: "/api/v1/ai-config/providers", payload: providerPayload, headers: h() });
     expect(pc.statusCode).toBe(201);
-    const up = multipart([{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "# harness-ai" }]);
+    const up = multipart([{ path: "SKILL.md", content: skillMd }]);
     const upRes = await realApp.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...h(), ...up.headers } });
     expect(upRes.statusCode).toBe(201);
     return { realApp, h };

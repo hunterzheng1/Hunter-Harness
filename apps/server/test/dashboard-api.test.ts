@@ -1,28 +1,50 @@
-import { uuidV7, type BootstrapBundle } from "@hunter-harness/core";
+import { uuidV7 } from "@hunter-harness/core";
+import type { SourceFile } from "@hunter-harness/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createServer } from "../src/app.js";
 import { MemoryRepository } from "../src/repositories/memory.js";
 import { MemoryArtifactStorage } from "../src/storage/memory.js";
+import type { BootstrapBundle } from "../src/registry/store.js";
+
+// 新模型：bootstrap skill 由 sourceFiles（SKILL.md frontmatter）驱动；canonical Skill IR 已删除。
+function skillMd(opts: { name: string; version: string; description?: string; kind?: string }): string {
+  const description = opts.description ?? "Synchronize governed project context.";
+  const kind = opts.kind ?? "workflow";
+  return `---
+name: ${opts.name}
+description: ${description}
+kind: ${kind}
+triggers: ["sync context"]
+inputs: ["project_root"]
+outputs: ["sync_report"]
+forbidden_actions: ["automatic_git_write"]
+required_context: ["AGENTS.md"]
+version: "${opts.version}"
+---
+
+# ${opts.name}
+Inspect before changing context.
+`;
+}
+
+function cursorMdc(name: string, version: string): string {
+  return `---
+name: ${name}
+description: cursor rule for ${name}
+version: "${version}"
+adapter: cursor
+---
+cursor rule body
+`;
+}
+
+const bootstrapSourceFiles: SourceFile[] = [{ path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.0.0" }) }];
 
 const bundle: BootstrapBundle = {
   registryVersion: "dashboard-test-registry",
   compilerVersion: "1.0.0",
-  bundleHash: "sha256:" + "d".repeat(64),
-  skills: [{
-    name: "harness-sync",
-    kind: "workflow",
-    description: "Synchronize governed project context.",
-    triggers: ["sync context"],
-    inputs: ["project_root"],
-    outputs: ["sync_report"],
-    forbidden_actions: ["automatic_git_write"],
-    required_context: ["AGENTS.md"],
-    profiles: { general: { enabled: true } },
-    adapters: { "claude-code": { enabled: true } },
-    version: "1.0.0",
-    instructions: ["Inspect before changing context."]
-  }]
+  skills: [{ slug: "harness-sync", version: "1.0.0", sourceFiles: bootstrapSourceFiles }]
 };
 
 describe("/api/v1/dashboard/overview", () => {
@@ -82,12 +104,16 @@ describe("/api/v1/dashboard/overview", () => {
     });
     expect(workflow.statusCode).toBe(201);
 
-    const proposedSkill = { ...bundle.skills[0], version: "1.1.0", description: "Dashboard-reviewed Skill." };
+    // 新模型：proposal 上传 source_files（SKILL.md frontmatter），不再 POST skill_ir。
+    const proposedFiles: SourceFile[] = [
+      { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.1.0", description: "Dashboard-reviewed Skill." }) },
+      { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "1.1.0") }
+    ];
     const proposal = await app.inject({
       method: "POST",
       url: "/api/v1/skill-proposals",
       headers: headers(),
-      payload: { schema_version: 1, skill_ir: proposedSkill, agent: "claude-code" }
+      payload: { schema_version: 1, source_files: proposedFiles, slug: "harness-sync", version: "1.1.0", agent: "claude-code" }
     });
     expect(proposal.statusCode).toBe(201);
 
@@ -108,7 +134,8 @@ describe("/api/v1/dashboard/overview", () => {
         artifacts: 1
       }),
       distributions: {
-        skill_categories: [{ key: "workflow", count: 1 }],
+        // 新模型不再写 detail.ir；overview 回退 "unknown"（src c492419 故意兼容，非 bug）
+        skill_categories: [{ key: "unknown", count: 1 }],
         workflow_profiles: [{ key: "general", count: 1 }]
       }
     });
