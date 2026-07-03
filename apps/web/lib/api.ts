@@ -22,7 +22,7 @@ import {
   type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
-  type SkillIr,
+  type SourceFile,
   type PublishWorkflowPackageRequest,
   type WorkflowPackage,
   type WorkflowPackageDraftState,
@@ -158,7 +158,7 @@ export interface HunterApi {
   listSkillVersions?(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]>;
   getSkillAdapterPreview?(slug: string, agent: RegistryAgent): Promise<{ path: string; content: string; sourceIrHash: string; compilerVersion: string; adapter: string }>;
   listSkillProposals?(status?: string): Promise<RegistrySkillProposal[]>;
-  createSkillProposal?(ir: SkillIr, agent: RegistryAgent): Promise<RegistrySkillProposal>;
+  createSkillProposal?(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal>;
   reviewSkillProposal?(proposalId: string, decision: "approve" | "reject", comment: string | null): Promise<Record<string, unknown>>;
   downloadSkillArtifact?(slug: string, agent: RegistryAgent): Promise<{ blob: Blob; hash: string; filename: string }>;
   listTags?(): Promise<RegistryTag[]>;
@@ -522,9 +522,9 @@ export class HttpHunterApi implements HunterApi {
     return result.items;
   }
 
-  async createSkillProposal(ir: SkillIr, agent: RegistryAgent): Promise<RegistrySkillProposal> {
+  async createSkillProposal(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal> {
     return this.request("POST", "/api/v1/skill-proposals", {
-      schema_version: 1, skill_ir: ir, agent
+      schema_version: 1, source_files: sourceFiles, agent
     });
   }
 
