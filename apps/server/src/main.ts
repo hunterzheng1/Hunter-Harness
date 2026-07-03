@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import { Pool } from "pg";
 
 import { createServer } from "./app.js";
-import { loadBootstrapBundle } from "@hunter-harness/core";
 import { PgAiJobStore } from "./ai/ai-job-store-pg.js";
 import { PostgresRegistryPersistence } from "./registry/persistence.js";
 import { runMigrations } from "./repositories/migrate.js";
@@ -41,9 +40,16 @@ await runMigrations(
   fileURLToPath(new URL("../migrations", import.meta.url))
 );
 const repository = new PostgresRepository(pool);
-const bootstrapBundle = await loadBootstrapBundle(
-  fileURLToPath(new URL("../../../resources/bootstrap-ir", import.meta.url))
-);
+const bootstrapManifest = JSON.parse(
+  await readFile(fileURLToPath(new URL("../../../resources/bootstrap-ir/manifest.json", import.meta.url)), "utf8")
+) as { registry_version: string; compiler_version: string };
+// 新模型：bootstrap skills 从 resources/skills/<name>/ 加载（任务 18 转换后）；
+// 此处暂只读 manifest（registry_version/compiler_version），skills 留空，等 resources/skills/ 就绪后扩展。
+const bootstrapBundle = {
+  registryVersion: bootstrapManifest.registry_version,
+  compilerVersion: bootstrapManifest.compiler_version,
+  skills: []
+};
 const bootstrapToken = await secret("HUNTER_HARNESS_BOOTSTRAP_TOKEN", false);
 if (bootstrapToken !== undefined && bootstrapToken !== "") {
   await repository.createActorWithToken({
