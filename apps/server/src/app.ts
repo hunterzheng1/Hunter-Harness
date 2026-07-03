@@ -31,7 +31,6 @@ import {
   parseReleaseNote,
   scanSensitiveFiles,
   sha256Bytes,
-  SkillEntryError,
   uuidV7,
   type FindingOverride,
   type FixSuggestionParse,

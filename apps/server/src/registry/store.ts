@@ -713,7 +713,7 @@ export class RegistryStore {
       if (d.draftContent !== null) {
         fileMap[d.path] = d.draftContent;
       } else {
-        delete fileMap[d.path];
+        Reflect.deleteProperty(fileMap, d.path);
       }
     }
     const findings = scanSensitiveFiles(fileMap);
