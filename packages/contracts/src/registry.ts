@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import { sha256Schema } from "./protocol.js";
-import { skillIrSchema } from "./skill-ir.js";
 
 export const registryAgentSchema = z.enum(["claude-code", "codex", "cursor", "generic", "mcp"]);
 export const registrySkillStatusSchema = z.enum([
@@ -25,6 +24,21 @@ export const sourceFileSchema = z.object({
   path: z.string(),
   content: z.string()
 }).strict();
+
+// SKILL.md frontmatter — 松校验，取代 canonical Skill IrSchema。
+// .passthrough() 保留未声明的额外字段（author/tags/license 等），避免合法 SKILL.md 因额外字段被拒（评审 RED#1）。
+export const skillFrontmatterSchema = z.object({
+  name: z.string().regex(/^harness-[a-z0-9-]+$/),
+  description: z.string().min(1),
+  kind: z.enum(["workflow", "tooling", "migration", "governance"]).optional(),
+  triggers: z.array(z.string()).optional(),
+  inputs: z.array(z.string()).optional(),
+  outputs: z.array(z.string()).optional(),
+  forbidden_actions: z.array(z.string()).optional(),
+  required_context: z.array(z.string()).optional(),
+  version: z.string().optional()
+}).passthrough();
+export type SkillFrontmatter = z.infer<typeof skillFrontmatterSchema>;
 
 export const skillUsageExampleSchema = z.object({
   title: z.string(),
@@ -69,7 +83,7 @@ export const draftStateSchema = z.object({
   slug: z.string(),
   agent: registryAgentSchema,
   sourceFiles: z.array(sourceFileSchema),
-  ir: skillIrSchema,
+  ir: z.unknown().optional(),
   examples: z.array(skillUsageExampleSchema).default([]),
   draftVersion: registrySemverSchema.nullable(),
   checks: skillCheckResultSchema.nullable(),
@@ -120,7 +134,7 @@ export const registrySkillVersionSchema = z.object({
   skill_slug: registrySlugSchema,
   version: registrySemverSchema,
   agent: registryAgentSchema,
-  ir: skillIrSchema,
+  ir: z.unknown().optional(),
   artifacts: z.array(registryArtifactSchema),
   source_proposal_id: z.string().regex(/^skp_/).nullable(),
   sourceFiles: z.array(sourceFileSchema).default([]),
@@ -145,7 +159,7 @@ export const registrySkillSummarySchema = z.object({
 }).strict();
 
 export const registrySkillDetailSchema = registrySkillSummarySchema.extend({
-  ir: skillIrSchema,
+  ir: z.unknown().optional(),
   sourceFiles: z.array(sourceFileSchema).default([]),
   examples: z.array(skillUsageExampleSchema).default([])
 }).strict();
@@ -153,7 +167,7 @@ export const registrySkillDetailSchema = registrySkillSummarySchema.extend({
 export const registrySkillProposalSchema = z.object({
   proposal_id: z.string().regex(/^skp_/),
   skill_slug: registrySlugSchema,
-  proposed_ir: skillIrSchema,
+  proposed_ir: z.unknown().optional(),
   status: registrySkillProposalStatusSchema,
   created_by: z.string().min(1),
   validation: registryValidationSchema,
