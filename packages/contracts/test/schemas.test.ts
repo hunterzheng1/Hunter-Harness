@@ -44,7 +44,7 @@ import {
   skillCheckItemSchema,
   skillCheckResultSchema,
   skillDiffFileSchema,
-  skillIrSchema,
+  skillFrontmatterSchema,
   skillUsageExampleSchema,
   sourceFileSchema,
   publishWorkflowPackageRequestSchema,
@@ -110,21 +110,7 @@ describe("shared contracts", () => {
     }).success).toBe(false);
   });
 
-  it("validates Skill IR and Knowledge frontmatter", () => {
-    expect(skillIrSchema.parse({
-      name: "harness-review",
-      kind: "workflow",
-      description: "Evidence based review",
-      triggers: ["review"],
-      inputs: ["change_ref"],
-      outputs: ["review_report"],
-      forbidden_actions: ["automatic_git_write"],
-      required_context: ["AGENTS.md"],
-      profiles: { general: { enabled: true } },
-      adapters: { "claude-code": { enabled: true } },
-      version: "1.0.0"
-    }).name).toBe("harness-review");
-
+  it("validates Knowledge frontmatter", () => {
     expect(knowledgeFrontmatterSchema.parse({
       id: "knowledge.architecture.boundary",
       type: "architecture",
@@ -147,19 +133,6 @@ describe("shared contracts", () => {
   it("validates governed registry records and direct workflow metadata", () => {
     expect(registryAgentSchema.parse("claude-code")).toBe("claude-code");
     expect(registryAgentSchema.safeParse("unknown-agent").success).toBe(false);
-    const ir = skillIrSchema.parse({
-      name: "harness-review",
-      kind: "governance",
-      description: "Evidence based review",
-      triggers: ["review"],
-      inputs: ["change_ref"],
-      outputs: ["review_report"],
-      forbidden_actions: ["automatic_git_write"],
-      required_context: ["AGENTS.md"],
-      profiles: { general: { enabled: true } },
-      adapters: { "claude-code": { enabled: true } },
-      version: "1.1.0"
-    });
     expect(registrySkillDetailSchema.parse({
       skill_id: "skl_review",
       slug: "harness-review",
@@ -178,7 +151,6 @@ describe("shared contracts", () => {
         draftVersion: null,
         sourcePackagePath: null
       }],
-      ir,
       revision: 3,
       created_at: "2026-06-20T00:00:00Z",
       updated_at: "2026-06-21T00:00:00Z"
@@ -212,7 +184,7 @@ describe("shared contracts", () => {
     expect(registrySkillProposalSchema.parse({
       proposal_id: "skp_review",
       skill_slug: "harness-review",
-      proposed_ir: ir,
+      proposed_ir: { name: "harness-review", version: "1.1.0" },
       status: "pending_review",
       created_by: "actor_owner",
       validation: { schema_valid: true, sensitive_findings: 0, claude_compilable: true },
@@ -239,20 +211,58 @@ describe("shared contracts", () => {
   });
 });
 
+describe("skill frontmatter schema (UT-001~004, UT-002b RED#1)", () => {
+  it("parses valid frontmatter with required name+description (UT-001)", () => {
+    expect(skillFrontmatterSchema.parse({
+      name: "harness-x",
+      description: "demo skill"
+    }).name).toBe("harness-x");
+  });
+
+  it("preserves extra undeclared fields via passthrough (UT-002b, RED#1)", () => {
+    const parsed = skillFrontmatterSchema.parse({
+      name: "harness-x",
+      description: "d",
+      author: "someone",
+      tags: ["a"],
+      license: "MIT"
+    });
+    expect(parsed.author).toBe("someone");
+    expect(parsed.tags).toEqual(["a"]);
+    expect(parsed.license).toBe("MIT");
+  });
+
+  it("rejects name not matching slug regex (UT-003)", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      name: "Foo Bar",
+      description: "d"
+    }).success).toBe(false);
+  });
+
+  it("accepts missing optional fields (UT-004)", () => {
+    const parsed = skillFrontmatterSchema.parse({
+      name: "harness-x",
+      description: "d"
+    });
+    expect(parsed.triggers).toBeUndefined();
+    expect(parsed.forbidden_actions).toBeUndefined();
+    expect(parsed.kind).toBeUndefined();
+  });
+
+  it("rejects missing description", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      name: "harness-x"
+    }).success).toBe(false);
+  });
+
+  it("rejects missing name", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      description: "d"
+    }).success).toBe(false);
+  });
+});
+
 describe("skill-center schemas", () => {
-  const validIr = {
-    name: "harness-x",
-    kind: "governance",
-    description: "demo skill",
-    triggers: ["run"],
-    inputs: ["ctx"],
-    outputs: ["out"],
-    forbidden_actions: ["automatic_git_write"],
-    required_context: ["AGENTS.md"],
-    profiles: { general: { enabled: true } },
-    adapters: { "claude-code": { enabled: true } },
-    version: "1.0.0"
-  };
   const agentCfg = {
     agent: "claude-code",
     enabled: true,
@@ -325,12 +335,11 @@ describe("skill-center schemas", () => {
     expect(r.summary.red).toBe(1);
   });
 
-  it("draftState requires ir/sourceFiles/revision and defaults examples", () => {
+  it("draftState defaults examples (ir optional, legacy tolerated COM-001/002)", () => {
     const d = draftStateSchema.parse({
       slug: "harness-x",
       agent: "claude-code",
       sourceFiles: [{ path: "SKILL.md", content: "..." }],
-      ir: validIr,
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -340,6 +349,19 @@ describe("skill-center schemas", () => {
     });
     expect(d.examples).toEqual([]);
     expect(d.revision).toBe(1);
+    const legacy = draftStateSchema.parse({
+      slug: "harness-x",
+      agent: "claude-code",
+      sourceFiles: [{ path: "SKILL.md", content: "..." }],
+      ir: { legacy: "ir-shape" },
+      draftVersion: "0.1.0",
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-26T00:00:00Z",
+      updated_at: "2026-06-26T00:00:00Z"
+    });
+    expect(legacy.ir).toEqual({ legacy: "ir-shape" });
   });
 
   it("publishSkillRequest requires version and accepts optional releaseNote", () => {
@@ -362,27 +384,46 @@ describe("skill-center schemas", () => {
     };
     const parsed = registrySkillSummarySchema.parse(s);
     expect(parsed).not.toHaveProperty("category");
+    expect(parsed.kind).toBeUndefined();
     expect(parsed.agents).toHaveLength(1);
     expect(parsed.defaultAgent).toBe("claude-code");
     expect(() => registrySkillSummarySchema.parse({ ...s, category: "tooling" })).toThrow();
   });
 
-  it("detail extends summary with ir and defaults sourceFiles/examples", () => {
+  it("summary kind 反范式化字段（从 frontmatter 派生，供 dashboard 分类）", () => {
+    const base = {
+      skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
+      tags: [], status: "published", latest_version: "1.0.0",
+      defaultAgent: "claude-code", agents: [agentCfg],
+      revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
+    };
+    expect(registrySkillSummarySchema.parse({ ...base, kind: "workflow" }).kind).toBe("workflow");
+    expect(registrySkillSummarySchema.parse({ ...base, kind: null }).kind).toBeNull();
+    expect(registrySkillSummarySchema.safeParse({ ...base, kind: "invalid" }).success).toBe(false);
+  });
+
+  it("detail defaults sourceFiles/examples (ir optional, legacy tolerated)", () => {
     const d = registrySkillDetailSchema.parse({
       skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
       tags: [], status: "published", latest_version: "1.0.0",
       defaultAgent: "claude-code", agents: [agentCfg],
-      ir: validIr,
       revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
     });
     expect(d.sourceFiles).toEqual([]);
     expect(d.examples).toEqual([]);
-    expect(d.ir).toEqual(validIr);
+    const legacy = registrySkillDetailSchema.parse({
+      skill_id: "skl_2", slug: "harness-x", name: "harness-x", description: "d",
+      tags: [], status: "published", latest_version: "1.0.0",
+      defaultAgent: "claude-code", agents: [agentCfg],
+      ir: { legacy: "ir-shape", name: "harness-x" },
+      revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
+    });
+    expect(legacy.ir).toEqual({ legacy: "ir-shape", name: "harness-x" });
   });
 
   it("version has sourceFiles/examples/changeNote and nullable source_proposal_id", () => {
     const v = registrySkillVersionSchema.parse({
-      skill_slug: "harness-x", version: "1.0.0", agent: "claude-code", ir: validIr, artifacts: [],
+      skill_slug: "harness-x", version: "1.0.0", agent: "claude-code", artifacts: [],
       source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null,
       created_at: "2026-06-26T00:00:00Z"
     });
@@ -566,7 +607,6 @@ describe("skill-center schemas", () => {
       slug: "harness-x",
       agent: "claude-code",
       sourceFiles: [{ path: "SKILL.md", content: "..." }],
-      ir: validIr,
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -581,7 +621,6 @@ describe("skill-center schemas", () => {
     const base = {
       slug: "harness-x",
       sourceFiles: [{ path: "SKILL.md", content: "..." }],
-      ir: validIr,
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -596,7 +635,7 @@ describe("skill-center schemas", () => {
 
   it("registrySkillVersion requires agent field (per-agent version)", () => {
     const base = {
-      skill_slug: "harness-x", version: "1.0.0", ir: validIr, artifacts: [],
+      skill_slug: "harness-x", version: "1.0.0", artifacts: [],
       source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null,
       created_at: "2026-06-26T00:00:00Z"
     };

@@ -13,32 +13,32 @@ import type {
   RegistrySkillDetail,
   RegistrySkillVersion,
   SkillCheckResult,
-  SkillDiffFile,
-  SkillIr
+  SkillDiffFile
 } from "@hunter-harness/contracts";
 
-const ir: SkillIr = {
-  name: "wiring-skill",
-  kind: "tooling",
-  description: "Wiring end-to-end test skill",
-  triggers: ["wire"],
-  inputs: ["source"],
-  outputs: ["artifact"],
-  forbidden_actions: ["automatic_git_write"],
-  required_context: ["AGENTS.md"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true } },
-  version: "1.2.0",
-  instructions: ["stage", "check", "publish"],
-  allowed_capabilities: ["read", "search"],
-  source_provenance: "wiring test fixture"
-};
+const SKILL_DESCRIPTION = "Wiring end-to-end test skill";
+const skillMd = `---
+name: wiring-skill
+description: ${SKILL_DESCRIPTION}
+kind: tooling
+triggers: ["wire"]
+inputs: ["source"]
+outputs: ["artifact"]
+forbidden_actions: ["automatic_git_write"]
+required_context: ["AGENTS.md"]
+version: "1.2.0"
+---
+
+# Wiring Skill
+
+Published source.`;
 
 const skill: RegistrySkillDetail = {
   skill_id: "skl_wiring",
   slug: "wiring-skill",
   name: "wiring-skill",
-  description: ir.description,
+  description: SKILL_DESCRIPTION,
+  kind: "tooling",
   tags: ["test"],
   status: "published",
   latest_version: "1.2.0",
@@ -57,8 +57,7 @@ const skill: RegistrySkillDetail = {
   revision: 1,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-21T00:00:00Z",
-  ir,
-  sourceFiles: [{ path: "SKILL.md", content: "# Wiring Skill\n\nPublished source." }],
+  sourceFiles: [{ path: "SKILL.md", content: skillMd }],
   examples: [
     {
       title: "Demo run",
@@ -93,7 +92,6 @@ const draft: DraftState = {
   slug: "wiring-skill",
   agent: "claude-code",
   sourceFiles: [{ path: "SKILL.md", content: "# Wiring Skill\n\nDraft source." }],
-  ir,
   examples: skill.examples,
   draftVersion: "1.3.0-draft",
   checks: checksResult,
@@ -117,7 +115,6 @@ const versions: RegistrySkillVersion[] = [
     skill_slug: "wiring-skill",
     version: "1.2.0",
     agent: "claude-code",
-    ir,
     artifacts: [],
     source_proposal_id: "skp_w1",
     sourceFiles: [{ path: "SKILL.md", content: "# v1.2.0 published" }],
@@ -131,7 +128,6 @@ const publishedVersion: RegistrySkillVersion = {
   skill_slug: "wiring-skill",
   version: "1.3.0",
   agent: "claude-code",
-  ir,
   artifacts: [],
   source_proposal_id: "skp_w2",
   sourceFiles: [{ path: "SKILL.md", content: "# v1.3.0 published" }],
@@ -144,7 +140,6 @@ const v100Version: RegistrySkillVersion = {
   skill_slug: "wiring-skill",
   version: "1.0.0",
   agent: "claude-code",
-  ir,
   artifacts: [],
   source_proposal_id: "skp_w0",
   sourceFiles: [{ path: "SKILL.md", content: "# v1.0.0 published" }],
@@ -157,7 +152,6 @@ const v120Version: RegistrySkillVersion = {
   skill_slug: "wiring-skill",
   version: "1.2.0",
   agent: "claude-code",
-  ir,
   artifacts: [],
   source_proposal_id: "skp_w1",
   sourceFiles: [{ path: "SKILL.md", content: "# v1.2.0 published" }],
@@ -306,7 +300,6 @@ describe("skill-center 前端接线端到端（mock API）", () => {
       skill_slug: "wiring-skill",
       version: "1.0.0",
       agent: "claude-code",
-      ir,
       artifacts: [],
       source_proposal_id: "skp_m0",
       sourceFiles: [
@@ -321,7 +314,6 @@ describe("skill-center 前端接线端到端（mock API）", () => {
       skill_slug: "wiring-skill",
       version: "1.1.0",
       agent: "claude-code",
-      ir,
       artifacts: [],
       source_proposal_id: "skp_m1",
       sourceFiles: [
@@ -353,19 +345,19 @@ describe("skill-center 前端接线端到端（mock API）", () => {
       agents: [{ agent: "cursor", enabled: true, isDefault: true, installTarget: ".claude/skills/wiring-skill", latestVersion: "1.1.0", draftVersion: null, sourcePackagePath: null }]
     };
     const cursorV100: RegistrySkillVersion = {
-      skill_slug: "wiring-skill", version: "1.0.0", agent: "cursor", ir, artifacts: [],
+      skill_slug: "wiring-skill", version: "1.0.0", agent: "cursor", artifacts: [],
       source_proposal_id: "skp_c0",
       sourceFiles: [{ path: "SKILL.md", content: "# cursor v1.0.0" }],
       examples: [], changeNote: "cursor first", created_at: "2026-06-20T00:00:00Z"
     };
     const cursorV110: RegistrySkillVersion = {
-      skill_slug: "wiring-skill", version: "1.1.0", agent: "cursor", ir, artifacts: [],
+      skill_slug: "wiring-skill", version: "1.1.0", agent: "cursor", artifacts: [],
       source_proposal_id: "skp_c1",
       sourceFiles: [{ path: "SKILL.md", content: "# cursor v1.1.0" }],
       examples: [], changeNote: "cursor second", created_at: "2026-06-22T00:00:00Z"
     };
     const ccV999: RegistrySkillVersion = {
-      skill_slug: "wiring-skill", version: "9.9.9", agent: "claude-code", ir, artifacts: [],
+      skill_slug: "wiring-skill", version: "9.9.9", agent: "claude-code", artifacts: [],
       source_proposal_id: "skp_cc9",
       sourceFiles: [{ path: "SKILL.md", content: "# cc v9.9.9" }],
       examples: [], changeNote: "cc other", created_at: "2026-06-25T00:00:00Z"

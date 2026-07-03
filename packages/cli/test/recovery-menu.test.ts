@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../../resources/bootstrap-ir", import.meta.url)
+  new URL("../../../resources", import.meta.url)
 );
 
 describe("configuration recovery menu", () => {

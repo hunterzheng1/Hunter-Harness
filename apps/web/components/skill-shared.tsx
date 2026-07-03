@@ -1,6 +1,8 @@
 "use client";
 
-import type { SkillDiffFile, SkillIr, SourceFile } from "@hunter-harness/contracts";
+import { skillFrontmatterSchema } from "@hunter-harness/contracts";
+import type { AgentSkillConfig, SkillDiffFile, SkillFrontmatter, SourceFile } from "@hunter-harness/contracts";
+import { parse as parseYaml } from "yaml";
 import { useState } from "react";
 
 import { ApiClientError, type HunterApi } from "../lib/api";
@@ -60,24 +62,23 @@ function ValueChips({ values, empty, t }: { values: string[] | undefined; empty:
 }
 
 function EnabledTargets({
-  targets,
+  agents,
   empty,
   enabledLabel,
   disabledLabel,
   labelFor
 }: {
-  targets: SkillIr["adapters"];
+  agents: readonly AgentSkillConfig[];
   empty: string;
   enabledLabel: string;
   disabledLabel: string;
   labelFor?: (name: string) => string;
 }) {
-  const entries = Object.entries(targets);
-  if (entries.length === 0) return <span className="muted-inline">{empty}</span>;
-  return <span className="config-chip-row">{entries.map(([name, config]) => (
-    <span className={`config-chip config-chip-${config.enabled ? "enabled" : "disabled"}`} key={name}>
-      <span>{labelFor?.(name) ?? name}</span>
-      <small>{config.enabled ? enabledLabel : disabledLabel}</small>
+  if (agents.length === 0) return <span className="muted-inline">{empty}</span>;
+  return <span className="config-chip-row">{agents.map((cfg) => (
+    <span className={`config-chip config-chip-${cfg.enabled ? "enabled" : "disabled"}`} key={cfg.agent}>
+      <span>{labelFor?.(cfg.agent) ?? cfg.agent}</span>
+      <small>{cfg.enabled ? enabledLabel : disabledLabel}</small>
     </span>
   ))}</span>;
 }
@@ -257,6 +258,25 @@ function computeDiff(published: SourceFile[], draft: SourceFile[]): SkillDiffFil
     }
   }
   return result;
+}
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+/**
+ * 从 SKILL.md 内容解析 frontmatter（取代 canonical Skill IR 的元数据来源）。
+ * web 端轻量解析：parseYaml + skillFrontmatterSchema.parse；失败返回 null（UI 降级展示，不抛错）。
+ * 与 core/skill/frontmatter.ts 的 parseFrontmatter 对齐，但容错而非抛错（展示用，非校验入口）。
+ */
+export function parseSkillFrontmatter(content: string): SkillFrontmatter | null {
+  const match = FRONTMATTER_RE.exec(content);
+  if (match === null) return null;
+  const raw = match[1] ?? "";
+  try {
+    const parsed: unknown = parseYaml(raw);
+    return skillFrontmatterSchema.parse(parsed);
+  } catch {
+    return null;
+  }
 }
 
 interface SourceTreeNode {

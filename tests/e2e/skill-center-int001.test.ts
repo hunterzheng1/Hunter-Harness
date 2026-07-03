@@ -7,24 +7,43 @@ import { MemoryRepository } from "../../apps/server/src/repositories/memory.js";
 import { MemoryArtifactStorage } from "../../apps/server/src/storage/memory.js";
 import { buildUploadFormData, HttpHunterApi } from "../../apps/web/lib/api.js";
 
-// 合法 skill IR（YAML）— findSkillIr 优先识别 skill.yaml（packages/core/src/skill-ir/extract.ts ENTRY_PRIORITY）
-const SKILL_YAML = `name: harness-int001-test
-kind: tooling
+// 合法 skill（SKILL.md frontmatter）— findEntryFile 识别 SKILL.md（claude-code entry）
+const SKILL_MD = `---
+name: harness-int001-test
 description: INT-001 end-to-end test skill
-triggers: [int001]
-inputs: [change_ref]
-outputs: [result]
-forbidden_actions: [automatic_git_write]
-required_context: [AGENTS.md]
-profiles:
-  general: { enabled: true }
-adapters:
-  claude-code: { enabled: true }
-version: 1.0.0
-instructions:
-  - Run end-to-end verification.
-allowed_capabilities: [read, search]
-source_provenance: int001 e2e fixture
+kind: tooling
+triggers:
+  - int001
+inputs:
+  - change_ref
+outputs:
+  - result
+forbidden_actions:
+  - automatic_git_write
+required_context:
+  - AGENTS.md
+version: "1.0.0"
+---
+
+# harness-int001-test
+
+INT-001 end-to-end test skill.
+
+## Triggers
+
+- int001
+
+## Required context
+
+- AGENTS.md
+
+## Instructions
+
+- Run end-to-end verification.
+
+## Forbidden actions
+
+- automatic_git_write
 `;
 
 describe("INT-001 skill center 真实后端端到端", () => {
@@ -46,7 +65,7 @@ describe("INT-001 skill center 真实后端端到端", () => {
 
     try {
       // 1. 上传 skill 包（multipart FormData + Idempotency-Key + Bearer token，真实 HTTP）
-      const file = new File([SKILL_YAML], "skill.yaml", { type: "text/yaml" });
+      const file = new File([SKILL_MD], "SKILL.md", { type: "text/markdown" });
       const draft = await api.uploadSkillDraft(buildUploadFormData([file]), "claude-code");
       expect(draft.slug).toBe("harness-int001-test");
       expect(draft.draftVersion).toBe("0.1.0");

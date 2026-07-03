@@ -2,80 +2,40 @@ import { describe, expect, it } from "vitest";
 import AdmZip from "adm-zip";
 
 import { sha256Bytes } from "@hunter-harness/core";
-import type { SkillIr, SourceFile, RegistryAgent } from "@hunter-harness/contracts";
+import type { SourceFile, RegistryAgent } from "@hunter-harness/contracts";
 
 import { RegistryStore } from "../src/registry/store.js";
 import type { RegistryPersistence } from "../src/registry/persistence.js";
 import { MemoryArtifactStorage } from "../src/storage/memory.js";
 
-const ir: SkillIr = {
-  name: "harness-x",
-  kind: "governance",
-  description: "demo skill",
-  triggers: ["run"],
-  inputs: ["ctx"],
-  outputs: ["out"],
-  forbidden_actions: ["automatic_git_write"],
-  required_context: ["AGENTS.md"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true } },
-  version: "1.0.0"
-};
-
-// 簇8 多 adapter fixture：enable 4 个 installable adapter，验 per-agent publish 独立制品/版本
-const irMultiAdapter: SkillIr = {
-  ...ir,
-  adapters: {
-    "claude-code": { enabled: true },
-    codex: { enabled: true },
-    cursor: { enabled: true },
-    generic: { enabled: true }
-  }
-};
-
-const skillYaml = `name: harness-x
-kind: governance
+const skillMd = `---
+name: harness-x
 description: demo skill
+kind: governance
 triggers: ["run"]
 inputs: ["ctx"]
 outputs: ["out"]
 forbidden_actions: ["automatic_git_write"]
 required_context: ["AGENTS.md"]
-profiles:
-  general:
-    enabled: true
-adapters:
-  claude-code:
-    enabled: true
 version: "1.0.0"
+---
+
+# harness-x
+demo skill body
 `;
 
-// 多 adapter skill.yaml（uploadDraft 路径用）
-const skillYamlMulti = `name: harness-x
-kind: governance
+// cursor entry（.mdc），多 agent fixture 用（claude-code 找 SKILL.md，cursor 找 .mdc）
+const cursorMdc = `---
+name: harness-x
 description: demo skill
-triggers: ["run"]
-inputs: ["ctx"]
-outputs: ["out"]
-forbidden_actions: ["automatic_git_write"]
-required_context: ["AGENTS.md"]
-profiles:
-  general:
-    enabled: true
-adapters:
-  claude-code:
-    enabled: true
-  codex:
-    enabled: true
-  cursor:
-    enabled: true
-  generic:
-    enabled: true
 version: "1.0.0"
+adapter: cursor
+---
+cursor rule body
 `;
 
-const files: SourceFile[] = [{ path: "skill.yaml", content: skillYaml }];
-const filesMulti: SourceFile[] = [{ path: "skill.yaml", content: skillYamlMulti }];
+const files: SourceFile[] = [{ path: "SKILL.md", content: skillMd }];
+const filesMulti: SourceFile[] = [{ path: "SKILL.md", content: skillMd }, { path: "harness-x.mdc", content: cursorMdc }];
 
 const CC = "claude-code" as RegistryAgent;
 const CURSOR = "cursor" as RegistryAgent;
@@ -96,11 +56,21 @@ async function setupPublished(
   store: RegistryStore,
   agent: RegistryAgent = CC,
   version = "1.0.0",
-  irArg: SkillIr = ir,
   filesArg: SourceFile[] = files
 ): Promise<void> {
-  await store.upsertDraft({ slug: "harness-x", agent, sourceFiles: filesArg, ir: irArg, draftVersion: "0.1.0" });
+  await store.upsertDraft({ slug: "harness-x", agent, sourceFiles: filesArg, draftVersion: "0.1.0" });
   await store.publish({ slug: "harness-x", agent, version, actorId: "owner" });
+}
+
+// 从 draft.sourceFiles 的 entry frontmatter 提取字段（取代旧 draft.ir.* 断言）
+function frontmatterField(draft: { sourceFiles: SourceFile[] } | undefined, field: string): string | undefined {
+  const entry = draft?.sourceFiles.find((f) => f.path === "SKILL.md");
+  if (entry === undefined) return undefined;
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(entry.content);
+  if (m === null) return undefined;
+  const fm = m[1] ?? "";
+  const line = fm.split("\n").find((l) => l.startsWith(field + ":"));
+  return line?.slice((field + ":").length).trim().replace(/^["']|["']$/g, "");
 }
 
 describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
@@ -136,13 +106,13 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
 
     it("blocks on sensitive high-risk content", async () => {
       const store = newStore();
-      const bad = [{ path: "skill.yaml", content: skillYaml }, { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }];
+      const bad = [{ path: "SKILL.md", content: skillMd }, { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }];
       await expect(store.uploadDraft({ files: bad, actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
     });
 
     it("blocks on schema-invalid IR", async () => {
       const store = newStore();
-      await expect(store.uploadDraft({ files: [{ path: "skill.yaml", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+      await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
     });
 
     it("rejects unsafe file path with SKILL_VALIDATION_FAILED (UT-037)", async () => {
@@ -181,22 +151,22 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
 
   it("getDraft 取指定 agent (UT-003)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.2.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.2.0" });
     expect(store.getDraft("harness-x", CC)?.draftVersion).toBe("0.1.0");
     expect(store.getDraft("harness-x", CURSOR)?.draftVersion).toBe("0.2.0");
   });
 
   it("getDraft 不存在的 agent 返回 undefined（路由层映射 404 DRAFT_NOT_FOUND）(UT-004)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     expect(store.getDraft("harness-x", CODEX)).toBeUndefined();
   });
 
   it("runChecks 按 agent 写 checks，仅该 agent draft 更新 (UT-005)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.1.0" });
     await store.runChecks({ slug: "harness-x", agent: CURSOR, checkedAt: "2026-06-30T00:00:00Z" });
     expect(store.getDraft("harness-x", CURSOR)?.checks).not.toBeNull();
     expect(store.getDraft("harness-x", CC)?.checks).toBeNull();
@@ -204,8 +174,8 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
 
   it("deleteDraft 按 agent 删，仅删该 agent draft (UT-006)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.1.0" });
     await store.deleteDraft("harness-x", CC, 1);
     expect(store.getDraft("harness-x", CC)).toBeUndefined();
     expect(store.getDraft("harness-x", CURSOR)?.agent).toBe(CURSOR);
@@ -213,42 +183,42 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
 
   it("deleteDraft DRAFT_NOT_FOUND 404 when (slug,agent) missing (UT-006)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     await expect(store.deleteDraft("harness-x", CURSOR, 1)).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND", status: 404 });
   });
 
   it("deleteDraft REVISION_CONFLICT 409 (UT-006)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     await expect(store.deleteDraft("harness-x", CC, 999)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
   });
 
-  it("applyDraftFix 按 agent，仅该 agent draft.ir 更新 (UT-007)", async () => {
+  it("applyDraftFix 按 agent，仅该 agent draft.sourceFiles 更新 (UT-007)", async () => {
     const store = newStore();
     // 先发布 CC 建立 latest_version（buildFixPatch 的 ir.version bump 依赖 latestVersion）
-    await setupPublished(store, CC, "1.0.0", ir, files);
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CC, "1.0.0", files);
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.1.0" });
     await store.runChecks({ slug: "harness-x", agent: CC, checkedAt: "2026-06-30T00:00:00Z" });
     await store.runChecks({ slug: "harness-x", agent: CURSOR, checkedAt: "2026-06-30T00:00:00Z" });
     const beforeCursor = store.getDraft("harness-x", CURSOR);
     await store.applyDraftFix("harness-x", CC, null);
-    // claude-code draft ir.version bumped；cursor draft 不变
-    expect(store.getDraft("harness-x", CC)?.ir.version).toBe("1.0.1");
+    // claude-code draft frontmatter version bumped；cursor draft 不变
+    expect(frontmatterField(store.getDraft("harness-x", CC), "version")).toBe("1.0.1");
     expect(store.getDraft("harness-x", CC)?.checks).toBeNull();
-    expect(store.getDraft("harness-x", CURSOR)?.ir.version).toBe(beforeCursor?.ir.version);
+    expect(frontmatterField(store.getDraft("harness-x", CURSOR), "version")).toBe(frontmatterField(beforeCursor, "version"));
     expect(store.getDraft("harness-x", CURSOR)?.checks).not.toBeNull();
   });
 
   it("upsertDraft bumps revision per-agent and persists across reload", async () => {
     const p = new MemoryPersistence();
     const store = newStore(p);
-    const d1 = await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    const d1 = await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     expect(d1.revision).toBe(1);
-    const d2 = await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    const d2 = await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     expect(d2.revision).toBe(2);
     // 其他 agent 独立 revision 序列
-    const dc = await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    const dc = await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.1.0" });
     expect(dc.revision).toBe(1);
     const reloaded = newStore(p);
     await reloaded.initialize();
@@ -260,7 +230,7 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
 describe("RegistryStore per-agent publish (UT-010~014)", () => {
   it("publish 只产当前 agent 的 1 个 artifact，其他 agent latestVersion 不变 (UT-010)", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     const v = await store.publish({ slug: "harness-x", agent: CURSOR, version: "1.0.0", actorId: "owner" });
     expect(v.agent).toBe(CURSOR);
     expect(v.artifacts).toHaveLength(1);
@@ -275,10 +245,26 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
     expect(store.getDraft("harness-x", CURSOR)).toBeUndefined();
   });
 
+  it("publish 反范式化 frontmatter kind 到 skill.kind (R8)", async () => {
+    const store = newStore();
+    await setupPublished(store, CC, "1.0.0", files); // files = SKILL.md (kind: governance)
+    const skill = store.getSkill("harness-x");
+    expect(skill.kind).toBe("governance");
+  });
+
+  it("publish frontmatter 无 kind 时 skill.kind 为 null (R8 边界)", async () => {
+    const store = newStore();
+    const noKindFiles: SourceFile[] = [{ path: "SKILL.md", content: skillMd.replace("kind: governance\n", "") }];
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: noKindFiles, draftVersion: "0.1.0" });
+    await store.publish({ slug: "harness-x", agent: CC, version: "1.0.0", actorId: "owner" });
+    const skill = store.getSkill("harness-x");
+    expect(skill.kind).toBeNull();
+  });
+
   it("publish 前进当前 agent latestVersion，其他 agent 不变 (UT-011)", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.0", irMultiAdapter, filesMulti);
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CC, "1.0.0", filesMulti);
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     await store.publish({ slug: "harness-x", agent: CURSOR, version: "1.1.0", actorId: "owner" });
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
@@ -288,16 +274,16 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
 
   it("publish 版本不前进按 agent 序列 → 409 SKILL_VERSION_NOT_FORWARD (UT-012)", async () => {
     const store = newStore();
-    await setupPublished(store, CURSOR, "1.0.0", irMultiAdapter, filesMulti);
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CURSOR, "1.0.0", filesMulti);
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     await expect(store.publish({ slug: "harness-x", agent: CURSOR, version: "0.9.0", actorId: "owner" }))
       .rejects.toMatchObject({ code: "SKILL_VERSION_NOT_FORWARD", status: 409 });
   });
 
   it("per-agent 版本序列独立：claude-code 1.0.0 不阻塞 cursor 1.0.0 (UT-012 独立性)", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.0", irMultiAdapter, filesMulti);
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CC, "1.0.0", filesMulti);
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     // cursor 无前序版本，1.0.0 应通过（即便 == claude-code 的 1.0.0）
     const v = await store.publish({ slug: "harness-x", agent: CURSOR, version: "1.0.0", actorId: "owner" });
     expect(v.agent).toBe(CURSOR);
@@ -305,8 +291,8 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
 
   it("agentsFor per-agent 独立 latestVersion：cc@1.0.1 + cursor@1.0.2 (UT-013)", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.1", irMultiAdapter, filesMulti);
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CC, "1.0.1", filesMulti);
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     await store.publish({ slug: "harness-x", agent: CURSOR, version: "1.0.2", actorId: "owner" });
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
@@ -317,7 +303,7 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
 
   it("fallback：agent 无专属版本回退默认 agent，sourcePackagePath 标注 (UT-014)", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.1", irMultiAdapter, filesMulti);
+    await setupPublished(store, CC, "1.0.1", filesMulti);
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
     // codex 无专属版本，default=claude-code → fallback 到 1.0.1
@@ -329,7 +315,7 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
 
   it("publish artifact content_sha256 matches stored blob bytes", async () => {
     const store = newStore();
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
     const v = await store.publish({ slug: "harness-x", agent: CC, version: "1.0.0", actorId: "owner" });
     const artifact = v.artifacts[0];
     if (artifact === undefined) throw new Error("artifact missing");
@@ -337,18 +323,17 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
     expect(sha256Bytes(bytes)).toBe(artifact.content_sha256);
   });
 
-  it("publish rejects mcp-only IR with 422 SKILL_VALIDATION_FAILED (Y-3)", async () => {
+  it("publish rejects non-installable agent (mcp) with 422 SKILL_VALIDATION_FAILED (Y-3)", async () => {
     const store = newStore();
-    const irMcpOnly: SkillIr = { ...ir, adapters: { mcp: { enabled: true } } };
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir: irMcpOnly, draftVersion: "0.1.0" });
-    await expect(store.publish({ slug: "harness-x", agent: CC, version: "1.0.0", actorId: "owner" }))
+    await store.upsertDraft({ slug: "harness-x", agent: "mcp" as RegistryAgent, sourceFiles: files, draftVersion: "0.1.0" });
+    await expect(store.publish({ slug: "harness-x", agent: "mcp" as RegistryAgent, version: "1.0.0", actorId: "owner" }))
       .rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED", status: 422 });
   });
 });
 
 describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", () => {
   async function publishAgent(store: RegistryStore, agent: RegistryAgent, version: string): Promise<void> {
-    await store.upsertDraft({ slug: "harness-x", agent, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     await store.publish({ slug: "harness-x", agent, version, actorId: "owner" });
   }
 
@@ -393,23 +378,23 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     expect(byAgent.get(CURSOR)?.installTarget).toBe(".cursor/rules/harness-x.mdc");
     expect(byAgent.get(CODEX)?.installTarget).toBe("AGENTS.md");
     expect(byAgent.get("generic")?.installTarget).toBe(".agent-skills/harness-x.md");
-    expect(byAgent.get(CC)?.installTarget).toBe(".claude/skills/harness-x/SKILL.md");
+    expect(byAgent.get(CC)?.installTarget).toBe(".claude/skills/harness-x/");
     expect(byAgent.get("mcp")).toBeUndefined();
     expect(skill.defaultAgent).toBe(CC);
   });
 
-  it("adapterPreview codex/cursor/generic returns compiled output (API-005~007)", async () => {
+  it("adapterPreview returns sourceFiles + installTarget per agent (API-005~007)", async () => {
     const store = newStore();
     await publishAgent(store, CC, "1.0.0");
-    const codex = store.adapterPreview("harness-x", CODEX);
-    expect(codex.path).toBe("AGENTS.md");
-    expect(codex.content).toContain("<!-- harness: adapter=codex");
+    await publishAgent(store, CURSOR, "1.0.0");
+    await publishAgent(store, CODEX, "1.0.0");
+    const cc = store.adapterPreview("harness-x", CC);
+    expect(cc.installTarget).toBe(".claude/skills/harness-x/");
+    expect(cc.sourceFiles.some((f) => f.path === "SKILL.md")).toBe(true);
     const cursor = store.adapterPreview("harness-x", CURSOR);
-    expect(cursor.path).toBe(".cursor/rules/harness-x.mdc");
-    expect(cursor.content).toContain("adapter: cursor");
-    const generic = store.adapterPreview("harness-x", "generic");
-    expect(generic.path).toBe(".agent-skills/harness-x.md");
-    expect(generic.content).toContain("adapter: generic");
+    expect(cursor.installTarget).toBe(".cursor/rules/harness-x.mdc");
+    const codex = store.adapterPreview("harness-x", CODEX);
+    expect(codex.installTarget).toBe("AGENTS.md");
   });
 
   it("adapterPreview mcp throws 422 ADAPTER_NOT_IMPLEMENTED (API-008)", async () => {
@@ -423,7 +408,7 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
 
 describe("RegistryStore setDefaultAgent (UT-015~017)", () => {
   async function setupMulti(store: RegistryStore): Promise<void> {
-    await setupPublished(store, CC, "1.0.0", irMultiAdapter, filesMulti);
+    await setupPublished(store, CC, "1.0.0", filesMulti);
   }
 
   it("setDefaultAgent 切换默认 agent (UT-015)", async () => {
@@ -457,7 +442,7 @@ describe("RegistryStore setDefaultAgent (UT-015~017)", () => {
   it("setDefaultAgent 后 fallback 来源切换为新默认 (UT-015 回退语义)", async () => {
     const store = newStore();
     // 只发布 cursor，默认仍是 claude-code（inferred）
-    await setupPublished(store, CURSOR, "1.0.0", irMultiAdapter, filesMulti);
+    await setupPublished(store, CURSOR, "1.0.0", filesMulti);
     const before = store.getSkill("harness-x");
     // 切默认为 cursor（cursor 有版本）
     await store.setDefaultAgent("harness-x", CURSOR, before.revision);
@@ -471,8 +456,8 @@ describe("RegistryStore setDefaultAgent (UT-015~017)", () => {
 describe("RegistryStore listVersions agent filter (UT-018)", () => {
   it("listVersions 按 agent 过滤", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.0", irMultiAdapter, filesMulti);
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, ir: irMultiAdapter, draftVersion: "0.1.0" });
+    await setupPublished(store, CC, "1.0.0", filesMulti);
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: filesMulti, draftVersion: "0.1.0" });
     await store.publish({ slug: "harness-x", agent: CURSOR, version: "1.0.1", actorId: "owner" });
 
     const ccOnly = store.listVersions("harness-x", CC);
@@ -494,7 +479,6 @@ describe("RegistryStore migration v2→v3 (UT-020~022)", () => {
     const oldDraft = {
       slug: "harness-x",
       sourceFiles: files,
-      ir,
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -533,11 +517,11 @@ describe("RegistryStore migration v2→v3 (UT-020~022)", () => {
         detail: {
           skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
           tags: [], status: "published", latest_version: "1.0.0",
-          agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/harness-x/SKILL.md", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
+          agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/harness-x/", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
           defaultAgent: CC,
-          revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z", ir
+          revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z"
         },
-        versions: [{ skill_slug: "harness-x", version: "1.0.0", ir, artifacts: [], source_proposal_id: null, created_at: "2026-06-20T00:00:00Z" }]
+        versions: [{ skill_slug: "harness-x", version: "1.0.0", artifacts: [], source_proposal_id: null, created_at: "2026-06-20T00:00:00Z" }]
       }]],
       proposals: [], tags: [], workflows: [], projectBindings: [], drafts: []
     };
@@ -547,13 +531,11 @@ describe("RegistryStore migration v2→v3 (UT-020~022)", () => {
     expect(versions[0]?.agent).toBe(CC);
   });
 
-  it("draft 无 enabled installable agent → 丢弃 (UT-022)", async () => {
+  it("draft 无 agent 迁默认 agent claude-code (UT-022)", async () => {
     const p = new MemoryPersistence();
-    const irMcpOnly: SkillIr = { ...ir, adapters: { mcp: { enabled: true } } };
     const oldDraft = {
       slug: "harness-x",
       sourceFiles: files,
-      ir: irMcpOnly,
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -569,7 +551,8 @@ describe("RegistryStore migration v2→v3 (UT-020~022)", () => {
     };
     const store = newStore(p);
     await store.initialize();
-    // mcp 非 installable → 无法推断默认 agent → draft 丢弃
+    // mcp 非 draft agent（迁默认 CC）；mcp draft 不存在
+    expect(store.getDraft("harness-x", CC)?.agent).toBe(CC);
     expect(store.getDraft("harness-x", "mcp" as RegistryAgent)).toBeUndefined();
   });
 });
@@ -578,8 +561,8 @@ describe("RegistryStore persist nested drafts (UT-031)", () => {
   it("persist 序列化嵌套 drafts [[slug,[[agent,DraftState]]]]", async () => {
     const p = new MemoryPersistence();
     const store = newStore(p);
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir, draftVersion: "0.1.0" });
-    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, ir: irMultiAdapter, draftVersion: "0.2.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, draftVersion: "0.1.0" });
+    await store.upsertDraft({ slug: "harness-x", agent: CURSOR, sourceFiles: files, draftVersion: "0.2.0" });
     await store.persist();
     const snap = p.snapshot as { schemaVersion: number; drafts: Array<[string, Array<[string, unknown]>]> };
     expect(snap.schemaVersion).toBe(4);
@@ -606,13 +589,13 @@ describe("RegistryStore uploadDraft validation", () => {
 
   it("blocks on sensitive high-risk content", async () => {
     const store = newStore();
-    const bad = [{ path: "skill.yaml", content: skillYaml }, { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }];
+    const bad = [{ path: "SKILL.md", content: skillMd }, { path: "secret.md", content: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----" }];
     await expect(store.uploadDraft({ files: bad, actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
   });
 
   it("blocks on schema-invalid IR", async () => {
     const store = newStore();
-    await expect(store.uploadDraft({ files: [{ path: "skill.yaml", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+    await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
   });
 
   it("rejects unsafe file path with SKILL_VALIDATION_FAILED", async () => {
@@ -636,7 +619,7 @@ describe("RegistryStore uploadDraft validation", () => {
 
   it("uploadDraft derives draftVersion from that agent's latestVersion", async () => {
     const store = newStore();
-    await setupPublished(store, CC, "1.0.0", ir, files);
+    await setupPublished(store, CC, "1.0.0", files);
     const draft = await store.uploadDraft({ files, actorId: "owner", agent: CC });
     expect(draft.draftVersion).toBe("1.0.1");
   });
@@ -684,9 +667,11 @@ describe("RegistryStore publish single-agent", () => {
 describe("RegistryStore diffDraft + deleteSkill", () => {
   it("diffDraft returns published vs draft differences (per-agent)", async () => {
     const store = newStore();
-    await store.uploadDraft({ files: [{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "v1" }], actorId: "owner", agent: CC });
+    const v1Files: SourceFile[] = [{ path: "SKILL.md", content: skillMd }];
+    const v2Files: SourceFile[] = [{ path: "SKILL.md", content: skillMd + "\nextra\n" }];
+    await store.uploadDraft({ files: v1Files, actorId: "owner", agent: CC });
     await store.publish({ slug: "harness-x", agent: CC, version: "1.0.0", actorId: "owner" });
-    await store.uploadDraft({ files: [{ path: "skill.yaml", content: skillYaml }, { path: "SKILL.md", content: "v2" }], actorId: "owner", agent: CC });
+    await store.uploadDraft({ files: v2Files, actorId: "owner", agent: CC });
     const diff = store.diffDraft("harness-x", CC);
     expect(diff.some((f) => f.status === "modified" && f.path === "SKILL.md")).toBe(true);
   });
@@ -721,9 +706,9 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
         detail: {
           skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
           category: "governance", tags: ["demo"], status: "published", latest_version: "1.0.0",
-          adapters: ["claude-code"], revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z", ir
+          adapters: ["claude-code"], revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z"
         },
-        versions: [{ skill_slug: "harness-x", version: "1.0.0", ir, artifacts: [], source_proposal_id: null, created_at: "2026-06-20T00:00:00Z" }]
+        versions: [{ skill_slug: "harness-x", version: "1.0.0", artifacts: [], source_proposal_id: null, created_at: "2026-06-20T00:00:00Z" }]
       }]],
       proposals: [],
       tags: [["tag_1", { tag_id: "tag_1", slug: "demo", label: "Demo", active: true, revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }]],
@@ -734,8 +719,8 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
     await store.initialize();
     const skill = store.getSkill("harness-x");
     expect(skill).not.toHaveProperty("category");
-    expect(skill.agents).toHaveLength(1);
-    expect(skill.agents[0]?.agent).toBe(CC);
+    expect(skill.agents).toHaveLength(4); // 新模型：所有 installable agent（fallback default）
+    expect(skill.agents.some((a) => a.agent === CC && a.isDefault)).toBe(true);
     expect(skill.defaultAgent).toBe(CC);
     expect(skill.agents[0]?.latestVersion).toBe("1.0.0");
     const tags = store.listTags();
@@ -747,7 +732,7 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
     expect(store.listSkills()).toEqual([]);
   });
 
-  it("skips corrupt skill with ir:null during migration", async () => {
+  it("skips corrupt skill with invalid version during migration", async () => {
     const p = new MemoryPersistence();
     p.snapshot = {
       schemaVersion: 1,
@@ -756,12 +741,11 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
         detail: {
           skill_id: "skl_1", slug: "harness-corrupt", name: "harness-corrupt", description: "d",
           tags: [], status: "published", latest_version: "1.0.0",
-          agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/harness-corrupt", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
+          agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/harness-corrupt/", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
           defaultAgent: CC,
-          revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z",
-          ir: null
+          revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z"
         },
-        versions: []
+        versions: [{ skill_slug: "harness-corrupt", version: "NOT_SEMVER", agent: CC, artifacts: [], source_proposal_id: null, created_at: "2026-06-20T00:00:00Z" }]
       }]],
       proposals: [], tags: [], workflows: [], projectBindings: []
     };
@@ -772,7 +756,7 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
 });
 
 describe("RegistryStore listTags usage cache", () => {
-  function minIr(name: string): SkillIr {
+  function minIr(name: string): unknown {
     return {
       name, kind: "tooling", description: "d",
       triggers: ["run"], inputs: [], outputs: ["out"],
@@ -788,7 +772,7 @@ describe("RegistryStore listTags usage cache", () => {
       detail: {
         skill_id: "skl_" + slug, slug, name: slug, description: "d",
         tags, status: "published", latest_version: "1.0.0",
-        agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/" + slug + "/SKILL.md", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
+        agents: [{ agent: CC, enabled: true, isDefault: true, installTarget: ".claude/skills/" + slug + "/", latestVersion: "1.0.0", draftVersion: null, sourcePackagePath: null }],
         defaultAgent: CC,
         revision: 1, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z",
         ir: minIr(slug)
@@ -873,7 +857,7 @@ describe("RegistryStore fix", () => {
     expect(after.revision).toBe((before?.revision ?? 0) + 1);
     expect(after.checks).toBeNull();
     expect(after.aiChecks).toBeNull();
-    expect(after.ir.version).toBe("1.0.1");
+    expect(frontmatterField(after, "version")).toBe("1.0.1");
   });
 
   it("applyDraftFix throws DRAFT_NOT_FOUND when no draft", async () => {
@@ -881,10 +865,10 @@ describe("RegistryStore fix", () => {
     await expect(store.applyDraftFix("harness-x", CC, null)).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
   });
 
-  it("applyDraftFix blocks on sensitive fixed ir", async () => {
+  it("applyDraftFix blocks on sensitive fixed source", async () => {
     const store = newStore();
-    const secretIr: SkillIr = { ...ir, instructions: ["-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"] };
-    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: files, ir: secretIr, draftVersion: "0.1.0" });
+    const secretFiles: SourceFile[] = [{ path: "SKILL.md", content: skillMd.replace("demo skill body", "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----") }];
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: secretFiles, draftVersion: "0.1.0" });
     await store.runChecks({ slug: "harness-x", agent: CC, checkedAt: "2026-06-28T00:00:00Z" });
     await expect(store.applyDraftFix("harness-x", CC, null)).rejects.toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
   });
@@ -926,7 +910,7 @@ describe("RegistryStore AI content generation", () => {
     const store = await setupDraftWithAiChecks();
     const before = store.getDraft("harness-x", CC);
     const r = await store.applyFixSuggestion({ slug: "harness-x", agent: CC, checkId: "AI_DESC", suggestedContent: "更清晰的描述", appliesTo: "description", actorId: "owner" });
-    expect(r.ir.description).toBe("更清晰的描述");
+    expect(frontmatterField(r, "description")).toBe("更清晰的描述");
     expect(r.aiChecks).toBeNull();
     expect(r.revision).toBe((before?.revision ?? 0) + 1);
   });
@@ -943,13 +927,14 @@ describe("RegistryStore AI content generation", () => {
   it("applyFixSuggestion appliesTo=instructions writes ir.instructions", async () => {
     const store = await setupDraftWithAiChecks();
     const r = await store.applyFixSuggestion({ slug: "harness-x", agent: CC, checkId: "AI_INSTR", suggestedContent: JSON.stringify(["步骤1", "步骤2"]), appliesTo: "instructions", actorId: "owner" });
-    expect(r.ir.instructions).toEqual(["步骤1", "步骤2"]);
+    const entry = r.sourceFiles.find((f) => f.path === "SKILL.md")?.content ?? "";
+    expect(entry).toContain("步骤1");
+    expect(entry).toContain("步骤2");
   });
 
-  it("applyFixSuggestion appliesTo=allowed_capabilities writes ir.allowed_capabilities", async () => {
+  it("applyFixSuggestion appliesTo=allowed_capabilities → 422 (新模型不再支持)", async () => {
     const store = await setupDraftWithAiChecks();
-    const r = await store.applyFixSuggestion({ slug: "harness-x", agent: CC, checkId: "AI_CAP", suggestedContent: JSON.stringify(["read-files"]), appliesTo: "allowed_capabilities", actorId: "owner" });
-    expect(r.ir.allowed_capabilities).toEqual(["read-files"]);
+    await expect(store.applyFixSuggestion({ slug: "harness-x", agent: CC, checkId: "AI_CAP", suggestedContent: JSON.stringify(["read-files"]), appliesTo: "allowed_capabilities", actorId: "owner" })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
   });
 
   it("applyFixSuggestion non-writable appliesTo (tags) → 422", async () => {
@@ -1009,7 +994,7 @@ describe("RegistryStore AI content generation", () => {
     const reloaded = newStore(p);
     await reloaded.initialize();
     expect(reloaded.getDraft("harness-x", CC)?.aiChecks).toBeNull();
-    expect(reloaded.getDraft("harness-x", CC)?.ir.description).toBe("新描述");
+    expect(frontmatterField(reloaded.getDraft("harness-x", CC), "description")).toBe("新描述");
   });
 
   it("applyFixSuggestion DRAFT_NOT_FOUND 404", async () => {
@@ -1021,7 +1006,7 @@ describe("RegistryStore AI content generation", () => {
 describe("createProposal + reviewProposal gate (per-agent)", () => {
   it("createProposal agent=cursor passes gate + records requestedAgent", () => {
     const store = newStore();
-    const proposal = store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: CURSOR });
+    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
     expect(proposal.requestedAgent).toBe(CURSOR);
     expect(proposal.status).toBe("pending_review");
   });
@@ -1029,21 +1014,20 @@ describe("createProposal + reviewProposal gate (per-agent)", () => {
   it("createProposal agent=mcp rejected 422 ADAPTER_NOT_INSTALLABLE", () => {
     const store = newStore();
     let caught: unknown = null;
-    try { store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: "mcp" as RegistryAgent }); } catch (e) { caught = e; }
+    try { store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: "mcp" as RegistryAgent }); } catch (e) { caught = e; }
     expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
   });
 
-  it("createProposal agent=claude-code on cursor-only IR rejected 422", () => {
-    const irCursorOnly: SkillIr = { ...ir, adapters: { cursor: { enabled: true } } };
+  it("createProposal agent=cursor without .mdc entry rejected 422 SKILL_ENTRY_NOT_FOUND", () => {
     const store = newStore();
     let caught: unknown = null;
-    try { store.createProposal({ ir: irCursorOnly, actorId: "owner", agent: CC }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
+    try { store.createProposal({ sourceFiles: files, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR }); } catch (e) { caught = e; }
+    expect(caught).toMatchObject({ code: "SKILL_ENTRY_NOT_FOUND", status: 422 });
   });
 
   it("reviewProposal approve publishes only requestedAgent artifact (per-agent)", async () => {
     const store = newStore();
-    const proposal = store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: CURSOR });
+    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
     const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "approve", comment: null });
     expect(review.status).toBe("approved");
     expect(review.publishedArtifacts).toHaveLength(1);
@@ -1056,7 +1040,7 @@ describe("createProposal + reviewProposal gate (per-agent)", () => {
 
   it("reviewProposal reject produces no artifacts", async () => {
     const store = newStore();
-    const proposal = store.createProposal({ ir: irMultiAdapter, actorId: "owner", agent: CURSOR });
+    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
     const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "reject", comment: "no" });
     expect(review.status).toBe("rejected");
     expect(review.publishedArtifacts).toEqual([]);

@@ -14,7 +14,7 @@ import { MemoryArtifactStorage } from "../../apps/server/src/storage/memory.js";
 import { runCli } from "../../packages/cli/src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../resources/bootstrap-ir", import.meta.url)
+  new URL("../../resources", import.meta.url)
 );
 
 describe("Hunter Harness end-to-end governance", () => {

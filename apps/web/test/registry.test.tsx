@@ -7,25 +7,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SkillDetail, SkillRegistry, WorkflowRegistry } from "../components/registry";
 import type { HunterApi } from "../lib/api";
 
-const ir = {
-  name: "harness-review",
-  kind: "governance" as const,
-  description: "Evidence based review",
-  triggers: ["review"],
-  inputs: ["change_ref"],
-  outputs: ["review_report"],
-  forbidden_actions: ["automatic_git_write"],
-  required_context: ["AGENTS.md"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true } },
-  version: "1.1.0"
-};
+const SKILL_DESCRIPTION = "Evidence based review";
+const skillMd = `---
+name: harness-review
+description: ${SKILL_DESCRIPTION}
+kind: governance
+triggers: ["review"]
+inputs: ["change_ref"]
+outputs: ["review_report"]
+forbidden_actions: ["automatic_git_write"]
+required_context: ["AGENTS.md"]
+version: "1.1.0"
+---
+
+Review workflow body.`;
 
 const skill = {
   skill_id: "skl_review",
   slug: "harness-review",
   name: "harness-review",
-  description: ir.description,
+  description: SKILL_DESCRIPTION,
+  kind: "governance" as const,
   tags: ["security"],
   status: "published" as const,
   latest_version: "1.1.0",
@@ -34,8 +36,7 @@ const skill = {
   revision: 2,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-21T00:00:00Z",
-  ir,
-  sourceFiles: [],
+  sourceFiles: [{ path: "SKILL.md", content: skillMd }],
   examples: []
 };
 
@@ -68,7 +69,6 @@ const draft = {
   slug: skill.slug,
   agent: "claude-code" as const,
   sourceFiles: [],
-  ir,
   examples: [],
   draftVersion: "0.1.0",
   checks: null,
@@ -104,7 +104,6 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       skill_slug: skill.slug,
       version: "1.1.0",
       agent: "claude-code" as const,
-      ir,
       artifacts: [],
       source_proposal_id: "skp_review",
       sourceFiles: [],
@@ -129,7 +128,6 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       skill_slug: skill.slug,
       version: "1.2.0",
       agent: "claude-code" as const,
-      ir,
       artifacts: [],
       source_proposal_id: "skp_new",
       sourceFiles: [],
@@ -158,7 +156,7 @@ describe("governed workflow and Skill Center", () => {
     expect(screen.queryByText("harness-review")).not.toBeInTheDocument();
   });
 
-  it("renders canonical IR, version history, and an agent-specific install command", async () => {
+  it("renders source files, version history, and an agent-specific install command", async () => {
     const client = api();
     client.getSkill = vi.fn(function (this: HunterApi) {
       if (this !== client) throw new Error("API method lost its client binding");
@@ -166,9 +164,9 @@ describe("governed workflow and Skill Center", () => {
     });
     render(<SkillDetail api={client} skillId="harness-review" />);
     expect(await screen.findByRole("heading", { name: "harness-review" })).toBeInTheDocument();
-    expect(screen.getAllByText(/规范技能 IR|Canonical Skill IR/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/1\.1\.0/).length).toBeGreaterThan(0);
-    expect(await screen.findByText((content) => content.includes('"name": "harness-review"'))).toBeInTheDocument();
+    // source tab 展示 SKILL.md body（frontmatter 剥离后的内容），取代旧 canonical IR JSON 展示
+    expect(await screen.findByText(/Review workflow body/)).toBeInTheDocument();
     expect(screen.getByText(/npx @hunter-harness\/skill-cli install harness-review --agent claude-code/)).toBeInTheDocument();
   });
 
@@ -206,7 +204,6 @@ describe("governed workflow and Skill Center", () => {
       slug: "harness-review",
       agent: "claude-code" as const,
       sourceFiles: [],
-      ir,
       examples: [],
       draftVersion: "0.1.0",
       checks: null,
@@ -220,7 +217,7 @@ describe("governed workflow and Skill Center", () => {
     render(<SkillRegistry api={api({ uploadSkillDraft, listSkills })} />);
     await screen.findByText("harness-review");
     const input = screen.getByLabelText(/选择文件|choose file/i);
-    fireEvent.change(input, { target: { files: [new File([JSON.stringify(ir)], "skill.json")] } });
+    fireEvent.change(input, { target: { files: [new File([skillMd], "SKILL.md")] } });
     const uploadButton = await screen.findByRole("button", { name: /添加为未发布|add as unpublished/i });
     await waitFor(() => expect(uploadButton).not.toBeDisabled());
     fireEvent.click(uploadButton);
@@ -270,8 +267,8 @@ describe("governed workflow and Skill Center", () => {
 
   it("applyFix button triggers fix preview via the API (INT-004)", async () => {
     const previewSkillFix = vi.fn(async () => ({
-      items: [{ checkId: "c2", action: "confirm" as const, label: "Secret scan", affectedPaths: ["skill-ir.json"], riskDelta: null, message: "narrowed" }],
-      mergedFiles: [{ path: "skill-ir.json", status: "modified" as const, publishedContent: "{}", draftContent: "{}\n" }],
+      items: [{ checkId: "c2", action: "confirm" as const, label: "Secret scan", affectedPaths: ["SKILL.md"], riskDelta: null, message: "narrowed" }],
+      mergedFiles: [{ path: "SKILL.md", status: "modified" as const, publishedContent: "# old", draftContent: "# new" }],
       summary: { autoCount: 0, confirmCount: 1, suggestCount: 0, changedFiles: 1, changedLines: 1 }
     }));
     const applySkillFix = vi.fn(async () => ({ ...draft, checks: null, aiChecks: null, revision: 2 }));
@@ -287,6 +284,28 @@ describe("governed workflow and Skill Center", () => {
     const applyFixBtn = await screen.findByRole("button", { name: /应用修复|apply fix/i });
     fireEvent.click(applyFixBtn);
     await waitFor(() => expect(previewSkillFix).toHaveBeenCalledWith("harness-review", "claude-code", ["c2"]));
+  });
+
+  it("fix preview degraded 项展示'建议手动改'明确提示（UT-014 web 展示缺口）", async () => {
+    const previewSkillFix = vi.fn(async () => ({
+      items: [{ checkId: "c2", action: "suggest" as const, label: "Secret scan", affectedPaths: [], riskDelta: "degraded: source-file region not auto-fixable (manual edit required)", message: "无法自动定位" }],
+      mergedFiles: [],
+      summary: { autoCount: 0, confirmCount: 0, suggestCount: 1, changedFiles: 0, changedLines: 0 }
+    }));
+    render(<SkillDetail api={api({
+      runSkillDraftChecks: vi.fn(async () => draftChecks),
+      previewSkillFix,
+      getSkillDraft: vi.fn(async () => ({ ...draft, checks: null }))
+    })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^检查$|^check$/i }));
+    await waitFor(() => expect(screen.getByText("Secret scan")).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: /应用修复|apply fix/i }));
+    await waitFor(() => expect(previewSkillFix).toHaveBeenCalled());
+    // degraded 项明确展示"建议手动改"（非静默，覆盖 UT-014 web 展示缺口）
+    expect(await screen.findByTestId("degraded-fix-notice")).toBeInTheDocument();
+    expect(screen.getByText(/该修复暂不支持自动应用|cannot be applied automatically/i)).toBeInTheDocument();
   });
 
   it("AI generate button fills release note textarea (T15 #1)", async () => {

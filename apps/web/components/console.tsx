@@ -169,7 +169,7 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
             <div><span>Workflow bindings</span><strong>{overview.metrics.workflows}</strong><small>active governed paths</small></div>
           </div>
           <div className="dashboard-skill-list">
-            {skills.slice(0, 3).map((skill) => <Link href={`/skills/${skill.slug}`} key={skill.skill_id}><span>{skill.ir.kind}</span><strong>{skill.name}</strong><code>{skill.latest_version ?? "unversioned"}</code></Link>)}
+            {skills.slice(0, 3).map((skill) => <Link href={`/skills/${skill.slug}`} key={skill.skill_id}><span>{skill.kind ?? "unknown"}</span><strong>{skill.name}</strong><code>{skill.latest_version ?? "unversioned"}</code></Link>)}
             {skills.length === 0 ? <Empty>No published Skills are available.</Empty> : null}
           </div>
         </section>
@@ -407,7 +407,7 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
       ) : (
         <>{skillProposals.map((proposal) => (
           <Link className="proposal-card" href={`/skills/${proposal.skill_slug}`} key={proposal.proposal_id}>
-            <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug} · v{proposal.proposed_ir.version}</code></div>
+            <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug}</code></div>
             <div><span>{t.reviewQueue.canonicalSkillIR}</span><Status value={proposal.status} /></div>
           </Link>
         ))}{proposals.map((proposal) => (

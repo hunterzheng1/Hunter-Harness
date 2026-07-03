@@ -1,4 +1,5 @@
-export type ProfileId = "general" | "java" | "node" | "python" | "docs" | "personal-automation";
+import type { SourceFile } from "@hunter-harness/contracts";
+
 export type AdapterId = "claude-code" | "codex" | "cursor" | "generic" | "mcp";
 
 export interface BootstrapSkill {
@@ -6,27 +7,47 @@ export interface BootstrapSkill {
   kind: "workflow" | "tooling" | "migration" | "governance";
   description: string;
   version: string;
-  profiles: ProfileId[];
-  adapters: AdapterId[];
+  sourceFiles: SourceFile[];
+}
+
+const SKILL_VERSION = "1.0.0";
+
+/**
+ * 从展示字段组装 SKILL.md（frontmatter + Instructions body）。
+ * 取代旧 compileClaudePreview：canonical Skill IR 已移除，源文件是唯一真相。
+ * frontmatter 字段对齐 contracts.skillFrontmatterSchema（name/description/kind/triggers/inputs/outputs/forbidden_actions/required_context/version）。
+ */
+function buildSkillMd(args: {
+  name: string;
+  kind: BootstrapSkill["kind"];
+  description: string;
   triggers: string[];
   inputs: string[];
   outputs: string[];
   forbiddenActions: string[];
   requiredContext: string[];
   instructions: string[];
+}): string {
+  return [
+    "---",
+    `name: ${args.name}`,
+    `description: ${JSON.stringify(args.description)}`,
+    `kind: ${args.kind}`,
+    `triggers: ${JSON.stringify(args.triggers)}`,
+    `inputs: ${JSON.stringify(args.inputs)}`,
+    `outputs: ${JSON.stringify(args.outputs)}`,
+    `forbidden_actions: ${JSON.stringify(args.forbiddenActions)}`,
+    `required_context: ${JSON.stringify(args.requiredContext)}`,
+    `version: ${JSON.stringify(SKILL_VERSION)}`,
+    "---",
+    "",
+    `# ${args.name}`,
+    "",
+    "## Instructions",
+    ...args.instructions.map((item) => "- " + item),
+    ""
+  ].join("\n");
 }
-
-export const profiles: ReadonlyArray<{ id: ProfileId; label: string; description: string }> = [
-  { id: "general", label: "General", description: "The cross-agent governance workflow used by all bootstrap projects." },
-  { id: "java", label: "Java", description: "General workflow plus Java-oriented documentation and package preparation." },
-  { id: "node", label: "Node", description: "Bootstrap optimizer coverage for Node-specific skill migration." },
-  { id: "python", label: "Python", description: "Bootstrap optimizer coverage for Python-specific skill migration." },
-  { id: "docs", label: "Docs", description: "Bootstrap optimizer coverage for documentation-focused skill migration." },
-  { id: "personal-automation", label: "Personal automation", description: "Bootstrap optimizer coverage for personal automation skills." }
-];
-
-const allAdapters: AdapterId[] = ["claude-code", "codex", "cursor", "generic", "mcp"];
-const coreProfiles: ProfileId[] = ["general", "java"];
 
 function skill(
   name: string,
@@ -37,22 +58,17 @@ function skill(
   outputs: string[],
   forbiddenActions: string[],
   requiredContext: string[],
-  instructions: string[],
-  skillProfiles: ProfileId[] = coreProfiles
+  instructions: string[]
 ): BootstrapSkill {
   return {
     name,
     kind,
     description,
-    version: "1.0.0",
-    profiles: skillProfiles,
-    adapters: allAdapters,
-    triggers,
-    inputs,
-    outputs,
-    forbiddenActions,
-    requiredContext,
-    instructions
+    version: SKILL_VERSION,
+    sourceFiles: [{
+      path: "SKILL.md",
+      content: buildSkillMd({ name, kind, description, triggers, inputs, outputs, forbiddenActions, requiredContext, instructions })
+    }]
   };
 }
 
@@ -65,7 +81,7 @@ export const bootstrapSkills: readonly BootstrapSkill[] = [
   skill("harness-submit", "workflow", "Prepare a submission summary, suggested message, and verification checklist without changing source control.", ["prepare submission", "summarize completed change"], ["change_ref", "verification_evidence"], ["submission_summary", "suggested_message", "submission_checklist"], ["source_control_write_without_explicit_confirmation", "publish_without_review"], ["AGENTS.md", ".harness/context-index.json"], ["Summarize verified changes and remaining risks.", "Produce a suggested message and checklist only.", "Require explicit confirmation before source-control mutation."]),
   skill("harness-archive", "workflow", "Archive completed change evidence and extract unpromoted candidate Knowledge.", ["archive completed change", "extract reusable knowledge"], ["change_documents", "verification_evidence"], ["archive_summary", "candidate_knowledge"], ["auto_promote_candidate_knowledge", "discard_evidence", "expose_sensitive_data"], ["AGENTS.md", ".harness/context-index.json"], ["Preserve final execution evidence.", "Extract reusable facts as candidates.", "Never promote candidates automatically."]),
   skill("harness-knowledge-ingest", "governance", "Validate, deduplicate, index, and propose project Knowledge without bypassing review.", ["ingest knowledge", "rebuild knowledge index"], ["knowledge_entries", "candidate_entries"], ["knowledge_index", "validation_report"], ["auto_promote_candidate_knowledge", "include_project_local_by_default", "erase_conflicts"], ["AGENTS.md", ".harness/knowledge/index.json"], ["Validate frontmatter and lifecycle relationships.", "Detect duplicate and conflicting active facts.", "Exclude project-local entries unless selected."]),
-  skill("harness-skill-optimizer", "migration", "Create, optimize, and migrate platform-neutral Skill IR with adapter-safe outputs.", ["create a skill", "optimize a skill", "migrate an agent skill"], ["skill_source", "target_profiles", "target_adapters"], ["skill_ir", "validation_report", "adapter_preview"], ["publish_canonical_skill", "automatic_proposal_push", "broaden_capabilities", "automatic_source_control_write"], ["AGENTS.md", ".harness/context-index.json"], ["Convert source workflows into canonical Skill IR.", "Validate contracts and constraints.", "Generate previews but never publish automatically."], ["general", "java", "node", "python", "docs", "personal-automation"]),
+  skill("harness-skill-optimizer", "migration", "Create, optimize, and migrate platform-neutral Skill source files with adapter-safe outputs.", ["create a skill", "optimize a skill", "migrate an agent skill"], ["skill_source", "target_adapters"], ["skill_source_files", "validation_report", "adapter_preview"], ["publish_canonical_skill", "automatic_proposal_push", "broaden_capabilities", "automatic_source_control_write"], ["AGENTS.md", ".harness/context-index.json"], ["Convert source workflows into SKILL.md source files.", "Validate contracts and constraints.", "Generate previews but never publish automatically."]),
   skill("harness-codebase-map", "workflow", "Generate seven evidence-based codebase-map documents under the Harness workspace.", ["map the codebase", "refresh codebase map"], ["project_root", "optional_paths"], ["stack_map", "integration_map", "architecture_map", "structure_map", "convention_map", "testing_map", "concern_map"], ["copy_source_code_wholesale", "manage_codegraph", "automatic_execution_from_sync"], ["AGENTS.md", ".harness/context-index.json"], ["Analyze requested scope using mapper focuses.", "Write all seven maps.", "Record evidence without embedding source files."]),
   skill("harness-apidoc", "workflow", "Analyze API changes and produce evidence-based documentation impact updates.", ["update API documentation", "inspect API compatibility"], ["change_ref", "api_contract"], ["api_impact_report", "documentation_updates"], ["invent_api_behavior", "hide_breaking_changes", "publish_without_review"], ["AGENTS.md", ".harness/context-index.json", ".harness/knowledge/api"], ["Compare implementation and declared contracts.", "Classify compatibility and documentation impact.", "Update evidence-supported documentation only."]),
   skill("harness-package", "workflow", "Validate and prepare a reproducible project package without publishing it.", ["prepare package", "validate package output"], ["project_root", "build_configuration"], ["package_report", "package_artifacts"], ["publish_artifact", "expose_secrets", "claim_unverified_build"], ["AGENTS.md", ".harness/context-index.json"], ["Validate build and required tests.", "Record hashes and build evidence.", "Do not publish or upload artifacts."])
@@ -77,27 +93,4 @@ export const workflowOrder = [
 
 export function findSkill(skillId: string): BootstrapSkill | undefined {
   return bootstrapSkills.find((item) => item.name === skillId);
-}
-
-export function compileClaudePreview(skill: BootstrapSkill): string {
-  return [
-    "---",
-    "name: " + skill.name,
-    "description: " + skill.description,
-    "---",
-    "",
-    "# " + skill.name,
-    "",
-    "## Triggers",
-    ...skill.triggers.map((item) => "- " + item),
-    "",
-    "## Required context",
-    ...skill.requiredContext.map((item) => "- " + item),
-    "",
-    "## Instructions",
-    ...skill.instructions.map((item) => "- " + item),
-    "",
-    "## Forbidden actions",
-    ...skill.forbiddenActions.map((item) => "- " + item)
-  ].join("\n");
 }

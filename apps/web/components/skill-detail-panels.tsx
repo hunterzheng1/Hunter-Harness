@@ -9,7 +9,7 @@ import type {
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
-  SkillIr,
+  SkillFrontmatter,
   RegistrySkillVersion
 } from "@hunter-harness/contracts";
 import { type ChangeEvent, useEffect, useState } from "react";
@@ -32,80 +32,80 @@ import {
   tagSlug
 } from "./skill-shared";
 
-function ContractSecurityOverview({ ir, t }: { ir: SkillIr; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
+function ContractSecurityOverview({ frontmatter, t }: { frontmatter: SkillFrontmatter | null; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
   return <div className="contract-card-grid">
     <article className="contract-card contract-card-wide">
       <div>
         <span className="contract-card-label">{t.triggers}</span>
         <p>{t.triggersDescription}</p>
       </div>
-      <ValueChips values={ir.triggers} empty={t.noneShort} t={t} />
+      <ValueChips values={frontmatter?.triggers} empty={t.noneShort} t={t} />
     </article>
     <article className="contract-card">
       <div>
         <span className="contract-card-label">{t.inputs}</span>
         <p>{t.inputsDescription}</p>
       </div>
-      <ValueChips values={ir.inputs} empty={t.noneShort} t={t} />
+      <ValueChips values={frontmatter?.inputs} empty={t.noneShort} t={t} />
     </article>
     <article className="contract-card">
       <div>
         <span className="contract-card-label">{t.outputs}</span>
         <p>{t.outputsDescription}</p>
       </div>
-      <ValueChips values={ir.outputs} empty={t.noneShort} t={t} />
+      <ValueChips values={frontmatter?.outputs} empty={t.noneShort} t={t} />
     </article>
     <article className="contract-card contract-card-danger">
       <div>
         <span className="contract-card-label">{t.forbiddenActions}</span>
         <p>{t.forbiddenActionsDescription}</p>
       </div>
-      <ValueChips values={ir.forbidden_actions} empty={t.noneShort} t={t} />
+      <ValueChips values={frontmatter?.forbidden_actions} empty={t.noneShort} t={t} />
     </article>
     <article className="contract-card">
       <div>
         <span className="contract-card-label">{t.requiredContext}</span>
         <p>{t.requiredContextDescription}</p>
       </div>
-      <ValueChips values={ir.required_context} empty={t.noneShort} t={t} />
-    </article>
-    <article className="contract-card contract-card-wide">
-      <div>
-        <span className="contract-card-label">{t.provenance}</span>
-        <p>{displayValue(ir.source_provenance ?? t.provenanceDefault, t)}</p>
-      </div>
+      <ValueChips values={frontmatter?.required_context} empty={t.noneShort} t={t} />
     </article>
   </div>;
 }
 
 function SkillConfigOverview({
-  ir,
+  name: skillName,
+  description: skillDescription,
+  version: skillVersion,
+  agents,
   t,
   top,
   tags,
   onSaveMeta
 }: {
-  ir: SkillIr;
+  name: string;
+  description: string;
+  version: string | null;
+  agents: readonly AgentSkillConfig[];
   t: ReturnType<typeof useI18n>["t"]["skillDetail"];
   top?: React.ReactNode;
   tags?: string[];
   onSaveMeta?: (next: { description: string; tags: string[] }) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [description, setDescription] = useState(ir.description);
+  const [description, setDescription] = useState(skillDescription);
   const [tagDraft, setTagDraft] = useState("");
   const [tagValues, setTagValues] = useState<string[]>(tags ?? []);
   const tagLibrary = Array.from(new Set([...(tags ?? []), "sap", "mapping", "finance", "migration", "security"])).sort();
 
   useEffect(() => {
     if (editing) return;
-    setDescription(ir.description);
+    setDescription(skillDescription);
     setTagValues(tags ?? []);
     setTagDraft("");
-  }, [editing, ir.description, tags]);
+  }, [editing, skillDescription, tags]);
 
   function save(): void {
-    onSaveMeta?.({ description: description.trim() || ir.description, tags: tagValues });
+    onSaveMeta?.({ description: description.trim() || skillDescription, tags: tagValues });
     setEditing(false);
   }
 
@@ -125,7 +125,7 @@ function SkillConfigOverview({
           ? <div className="editable-card-actions"><button type="button" onClick={save}>{t.saveBasicInfo}</button><button type="button" className="secondary" onClick={() => setEditing(false)}>{t.cancelEdit}</button></div>
           : <button type="button" className="secondary" onClick={() => setEditing(true)}>{t.editBasicInfo}</button>}
       </div>
-      <h3>{ir.name}</h3>
+      <h3>{skillName}</h3>
       {editing ? <div className="basic-info-editor">
         <label className="config-edit-field">{t.description}<textarea value={description} onChange={(event) => setDescription(event.target.value)} /></label>
         <section className="edit-panel">
@@ -141,26 +141,16 @@ function SkillConfigOverview({
           </div>
           <div className="inline-add-control"><input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder={t.addTagPlaceholder} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addTag(tagDraft); } }} /><button type="button" className="secondary" onClick={() => addTag(tagDraft)}>＋</button></div>
         </section>
-      </div> : <p>{displayValue(ir.description, t)}</p>}
+      </div> : <p>{displayValue(skillDescription, t)}</p>}
       {!editing ? <dl>
-        <dt>{t.version}</dt><dd><span className="meta-pill meta-pill-version">v{ir.version}</span></dd>
+        <dt>{t.version}</dt><dd><span className="meta-pill meta-pill-version">v{skillVersion ?? "—"}</span></dd>
         <dt>{t.tags}</dt>
         <dd><ValueChips values={tags} empty={t.noneShort} /></dd>
       </dl> : null}
     </article>
     <article className="system-config-card">
       <span className="config-card-label">{t.adapters}</span>
-      <EnabledTargets targets={ir.adapters} empty={t.noneShort} enabledLabel={t.enabled} disabledLabel={t.disabled} />
-    </article>
-    <article className="system-config-card">
-      <span className="config-card-label">{t.allowedCapabilities}</span>
-      <ValueChips values={ir.allowed_capabilities} empty={t.noneShort} t={t} />
-    </article>
-    <article className="system-config-card system-config-card-wide">
-      <span className="config-card-label">{t.instructions}</span>
-      {ir.instructions === undefined || ir.instructions.length === 0
-        ? <p className="muted-inline">{t.noneShort}</p>
-        : <ol className="config-steps">{ir.instructions.map((instruction) => <li key={instruction}>{displayValue(instruction, t)}</li>)}</ol>}
+      <EnabledTargets agents={agents} empty={t.noneShort} enabledLabel={t.enabled} disabledLabel={t.disabled} />
     </article>
   </div>;
 }
@@ -501,7 +491,7 @@ function AgentCheckPanel({
         <div className="version-file-tree-title">{sd.fixPreview}</div>
         {fixPlan.items.map((item) => <div className="check-row" key={item.checkId}>
           <span className={`fix-action fix-action-${item.action}`}>{item.action}</span>
-          <div><strong>{item.label}</strong><p>{item.message}</p>{item.riskDelta === null ? null : <small className="risk">{sd.riskDelta}: {item.riskDelta}</small>}</div>
+          <div><strong>{item.label}</strong><p>{item.message}</p>{item.riskDelta === null ? null : <small className="risk">{sd.riskDelta}: {item.riskDelta}</small>}{item.riskDelta !== null && item.riskDelta.includes("degraded") ? <p className="degraded-fix-notice" data-testid="degraded-fix-notice">{sd.fixDegradedHint}</p> : null}</div>
         </div>)}
       </aside>
       <div className="version-diff-pane">
@@ -679,7 +669,7 @@ function VersionHistoryPanel({
       <article className="release-note-card">
         <div className="editable-card-heading">
           <div><span className="config-card-label">{t.releaseNote}</span><h3>v{current.version}</h3></div>
-          <small>{current.ir.version} · {current.artifacts.length} artifacts</small>
+          <small>v{current.version} · {current.artifacts.length} artifacts</small>
         </div>
         <p>{current.changeNote ?? t.defaultReleaseNote}</p>
       </article>

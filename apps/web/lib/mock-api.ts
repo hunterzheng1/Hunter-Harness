@@ -14,7 +14,6 @@ import type {
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
-  SkillIr,
   FixPlan,
   PublishSkillRequest,
   WorkflowPackage,
@@ -185,35 +184,25 @@ const MOCK_ARTIFACTS: ArtifactSummary[] = [
 
 const DELAY_MS = 400; // simulate a slight async feel
 
-function toIr(skill: (typeof bootstrapSkills)[number]): SkillIr {
-  return {
-    name: skill.name,
-    kind: skill.kind,
-    description: skill.description,
-    triggers: skill.triggers,
-    inputs: skill.inputs,
-    outputs: skill.outputs,
-    forbidden_actions: skill.forbiddenActions,
-    required_context: skill.requiredContext,
-    profiles: Object.fromEntries(skill.profiles.map((profile) => [profile, { enabled: true }])),
-    adapters: Object.fromEntries(skill.adapters.map((adapter) => [adapter, { enabled: true }])),
-    version: skill.version,
-    instructions: skill.instructions,
-    source_provenance: "Explicit demo data"
-  };
-}
+const ALL_AGENTS: RegistryAgent[] = ["claude-code", "codex", "cursor", "generic", "mcp"];
+
+// sap-field-mapper demo 元数据（原 canonical IR 字段，现作为纯展示常量；源文件见 sapFieldMapper.source.files）。
+const SAP_FIELD_MAPPER_DESCRIPTION = "Extract SAP/S4 table and field references from Markdown and build entity-class mapping tables.";
+const SAP_FIELD_MAPPER_VERSION = "1.0.0";
+const SAP_FIELD_MAPPER_KIND = "tooling" as const;
 
 const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) => ({
   skill_id: "skl_demo_" + index,
   slug: skill.name,
   name: skill.name,
   description: skill.description,
+  kind: skill.kind,
   tags: skill.kind === "governance" ? ["review"] : ["bootstrap"],
   status: "published",
   latest_version: skill.version,
-  defaultAgent: skill.adapters.some((a) => a === "claude-code") ? "claude-code" : null,
-  agents: skill.adapters.map((agent) => ({
-    agent: agent as RegistryAgent,
+  defaultAgent: "claude-code",
+  agents: ALL_AGENTS.map((agent) => ({
+    agent,
     enabled: true,
     isDefault: agent === "claude-code",
     installTarget: ".claude/skills/" + skill.name,
@@ -224,50 +213,28 @@ const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) =>
   revision: 1,
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z",
-  ir: toIr(skill),
-  sourceFiles: [],
+  sourceFiles: skill.sourceFiles.map((f) => ({ path: f.path, content: f.content })),
   examples: []
 }));
-
-const SAP_FIELD_MAPPER_IR: SkillIr = {
-  name: "harness-sap-field-mapper",
-  kind: "tooling",
-  description: "Extract SAP/S4 table and field references from Markdown and build entity-class mapping tables.",
-  triggers: ["map SAP fields", "map S/4 fields", "SAP entity mapping"],
-  inputs: ["markdown_document", "project_source"],
-  outputs: ["sap_entity_mapping_table", "entity_class_paths"],
-  forbidden_actions: ["modify_source_without_request", "discard_unmatched_fields"],
-  required_context: ["target_markdown_document", "project_root"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true }, codex: { enabled: true } },
-  version: "1.0.0",
-  instructions: [
-    "Extract SAP/S4 table and field references from the target Markdown document.",
-    "Merge T-table fields into the derived base-table entity mapping.",
-    "Append the verified mapping table to the requested document."
-  ],
-  allowed_capabilities: ["read", "search", "network-api", "write"],
-  source_provenance: "Demo source package imported from the original sap-field-mapper directory."
-};
 
 MOCK_SKILLS.push({
   skill_id: "skl_demo_sap_field_mapper",
   slug: sapFieldMapper.slug,
   name: sapFieldMapper.slug,
-  description: SAP_FIELD_MAPPER_IR.description,
+  description: SAP_FIELD_MAPPER_DESCRIPTION,
+  kind: SAP_FIELD_MAPPER_KIND,
   tags: ["sap", "source-package"],
   status: "published",
-  latest_version: SAP_FIELD_MAPPER_IR.version,
+  latest_version: SAP_FIELD_MAPPER_VERSION,
   defaultAgent: "claude-code",
   agents: [
-    { agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/" + sapFieldMapper.slug, latestVersion: SAP_FIELD_MAPPER_IR.version, draftVersion: null, sourcePackagePath: null },
+    { agent: "claude-code", enabled: true, isDefault: true, installTarget: ".claude/skills/" + sapFieldMapper.slug, latestVersion: SAP_FIELD_MAPPER_VERSION, draftVersion: null, sourcePackagePath: null },
     { agent: "codex", enabled: true, isDefault: false, installTarget: ".harness/generated/codex/" + sapFieldMapper.slug, latestVersion: null, draftVersion: null, sourcePackagePath: null }
   ],
   revision: 1,
   created_at: "2026-06-25T00:00:00Z",
   updated_at: "2026-06-25T00:00:00Z",
-  ir: SAP_FIELD_MAPPER_IR,
-  sourceFiles: [],
+  sourceFiles: sapFieldMapper.source.files.map((f) => ({ path: f.path, content: f.content })),
   examples: []
 });
 
@@ -393,7 +360,7 @@ export class MockApiClient implements HunterApi {
   async listSkillVersions(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]> {
     const skill = await this.getSkill(slug);
     const versionAgent = agent ?? skill.defaultAgent ?? skill.agents[0]?.agent ?? "claude-code";
-    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", agent: versionAgent, ir: skill.ir, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: skill.updated_at }]);
+    return delay([{ skill_slug: slug, version: skill.latest_version ?? "1.0.0", agent: versionAgent, artifacts: [], source_proposal_id: null, sourceFiles: [], examples: [], changeNote: null, created_at: skill.updated_at }]);
   }
 
   async getSkillAdapterPreview(slug: string, agent: RegistryAgent) {
@@ -598,7 +565,6 @@ export class MockApiClient implements HunterApi {
       slug: src.slug,
       agent,
       sourceFiles: src.source.files.map((f) => ({ path: f.path, content: f.content })),
-      ir: SAP_FIELD_MAPPER_IR,
       examples: src.examples.map((e) => ({ title: e.title, description: e.description, request: e.request, result: e.result, files: e.files ? [...e.files] : [] })),
       draftVersion: agentCfg.draftVersion?.version ?? null,
       checks: demoChecksToResult(agentCfg.checks),

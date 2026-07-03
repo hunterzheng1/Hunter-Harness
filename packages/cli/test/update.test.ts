@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../../resources/bootstrap-ir", import.meta.url)
+  new URL("../../../resources", import.meta.url)
 );
 
 function artifact(
@@ -367,7 +367,7 @@ describe("hunter-harness update", () => {
   it("applies managed-block modify with block_id to AGENTS.md as per-id block (T11)", async () => {
     const existing = "# Project agents\n\nexisting content\n";
     await seedBaseline({ "AGENTS.md": existing });
-    const blockBody = "<!-- harness: adapter=codex source_ir_hash=sha256:abc compiler_version=1.0.0 -->\n# harness-review\ncodex skill body";
+    const blockBody = "<!-- harness: adapter=codex source_hash=sha256:abc compiler_version=1.0.0 -->\n# harness-review\ncodex skill body";
     const manifest = artifact([{
       operation: "modify",
       path: "AGENTS.md",
@@ -426,7 +426,7 @@ describe("hunter-harness update", () => {
     await seedBaseline({ "AGENTS.md": agentsExisting });
     const cursorBody = "---\nadapter: cursor\n---\ncursor body\n";
     const genericBody = "---\nadapter: generic\n---\ngeneric body\n";
-    const codexBlock = "<!-- harness: adapter=codex source_ir_hash=sha256:abc compiler_version=1.0.0 -->\ncodex skill body";
+    const codexBlock = "<!-- harness: adapter=codex source_hash=sha256:abc compiler_version=1.0.0 -->\ncodex skill body";
     const manifest = artifact([
       { operation: "add", path: ".cursor/rules/harness-review.mdc", file_kind: "user_editable", content_sha256: sha256Bytes(cursorBody), size_bytes: Buffer.byteLength(cursorBody) },
       { operation: "add", path: ".agent-skills/harness-review.md", file_kind: "user_editable", content_sha256: sha256Bytes(genericBody), size_bytes: Buffer.byteLength(genericBody) },

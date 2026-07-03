@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../../resources/bootstrap-ir", import.meta.url)
+  new URL("../../../resources", import.meta.url)
 );
 
 async function pathExists(path: string): Promise<boolean> {
@@ -116,7 +116,7 @@ describe("hunter-harness initialization", () => {
     expect(await readFile(
       join(root, ".claude", "skills", "harness-review", "SKILL.md"),
       "utf8"
-    )).toContain("source_ir_hash:");
+    )).toContain("source_hash:");
     expect(await pathExists(join(root, ".harness", "rules"))).toBe(false);
     expect(await pathExists(join(root, ".harness", "state", "local"))).toBe(true);
     expect(await pathExists(
@@ -184,20 +184,17 @@ describe("hunter-harness initialization", () => {
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("# User Agents");
   });
 
-  it("initializes with cursor adapter and compiles real .cursor/rules files (INT-002)", async () => {
+  it("rejects cursor adapter in source-file init model (INT-002)", async () => {
     const code = await run([
       "--adapter", "cursor",
       "--profile", "java",
       "--non-interactive",
       "--yes"
     ]);
-    expect(code).toBe(0);
-    const cursorSkill = await readFile(
-      join(root, ".cursor", "rules", "harness-review.mdc"),
-      "utf8"
-    );
-    expect(cursorSkill).toContain("adapter: cursor");
-    expect(cursorSkill).not.toContain("Adapter contract placeholder");
+    expect(code).toBe(1);
+    expect(stderr.join(" ")).toMatch(/not yet supported/i);
+    expect(stderr.join(" ")).toContain("cursor");
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
+    expect(await pathExists(join(root, ".cursor", "rules"))).toBe(false);
   });
 });

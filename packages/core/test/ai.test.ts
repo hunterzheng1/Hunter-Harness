@@ -1,19 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import type { SkillIr, SourceFile } from "@hunter-harness/contracts";
+import type { SkillFrontmatter, SourceFile } from "@hunter-harness/contracts";
 import { buildAiCheckPrompt, DeepSeekLlmClient, parseAiCheckResult } from "../src/index.js";
 
-const baseIr: SkillIr = {
+const baseMeta: SkillFrontmatter = {
   name: "harness-x",
-  kind: "governance",
   description: "demo skill",
   triggers: ["run"],
   inputs: ["ctx"],
   outputs: ["out"],
   forbidden_actions: ["automatic_git_write"],
   required_context: ["AGENTS.md"],
-  profiles: { general: { enabled: true } },
-  adapters: { "claude-code": { enabled: true } },
   version: "1.0.0"
 };
 
@@ -24,7 +21,7 @@ const baseFiles: SourceFile[] = [
 
 describe("buildAiCheckPrompt", () => {
   it("system contains 8 AI_ check ids and injection guard", () => {
-    const p = buildAiCheckPrompt({ ir: baseIr, sourceFiles: baseFiles });
+    const p = buildAiCheckPrompt({ meta: baseMeta, sourceFiles: baseFiles });
     const ids = [
       "AI_TRIGGER_QUALITY",
       "AI_BODY_QUALITY",
@@ -42,12 +39,12 @@ describe("buildAiCheckPrompt", () => {
     expect(p.system.toLowerCase()).toContain("instruction");
   });
 
-  it("user wraps source files in skill_data tag and includes ir metadata", () => {
-    const p = buildAiCheckPrompt({ ir: baseIr, sourceFiles: baseFiles });
+  it("user wraps source files in skill_data tag and includes meta metadata", () => {
+    const p = buildAiCheckPrompt({ meta: baseMeta, sourceFiles: baseFiles });
     expect(p.user).toContain("<skill_data>");
     expect(p.user).toContain("</skill_data>");
-    expect(p.user).toContain(baseIr.name);
-    expect(p.user).toContain(baseIr.description);
+    expect(p.user).toContain(baseMeta.name);
+    expect(p.user).toContain(baseMeta.description);
   });
 });
 

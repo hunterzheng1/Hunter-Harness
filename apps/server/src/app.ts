@@ -8,10 +8,11 @@ import {
   publishSkillRequestSchema,
   publishWorkflowPackageRequestSchema,
   registryAgentSchema,
+  registrySemverSchema,
   registrySlugSchema,
   registryWorkflowMutationSchema,
   setDefaultAgentRequestSchema,
-  skillIrSchema,
+  sourceFileSchema,
   type AiProviderConfig,
   type FileOperation,
   type FixPlanItem,
@@ -23,17 +24,19 @@ import {
   buildReleaseNotePrompt,
   classifyFile,
   decidePush,
+  findEntryFile,
   parseAiCheckResult,
   parseFixSuggestionResult,
+  parseFrontmatter,
   parseReleaseNote,
   scanSensitiveFiles,
   sha256Bytes,
   uuidV7,
-  type BootstrapBundle,
   type FindingOverride,
   type FixSuggestionParse,
   type LlmClient
 } from "@hunter-harness/core";
+import type { BootstrapBundle } from "./registry/store.js";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -130,7 +133,9 @@ const reviewSchema = z.object({
 
 const registryProposalCreateSchema = z.object({
   schema_version: z.literal(1),
-  skill_ir: skillIrSchema,
+  source_files: z.array(sourceFileSchema),
+  slug: registrySlugSchema,
+  version: registrySemverSchema,
   agent: registryAgentSchema
 }).strict();
 
@@ -1196,7 +1201,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const body = registryProposalCreateSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
       const proposal = registry.createProposal({
-        ir: body.skill_ir,
+        sourceFiles: body.source_files,
+        slug: body.slug,
+        version: body.version,
         actorId: actor.actorId,
         agent: body.agent
       });
@@ -1207,7 +1214,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         action: "skill.proposal.created",
         targetId: proposal.proposal_id,
         requestId,
-        details: { skill_slug: proposal.skill_slug, version: proposal.proposed_ir.version }
+        details: { skill_slug: proposal.skill_slug, version: proposal.version }
       });
       return { statusCode: 201, body: { ...proposal } };
     });
@@ -1234,7 +1241,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         requestId,
         details: {
           skill_slug: proposal.skill_slug,
-          published_version: body.decision === "approve" ? proposal.proposed_ir.version : null,
+          published_version: body.decision === "approve" ? proposal.version : null,
           artifact_ids: proposal.publishedArtifacts.map((item) => item.artifact_id)
         }
       });
@@ -1244,7 +1251,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           proposal_id: proposalId,
           decision: body.decision,
           status: proposal.status,
-          published_version: body.decision === "approve" ? proposal.proposed_ir.version : null,
+          published_version: body.decision === "approve" ? proposal.version : null,
           artifacts: proposal.publishedArtifacts
         }
       };
@@ -1767,7 +1774,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       registry.checkQuota({ provider_id: resolved.provider.provider_id, requests: 1, tokens: 0 });
       // AiJobStore.startJob(slug,agent,fn) dedup：同 slug+agent active job 返已有 jobId（治 R2）。
       const job = await aiJobStore.startJob(slug, agent, async () => {
-        const prompt = buildAiCheckPrompt({ ir: draft.ir, sourceFiles: draft.sourceFiles });
+        const entry = findEntryFile(draft.sourceFiles, agent);
+        const meta = parseFrontmatter(entry.content);
+        const prompt = buildAiCheckPrompt({ meta, sourceFiles: draft.sourceFiles });
         const checkedAt = new Date().toISOString();
         const res = await resolved.client.analyze(prompt);
         await registry.recordUsage({
@@ -1838,7 +1847,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
       }
       const diff = registry.diffDraft(slug, agent);
-      const prompt = buildReleaseNotePrompt({ ir: draft.ir, diff });
+      const entry = findEntryFile(draft.sourceFiles, agent);
+      const meta = parseFrontmatter(entry.content);
+      const prompt = buildReleaseNotePrompt({ meta, diff });
       const generatedAt = new Date().toISOString();
       try {
         const res = await resolved.client.analyze(prompt);
@@ -1905,9 +1916,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     }
     const fixableItems = draft.aiChecks.items.filter((i) => i.fixable && (checkIds === null || checkIds.includes(i.id)));
     const generatedAt = new Date().toISOString();
+    const entry = findEntryFile(draft.sourceFiles, agent);
+    const meta = parseFrontmatter(entry.content);
     const items: FixPlanItem[] = [];
     for (const ci of fixableItems) {
-      const prompt = buildFixSuggestionPrompt({ checkItem: ci, ir: draft.ir, sourceFiles: draft.sourceFiles });
+      const prompt = buildFixSuggestionPrompt({ checkItem: ci, meta, sourceFiles: draft.sourceFiles });
       let parsed: FixSuggestionParse | null;
       try {
         const res = await resolved.client.analyze(prompt);

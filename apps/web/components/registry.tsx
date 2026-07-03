@@ -8,13 +8,11 @@ import type {
   RegistrySkillVersion,
   RegistryTag,
   RegistryWorkflow,
-  RegistryWorkflowMutation,
-  SkillIr
+  RegistryWorkflowMutation
 } from "@hunter-harness/contracts";
 import JSZip from "jszip";
 import Link from "next/link";
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { parse as parseYaml } from "yaml";
 
 import { browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
 import type { DemoAgent } from "../lib/demo-skills/types";
@@ -40,6 +38,7 @@ import {
   apiError,
   detailAgents,
   displayValue,
+  parseSkillFrontmatter,
   required
 } from "./skill-shared";
 
@@ -59,9 +58,11 @@ function skillStatusLabel(status: RegistrySkillDetail["status"], t: ReturnType<t
 
 type SkillDetailTab = "source" | "examples" | "definition" | "checks" | "versions" | "governance";
 
-const SKILL_IR_ENTRY_PATTERN = /(^|\/)(skill\.ya?ml|skill\.json|hunter-skill-ir\.json)$/i;
+const SKILL_ENTRY_PATTERN = /(^|\/)SKILL\.md$/i;
 
-async function parseSkillFile(input: File | FileList | File[]): Promise<{ ir: SkillIr; sourceName: string }> {
+// 客户端预览：从上传的 zip/folder 找 SKILL.md entry，解析 frontmatter 取 name（取代旧 skill IR 解析）。
+// 后端 authoritative 解析；此处仅用于上传后提示文案，失败静默回退 draft.slug。
+async function parseSkillFile(input: File | FileList | File[]): Promise<{ name: string; sourceName: string }> {
   const files: File[] = Array.isArray(input)
     ? input
     : input instanceof FileList
@@ -73,23 +74,23 @@ async function parseSkillFile(input: File | FileList | File[]): Promise<{ ir: Sk
   if (first !== undefined && files.length === 1 && first.name.toLowerCase().endsWith(".zip")) {
     const zip = await JSZip.loadAsync(await first.arrayBuffer());
     const entry = Object.values(zip.files).find((item) =>
-      !item.dir && SKILL_IR_ENTRY_PATTERN.test(item.name) && !item.name.includes("..")
+      !item.dir && SKILL_ENTRY_PATTERN.test(item.name) && !item.name.includes("..")
     );
-    if (entry === undefined) throw new Error("ZIP: skill IR not found");
+    if (entry === undefined) throw new Error("ZIP: SKILL.md not found");
     const content = await entry.async("text");
-    const ir = entry.name.toLowerCase().endsWith(".json") ? JSON.parse(content) : parseYaml(content);
-    return { ir: ir as SkillIr, sourceName: first.name };
+    const fm = parseSkillFrontmatter(content);
+    return { name: fm?.name ?? first.name, sourceName: first.name };
   }
 
   const folderEntry = files
     .map((file) => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name }))
-    .filter(({ path }) => SKILL_IR_ENTRY_PATTERN.test(path) && !path.includes(".."))
+    .filter(({ path }) => SKILL_ENTRY_PATTERN.test(path) && !path.includes(".."))
     .sort((left, right) => left.path.split("/").length - right.path.split("/").length)[0];
-  if (folderEntry === undefined) throw new Error("Folder: skill IR not found");
+  if (folderEntry === undefined) throw new Error("Folder: SKILL.md not found");
   const content = await folderEntry.file.text();
-  const ir = folderEntry.path.toLowerCase().endsWith(".json") ? JSON.parse(content) : parseYaml(content);
+  const fm = parseSkillFrontmatter(content);
   const rootName = folderEntry.path.includes("/") ? (folderEntry.path.split("/")[0] ?? folderEntry.file.name) : folderEntry.file.name;
-  return { ir: ir as SkillIr, sourceName: rootName };
+  return { name: fm?.name ?? rootName, sourceName: rootName };
 }
 
 function uploadLabel(files: File[] | null, fallback: string): string {
@@ -180,7 +181,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files), "claude-code");
       await refresh();
       let previewName = draft.slug;
-      try { previewName = (await parseSkillFile(files)).ir.name || draft.slug; } catch { /* optional client-side preview; backend re-parses authoritatively */ }
+      try { previewName = (await parseSkillFile(files)).name || draft.slug; } catch { /* optional client-side preview; backend re-parses authoritatively */ }
       setMessage(t.skills.uploadedAsDraft.replace("{name}", previewName));
       setUpload(null);
     } catch (reason) { setError(apiError(reason, t)); }
@@ -422,18 +423,14 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       ...current,
       description: next.description,
       tags: next.tags,
-      updated_at: new Date().toISOString(),
-      ir: current.ir === null ? current.ir : {
-        ...current.ir,
-        description: next.description
-      }
+      updated_at: new Date().toISOString()
     });
     setMessage(t.skillDetail.savedLocalConfig);
   }
   function removeLocalTag(slug: string): void {
     if (skill === null) return;
     saveLocalMeta({
-      description: skill.ir?.description ?? skill.description,
+      description: skill.description,
       tags: skill.tags.filter((tag) => tag !== slug)
     });
   }
@@ -455,6 +452,8 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const sourceFile = sourceSkill?.source.files.find((file) => file.path === sourcePath) ?? sourceSkill?.source.entrypoint;
   const prodSourceFile = skill.sourceFiles.find((file) => file.path === sourcePath) ?? skill.sourceFiles[0];
   const adapterPatch = sourceSkill?.adapters[agent];
+  const entryFile = skill.sourceFiles.find((file) => /(^|\/)SKILL\.md$/i.test(file.path)) ?? skill.sourceFiles[0];
+  const frontmatter = entryFile !== undefined ? parseSkillFrontmatter(entryFile.content) : null;
   return (
     <section className="stack governance-page">
       <header className="page-heading command-hero skill-detail-hero">
@@ -508,9 +507,9 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         </div>
       </article> : null}
 
-      {activeTab === "source" && sourceSkill === undefined && skill.sourceFiles.length === 0 && skill.ir !== null ? <article className="panel source-package">
+      {activeTab === "source" && sourceSkill === undefined && skill.sourceFiles.length === 0 ? <article className="panel source-package">
         <div className="panel-title"><h2>{t.skillDetail.sourceFiles}</h2><span>{t.skillDetail.configSummary}</span></div>
-        <FilePreview path="skill-ir.json" content={JSON.stringify(skill.ir, null, 2)} showRaw={t.skillDetail.showRaw} showRendered={t.skillDetail.showRendered} />
+        <Empty>{t.skillDetail.notAvailable}</Empty>
       </article> : null}
 
       {activeTab === "examples" ? <article className="panel">
@@ -518,18 +517,14 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         <UsageExamples examples={sourceSkill !== undefined ? sourceSkill.examples : skill.examples} t={t.skillDetail} />
       </article> : null}
 
-      {activeTab === "definition" && sourceSkill !== undefined && skill.ir !== null ? <div className="detail-grid system-config-layout">
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<DemoSystemConfig agents={sourceSkill.agents} currentAgent={selectedAgent} defaultAgent={activeDefaultAgent ?? sourceSkill.defaultAgent} onSetDefault={setDemoDefaultAgent} t={t.skillDetail} />} /></article>
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview ir={skill.ir} t={t.skillDetail} /></article>
+      {activeTab === "definition" && sourceSkill !== undefined ? <div className="detail-grid system-config-layout">
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview name={skill.name} description={skill.description} version={frontmatter?.version ?? null} agents={skill.agents} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<DemoSystemConfig agents={sourceSkill.agents} currentAgent={selectedAgent} defaultAgent={activeDefaultAgent ?? sourceSkill.defaultAgent} onSetDefault={setDemoDefaultAgent} t={t.skillDetail} />} /></article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview frontmatter={frontmatter} t={t.skillDetail} /></article>
       </div> : null}
 
-      {activeTab === "definition" && sourceSkill === undefined && skill.ir !== null ? <div className="detail-grid system-config-layout">
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview ir={skill.ir} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<AgentConfigsOverview agents={skill.agents} t={t.skillDetail} />} /></article>
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview ir={skill.ir} t={t.skillDetail} /></article>
-      </div> : null}
-
-      {activeTab === "definition" && skill.ir === null ? <div className="detail-grid">
-        <article className="panel"><Empty>{t.skillDetail.notAvailable}</Empty></article>
+      {activeTab === "definition" && sourceSkill === undefined ? <div className="detail-grid system-config-layout">
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.systemConfig}</h2><span>{t.skillDetail.configSummary}</span></div><SkillConfigOverview name={skill.name} description={skill.description} version={frontmatter?.version ?? null} agents={skill.agents} t={t.skillDetail} tags={skill.tags} onSaveMeta={saveLocalMeta} top={<AgentConfigsOverview agents={skill.agents} t={t.skillDetail} />} /></article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.contractsSecurity}</h2><span>{t.skillDetail.contractsSecuritySummary}</span></div><ContractSecurityOverview frontmatter={frontmatter} t={t.skillDetail} /></article>
       </div> : null}
 
       {activeTab === "checks" ? <article className="panel">
@@ -549,7 +544,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
 
         <article className="panel"><div className="panel-title"><h2>{t.skillDetail.createProposal}</h2><Status value="review-required" /></div><textarea className="ir-editor" aria-label="Skill IR draft" value={draft} onChange={(event) => setDraft(event.target.value)} /><div className="actions"><button onClick={() => void submitDraft()}>{t.skillDetail.validateSubmit}</button></div></article>
 
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.reviewRecord}</h2><span>{proposals.length}</span></div>{proposals.length === 0 ? <Empty>{t.skillDetail.noProposalLinked}</Empty> : proposals.map((proposal) => <div className="proposal-card" key={proposal.proposal_id}><div><strong>{proposal.proposal_id}</strong><code>v{proposal.proposed_ir.version}</code><small>schema {proposal.validation.schema_valid ? "valid" : "invalid"} · sensitive findings {proposal.validation.sensitive_findings} · Claude compile {proposal.validation.claude_compilable ? "passed" : "failed"}</small></div><div><Status value={proposal.status} />{proposal.status === "pending_review" ? <><button onClick={() => void review(proposal.proposal_id, "approve")}>{t.skillDetail.approve}</button><button className="secondary" onClick={() => void review(proposal.proposal_id, "reject")}>{t.skillDetail.reject}</button></> : null}</div></div>)}</article>
+        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.reviewRecord}</h2><span>{proposals.length}</span></div>{proposals.length === 0 ? <Empty>{t.skillDetail.noProposalLinked}</Empty> : proposals.map((proposal) => <div className="proposal-card" key={proposal.proposal_id}><div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug}</code><small>schema {proposal.validation.schema_valid ? "valid" : "invalid"} · sensitive findings {proposal.validation.sensitive_findings} · Claude compile {proposal.validation.claude_compilable ? "passed" : "failed"}</small></div><div><Status value={proposal.status} />{proposal.status === "pending_review" ? <><button onClick={() => void review(proposal.proposal_id, "approve")}>{t.skillDetail.approve}</button><button className="secondary" onClick={() => void review(proposal.proposal_id, "reject")}>{t.skillDetail.reject}</button></> : null}</div></div>)}</article>
       </> : null}
       {message === null ? null : <div className="notice success">{message}</div>}{error === null ? null : <div className="notice danger">{error}</div>}
     </section>
@@ -578,7 +573,7 @@ export function WorkflowRegistry({ api: apiValue }: { api?: HunterApi }) {
     `${workflow.name} ${workflow.key} ${workflow.profile}`.toLowerCase().includes(workflowNeedle));
   const skillNeedle = skillQuery.trim().toLowerCase();
   const filteredLibrarySkills = skills.filter((skill) => skillNeedle === "" ||
-    `${skill.name} ${skill.description} ${skill.ir.kind}`.toLowerCase().includes(skillNeedle));
+    `${skill.name} ${skill.description} ${skill.kind ?? ""}`.toLowerCase().includes(skillNeedle));
 
   async function refresh(preferId?: string): Promise<void> {
     try {
@@ -634,10 +629,10 @@ export function WorkflowRegistry({ api: apiValue }: { api?: HunterApi }) {
           <div className="form-grid"><label>{t.workflows.name}<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label><label>{t.workflows.key}<input value={form.key} onChange={(event) => setForm({ ...form, key: event.target.value })} /></label><label className="span-2">{t.workflows.description2}<textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /></label><label>Profile<input value={form.profile} onChange={(event) => setForm({ ...form, profile: event.target.value })} /></label><label>{t.workflows.defaultAgent}<select value={form.default_agent} onChange={(event) => setForm({ ...form, default_agent: event.target.value as RegistryAgent })}><option value="claude-code">Claude Code</option></select></label></div>
           <div className="panel-title"><h3>{t.workflows.orderedSkillBinding}</h3><span>{t.workflows.directSaveAudit}</span></div>
           <ol className="binding-list">{form.skill_slugs.map((slug, index) => <li key={slug}><span className="sequence">{String(index + 1).padStart(2, "0")}</span><strong>{slug}</strong><div><button className="icon-button" aria-label={`move-up ${slug}`} onClick={() => move(index, -1)}>↑</button><button className="icon-button" aria-label={`move-down ${slug}`} onClick={() => move(index, 1)}>↓</button><button className="icon-button danger" aria-label={`remove ${slug}`} onClick={() => setForm({ ...form, skill_slugs: form.skill_slugs.filter((item) => item !== slug) })}>×</button></div></li>)}</ol>
-          <label>{t.workflows.addPublishedSkill}<select value="" onChange={(event) => event.target.value !== "" && setForm({ ...form, skill_slugs: [...form.skill_slugs, event.target.value] })}><option value="">{t.workflows.selectSkill}</option>{skills.filter((skill) => !form.skill_slugs.includes(skill.slug) && skill.agents.some((a) => a.agent === form.default_agent) && skill.ir?.profiles[form.profile]?.enabled).map((skill) => <option value={skill.slug} key={skill.skill_id}>{skill.name}</option>)}</select></label>
+          <label>{t.workflows.addPublishedSkill}<select value="" onChange={(event) => event.target.value !== "" && setForm({ ...form, skill_slugs: [...form.skill_slugs, event.target.value] })}><option value="">{t.workflows.selectSkill}</option>{skills.filter((skill) => !form.skill_slugs.includes(skill.slug) && skill.agents.some((a) => a.agent === form.default_agent)).map((skill) => <option value={skill.slug} key={skill.skill_id}>{skill.name}</option>)}</select></label>
           <div className="actions"><button disabled={!form.name || !form.key || !form.description} onClick={() => void save()}>{t.workflows.save}</button>{revision === null ? null : <button className="secondary danger" onClick={() => void remove()}>{t.workflows.archiveDelete}</button>}</div>
         </div>
-        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder={t.workflows.availablePlaceholder} /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.ir.kind} /></div>)}</div>
+        <div className="panel skill-library"><div className="panel-title"><h2>{t.workflows.availableSkills}</h2><span>{filteredLibrarySkills.length}</span></div><label className="rail-search">{t.workflows.searchAvailableSkills}<input value={skillQuery} onChange={(event) => setSkillQuery(event.target.value)} placeholder={t.workflows.availablePlaceholder} /></label>{filteredLibrarySkills.length === 0 ? <Empty>{t.workflows.noAvailable}</Empty> : filteredLibrarySkills.map((skill) => <div className="library-item" key={skill.skill_id}><div><strong>{skill.name}</strong><p>{skill.description}</p></div><Status value={skill.kind ?? "unknown"} /></div>)}</div>
       </div>
       {error === null ? null : <div className="notice danger">{error}</div>}
     </section>

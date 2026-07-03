@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 
 import { sha256Bytes, uuidV7 } from "@hunter-harness/core";
-import type { SkillIr, SourceFile } from "@hunter-harness/contracts";
+import type { SourceFile } from "@hunter-harness/contracts";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -133,7 +133,7 @@ postgresDescribe("PostgreSQL repository integration", () => {
   // 仅验 metadata 数量/agent；latestVersion 来自 snapshot.detail.agents（agentsFor 写入）。
   // per-agent publish：每个 agent 各 upsertDraft + publish 1.0.0（独立版本序列），各产 1 version 记录(artifacts[1])。
   it("INT-005: publish multi-agent skill → PG save → reload initialize preserves artifacts + per-agent latestVersion", async () => {
-    const ir: SkillIr = {
+    const ir = {
       name: "harness-pg-multi", kind: "tooling", description: "pg multi-agent",
       triggers: ["run"], inputs: [], outputs: ["out"],
       forbidden_actions: [], required_context: [],
@@ -207,7 +207,7 @@ postgresDescribe("PostgreSQL repository integration", () => {
   // COM-004: per-agent nested drafts (v3 snapshot) PG jsonb round-trip。
   // UT-031 验 memory 路径 drafts[slug][agent] 嵌套序列化结构；此用例验 PG jsonb 持久化 + 新 store initialize 保持嵌套。
   it("COM-004: per-agent nested drafts (v3 snapshot) round-trip through PG jsonb", async () => {
-    const ir: SkillIr = {
+    const ir = {
       name: "harness-pg-drafts", kind: "tooling", description: "pg drafts nested",
       triggers: ["run"], inputs: [], outputs: ["out"],
       forbidden_actions: [], required_context: [],

@@ -13,7 +13,6 @@ import {
   registryTagSchema,
   registryWorkflowMutationSchema,
   registryWorkflowSchema,
-  skillIrSchema,
   skillUsageExampleSchema,
   workflowPackageDraftStateSchema,
   workflowPackageSchema,
@@ -37,7 +36,7 @@ import {
   type RegistryWorkflowMutation,
   type SkillCheckResult,
   type SkillDiffFile,
-  type SkillIr,
+  type SkillFrontmatter,
   type SkillUsageExample,
   type SourceFile,
   type WorkflowPackage,
@@ -45,19 +44,22 @@ import {
   type WorkflowPackageVersion
 } from "@hunter-harness/contracts";
 import {
-  ADAPTERS,
+  AGENT_DESCRIPTORS,
+  INSTALLABLE_AGENTS,
   buildFixPatch,
   bumpPatch,
   checkSkill,
   compareSemver,
-  compileSkill,
   computeDiff,
-  findSkillIr,
+  deriveSlug,
+  findEntryFile,
+  parseFrontmatter,
   scanSensitiveFiles,
   sha256Bytes,
-  type BootstrapBundle
+  SkillEntryError
 } from "@hunter-harness/core";
 import AdmZip from "adm-zip";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { ServerDomainError, type TransactionRepository } from "../repositories/interfaces.js";
 import type { ArtifactStorage } from "../storage/interface.js";
@@ -66,7 +68,19 @@ import { WorkflowPackageStore, type WorkflowPackageState } from "./workflow-pack
 
 // applyFixSuggestion 可写白名单（examples/allowed_capabilities/instructions/description）；
 // tags/null 为展示型建议不可写 → 422。与 output-parser FIX_APPLIES_TO_WHITELIST（5 值含 tags，解析白名单）语义不同，不可合并。
-const WRITABLE_APPLIES_TO = ["examples", "allowed_capabilities", "instructions", "description"] as const;
+const WRITABLE_APPLIES_TO = ["examples", "instructions", "description"] as const;
+
+export interface BootstrapSkill {
+  slug: string;
+  version: string;
+  sourceFiles: SourceFile[];
+}
+
+export interface BootstrapBundle {
+  registryVersion: string;
+  compilerVersion: string;
+  skills: BootstrapSkill[];
+}
 
 interface SkillState {
   detail: RegistrySkillDetail;
@@ -78,6 +92,8 @@ interface ProposalState extends RegistrySkillProposal {
   reviewedBy: string | null;
   reviewComment: string | null;
   publishedArtifacts: RegistryArtifact[];
+  sourceFiles: SourceFile[];
+  version: string;
 }
 
 function id(prefix: string): string {
@@ -98,15 +114,20 @@ function maxVersionOf(versions: RegistrySkillVersion[]): string | null {
 // draftVersion 从该 agent 的 draft 取；isDefault 由 detail.defaultAgent 判定（不再硬编码 claude-code）。
 // fallback（§9 / UT-014）：agent 无专属版本且非默认 agent 且默认 agent 有版本 → 回退默认 agent latestVersion，
 // sourcePackagePath 标注 "fallback:<defaultAgent>"；默认 agent 自身不 fallback。
+// per-agent 独立版本：每个 enabled installable agent 持独立 latestVersion（从该 agent 的 version 序列取最大）；
+// draftVersion 从该 agent 的 draft 取；isDefault 由 detail.defaultAgent 判定。
+// fallback（§9 / UT-014）：agent 无专属版本且非默认 agent 且默认 agent 有版本 → 回退默认 agent latestVersion，
+// sourcePackagePath 标注 "fallback:<defaultAgent>"；默认 agent 自身不 fallback。
+// 新模型：agent 支持由上传存在性 + fallback 决定（去 ir.adapters 声明）；enabledAgents = installable 中（有 version ∪ 有 draft ∪ 默认 agent）。
 function agentsFor(
-  ir: SkillIr,
+  slug: string,
   defaultAgent: RegistryAgent | null,
   versions: RegistrySkillVersion[],
   draftsForSlug: Map<RegistryAgent, DraftState> | undefined
 ): AgentSkillConfig[] {
-  const enabledAgents = (Object.keys(ADAPTERS) as RegistryAgent[])
-    .filter((agent) => ADAPTERS[agent].installable && ir.adapters[agent]?.enabled === true);
   const defaultLatest = defaultAgent === null ? null : maxVersionOf(versions.filter((v) => v.agent === defaultAgent));
+  // 新模型：所有 installable agent 都支持（agent 支持由 fallback 决定；无 own version 的非默认 agent fallback default latestVersion）
+  const enabledAgents = [...INSTALLABLE_AGENTS];
   return enabledAgents.map((agent) => {
     const ownLatest = maxVersionOf(versions.filter((v) => v.agent === agent));
     const isDefault = agent === defaultAgent;
@@ -117,7 +138,7 @@ function agentsFor(
         agent,
         enabled: true,
         isDefault,
-        installTarget: ADAPTERS[agent].targetPath(ir),
+        installTarget: AGENT_DESCRIPTORS[agent].installTarget(slug),
         latestVersion: defaultLatest,
         draftVersion,
         sourcePackagePath: defaultLatest === null ? null : "fallback:" + defaultAgent
@@ -127,7 +148,7 @@ function agentsFor(
       agent,
       enabled: true,
       isDefault,
-      installTarget: ADAPTERS[agent].targetPath(ir),
+      installTarget: AGENT_DESCRIPTORS[agent].installTarget(slug),
       latestVersion: ownLatest,
       draftVersion,
       sourcePackagePath: null
@@ -135,14 +156,15 @@ function agentsFor(
   });
 }
 
-// defaultAgentOf：优先 detail.defaultAgent（用户设定），否则自动推断（优先 claude-code，否则首个 installable+enabled，否则 null）。
-function defaultAgentOf(detail: RegistrySkillDetail | undefined, ir: SkillIr): RegistryAgent | null {
+// defaultAgentOf：优先 detail.defaultAgent（用户设定），否则 claude-code，否则首个有 version 的 installable agent，否则首个 installable，否则 null。
+// 新模型：从 versions 推断（去 ir.adapters 依赖，评审 Y2）。
+function defaultAgentOf(detail: RegistrySkillDetail | undefined, versions: RegistrySkillVersion[]): RegistryAgent | null {
   if (detail !== undefined && detail.defaultAgent !== null) return detail.defaultAgent;
-  if (ir.adapters["claude-code"]?.enabled === true) return "claude-code";
-  for (const agent of Object.keys(ADAPTERS) as RegistryAgent[]) {
-    if (ADAPTERS[agent].installable && ir.adapters[agent]?.enabled === true) return agent;
+  if (AGENT_DESCRIPTORS["claude-code"].installable) return "claude-code";
+  for (const v of versions) {
+    if (AGENT_DESCRIPTORS[v.agent]?.installable === true) return v.agent;
   }
-  return null;
+  return INSTALLABLE_AGENTS[0] ?? null;
 }
 
 function migrateSkillDetail(raw: unknown): RegistrySkillDetail {
@@ -159,7 +181,7 @@ function migrateSkillDetail(raw: unknown): RegistrySkillDetail {
     agent,
     enabled: true,
     isDefault: agent === "claude-code",
-    installTarget: ADAPTERS[agent]?.targetPath({ name: slug } as SkillIr) ?? ".claude/skills/" + slug,
+    installTarget: AGENT_DESCRIPTORS[agent]?.installTarget(slug) ?? ".claude/skills/" + slug + "/",
     latestVersion: agent === "claude-code" ? latestVersion : null,
     draftVersion: null,
     sourcePackagePath: null
@@ -215,44 +237,56 @@ interface BuiltArtifact {
 // zip 内 hunter-skill.json manifest 的 schema 版本（zip 元数据，无 contracts schema 约束，skill-cli 不 parse 该字段；Y-8 去魔法值）
 const MANIFEST_SCHEMA_VERSION = 2;
 
-// 单 agent 制品构建（从 buildArtifacts 抽出的 per-agent 路径）：compileSkill + zip（目标文件 + hunter-skill.json manifest）。
-// installable+enabled 才构建；无 enabled profile 抛 422；agent 未 installable/enabled 返回 null（由调用方决定 422）。
-function buildArtifactFor(ir: SkillIr, agent: RegistryAgent, compilerVersion: string): BuiltArtifact | null {
-  const profile = Object.entries(ir.profiles).find(([, value]) => value.enabled)?.[0];
-  if (profile === undefined) {
-    throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled profile");
+// 单 agent 制品构建（源文件驱动）：zip 全部 sourceFiles + hunter-skill.json manifest。
+// installable 才构建；entry 缺失抛 422 SKILL_ENTRY_NOT_FOUND；agent 未 installable 返回 null（由调用方决定 422）。
+// manifest source_sha256（取代旧 source_ir_sha256）= sourceFiles canonical sha256；target_path = installTarget(slug) 文件夹根（设计 §3.4）。
+function buildArtifactFor(
+  sourceFiles: SourceFile[],
+  slug: string,
+  version: string,
+  agent: RegistryAgent
+): BuiltArtifact | null {
+  const descriptor = AGENT_DESCRIPTORS[agent];
+  if (!descriptor.installable) return null;
+  try {
+    findEntryFile(sourceFiles, agent);
+  } catch (error) {
+    if (error instanceof SkillEntryError) {
+      throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent });
+    }
+    throw error;
   }
-  const descriptor = ADAPTERS[agent];
-  if (!descriptor.installable || ir.adapters[agent]?.enabled !== true) return null;
-  const output = compileSkill(ir, { adapter: agent, profile, compilerVersion });
-  const filename = output.path.split("/").pop();
-  if (filename === undefined || filename === "") {
-    throw new ServerDomainError(500, "ARTIFACT_BUILD_FAILED", "compiled skill path has no filename");
-  }
+  const sourceSha256 = sha256Bytes(canonicalJson(
+    [...sourceFiles].sort((a, b) => a.path.localeCompare(b.path))
+      .map((f) => ({ path: f.path, content: f.content }))
+  ));
+  const targetPath = descriptor.installTarget(slug);
   const manifest: Record<string, unknown> = {
     schema_version: MANIFEST_SCHEMA_VERSION,
-    slug: ir.name,
-    version: ir.version,
+    slug,
+    version,
     agent,
-    source_ir_sha256: output.sourceIrHash,
-    target_path: output.path,
+    source_sha256: sourceSha256,
+    target_path: targetPath,
     install_mode: descriptor.installMode
   };
   if (descriptor.blockId !== undefined) {
-    manifest.block_id = descriptor.blockId(ir);
+    manifest.block_id = descriptor.blockId(slug);
   }
   const zip = new AdmZip();
-  zip.addFile(filename, Buffer.from(output.content, "utf8"));
+  for (const f of sourceFiles) {
+    zip.addFile(f.path, Buffer.from(f.content, "utf8"));
+  }
   zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8"));
   return { agent, bytes: zip.toBuffer() };
 }
 
-// 多 agent 制品构建（createProposal/publishIr 验证闸门保留）：遍历 installable+enabled adapter 各 compileSkill+zip。
-// per-agent publish 路径用 buildArtifactFor（单 agent）；此处保留用于 createProposal "至少 1 制品可编译" 校验。
-function buildArtifacts(ir: SkillIr, compilerVersion: string): BuiltArtifact[] {
+// 多 agent 制品构建（createProposal 验证闸门保留）：遍历 installable agent 各构建 zip。
+// per-agent publish 路径用 buildArtifactFor（单 agent）；此处保留用于 createProposal "至少 1 制品可构建" 校验。
+function buildArtifacts(sourceFiles: SourceFile[], slug: string, version: string): BuiltArtifact[] {
   const built: BuiltArtifact[] = [];
-  for (const agent of Object.keys(ADAPTERS) as RegistryAgent[]) {
-    const artifact = buildArtifactFor(ir, agent, compilerVersion);
+  for (const agent of INSTALLABLE_AGENTS) {
+    const artifact = buildArtifactFor(sourceFiles, slug, version, agent);
     if (artifact !== null) built.push(artifact);
   }
   return built;
@@ -270,6 +304,19 @@ function parseSuggestedStringArray(raw: unknown): string[] {
     }
   }
   return raw as string[];
+}
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+// YAML round-trip 重写 entry frontmatter（用于 applyFixSuggestion 改 description 等字段）。
+function rewriteFrontmatter(content: string, mutate: (fm: Record<string, unknown>) => void): string {
+  const match = FRONTMATTER_RE.exec(content);
+  if (match === null) return content;
+  const raw = match[1] ?? "";
+  const body = match[2] ?? "";
+  const fm = parseYaml(raw) as Record<string, unknown>;
+  mutate(fm);
+  return `---\n${stringifyYaml(fm)}---\n${body}`;
 }
 
 export class RegistryStore {
@@ -359,16 +406,11 @@ export class RegistryStore {
             if (parsed.success) this.setDraftState(key, agent, parsed.data);
           }
         } else {
-          // 旧 slug-only 格式：DraftState 无 agent → 迁默认 agent（UT-020）；无 enabled installable agent 则丢弃（UT-022）
-          const obj = raw as { ir?: SkillIr } | null;
-          const draftIr = obj?.ir;
-          if (draftIr === undefined) {
-            console.warn("[registry] discarding legacy draft with missing ir:", key);
-            continue;
-          }
-          const agent = defaultAgentOf(undefined, draftIr);
+          // 旧 slug-only 格式：DraftState 无 agent → 迁默认 agent（claude-code）；无 installable agent 则丢弃
+          const obj = raw as { agent?: RegistryAgent } | null;
+          const agent: RegistryAgent | null = obj?.agent ?? defaultAgentOf(undefined, []);
           if (agent === null) {
-            console.warn("[registry] discarding draft with no enabled installable agent:", key);
+            console.warn("[registry] discarding draft with no installable agent:", key);
             continue;
           }
           const parsed = draftStateSchema.safeParse({ ...obj, agent });
@@ -377,11 +419,11 @@ export class RegistryStore {
       }
       // 草稿加载完成后重算各 skill 的 agents：draftVersion 字段需反映已加载草稿（migrateSkillState 迁移时 drafts 尚未加载，传 undefined）
       for (const [slug, state] of this.skills) {
-        const defaultAgent = state.detail.defaultAgent ?? defaultAgentOf(undefined, state.detail.ir);
+        const defaultAgent = state.detail.defaultAgent ?? defaultAgentOf(state.detail, state.versions);
         state.detail = registrySkillDetailSchema.parse({
           ...state.detail,
           defaultAgent,
-          agents: agentsFor(state.detail.ir, defaultAgent, state.versions, this.drafts.get(slug))
+          agents: agentsFor(slug, defaultAgent, state.versions, this.drafts.get(slug))
         });
       }
       for (const [key, raw] of value.workflowPackages ?? []) {
@@ -429,11 +471,11 @@ export class RegistryStore {
     }
     if (bundle === undefined) return;
     this.compilerVersion = bundle.compilerVersion;
-    for (const ir of bundle.skills) {
-      if (this.skills.has(ir.name)) continue;
-      const agent = defaultAgentOf(undefined, ir);
+    for (const skill of bundle.skills) {
+      if (this.skills.has(skill.slug)) continue;
+      const agent = defaultAgentOf(undefined, []);
       if (agent === null) continue; // 无 installable agent，跳过 bootstrap 发布
-      await this.publishIr(ir, null, new Date().toISOString(), agent);
+      await this.publishIr(skill.sourceFiles, skill.slug, skill.version, null, new Date().toISOString(), agent);
     }
     await this.persist();
   }
@@ -459,12 +501,12 @@ export class RegistryStore {
     try {
       const obj = (raw ?? {}) as Record<string, unknown>;
       const detail = migrateSkillDetail(obj.detail);
-      // defaultAgent：优先 detail.defaultAgent，否则按 ir 推断（确保 fallback 有目标）
-      const defaultAgent = detail.defaultAgent ?? defaultAgentOf(undefined, detail.ir);
       const rawVersions = Array.isArray(obj.versions) ? obj.versions : [];
-      const versions = rawVersions.map((v) => migrateSkillVersion(v, defaultAgent));
+      const versions = rawVersions.map((v) => migrateSkillVersion(v, detail.defaultAgent));
+      // defaultAgent：优先 detail.defaultAgent，否则从 versions 推断（去 ir 依赖，评审 Y2）
+      const defaultAgent = detail.defaultAgent ?? defaultAgentOf(detail, versions);
       // 重算 agents：per-agent latestVersion 从迁移后 versions 取；旧 v2 同步版本由此拆为 per-agent 独立（COM-003）
-      const recomputedAgents = agentsFor(detail.ir, defaultAgent, versions, undefined);
+      const recomputedAgents = agentsFor(detail.slug, defaultAgent, versions, undefined);
       const latestVersion = maxVersionOf(versions);
       const detailFinal = registrySkillDetailSchema.parse({
         ...detail,
@@ -521,7 +563,6 @@ export class RegistryStore {
     slug: string;
     agent: RegistryAgent;
     sourceFiles: SourceFile[];
-    ir: SkillIr;
     draftVersion: string | null;
   }): Promise<DraftState> {
     const now = new Date().toISOString();
@@ -530,7 +571,6 @@ export class RegistryStore {
       slug: input.slug,
       agent: input.agent,
       sourceFiles: input.sourceFiles,
-      ir: input.ir,
       examples: existing?.examples ?? [],
       draftVersion: input.draftVersion,
       checks: null,
@@ -572,28 +612,32 @@ export class RegistryStore {
     if (unsafe !== undefined) {
       throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "unsafe file path: " + unsafe.path);
     }
-    let ir: SkillIr;
+    let slug: string;
     try {
-      ir = findSkillIr(input.files);
+      slug = deriveSlug(input.files, input.agent);
     } catch (error) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", (error as Error).message);
+      if (error instanceof SkillEntryError) {
+        if (error.code === "SKILL_ENTRY_NOT_FOUND") {
+          throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent: input.agent });
+        }
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+      }
+      throw error;
     }
     const fileMap: Record<string, string> = {};
     for (const f of input.files) fileMap[f.path] = f.content;
-    fileMap["skill-ir.json"] = canonicalJson(ir);
     const findings = scanSensitiveFiles(fileMap);
     if (findings.blocked) {
       throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
         finding_count: findings.findings.length
       });
     }
-    const slug = ir.name;
     // per-agent draftVersion：从该 agent 自有 version 序列取最大，无则 0.1.0
     const skillState = this.skills.get(slug);
     const ownVersions = skillState?.versions.filter((v) => v.agent === input.agent) ?? [];
     const agentLatest = maxVersionOf(ownVersions);
     const draftVersion = agentLatest === null ? "0.1.0" : bumpPatch(agentLatest);
-    return this.upsertDraft({ slug, agent: input.agent, sourceFiles: input.files, ir, draftVersion });
+    return this.upsertDraft({ slug, agent: input.agent, sourceFiles: input.files, draftVersion });
   }
 
   async runChecks(input: { slug: string; agent: RegistryAgent; checkedAt: string }): Promise<SkillCheckResult> {
@@ -603,8 +647,8 @@ export class RegistryStore {
     }
     const latest = this.skills.get(input.slug)?.detail.latest_version ?? null;
     const result = checkSkill({
-      ir: draft.ir,
       sourceFiles: draft.sourceFiles,
+      agent: input.agent,
       latestVersion: latest,
       compilerVersion: this.compilerVersion,
       checkedAt: input.checkedAt
@@ -632,20 +676,20 @@ export class RegistryStore {
     return structuredClone(updated);
   }
 
-  async buildDraftFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan & { fixedIr: SkillIr }> {
+  async buildDraftFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
     const draft = this.getDraftState(slug, agent);
     if (draft === undefined) {
       throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
     }
     const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
-    const { items, mergedFiles, summary, fixedIr } = buildFixPatch({
-      ir: draft.ir,
+    return buildFixPatch({
+      sourceFiles: draft.sourceFiles,
+      agent,
       checks: draft.checks,
       aiChecks: draft.aiChecks,
       latestVersion,
       checkIds
     });
-    return { items, mergedFiles, summary, fixedIr };
   }
 
   async applyDraftFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<DraftState> {
@@ -654,25 +698,34 @@ export class RegistryStore {
       throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
     }
     const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
-    const { fixedIr } = buildFixPatch({
-      ir: draft.ir,
+    const { mergedFiles } = buildFixPatch({
+      sourceFiles: draft.sourceFiles,
+      agent,
       checks: draft.checks,
       aiChecks: draft.aiChecks,
       latestVersion,
       checkIds
     });
+    // mergedFiles 反映源文件改写；应用到 draft.sourceFiles（覆盖改动文件，删除 removed）
     const fileMap: Record<string, string> = {};
     for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
-    fileMap["skill-ir.json"] = canonicalJson(fixedIr);
+    for (const d of mergedFiles) {
+      if (d.draftContent !== null) {
+        fileMap[d.path] = d.draftContent;
+      } else {
+        Reflect.deleteProperty(fileMap, d.path);
+      }
+    }
     const findings = scanSensitiveFiles(fileMap);
     if (findings.blocked) {
-      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "fixed ir contains sensitive content", { finding_count: findings.findings.length });
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "fixed source contains sensitive content", { finding_count: findings.findings.length });
     }
+    const updatedSourceFiles: SourceFile[] = Object.entries(fileMap).map(([path, content]) => ({ path, content }));
     const now = new Date().toISOString();
     const cleared = draftStateSchema.parse({
       ...draft,
       agent,
-      ir: fixedIr,
+      sourceFiles: updatedSourceFiles,
       checks: null,
       aiChecks: null,
       revision: draft.revision + 1,
@@ -700,7 +753,7 @@ export class RegistryStore {
     return structuredClone(updated);
   }
 
-  // 采纳 AI 修复建议：按 appliesTo 白名单写入 draft.ir / draft.examples 对应字段，
+  // 采纳 AI 修复建议：按 appliesTo 白名单写入 draft.sourceFiles / draft.examples 对应字段，
   // 校验写入后内容不含敏感信息，清 aiChecks（建议已采纳，待重新 check），revision+1（§6.3 第4步/§3.6）。
   // 可写白名单：examples(→draft.examples) / allowed_capabilities / instructions / description(→ir 字段)。
   // tags 与 null 为展示型建议（无对应可写 draft 字段，tag 绑定走 bindTag 独立流程），不可采纳 → 422。
@@ -720,13 +773,24 @@ export class RegistryStore {
       throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "appliesTo is not a writable target", { appliesTo: input.appliesTo });
     }
     const target = input.appliesTo as typeof WRITABLE_APPLIES_TO[number];
-    const fixedIr: SkillIr = structuredClone(draft.ir);
     let fixedExamples: SkillUsageExample[] = structuredClone(draft.examples);
+    const fileMap: Record<string, string> = {};
+    for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
     if (target === "description") {
       if (input.suggestedContent.length === 0) {
         throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for description must be non-empty", { appliesTo: target });
       }
-      fixedIr.description = input.suggestedContent;
+      try {
+        const entry = findEntryFile(draft.sourceFiles, input.agent);
+        fileMap[entry.path] = rewriteFrontmatter(entry.content, (fm) => {
+          fm["description"] = input.suggestedContent;
+        });
+      } catch (error) {
+        if (error instanceof SkillEntryError) {
+          throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+        }
+        throw error;
+      }
     } else if (target === "examples") {
       let parsed: unknown;
       try {
@@ -743,6 +807,7 @@ export class RegistryStore {
       }
       fixedExamples = result.data;
     } else {
+      // instructions → entry body 追加段（array of strings）；allowed_capabilities 已从白名单移除（新模型无此字段）
       let parsed: unknown;
       try {
         parsed = JSON.parse(input.suggestedContent);
@@ -758,25 +823,26 @@ export class RegistryStore {
       if (arr.length === 0) {
         throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", `suggestedContent for ${target} must be a non-empty array of strings`, { appliesTo: target });
       }
-      if (target === "instructions") {
-        fixedIr.instructions = arr;
-      } else {
-        fixedIr.allowed_capabilities = arr;
+      try {
+        const entry = findEntryFile(draft.sourceFiles, input.agent);
+        fileMap[entry.path] = entry.content + "\n\n## Instructions\n\n" + arr.map((i) => "- " + i).join("\n") + "\n";
+      } catch (error) {
+        if (error instanceof SkillEntryError) {
+          throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+        }
+        throw error;
       }
     }
-    const fileMap: Record<string, string> = {};
-    for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
-    fileMap["skill-ir.json"] = canonicalJson(fixedIr);
-    fileMap["examples.json"] = JSON.stringify(fixedExamples);
     const findings = scanSensitiveFiles(fileMap);
     if (findings.blocked) {
       throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "applied suggestion contains sensitive content", { finding_count: findings.findings.length });
     }
+    const updatedSourceFiles: SourceFile[] = Object.entries(fileMap).map(([path, content]) => ({ path, content }));
     const now = new Date().toISOString();
     const cleared = draftStateSchema.parse({
       ...draft,
       agent: input.agent,
-      ir: fixedIr,
+      sourceFiles: updatedSourceFiles,
       examples: fixedExamples,
       aiChecks: null,
       revision: draft.revision + 1,
@@ -801,21 +867,27 @@ export class RegistryStore {
     }
     const existing = this.skills.get(input.slug);
     requireForwardVersion(existing, input.agent, input.version);
-    const ir = draft.ir;
-    skillIrSchema.parse(ir);
+    let meta: SkillFrontmatter;
+    try {
+      const entry = findEntryFile(draft.sourceFiles, input.agent);
+      meta = parseFrontmatter(entry.content);
+    } catch (error) {
+      if (error instanceof SkillEntryError) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+      }
+      throw error;
+    }
     const fileMap: Record<string, string> = {};
     for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
-    fileMap["skill-ir.json"] = canonicalJson(ir);
     const findings = scanSensitiveFiles(fileMap);
     if (findings.blocked) {
       throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
         finding_count: findings.findings.length
       });
     }
-    const built = buildArtifactFor(ir, input.agent, this.compilerVersion);
+    const built = buildArtifactFor(draft.sourceFiles, input.slug, input.version, input.agent);
     if (built === null) {
-      // Y-3：与 createProposal 一致——IR 无该 agent 的 enabled installable adapter（如仅 mcp）时拒绝发布，
-      // 避免静默发布 0 制品 version（不可安装）。
+      // agent 未 installable 时拒绝发布（避免静默发布 0 制品 version）
       throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
     }
     const hash = sha256Bytes(built.bytes);
@@ -835,7 +907,6 @@ export class RegistryStore {
       skill_slug: input.slug,
       version: input.version,
       agent: input.agent,
-      ir,
       artifacts: [artifact],
       source_proposal_id: null,
       sourceFiles: draft.sourceFiles,
@@ -844,8 +915,8 @@ export class RegistryStore {
       created_at: createdAt
     };
     const defaultAgent = existing === undefined
-      ? defaultAgentOf(undefined, ir)
-      : (existing.detail.defaultAgent ?? defaultAgentOf(undefined, ir));
+      ? defaultAgentOf(undefined, [])
+      : (existing.detail.defaultAgent ?? defaultAgentOf(existing.detail, existing.versions));
     // 先删该 agent draft，再重算 agents（draftVersion 反映发布后状态）
     this.deleteDraftState(input.slug, input.agent);
     if (existing === undefined) {
@@ -853,17 +924,17 @@ export class RegistryStore {
       const detail = registrySkillDetailSchema.parse({
         skill_id: id("skl_"),
         slug: input.slug,
-        name: ir.name,
-        description: ir.description,
+        name: meta.name,
+        description: meta.description,
+        kind: meta.kind ?? null,
         tags: [],
         status: "published",
         latest_version: maxVersionOf(versions),
         defaultAgent,
-        agents: agentsFor(ir, defaultAgent, versions, this.drafts.get(input.slug)),
+        agents: agentsFor(input.slug, defaultAgent, versions, this.drafts.get(input.slug)),
         revision: 1,
         created_at: createdAt,
-        updated_at: createdAt,
-        ir
+        updated_at: createdAt
       });
       this.skills.set(input.slug, { detail, versions });
     } else {
@@ -871,14 +942,14 @@ export class RegistryStore {
       const latestVersion = maxVersionOf(existing.versions);
       existing.detail = registrySkillDetailSchema.parse({
         ...existing.detail,
-        description: ir.description,
+        description: meta.description,
+        kind: meta.kind ?? null,
         status: "published",
         latest_version: latestVersion,
         defaultAgent,
-        agents: agentsFor(ir, defaultAgent, existing.versions, this.drafts.get(input.slug)),
+        agents: agentsFor(input.slug, defaultAgent, existing.versions, this.drafts.get(input.slug)),
         revision: existing.detail.revision + 1,
-        updated_at: createdAt,
-        ir
+        updated_at: createdAt
       });
     }
     this.invalidateTagUsageCache();
@@ -932,7 +1003,7 @@ export class RegistryStore {
       ...state.detail,
       defaultAgent: agent,
       // 重算 agents：isDefault 按新默认，fallback 来源切到新默认
-      agents: agentsFor(state.detail.ir, agent, state.versions, this.drafts.get(slug)),
+      agents: agentsFor(slug, agent, state.versions, this.drafts.get(slug)),
       revision: state.detail.revision + 1,
       updated_at: now
     });
@@ -1247,17 +1318,24 @@ export class RegistryStore {
     };
   }
 
-  createProposal(input: { ir: SkillIr; actorId: string; agent: RegistryAgent }): ProposalState {
-    // 簇A：放开 claude-code 硬编码 gate → installable && IR enabled 白名单。
-    // cursor/codex/generic installable=true 且 IR enabled → 通过；mcp installable=false → 422；
-    // agent 在 IR 未 enable → 422（避免为未启用 agent 建 proposal）。
-    if (!ADAPTERS[input.agent].installable || input.ir.adapters[input.agent]?.enabled !== true) {
-      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "agent is not installable or not enabled for this skill");
+  createProposal(input: { sourceFiles: SourceFile[]; slug: string; version: string; actorId: string; agent: RegistryAgent }): ProposalState {
+    // 新模型：agent installable + entry 存在即可建 proposal（去 ir.adapters 声明）
+    if (!AGENT_DESCRIPTORS[input.agent].installable) {
+      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "agent is not installable");
     }
-    const ir = skillIrSchema.parse(input.ir);
-    const existing = this.skills.get(ir.name);
-    requireForwardVersion(existing, input.agent, ir.version);
-    const findings = scanSensitiveFiles({ "skill-ir.json": canonicalJson(ir) });
+    try {
+      findEntryFile(input.sourceFiles, input.agent);
+    } catch (error) {
+      if (error instanceof SkillEntryError) {
+        throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent: input.agent });
+      }
+      throw error;
+    }
+    const existing = this.skills.get(input.slug);
+    requireForwardVersion(existing, input.agent, input.version);
+    const fileMap: Record<string, string> = {};
+    for (const f of input.sourceFiles) fileMap[f.path] = f.content;
+    const findings = scanSensitiveFiles(fileMap);
     const validation = {
       schema_valid: true,
       sensitive_findings: findings.findings.length,
@@ -1269,10 +1347,10 @@ export class RegistryStore {
       });
     }
     try {
-      // 验证闸门：至少一个 installable adapter enabled 且 compileSkill 成功（buildArtifacts 多制品路径保留）
-      const built = buildArtifacts(ir, this.compilerVersion);
+      // 验证闸门：至少一个 installable adapter 可构建（buildArtifacts 多制品路径保留）
+      const built = buildArtifacts(input.sourceFiles, input.slug, input.version);
       if (built.length === 0) {
-        throw new Error("skill has no enabled installable adapter");
+        throw new Error("skill has no installable adapter");
       }
       validation.claude_compilable = true;
     } catch (error) {
@@ -1282,8 +1360,7 @@ export class RegistryStore {
     }
     const proposal = registrySkillProposalSchema.parse({
       proposal_id: id("skp_"),
-      skill_slug: ir.name,
-      proposed_ir: ir,
+      skill_slug: input.slug,
       status: "pending_review",
       created_by: input.actorId,
       validation,
@@ -1295,7 +1372,9 @@ export class RegistryStore {
       requestedAgent: input.agent,
       reviewedBy: null,
       reviewComment: null,
-      publishedArtifacts: []
+      publishedArtifacts: [],
+      sourceFiles: input.sourceFiles,
+      version: input.version
     };
     this.proposals.set(state.proposal_id, state);
     return structuredClone(state);
@@ -1332,7 +1411,7 @@ export class RegistryStore {
     const reviewedAt = new Date().toISOString();
     // approve → 按 proposal.requestedAgent 发布（per-agent，只产该 agent 制品）
     const artifacts = input.decision === "approve"
-      ? await this.publishIr(proposal.proposed_ir, proposal.proposal_id, reviewedAt, proposal.requestedAgent)
+      ? await this.publishIr(proposal.sourceFiles, proposal.skill_slug, proposal.version, proposal.proposal_id, reviewedAt, proposal.requestedAgent)
       : [];
     proposal.status = input.decision === "approve" ? "approved" : "rejected";
     proposal.reviewed_at = reviewedAt;
@@ -1346,76 +1425,86 @@ export class RegistryStore {
   // 其他 agent 不动；detail.agents 经 agentsFor 重算（fallback 按新 latestVersion 状态）。
   // 改 public 便于未来 proposal 路径事务化（prod-readiness-2）；本次 draft→publish 路由不直接调（用 publish）。
   async publishIr(
-    ir: SkillIr,
+    sourceFiles: SourceFile[],
+    slug: string,
+    version: string,
     proposalId: string | null,
     createdAt: string,
     agent: RegistryAgent
   ): Promise<RegistryArtifact[]> {
-    const existing = this.skills.get(ir.name);
-    requireForwardVersion(existing, agent, ir.version);
-    const built = buildArtifactFor(ir, agent, this.compilerVersion);
+    const existing = this.skills.get(slug);
+    requireForwardVersion(existing, agent, version);
+    let meta: SkillFrontmatter;
+    try {
+      const entry = findEntryFile(sourceFiles, agent);
+      meta = parseFrontmatter(entry.content);
+    } catch (error) {
+      if (error instanceof SkillEntryError) {
+        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+      }
+      throw error;
+    }
+    const built = buildArtifactFor(sourceFiles, slug, version, agent);
     if (built === null) {
-      // Y-3：与 createProposal/publish 一致——IR 无该 agent 的 enabled installable adapter 时拒绝发布。
       throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
     }
     const hash = sha256Bytes(built.bytes);
     await this.storage.putBlob(hash, built.bytes);
     const artifact: RegistryArtifact = {
       artifact_id: id("ska_"),
-      skill_slug: ir.name,
-      version: ir.version,
+      skill_slug: slug,
+      version,
       agent,
       content_sha256: hash,
       size_bytes: built.bytes.byteLength,
       source_proposal_id: proposalId ?? "skp_bootstrap",
       created_at: createdAt
     };
-    const version: RegistrySkillVersion = {
-      skill_slug: ir.name,
-      version: ir.version,
+    const versionRecord: RegistrySkillVersion = {
+      skill_slug: slug,
+      version,
       agent,
-      ir,
       artifacts: [artifact],
       source_proposal_id: proposalId,
-      sourceFiles: [],
+      sourceFiles,
       examples: [],
       changeNote: null,
       created_at: createdAt
     };
     const defaultAgent = existing === undefined
-      ? defaultAgentOf(undefined, ir)
-      : (existing.detail.defaultAgent ?? defaultAgentOf(undefined, ir));
+      ? defaultAgentOf(undefined, [])
+      : (existing.detail.defaultAgent ?? defaultAgentOf(existing.detail, existing.versions));
     if (existing === undefined) {
-      const versions = [version];
+      const versions = [versionRecord];
       const detail = registrySkillDetailSchema.parse({
         skill_id: id("skl_"),
-        slug: ir.name,
-        name: ir.name,
-        description: ir.description,
+        slug,
+        name: meta.name,
+        description: meta.description,
+        kind: meta.kind ?? null,
         tags: [],
         status: "published",
         latest_version: maxVersionOf(versions),
         defaultAgent,
-        agents: agentsFor(ir, defaultAgent, versions, this.drafts.get(ir.name)),
+        agents: agentsFor(slug, defaultAgent, versions, this.drafts.get(slug)),
         revision: 1,
         created_at: createdAt,
-        updated_at: createdAt,
-        ir
+        updated_at: createdAt
       });
-      this.skills.set(ir.name, { detail, versions });
+      this.skills.set(slug, { detail, versions });
     } else {
-      existing.versions.push(version);
+      existing.versions.push(versionRecord);
       const latestVersion = maxVersionOf(existing.versions);
       existing.detail = registrySkillDetailSchema.parse({
         ...existing.detail,
-        description: ir.description,
+        description: meta.description,
+        kind: meta.kind ?? null,
         status: "published",
         latest_version: latestVersion,
         defaultAgent,
-        agents: agentsFor(ir, defaultAgent, existing.versions, this.drafts.get(ir.name)),
+        agents: agentsFor(slug, defaultAgent, existing.versions, this.drafts.get(slug)),
         revision: existing.detail.revision + 1,
-        updated_at: createdAt,
-        ir
+        updated_at: createdAt
       });
     }
     this.invalidateTagUsageCache();
@@ -1423,18 +1512,22 @@ export class RegistryStore {
   }
 
   adapterPreview(slug: string, agent: RegistryAgent) {
-    // 簇8：去 claude-code 硬闸门，改按 ADAPTERS[agent].installable 判定；mcp installable=false → 422 ADAPTER_NOT_IMPLEMENTED
-    if (!ADAPTERS[agent].installable) {
+    if (!AGENT_DESCRIPTORS[agent].installable) {
       throw new ServerDomainError(422, "ADAPTER_NOT_IMPLEMENTED", `adapter ${agent} is not yet implemented`);
     }
-    const ir = this.getSkill(slug).ir;
-    const profile = Object.entries(ir.profiles).find(([, value]) => value.enabled)?.[0];
-    if (profile === undefined) throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled profile");
-    return compileSkill(ir, {
-      adapter: agent,
-      profile,
-      compilerVersion: this.compilerVersion
-    });
+    const state = this.skills.get(slug);
+    if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
+    // 新模型：安装 = 上传源文件，无编译预览；返回该 agent 最新 version 的 sourceFiles + installTarget
+    const versions = state.versions.filter((v) => v.agent === agent);
+    const latest = versions[0];
+    if (latest === undefined || latest.sourceFiles.length === 0) {
+      throw new ServerDomainError(404, "SKILL_ARTIFACT_NOT_FOUND", "no source files for agent");
+    }
+    return {
+      agent,
+      sourceFiles: structuredClone(latest.sourceFiles),
+      installTarget: AGENT_DESCRIPTORS[agent].installTarget(slug)
+    };
   }
 
   // per-agent：取该 agent 最新 version 的 artifact（listVersions 按 agent 过滤后取首）
@@ -1663,9 +1756,7 @@ export class RegistryStore {
       if (!skill.agents.some((a) => a.agent === workflow.default_agent)) {
         throw new ServerDomainError(422, "WORKFLOW_ADAPTER_INCOMPATIBLE", "skill does not support workflow agent", { slug });
       }
-      if (skill.ir.profiles[workflow.profile]?.enabled !== true) {
-        throw new ServerDomainError(422, "WORKFLOW_PROFILE_INCOMPATIBLE", "skill does not support workflow profile", { slug });
-      }
+      // profile 系统已删除（新模型无 ir.profiles）；profile 兼容检查移除
     }
   }
 }
