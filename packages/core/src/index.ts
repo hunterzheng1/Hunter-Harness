@@ -28,6 +28,7 @@ export * from "./skill/frontmatter.js";
 export * from "./skill/meta.js";
 export * from "./skill/checker.js";
 export * from "./skill/fixer.js";
+export * from "./skill/agents.js";
 export * from "./skill-ir/diff.js";
 export * from "./skill-ir/semver.js";
 export * from "./transaction/journal.js";
