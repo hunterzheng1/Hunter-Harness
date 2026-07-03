@@ -125,14 +125,9 @@ function agentsFor(
   versions: RegistrySkillVersion[],
   draftsForSlug: Map<RegistryAgent, DraftState> | undefined
 ): AgentSkillConfig[] {
-  const candidateAgents = new Set<RegistryAgent>();
-  for (const v of versions) candidateAgents.add(v.agent);
-  if (draftsForSlug !== undefined) {
-    for (const a of draftsForSlug.keys()) candidateAgents.add(a);
-  }
   const defaultLatest = defaultAgent === null ? null : maxVersionOf(versions.filter((v) => v.agent === defaultAgent));
-  const enabledAgents = INSTALLABLE_AGENTS.filter((agent) =>
-    candidateAgents.has(agent) || agent === defaultAgent);
+  // 新模型：所有 installable agent 都支持（agent 支持由 fallback 决定；无 own version 的非默认 agent fallback default latestVersion）
+  const enabledAgents = [...INSTALLABLE_AGENTS];
   return enabledAgents.map((agent) => {
     const ownLatest = maxVersionOf(versions.filter((v) => v.agent === agent));
     const isDefault = agent === defaultAgent;
