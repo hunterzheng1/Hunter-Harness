@@ -13,7 +13,7 @@ import {
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
+import { canonicalJson, type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
 
@@ -120,6 +120,16 @@ async function fileExists(path: string): Promise<boolean> {
   try { await access(path); return true; } catch { return false; }
 }
 
+// folder 模式 unmanaged 检查：目录已存在且非空（有未托管内容）时拒绝覆盖。
+async function dirHasFiles(path: string): Promise<boolean> {
+  try {
+    const entries = await readdir(path);
+    return entries.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function readManifest(path: string): Promise<InstallManifest | null> {
   try {
     return JSON.parse(await readFile(path, "utf8")) as InstallManifest;
@@ -201,9 +211,15 @@ async function runInstall(
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
   }
   const metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as {
-    slug: string; version: string; agent: string; target_path: string;
+    slug: string;
+    version: string;
+    agent: string;
+    target_path: string;
+    source_sha256?: string;
+    source_ir_sha256?: string;
+    install_mode?: string;
   };
-  // 簇B：identity 校验 agent 与请求一致；target_path 提供 filename + 安装目录（对齐 server buildArtifacts 产出）。
+  // identity 校验 agent 与请求一致；target_path 提供 install 目录（folder=文件夹根，file=文件路径）。
   if (
     metadata.slug !== slug ||
     metadata.agent !== options.agent ||
@@ -212,7 +228,7 @@ async function runInstall(
   ) {
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact identity does not match request");
   }
-  // 文件名从 target_path 取（cursor=<slug>.mdc, claude-code=SKILL.md）；拦截绝对路径/.. 防逃逸。
+  // target_path 防逃逸：拦截绝对路径/驱动器前缀/.. 父段。folder 模式 target_path 以 / 结尾（如 .claude/skills/<slug>/）。
   // 按路径片段判断 ".."，避免误伤含 ".." 的合法文件名（如 notes..v1.md）。
   if (
     metadata.target_path.split(/[/\\]/).some((seg) => seg === "..") ||
@@ -221,32 +237,88 @@ async function runInstall(
   ) {
     throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path is unsafe");
   }
-  const filename = metadata.target_path.split(/[/\\]/).at(-1);
-  if (filename === undefined || filename === "") {
-    throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path has no filename");
+
+  // 收集 zip 内全部源文件（hunter-skill.json 除外），保留相对目录结构。
+  // folder 模式全部落地；file 模式只装 entry；zip-slip 防御与 server DANGEROUS_PATH 对齐。
+  const sourceFiles: SourceFile[] = [];
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory || entry.entryName === "hunter-skill.json") continue;
+    if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
+      throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path: " + entry.entryName);
+    }
+    sourceFiles.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
   }
-  const skillEntry = zip.getEntry(filename);
-  if (skillEntry === null || skillEntry.isDirectory) {
+  if (sourceFiles.length === 0) {
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
   }
-  const target = join(dependencies.cwd, dirname(metadata.target_path));
-  const skillFilePath = join(target, filename);
+
+  // source hash 校验：优先 source_sha256（新），回退 source_ir_sha256（旧 zip 兼容）；均缺则跳过（极旧 zip）。
+  // 与 server buildArtifactFor / core computeSourceHash 同算法：sorted by path → canonicalJson → sha256。
+  const computedSourceHash = sha256(Buffer.from(canonicalJson(
+    [...sourceFiles].sort((a, b) => a.path.localeCompare(b.path))
+      .map((f) => ({ path: f.path, content: f.content }))
+  ), "utf8"));
+  const declaredSourceHash = metadata.source_sha256 ?? metadata.source_ir_sha256;
+  if (declaredSourceHash !== undefined && declaredSourceHash !== computedSourceHash) {
+    throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "artifact source files failed SHA-256 verification");
+  }
+
+  // install mode：manifest 显式提供则用，否则按 target_path 尾部分隔符推断（folder=/结尾，file=其余）。
+  const installMode = metadata.install_mode ??
+    (/(?:[\\/])$/.test(metadata.target_path) ? "folder" : "file");
+
+  // folder 模式：installRoot=target_path 文件夹根，装全部文件（保留目录结构，references/scripts 一起落地）；
+  // file 模式：installRoot=dirname(target_path)，只装 entry（basename）。
+  let installRoot: string;
+  let filesToInstall: Array<{ name: string; bytes: Buffer }>;
+  let manifestFiles: Record<string, string>;
+  let primaryName: string | null = null; // file 模式 = filename（unmanaged 检查用）；folder 模式 = null
+  if (installMode === "folder") {
+    installRoot = join(dependencies.cwd, metadata.target_path);
+    filesToInstall = sourceFiles.map((f) => ({ name: f.path, bytes: Buffer.from(f.content, "utf8") }));
+    manifestFiles = Object.fromEntries(
+      sourceFiles.map((f) => [f.path, sha256(Buffer.from(f.content, "utf8"))])
+    );
+  } else {
+    const filename = metadata.target_path.split(/[/\\]/).at(-1);
+    if (filename === undefined || filename === "") {
+      throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path has no filename");
+    }
+    // file 模式 entry：优先精确匹配 basename，回退以 /<basename> 结尾（兼容 zip 内带前缀目录）。
+    const entry = sourceFiles.find((f) => f.path === filename) ??
+      sourceFiles.find((f) => f.path.endsWith("/" + filename));
+    if (entry === undefined) {
+      throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
+    }
+    installRoot = join(dependencies.cwd, dirname(metadata.target_path));
+    filesToInstall = [{ name: filename, bytes: Buffer.from(entry.content, "utf8") }];
+    manifestFiles = { [filename]: sha256(Buffer.from(entry.content, "utf8")) };
+    primaryName = filename;
+  }
+
   const manifestPath = join(
     dependencies.cwd, ".harness", "state", "local", "skill-installs", slug + ".json"
   );
   const existing = await readManifest(manifestPath);
-  if (existing === null && await fileExists(skillFilePath) && options.force !== true) {
-    throw new CliFailure(5, "LOCAL_SKILL_UNMANAGED", "target skill already exists without a trusted install manifest; use --force to confirm overwrite");
+  // unmanaged：无 manifest 且目标已存在内容（folder=目录有文件，file=目标文件存在）。
+  if (existing === null && options.force !== true) {
+    const occupied = primaryName === null
+      ? await dirHasFiles(installRoot)
+      : await fileExists(join(installRoot, primaryName));
+    if (occupied) {
+      throw new CliFailure(5, "LOCAL_SKILL_UNMANAGED", primaryName === null
+        ? "target skill directory already exists without a trusted install manifest; use --force to confirm overwrite"
+        : "target skill already exists without a trusted install manifest; use --force to confirm overwrite");
+    }
   }
-  if (existing !== null && await isDirty(target, existing) && options.force !== true) {
+  if (existing !== null && await isDirty(installRoot, existing) && options.force !== true) {
     throw new CliFailure(5, "LOCAL_SKILL_DIRTY", "local skill has uncommitted edits; use --force to confirm overwrite");
   }
-  if (existing?.artifact_sha256 === actualArtifactHash && !(await isDirty(target, existing))) {
+  if (existing?.artifact_sha256 === actualArtifactHash && !(await isDirty(installRoot, existing))) {
     dependencies.stdout(JSON.stringify({ ok: true, action: "noop", slug, version: metadata.version }) + "\n");
     return;
   }
-  const skillBytes = skillEntry.getData();
-  await atomicInstall({ target, files: [{ name: filename, bytes: skillBytes }] });
+  await atomicInstall({ target: installRoot, files: filesToInstall });
   const manifest: InstallManifest = {
     schema_version: 1,
     slug,
@@ -254,7 +326,7 @@ async function runInstall(
     agent: options.agent as RegistryAgent,
     source_url: serverUrl,
     artifact_sha256: actualArtifactHash,
-    files: { [filename]: sha256(skillBytes) },
+    files: manifestFiles,
     installed_at: new Date().toISOString()
   };
   await mkdir(dirname(manifestPath), { recursive: true });

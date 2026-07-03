@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import AdmZip from "adm-zip";
+import { canonicalJson } from "@hunter-harness/contracts";
 import { sha256Bytes } from "@hunter-harness/core";
 import { describe, expect, it, vi } from "vitest";
 
@@ -10,22 +11,52 @@ import { runSkillCli } from "../src/bin.js";
 
 const tokenEnv = { HH_SKILL_TOKEN: "test-token" };
 
-function zipBytes(content = "# harness-sync\n"): Buffer {
+// 与 server buildArtifactFor / core computeSourceHash 同算法：sorted by path → canonicalJson → sha256。
+function sourceHashOf(files: Array<{ path: string; content: string }>): string {
+  return sha256Bytes(canonicalJson(
+    [...files].sort((a, b) => a.path.localeCompare(b.path))
+      .map((f) => ({ path: f.path, content: f.content }))
+  ));
+}
+
+const DEFAULT_SKILL_CONTENT = "---\nname: harness-sync\ndescription: sync skill\n---\n# harness-sync\n";
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// folder zip fixture（claude-code 新模型）：多文件 SKILL.md + references/，target_path=文件夹根，install_mode=folder。
+// source_sha256 与 server buildArtifactFor 同算法；references/ 一起落地验证多文件 skill 安装修复。
+function zipBytes(skillContent = DEFAULT_SKILL_CONTENT): Buffer {
+  const guide = "# guide\n";
+  const files = [
+    { path: "SKILL.md", content: skillContent },
+    { path: "references/guide.md", content: guide }
+  ];
   const zip = new AdmZip();
-  zip.addFile("SKILL.md", Buffer.from(content));
+  zip.addFile("SKILL.md", Buffer.from(skillContent));
+  zip.addFile("references/guide.md", Buffer.from(guide));
   zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify({
-    schema_version: 1,
+    schema_version: 2,
     slug: "harness-sync",
     version: "1.0.0",
     agent: "claude-code",
-    target_path: ".claude/skills/harness-sync/SKILL.md"
+    source_sha256: sourceHashOf(files),
+    target_path: ".claude/skills/harness-sync/",
+    install_mode: "folder"
   })));
   return zip.toBuffer();
 }
 
 // 簇B cursor fixture：zip 内文件名 harness-sync.mdc（非 SKILL.md），target_path=.cursor/rules/<slug>.mdc，
-// 对齐 server buildArtifacts 的 cursor 产出（ADAPTERS.cursor.targetPath）。schema_version=2 对齐 server MANIFEST_SCHEMA_VERSION。
+// 对齐 server buildArtifacts 的 cursor 产出。schema_version=2 + source_sha256 + install_mode=file 对齐 server MANIFEST_SCHEMA_VERSION。
 function zipBytesCursor(content = "# harness-sync\n"): Buffer {
+  const files = [{ path: "harness-sync.mdc", content }];
   const zip = new AdmZip();
   zip.addFile("harness-sync.mdc", Buffer.from(content));
   zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify({
@@ -33,7 +64,9 @@ function zipBytesCursor(content = "# harness-sync\n"): Buffer {
     slug: "harness-sync",
     version: "1.0.0",
     agent: "cursor",
-    target_path: ".cursor/rules/harness-sync.mdc"
+    source_sha256: sourceHashOf(files),
+    target_path: ".cursor/rules/harness-sync.mdc",
+    install_mode: "file"
   })));
   return zip.toBuffer();
 }
@@ -126,7 +159,10 @@ describe("@hunter-harness/skill-cli", () => {
       cwd, env: tokenEnv, fetch, stdout: (value) => output.push(value), stderr: () => undefined
     })).toBe(0);
     expect(await readFile(join(cwd, ".claude/skills/harness-sync/SKILL.md"), "utf8"))
-      .toBe("# harness-sync\n");
+      .toBe(DEFAULT_SKILL_CONTENT);
+    // folder 模式：references/ 一起落地（多文件 skill 安装修复核心断言）
+    expect(await readFile(join(cwd, ".claude/skills/harness-sync/references/guide.md"), "utf8"))
+      .toBe("# guide\n");
 
     expect(await runSkillCli(args, {
       cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined
@@ -220,6 +256,60 @@ describe("@hunter-harness/skill-cli", () => {
     ));
     expect(manifest.agent).toBe("cursor");
     expect(manifest.files).toHaveProperty("harness-sync.mdc");
+  });
+
+  it("installs a legacy single-file artifact with source_ir_sha256 manifest (backward compat)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-legacy-"));
+    const skill = "# harness-legacy\n";
+    const files = [{ path: "SKILL.md", content: skill }];
+    const zip = new AdmZip();
+    zip.addFile("SKILL.md", Buffer.from(skill));
+    // 旧 manifest：schema_version 1 + source_ir_sha256（无 source_sha256 / install_mode），target_path=完整文件路径
+    zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify({
+      schema_version: 1,
+      slug: "harness-sync",
+      version: "1.0.0",
+      agent: "claude-code",
+      source_ir_sha256: sourceHashOf(files),
+      target_path: ".claude/skills/harness-sync/SKILL.md"
+    })));
+    const artifact = zip.toBuffer();
+    const fetch = vi.fn(async () => new Response(artifact, {
+      status: 200,
+      headers: { "x-content-sha256": sha256Bytes(artifact) }
+    }));
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--agent", "claude-code",
+      "--server-url", "https://harness.example", "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined });
+    expect(exitCode).toBe(0);
+    expect(await readFile(join(cwd, ".claude/skills/harness-sync/SKILL.md"), "utf8")).toBe(skill);
+  });
+
+  it("rejects a folder artifact whose source_sha256 does not match the extracted files", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-source-mismatch-"));
+    const zip = new AdmZip();
+    zip.addFile("SKILL.md", Buffer.from("# tampered\n"));
+    zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify({
+      schema_version: 2,
+      slug: "harness-sync",
+      version: "1.0.0",
+      agent: "claude-code",
+      source_sha256: "sha256:deadbeef",
+      target_path: ".claude/skills/harness-sync/",
+      install_mode: "folder"
+    })));
+    const artifact = zip.toBuffer();
+    const fetch = vi.fn(async () => new Response(artifact, {
+      status: 200,
+      headers: { "x-content-sha256": sha256Bytes(artifact) }
+    }));
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--agent", "claude-code",
+      "--server-url", "https://harness.example", "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined });
+    expect(exitCode).toBe(7);
+    expect(await pathExists(join(cwd, ".claude", "skills", "harness-sync", "SKILL.md"))).toBe(false);
   });
 
   it("uploads with agent=cursor to the per-agent draft endpoint (INT-103)", async () => {
