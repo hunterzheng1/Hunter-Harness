@@ -1,21 +1,22 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { basename, join, relative, resolve } from "node:path";
 
 import {
+  canonicalJson,
   baselineManifestSchema,
   initConfigSchema,
   projectConfigSchema,
   type InitConfig,
-  type ProjectConfig
+  type ProjectConfig,
+  type SourceFile
 } from "@hunter-harness/contracts";
 import {
   parse as parseYaml,
   stringify as stringifyYaml
 } from "yaml";
 
+import { sha256Bytes } from "../fs/hash.js";
 import { upsertManagedBlock } from "../managed/managed-block.js";
-import { loadBootstrapBundle } from "../skill-ir/bundle.js";
-import { compileSkill } from "../skill-ir/compiler.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import { runTransaction } from "../transaction/transaction.js";
 import { uuidV7 } from "./uuid-v7.js";
@@ -32,6 +33,13 @@ export interface InitializeProjectResult {
   paths: string[];
   bundleHash: string;
   registryVersion: string;
+}
+
+interface BundleManifest {
+  schema_version: 1;
+  registry_version: string;
+  compiler_version: string;
+  skills: string[];
 }
 
 async function readOptional(path: string): Promise<string> {
@@ -73,13 +81,65 @@ async function operationFor(
     : { operation: "add", path, content };
 }
 
+// 递归读取目录下所有文件，返回相对路径（正斜杠）+ 内容。用于复制 resources/skills/<name>/。
+async function readDirFiles(dir: string, base: string = dir): Promise<SourceFile[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const files: SourceFile[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await readDirFiles(full, base));
+    } else if (entry.isFile()) {
+      const rel = relative(base, full).replace(/\\/g, "/");
+      files.push({ path: rel, content: await readFile(full, "utf8") });
+    }
+  }
+  return files;
+}
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+
+/**
+ * YAML round-trip 重写 SKILL.md frontmatter，写入 source_hash 字段（取代旧 source_ir_hash）。
+ * source_hash = 上传/引导源文件的 canonical sha256，由 init 复制时计算并写入 entry frontmatter。
+ * 无 frontmatter 则原样返回（不写 source_hash）。
+ */
+function writeSourceHash(content: string, sourceHash: string): string {
+  const match = FRONTMATTER_RE.exec(content);
+  if (match === null) return content;
+  const raw = match[1] ?? "";
+  const body = match[2] ?? "";
+  const fm = parseYaml(raw) as Record<string, unknown>;
+  fm["source_hash"] = sourceHash;
+  return `---\n${stringifyYaml(fm)}---\n${body}`;
+}
+
+function computeSourceHash(files: SourceFile[]): string {
+  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
+  return sha256Bytes(canonicalJson(sorted.map((f) => ({ path: f.path, content: f.content }))));
+}
+
 export async function initializeProject(
   options: InitializeProjectOptions
 ): Promise<InitializeProjectResult> {
   const root = resolve(options.projectRoot);
   const config = initConfigSchema.parse(options.config);
   const existing = await existingProjectConfig(root);
-  const bundle = await loadBootstrapBundle(options.resourcesRoot);
+
+  // 读 bootstrap manifest（registry_version + compiler_version + skills 列表）。
+  // 新模型下 resources/<root>/skills/<name>/ 是源文件夹（SKILL.md + references），不再走 IR 编译。
+  const manifest = JSON.parse(
+    await readFile(join(options.resourcesRoot, "manifest.json"), "utf8")
+  ) as BundleManifest;
+  if (manifest.schema_version !== 1) {
+    throw new Error("unsupported bootstrap bundle schema version");
+  }
+  const bundleHash = sha256Bytes(canonicalJson({
+    registry_version: manifest.registry_version,
+    compiler_version: manifest.compiler_version,
+    skills: manifest.skills
+  }));
+
   const projectConfig = projectConfigSchema.parse({
     harness: { name: "hunter-harness", schema_version: 1 },
     project: {
@@ -146,9 +206,9 @@ export async function initializeProject(
         knowledge: { index: ".harness/knowledge/index.json" },
         codebase: { map: ".harness/codebase/map", status: "missing" },
         skill_bundle: {
-          registry_version: bundle.registryVersion,
-          bundle_hash: bundle.bundleHash,
-          compiler_version: bundle.compilerVersion
+          registry_version: manifest.registry_version,
+          bundle_hash: bundleHash,
+          compiler_version: manifest.compiler_version
         }
       }, null, 2) + "\n"
     ],
@@ -180,16 +240,27 @@ export async function initializeProject(
       "# Java Profile\n\n- Verify builds and tests with the project build tool.\n"
     );
   }
-  for (const skill of bundle.skills) {
-    if (skill.profiles[config.profile]?.enabled !== true) {
-      continue;
+
+  // 复制 bootstrap skills（源文件模型，取代 IR 编译）。
+  // 仅 claude-code adapter 支持：resources/skills/<name>/ → .claude/skills/<name>/，
+  // entry SKILL.md frontmatter 写入 source_hash（取代旧 source_ir_hash + compiler_version）。
+  // cursor/codex 等 adapter 的 .mdc 编译能力随 compileSkill 移除，暂不支持（任务 16 评估是否补轻量转换）。
+  if (config.adapter !== "claude-code") {
+    throw new Error(
+      `adapter '${config.adapter}' is not yet supported in source-file init model (only claude-code)`
+    );
+  }
+  for (const name of manifest.skills) {
+    const skillFiles = await readDirFiles(join(options.resourcesRoot, "skills", name));
+    if (skillFiles.length === 0) continue;
+    const sourceHash = computeSourceHash(skillFiles);
+    for (const f of skillFiles) {
+      const targetPath = `.claude/skills/${name}/${f.path}`;
+      const content = f.path === "SKILL.md"
+        ? writeSourceHash(f.content, sourceHash)
+        : f.content;
+      files.set(targetPath, content);
     }
-    const compiled = compileSkill(skill, {
-      profile: config.profile,
-      adapter: config.adapter,
-      compilerVersion: bundle.compilerVersion
-    });
-    files.set(compiled.path, compiled.content);
   }
 
   const paths = [...files.keys()].sort((left, right) => left.localeCompare(right));
@@ -202,7 +273,7 @@ export async function initializeProject(
   return {
     projectConfig,
     paths,
-    bundleHash: bundle.bundleHash,
-    registryVersion: bundle.registryVersion
+    bundleHash,
+    registryVersion: manifest.registry_version
   };
 }
