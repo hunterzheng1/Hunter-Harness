@@ -338,7 +338,7 @@ async function runInstall(
 
 // readSourceFiles：读 skill 源（目录递归 / ZIP 解包 / 单文件）为 SourceFile[]（{path, content}）。
 // path 用相对路径（目录/ZIP 内，正斜杠），与 Web buildUploadFormData 的 filename 协议对齐——server part.filename 取此。
-// IR 解析交给 server uploadDraft（store 内 findSkillIr），CLI 不重复解析，避免与 server schema 双重维护。
+// entry 定位交给 server uploadDraft（store 内 deriveSlug + findEntryFile），CLI 不重复解析，避免与 server schema 双重维护。
 async function readSourceFiles(source: string): Promise<SourceFile[]> {
   const sourceStat = await stat(source).catch(() => null);
   if (sourceStat === null) throw new CliFailure(3, "SOURCE_NOT_FOUND", "skill source does not exist");

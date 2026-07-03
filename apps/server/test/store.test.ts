@@ -193,7 +193,7 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
     await expect(store.deleteDraft("harness-x", CC, 999)).rejects.toMatchObject({ code: "REVISION_CONFLICT" });
   });
 
-  it("applyDraftFix 按 agent，仅该 agent draft.ir 更新 (UT-007)", async () => {
+  it("applyDraftFix 按 agent，仅该 agent draft.sourceFiles 更新 (UT-007)", async () => {
     const store = newStore();
     // 先发布 CC 建立 latest_version（buildFixPatch 的 ir.version bump 依赖 latestVersion）
     await setupPublished(store, CC, "1.0.0", files);
@@ -203,7 +203,7 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
     await store.runChecks({ slug: "harness-x", agent: CURSOR, checkedAt: "2026-06-30T00:00:00Z" });
     const beforeCursor = store.getDraft("harness-x", CURSOR);
     await store.applyDraftFix("harness-x", CC, null);
-    // claude-code draft ir.version bumped；cursor draft 不变
+    // claude-code draft frontmatter version bumped；cursor draft 不变
     expect(frontmatterField(store.getDraft("harness-x", CC), "version")).toBe("1.0.1");
     expect(store.getDraft("harness-x", CC)?.checks).toBeNull();
     expect(frontmatterField(store.getDraft("harness-x", CURSOR), "version")).toBe(frontmatterField(beforeCursor, "version"));
@@ -243,6 +243,22 @@ describe("RegistryStore per-agent publish (UT-010~014)", () => {
     expect(skill.latest_version).toBe("1.0.0");
     // 草稿按 agent 清除
     expect(store.getDraft("harness-x", CURSOR)).toBeUndefined();
+  });
+
+  it("publish 反范式化 frontmatter kind 到 skill.kind (R8)", async () => {
+    const store = newStore();
+    await setupPublished(store, CC, "1.0.0", files); // files = SKILL.md (kind: governance)
+    const skill = store.getSkill("harness-x");
+    expect(skill.kind).toBe("governance");
+  });
+
+  it("publish frontmatter 无 kind 时 skill.kind 为 null (R8 边界)", async () => {
+    const store = newStore();
+    const noKindFiles: SourceFile[] = [{ path: "SKILL.md", content: skillMd.replace("kind: governance\n", "") }];
+    await store.upsertDraft({ slug: "harness-x", agent: CC, sourceFiles: noKindFiles, draftVersion: "0.1.0" });
+    await store.publish({ slug: "harness-x", agent: CC, version: "1.0.0", actorId: "owner" });
+    const skill = store.getSkill("harness-x");
+    expect(skill.kind).toBeNull();
   });
 
   it("publish 前进当前 agent latestVersion，其他 agent 不变 (UT-011)", async () => {
@@ -740,7 +756,7 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
 });
 
 describe("RegistryStore listTags usage cache", () => {
-  function minIr(name: string): SkillIr {
+  function minIr(name: string): unknown {
     return {
       name, kind: "tooling", description: "d",
       triggers: ["run"], inputs: [], outputs: ["out"],
