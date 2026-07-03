@@ -164,7 +164,7 @@ export async function buildDashboardOverview(input: {
     },
     trend,
     distributions: {
-      skill_categories: countBy(skills.map((skill) => (skill.ir as { kind?: string } | undefined)?.kind ?? "unknown")),
+      skill_categories: countBy(skills.map((skill) => skill.kind ?? "unknown")),
       workflow_profiles: countBy(workflows.map((workflow) => workflow.profile))
     },
     health,

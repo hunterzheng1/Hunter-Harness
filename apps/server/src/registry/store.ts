@@ -926,6 +926,7 @@ export class RegistryStore {
         slug: input.slug,
         name: meta.name,
         description: meta.description,
+        kind: meta.kind ?? null,
         tags: [],
         status: "published",
         latest_version: maxVersionOf(versions),
@@ -942,6 +943,7 @@ export class RegistryStore {
       existing.detail = registrySkillDetailSchema.parse({
         ...existing.detail,
         description: meta.description,
+        kind: meta.kind ?? null,
         status: "published",
         latest_version: latestVersion,
         defaultAgent,
@@ -1479,6 +1481,7 @@ export class RegistryStore {
         slug,
         name: meta.name,
         description: meta.description,
+        kind: meta.kind ?? null,
         tags: [],
         status: "published",
         latest_version: maxVersionOf(versions),
@@ -1495,6 +1498,7 @@ export class RegistryStore {
       existing.detail = registrySkillDetailSchema.parse({
         ...existing.detail,
         description: meta.description,
+        kind: meta.kind ?? null,
         status: "published",
         latest_version: latestVersion,
         defaultAgent,

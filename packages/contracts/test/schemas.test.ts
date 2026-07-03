@@ -384,9 +384,22 @@ describe("skill-center schemas", () => {
     };
     const parsed = registrySkillSummarySchema.parse(s);
     expect(parsed).not.toHaveProperty("category");
+    expect(parsed.kind).toBeUndefined();
     expect(parsed.agents).toHaveLength(1);
     expect(parsed.defaultAgent).toBe("claude-code");
     expect(() => registrySkillSummarySchema.parse({ ...s, category: "tooling" })).toThrow();
+  });
+
+  it("summary kind 反范式化字段（从 frontmatter 派生，供 dashboard 分类）", () => {
+    const base = {
+      skill_id: "skl_1", slug: "harness-x", name: "harness-x", description: "d",
+      tags: [], status: "published", latest_version: "1.0.0",
+      defaultAgent: "claude-code", agents: [agentCfg],
+      revision: 1, created_at: "2026-06-26T00:00:00Z", updated_at: "2026-06-26T00:00:00Z"
+    };
+    expect(registrySkillSummarySchema.parse({ ...base, kind: "workflow" }).kind).toBe("workflow");
+    expect(registrySkillSummarySchema.parse({ ...base, kind: null }).kind).toBeNull();
+    expect(registrySkillSummarySchema.safeParse({ ...base, kind: "invalid" }).success).toBe(false);
   });
 
   it("detail defaults sourceFiles/examples (ir optional, legacy tolerated)", () => {

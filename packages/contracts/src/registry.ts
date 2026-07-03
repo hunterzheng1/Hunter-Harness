@@ -148,6 +148,9 @@ export const registrySkillSummarySchema = z.object({
   slug: registrySlugSchema,
   name: z.string().min(1),
   description: z.string().min(1),
+  // kind 从 entry frontmatter 反范式化（与 description 同理），供 dashboard 分类分布。
+  // nullable：新 skill 无 kind 时为 null（overview 回退 "unknown"）；optional：兼容旧数据无此字段。
+  kind: z.enum(["workflow", "tooling", "migration", "governance"]).nullable().optional(),
   tags: z.array(registrySlugSchema),
   status: registrySkillStatusSchema,
   latest_version: registrySemverSchema.nullable(),

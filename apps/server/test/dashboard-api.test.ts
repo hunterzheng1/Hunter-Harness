@@ -134,8 +134,8 @@ describe("/api/v1/dashboard/overview", () => {
         artifacts: 1
       }),
       distributions: {
-        // 新模型不再写 detail.ir；overview 回退 "unknown"（src c492419 故意兼容，非 bug）
-        skill_categories: [{ key: "unknown", count: 1 }],
+        // kind 从 frontmatter 反范式化到 detail（与 description 同理），dashboard 分类分布按真实 kind
+        skill_categories: [{ key: "workflow", count: 1 }],
         workflow_profiles: [{ key: "general", count: 1 }]
       }
     });
