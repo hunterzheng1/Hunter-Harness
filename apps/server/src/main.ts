@@ -41,7 +41,7 @@ await runMigrations(
 );
 const repository = new PostgresRepository(pool);
 const bootstrapManifest = JSON.parse(
-  await readFile(fileURLToPath(new URL("../../../resources/bootstrap-ir/manifest.json", import.meta.url)), "utf8")
+  await readFile(fileURLToPath(new URL("../../../resources/manifest.json", import.meta.url)), "utf8")
 ) as { registry_version: string; compiler_version: string };
 // 新模型：bootstrap skills 从 resources/skills/<name>/ 加载（任务 18 转换后）；
 // 此处暂只读 manifest（registry_version/compiler_version），skills 留空，等 resources/skills/ 就绪后扩展。

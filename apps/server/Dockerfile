@@ -14,7 +14,7 @@ COPY packages/contracts/src ./packages/contracts/src
 COPY packages/core/src ./packages/core/src
 COPY apps/server/src ./apps/server/src
 COPY apps/server/migrations ./apps/server/migrations
-COPY resources/bootstrap-ir ./resources/bootstrap-ir
+COPY resources ./resources
 RUN npx tsc -b packages/contracts packages/core apps/server
 
 FROM node:24.14.0-bookworm-slim AS runtime
@@ -32,7 +32,7 @@ COPY --from=build /app/packages/core/dist ./packages/core/dist
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/server/migrations ./apps/server/migrations
-COPY --from=build /app/resources/bootstrap-ir ./resources/bootstrap-ir
+COPY --from=build /app/resources ./resources
 RUN mkdir -p /var/lib/hunter-harness/artifacts && chown -R node:node /var/lib/hunter-harness /app
 USER node
 EXPOSE 3001
