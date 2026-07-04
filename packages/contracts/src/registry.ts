@@ -27,8 +27,14 @@ export const sourceFileSchema = z.object({
 
 // SKILL.md frontmatter — 松校验，取代 canonical Skill IrSchema。
 // .passthrough() 保留未声明的额外字段（author/tags/license 等），避免合法 SKILL.md 因额外字段被拒（评审 RED#1）。
+// name/slug 统一格式：^[a-z0-9][a-z0-9-]{0,63}$（1-64 字符，小写字母数字+连字符，不以连字符开头；不强制 harness- 前缀）。
+export const SKILL_NAME_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const skillNameSchema = z.string().regex(
+  SKILL_NAME_REGEX,
+  "name must be 1-64 chars of [a-z0-9-], not starting with '-'"
+);
 export const skillFrontmatterSchema = z.object({
-  name: z.string().regex(/^harness-[a-z0-9-]+$/),
+  name: skillNameSchema,
   description: z.string().min(1),
   kind: z.enum(["workflow", "tooling", "migration", "governance"]).optional(),
   triggers: z.array(z.string()).optional(),

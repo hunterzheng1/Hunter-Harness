@@ -45,7 +45,11 @@ import {
   skillCheckResultSchema,
   skillDiffFileSchema,
   skillFrontmatterSchema,
+  skillNameSchema,
   skillUsageExampleSchema,
+  apiErrorCodeSchema,
+  SKILL_NAME_REGEX,
+  SKILL_ERROR_CODE,
   sourceFileSchema,
   publishWorkflowPackageRequestSchema,
   workflowPackageDraftStateSchema,
@@ -259,6 +263,109 @@ describe("skill frontmatter schema (UT-001~004, UT-002b RED#1)", () => {
     expect(skillFrontmatterSchema.safeParse({
       description: "d"
     }).success).toBe(false);
+  });
+
+  it("accepts name without harness- prefix (U-02)", () => {
+    expect(skillFrontmatterSchema.parse({
+      name: "my-skill",
+      description: "d"
+    }).name).toBe("my-skill");
+  });
+
+  it("rejects name starting with hyphen (U-04)", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      name: "-x",
+      description: "d"
+    }).success).toBe(false);
+  });
+
+  it("rejects name with underscore (U-05)", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      name: "_x",
+      description: "d"
+    }).success).toBe(false);
+  });
+
+  it("rejects name exceeding 64 chars (U-07)", () => {
+    expect(skillFrontmatterSchema.safeParse({
+      name: "a".repeat(65),
+      description: "d"
+    }).success).toBe(false);
+  });
+
+  it("accepts name exactly 64 chars (U-07b)", () => {
+    expect(skillFrontmatterSchema.parse({
+      name: "a".repeat(64),
+      description: "d"
+    }).name).toBe("a".repeat(64));
+  });
+});
+
+describe("SKILL_NAME_REGEX (U-01~U-07b standalone)", () => {
+  it("matches old harness-xxx format (U-01)", () => {
+    expect(SKILL_NAME_REGEX.test("harness-x")).toBe(true);
+  });
+
+  it("matches new format without harness- prefix (U-02)", () => {
+    expect(SKILL_NAME_REGEX.test("my-skill")).toBe(true);
+  });
+
+  it("rejects uppercase/spaces (U-03)", () => {
+    expect(SKILL_NAME_REGEX.test("Foo Bar")).toBe(false);
+  });
+
+  it("rejects hyphen-start (U-04)", () => {
+    expect(SKILL_NAME_REGEX.test("-x")).toBe(false);
+  });
+
+  it("rejects underscore (U-05)", () => {
+    expect(SKILL_NAME_REGEX.test("_x")).toBe(false);
+  });
+
+  it("rejects 65 chars (U-07)", () => {
+    expect(SKILL_NAME_REGEX.test("a".repeat(65))).toBe(false);
+  });
+
+  it("accepts 64 chars (U-07b)", () => {
+    expect(SKILL_NAME_REGEX.test("a".repeat(64))).toBe(true);
+  });
+});
+
+describe("apiErrorCodeSchema 7 new skill codes (U-08)", () => {
+  const newCodes = [
+    "SKILL_VALIDATION_FAILED",
+    "SKILL_ENTRY_NOT_FOUND",
+    "SKILL_NOT_FOUND",
+    "DRAFT_NOT_FOUND",
+    "REVISION_CONFLICT",
+    "ADAPTER_NOT_INSTALLABLE",
+    "WORKFLOW_PACKAGE_REDIRECT"
+  ] as const;
+
+  for (const code of newCodes) {
+    it(`accepts ${code}`, () => {
+      expect(apiErrorCodeSchema.safeParse(code).success).toBe(true);
+    });
+  }
+});
+
+describe("SKILL_ERROR_CODE constant", () => {
+  it("contains wire codes + non-wire codes", () => {
+    expect(SKILL_ERROR_CODE.VALIDATION_FAILED).toBe("SKILL_VALIDATION_FAILED");
+    expect(SKILL_ERROR_CODE.ENTRY_NOT_FOUND).toBe("SKILL_ENTRY_NOT_FOUND");
+    expect(SKILL_ERROR_CODE.NOT_FOUND).toBe("SKILL_NOT_FOUND");
+    expect(SKILL_ERROR_CODE.DRAFT_NOT_FOUND).toBe("DRAFT_NOT_FOUND");
+    expect(SKILL_ERROR_CODE.REVISION_CONFLICT).toBe("REVISION_CONFLICT");
+    expect(SKILL_ERROR_CODE.ADAPTER_NOT_INSTALLABLE).toBe("ADAPTER_NOT_INSTALLABLE");
+    expect(SKILL_ERROR_CODE.WORKFLOW_PACKAGE_REDIRECT).toBe("WORKFLOW_PACKAGE_REDIRECT");
+    // non-wire (internal) codes
+    expect(SKILL_ERROR_CODE.SLUG_INVALID).toBe("SKILL_SLUG_INVALID");
+    expect(SKILL_ERROR_CODE.FRONTMATTER_INVALID).toBe("FRONTMATTER_INVALID");
+  });
+
+  it("skillNameSchema uses SKILL_NAME_REGEX", () => {
+    expect(skillNameSchema.safeParse("my-skill").success).toBe(true);
+    expect(skillNameSchema.safeParse("-x").success).toBe(false);
   });
 });
 
