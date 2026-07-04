@@ -13,7 +13,7 @@ import {
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { canonicalJson, type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
+import { SKILL_ERROR_CODE, SKILL_NAME_REGEX, canonicalJson, type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
 
@@ -187,8 +187,8 @@ async function runInstall(
   options: CommonOptions,
   dependencies: Required<SkillCliDependencies>
 ): Promise<void> {
-  if (!/^harness-[a-z0-9-]+$/.test(slug)) {
-    throw new CliFailure(3, "SKILL_SLUG_INVALID", "skill slug is invalid");
+  if (!SKILL_NAME_REGEX.test(slug)) {
+    throw new CliFailure(3, SKILL_ERROR_CODE.SLUG_INVALID, "skill slug is invalid: must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric with single hyphens, at most 64 chars)");
   }
   if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
     throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install supports claude-code and cursor only");

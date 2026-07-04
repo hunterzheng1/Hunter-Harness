@@ -4,27 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { WorkflowPackage, WorkflowPackageDraftState, WorkflowPackageVersion } from "@hunter-harness/contracts";
 
-import { ApiClientError, browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
+import { browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
+import { apiError, required } from "./skill-shared";
 
 // 工作流中心（T17）：workflow package 上传 ZIP + 列表 + 草稿 + 检查 + 发布 + 版本记录。
 // 与清单 WorkflowList 并存（设计 §6：清单 workflow 与 package 本期并存），不替换 /workflows 的清单管理。
 // 标签硬编码中文：workflow package 是新概念，i18n key 未定义（MVP，后续 i18n 切片补 t.workflowPackage.*）。
 function resolveApi(): HunterApi {
   return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
-}
-
-function required<K extends keyof HunterApi>(api: HunterApi, key: K): NonNullable<HunterApi[K]> {
-  const method = api[key];
-  if (typeof method !== "function") throw new Error(`API capability ${String(key)} is unavailable`);
-  return method.bind(api) as NonNullable<HunterApi[K]>;
-}
-
-function apiError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
-  if (error instanceof ApiClientError && error.status === 401) return t.error.authRequiredSettings;
-  if (error instanceof ApiClientError) return t.error.apiFailed.replace("{code}", error.code);
-  return t.error.opFailed;
 }
 
 export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {

@@ -20,4 +20,9 @@ describe("deriveSlug", () => {
       expect((error as SkillEntryError).code).toBe("FRONTMATTER_INVALID");
     }
   });
+
+  it("U-11 deriveSlug returns name without harness- prefix", () => {
+    const files: SourceFile[] = [{ path: "SKILL.md", content: "---\nname: my-skill\ndescription: d\n---\nbody" }];
+    expect(deriveSlug(files, "claude-code")).toBe("my-skill");
+  });
 });

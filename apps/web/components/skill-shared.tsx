@@ -9,14 +9,18 @@ import { ApiClientError, type HunterApi } from "../lib/api";
 import type { DemoAgent, DemoUsageExample } from "../lib/demo-skills/types";
 import type { useI18n } from "../lib/i18n";
 
-function apiError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
+export function apiError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
   if (process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" && error instanceof Error) {
     return t.error.demoFailed + error.message;
   }
   if (error instanceof ApiClientError && error.status === 401) {
     return t.error.authRequiredSettings;
   }
-  if (error instanceof ApiClientError) return t.error.apiFailed.replace("{code}", error.code);
+  if (error instanceof ApiClientError) {
+    const base = t.error.apiFailed.replace("{code}", error.code);
+    const detail = error.message && error.code !== "HTTP_ERROR" ? error.message : "";
+    return detail ? `${base} ${detail}` : base;
+  }
   return t.error.opFailed;
 }
 
@@ -334,7 +338,6 @@ function SourceFileTree({
 }
 
 export {
-  apiError,
   required,
   Status,
   Empty,

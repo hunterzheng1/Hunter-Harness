@@ -10,6 +10,7 @@ import {
   workflowPackageManifestSchema,
   workflowPackageSchema,
   workflowPackageVersionSchema,
+  SKILL_ERROR_CODE,
   type SkillCheckItem,
   type SkillCheckResult,
   type SkillDiffFile,
@@ -52,7 +53,7 @@ export class WorkflowPackageStore {
   async uploadPackage(input: { files: SourceFile[]; actorId: string }): Promise<WorkflowPackageDraftState> {
     const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
     if (unsafe !== undefined) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "unsafe file path: " + unsafe.path);
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "unsafe file path: " + unsafe.path);
     }
     const manifestFile = input.files.find((f) => WORKFLOW_MANIFEST_PATH.test(f.path));
     if (manifestFile === undefined) {
@@ -96,7 +97,7 @@ export class WorkflowPackageStore {
   getPackageDraft(key: string): WorkflowPackageDraftState {
     const draft = this.deps.drafts.get(key);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "workflow package draft not found", { key });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "workflow package draft not found", { key });
     }
     return structuredClone(draft);
   }
@@ -104,10 +105,10 @@ export class WorkflowPackageStore {
   async discardPackageDraft(key: string, revision: number): Promise<void> {
     const draft = this.deps.drafts.get(key);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "workflow package draft not found", { key });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "workflow package draft not found", { key });
     }
     if (draft.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "draft revision is stale", {
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "draft revision is stale", {
         key, expected: draft.revision, provided: revision
       });
     }
@@ -118,7 +119,7 @@ export class WorkflowPackageStore {
   async runPackageChecks(input: { key: string; checkedAt: string }): Promise<SkillCheckResult> {
     const draft = this.deps.drafts.get(input.key);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "workflow package draft not found", { key: input.key });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "workflow package draft not found", { key: input.key });
     }
     // MVP 最小检查：manifest 已在 uploadPackage 时 schema 校验；此处发 green 基线确认 draft 可发布。
     // 共享资源完整性 / execution_order 一致性 / 依赖图影响分析 留 deferred（设计 §6）。
@@ -144,7 +145,7 @@ export class WorkflowPackageStore {
   diffPackageDraft(key: string): SkillDiffFile[] {
     const draft = this.deps.drafts.get(key);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "workflow package draft not found", { key });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "workflow package draft not found", { key });
     }
     const pkg = this.deps.packages.get(key);
     const latest = pkg?.package.latestVersion ?? null;
@@ -160,7 +161,7 @@ export class WorkflowPackageStore {
   }): Promise<WorkflowPackageVersion> {
     const draft = this.deps.drafts.get(key);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "workflow package draft not found", { key });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "workflow package draft not found", { key });
     }
     const existing = this.deps.packages.get(key);
     const latest = existing?.package.latestVersion ?? null;

@@ -42,6 +42,37 @@ describe("parseFrontmatter", () => {
     expect(meta.kind).toBeUndefined();
     expect(meta.forbidden_actions).toBeUndefined();
   });
+
+  it("U-09 frontmatter 缺 name → 友好 message 含 '缺少必填字段 name'", () => {
+    try {
+      parseFrontmatter("---\ndescription: d\n---\n");
+      expect.fail("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SkillEntryError);
+      expect((error as SkillEntryError).code).toBe("FRONTMATTER_INVALID");
+      expect((error as SkillEntryError).message).toContain("缺少必填字段 name");
+    }
+  });
+
+  it("U-10 frontmatter name 格式错 → 友好 message 含 'name:' 且非 Zod 原始 JSON", () => {
+    try {
+      parseFrontmatter("---\nname: Foo Bar\ndescription: d\n---\n");
+      expect.fail("should have thrown");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SkillEntryError);
+      expect((error as SkillEntryError).code).toBe("FRONTMATTER_INVALID");
+      const msg = (error as SkillEntryError).message;
+      expect(msg).toContain("name");
+      // 不应是 Zod 原始 JSON
+      expect(msg).not.toContain("[{");
+      expect(msg).not.toContain('"expected"');
+    }
+  });
+
+  it("U-02 frontmatter name: my-skill 通过（无 harness- 前缀）", () => {
+    const meta = parseFrontmatter("---\nname: my-skill\ndescription: d\n---\n");
+    expect(meta.name).toBe("my-skill");
+  });
 });
 
 describe("findEntryFile", () => {
