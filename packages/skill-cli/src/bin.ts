@@ -188,7 +188,7 @@ async function runInstall(
   dependencies: Required<SkillCliDependencies>
 ): Promise<void> {
   if (!SKILL_NAME_REGEX.test(slug)) {
-    throw new CliFailure(3, SKILL_ERROR_CODE.SLUG_INVALID, "skill slug is invalid: must match ^[a-z0-9][a-z0-9-]{0,63}$ (1-64 chars)");
+    throw new CliFailure(3, SKILL_ERROR_CODE.SLUG_INVALID, "skill slug is invalid: must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric with single hyphens, at most 64 chars)");
   }
   if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
     throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install supports claude-code and cursor only");

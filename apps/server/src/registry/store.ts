@@ -607,7 +607,7 @@ export class RegistryStore {
     const hasProtocolsDir = paths.some((p) => /(^|\/)protocols\//i.test(p));
     const hasTemplatesDir = paths.some((p) => /(^|\/)templates\//i.test(p));
     if (hasWorkflow && (hasSkillsDir || hasAgentsDir || hasProtocolsDir || hasTemplatesDir)) {
-      throw new ServerDomainError(422, "WORKFLOW_PACKAGE_REDIRECT", "workflow packages must use the workflow center", { redirect: "workflow-packages" });
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.WORKFLOW_PACKAGE_REDIRECT, "workflow packages must use the workflow center", { redirect: "workflow-packages" });
     }
     const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
     if (unsafe !== undefined) {

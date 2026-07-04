@@ -322,12 +322,33 @@ describe("SKILL_NAME_REGEX (U-01~U-07b standalone)", () => {
     expect(SKILL_NAME_REGEX.test("_x")).toBe(false);
   });
 
-  it("rejects 65 chars (U-07)", () => {
-    expect(SKILL_NAME_REGEX.test("a".repeat(65))).toBe(false);
+  it("rejects consecutive hyphens (YELLOW-2 alignment)", () => {
+    expect(SKILL_NAME_REGEX.test("a--b")).toBe(false);
+    expect(skillFrontmatterSchema.safeParse({
+      name: "a--b",
+      description: "d"
+    }).success).toBe(false);
+  });
+
+  it("rejects trailing hyphen (YELLOW-2 alignment)", () => {
+    expect(SKILL_NAME_REGEX.test("a-")).toBe(false);
+  });
+
+  it("allows 65 chars at regex level (length enforced by skillNameSchema.max(64))", () => {
+    // SKILL_NAME_REGEX 仅校验格式，长度由 skillNameSchema.max(64) 单独强制
+    expect(SKILL_NAME_REGEX.test("a".repeat(65))).toBe(true);
+    expect(skillFrontmatterSchema.safeParse({
+      name: "a".repeat(65),
+      description: "d"
+    }).success).toBe(false);
   });
 
   it("accepts 64 chars (U-07b)", () => {
     expect(SKILL_NAME_REGEX.test("a".repeat(64))).toBe(true);
+    expect(skillFrontmatterSchema.parse({
+      name: "a".repeat(64),
+      description: "d"
+    }).name).toBe("a".repeat(64));
   });
 });
 
