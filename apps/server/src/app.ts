@@ -13,6 +13,7 @@ import {
   registryWorkflowMutationSchema,
   setDefaultAgentRequestSchema,
   sourceFileSchema,
+  SKILL_ERROR_CODE,
   type AiProviderConfig,
   type FileOperation,
   type FixPlanItem,
@@ -266,7 +267,7 @@ function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buf
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
       if (DANGEROUS_PATH.test(entry.entryName)) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "zip slip detected: " + entry.entryName);
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "zip slip detected: " + entry.entryName);
       }
       files.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
     }
@@ -1066,7 +1067,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
     }
     const draft = registry.getDraft(slug, agentResult.data);
-    if (draft === undefined) throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent: agentResult.data });
+    if (draft === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent: agentResult.data });
     reply.header("X-Request-Id", requestId);
     return { ...draft, request_id: requestId };
   });
@@ -1622,7 +1623,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         // UI tabs can issue rapid sequential PATCH requests while holding a stale revision.
         // Treat AI provider config updates as last-write-wins: on optimistic-lock conflict,
         // retry once with the server's current revision so older browser bundles are also safe.
-        if (err instanceof ServerDomainError && err.code === "REVISION_CONFLICT") {
+        if (err instanceof ServerDomainError && err.code === SKILL_ERROR_CODE.REVISION_CONFLICT) {
           const current = registry.listProviders().find((p) => p.provider_id === providerId);
           if (current === undefined) throw err;
           provider = await registry.updateProvider(providerId, current.revision, patch);
@@ -1764,7 +1765,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = registry.getDraft(slug, agent);
       if (draft === undefined) {
-        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+        throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
       }
       const resolved = await resolveLlmClient(null);
       if (resolved === null) {
@@ -1840,7 +1841,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = registry.getDraft(slug, agent);
       if (draft === undefined) {
-        throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+        throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
       }
       const resolved = await resolveLlmClient(null);
       if (resolved === null) {
@@ -1904,7 +1905,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const checkIds = body.checkIds ?? null;
     const draft = registry.getDraft(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     if (draft.aiChecks === null) {
       // 无 aiChecks → 空 FixPlan（提示先跑 ai-checks；只读预览不 422）

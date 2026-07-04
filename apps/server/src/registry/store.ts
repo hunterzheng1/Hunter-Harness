@@ -17,6 +17,7 @@ import {
   workflowPackageDraftStateSchema,
   workflowPackageSchema,
   workflowPackageVersionSchema,
+  SKILL_ERROR_CODE,
   type AiConfigState,
   type AiProviderApiFormat,
   type AiProviderConfig,
@@ -252,7 +253,7 @@ function buildArtifactFor(
     findEntryFile(sourceFiles, agent);
   } catch (error) {
     if (error instanceof SkillEntryError) {
-      throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent });
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.ENTRY_NOT_FOUND, error.message, { agent });
     }
     throw error;
   }
@@ -543,13 +544,13 @@ export class RegistryStore {
 
   getSkill(slug: string): RegistrySkillDetail {
     const state = this.skills.get(slug);
-    if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
+    if (state === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
     return structuredClone(state.detail);
   }
 
   listVersions(slug: string, agent?: RegistryAgent): RegistrySkillVersion[] {
     const state = this.skills.get(slug);
-    if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
+    if (state === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
     const versions = agent === undefined ? state.versions : state.versions.filter((v) => v.agent === agent);
     return structuredClone(versions).sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
@@ -587,10 +588,10 @@ export class RegistryStore {
   async deleteDraft(slug: string, agent: RegistryAgent, revision: number): Promise<void> {
     const draft = this.getDraftState(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     if (draft.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "draft revision is stale", {
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "draft revision is stale", {
         slug, agent, expected: draft.revision, provided: revision
       });
     }
@@ -610,17 +611,17 @@ export class RegistryStore {
     }
     const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
     if (unsafe !== undefined) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "unsafe file path: " + unsafe.path);
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "unsafe file path: " + unsafe.path);
     }
     let slug: string;
     try {
       slug = deriveSlug(input.files, input.agent);
     } catch (error) {
       if (error instanceof SkillEntryError) {
-        if (error.code === "SKILL_ENTRY_NOT_FOUND") {
-          throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent: input.agent });
+        if (error.code === SKILL_ERROR_CODE.ENTRY_NOT_FOUND) {
+          throw new ServerDomainError(422, SKILL_ERROR_CODE.ENTRY_NOT_FOUND, error.message, { agent: input.agent });
         }
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
       }
       throw error;
     }
@@ -643,7 +644,7 @@ export class RegistryStore {
   async runChecks(input: { slug: string; agent: RegistryAgent; checkedAt: string }): Promise<SkillCheckResult> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug: input.slug, agent: input.agent });
     }
     const latest = this.skills.get(input.slug)?.detail.latest_version ?? null;
     const result = checkSkill({
@@ -668,7 +669,7 @@ export class RegistryStore {
   }): Promise<DraftState> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug: input.slug, agent: input.agent });
     }
     const updated: DraftState = { ...draft, aiChecks: input.aiChecks, updated_at: input.checkedAt };
     this.setDraftState(input.slug, input.agent, updated);
@@ -679,7 +680,7 @@ export class RegistryStore {
   async buildDraftFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<FixPlan> {
     const draft = this.getDraftState(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
     return buildFixPatch({
@@ -695,7 +696,7 @@ export class RegistryStore {
   async applyDraftFix(slug: string, agent: RegistryAgent, checkIds: string[] | null): Promise<DraftState> {
     const draft = this.getDraftState(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     const latestVersion = this.skills.get(slug)?.detail.latest_version ?? null;
     const { mergedFiles } = buildFixPatch({
@@ -745,7 +746,7 @@ export class RegistryStore {
   }): Promise<DraftState> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug: input.slug, agent: input.agent });
     }
     const updated: DraftState = { ...draft, releaseNote: input.releaseNote, updated_at: input.generatedAt };
     this.setDraftState(input.slug, input.agent, updated);
@@ -767,10 +768,10 @@ export class RegistryStore {
   }): Promise<DraftState> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug: input.slug, agent: input.agent });
     }
     if (input.appliesTo === null || !(WRITABLE_APPLIES_TO as readonly string[]).includes(input.appliesTo)) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "appliesTo is not a writable target", { appliesTo: input.appliesTo });
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "appliesTo is not a writable target", { appliesTo: input.appliesTo });
     }
     const target = input.appliesTo as typeof WRITABLE_APPLIES_TO[number];
     let fixedExamples: SkillUsageExample[] = structuredClone(draft.examples);
@@ -778,7 +779,7 @@ export class RegistryStore {
     for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
     if (target === "description") {
       if (input.suggestedContent.length === 0) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for description must be non-empty", { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "suggestedContent for description must be non-empty", { appliesTo: target });
       }
       try {
         const entry = findEntryFile(draft.sourceFiles, input.agent);
@@ -787,7 +788,7 @@ export class RegistryStore {
         });
       } catch (error) {
         if (error instanceof SkillEntryError) {
-          throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+          throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
         }
         throw error;
       }
@@ -796,14 +797,14 @@ export class RegistryStore {
       try {
         parsed = JSON.parse(input.suggestedContent);
       } catch {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
       }
       const result = skillUsageExampleSchema.array().safeParse(parsed);
       if (!result.success) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "suggestedContent for examples must be a JSON array of usage examples", { appliesTo: target });
       }
       if (result.data.length === 0) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "suggestedContent for examples must be a non-empty array", { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "suggestedContent for examples must be a non-empty array", { appliesTo: target });
       }
       fixedExamples = result.data;
     } else {
@@ -812,23 +813,23 @@ export class RegistryStore {
       try {
         parsed = JSON.parse(input.suggestedContent);
       } catch {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", `suggestedContent for ${target} must be a JSON array of strings`, { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, `suggestedContent for ${target} must be a JSON array of strings`, { appliesTo: target });
       }
       let arr: string[];
       try {
         arr = parseSuggestedStringArray(parsed);
       } catch (error) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", (error as Error).message, { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, (error as Error).message, { appliesTo: target });
       }
       if (arr.length === 0) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", `suggestedContent for ${target} must be a non-empty array of strings`, { appliesTo: target });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, `suggestedContent for ${target} must be a non-empty array of strings`, { appliesTo: target });
       }
       try {
         const entry = findEntryFile(draft.sourceFiles, input.agent);
         fileMap[entry.path] = entry.content + "\n\n## Instructions\n\n" + arr.map((i) => "- " + i).join("\n") + "\n";
       } catch (error) {
         if (error instanceof SkillEntryError) {
-          throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+          throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
         }
         throw error;
       }
@@ -863,7 +864,7 @@ export class RegistryStore {
   }, tx?: TransactionRepository): Promise<RegistrySkillVersion> {
     const draft = this.getDraftState(input.slug, input.agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug: input.slug, agent: input.agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug: input.slug, agent: input.agent });
     }
     const existing = this.skills.get(input.slug);
     requireForwardVersion(existing, input.agent, input.version);
@@ -873,7 +874,7 @@ export class RegistryStore {
       meta = parseFrontmatter(entry.content);
     } catch (error) {
       if (error instanceof SkillEntryError) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
       }
       throw error;
     }
@@ -888,7 +889,7 @@ export class RegistryStore {
     const built = buildArtifactFor(draft.sourceFiles, input.slug, input.version, input.agent);
     if (built === null) {
       // agent 未 installable 时拒绝发布（避免静默发布 0 制品 version）
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "skill has no enabled installable adapter");
     }
     const hash = sha256Bytes(built.bytes);
     await this.storage.putBlob(hash, built.bytes);
@@ -960,7 +961,7 @@ export class RegistryStore {
   diffDraft(slug: string, agent: RegistryAgent): SkillDiffFile[] {
     const draft = this.getDraftState(slug, agent);
     if (draft === undefined) {
-      throw new ServerDomainError(404, "DRAFT_NOT_FOUND", "skill draft not found", { slug, agent });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     const skill = this.skills.get(slug);
     const ownVersions = skill?.versions.filter((v) => v.agent === agent) ?? [];
@@ -974,7 +975,7 @@ export class RegistryStore {
     const state = this.skills.get(input.slug);
     const draftsInner = this.drafts.get(input.slug);
     if (state === undefined && draftsInner === undefined) {
-      throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found", { slug: input.slug });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found", { slug: input.slug });
     }
     if (state !== undefined) this.skills.delete(input.slug);
     if (draftsInner !== undefined) this.drafts.delete(input.slug); // 删该 slug 全部 agent 草稿
@@ -987,14 +988,14 @@ export class RegistryStore {
   async setDefaultAgent(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail> {
     const state = this.skills.get(slug);
     if (state === undefined) {
-      throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found", { slug });
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found", { slug });
     }
     const agentConfig = state.detail.agents.find((a) => a.agent === agent);
     if (agentConfig === undefined || !agentConfig.enabled) {
       throw new ServerDomainError(422, "AGENT_NOT_ENABLED", "agent is not enabled for this skill", { slug, agent });
     }
     if (state.detail.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "skill revision is stale", {
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "skill revision is stale", {
         slug, expected: state.detail.revision, provided: revision
       });
     }
@@ -1139,7 +1140,7 @@ export class RegistryStore {
       throw new ServerDomainError(404, "PROVIDER_NOT_FOUND", "ai provider not found", { provider_id: providerId });
     }
     if (existing.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "ai provider revision is stale", {
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "ai provider revision is stale", {
         provider_id: providerId, expected: existing.revision, provided: revision
       });
     }
@@ -1321,13 +1322,13 @@ export class RegistryStore {
   createProposal(input: { sourceFiles: SourceFile[]; slug: string; version: string; actorId: string; agent: RegistryAgent }): ProposalState {
     // 新模型：agent installable + entry 存在即可建 proposal（去 ir.adapters 声明）
     if (!AGENT_DESCRIPTORS[input.agent].installable) {
-      throw new ServerDomainError(422, "ADAPTER_NOT_INSTALLABLE", "agent is not installable");
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.ADAPTER_NOT_INSTALLABLE, "agent is not installable");
     }
     try {
       findEntryFile(input.sourceFiles, input.agent);
     } catch (error) {
       if (error instanceof SkillEntryError) {
-        throw new ServerDomainError(422, "SKILL_ENTRY_NOT_FOUND", error.message, { agent: input.agent });
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.ENTRY_NOT_FOUND, error.message, { agent: input.agent });
       }
       throw error;
     }
@@ -1354,7 +1355,7 @@ export class RegistryStore {
       }
       validation.claude_compilable = true;
     } catch (error) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill adapter validation failed", {
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "skill adapter validation failed", {
         reason: error instanceof Error ? error.message : "unknown"
       });
     }
@@ -1440,13 +1441,13 @@ export class RegistryStore {
       meta = parseFrontmatter(entry.content);
     } catch (error) {
       if (error instanceof SkillEntryError) {
-        throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", error.message);
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
       }
       throw error;
     }
     const built = buildArtifactFor(sourceFiles, slug, version, agent);
     if (built === null) {
-      throw new ServerDomainError(422, "SKILL_VALIDATION_FAILED", "skill has no enabled installable adapter");
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "skill has no enabled installable adapter");
     }
     const hash = sha256Bytes(built.bytes);
     await this.storage.putBlob(hash, built.bytes);
@@ -1516,7 +1517,7 @@ export class RegistryStore {
       throw new ServerDomainError(422, "ADAPTER_NOT_IMPLEMENTED", `adapter ${agent} is not yet implemented`);
     }
     const state = this.skills.get(slug);
-    if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
+    if (state === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
     // 新模型：安装 = 上传源文件，无编译预览；返回该 agent 最新 version 的 sourceFiles + installTarget
     const versions = state.versions.filter((v) => v.agent === agent);
     const latest = versions[0];
@@ -1596,7 +1597,7 @@ export class RegistryStore {
   }): RegistryTag {
     const tag = this.tags.get(tagId);
     if (tag === undefined) throw new ServerDomainError(404, "TAG_NOT_FOUND", "tag not found");
-    if (tag.revision !== input.revision) throw new ServerDomainError(409, "REVISION_CONFLICT", "tag revision is stale");
+    if (tag.revision !== input.revision) throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "tag revision is stale");
     const updated = registryTagSchema.parse({
       ...tag,
       ...(input.label === undefined ? {} : { label: input.label }),
@@ -1615,7 +1616,7 @@ export class RegistryStore {
       throw new ServerDomainError(422, "TAG_MERGE_INVALID", "tag merge target is invalid");
     }
     if (source.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "tag revision is stale");
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "tag revision is stale");
     }
     for (const state of this.skills.values()) {
       if (!state.detail.tags.includes(source.slug)) continue;
@@ -1632,7 +1633,7 @@ export class RegistryStore {
 
   bindTag(slug: string, tagId: string, remove = false): RegistrySkillDetail {
     const state = this.skills.get(slug);
-    if (state === undefined) throw new ServerDomainError(404, "SKILL_NOT_FOUND", "skill not found");
+    if (state === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
     const tag = this.tags.get(tagId);
     if (tag === undefined || !tag.active) throw new ServerDomainError(404, "TAG_NOT_FOUND", "active tag not found");
     const set = new Set(state.detail.tags);
@@ -1687,7 +1688,7 @@ export class RegistryStore {
   ): RegistryWorkflow {
     const current = this.getWorkflow(workflowId);
     if (current.revision !== input.revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "workflow revision is stale");
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "workflow revision is stale");
     }
     const merged = registryWorkflowMutationSchema.parse({
       key: input.key ?? current.key,
@@ -1709,7 +1710,7 @@ export class RegistryStore {
   deleteWorkflow(workflowId: string, revision: number): void {
     const current = this.getWorkflow(workflowId);
     if (current.revision !== revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "workflow revision is stale");
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "workflow revision is stale");
     }
     if ([...this.projectBindings.values()].some((binding) => binding.workflow_id === workflowId)) {
       throw new ServerDomainError(409, "WORKFLOW_IN_USE", "workflow is still bound to a project");
@@ -1729,10 +1730,10 @@ export class RegistryStore {
     this.getWorkflow(input.workflowId);
     const current = this.projectBindings.get(input.projectId);
     if (current !== undefined && current.revision !== input.revision) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "project workflow binding revision is stale");
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "project workflow binding revision is stale");
     }
     if (current === undefined && input.revision !== null) {
-      throw new ServerDomainError(409, "REVISION_CONFLICT", "project workflow binding does not exist");
+      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "project workflow binding does not exist");
     }
     const binding = registryProjectWorkflowBindingSchema.parse({
       project_id: input.projectId,
