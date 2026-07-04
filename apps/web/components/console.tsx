@@ -10,7 +10,6 @@ import type {
 } from "@hunter-harness/contracts";
 
 import {
-  ApiClientError,
   browserApi,
   type HunterApi,
   type ArtifactSummary,
@@ -21,24 +20,12 @@ import {
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
+import { apiError } from "./skill-shared";
 
 // ── Resolve API: real (with token) or mock (offline demo) ──
 
 function resolveApi(): HunterApi {
   return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
-}
-
-function errorMessage(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
-  if (error instanceof ApiClientError && (error.status === 401 || error.status === 403)) {
-    return t.error.authRequired;
-  }
-  if (error instanceof ApiClientError && error.code === "NETWORK_ERROR") {
-    return t.error.networkError + " " + error.message;
-  }
-  if (error instanceof ApiClientError) {
-    return t.error.apiFailed.replace("{code}", error.code);
-  }
-  return t.error.genericError;
 }
 
 // ── Shared helpers ────────────────────────────────────────
@@ -83,7 +70,7 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
         setArtifacts(nextArtifacts);
       })
       .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, t));
+        if (active) setError(apiError(reason, t));
       });
     return () => {
       active = false;
@@ -277,7 +264,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
       });
       if (active) { setProjects(items); setWorkflowInfo(nextInfo); }
     }).catch((reason: unknown) => {
-      if (active) setError(errorMessage(reason, t));
+      if (active) setError(apiError(reason, t));
     });
     return () => {
       active = false;
@@ -381,7 +368,7 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
         }
       })
       .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, t));
+        if (active) setError(apiError(reason, t));
       });
     return () => {
       active = false;
@@ -456,7 +443,7 @@ export function ArtifactHistory({ api: propApi }: { api?: HunterApi }) {
         }
       })
       .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, t));
+        if (active) setError(apiError(reason, t));
       });
     return () => {
       active = false;
@@ -563,7 +550,7 @@ export function ProposalDetail({
         if (active) setProposal(value);
       })
       .catch((reason: unknown) => {
-        if (active) setError(errorMessage(reason, t));
+        if (active) setError(apiError(reason, t));
       });
     return () => {
       active = false;
@@ -613,7 +600,7 @@ export function ProposalDetail({
             : t.proposal.decisionRecorded + decision.replaceAll("_", " ")
       );
     } catch (reason) {
-      setError(errorMessage(reason, t));
+      setError(apiError(reason, t));
     } finally {
       setBusy(false);
     }

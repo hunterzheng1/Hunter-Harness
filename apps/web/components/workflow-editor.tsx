@@ -4,24 +4,13 @@ import Link from "next/link";
 import { type DragEvent, useEffect, useMemo, useState } from "react";
 import type { RegistryAgent, RegistrySkillDetail, RegistryWorkflow, RegistryWorkflowMutation } from "@hunter-harness/contracts";
 
-import { ApiClientError, browserApi, type HunterApi } from "../lib/api";
+import { browserApi, type HunterApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
+import { apiError, required } from "./skill-shared";
 
 function resolveApi(): HunterApi {
   return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
-}
-
-function required<K extends keyof HunterApi>(api: HunterApi, key: K): NonNullable<HunterApi[K]> {
-  const method = api[key];
-  if (typeof method !== "function") throw new Error(`API capability ${String(key)} is unavailable`);
-  return method.bind(api) as NonNullable<HunterApi[K]>;
-}
-
-function apiError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
-  if (error instanceof ApiClientError && error.status === 401) return t.error.authRequiredSettings;
-  if (error instanceof ApiClientError) return t.error.apiFailed.replace("{code}", error.code);
-  return t.error.opFailed;
 }
 
 function Status({ value }: { value: string }) {
