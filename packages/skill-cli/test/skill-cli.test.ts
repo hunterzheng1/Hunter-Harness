@@ -193,6 +193,32 @@ describe("@hunter-harness/skill-cli", () => {
     expect(exitCode).toBe(5);
     expect(await readFile(join(target, "SKILL.md"), "utf8")).toBe("local unmanaged skill\n");
   });
+
+  it("U-12 install accepts slug 'my-skill' without harness- prefix", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-install-newslug-"));
+    const fetch = vi.fn(async () => new Response(zipBytes(), {
+      status: 200,
+      headers: { "x-content-sha256": sha256Bytes(zipBytes()) }
+    }));
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "my-skill", "--agent", "claude-code",
+      "--server-url", "https://harness.example", "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined });
+    // my-skill 应通过 slug 校验，fetch 应被调用（exit code 不应为 3/SKILL_SLUG_INVALID）
+    expect(exitCode).not.toBe(3);
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it("U-13 install rejects slug '-x' with exit 3 (SKILL_SLUG_INVALID)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-install-badslug-"));
+    const fetch = vi.fn(async () => { throw new Error("should not be called"); });
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "-x", "--agent", "claude-code",
+      "--server-url", "https://harness.example", "--token-env", "HH_SKILL_TOKEN"
+    ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined });
+    expect(exitCode).toBe(3);
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("uploads a directory to the per-agent draft endpoint as multipart (INT-102)", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-upload-"));
     const source = join(cwd, "candidate");
