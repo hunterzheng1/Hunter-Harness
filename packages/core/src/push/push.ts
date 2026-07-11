@@ -77,6 +77,27 @@ const MANAGED_FILES = [
   ".harness/context-index.json"
 ];
 
+// init 写入的已安装 Harness Bundle 清单：记录 Bundle 安装的受管文件路径。
+// push 对这些文件豁免敏感扫描（Harness 自有文件含教学示例，非用户引入的 secret），
+// 但仍照常 propose（diff-proposal 不变）。
+const INSTALLED_BUNDLE_PATH = ".harness/state/local/installed-harness-bundle.json";
+
+async function installedBundlePaths(root: string): Promise<Set<string>> {
+  try {
+    const content = await readFile(join(root, INSTALLED_BUNDLE_PATH), "utf8");
+    const parsed = JSON.parse(content) as { schema_version?: unknown; files?: unknown };
+    if (parsed.schema_version === 1 && Array.isArray(parsed.files)) {
+      return new Set(parsed.files as string[]);
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return new Set();
+    }
+    throw error;
+  }
+  return new Set();
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -224,11 +245,19 @@ function makePreview(
   baseline: BaselineManifest,
   files: Record<string, string>,
   confirmedProjectLocal: readonly string[],
+  ignorePaths: ReadonlySet<string>,
   deletedAt = new Date().toISOString()
 ) {
+  // Harness Bundle 安装的文件是 adapter working copy（含教学示例与本地路径），
+  // 不纳入服务端治理 proposal：既不上传也不扫描，避免教学 secret 触发 SENSITIVE_CONTENT_BLOCKED。
+  // 其余受管文件（rules/knowledge/CLAUDE.md 等）照常 diff-proposal。
+  const filteredFiles: Record<string, string> = {};
+  for (const [path, content] of Object.entries(files)) {
+    if (!ignorePaths.has(path)) filteredFiles[path] = content;
+  }
   return generateProposalPreview({
     baseline: proposalBaseline(baseline),
-    files,
+    files: filteredFiles,
     deletedAt,
     deleteReason: "removed from local managed working copy",
     confirmedProjectLocal
@@ -268,10 +297,12 @@ export async function pushProject(options: PushProjectOptions) {
   const root = resolve(options.projectRoot);
   let project = await readProject(root);
   let baseline = await readBaseline(root);
+  const installedPaths = await installedBundlePaths(root);
   let preview = makePreview(
     baseline,
     await managedFiles(root),
-    options.confirmedProjectLocal ?? []
+    options.confirmedProjectLocal ?? [],
+    installedPaths
   );
   if (preview.blocked) {
     throw new PushWorkflowError(
@@ -328,6 +359,7 @@ export async function pushProject(options: PushProjectOptions) {
       baseline,
       await managedFiles(root),
       options.confirmedProjectLocal ?? [],
+      installedPaths,
       workflow.created_at
     );
     const requestId = workflow.request_id;
@@ -353,6 +385,7 @@ export async function pushProject(options: PushProjectOptions) {
         baseline,
         await managedFiles(root),
         options.confirmedProjectLocal ?? [],
+        installedPaths,
         workflow.created_at
       );
       if (preview.blocked) {

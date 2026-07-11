@@ -18,7 +18,7 @@ describe("configuration recovery menu", () => {
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-recovery-"));
     expect(await runCli([
-      "--adapter", "claude-code", "--profile", "java",
+      "--profile", "java",
       "--non-interactive", "--yes"
     ], {
       cwd: root,

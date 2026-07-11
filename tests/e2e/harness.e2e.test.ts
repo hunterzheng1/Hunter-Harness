@@ -57,7 +57,7 @@ describe("Hunter Harness end-to-end governance", () => {
 
     try {
       expect(await runCli([
-        "--adapter", "claude-code", "--profile", "java",
+        "--profile", "java",
         "--non-interactive", "--yes"
       ], { cwd: root, resourcesRoot, env, ...silent })).toBe(0);
       const offlineProject = parseYaml(await readFile(

@@ -11,7 +11,12 @@ export default tseslint.config(
       // gitignored 本机目录（AI 工具 / harness 本地件），非仓库代码，不参与 lint
       ".claude/**",
       ".harness/**",
-      ".codegraph/**"
+      ".codegraph/**",
+      // canonical Harness 源（Python/Markdown 为主，辅助 .mjs 不受 TS lint 约束）
+      "harness/**",
+      // 生成 Bundle 与复制产物（harness_deploy.py 输出，字节一致，不应 lint）
+      "resources/**",
+      "packages/cli/resources/**"
     ]
   },
   eslint.configs.recommended,

@@ -29,7 +29,7 @@ describe("hunter-harness push", () => {
     stdout = [];
     stderr = [];
     expect(await runCli([
-      "--adapter", "claude-code", "--profile", "java",
+      "--profile", "java",
       "--server-url", "https://server.example.test",
       "--token-env", "TEST_HUNTER_TOKEN", "--non-interactive", "--yes"
     ], {
