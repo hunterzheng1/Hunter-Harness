@@ -110,7 +110,7 @@ describe("hunter-harness refresh CLI", () => {
     });
 
     expect(code).toBe(0);
-    expect(outputBeforeConfirmation).toContain("Preview");
+    expect(outputBeforeConfirmation).toContain("配置切换预览");
     expect(outputBeforeConfirmation).toContain("harness-apidoc");
   });
 });

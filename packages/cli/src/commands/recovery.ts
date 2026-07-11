@@ -33,16 +33,16 @@ export async function runRecoveryMenuIfApplicable(
   const pending = await pendingTransactions(dependencies.cwd);
   if (pending.length > 0) {
     if (options.nonInteractive === true) {
-      dependencies.stderr("unfinished transaction requires interactive recovery\n");
+      dependencies.stderr("存在未完成事务，需要以交互模式恢复。\n");
       return 5;
     }
     const answer = await dependencies.prompt([
-      "Unfinished Hunter Harness transaction detected.",
-      "1. Recover last failed update",
-      "2. Roll back last committed update",
-      "3. View transaction status",
-      "4. Clean old transactions",
-      "Choose [1-4]: "
+      "检测到未完成的 Hunter Harness 事务。",
+      "1. 恢复最近一次失败的更新",
+      "2. 回滚最近一次已提交的更新",
+      "3. 查看事务状态",
+      "4. 清理旧事务",
+      "请选择 [1-4]："
     ].join("\n"));
     try {
       if (answer.trim() === "1") {
@@ -50,12 +50,12 @@ export async function runRecoveryMenuIfApplicable(
           dependencies.cwd,
           pending[0]?.transactionId ?? ""
         );
-        dependencies.stdout("Recovery completed: " + result.status + ".\n");
+        dependencies.stdout("恢复完成：" + result.status + "。\n");
         return 0;
       }
       if (answer.trim() === "2") {
         const result = await rollbackLatestCommittedUpdate(dependencies.cwd);
-        dependencies.stdout("Rollback completed: " + result.status + ".\n");
+        dependencies.stdout("回滚完成：" + result.status + "。\n");
         return 0;
       }
       if (answer.trim() === "3") {
@@ -66,7 +66,7 @@ export async function runRecoveryMenuIfApplicable(
       }
       if (answer.trim() === "4") {
         const removed = await cleanupOldTransactions(dependencies.cwd);
-        dependencies.stdout("Cleaned " + removed.length + " old transactions.\n");
+        dependencies.stdout("已清理 " + removed.length + " 个旧事务。\n");
         return 0;
       }
       return 2;
@@ -81,13 +81,13 @@ export async function runRecoveryMenuIfApplicable(
     return null;
   }
   const answer = await dependencies.prompt([
-    "Hunter Harness project menu.",
-    "1. Configure project",
-    "2. Roll back last update",
-    "3. Clean old transactions",
-    "4. View transaction status",
-    "5. Exit",
-    "Choose [1-5]: "
+    "Hunter Harness 项目菜单。",
+    "1. 配置项目",
+    "2. 回滚最近一次更新",
+    "3. 清理旧事务",
+    "4. 查看事务状态",
+    "5. 退出",
+    "请选择 [1-5]："
   ].join("\n"));
   try {
     if (answer.trim() === "1") {
@@ -95,12 +95,12 @@ export async function runRecoveryMenuIfApplicable(
     }
     if (answer.trim() === "2") {
       const result = await rollbackLatestCommittedUpdate(dependencies.cwd);
-      dependencies.stdout("Rollback completed: " + result.status + ".\n");
+      dependencies.stdout("回滚完成：" + result.status + "。\n");
       return 0;
     }
     if (answer.trim() === "3") {
       const removed = await cleanupOldTransactions(dependencies.cwd);
-      dependencies.stdout("Cleaned " + removed.length + " old transactions.\n");
+      dependencies.stdout("已清理 " + removed.length + " 个旧事务。\n");
       return 0;
     }
     if (answer.trim() === "4") {

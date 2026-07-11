@@ -19,7 +19,7 @@ export async function runPush(
   const requestId = uuidV7();
   if (options.nonInteractive === true && options.yes !== true &&
       options.dryRun !== true) {
-    dependencies.stderr("non-interactive push requires --yes\n");
+    dependencies.stderr("非交互模式推送需要 --yes\n");
     return 2;
   }
   try {

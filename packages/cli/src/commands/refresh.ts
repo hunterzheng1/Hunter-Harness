@@ -55,7 +55,7 @@ function parseProfile(value: string | undefined, current: HarnessProfile): Harne
   }
   if (value === "1" || value === "general") return "general";
   if (value === "2" || value === "java") return "java";
-  throw new Error("profile must be general or java");
+  throw new Error("配置类型必须为 general 或 java");
 }
 
 function summarize(result: RefreshResult): CliResult {
@@ -94,8 +94,17 @@ function renderProfileTransitionPreview(result: RefreshResult): string {
     ...result.preserved,
     ...result.unchanged
   ];
-  return "Preview profile transition:\n" + items
-    .map((item) => `- ${item.action}: ${item.target_path} (${item.reason})`)
+  const actionLabel: Record<RefreshResult["applied"][number]["action"], string> = {
+    add: "新增", replace: "替换", delete: "删除", preserve: "保留", unchanged: "无需变更"
+  };
+  const reasonLabel: Record<RefreshResult["applied"][number]["reason"], string> = {
+    MISSING_TARGET: "目标缺失", BASELINE_CLEAN: "基线未修改", ALREADY_CURRENT: "已是最新",
+    LOCAL_MODIFICATION: "检测到本地修改", MALFORMED_MANAGED_BLOCK: "受管区块格式异常",
+    LEGACY_PROFILE_FILE_MODIFIED: "旧配置文件已修改", LEGACY_BASELINE_UNKNOWN: "旧版基线未知",
+    FORCE_MANAGED: "强制更新"
+  };
+  return "配置切换预览：\n" + items
+    .map((item) => `- ${actionLabel[item.action]}：${item.target_path}（${reasonLabel[item.reason]}）`)
     .join("\n") + "\n";
 }
 
@@ -108,11 +117,11 @@ export async function runRefresh(
   const requestId = uuidV7();
   const detection = await detectProject(dependencies.cwd);
   if (detection.status === "absent") {
-    dependencies.stderr("Hunter Harness is not initialized; run `hunter-harness` first.\n");
+    dependencies.stderr("尚未初始化 Hunter Harness；请先运行 `hunter-harness`。\n");
     return 3;
   }
   if (detection.status === "invalid") {
-    dependencies.stderr("PROJECT_CONFIG_INVALID: .harness/project.yaml is invalid\n");
+    dependencies.stderr("PROJECT_CONFIG_INVALID：.harness/project.yaml 无效\n");
     return 3;
   }
 
@@ -151,14 +160,14 @@ export async function runRefresh(
   if (options.confirmed !== true) {
     if (options.nonInteractive === true) {
       if (!options.yes && !dryRun) {
-        dependencies.stderr("non-interactive refresh requires --yes\n");
+        dependencies.stderr("非交互模式刷新需要 --yes\n");
         return 2;
       }
     } else if (!options.yes && !dryRun) {
       const label = targetProfile === currentProfile
-        ? `Refresh current profile (${currentProfile})`
-        : `Switch profile ${currentProfile} -> ${targetProfile}`;
-      const answer = await dependencies.prompt(`${label}? [y/N]: `);
+        ? `刷新当前配置（${currentProfile}）`
+        : `切换配置：${currentProfile} → ${targetProfile}`;
+      const answer = await dependencies.prompt(`${label}？[y/N]：`);
       if (!/^(?:y|yes)$/i.test(answer.trim())) {
         return 2;
       }
@@ -178,11 +187,11 @@ export async function runRefresh(
       dependencies.stdout(serializeCliResult({ ...output, request_id: requestId }));
     } else {
       const parts: string[] = [];
-      if (result.applied.length > 0) parts.push(`applied ${result.applied.length}`);
-      if (result.removed.length > 0) parts.push(`removed ${result.removed.length}`);
-      if (result.preserved.length > 0) parts.push(`preserved ${result.preserved.length}`);
-      if (result.unchanged.length > 0) parts.push(`unchanged ${result.unchanged.length}`);
-      dependencies.stdout(`Harness refresh (${targetProfile}): ${parts.join(", ") || "no changes"}.\n`);
+      if (result.applied.length > 0) parts.push(`已更新 ${result.applied.length} 个`);
+      if (result.removed.length > 0) parts.push(`已删除 ${result.removed.length} 个`);
+      if (result.preserved.length > 0) parts.push(`已保留 ${result.preserved.length} 个`);
+      if (result.unchanged.length > 0) parts.push(`无需变更 ${result.unchanged.length} 个`);
+      dependencies.stdout(`Harness 刷新（${targetProfile}）：${parts.join("，") || "没有变更"}。\n`);
     }
     return output.exit_code;
   } catch (error) {

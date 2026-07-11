@@ -79,7 +79,7 @@ export async function runCli(
     exitCode = await runConfigure(options, dependencies);
   });
   addCommonOptions(program.command("refresh"))
-    .description("Local Conservative Refresh of an installed Harness project")
+    .description("本地保守刷新已安装的 Harness 项目")
     .option("--profile <name>")
     .option("--force-managed")
     .action(async (options: RefreshCommandOptions) => {
@@ -89,7 +89,7 @@ export async function runCli(
       );
     });
   addCommonOptions(program.command("update"))
-    .description("Apply approved server artifacts")
+    .description("应用已批准的服务端产物")
     .action(async (options: UpdateOptions) => {
       exitCode = await runUpdate(
         { ...program.opts<UpdateOptions>(), ...options },
@@ -97,12 +97,12 @@ export async function runCli(
       );
     });
   addCommonOptions(program.command("push"))
-    .description("Create a governed proposal")
+    .description("创建受治理的变更提案")
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
     });
   addCommonOptions(program.command("cleanup"))
-    .description("Prune completed transactions and obsolete server cache")
+    .description("清理已完成事务和过期服务端缓存")
     .action(async (options: CleanupCommandOptions) => {
       exitCode = await runCleanup(
         { ...program.opts<CleanupCommandOptions>(), ...options },

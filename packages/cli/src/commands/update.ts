@@ -19,7 +19,7 @@ export async function runUpdate(
   const requestId = uuidV7();
   if (options.nonInteractive === true && options.yes !== true &&
       options.dryRun !== true) {
-    dependencies.stderr("non-interactive update requires --yes\n");
+    dependencies.stderr("非交互模式更新需要 --yes\n");
     return 2;
   }
   const execute = async (dryRun: boolean) => updateProject({
@@ -36,7 +36,7 @@ export async function runUpdate(
         options.nonInteractive !== true) {
       const preview = await execute(true);
       const answer = await dependencies.prompt(
-        "Apply " + preview.applied.length + " eligible update items? [y/N]: "
+        "应用 " + preview.applied.length + " 个可更新条目？[y/N]："
       );
       if (!/^(?:y|yes)$/i.test(answer.trim())) {
         return 2;
@@ -86,9 +86,9 @@ export async function runUpdate(
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
       : result.artifactId === null
-        ? "No approved updates are available.\n"
-        : "Update applied " + result.applied.length + " items; skipped " +
-          result.skipped.length + ".\n");
+        ? "没有可应用的已批准更新。\n"
+        : "更新完成：已应用 " + result.applied.length + " 个条目，跳过 " +
+          result.skipped.length + " 个。\n");
     return exitCode;
   } catch (error) {
     const exitCode = error instanceof UpdateWorkflowError ? error.exitCode : 1;

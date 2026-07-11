@@ -57,7 +57,7 @@ async function runFirstInstall(
     );
     if (options.nonInteractive === true && options.yes !== true &&
         options.dryRun !== true) {
-      dependencies.stderr("non-interactive writes require --yes\n");
+      dependencies.stderr("非交互模式执行写入操作需要 --yes\n");
       return 2;
     }
     const result = await initializeProject({
@@ -81,7 +81,7 @@ async function runFirstInstall(
     };
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
-      : "Hunter Harness initialized " + result.paths.length + " files.\n");
+      : "Hunter Harness 初始化完成，共处理 " + result.paths.length + " 个文件。\n");
     return 0;
   } catch (error) {
     const exitCode = error instanceof InitConfigurationError ? error.exitCode : 1;
@@ -126,9 +126,9 @@ async function runExistingProject(
   }
   const menu = await dependencies.prompt(
     `Hunter Harness 已初始化（profile: ${currentProfile}）。\n` +
-    "1. Refresh current profile（默认且推荐）\n" +
-    "2. Switch to the other profile\n" +
-    "3. Cancel\n" +
+    "1. 刷新当前配置（默认且推荐）\n" +
+    "2. 切换到另一种配置\n" +
+    "3. 取消\n" +
     "请选择 [1]: "
   );
   const choice = menu.trim();

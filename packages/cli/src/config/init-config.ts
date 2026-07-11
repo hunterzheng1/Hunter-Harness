@@ -28,7 +28,7 @@ function normalizeProfile(value: unknown): "general" | "java" | undefined {
   if (value === undefined) return undefined;
   if (value === "" || value === "1" || value === "general") return "general";
   if (value === "2" || value === "java") return "java";
-  throw new InitConfigurationError("profile must be general or java");
+  throw new InitConfigurationError("配置类型必须为 general 或 java");
 }
 
 export async function resolveInitConfig(

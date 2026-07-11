@@ -17,7 +17,7 @@ export async function runCleanup(
   const requestId = uuidV7();
   const dryRun = options.dryRun === true;
   if (options.nonInteractive === true && options.yes !== true && !dryRun) {
-    dependencies.stderr("non-interactive cleanup requires --yes\n");
+    dependencies.stderr("非交互模式清理需要 --yes\n");
     return 2;
   }
   try {
@@ -45,8 +45,8 @@ export async function runCleanup(
       dependencies.stdout(serializeCliResult(output));
     } else {
       dependencies.stdout(
-        `Harness cleanup: pruned ${result.pruned_transactions.length} transaction(s), ` +
-        `removed ${result.removed_cache.length} cache entr(ies).\n`
+        `Harness 清理完成：已裁剪 ${result.pruned_transactions.length} 个事务，` +
+        `已删除 ${result.removed_cache.length} 个缓存条目。\n`
       );
     }
     return 0;
