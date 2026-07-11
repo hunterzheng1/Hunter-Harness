@@ -81,7 +81,7 @@ def iter_copy_entries(skills_root: Path) -> Iterable[Path]:
 
 
 RUNTIME_IGNORE = shutil.ignore_patterns(
-    "__pycache__", "*.pyc", ".pytest_cache", "_last_run.txt", "_same_proc_*"
+    "tests", "__pycache__", "*.pyc", ".pytest_cache", "_last_run.txt", "_same_proc_*"
 )
 RUNTIME_SKIP_FILES = {"_last_run.txt", "_same_proc_pid.txt", "_same_proc_tmp.txt"}
 
@@ -282,7 +282,7 @@ def core_content_hash(skills_root: Path, overlay_dir: Path | None) -> str:
         else:
             files.extend(
                 p for p in entry.rglob("*")
-                if p.is_file() and "__pycache__" not in p.parts
+                if p.is_file() and "__pycache__" not in p.parts and "tests" not in p.parts
                 and not p.name.endswith(".pyc") and p.name not in RUNTIME_SKIP_FILES
             )
     if overlay_dir and overlay_dir.is_dir():
@@ -330,7 +330,7 @@ def process_skill_md(
     text = inject_header(text, header)
     if INCLUDE_RE.search(text):
         raise RuntimeError(f"unexpanded include placeholder remains in {path}")
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def overlay_for_skill(overlay_dir: Path, skill_name: str) -> Path | None:

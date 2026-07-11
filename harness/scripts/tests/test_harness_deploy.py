@@ -243,6 +243,12 @@ class DeploySafetyReproTests(unittest.TestCase):
         hd.cmd_build(root, out2, None)
         self.assertEqual(hd.collect_files(out1), hd.collect_files(out2))
 
+    def test_generated_skill_uses_lf_newlines(self) -> None:
+        root = _fixture_root(self.tmp)
+        out = self.tmp / "out"
+        hd.cmd_build(root, out, None)
+        self.assertNotIn(b"\r\n", (out / "harness-demo" / "SKILL.md").read_bytes())
+
     def test_runtime_build_excludes_tests_and_debug_artifacts(self) -> None:
         root = _fixture_root(self.tmp)
         _write(root / "scripts" / "harness_x.py", "# x\n")
@@ -263,6 +269,17 @@ class DeploySafetyReproTests(unittest.TestCase):
             self.assertFalse(p.name == "_last_run.txt", f"debug artifact leaked: {rel}")
             self.assertFalse(p.name.startswith("_same_proc"), f"debug artifact leaked: {rel}")
             self.assertFalse(rel.endswith(".pyc"), f"pyc leaked: {rel}")
+
+    def test_runtime_build_excludes_nested_skill_tests_and_fixtures(self) -> None:
+        root = _fixture_root(self.tmp)
+        _write(root / "harness-demo" / "tests" / "test_demo.py", "# test\n")
+        _write(
+            root / "harness-demo" / "tests" / "fixtures" / "sample.json",
+            "{}\n",
+        )
+        out = self.tmp / "out"
+        hd.cmd_build(root, out, None)
+        self.assertFalse((out / "harness-demo" / "tests").exists())
 
     def test_duplicate_section_id_fails(self) -> None:
         root = _fixture_root(self.tmp)

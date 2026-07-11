@@ -1,6 +1,6 @@
 {
   "name": "hunter-harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first, server-governed agent harness",
   "license": "MIT",
   "type": "module",
@@ -8,7 +8,7 @@
     "node": ">=24.0.0"
   },
   "bin": {
-    "hunter-harness": "./dist/bin.js"
+    "hunter-harness": "dist/bin.js"
   },
   "files": [
     "dist/bin.js",

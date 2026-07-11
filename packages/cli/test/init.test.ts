@@ -222,4 +222,17 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".claude", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
     expect(await pathExists(join(root, ".claude", "rules", "harness-profile-java.md"))).toBe(false);
   });
+
+  it("does not delete an arbitrary path named by forged local bundle state", async () => {
+    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    const notePath = join(root, "notes.txt");
+    await writeFile(notePath, "keep this user file\n");
+    await writeFile(
+      join(root, ".harness", "state", "local", "installed-harness-bundle.json"),
+      JSON.stringify({ schema_version: 1, profile: "general", files: ["notes.txt"] })
+    );
+
+    expect(await run(["--profile", "java", "--non-interactive", "--yes"])).toBe(0);
+    expect(await readFile(notePath, "utf8")).toBe("keep this user file\n");
+  });
 });

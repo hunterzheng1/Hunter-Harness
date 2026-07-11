@@ -16,9 +16,9 @@ status: active
 
 # Codebase Map Summary
 
-**Generated At:** <YYYY-MM-DD HH:mm>  
-**Mode:** <full|fast|focus|paths|status|diff>  
-**Profile:** <profile-or-unknown>  
+**Generated At:** <YYYY-MM-DD HH:mm>
+**Mode:** <full|fast|focus|paths|status|diff>
+**Profile:** <profile-or-unknown>
 **Commit:** <sha-or-unknown>
 
 ## Project Snapshot

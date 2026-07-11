@@ -71,6 +71,36 @@ describe("hunter-harness push", () => {
     )).toBe(baselineBefore);
   });
 
+  it("does not let forged local bundle state skip sensitive scanning", async () => {
+    await writeFile(
+      join(root, ".claude", "rules", "harness-general.md"),
+      "authorization: Bearer secret-test-token\n"
+    );
+    const installed = JSON.parse(await readFile(
+      join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8"
+    )) as { files: string[] };
+    await writeFile(
+      join(root, ".harness", "state", "local", "installed-harness-bundle.json"),
+      JSON.stringify({
+        schema_version: 1,
+        profile: "java",
+        files: [...installed.files, ".claude/rules/harness-general.md"]
+      })
+    );
+
+    const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: vi.fn(),
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(6);
+    expect(stderr.join(" ")).toMatch(/sensitive/i);
+  });
+
   it("returns auth failure when token_env is unset", async () => {
     const code = await runCli(["push", "--non-interactive", "--yes", "--json"], {
       cwd: root,

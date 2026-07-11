@@ -1,4 +1,4 @@
 # Harness 源与生成 Bundle 必须保持原始字节；禁止 git 换行符转换
 # （core.autocrlf=true 会破坏 Bundle 与安装结果的逐字节一致性）。
-harness/** -text
-resources/harness/** -text
+harness/** -text whitespace=-cr-at-eol
+resources/harness/** -text whitespace=-cr-at-eol

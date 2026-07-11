@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
@@ -19,6 +18,13 @@ import { sha256Bytes } from "../fs/hash.js";
 import { upsertManagedBlock } from "../managed/managed-block.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import { runTransaction } from "../transaction/transaction.js";
+import {
+  bundleTargetContents,
+  loadProfileBundle,
+  managedBundleTargets,
+  parseHarnessProfile,
+  type HarnessProfile
+} from "./profile-bundle.js";
 import { uuidV7 } from "./uuid-v7.js";
 
 export interface InitializeProjectOptions {
@@ -33,14 +39,6 @@ export interface InitializeProjectResult {
   paths: string[];
   bundleHash: string;
   registryVersion: string;
-}
-
-interface ProfileBundleManifest {
-  schema_version: 1;
-  profile: "general" | "java";
-  bundle_version: string;
-  generator: "harness_deploy.py";
-  files: Array<{ path: string; sha256: string }>;
 }
 
 interface InstalledBundleManifest {
@@ -90,46 +88,19 @@ async function operationFor(
 
 // 读取选中 profile 的 Harness Bundle：校验外部 manifest 的 SHA-256，以 Uint8Array 保留原始字节。
 // 不注入 source_hash、不重新序列化，确保安装结果与 harness_deploy.py 输出逐字节一致。
-async function readProfileBundle(
-  resourcesRoot: string,
-  profile: "general" | "java"
-): Promise<{ manifest: ProfileBundleManifest; files: Map<string, Uint8Array> }> {
-  const manifest = JSON.parse(await readFile(
-    join(resourcesRoot, "harness", "manifests", `${profile}.json`), "utf8"
-  )) as ProfileBundleManifest;
-  if (manifest.schema_version !== 1 || manifest.profile !== profile) {
-    throw new Error(`invalid ${profile} Harness Bundle manifest`);
-  }
-  const files = new Map<string, Uint8Array>();
-  for (const item of manifest.files) {
-    const bytes = await readFile(join(resourcesRoot, "harness", profile, item.path));
-    if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) {
-      throw new Error(`Harness Bundle hash mismatch: ${item.path}`);
-    }
-    files.set(item.path, bytes);
-  }
-  return { manifest, files };
-}
-
 // Bundle 相对路径 → 目标安装路径：任意路径 → .claude/skills/<rel>；
 // agents/<name>.md 额外复制到 .claude/agents/<name>.md（与 harness_deploy.py install 一致）。
-function bundleTargets(bundleFiles: Map<string, Uint8Array>): Map<string, Uint8Array> {
-  const targets = new Map<string, Uint8Array>();
-  for (const [path, bytes] of bundleFiles) {
-    targets.set(`.claude/skills/${path}`, bytes);
-    const agent = /^agents\/([^/]+\.md)$/.exec(path);
-    if (agent?.[1] !== undefined) targets.set(`.claude/agents/${agent[1]}`, bytes);
-  }
-  return targets;
-}
-
 const INSTALLED_BUNDLE_PATH = ".harness/state/local/installed-harness-bundle.json";
 
-async function previousInstalledFiles(root: string): Promise<string[]> {
+async function previousInstalledProfile(root: string): Promise<HarnessProfile | null> {
   const content = await readOptional(join(root, INSTALLED_BUNDLE_PATH));
-  if (content === "") return [];
-  const parsed = JSON.parse(content) as InstalledBundleManifest;
-  return parsed.schema_version === 1 && Array.isArray(parsed.files) ? parsed.files : [];
+  if (content === "") return null;
+  try {
+    const parsed = JSON.parse(content) as InstalledBundleManifest;
+    return parsed.schema_version === 1 ? parseHarnessProfile(parsed.profile) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function initializeProject(
@@ -139,9 +110,9 @@ export async function initializeProject(
   const config = initConfigSchema.parse(options.config);
   const existing = await existingProjectConfig(root);
 
-  const profile = config.profile as "general" | "java";
-  const bundle = await readProfileBundle(options.resourcesRoot, profile);
-  const bundleFiles = bundleTargets(bundle.files);
+  const profile = config.profile as HarnessProfile;
+  const bundle = await loadProfileBundle(options.resourcesRoot, profile);
+  const bundleFiles = bundleTargetContents(bundle);
   const bundleHash = sha256Bytes(canonicalJson(bundle.manifest.files));
 
   const projectConfig = projectConfigSchema.parse({
@@ -259,8 +230,12 @@ export async function initializeProject(
     files: installedFileList.sort()
   };
   files.set(INSTALLED_BUNDLE_PATH, JSON.stringify(installedManifest, null, 2) + "\n");
-  const newManaged = new Set(installedManifest.files);
-  const deleteOperations: TransactionOperation[] = (await previousInstalledFiles(root))
+  const newManaged = await managedBundleTargets(options.resourcesRoot, profile);
+  const oldProfile = await previousInstalledProfile(root);
+  const oldManaged = oldProfile === null
+    ? new Set<string>()
+    : await managedBundleTargets(options.resourcesRoot, oldProfile);
+  const deleteOperations: TransactionOperation[] = [...oldManaged]
     .filter((path) => !newManaged.has(path))
     .map((path) => ({ operation: "delete", path }));
   const paths = [...files.keys()].sort((left, right) => left.localeCompare(right));

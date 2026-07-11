@@ -25,6 +25,7 @@ export async function runPush(
   try {
     const result = await pushProject({
       projectRoot: dependencies.cwd,
+      resourcesRoot: dependencies.resourcesRoot,
       ...(options.serverUrl === undefined ? {} : { serverUrl: options.serverUrl }),
       ...(options.tokenEnv === undefined ? {} : { tokenEnv: options.tokenEnv }),
       env: dependencies.env,

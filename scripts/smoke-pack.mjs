@@ -46,6 +46,12 @@ try {
     "--ignore-scripts",
     join(temporary, archive)
   ]);
+  for (const legacyResource of ["bootstrap-ir", "skills"]) {
+    await stat(join(temporary, "node_modules", "hunter-harness", "resources", legacyResource)).then(
+      () => { throw new Error(`packaged CLI must not contain legacy resource: ${legacyResource}`); },
+      () => undefined
+    );
+  }
   const bin = join(
     temporary,
     "node_modules",

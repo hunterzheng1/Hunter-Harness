@@ -17,6 +17,10 @@ import {
   generateProposalPreview
 } from "../proposal/preview.js";
 import type { ProposalBaselineEntry } from "../proposal/diff.js";
+import {
+  managedBundleTargets,
+  parseHarnessProfile
+} from "../project/profile-bundle.js";
 import { uuidV7 } from "../project/uuid-v7.js";
 import { atomicWriteJson } from "../state/atomic.js";
 import { readBaseline } from "../state/baseline.js";
@@ -37,6 +41,7 @@ export class PushWorkflowError extends Error {
 
 export interface PushProjectOptions {
   projectRoot: string;
+  resourcesRoot: string;
   serverUrl?: string;
   tokenEnv?: string;
   env: Readonly<Record<string, string | undefined>>;
@@ -80,24 +85,6 @@ const MANAGED_FILES = [
 // init 写入的已安装 Harness Bundle 清单：记录 Bundle 安装的受管文件路径。
 // push 对这些文件豁免敏感扫描（Harness 自有文件含教学示例，非用户引入的 secret），
 // 但仍照常 propose（diff-proposal 不变）。
-const INSTALLED_BUNDLE_PATH = ".harness/state/local/installed-harness-bundle.json";
-
-async function installedBundlePaths(root: string): Promise<Set<string>> {
-  try {
-    const content = await readFile(join(root, INSTALLED_BUNDLE_PATH), "utf8");
-    const parsed = JSON.parse(content) as { schema_version?: unknown; files?: unknown };
-    if (parsed.schema_version === 1 && Array.isArray(parsed.files)) {
-      return new Set(parsed.files as string[]);
-    }
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return new Set();
-    }
-    throw error;
-  }
-  return new Set();
-}
-
 async function exists(path: string): Promise<boolean> {
   try {
     await lstat(path);
@@ -297,7 +284,10 @@ export async function pushProject(options: PushProjectOptions) {
   const root = resolve(options.projectRoot);
   let project = await readProject(root);
   let baseline = await readBaseline(root);
-  const installedPaths = await installedBundlePaths(root);
+  const profile = parseHarnessProfile(project.project.profiles[0]);
+  const installedPaths = profile === null
+    ? new Set<string>()
+    : await managedBundleTargets(options.resourcesRoot, profile);
   let preview = makePreview(
     baseline,
     await managedFiles(root),
