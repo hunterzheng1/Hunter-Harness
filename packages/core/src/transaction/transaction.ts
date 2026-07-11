@@ -3,6 +3,7 @@ import {
   copyFile,
   mkdir,
   readFile,
+  readdir,
   rename,
   rm,
   stat,
@@ -80,6 +81,37 @@ async function writeJournal(
     failure: journal.failure,
     updated_at: new Date().toISOString()
   });
+}
+
+// design §10：提交后剪除同 kind 的更早成功事务，仅保留最新一个供回滚。
+// 只读 journal.json 判定 state/kind，绝不动非 committed（interrupted/failed/recovery_required）事务。
+async function pruneOlderSuccessful(
+  layout: { transactions: string },
+  currentId: string,
+  kind: string | undefined
+): Promise<void> {
+  if (kind === undefined) return;
+  let entries: string[];
+  try {
+    entries = await readdir(layout.transactions);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of entries) {
+    if (name === currentId) continue;
+    const txRoot = join(layout.transactions, name);
+    try {
+      const journal = JSON.parse(await readFile(join(txRoot, "journal.json"), "utf8")) as {
+        state?: string; kind?: string;
+      };
+      if (journal.state === "committed" && journal.kind === kind) {
+        await rm(txRoot, { recursive: true, force: true });
+      }
+    } catch {
+      continue;
+    }
+  }
 }
 
 async function snapshotPaths(
@@ -272,7 +304,6 @@ export async function runTransaction(
     await atomicWriteJson(join(transactionRoot, "after", "manifest.json"), after);
     journal.state = "committed";
     await writeJournal(transactionRoot, journal);
-    return { transactionId, status: "committed" };
   } catch (error) {
     if (error instanceof InterruptedTransactionError) {
       throw error;
@@ -282,6 +313,11 @@ export async function runTransaction(
     await rollbackTransaction(projectRoot, transactionId);
     throw error;
   }
+  // design §10：成功提交后立即删 staged/（保留 before/after/journal/status 供回滚），
+  // 并按 kind 保留最新成功事务，剪除更早的同 kind committed 事务。
+  await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
+  await pruneOlderSuccessful(layout, transactionId, options.kind);
+  return { transactionId, status: "committed" };
 }
 
 export async function verifyStagedContent(

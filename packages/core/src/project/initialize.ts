@@ -19,10 +19,12 @@ import { upsertManagedBlock } from "../managed/managed-block.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import { runTransaction } from "../transaction/transaction.js";
 import {
-  bundleTargetContents,
+  AGENTS_MANAGED_BLOCK_CONTENT,
+  CLAUDE_MANAGED_BLOCK_CONTENT
+} from "./managed-content.js";
+import {
   loadProfileBundle,
-  managedBundleTargets,
-  parseHarnessProfile,
+  managedTargets,
   type HarnessProfile
 } from "./profile-bundle.js";
 import { uuidV7 } from "./uuid-v7.js";
@@ -41,10 +43,15 @@ export interface InitializeProjectResult {
   registryVersion: string;
 }
 
-interface InstalledBundleManifest {
-  schema_version: 1;
-  profile: "general" | "java";
-  files: string[];
+// Installed Bundle state schema v2：记录 per-file trusted hash（hex，无前缀，与 Bundle manifest 一致），
+// 供后续 Conservative Refresh 做干净/冲突分类。bundle_manifest_hash 带 sha256: 前缀（与 context-index 一致）。
+export interface InstalledBundleStateV2 {
+  schema_version: 2;
+  profile: HarnessProfile;
+  bundle_version: string;
+  bundle_manifest_hash: string;
+  installed_at: string;
+  files: Array<{ source_path: string; target_path: string; sha256: string }>;
 }
 
 async function readOptional(path: string): Promise<string> {
@@ -86,23 +93,10 @@ async function operationFor(
     : { operation: "add", path, content };
 }
 
-// 读取选中 profile 的 Harness Bundle：校验外部 manifest 的 SHA-256，以 Uint8Array 保留原始字节。
-// 不注入 source_hash、不重新序列化，确保安装结果与 harness_deploy.py 输出逐字节一致。
-// Bundle 相对路径 → 目标安装路径：任意路径 → .claude/skills/<rel>；
-// agents/<name>.md 额外复制到 .claude/agents/<name>.md（与 harness_deploy.py install 一致）。
 const INSTALLED_BUNDLE_PATH = ".harness/state/local/installed-harness-bundle.json";
 
-async function previousInstalledProfile(root: string): Promise<HarnessProfile | null> {
-  const content = await readOptional(join(root, INSTALLED_BUNDLE_PATH));
-  if (content === "") return null;
-  try {
-    const parsed = JSON.parse(content) as InstalledBundleManifest;
-    return parsed.schema_version === 1 ? parseHarnessProfile(parsed.profile) : null;
-  } catch {
-    return null;
-  }
-}
-
+// 首次安装：仅在没有既有 Harness 项目时调用（configure 检测到既有有效项目会改走 refresh）。
+// 创建 design §9 的最小 .harness 布局，不预创建 cache/reports/codebase-map 等可选目录。
 export async function initializeProject(
   options: InitializeProjectOptions
 ): Promise<InitializeProjectResult> {
@@ -112,7 +106,7 @@ export async function initializeProject(
 
   const profile = config.profile as HarnessProfile;
   const bundle = await loadProfileBundle(options.resourcesRoot, profile);
-  const bundleFiles = bundleTargetContents(bundle);
+  const managed = await managedTargets(options.resourcesRoot, profile);
   const bundleHash = sha256Bytes(canonicalJson(bundle.manifest.files));
 
   const projectConfig = projectConfigSchema.parse({
@@ -141,26 +135,11 @@ export async function initializeProject(
   });
   const agentsContent = upsertManagedBlock(
     await readOptional(join(root, "AGENTS.md")),
-    [
-      "# Hunter Harness",
-      "",
-      "Use .harness/context-index.json to route rules, Knowledge, and codebase maps.",
-      "Treat .claude/skills/harness-* as editable adapter working copies.",
-      "Do not modify .harness/state or .harness/cache directly."
-    ].join("\n")
+    AGENTS_MANAGED_BLOCK_CONTENT
   );
   const claudeContent = upsertManagedBlock(
     await readOptional(join(root, "CLAUDE.md")),
-    [
-      "@AGENTS.md",
-      "",
-      "# Hunter Harness",
-      "",
-      "- Rules: .claude/rules/",
-      "- Skills: .claude/skills/harness-*/",
-      "- Knowledge: .harness/knowledge/",
-      "- Codebase map: .harness/codebase/map/"
-    ].join("\n")
+    CLAUDE_MANAGED_BLOCK_CONTENT
   );
 
   const files = new Map<string, string | Uint8Array>([
@@ -191,59 +170,38 @@ export async function initializeProject(
       JSON.stringify({ schema_version: 1, generated_at: null, entries: [] }, null, 2) +
         "\n"
     ],
-    [".harness/knowledge/_candidates/.gitkeep", ""],
-    [".harness/knowledge/project-local/.gitkeep", ""],
-    [".harness/codebase/map/.gitkeep", ""],
-    [".harness/state/local/.gitkeep", ""],
-    [".harness/cache/server-artifacts/.gitkeep", ""],
-    [".harness/reports/.gitkeep", ""],
-    [
-      ".harness/README.md",
-      "# Hunter Harness\n\nUse npx hunter-harness, update, and push.\n"
-    ],
     ["AGENTS.md", agentsContent],
-    ["CLAUDE.md", claudeContent],
-    [
-      ".claude/rules/harness-general.md",
-      "# Hunter Harness Rules\n\n- Report evidence honestly.\n- Do not execute destructive actions without confirmation.\n"
-    ]
+    ["CLAUDE.md", claudeContent]
   ]);
-  if (config.profile === "java") {
-    files.set(
-      ".claude/rules/harness-profile-java.md",
-      "# Java Profile\n\n- Verify builds and tests with the project build tool.\n"
-    );
+
+  // 安装受管目标全集（Bundle 投影 + rules），字节原样写入。
+  for (const target of managed) {
+    files.set(target.target_path, target.bytes);
   }
 
-  // 安装选中 profile 的 Harness Bundle：字节原样写入，不注入 source_hash、不重新序列化。
-  // Bundle 路径 → .claude/skills/<rel>；agents/<name>.md 额外复制到 .claude/agents/<name>.md。
-  for (const [targetPath, bytes] of bundleFiles) {
-    files.set(targetPath, bytes);
-  }
-
-  // 记录本次安装的受管文件清单，供下次 profile 切换时计算需删除的旧 profile 独有文件。
-  const installedFileList = [...bundleFiles.keys()].sort();
-  if (profile === "java") installedFileList.push(".claude/rules/harness-profile-java.md");
-  const installedManifest: InstalledBundleManifest = {
-    schema_version: 1,
+  // schema-v2 installed state：per-file trusted hash，按 target_path 排序确定性输出。
+  const installedState: InstalledBundleStateV2 = {
+    schema_version: 2,
     profile,
-    files: installedFileList.sort()
+    bundle_version: bundle.manifest.bundle_version,
+    bundle_manifest_hash: bundleHash,
+    installed_at: new Date().toISOString(),
+    files: managed
+      .map((target) => ({
+        source_path: target.source_path,
+        target_path: target.target_path,
+        sha256: target.sha256
+      }))
+      .sort((left, right) => left.target_path.localeCompare(right.target_path))
   };
-  files.set(INSTALLED_BUNDLE_PATH, JSON.stringify(installedManifest, null, 2) + "\n");
-  const newManaged = await managedBundleTargets(options.resourcesRoot, profile);
-  const oldProfile = await previousInstalledProfile(root);
-  const oldManaged = oldProfile === null
-    ? new Set<string>()
-    : await managedBundleTargets(options.resourcesRoot, oldProfile);
-  const deleteOperations: TransactionOperation[] = [...oldManaged]
-    .filter((path) => !newManaged.has(path))
-    .map((path) => ({ operation: "delete", path }));
+  files.set(INSTALLED_BUNDLE_PATH, JSON.stringify(installedState, null, 2) + "\n");
+
   const paths = [...files.keys()].sort((left, right) => left.localeCompare(right));
   if (!options.dryRun) {
     const writeOperations = await Promise.all(
       [...files.entries()].map(async ([path, content]) => operationFor(root, path, content))
     );
-    await runTransaction(root, [...deleteOperations, ...writeOperations], { kind: "init" });
+    await runTransaction(root, writeOperations, { kind: "init" });
   }
   return {
     projectConfig,

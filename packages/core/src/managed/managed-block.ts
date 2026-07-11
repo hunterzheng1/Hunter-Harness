@@ -61,6 +61,31 @@ export function removeManagedBlock(original: string): string {
   return before + after;
 }
 
+export type ManagedBlockAction = "refreshed" | "appended" | "preserved_conflict";
+
+export interface ManagedBlockRefresh {
+  content: string;
+  action: ManagedBlockAction;
+  conflict: boolean;
+}
+
+// 非抛错的受管块刷新：标记缺失→追加；标记合法→替换块内正文；标记畸形/重复/倒序→
+// 整文件原样保留并报告冲突（design §4.1）。--force-managed 也不得越界改写块外字节，
+// 故冲突时始终返回 original。调用方据此决定是否写入与是否计入 exit 5。
+export function refreshManagedBlock(original: string, blockContent: string): ManagedBlockRefresh {
+  const starts = markerCount(original, MANAGED_BLOCK_START);
+  const ends = markerCount(original, MANAGED_BLOCK_END);
+  const absent = starts === 0 && ends === 0;
+  const malformed = !absent &&
+    (starts !== 1 || ends !== 1 ||
+      original.indexOf(MANAGED_BLOCK_START) > original.indexOf(MANAGED_BLOCK_END));
+  if (malformed) {
+    return { content: original, action: "preserved_conflict", conflict: true };
+  }
+  const action: ManagedBlockAction = absent ? "appended" : "refreshed";
+  return { content: upsertManagedBlock(original, blockContent), action, conflict: false };
+}
+
 function escapeRe(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

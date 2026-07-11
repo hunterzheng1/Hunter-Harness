@@ -27,7 +27,7 @@ export interface SnapshotRecord {
 export interface TransactionJournal {
   schema_version: 1;
   transaction_id: string;
-  kind?: "init" | "push-binding" | "update" | "rollback" | "other";
+  kind?: "init" | "push-binding" | "update" | "refresh" | "rollback" | "other";
   state: TransactionState;
   created_at: string;
   operations: TransactionOperation[];

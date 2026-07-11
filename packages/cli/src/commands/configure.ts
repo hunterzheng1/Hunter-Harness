@@ -12,12 +12,18 @@ import {
   serializeCliResult,
   type CliResult
 } from "../output/json.js";
+import {
+  detectProject,
+  runRefresh,
+  type RefreshCommandOptions
+} from "./refresh.js";
 
 export interface ConfigureOptions extends InitFlagValues {
   nonInteractive?: boolean;
   yes?: boolean;
   dryRun?: boolean;
   json?: boolean;
+  forceManaged?: boolean;
 }
 
 export interface CommandDependencies {
@@ -30,7 +36,11 @@ export interface CommandDependencies {
   env: Readonly<Record<string, string | undefined>>;
 }
 
-export async function runConfigure(
+function otherProfile(current: "general" | "java"): "general" | "java" {
+  return current === "general" ? "java" : "general";
+}
+
+async function runFirstInstall(
   options: ConfigureOptions,
   dependencies: CommandDependencies
 ): Promise<number> {
@@ -94,4 +104,73 @@ export async function runConfigure(
     }
     return exitCode;
   }
+}
+
+// 既有有效项目：bare 命令进入 Conservative Refresh 流程（design §3.1/§3.3）。
+// 交互式呈现 3 选项（刷新当前/切换 profile/取消），非交互式按 --profile 决定 refresh/transition。
+async function runExistingProject(
+  options: ConfigureOptions,
+  dependencies: CommandDependencies,
+  currentProfile: "general" | "java"
+): Promise<number> {
+  // exactOptionalPropertyTypes: 可选属性不接受显式 undefined，按字段条件赋值。
+  const refreshOptions: RefreshCommandOptions = {};
+  if (options.profile !== undefined) refreshOptions.profile = options.profile;
+  if (options.nonInteractive !== undefined) refreshOptions.nonInteractive = options.nonInteractive;
+  if (options.yes !== undefined) refreshOptions.yes = options.yes;
+  if (options.dryRun !== undefined) refreshOptions.dryRun = options.dryRun;
+  if (options.json !== undefined) refreshOptions.json = options.json;
+  if (options.forceManaged !== undefined) refreshOptions.forceManaged = options.forceManaged;
+  if (options.nonInteractive === true) {
+    return runRefresh(refreshOptions, dependencies);
+  }
+  const menu = await dependencies.prompt(
+    `Hunter Harness 已初始化（profile: ${currentProfile}）。\n` +
+    "1. Refresh current profile（默认且推荐）\n" +
+    "2. Switch to the other profile\n" +
+    "3. Cancel\n" +
+    "请选择 [1]: "
+  );
+  const choice = menu.trim();
+  if (choice === "3" || /^c/i.test(choice)) {
+    return 2;
+  }
+  if (choice === "2" || /^s/i.test(choice)) {
+    refreshOptions.profile = otherProfile(currentProfile);
+  } else {
+    refreshOptions.profile = currentProfile;
+  }
+  refreshOptions.confirmed = true;
+  return runRefresh(refreshOptions, dependencies);
+}
+
+export async function runConfigure(
+  options: ConfigureOptions,
+  dependencies: CommandDependencies
+): Promise<number> {
+  const detection = await detectProject(dependencies.cwd);
+  if (detection.status === "invalid") {
+    dependencies.stderr("PROJECT_CONFIG_INVALID: .harness/project.yaml is invalid; not initializing over it.\n");
+    if (options.json === true) {
+      dependencies.stdout(serializeCliResult({
+        schema_version: 1,
+        command: "configure",
+        request_id: uuidV7(),
+        dry_run: options.dryRun === true,
+        ok: false,
+        exit_code: 3,
+        project_id: null,
+        summary: { planned: 0, applied: 0 },
+        items: [],
+        warnings: [],
+        errors: [{ code: "PROJECT_CONFIG_INVALID", message: "project.yaml is invalid" }]
+      }));
+    }
+    return 3;
+  }
+  if (detection.status === "valid") {
+    const currentProfile = (detection.config.project.profiles[0] ?? "general") as "general" | "java";
+    return runExistingProject(options, dependencies, currentProfile);
+  }
+  return runFirstInstall(options, dependencies);
 }

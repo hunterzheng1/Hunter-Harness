@@ -9,7 +9,9 @@ import {
   type CommandDependencies,
   type ConfigureOptions
 } from "./commands/configure.js";
+import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runPush, type PushOptions } from "./commands/push.js";
+import { runRefresh, type RefreshCommandOptions } from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
 import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
 
@@ -59,6 +61,7 @@ export async function runCli(
     .description("Local-first, server-governed agent harness")
     .option("--profile <name>")
     .option("--config <file>")
+    .option("--force-managed")
     .showHelpAfterError()
     .exitOverride()
     .configureOutput({
@@ -75,6 +78,16 @@ export async function runCli(
     }
     exitCode = await runConfigure(options, dependencies);
   });
+  addCommonOptions(program.command("refresh"))
+    .description("Local Conservative Refresh of an installed Harness project")
+    .option("--profile <name>")
+    .option("--force-managed")
+    .action(async (options: RefreshCommandOptions) => {
+      exitCode = await runRefresh(
+        { ...program.opts<RefreshCommandOptions>(), ...options },
+        dependencies
+      );
+    });
   addCommonOptions(program.command("update"))
     .description("Apply approved server artifacts")
     .action(async (options: UpdateOptions) => {
@@ -87,6 +100,14 @@ export async function runCli(
     .description("Create a governed proposal")
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
+    });
+  addCommonOptions(program.command("cleanup"))
+    .description("Prune completed transactions and obsolete server cache")
+    .action(async (options: CleanupCommandOptions) => {
+      exitCode = await runCleanup(
+        { ...program.opts<CleanupCommandOptions>(), ...options },
+        dependencies
+      );
     });
 
   try {
