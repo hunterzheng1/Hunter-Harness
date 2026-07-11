@@ -67,18 +67,28 @@ try {
     () => { throw new Error("packaged CLI dry-run wrote project state"); },
     () => undefined
   );
-  run(process.execPath, [bin,
-    "--profile", "java",
-    "--non-interactive",
-    "--yes"
-  ], { cwd: temporary, capture: true });
-  await stat(join(
-    temporary,
-    ".claude",
-    "skills",
-    "harness-review",
-    "SKILL.md"
-  ));
+  for (const profile of ["general", "java"]) {
+    const project = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
+    try {
+      run(process.execPath, [bin,
+        "--profile", profile,
+        "--non-interactive",
+        "--yes"
+      ], { cwd: project, capture: true });
+      await stat(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
+      const apidoc = join(project, ".claude", "skills", "harness-apidoc", "SKILL.md");
+      if (profile === "java") {
+        await stat(apidoc);
+      } else {
+        await stat(apidoc).then(
+          () => { throw new Error("general bundle must not install harness-apidoc"); },
+          () => undefined
+        );
+      }
+    } finally {
+      await rm(project, { recursive: true, force: true });
+    }
+  }
   run(process.execPath, [
     npmCli,
     "pack",
