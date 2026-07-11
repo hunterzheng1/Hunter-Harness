@@ -1,5 +1,6 @@
-import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, stat } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 
 import {
   canonicalJson,
@@ -7,8 +8,7 @@ import {
   initConfigSchema,
   projectConfigSchema,
   type InitConfig,
-  type ProjectConfig,
-  type SourceFile
+  type ProjectConfig
 } from "@hunter-harness/contracts";
 import {
   parse as parseYaml,
@@ -35,11 +35,18 @@ export interface InitializeProjectResult {
   registryVersion: string;
 }
 
-interface BundleManifest {
+interface ProfileBundleManifest {
   schema_version: 1;
-  registry_version: string;
-  compiler_version: string;
-  skills: string[];
+  profile: "general" | "java";
+  bundle_version: string;
+  generator: "harness_deploy.py";
+  files: Array<{ path: string; sha256: string }>;
+}
+
+interface InstalledBundleManifest {
+  schema_version: 1;
+  profile: "general" | "java";
+  files: string[];
 }
 
 async function readOptional(path: string): Promise<string> {
@@ -74,49 +81,55 @@ async function existingProjectConfig(root: string): Promise<ProjectConfig | null
 async function operationFor(
   root: string,
   path: string,
-  content: string
+  content: string | Uint8Array
 ): Promise<TransactionOperation> {
   return await exists(join(root, path))
     ? { operation: "modify", path, content }
     : { operation: "add", path, content };
 }
 
-// 递归读取目录下所有文件，返回相对路径（正斜杠）+ 内容。用于复制 resources/skills/<name>/。
-async function readDirFiles(dir: string, base: string = dir): Promise<SourceFile[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const files: SourceFile[] = [];
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await readDirFiles(full, base));
-    } else if (entry.isFile()) {
-      const rel = relative(base, full).replace(/\\/g, "/");
-      files.push({ path: rel, content: await readFile(full, "utf8") });
-    }
+// 读取选中 profile 的 Harness Bundle：校验外部 manifest 的 SHA-256，以 Uint8Array 保留原始字节。
+// 不注入 source_hash、不重新序列化，确保安装结果与 harness_deploy.py 输出逐字节一致。
+async function readProfileBundle(
+  resourcesRoot: string,
+  profile: "general" | "java"
+): Promise<{ manifest: ProfileBundleManifest; files: Map<string, Uint8Array> }> {
+  const manifest = JSON.parse(await readFile(
+    join(resourcesRoot, "harness", "manifests", `${profile}.json`), "utf8"
+  )) as ProfileBundleManifest;
+  if (manifest.schema_version !== 1 || manifest.profile !== profile) {
+    throw new Error(`invalid ${profile} Harness Bundle manifest`);
   }
-  return files;
+  const files = new Map<string, Uint8Array>();
+  for (const item of manifest.files) {
+    const bytes = await readFile(join(resourcesRoot, "harness", profile, item.path));
+    if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) {
+      throw new Error(`Harness Bundle hash mismatch: ${item.path}`);
+    }
+    files.set(item.path, bytes);
+  }
+  return { manifest, files };
 }
 
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
-
-/**
- * YAML round-trip 重写 SKILL.md frontmatter，写入 source_hash 字段（取代旧 source_ir_hash）。
- * source_hash = 上传/引导源文件的 canonical sha256，由 init 复制时计算并写入 entry frontmatter。
- * 无 frontmatter 则原样返回（不写 source_hash）。
- */
-function writeSourceHash(content: string, sourceHash: string): string {
-  const match = FRONTMATTER_RE.exec(content);
-  if (match === null) return content;
-  const raw = match[1] ?? "";
-  const body = match[2] ?? "";
-  const fm = parseYaml(raw) as Record<string, unknown>;
-  fm["source_hash"] = sourceHash;
-  return `---\n${stringifyYaml(fm)}---\n${body}`;
+// Bundle 相对路径 → 目标安装路径：任意路径 → .claude/skills/<rel>；
+// agents/<name>.md 额外复制到 .claude/agents/<name>.md（与 harness_deploy.py install 一致）。
+function bundleTargets(bundleFiles: Map<string, Uint8Array>): Map<string, Uint8Array> {
+  const targets = new Map<string, Uint8Array>();
+  for (const [path, bytes] of bundleFiles) {
+    targets.set(`.claude/skills/${path}`, bytes);
+    const agent = /^agents\/([^/]+\.md)$/.exec(path);
+    if (agent?.[1] !== undefined) targets.set(`.claude/agents/${agent[1]}`, bytes);
+  }
+  return targets;
 }
 
-function computeSourceHash(files: SourceFile[]): string {
-  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
-  return sha256Bytes(canonicalJson(sorted.map((f) => ({ path: f.path, content: f.content }))));
+const INSTALLED_BUNDLE_PATH = ".harness/state/local/installed-harness-bundle.json";
+
+async function previousInstalledFiles(root: string): Promise<string[]> {
+  const content = await readOptional(join(root, INSTALLED_BUNDLE_PATH));
+  if (content === "") return [];
+  const parsed = JSON.parse(content) as InstalledBundleManifest;
+  return parsed.schema_version === 1 && Array.isArray(parsed.files) ? parsed.files : [];
 }
 
 export async function initializeProject(
@@ -126,19 +139,10 @@ export async function initializeProject(
   const config = initConfigSchema.parse(options.config);
   const existing = await existingProjectConfig(root);
 
-  // 读 bootstrap manifest（registry_version + compiler_version + skills 列表）。
-  // 新模型下 resources/<root>/skills/<name>/ 是源文件夹（SKILL.md + references），不再走 IR 编译。
-  const manifest = JSON.parse(
-    await readFile(join(options.resourcesRoot, "manifest.json"), "utf8")
-  ) as BundleManifest;
-  if (manifest.schema_version !== 1) {
-    throw new Error("unsupported bootstrap bundle schema version");
-  }
-  const bundleHash = sha256Bytes(canonicalJson({
-    registry_version: manifest.registry_version,
-    compiler_version: manifest.compiler_version,
-    skills: manifest.skills
-  }));
+  const profile = config.profile as "general" | "java";
+  const bundle = await readProfileBundle(options.resourcesRoot, profile);
+  const bundleFiles = bundleTargets(bundle.files);
+  const bundleHash = sha256Bytes(canonicalJson(bundle.manifest.files));
 
   const projectConfig = projectConfigSchema.parse({
     harness: { name: "hunter-harness", schema_version: 1 },
@@ -188,7 +192,7 @@ export async function initializeProject(
     ].join("\n")
   );
 
-  const files = new Map<string, string>([
+  const files = new Map<string, string | Uint8Array>([
     [
       ".harness/project.yaml",
       stringifyYaml(projectConfig, { sortMapEntries: true })
@@ -206,9 +210,8 @@ export async function initializeProject(
         knowledge: { index: ".harness/knowledge/index.json" },
         codebase: { map: ".harness/codebase/map", status: "missing" },
         skill_bundle: {
-          registry_version: manifest.registry_version,
-          bundle_hash: bundleHash,
-          compiler_version: manifest.compiler_version
+          registry_version: bundle.manifest.bundle_version,
+          bundle_hash: bundleHash
         }
       }, null, 2) + "\n"
     ],
@@ -241,39 +244,36 @@ export async function initializeProject(
     );
   }
 
-  // 复制 bootstrap skills（源文件模型，取代 IR 编译）。
-  // 仅 claude-code adapter 支持：resources/skills/<name>/ → .claude/skills/<name>/，
-  // entry SKILL.md frontmatter 写入 source_hash（取代旧 source_ir_hash + compiler_version）。
-  // cursor/codex 等 adapter 的 .mdc 编译能力随 compileSkill 移除，暂不支持（任务 16 评估是否补轻量转换）。
-  if (config.adapter !== "claude-code") {
-    throw new Error(
-      `adapter '${config.adapter}' is not yet supported in source-file init model (only claude-code)`
-    );
-  }
-  for (const name of manifest.skills) {
-    const skillFiles = await readDirFiles(join(options.resourcesRoot, "skills", name));
-    if (skillFiles.length === 0) continue;
-    const sourceHash = computeSourceHash(skillFiles);
-    for (const f of skillFiles) {
-      const targetPath = `.claude/skills/${name}/${f.path}`;
-      const content = f.path === "SKILL.md"
-        ? writeSourceHash(f.content, sourceHash)
-        : f.content;
-      files.set(targetPath, content);
-    }
+  // 安装选中 profile 的 Harness Bundle：字节原样写入，不注入 source_hash、不重新序列化。
+  // Bundle 路径 → .claude/skills/<rel>；agents/<name>.md 额外复制到 .claude/agents/<name>.md。
+  for (const [targetPath, bytes] of bundleFiles) {
+    files.set(targetPath, bytes);
   }
 
+  // 记录本次安装的受管文件清单，供下次 profile 切换时计算需删除的旧 profile 独有文件。
+  const installedFileList = [...bundleFiles.keys()].sort();
+  if (profile === "java") installedFileList.push(".claude/rules/harness-profile-java.md");
+  const installedManifest: InstalledBundleManifest = {
+    schema_version: 1,
+    profile,
+    files: installedFileList.sort()
+  };
+  files.set(INSTALLED_BUNDLE_PATH, JSON.stringify(installedManifest, null, 2) + "\n");
+  const newManaged = new Set(installedManifest.files);
+  const deleteOperations: TransactionOperation[] = (await previousInstalledFiles(root))
+    .filter((path) => !newManaged.has(path))
+    .map((path) => ({ operation: "delete", path }));
   const paths = [...files.keys()].sort((left, right) => left.localeCompare(right));
   if (!options.dryRun) {
-    const operations = await Promise.all(
-      paths.map(async (path) => operationFor(root, path, files.get(path) ?? ""))
+    const writeOperations = await Promise.all(
+      [...files.entries()].map(async ([path, content]) => operationFor(root, path, content))
     );
-    await runTransaction(root, operations);
+    await runTransaction(root, [...deleteOperations, ...writeOperations], { kind: "init" });
   }
   return {
     projectConfig,
     paths,
     bundleHash,
-    registryVersion: manifest.registry_version
+    registryVersion: bundle.manifest.bundle_version
   };
 }
