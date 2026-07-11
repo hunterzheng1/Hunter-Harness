@@ -2,7 +2,7 @@
   "name": "hunter-harness",
   "version": "0.1.0",
   "description": "Local-first, server-governed agent harness",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
@@ -19,7 +19,7 @@
     "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --outfile=dist/bin.js",
     "copy-resources": "node scripts/copy-resources.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepack": "npm run build"
+    "prepack": "node ../../scripts/sync-harness.mjs && npm run build"
   },
   "dependencies": {
     "commander": "15.0.0",
