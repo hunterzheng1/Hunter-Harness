@@ -80,6 +80,7 @@ temp/
 .worktrees/
 .playwright-mcp/
 /packages/cli/resources/
+/packages/cli/LICENSE
 
 # ===== 本机部署/调试产物 =====
 /caddy/
