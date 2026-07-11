@@ -2,6 +2,25 @@
 
 Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。项目 CLI 维护本地 working copy；`push` 只创建 proposal，人工审核通过后，`update` 才事务化应用已发布 artifact。
 
+## 快速安装
+
+要求：Node.js 24 或更高版本。
+
+```powershell
+mkdir my-project
+cd my-project
+npx hunter-harness
+```
+
+选择 `1` 安装通用 Harness，或 `2` 安装 Java Harness。安装是本地操作，不需要 Hunter-Harness 服务器、Python 或访问源 Vault。
+
+自动化场景：
+
+```powershell
+npx hunter-harness --profile general --non-interactive --yes
+npx hunter-harness --profile java --non-interactive --yes
+```
+
 ## 项目级 CLI
 
 项目级公开命令保持不变：
