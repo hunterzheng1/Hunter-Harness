@@ -41,13 +41,9 @@ export async function runConfigure(
       options,
       options.nonInteractive === true
         ? undefined
-        : (field) => dependencies.prompt(
-          field === "adapter"
-            ? "Adapter (claude-code): "
-            : "Profile (general/java): "
-        ).then((answer) => answer.trim() || (
-          field === "adapter" ? "claude-code" : "general"
-        ))
+        : () => dependencies.prompt(
+          "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
+        ).then((answer) => answer.trim())
     );
     if (options.nonInteractive === true && options.yes !== true &&
         options.dryRun !== true) {

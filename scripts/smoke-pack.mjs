@@ -54,7 +54,6 @@ try {
     "bin.js"
   );
   const preview = run(process.execPath, [bin,
-    "--adapter", "claude-code",
     "--profile", "java",
     "--non-interactive",
     "--dry-run",
@@ -69,7 +68,6 @@ try {
     () => undefined
   );
   run(process.execPath, [bin,
-    "--adapter", "claude-code",
     "--profile", "java",
     "--non-interactive",
     "--yes"

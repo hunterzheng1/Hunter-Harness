@@ -24,10 +24,17 @@ export class InitConfigurationError extends Error {
   }
 }
 
+function normalizeProfile(value: unknown): "general" | "java" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "" || value === "1" || value === "general") return "general";
+  if (value === "2" || value === "java") return "java";
+  throw new InitConfigurationError("profile must be general or java");
+}
+
 export async function resolveInitConfig(
   cwd: string,
   flags: InitFlagValues,
-  promptMissing?: (field: "adapter" | "profile") => Promise<string>
+  promptMissing?: () => Promise<string>
 ): Promise<InitConfig> {
   let fileConfig: Record<string, unknown> = {};
   if (flags.config !== undefined) {
@@ -44,21 +51,22 @@ export async function resolveInitConfig(
     }
   }
 
-  const adapter = fileConfig.adapter ?? flags.adapter ??
-    (promptMissing === undefined ? undefined : await promptMissing("adapter"));
-  const profile = fileConfig.profile ?? flags.profile ??
-    (promptMissing === undefined ? undefined : await promptMissing("profile"));
+  const configuredAdapter = fileConfig.adapter ?? flags.adapter ?? "claude-code";
+  if (configuredAdapter !== "claude-code") {
+    throw new InitConfigurationError("only claude-code is supported");
+  }
+  const profile = normalizeProfile(
+    fileConfig.profile ?? flags.profile ??
+      (promptMissing === undefined ? undefined : await promptMissing())
+  );
   const candidate = {
-    adapter,
+    adapter: "claude-code",
     profile,
     server_url: fileConfig.server_url ?? flags.serverUrl ?? null,
     token_env: fileConfig.token_env ?? flags.tokenEnv ?? "HUNTER_HARNESS_TOKEN",
     project_id: fileConfig.project_id ?? null,
     features: fileConfig.features
   };
-  if (candidate.adapter === undefined) {
-    throw new InitConfigurationError("adapter is required");
-  }
   if (candidate.profile === undefined) {
     throw new InitConfigurationError("profile is required");
   }

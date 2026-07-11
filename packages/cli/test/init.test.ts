@@ -48,7 +48,6 @@ describe("hunter-harness initialization", () => {
 
   it("performs a write-free dry run", async () => {
     const code = await run([
-      "--adapter", "claude-code",
       "--profile", "java",
       "--non-interactive",
       "--dry-run",
@@ -61,36 +60,49 @@ describe("hunter-harness initialization", () => {
     expect(output).toMatchObject({ dry_run: true, command: "configure" });
   });
 
-  it("fails non-interactively when adapter or profile is missing", async () => {
-    const code = await run(["--adapter", "claude-code", "--non-interactive", "--yes"]);
+  it("fails non-interactively when profile is missing", async () => {
+    const code = await run(["--non-interactive", "--yes"]);
     expect(code).toBe(3);
     expect(stderr.join(" ")).toMatch(/profile/i);
     expect(await pathExists(join(root, ".harness"))).toBe(false);
   });
 
-  it("prompts for missing interactive initialization fields", async () => {
-    const answers = ["", ""];
+  it.each([
+    ["", "general"],
+    ["1", "general"],
+    ["general", "general"],
+    ["2", "java"],
+    ["java", "java"]
+  ])("maps interactive profile input %j to %s", async (answer, expected) => {
     const code = await runCli([], {
       cwd: root,
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
-      prompt: async () => answers.shift() ?? ""
+      prompt: async () => answer
     });
-
     expect(code).toBe(0);
-    expect(await pathExists(join(root, ".harness", "project.yaml"))).toBe(true);
-    expect(answers).toHaveLength(0);
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { project: { profiles: string[] }; adapters: { enabled: string[] } };
-    expect(project.project.profiles).toEqual(["general"]);
+    expect(project.project.profiles).toEqual([expected]);
     expect(project.adapters.enabled).toEqual(["claude-code"]);
+  });
+
+  it("rejects an unknown interactive profile", async () => {
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async () => "python"
+    });
+    expect(code).toBe(3);
+    expect(stderr.join(" ")).toContain("profile must be general or java");
   });
 
   it("initializes offline and compiles real Claude Code skills", async () => {
     const code = await run([
-      "--adapter", "claude-code",
       "--profile", "java",
       "--non-interactive",
       "--yes"
@@ -143,7 +155,6 @@ describe("hunter-harness initialization", () => {
 
     const code = await run([
       "--config", configPath,
-      "--adapter", "claude-code",
       "--profile", "general",
       "--server-url", "https://flag.example.com",
       "--non-interactive",
@@ -168,7 +179,6 @@ describe("hunter-harness initialization", () => {
     await writeFile(join(root, "CLAUDE.md"), "# User Claude\nKeep this.\n");
     await writeFile(join(root, "AGENTS.md"), "# User Agents\nKeep this too.\n");
     const args = [
-      "--adapter", "claude-code",
       "--profile", "java",
       "--non-interactive",
       "--yes"
@@ -182,19 +192,5 @@ describe("hunter-harness initialization", () => {
     expect(secondClaude).toContain("# User Claude");
     expect(secondClaude.match(/hunter-harness:start/g)).toHaveLength(1);
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("# User Agents");
-  });
-
-  it("rejects cursor adapter in source-file init model (INT-002)", async () => {
-    const code = await run([
-      "--adapter", "cursor",
-      "--profile", "java",
-      "--non-interactive",
-      "--yes"
-    ]);
-    expect(code).toBe(1);
-    expect(stderr.join(" ")).toMatch(/not yet supported/i);
-    expect(stderr.join(" ")).toContain("cursor");
-    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
-    expect(await pathExists(join(root, ".cursor", "rules"))).toBe(false);
   });
 });

@@ -57,7 +57,6 @@ export async function runCli(
   const program = addCommonOptions(new Command())
     .name("hunter-harness")
     .description("Local-first, server-governed agent harness")
-    .option("--adapter <name>")
     .option("--profile <name>")
     .option("--config <file>")
     .showHelpAfterError()

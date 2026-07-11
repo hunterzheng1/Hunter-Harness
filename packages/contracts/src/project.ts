@@ -17,7 +17,7 @@ export const adapterNameSchema = z.enum([
 
 export const initConfigSchema = z.object({
   adapter: adapterNameSchema,
-  profile: z.string().min(1).regex(/^[a-z][a-z0-9-]*$/),
+  profile: z.enum(["general", "java"]),
   server_url: httpsUrlSchema.nullable().optional(),
   token_env: tokenEnvSchema.nullable().optional(),
   project_id: projectIdSchema.nullable().optional(),
