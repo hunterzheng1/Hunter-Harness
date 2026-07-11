@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "smoke:pack": "node scripts/smoke-pack.mjs",
+    "sync:harness": "node scripts/sync-harness.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:pack"
   },
   "devDependencies": {

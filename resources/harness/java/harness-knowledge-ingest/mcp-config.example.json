@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "harness-knowledge": {
+      "command": "python",
+      "args": [
+        "scripts/harness_knowledge_mcp.py"
+      ]
+    }
+  }
+}
