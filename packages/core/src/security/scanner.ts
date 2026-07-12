@@ -146,7 +146,14 @@ export function scanSensitiveFiles(
   )) {
     const path = normalizeManagedPath(inputPath);
     const ignores = parseInlineIgnores(content);
+    const knowledgeMetadata = path === ".harness/knowledge" ||
+      path.startsWith(".harness/knowledge/");
     for (const raw of rawFindings(content)) {
+      // Knowledge index/entries routinely record local projectRoot paths; that is
+      // metadata, not a credential leak worth blocking push.
+      if (knowledgeMetadata && raw.ruleId === "HH_WINDOWS_ABSOLUTE_PATH") {
+        continue;
+      }
       const position = location(content, raw.offset);
       const fingerprint = sha256Bytes([
         SENSITIVE_SCANNER_VERSION,

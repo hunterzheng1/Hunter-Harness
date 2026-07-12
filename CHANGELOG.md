@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1]
+
+### Fixed
+
+- 敏感扫描不再把相对路径、SHA/commit hex、知识条目 ID 误判为高熵 secret；`.harness/knowledge/**` 下的本地 `projectRoot` Windows 路径不再阻断 push。
+
 ## [0.2.0]
 
 ### Added
