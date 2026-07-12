@@ -7,10 +7,13 @@ import { describe, expect, it } from "vitest";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const resources = join(root, "resources", "harness");
 const packagedResources = join(root, "packages", "cli", "resources");
+const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
+const PROFILES = ["general", "java"] as const;
 
-interface Manifest {
-  schema_version: 1;
+interface ManifestV2 {
+  schema_version: 2;
   profile: "general" | "java";
+  adapter: string;
   files: Array<{ path: string; sha256: string }>;
 }
 
@@ -29,32 +32,42 @@ async function filePaths(directory: string, base = directory): Promise<string[]>
 }
 
 describe("embedded Harness Bundles", () => {
-  it.each(["general", "java"] as const)("matches every %s manifest hash", async (profile) => {
-    const manifest = JSON.parse(await readFile(
-      join(resources, "manifests", `${profile}.json`), "utf8"
-    )) as Manifest;
-    expect(manifest.profile).toBe(profile);
-    expect(manifest.files.length).toBeGreaterThan(0);
-    for (const item of manifest.files) {
-      const bytes = await readFile(join(resources, profile, item.path));
-      expect(createHash("sha256").update(bytes).digest("hex"), item.path).toBe(item.sha256);
+  it.each(PROFILES)("matches every %s agent manifest hash", async (profile) => {
+    for (const agent of AGENTS) {
+      const manifest = JSON.parse(await readFile(
+        join(resources, "manifests", profile, `${agent}.json`), "utf8"
+      )) as ManifestV2;
+      expect(manifest.schema_version).toBe(2);
+      expect(manifest.profile).toBe(profile);
+      expect(manifest.adapter).toBe(agent);
+      expect(manifest.files.length).toBeGreaterThan(0);
+      for (const item of manifest.files) {
+        const bytes = await readFile(join(resources, "bundles", profile, agent, item.path));
+        expect(createHash("sha256").update(bytes).digest("hex"), `${agent}:${item.path}`)
+          .toBe(item.sha256);
+      }
     }
   });
 
   it("keeps source-only material out of runtime bundles", async () => {
-    for (const profile of ["general", "java"]) {
-      expect(await exists(join(resources, profile, "redesign"))).toBe(false);
-      expect(await exists(join(resources, profile, "scripts", "tests"))).toBe(false);
-      expect(await exists(join(resources, profile, "shared"))).toBe(false);
-      expect(await exists(join(resources, profile, "overlays"))).toBe(false);
-      expect((await filePaths(join(resources, profile))).some((path) =>
-        path.split("/").includes("tests")
-      )).toBe(false);
+    for (const profile of PROFILES) {
+      for (const agent of AGENTS) {
+        const bundleRoot = join(resources, "bundles", profile, agent);
+        expect(await exists(join(bundleRoot, "redesign"))).toBe(false);
+        expect(await exists(join(bundleRoot, "scripts", "tests"))).toBe(false);
+        expect(await exists(join(bundleRoot, "shared"))).toBe(false);
+        expect(await exists(join(bundleRoot, "overlays"))).toBe(false);
+        expect((await filePaths(bundleRoot)).some((path) =>
+          path.split("/").includes("tests")
+        )).toBe(false);
+      }
     }
   });
 
   it("keeps legacy bootstrap resources out of the CLI package staging tree", async () => {
-    expect(await exists(join(packagedResources, "harness", "general", "harness-plan", "SKILL.md"))).toBe(true);
+    expect(await exists(join(
+      packagedResources, "harness", "bundles", "general", "claude-code", "harness-plan", "SKILL.md"
+    ))).toBe(true);
     expect(await exists(join(packagedResources, "bootstrap-ir"))).toBe(false);
     expect(await exists(join(packagedResources, "skills"))).toBe(false);
   });

@@ -120,7 +120,9 @@ describe("Conservative Refresh", () => {
     expect(replaced, "reviewer should be replaced").toBeDefined();
     expect(replaced?.action).toBe("replace");
     expect(replaced?.reason).toBe("BASELINE_CLEAN");
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", REVIEWER_SOURCE));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", REVIEWER_SOURCE
+    ));
     expect(await readFile(join(root, REVIEWER_TARGET))).toEqual(incoming);
     expect(result.conflicts).toHaveLength(0);
   });
@@ -169,7 +171,9 @@ describe("Conservative Refresh", () => {
 
     const replaced = result.applied.find((item) => item.target_path === REVIEWER_TARGET);
     expect(replaced?.reason).toBe("FORCE_MANAGED");
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", REVIEWER_SOURCE));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", REVIEWER_SOURCE
+    ));
     expect(await readFile(join(root, REVIEWER_TARGET))).toEqual(incoming);
     expect(await readFile(join(root, "notes.txt"), "utf8")).toBe("keep\n");
   });

@@ -265,7 +265,7 @@ describe("hunter-harness initialization", () => {
 
   it.each(["general", "java"])("installs %s bundle byte-for-byte", async (profile) => {
     expect(await run(["--profile", profile, "--non-interactive", "--yes"])).toBe(0);
-    const bundle = join(resourcesRoot, "harness", profile);
+    const bundle = join(resourcesRoot, "harness", "bundles", profile, "claude-code");
     for (const rel of await filesUnder(bundle)) {
       const target = /^agents\/[^/]+\.md$/.test(rel)
         ? join(root, ".claude", "agents", rel.slice("agents/".length))

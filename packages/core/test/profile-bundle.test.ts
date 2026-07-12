@@ -25,8 +25,9 @@ function syntheticBundle(
   for (const entry of entries) files.set(entry.path, entry.bytes);
   return {
     manifest: {
-      schema_version: 1,
+      schema_version: 2,
       profile: "general",
+      adapter: "claude-code",
       bundle_version: "0.0.0-test",
       generator: "harness_deploy.py",
       files: entries.map((entry) => ({

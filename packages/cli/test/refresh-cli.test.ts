@@ -71,7 +71,9 @@ describe("hunter-harness refresh CLI", () => {
     stdout = []; stderr = [];
     const code = await run(["refresh", "--non-interactive", "--yes", "--force-managed", "--json"]);
     expect(code).toBe(0);
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", "agents", "harness-reviewer.md"));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", "agents", "harness-reviewer.md"
+    ));
     expect(await readFile(target)).toEqual(incoming);
   });
 
