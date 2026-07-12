@@ -9,19 +9,18 @@ import type {
   RegistrySkillProposal,
   RegistrySkillVersion,
   RegistryTag,
-  RegistryWorkflow,
-  RegistryWorkflowMutation,
+  WorkflowFamily,
+  WorkflowFamilyDraftState,
+  WorkflowFamilyMutation,
+  WorkflowFamilyVersion,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
   FixPlan,
-  PublishSkillRequest,
-  WorkflowPackage,
-  WorkflowPackageDraftState,
-  WorkflowPackageVersion
+  PublishSkillRequest
 } from "@hunter-harness/contracts";
 
-import { bootstrapSkills, workflowOrder } from "./catalog";
+import { bootstrapSkills } from "./catalog";
 import { findDemoSourceSkill, sapFieldMapper } from "./demo-skills/sap-field-mapper";
 import { ApiClientError } from "./api";
 import type {
@@ -245,16 +244,16 @@ const MOCK_TAGS: RegistryTag[] = [
   { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
 ];
 
-const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
-  workflow_id: "wf_demo_general",
-  key: "general",
-  name: "General",
-  description: "Explicit read-only demo workflow",
-  profile: "general",
-  default_agent: "claude-code",
-  enabled: true,
-  skill_slugs: [...workflowOrder],
+const MOCK_WORKFLOW_FAMILIES: WorkflowFamily[] = [{
+  family_id: "wff_demo_general",
+  slug: "general",
+  displayName: "General",
+  description: "Explicit read-only demo workflow family",
+  tags: ["bootstrap"],
+  latest_version: "1.0.0",
+  required_profiles: ["general"],
   revision: 1,
+  npmReleases: [],
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z"
 }];
@@ -382,7 +381,7 @@ export class MockApiClient implements HunterApi {
 
   async listSkillProposals(): Promise<RegistrySkillProposal[]> { return delay([]); }
   async listTags(): Promise<RegistryTag[]> { return delay(clone(MOCK_TAGS)); }
-  async listWorkflows(): Promise<RegistryWorkflow[]> { return delay(clone(MOCK_WORKFLOWS)); }
+  async listWorkflowFamilies(): Promise<WorkflowFamily[]> { return delay(clone(MOCK_WORKFLOW_FAMILIES)); }
   async listSkillArtifacts() { return delay([]); }
   async createSkillProposal(): Promise<RegistrySkillProposal> { return demoReadOnly(); }
   async reviewSkillProposal(): Promise<Record<string, unknown>> { return demoReadOnly(); }
@@ -391,9 +390,50 @@ export class MockApiClient implements HunterApi {
   async updateTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async mergeTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async bindSkillTag(): Promise<RegistrySkillDetail> { return demoReadOnly(); }
-  async createWorkflow(input: RegistryWorkflowMutation): Promise<RegistryWorkflow> { void input; return demoReadOnly(); }
-  async updateWorkflow(): Promise<RegistryWorkflow> { return demoReadOnly(); }
-  async deleteWorkflow(): Promise<void> { return demoReadOnly(); }
+  async createWorkflowFamily(input: WorkflowFamilyMutation): Promise<WorkflowFamily> { void input; return demoReadOnly(); }
+  async getWorkflowFamily(slug: string): Promise<WorkflowFamily> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined) throw new ApiClientError(404, "WORKFLOW_FAMILY_NOT_FOUND", "Demo workflow family not found.");
+    return delay(clone(family));
+  }
+  async uploadWorkflowFamilyProfileDraft(): Promise<WorkflowFamilyDraftState> { return demoReadOnly(); }
+  async getWorkflowFamilyDraft(slug: string): Promise<WorkflowFamilyDraftState> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow family draft not found.");
+    return delay({
+      family_slug: family.slug,
+      profiles: [],
+      required_profiles: family.required_profiles,
+      draftVersion: null,
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-25T00:00:00Z",
+      updated_at: "2026-06-25T00:00:00Z"
+    });
+  }
+  async discardWorkflowFamilyDraft(): Promise<{ slug: string; discarded: boolean }> { return demoReadOnly(); }
+  async runWorkflowFamilyDraftChecks(slug: string): Promise<SkillCheckResult> {
+    void slug;
+    return delay(demoChecksToResult([
+      { id: "WF_BUNDLE_MANIFEST", label: "Bundle manifest", status: "green", message: "ok", filePath: null, fixable: false }
+    ]));
+  }
+  async publishWorkflowFamilyDraft(): Promise<WorkflowFamilyVersion> { return demoReadOnly(); }
+  async diffWorkflowFamilyDraft(): Promise<SkillDiffFile[]> { return []; }
+  async listWorkflowFamilyVersions(slug: string): Promise<WorkflowFamilyVersion[]> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined || family.latest_version === null) return delay([]);
+    return delay([{
+      family_slug: family.slug,
+      version: family.latest_version,
+      profiles: [{ profile: "general", bundle_manifest: { schema_version: 1, profile: "general", files: [{ path: "workflow.yaml", sha256: "sha256:" + "a".repeat(64) }] }, artifact_id: "wfb_demo_general", sourceFiles: [] }],
+      artifacts: [],
+      changeNote: "Demo release",
+      created_at: "2026-06-20T00:00:00Z"
+    }]);
+  }
+  async downloadWorkflowFamilyArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
   async listProjects(): Promise<ProjectSummary[]> {
     return delay([...MOCK_PROJECTS]);
   }
@@ -616,17 +656,6 @@ export class MockApiClient implements HunterApi {
   }
 
   async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
-
-  // workflow package：demo 模式禁写（mutation 走 demoReadOnly），get 返回空/404（无 mock 数据；真实模式调 /workflow-packages）。
-  async uploadWorkflowPackage(): Promise<WorkflowPackageDraftState> { return demoReadOnly(); }
-  async getWorkflowPackageDraft(): Promise<WorkflowPackageDraftState> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
-  async discardWorkflowPackageDraft(): Promise<{ key: string; discarded: boolean }> { return demoReadOnly(); }
-  async runWorkflowPackageChecks(): Promise<SkillCheckResult> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
-  async publishWorkflowPackage(): Promise<WorkflowPackageVersion> { return demoReadOnly(); }
-  async diffWorkflowPackageDraft(): Promise<SkillDiffFile[]> { return []; }
-  async listWorkflowPackages(): Promise<WorkflowPackage[]> { return []; }
-  async getWorkflowPackage(): Promise<WorkflowPackage> { throw new ApiClientError(404, "PACKAGE_NOT_FOUND", "Demo workflow package not found."); }
-  async listWorkflowPackageVersions(): Promise<WorkflowPackageVersion[]> { return []; }
 
   async listAiProviders(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }> {
     return delay({ items: clone(MOCK_AI_PROVIDERS).map((p) => ({ ...p, key_set: p.provider_id === "deepseek" })), default_provider: "deepseek" });

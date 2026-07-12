@@ -12,12 +12,10 @@ import {
   registrySkillVersionSchema,
   registryProjectWorkflowBindingSchema,
   registryTagSchema,
-  registryWorkflowMutationSchema,
-  registryWorkflowSchema,
   skillUsageExampleSchema,
-  workflowPackageDraftStateSchema,
-  workflowPackageSchema,
-  workflowPackageVersionSchema,
+  workflowFamilyDraftStateSchema,
+  workflowFamilySchema,
+  workflowFamilyVersionSchema,
   SKILL_ERROR_CODE,
   type AiConfigState,
   type AiProviderApiFormat,
@@ -35,16 +33,15 @@ import {
   type RegistrySkillProposal,
   type RegistrySkillVersion,
   type RegistryTag,
-  type RegistryWorkflow,
-  type RegistryWorkflowMutation,
   type SkillCheckResult,
   type SkillDiffFile,
   type SkillFrontmatter,
   type SkillUsageExample,
   type SourceFile,
-  type WorkflowPackage,
-  type WorkflowPackageDraftState,
-  type WorkflowPackageVersion
+  type WorkflowFamily,
+  type WorkflowFamilyDraftState,
+  type WorkflowFamilyMutation,
+  type WorkflowFamilyVersion
 } from "@hunter-harness/contracts";
 import {
   AGENT_DESCRIPTORS,
@@ -70,7 +67,7 @@ import type { RegistryPersistence } from "./persistence.js";
 import type { NpmPublishAttemptResult, SkillNpmPackageInput } from "../npm/publisher.js";
 import { skillNpmPackageInput } from "../npm/publisher.js";
 import type { NpmPublishConfig } from "../npm/config.js";
-import { WorkflowPackageStore, type WorkflowPackageState } from "./workflow-package-store.js";
+import { WorkflowFamilyStore, type WorkflowFamilyState } from "./workflow-family-store.js";
 
 // applyFixSuggestion 可写白名单（examples/allowed_capabilities/instructions/description）；
 // tags/null 为展示型建议不可写 → 422。与 output-parser FIX_APPLIES_TO_WHITELIST（5 值含 tags，解析白名单）语义不同，不可合并。
@@ -330,13 +327,12 @@ export class RegistryStore {
   private readonly skills = new Map<string, SkillState>();
   private readonly proposals = new Map<string, ProposalState>();
   private readonly tags = new Map<string, RegistryTag>();
-  private readonly workflows = new Map<string, RegistryWorkflow>();
   private readonly projectBindings = new Map<string, RegistryProjectWorkflowBinding>();
   // per-agent 独立草稿：Map<slug, Map<agent, DraftState>>。每 agent 独立 draftVersion/revision/checks。
   private readonly drafts = new Map<string, Map<RegistryAgent, DraftState>>();
-  private readonly workflowPackages = new Map<string, WorkflowPackageState>();
-  private readonly workflowPackageDrafts = new Map<string, WorkflowPackageDraftState>();
-  private readonly workflowPackageStore: WorkflowPackageStore;
+  private readonly workflowFamilies = new Map<string, WorkflowFamilyState>();
+  private readonly workflowFamilyDrafts = new Map<string, WorkflowFamilyDraftState>();
+  private readonly workflowFamilyStore: WorkflowFamilyStore;
   private compilerVersion = "1.0.0";
   private tagUsageCache: Map<string, number> | null = null;
   private aiConfig: AiConfigState = { defaultProvider: null, providers: [], usage: [] };
@@ -346,10 +342,10 @@ export class RegistryStore {
     private readonly persistence?: RegistryPersistence
   ) {
     // 在构造函数体初始化（非 field initializer）：依赖参数属性 this.storage，须在参数属性赋值后（esbuild field init 先于参数属性会导致 this.storage undefined）。
-    this.workflowPackageStore = new WorkflowPackageStore({
+    this.workflowFamilyStore = new WorkflowFamilyStore({
       storage: this.storage,
-      packages: this.workflowPackages,
-      drafts: this.workflowPackageDrafts,
+      families: this.workflowFamilies,
+      drafts: this.workflowFamilyDrafts,
       persist: () => this.persist(),
       compilerVersion: () => this.compilerVersion
     });
@@ -385,11 +381,10 @@ export class RegistryStore {
         skills: Array<[string, unknown]>;
         proposals: Array<[string, ProposalState]>;
         tags: Array<[string, unknown]>;
-        workflows: Array<[string, RegistryWorkflow]>;
-        projectBindings?: Array<[string, RegistryProjectWorkflowBinding]>;
+        projectBindings?: Array<[string, unknown]>;
         drafts?: Array<[string, unknown]>;
-        workflowPackages?: Array<[string, unknown]>;
-        workflowPackageDrafts?: Array<[string, unknown]>;
+        workflowFamilies?: Array<[string, unknown]>;
+        workflowFamilyDrafts?: Array<[string, unknown]>;
         aiConfig?: unknown;
         aiUsage?: unknown;
       };
@@ -400,8 +395,10 @@ export class RegistryStore {
       }
       for (const [key, state] of value.proposals) this.proposals.set(key, state);
       for (const [key, raw] of value.tags) this.tags.set(key, migrateTag(raw));
-      for (const [key, state] of value.workflows) this.workflows.set(key, state);
-      for (const [key, state] of value.projectBindings ?? []) this.projectBindings.set(key, state);
+      for (const [key, raw] of value.projectBindings ?? []) {
+        const parsed = registryProjectWorkflowBindingSchema.safeParse(raw);
+        if (parsed.success) this.projectBindings.set(key, parsed.data);
+      }
       // drafts 兼容两种格式：旧 [[slug, DraftState-without-agent]] 与 新 [[slug, [[agent, DraftState]]]]。
       for (const [key, raw] of value.drafts ?? []) {
         if (Array.isArray(raw)) {
@@ -433,20 +430,20 @@ export class RegistryStore {
           agents: agentsFor(slug, defaultAgent, state.versions, this.drafts.get(slug))
         });
       }
-      for (const [key, raw] of value.workflowPackages ?? []) {
-        const state = raw as { package: unknown; versions: unknown[] };
-        const pkg = workflowPackageSchema.safeParse(state.package);
-        if (!pkg.success) continue;
-        const versions: WorkflowPackageVersion[] = [];
+      for (const [key, raw] of value.workflowFamilies ?? []) {
+        const state = raw as { detail: unknown; versions: unknown[] };
+        const detail = workflowFamilySchema.safeParse(state.detail);
+        if (!detail.success) continue;
+        const versions: WorkflowFamilyVersion[] = [];
         for (const v of Array.isArray(state.versions) ? state.versions : []) {
-          const r = workflowPackageVersionSchema.safeParse(v);
-          if (r.success) versions.push(r.data);
+          const parsed = workflowFamilyVersionSchema.safeParse(v);
+          if (parsed.success) versions.push(parsed.data);
         }
-        this.workflowPackages.set(key, { package: pkg.data, versions });
+        this.workflowFamilies.set(key, { detail: detail.data, versions });
       }
-      for (const [key, raw] of value.workflowPackageDrafts ?? []) {
-        const parsed = workflowPackageDraftStateSchema.safeParse(raw);
-        if (parsed.success) this.workflowPackageDrafts.set(key, parsed.data);
+      for (const [key, raw] of value.workflowFamilyDrafts ?? []) {
+        const parsed = workflowFamilyDraftStateSchema.safeParse(raw);
+        if (parsed.success) this.workflowFamilyDrafts.set(key, parsed.data);
       }
       // AI config 反序列化：schemaVersion < 4 时 migrate 每个 provider（旧单 model → models[] + selected_model_id）
       const aiCfgRaw = value.aiConfig as { providers?: unknown[]; defaultProvider?: string | null; usage?: unknown[] } | undefined;
@@ -494,12 +491,11 @@ export class RegistryStore {
       skills: [...this.skills.entries()],
       proposals: [...this.proposals.entries()],
       tags: [...this.tags.entries()],
-      workflows: [...this.workflows.entries()],
       projectBindings: [...this.projectBindings.entries()],
       // 嵌套 drafts：[[slug, [[agent, DraftState]]]]（UT-031）
       drafts: [...this.drafts.entries()].map(([slug, m]) => [slug, [...m.entries()]] as [string, [RegistryAgent, DraftState][]]),
-      workflowPackages: [...this.workflowPackages.entries()].map(([key, state]) => [key, { package: state.package, versions: state.versions }]),
-      workflowPackageDrafts: [...this.workflowPackageDrafts.entries()],
+      workflowFamilies: [...this.workflowFamilies.entries()].map(([slug, state]) => [slug, { detail: state.detail, versions: state.versions }]),
+      workflowFamilyDrafts: [...this.workflowFamilyDrafts.entries()],
       aiConfig: this.aiConfig
     }, tx);
   }
@@ -626,7 +622,7 @@ export class RegistryStore {
     const hasProtocolsDir = paths.some((p) => /(^|\/)protocols\//i.test(p));
     const hasTemplatesDir = paths.some((p) => /(^|\/)templates\//i.test(p));
     if (hasWorkflow && (hasSkillsDir || hasAgentsDir || hasProtocolsDir || hasTemplatesDir)) {
-      throw new ServerDomainError(422, SKILL_ERROR_CODE.WORKFLOW_PACKAGE_REDIRECT, "workflow packages must use the workflow center", { redirect: "workflow-packages" });
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.WORKFLOW_PACKAGE_REDIRECT, "workflow bundles must use the workflow family center", { redirect: "workflow-families" });
     }
     const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
     if (unsafe !== undefined) {
@@ -1031,33 +1027,48 @@ export class RegistryStore {
     return structuredClone(state.detail);
   }
 
-  // ---- Workflow package 委派（T9；独立域，不碰 skill/workflow 清单 CRUD；maps 与 persist 共享，snapshot 序列化在 persist）----
-  async uploadWorkflowPackage(input: { files: SourceFile[]; actorId: string }): Promise<WorkflowPackageDraftState> {
-    return this.workflowPackageStore.uploadPackage(input);
+  // ---- Workflow family 委派 ----
+  createWorkflowFamily(input: WorkflowFamilyMutation): WorkflowFamily {
+    return this.workflowFamilyStore.createFamily(input);
   }
-  getWorkflowPackageDraft(key: string): WorkflowPackageDraftState {
-    return this.workflowPackageStore.getPackageDraft(key);
+  listWorkflowFamilies(): WorkflowFamily[] {
+    return this.workflowFamilyStore.listFamilies();
   }
-  async discardWorkflowPackageDraft(key: string, revision: number): Promise<void> {
-    return this.workflowPackageStore.discardPackageDraft(key, revision);
+  getWorkflowFamily(slug: string): WorkflowFamily {
+    return this.workflowFamilyStore.getFamily(slug);
   }
-  async runWorkflowPackageChecks(input: { key: string; checkedAt: string }): Promise<SkillCheckResult> {
-    return this.workflowPackageStore.runPackageChecks(input);
+  async uploadWorkflowFamilyProfileDraft(input: {
+    slug: string;
+    profile: string;
+    files: SourceFile[];
+    actorId: string;
+  }): Promise<WorkflowFamilyDraftState> {
+    return this.workflowFamilyStore.uploadProfileDraft(input);
   }
-  diffWorkflowPackageDraft(key: string): SkillDiffFile[] {
-    return this.workflowPackageStore.diffPackageDraft(key);
+  getWorkflowFamilyDraft(slug: string): WorkflowFamilyDraftState {
+    return this.workflowFamilyStore.getFamilyDraft(slug);
   }
-  async publishWorkflowPackage(key: string, input: { version: string; releaseNote?: string | null; actorId: string }): Promise<WorkflowPackageVersion> {
-    return this.workflowPackageStore.publishPackage(key, input);
+  async discardWorkflowFamilyDraft(slug: string, revision: number): Promise<void> {
+    return this.workflowFamilyStore.discardFamilyDraft(slug, revision);
   }
-  listWorkflowPackages(): WorkflowPackage[] {
-    return this.workflowPackageStore.listPackages();
+  async runWorkflowFamilyChecks(input: { slug: string; checkedAt: string }): Promise<SkillCheckResult> {
+    return this.workflowFamilyStore.runFamilyChecks(input);
   }
-  getWorkflowPackage(key: string): WorkflowPackage {
-    return this.workflowPackageStore.getPackage(key);
+  diffWorkflowFamilyDraft(slug: string, profile?: string): SkillDiffFile[] {
+    return this.workflowFamilyStore.diffFamilyDraft(slug, profile);
   }
-  listWorkflowPackageVersions(key: string): WorkflowPackageVersion[] {
-    return this.workflowPackageStore.listPackageVersions(key);
+  async publishWorkflowFamily(slug: string, input: {
+    version: string;
+    releaseNote?: string | null;
+    actorId: string;
+  }): Promise<WorkflowFamilyVersion> {
+    return this.workflowFamilyStore.publishFamily(slug, input);
+  }
+  listWorkflowFamilyVersions(slug: string): WorkflowFamilyVersion[] {
+    return this.workflowFamilyStore.listFamilyVersions(slug);
+  }
+  async getWorkflowFamilyProfileArtifactBytes(slug: string, profile: string, version?: string): Promise<Uint8Array> {
+    return this.workflowFamilyStore.getProfileArtifactBytes(slug, profile, version);
   }
 
   // ---- AI provider 配置（§12.9；key 不进 store，只存 provider 元数据 + 用量）----
@@ -1725,86 +1736,33 @@ export class RegistryStore {
     return structuredClone(state.detail);
   }
 
-  createWorkflow(input: RegistryWorkflowMutation): RegistryWorkflow {
-    const value = registryWorkflowMutationSchema.parse(input);
-    this.validateWorkflowSkills(value);
-    if ([...this.workflows.values()].some((workflow) => workflow.key === value.key)) {
-      throw new ServerDomainError(409, "WORKFLOW_EXISTS", "workflow already exists");
-    }
-    const now = new Date().toISOString();
-    const workflow = registryWorkflowSchema.parse({
-      ...value,
-      workflow_id: id("wf_"), revision: 1, created_at: now, updated_at: now
-    });
-    this.workflows.set(workflow.workflow_id, workflow);
-    return structuredClone(workflow);
-  }
-
-  listWorkflows(): RegistryWorkflow[] {
-    return [...this.workflows.values()].map((value) => structuredClone(value));
-  }
-
-  getWorkflow(workflowId: string): RegistryWorkflow {
-    const workflow = this.workflows.get(workflowId);
-    if (workflow === undefined) throw new ServerDomainError(404, "WORKFLOW_NOT_FOUND", "workflow not found");
-    return structuredClone(workflow);
-  }
-
-  updateWorkflow(
-    workflowId: string,
-    input: {
-      revision: number;
-      key?: string | undefined;
-      name?: string | undefined;
-      description?: string | undefined;
-      profile?: string | undefined;
-      default_agent?: RegistryAgent | undefined;
-      enabled?: boolean | undefined;
-      skill_slugs?: string[] | undefined;
-    }
-  ): RegistryWorkflow {
-    const current = this.getWorkflow(workflowId);
-    if (current.revision !== input.revision) {
-      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "workflow revision is stale");
-    }
-    const merged = registryWorkflowMutationSchema.parse({
-      key: input.key ?? current.key,
-      name: input.name ?? current.name,
-      description: input.description ?? current.description,
-      profile: input.profile ?? current.profile,
-      default_agent: input.default_agent ?? current.default_agent,
-      enabled: input.enabled ?? current.enabled,
-      skill_slugs: input.skill_slugs ?? current.skill_slugs
-    });
-    this.validateWorkflowSkills(merged);
-    const updated = registryWorkflowSchema.parse({
-      ...current, ...merged, revision: current.revision + 1, updated_at: new Date().toISOString()
-    });
-    this.workflows.set(workflowId, updated);
-    return structuredClone(updated);
-  }
-
-  deleteWorkflow(workflowId: string, revision: number): void {
-    const current = this.getWorkflow(workflowId);
-    if (current.revision !== revision) {
-      throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "workflow revision is stale");
-    }
-    if ([...this.projectBindings.values()].some((binding) => binding.workflow_id === workflowId)) {
-      throw new ServerDomainError(409, "WORKFLOW_IN_USE", "workflow is still bound to a project");
-    }
-    this.workflows.delete(workflowId);
-  }
-
   getProjectBinding(projectId: string): RegistryProjectWorkflowBinding | null {
     return structuredClone(this.projectBindings.get(projectId) ?? null);
   }
 
-  bindProjectWorkflow(input: {
+  bindProjectWorkflowFamily(input: {
     projectId: string;
-    workflowId: string;
+    familySlug: string;
+    profile: string;
+    version?: string | null;
     revision: number | null;
   }): RegistryProjectWorkflowBinding {
-    this.getWorkflow(input.workflowId);
+    const family = this.workflowFamilyStore.getFamily(input.familySlug);
+    if (!family.required_profiles.includes(input.profile)) {
+      throw new ServerDomainError(422, "WORKFLOW_PROFILE_INVALID", "profile is not required for this family", {
+        slug: input.familySlug,
+        profile: input.profile
+      });
+    }
+    if (input.version !== undefined && input.version !== null) {
+      const versions = this.workflowFamilyStore.listFamilyVersions(input.familySlug);
+      if (!versions.some((entry) => entry.version === input.version)) {
+        throw new ServerDomainError(404, "WORKFLOW_FAMILY_VERSION_NOT_FOUND", "workflow family version not found", {
+          slug: input.familySlug,
+          version: input.version
+        });
+      }
+    }
     const current = this.projectBindings.get(input.projectId);
     if (current !== undefined && current.revision !== input.revision) {
       throw new ServerDomainError(409, SKILL_ERROR_CODE.REVISION_CONFLICT, "project workflow binding revision is stale");
@@ -1814,27 +1772,13 @@ export class RegistryStore {
     }
     const binding = registryProjectWorkflowBindingSchema.parse({
       project_id: input.projectId,
-      workflow_id: input.workflowId,
+      family_slug: input.familySlug,
+      profile: input.profile,
+      version: input.version ?? null,
       revision: (current?.revision ?? 0) + 1,
       updated_at: new Date().toISOString()
     });
     this.projectBindings.set(input.projectId, binding);
     return structuredClone(binding);
-  }
-
-  private validateWorkflowSkills(workflow: RegistryWorkflowMutation): void {
-    if (new Set(workflow.skill_slugs).size !== workflow.skill_slugs.length) {
-      throw new ServerDomainError(422, "WORKFLOW_SKILL_DUPLICATE", "workflow contains duplicate skills");
-    }
-    for (const slug of workflow.skill_slugs) {
-      const skill = this.skills.get(slug)?.detail;
-      if (skill === undefined || skill.status !== "published") {
-        throw new ServerDomainError(422, "WORKFLOW_SKILL_INVALID", "workflow references an unpublished skill", { slug });
-      }
-      if (!skill.agents.some((a) => a.agent === workflow.default_agent)) {
-        throw new ServerDomainError(422, "WORKFLOW_ADAPTER_INCOMPATIBLE", "skill does not support workflow agent", { slug });
-      }
-      // profile 系统已删除（新模型无 ir.profiles）；profile 兼容检查移除
-    }
   }
 }

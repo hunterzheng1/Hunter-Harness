@@ -75,7 +75,7 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     };
   }
 
-  it("lists canonical bootstrap skills and directly maintains tags and workflows", async () => {
+  it("lists canonical bootstrap skills and directly maintains tags and workflow families", async () => {
     const skills = await app.inject({ method: "GET", url: "/api/v1/skills", headers: headers() });
     expect(skills.statusCode).toBe(200);
     expect(skills.json().items).toMatchObject([{ slug: "harness-sync", latest_version: "1.0.0" }]);
@@ -88,38 +88,40 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     });
     expect(tag.statusCode).toBe(201);
 
-    const workflow = await app.inject({
+    const family = await app.inject({
       method: "POST",
-      url: "/api/v1/workflows",
+      url: "/api/v1/workflow-families",
       headers: headers(),
       payload: {
         schema_version: 1,
-        key: "general",
-        name: "General",
-        description: "Default governed workflow",
-        profile: "general",
-        default_agent: "claude-code",
-        enabled: true,
-        skill_slugs: ["harness-sync"]
+        slug: "harness",
+        displayName: "Harness",
+        description: "Default harness workflow family",
+        tags: [],
+        required_profiles: ["general"]
       }
     });
-    expect(workflow.statusCode).toBe(201);
-    expect(workflow.json()).toMatchObject({ key: "general", revision: 1 });
+    expect(family.statusCode).toBe(201);
+    expect(family.json()).toMatchObject({ slug: "harness", revision: 1 });
 
-    const updated = await app.inject({
-      method: "PATCH",
-      url: `/api/v1/workflows/${workflow.json().workflow_id}`,
-      headers: headers(),
-      payload: { revision: 1, description: "Updated without review" }
+    const upload = multipart([
+      { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+      { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+    ]);
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
     });
-    expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ revision: 2, description: "Updated without review" });
+    expect(draft.statusCode).toBe(201);
+    expect(draft.json()).toMatchObject({ family_slug: "harness", revision: 1 });
 
     const audit = await repository.listAuditEvents();
     expect(audit.map((event) => event.action)).toEqual(expect.arrayContaining([
       "tag.created",
-      "workflow.created",
-      "workflow.updated"
+      "workflow.family.created",
+      "workflow.family.draft.created"
     ]));
   });
 

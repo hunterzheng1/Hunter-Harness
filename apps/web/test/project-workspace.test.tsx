@@ -102,32 +102,33 @@ describe("ProjectWorkspace", () => {
     expect(await screen.findByText(/proposal prp_new is pending review/i)).toBeInTheDocument();
   });
 
-  it("shows the bound Workflow and its effective ordered Skills", async () => {
+  it("shows the bound workflow family and profile", async () => {
     render(<ProjectWorkspace api={api({
-      listWorkflows: vi.fn(async () => [{
-        workflow_id: "wf_review",
-        key: "review",
-        name: "Review",
-        description: "Review workflow",
-        profile: "general",
-        default_agent: "claude-code" as const,
-        enabled: true,
-        skill_slugs: ["harness-sync", "harness-review"],
+      listWorkflowFamilies: vi.fn(async () => [{
+        family_id: "wff_review",
+        slug: "review",
+        displayName: "Review",
+        description: "Review workflow family",
+        tags: ["review"],
+        latest_version: "1.0.0",
+        required_profiles: ["general"],
         revision: 1,
+        npmReleases: [],
         created_at: "2026-06-20T00:00:00Z",
         updated_at: "2026-06-20T00:00:00Z"
       }]),
       getProjectWorkflowBinding: vi.fn(async () => ({
         project_id: "prj_one",
-        workflow_id: "wf_review",
+        family_slug: "review",
+        profile: "general",
+        version: "1.0.0",
         revision: 1,
         updated_at: "2026-06-20T00:00:00Z"
       }))
     })} projectId="prj_one" />);
 
     expect(await screen.findByRole("heading", { name: "Review" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "01 harness-sync" })).toHaveAttribute("href", "/skills/harness-sync");
-    expect(screen.getByRole("link", { name: "02 harness-review" })).toHaveAttribute("href", "/skills/harness-review");
+    expect(screen.getByRole("combobox", { name: "Bound workflow family" })).toHaveValue("review:general");
   });
 
   it("keeps protocol-only paths inspectable but never editable", async () => {

@@ -89,17 +89,15 @@ describe("/api/v1/dashboard/overview", () => {
 
     const workflow = await app.inject({
       method: "POST",
-      url: "/api/v1/workflows",
+      url: "/api/v1/workflow-families",
       headers: headers(),
       payload: {
         schema_version: 1,
-        key: "dashboard",
-        name: "Dashboard Workflow",
-        description: "Workflow included in the governance overview.",
-        profile: "general",
-        default_agent: "claude-code",
-        enabled: true,
-        skill_slugs: ["harness-sync"]
+        slug: "harness",
+        displayName: "Harness",
+        description: "Workflow family included in the governance overview.",
+        tags: [],
+        required_profiles: ["general"]
       }
     });
     expect(workflow.statusCode).toBe(201);
@@ -171,9 +169,9 @@ describe("/api/v1/dashboard/overview", () => {
       expect.objectContaining({ key: "registry", status: "operational" })
     ]));
     expect(overview.json().activity).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: "workflow.created" })
+      expect.objectContaining({ action: "workflow.family.created" })
     ]));
-    expect(overview.json().activity.find((event: { action: string }) => event.action === "workflow.created"))
+    expect(overview.json().activity.find((event: { action: string }) => event.action === "workflow.family.created"))
       .not.toHaveProperty("details");
   });
 

@@ -250,15 +250,17 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     let active = true;
     setError(null);
     void api.listProjects().then(async (items) => {
-      const workflows = await (api.listWorkflows?.() ?? Promise.resolve([]));
+      const families = await (api.listWorkflowFamilies?.() ?? Promise.resolve([]));
       const bindings = api.getProjectWorkflowBinding === undefined
         ? items.map(() => null)
         : await Promise.all(items.map((project) => api.getProjectWorkflowBinding?.(project.project_id) ?? Promise.resolve(null)));
       const nextInfo: Record<string, { name: string; skillCount: number }> = {};
       items.forEach((project, index) => {
         const binding = bindings[index];
-        const workflow = workflows.find((item) => item.workflow_id === binding?.workflow_id);
-        if (workflow !== undefined) nextInfo[project.project_id] = { name: workflow.name, skillCount: workflow.skill_slugs.length };
+        const family = families.find((item) => item.slug === binding?.family_slug);
+        if (family !== undefined && binding !== null && binding !== undefined) {
+          nextInfo[project.project_id] = { name: `${family.displayName} · ${binding.profile}`, skillCount: family.required_profiles.length };
+        }
       });
       if (active) { setProjects(items); setWorkflowInfo(nextInfo); }
     }).catch((reason: unknown) => {

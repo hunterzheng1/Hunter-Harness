@@ -491,111 +491,92 @@ paths:
       responses:
         "200": { description: Tag removed from Skill }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages:
+  /api/v1/workflow-families:
+    get:
+      operationId: listWorkflowFamilies
+      responses:
+        "200": { description: Workflow families }
+        default: { $ref: "#/components/responses/Error" }
     post:
-      operationId: uploadWorkflowPackage
+      operationId: createWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "201": { description: Workflow package draft created or updated from uploaded ZIP }
+        "201": { description: Workflow family created }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/{slug}:
     get:
-      operationId: listWorkflowPackages
+      operationId: getWorkflowFamily
       responses:
-        "200": { description: List of published workflow packages }
+        "200": { description: Workflow family detail }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}:
-    get:
-      operationId: getWorkflowPackage
+  /api/v1/workflow-families/{slug}/draft/profiles/{profile}:
+    post:
+      operationId: uploadWorkflowFamilyProfileDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Published workflow package detail }
+        "201": { description: Per-profile workflow family draft uploaded from ZIP }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft:
+  /api/v1/workflow-families/{slug}/draft:
     get:
-      operationId: getWorkflowPackageDraft
+      operationId: getWorkflowFamilyDraft
       responses:
-        "200": { description: Unpublished workflow package draft with manifest and checks }
+        "200": { description: Unpublished workflow family draft with per-profile bundles }
         default: { $ref: "#/components/responses/Error" }
     delete:
-      operationId: discardWorkflowPackageDraft
+      operationId: discardWorkflowFamilyDraft
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow package draft discarded }
+        "200": { description: Workflow family draft discarded }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft/checks:
+  /api/v1/workflow-families/{slug}/draft/checks:
     post:
-      operationId: runWorkflowPackageChecks
+      operationId: runWorkflowFamilyChecks
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow package draft check results }
+        "200": { description: Workflow family draft check results }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/publish:
+  /api/v1/workflow-families/{slug}/publish:
     post:
-      operationId: publishWorkflowPackage
+      operationId: publishWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Published workflow package version with artifacts }
+        "200": { description: Published workflow family version covering all required profiles }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft/diff:
+  /api/v1/workflow-families/{slug}/draft/diff:
     get:
-      operationId: diffWorkflowPackageDraft
+      operationId: diffWorkflowFamilyDraft
       responses:
-        "200": { description: Diff files between published and draft workflow package }
+        "200": { description: Diff files between published and draft workflow family profile bundle }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/versions:
+  /api/v1/workflow-families/{slug}/versions:
     get:
-      operationId: listWorkflowPackageVersions
+      operationId: listWorkflowFamilyVersions
       responses:
-        "200": { description: Published workflow package version sequence }
+        "200": { description: Published workflow family version sequence }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflows:
+  /api/v1/workflow-families/{slug}/artifacts/{profile}/download:
     get:
-      operationId: listWorkflows
+      operationId: downloadWorkflowFamilyProfileArtifact
       responses:
-        "200": { description: Workflow profiles }
-        default: { $ref: "#/components/responses/Error" }
-    post:
-      operationId: createWorkflow
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201": { description: Workflow created directly with audit }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflows/{workflow_id}:
-    get:
-      operationId: getWorkflow
-      responses:
-        "200": { description: Workflow detail }
-        default: { $ref: "#/components/responses/Error" }
-    patch:
-      operationId: updateWorkflow
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200": { description: Workflow updated with optimistic revision }
-        default: { $ref: "#/components/responses/Error" }
-    delete:
-      operationId: deleteWorkflow
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "200": { description: Unreferenced Workflow deleted }
+        "200": { description: Download published per-profile workflow family ZIP artifact }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/workflow-binding:
     get:
       operationId: getProjectWorkflowBinding
       responses:
-        "200": { description: Current project Workflow binding }
+        "200": { description: Current project workflow family binding (family + profile) }
         default: { $ref: "#/components/responses/Error" }
     put:
-      operationId: bindProjectWorkflow
+      operationId: bindProjectWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Project Workflow binding updated with optimistic revision }
+        "200": { description: Project workflow family binding updated with optimistic revision }
         default: { $ref: "#/components/responses/Error" }
 
 components:

@@ -7,11 +7,12 @@ import {
   finalizeProposalSchema,
   providerModelSchema,
   publishSkillRequestSchema,
-  publishWorkflowPackageRequestSchema,
+  publishWorkflowFamilyRequestSchema,
   registryAgentSchema,
   registrySlugSchema,
-  registryWorkflowMutationSchema,
   setDefaultAgentRequestSchema,
+  workflowFamilyMutationSchema,
+  bindProjectWorkflowFamilyRequestSchema,
   SKILL_ERROR_CODE,
   type AiProviderConfig,
   type FileOperation,
@@ -138,19 +139,7 @@ const tagMergeSchema = z.object({
   target_tag_id: z.string().regex(/^tag_/)
 }).strict();
 
-const workflowCreateSchema = registryWorkflowMutationSchema.extend({
-  schema_version: z.literal(1)
-}).strict();
-
-const workflowUpdateSchema = registryWorkflowMutationSchema.partial().extend({
-  revision: z.number().int().positive()
-}).strict();
-
-const projectWorkflowBindingSchema = z.object({
-  schema_version: z.literal(1),
-  workflow_id: z.string().regex(/^wf_/),
-  revision: z.number().int().positive().nullable()
-}).strict();
+const projectWorkflowBindingSchema = bindProjectWorkflowFamilyRequestSchema;
 
 // 解析 provider 当前 selected model 的 request_model（fallback models[0] → provider.model）；test/ai-checks/release-note/fix-suggestions 共用（Y3 去重）。
 function resolveRequestModel(provider: AiProviderConfig): string {
@@ -1250,10 +1239,38 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   }
 
-  app.get("/api/v1/workflows", async (request, reply) => {
+  app.get("/api/v1/workflow-families", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     reply.header("X-Request-Id", requestId);
-    return { items: registry.listWorkflows(), request_id: requestId };
+    return { items: registry.listWorkflowFamilies(), request_id: requestId };
+  });
+
+  app.post("/api/v1/workflow-families", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = workflowFamilyMutationSchema.extend({ schema_version: z.literal(1) }).strict().parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const family = registry.createWorkflowFamily({
+        slug: body.slug,
+        displayName: body.displayName,
+        description: body.description,
+        tags: body.tags,
+        required_profiles: body.required_profiles
+      });
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.family.created",
+        targetId: family.family_id, requestId, details: { slug: family.slug }
+      });
+      return { statusCode: 201, body: family };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/workflow-families/:slug", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getWorkflowFamily(slug), request_id: requestId };
   });
 
   app.get("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {
@@ -1270,88 +1287,27 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     await repository.getProject(actor.actorId, projectId);
     const body = projectWorkflowBindingSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const binding = registry.bindProjectWorkflow({
-        projectId, workflowId: body.workflow_id, revision: body.revision
+      const binding = registry.bindProjectWorkflowFamily({
+        projectId,
+        familySlug: body.family_slug,
+        profile: body.profile,
+        version: body.version ?? null,
+        revision: body.revision
       });
       await registry.persist();
       await writeAudit(repository, {
         actorId: actor.actorId, projectId, action: "project.workflow.bound",
         targetId: projectId, requestId,
-        details: { workflow_id: binding.workflow_id, revision: binding.revision }
+        details: { family_slug: binding.family_slug, profile: binding.profile, revision: binding.revision }
       });
       return { statusCode: 200, body: binding };
     });
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    reply.header("X-Request-Id", requestId);
-    return { ...registry.getWorkflow(workflowId), request_id: requestId };
-  });
-
-  app.post("/api/v1/workflows", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/draft/profiles/:profile", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const parsed = workflowCreateSchema.parse(request.body);
-    const body = {
-      key: parsed.key,
-      name: parsed.name,
-      description: parsed.description,
-      profile: parsed.profile,
-      default_agent: parsed.default_agent,
-      enabled: parsed.enabled,
-      skill_slugs: parsed.skill_slugs
-    };
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const workflow = registry.createWorkflow(body);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.created",
-        targetId: workflow.workflow_id, requestId, details: { key: workflow.key }
-      });
-      return { statusCode: 201, body: workflow };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.patch("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    const body = workflowUpdateSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const workflow = registry.updateWorkflow(workflowId, body);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.updated",
-        targetId: workflowId, requestId, details: { revision: workflow.revision }
-      });
-      return { statusCode: 200, body: workflow };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.delete("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    const query = z.object({ revision: z.coerce.number().int().positive() }).parse(request.query);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      registry.deleteWorkflow(workflowId, query.revision);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.deleted",
-        targetId: workflowId, requestId
-      });
-      return { statusCode: 200, body: { workflow_id: workflowId, deleted: true } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  // ---- AI 配置 + AI 检查（§12.9 / §6.2）----
-
-  // ---- Workflow package 路由（T13；独立 /workflow-packages 端点，与清单 /workflows 并存；上传走 multipart ZIP）----
-  app.post("/api/v1/workflow-packages", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
+    const { slug, profile } = request.params as { slug: string; profile: string };
     const collected: Array<{ path: string; buffer: Buffer }> = [];
     for await (const part of request.parts()) {
       if (part.type !== "file") continue;
@@ -1360,102 +1316,117 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const files = resolveUploadFiles(collected);
     const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = await registry.uploadWorkflowPackage({ files, actorId: actor.actorId });
+      const draft = await registry.uploadWorkflowFamilyProfileDraft({
+        slug, profile, files, actorId: actor.actorId
+      });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null,
-        action: draft.revision === 1 ? "workflow.package.draft.created" : "workflow.package.draft.updated",
-        targetId: draft.key, requestId,
-        details: { key: draft.key, draft_version: draft.draftVersion, revision: draft.revision }
+        action: draft.revision === 1 ? "workflow.family.draft.created" : "workflow.family.draft.updated",
+        targetId: slug, requestId,
+        details: { slug, profile, revision: draft.revision }
       });
       return { statusCode: 201, body: draft };
     }, bodyHash);
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflow-packages", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/draft", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const items = registry.listWorkflowPackages();
-    reply.header("X-Request-Id", requestId);
-    return { items, request_id: requestId };
-  });
-
-  app.get("/api/v1/workflow-packages/:key", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const pkg = registry.getWorkflowPackage(key);
-    reply.header("X-Request-Id", requestId);
-    return { ...pkg, request_id: requestId };
-  });
-
-  app.get("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const draft = registry.getWorkflowPackageDraft(key);
+    const { slug } = request.params as { slug: string };
+    const draft = registry.getWorkflowFamilyDraft(slug);
     reply.header("X-Request-Id", requestId);
     return { ...draft, request_id: requestId };
   });
 
-  app.delete("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
+  app.delete("/api/v1/workflow-families/:slug/draft", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = z.object({ revision: z.number().int().positive() }).strict().parse(request.body);
-      await registry.discardWorkflowPackageDraft(key, body.revision);
+      await registry.discardWorkflowFamilyDraft(slug, body.revision);
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.discarded",
-        targetId: key, requestId, details: { key }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.draft.discarded",
+        targetId: slug, requestId, details: { slug }
       });
-      return { statusCode: 200, body: { key, discarded: true } };
+      return { statusCode: 200, body: { slug, discarded: true } };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/workflow-packages/:key/draft/checks", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/draft/checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const checks = await registry.runWorkflowPackageChecks({ key, checkedAt: new Date().toISOString() });
+      const checks = await registry.runWorkflowFamilyChecks({ slug, checkedAt: new Date().toISOString() });
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.checked",
-        targetId: key, requestId, details: { key, red: checks.summary.red }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.draft.checked",
+        targetId: slug, requestId, details: { slug, red: checks.summary.red }
       });
       return { statusCode: 200, body: checks };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/workflow-packages/:key/publish", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/publish", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const body = publishWorkflowPackageRequestSchema.parse(request.body);
-      const version = await registry.publishWorkflowPackage(key, {
+      const body = publishWorkflowFamilyRequestSchema.parse(request.body);
+      const version = await registry.publishWorkflowFamily(slug, {
         version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
       });
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.published",
-        targetId: key, requestId, details: { key, version: version.version }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.published",
+        targetId: slug, requestId, details: { slug, version: version.version }
       });
       return { statusCode: 200, body: version };
     });
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflow-packages/:key/draft/diff", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/draft/diff", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const diff = registry.diffWorkflowPackageDraft(key);
+    const { slug } = request.params as { slug: string };
+    const query = z.object({ profile: registrySlugSchema.optional() }).strict().parse(request.query);
+    const diff = registry.diffWorkflowFamilyDraft(slug, query.profile);
     reply.header("X-Request-Id", requestId);
     return { items: diff, request_id: requestId };
   });
 
-  app.get("/api/v1/workflow-packages/:key/versions", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/versions", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const versions = registry.listWorkflowPackageVersions(key);
+    const { slug } = request.params as { slug: string };
+    const versions = registry.listWorkflowFamilyVersions(slug);
     reply.header("X-Request-Id", requestId);
     return { items: versions, request_id: requestId };
   });
+
+  app.get("/api/v1/workflow-families/:slug/artifacts/:profile/download", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug, profile } = request.params as { slug: string; profile: string };
+    const query = z.object({ version: z.string().optional() }).strict().parse(request.query);
+    const bytes = await registry.getWorkflowFamilyProfileArtifactBytes(slug, profile, query.version);
+    const family = registry.getWorkflowFamily(slug);
+    const version = query.version ?? family.latest_version ?? "draft";
+    const hash = sha256Bytes(bytes);
+    await writeAudit(repository, {
+      actorId: actor.actorId,
+      projectId: null,
+      action: "workflow.family.artifact.downloaded",
+      targetId: slug,
+      requestId,
+      details: { slug, profile, version }
+    });
+    reply
+      .header("Content-Type", "application/zip")
+      .header("Content-Disposition", `attachment; filename="${slug}-${profile}-${version}.zip"`)
+      .header("X-Content-SHA256", hash)
+      .header("ETag", hash)
+      .header("X-Request-Id", requestId);
+    return Buffer.from(bytes);
+  });
+
+  // ---- AI 配置 + AI 检查（§12.9 / §6.2）----
 
   app.get("/api/v1/ai-config/providers", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
