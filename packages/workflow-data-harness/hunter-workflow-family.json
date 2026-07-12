@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "family_slug": "harness",
+  "display_name": "Harness",
+  "required_profiles": [
+    "general",
+    "java"
+  ],
+  "bundle_version": "0.2.0",
+  "content_sha256": "sha256:dc58e61b0df81a8bbf47421e4f1eb7bd98ce06d753be160ac9f51ac1b4dd07ab"
+}

@@ -17,10 +17,19 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}",
       "/api/v1/artifacts/{artifact_id}/manifest",
       "/api/v1/dashboard/overview",
+      "/api/v1/external-skills",
+      "/api/v1/external-skills/{id}",
+      "/api/v1/external-skills/{id}/refresh",
+      "/mcp",
       "/api/v1/projects",
       "/api/v1/projects/{project_id}",
       "/api/v1/projects/{project_id}/artifacts",
       "/api/v1/projects/{project_id}/workflow-binding",
+      "/api/v1/projects/{project_id}/semantic/overview",
+      "/api/v1/projects/{project_id}/semantic/knowledge",
+      "/api/v1/projects/{project_id}/semantic/rules",
+      "/api/v1/projects/{project_id}/semantic/changes",
+      "/api/v1/projects/{project_id}/semantic/graph",
       "/api/v1/projects/{project_id}/proposal-sessions",
       "/api/v1/projects/{project_id}/proposals",
       "/api/v1/projects/{project_id}/update-manifest",
@@ -29,11 +38,8 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/proposal-sessions/{session_id}/blobs:query",
       "/api/v1/proposal-sessions/{session_id}:finalize",
       "/api/v1/proposals/{proposal_id}",
-      "/api/v1/proposals/{proposal_id}/review-decisions",
+      "/api/v1/semantic/search",
       "/api/v1/skill-artifacts",
-      "/api/v1/skill-proposals",
-      "/api/v1/skill-proposals/{proposal_id}",
-      "/api/v1/skill-proposals/{proposal_id}/review",
       "/api/v1/skills",
       "/api/v1/skills/draft",
       "/api/v1/skills/{slug}",
@@ -49,21 +55,23 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/skills/{slug}/draft/{agent}/fix-preview",
       "/api/v1/skills/{slug}/draft/{agent}/fix-suggestions",
       "/api/v1/skills/{slug}/draft/{agent}/publish",
+      "/api/v1/skills/{slug}/npm-release",
       "/api/v1/skills/{slug}/draft/{agent}/release-note:generate",
       "/api/v1/skills/{slug}/tags/{tag_id}",
       "/api/v1/skills/{slug}/versions",
       "/api/v1/tags",
       "/api/v1/tags/{tag_id}",
       "/api/v1/tags/{tag_id}/merge",
-      "/api/v1/workflow-packages",
-      "/api/v1/workflow-packages/{key}",
-      "/api/v1/workflow-packages/{key}/draft",
-      "/api/v1/workflow-packages/{key}/draft/checks",
-      "/api/v1/workflow-packages/{key}/draft/diff",
-      "/api/v1/workflow-packages/{key}/publish",
-      "/api/v1/workflow-packages/{key}/versions",
-      "/api/v1/workflows",
-      "/api/v1/workflows/{workflow_id}",
+      "/api/v1/workflow-families",
+      "/api/v1/workflow-families/{slug}",
+      "/api/v1/workflow-families/{slug}/draft",
+      "/api/v1/workflow-families/{slug}/draft/checks",
+      "/api/v1/workflow-families/{slug}/draft/diff",
+      "/api/v1/workflow-families/{slug}/draft/profiles/{profile}",
+      "/api/v1/workflow-families/{slug}/publish",
+      "/api/v1/workflow-families/{slug}/npm-release",
+      "/api/v1/workflow-families/{slug}/versions",
+      "/api/v1/workflow-families/{slug}/artifacts/{profile}/download",
       "/api/v1/ai-config/providers",
       "/api/v1/ai-config/providers/{provider_id}",
       "/api/v1/ai-config/providers/{provider_id}/test",
@@ -75,6 +83,21 @@ describe("OpenAPI v1 contract", () => {
       Object.values(path).map((operation) => operation.operationId).filter(Boolean)
     );
     expect(new Set(operationIds).size).toBe(operationIds.length);
+  });
+
+  it("documents STALE_PUSH as a 409 response on finalizeProposal", async () => {
+    const document = parseYaml(await readFile(
+      new URL("../openapi/hunter-harness-v1.yaml", import.meta.url),
+      "utf8"
+    )) as {
+      paths: Record<string, Record<string, {
+        operationId?: string;
+        responses?: Record<string, { description?: string }>;
+      }>>;
+    };
+    const finalize = document.paths["/api/v1/proposal-sessions/{session_id}:finalize"]?.post;
+    expect(finalize?.operationId).toBe("finalizeProposal");
+    expect(finalize?.responses?.["409"]?.description).toContain("STALE_PUSH");
   });
 
   it("ai-jobs GET 200 response schema includes slug+agent dedup key (Y9)", async () => {

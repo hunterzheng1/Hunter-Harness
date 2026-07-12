@@ -114,7 +114,9 @@ paths:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "201":
-          description: Proposal created
+          description: Proposal auto-approved and artifact published
+        "409":
+          description: Server already has a newer artifact for this project; re-sync base_artifact_id before finalizing again (STALE_PUSH)
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/proposals:
@@ -149,17 +151,6 @@ paths:
       responses:
         "200":
           description: Proposal details
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/proposals/{proposal_id}/review-decisions:
-    post:
-      operationId: createReviewDecision
-      parameters:
-        - $ref: "#/components/parameters/ProposalId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201":
-          description: Review decision recorded
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/update-manifest:
@@ -346,6 +337,17 @@ paths:
       responses:
         "200": { description: Per-agent Skill draft promoted to a new published version with one artifact for the specified agent }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/npm-release:
+    post:
+      operationId: releaseSkillToNpm
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Latest published skill version released to npm as a data-only package }
+        "503": { description: npm publish is not configured on the server (NPM_PUBLISH_NOT_CONFIGURED) }
+        "409": { description: npm registry already has this package version (NPM_PUBLISH_CONFLICT) }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/draft/{agent}/diff:
     get:
       operationId: diffSkillDraft
@@ -447,33 +449,6 @@ paths:
       responses:
         "200": { description: Published Skill adapter artifacts }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals:
-    get:
-      operationId: listSkillProposals
-      responses:
-        "200": { description: Skill proposal queue }
-        default: { $ref: "#/components/responses/Error" }
-    post:
-      operationId: createSkillProposal
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201": { description: Validated Skill proposal created }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals/{proposal_id}:
-    get:
-      operationId: getSkillProposal
-      responses:
-        "200": { description: Skill proposal detail and validation }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals/{proposal_id}/review:
-    post:
-      operationId: reviewSkillProposal
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201": { description: Review recorded and approved artifact published when approved }
-        default: { $ref: "#/components/responses/Error" }
   /api/v1/tags:
     get:
       operationId: listSkillTags
@@ -518,111 +493,221 @@ paths:
       responses:
         "200": { description: Tag removed from Skill }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages:
+  /api/v1/workflow-families:
+    get:
+      operationId: listWorkflowFamilies
+      responses:
+        "200": { description: Workflow families }
+        default: { $ref: "#/components/responses/Error" }
     post:
-      operationId: uploadWorkflowPackage
+      operationId: createWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "201": { description: Workflow package draft created or updated from uploaded ZIP }
+        "201": { description: Workflow family created }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/{slug}:
     get:
-      operationId: listWorkflowPackages
+      operationId: getWorkflowFamily
       responses:
-        "200": { description: List of published workflow packages }
+        "200": { description: Workflow family detail }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}:
-    get:
-      operationId: getWorkflowPackage
+  /api/v1/workflow-families/{slug}/draft/profiles/{profile}:
+    post:
+      operationId: uploadWorkflowFamilyProfileDraft
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Published workflow package detail }
+        "201": { description: Per-profile workflow family draft uploaded from ZIP }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft:
+  /api/v1/workflow-families/{slug}/draft:
     get:
-      operationId: getWorkflowPackageDraft
+      operationId: getWorkflowFamilyDraft
       responses:
-        "200": { description: Unpublished workflow package draft with manifest and checks }
+        "200": { description: Unpublished workflow family draft with per-profile bundles }
         default: { $ref: "#/components/responses/Error" }
     delete:
-      operationId: discardWorkflowPackageDraft
+      operationId: discardWorkflowFamilyDraft
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow package draft discarded }
+        "200": { description: Workflow family draft discarded }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft/checks:
+  /api/v1/workflow-families/{slug}/draft/checks:
     post:
-      operationId: runWorkflowPackageChecks
+      operationId: runWorkflowFamilyChecks
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow package draft check results }
+        "200": { description: Workflow family draft check results }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/publish:
+  /api/v1/workflow-families/{slug}/publish:
     post:
-      operationId: publishWorkflowPackage
+      operationId: publishWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Published workflow package version with artifacts }
+        "200": { description: Published workflow family version covering all required profiles }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/draft/diff:
+  /api/v1/workflow-families/{slug}/draft/diff:
     get:
-      operationId: diffWorkflowPackageDraft
+      operationId: diffWorkflowFamilyDraft
       responses:
-        "200": { description: Diff files between published and draft workflow package }
+        "200": { description: Diff files between published and draft workflow family profile bundle }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflow-packages/{key}/versions:
+  /api/v1/workflow-families/{slug}/versions:
     get:
-      operationId: listWorkflowPackageVersions
+      operationId: listWorkflowFamilyVersions
       responses:
-        "200": { description: Published workflow package version sequence }
+        "200": { description: Published workflow family version sequence }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflows:
-    get:
-      operationId: listWorkflows
+  /api/v1/workflow-families/{slug}/npm-release:
+    post:
+      operationId: releaseWorkflowFamilyToNpm
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow profiles }
+        "200": { description: Latest published workflow family version released to npm as a data-only package }
+        "503": { description: npm publish is not configured on the server (NPM_PUBLISH_NOT_CONFIGURED) }
+        "409": { description: npm registry already has this package version (NPM_PUBLISH_CONFLICT) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/{slug}/artifacts/{profile}/download:
+    get:
+      operationId: downloadWorkflowFamilyProfileArtifact
+      responses:
+        "200": { description: Download published per-profile workflow family ZIP artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills:
+    get:
+      operationId: listExternalSkills
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: source_type
+          in: query
+          schema: { type: string, enum: [npm, github] }
+      responses:
+        "200": { description: Curated external skill listings (display-only metadata snapshots) }
         default: { $ref: "#/components/responses/Error" }
     post:
-      operationId: createWorkflow
+      operationId: createExternalSkill
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "201": { description: Workflow created directly with audit }
+        "201": { description: External skill registered after fetching upstream metadata }
+        "404": { description: Upstream source not found (EXTERNAL_SOURCE_NOT_FOUND) }
+        "409": { description: Same npm/GitHub source already registered (EXTERNAL_SKILL_EXISTS) }
         default: { $ref: "#/components/responses/Error" }
-  /api/v1/workflows/{workflow_id}:
+  /api/v1/external-skills/{id}:
     get:
-      operationId: getWorkflow
+      operationId: getExternalSkill
       responses:
-        "200": { description: Workflow detail }
+        "200": { description: External skill detail including curation note and snapshot }
+        "404": { description: External skill not found }
         default: { $ref: "#/components/responses/Error" }
     patch:
-      operationId: updateWorkflow
+      operationId: patchExternalSkill
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Workflow updated with optimistic revision }
+        "200": { description: Curation note/tags updated, or update badge acknowledged }
+        "409": { description: Revision conflict }
         default: { $ref: "#/components/responses/Error" }
     delete:
-      operationId: deleteWorkflow
+      operationId: deleteExternalSkill
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Unreferenced Workflow deleted }
+        "200": { description: External skill listing removed (upstream untouched) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}/refresh:
+    post:
+      operationId: refreshExternalSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Upstream metadata refreshed; curationNote is never modified }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/workflow-binding:
     get:
       operationId: getProjectWorkflowBinding
       responses:
-        "200": { description: Current project Workflow binding }
+        "200": { description: Current project workflow family binding (family + profile) }
         default: { $ref: "#/components/responses/Error" }
     put:
-      operationId: bindProjectWorkflow
+      operationId: bindProjectWorkflowFamily
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Project Workflow binding updated with optimistic revision }
+        "200": { description: Project workflow family binding updated with optimistic revision }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/overview:
+    get:
+      operationId: getProjectSemanticOverview
+      responses:
+        "200": { description: Semantic index overview counts for a project }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/knowledge:
+    get:
+      operationId: listProjectSemanticKnowledge
+      responses:
+        "200": { description: Knowledge documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/rules:
+    get:
+      operationId: listProjectSemanticRules
+      responses:
+        "200": { description: Rule documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/changes:
+    get:
+      operationId: listProjectSemanticChanges
+      responses:
+        "200": { description: Archive change documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/graph:
+    get:
+      operationId: getProjectSemanticGraph
+      responses:
+        "200": { description: Semantic graph nodes and edges for a project }
+        default: { $ref: "#/components/responses/Error" }
+  /mcp:
+    post:
+      operationId: semanticMcpStreamableHttp
+      summary: Semantic MCP server (Streamable HTTP transport). GET/DELETE return 405; use POST only.
+      description: >-
+        JSON-RPC 2.0 endpoint for the read-only Semantic MCP server (tools: search_knowledge,
+        get_project_overview, get_knowledge_entry, list_recent_changes). Stateless per request;
+        no MCP session id is issued or required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 request envelope (initialize, tools/list, tools/call, ...)
+      responses:
+        "200":
+          description: JSON-RPC 2.0 response (or an SSE stream) for the invoked Semantic MCP method
+        "401":
+          description: Auth required (AUTH_REQUIRED)
+        default:
+          $ref: "#/components/responses/Error"
+  /api/v1/semantic/search:
+    get:
+      operationId: searchSemanticDocuments
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: project_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200": { description: Cross-project or project-scoped FTS search over semantic documents }
         default: { $ref: "#/components/responses/Error" }
 
 components:

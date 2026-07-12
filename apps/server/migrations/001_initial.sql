@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS reviews (
   proposal_id text NOT NULL REFERENCES proposals(proposal_id),
   actor_id text NOT NULL REFERENCES actors(actor_id),
   decision text NOT NULL CHECK (
-    decision IN ('approve', 'reject', 'need_more_evidence', 'split')
+    decision IN ('approve', 'reject', 'need_more_evidence', 'split', 'auto-approved')
   ),
   comment text,
   target_scope text NOT NULL,

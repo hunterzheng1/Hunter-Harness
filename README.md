@@ -124,6 +124,42 @@ npm run test:postgres -w apps/server
 
 部署、TLS、secrets、备份、恢复、升级与回滚见 [SERVER-DEPLOYMENT.md](docs/SERVER-DEPLOYMENT.md)。完整 API 合同见 [hunter-harness-v1.yaml](apps/server/openapi/hunter-harness-v1.yaml)。
 
+## Semantic MCP（只读）
+
+治理服务端在 `/mcp` 暴露只读 Semantic MCP（Streamable HTTP），复用 API Bearer Token，不提供写入口。Agent 可查询跨项目语义索引；单项目本地知识写入仍走 CLI push。
+
+可用工具：
+
+| 工具 | 作用 |
+|---|---|
+| `search_knowledge` | 按关键词搜索知识文档（可按 `project_id` 限定） |
+| `get_project_overview` | 项目语义索引概览计数 |
+| `get_knowledge_entry` | 按 `document_id` 或 `source_path` 取单条知识 |
+| `list_recent_changes` | 列出项目 archive 变更记录 |
+
+Cursor / Claude Desktop 示例（把 `YOUR_TOKEN` 换成真实 `hh_…` token）：
+
+```json
+{
+  "mcpServers": {
+    "hunter-harness-semantic": {
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
+## External Skill（策展列表）
+
+技能中心可混排展示第三方 External Skill：从 npm 包名或 GitHub 仓库 URL 录入后，服务端只抓取公开元数据快照（名称/描述/版本/README/安装命令/license），并保存 owner 策展笔记。
+
+- **不做二次分发**：永不托管、安装或 republish 上游内容；安装始终走官方渠道命令。
+- **上游刷新**：详情页手动刷新 + 每日定时任务（`HUNTER_HARNESS_EXTERNAL_SKILL_REFRESH_MS`，默认 24h；`0` 关闭）。只更新 snapshot 与「有更新」徽章，**绝不改** `curationNote`。
+- **可选 GitHub token**：`HUNTER_HARNESS_GITHUB_TOKEN` 或 `GITHUB_TOKEN`，仅提升公开 API 限额。
+
 ## 安全边界
 
 - token 只从环境变量、secret file 或浏览器 session storage 读取，不写入项目文件或 CLI JSON。

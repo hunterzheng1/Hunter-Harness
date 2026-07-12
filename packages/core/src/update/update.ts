@@ -380,6 +380,7 @@ export async function updateProject(options: UpdateProjectOptions) {
       if (skipped.length === 0) {
         nextBaseline.complete_project_version = manifest.project_version;
         nextBaseline.artifact_manifest_hash = manifest.manifest_sha256;
+        nextBaseline.latest_artifact_id = manifest.artifact_id;
       }
       const transactionId = "tx_update_" + Date.now() + "_" + uuidV7();
       const reportPath = ".harness/reports/update-" + requestId + ".json";

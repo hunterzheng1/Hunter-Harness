@@ -6,7 +6,6 @@ import type {
   DashboardOverview,
   RegistrySkillDetail,
   RegistryArtifact,
-  RegistrySkillProposal
 } from "@hunter-harness/contracts";
 
 import {
@@ -15,8 +14,6 @@ import {
   type ArtifactSummary,
   type ProjectSummary,
   type ProposalDetailModel,
-  type ProposalSummary,
-  type ReviewInput,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
@@ -252,15 +249,17 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     let active = true;
     setError(null);
     void api.listProjects().then(async (items) => {
-      const workflows = await (api.listWorkflows?.() ?? Promise.resolve([]));
+      const families = await (api.listWorkflowFamilies?.() ?? Promise.resolve([]));
       const bindings = api.getProjectWorkflowBinding === undefined
         ? items.map(() => null)
         : await Promise.all(items.map((project) => api.getProjectWorkflowBinding?.(project.project_id) ?? Promise.resolve(null)));
       const nextInfo: Record<string, { name: string; skillCount: number }> = {};
       items.forEach((project, index) => {
         const binding = bindings[index];
-        const workflow = workflows.find((item) => item.workflow_id === binding?.workflow_id);
-        if (workflow !== undefined) nextInfo[project.project_id] = { name: workflow.name, skillCount: workflow.skill_slugs.length };
+        const family = families.find((item) => item.slug === binding?.family_slug);
+        if (family !== undefined && binding !== null && binding !== undefined) {
+          nextInfo[project.project_id] = { name: `${family.displayName} · ${binding.profile}`, skillCount: family.required_profiles.length };
+        }
       });
       if (active) { setProjects(items); setWorkflowInfo(nextInfo); }
     }).catch((reason: unknown) => {
@@ -350,8 +349,15 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
 export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
-  const [skillProposals, setSkillProposals] = useState<RegistrySkillProposal[]>([]);
+  type HistoryItem = {
+    id: string;
+    kind: "project_push" | "skill_npm" | "workflow_npm";
+    title: string;
+    subtitle: string;
+    createdAt: string;
+    href: string;
+  };
+  const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -359,13 +365,48 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
     setError(null);
     void Promise.all([
       api.listAllProposals(),
-      api.listSkillProposals?.("pending_review") ?? Promise.resolve([])
+      api.listSkills?.() ?? Promise.resolve([]),
+      api.listWorkflowFamilies?.() ?? Promise.resolve([])
     ])
-      .then(([items, skillItems]) => {
-        if (active) {
-          setProposals(items.filter((item) => item.status === "pending_review"));
-          setSkillProposals(skillItems);
+      .then(([proposals, skills, families]) => {
+        if (!active) return;
+        const next: HistoryItem[] = [];
+        for (const proposal of proposals.filter((item) => item.status === "approved")) {
+          next.push({
+            id: proposal.proposal_id,
+            kind: "project_push",
+            title: proposal.proposal_id,
+            subtitle: `${proposal.project_id} · ${proposal.changed_item_count} ${t.reviewQueue.changes}`,
+            createdAt: proposal.created_at,
+            href: `/proposals/${proposal.proposal_id}`
+          });
         }
+        for (const skill of skills) {
+          for (const release of skill.npmReleases ?? []) {
+            next.push({
+              id: `skill-npm-${skill.slug}-${release.version}-${release.publishedAt}`,
+              kind: "skill_npm",
+              title: `${skill.slug}@${release.version}`,
+              subtitle: `${release.packageName} · ${release.status}`,
+              createdAt: release.publishedAt,
+              href: `/skills/${encodeURIComponent(skill.slug)}`
+            });
+          }
+        }
+        for (const family of families) {
+          for (const release of family.npmReleases ?? []) {
+            next.push({
+              id: `wf-npm-${family.slug}-${release.version}-${release.publishedAt}`,
+              kind: "workflow_npm",
+              title: `${family.slug}@${release.version}`,
+              subtitle: `${release.packageName} · ${release.status}`,
+              createdAt: release.publishedAt,
+              href: `/workflows`
+            });
+          }
+        }
+        next.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+        setItems(next);
       })
       .catch((reason: unknown) => {
         if (active) setError(apiError(reason, t));
@@ -376,7 +417,13 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   }, [api, t]);
 
   if (error !== null) return <Empty>{error}</Empty>;
-  if (proposals === null) return <Empty>{t.reviewQueue.loading}</Empty>;
+  if (items === null) return <Empty>{t.reviewQueue.loading}</Empty>;
+
+  const kindLabel = (kind: HistoryItem["kind"]): string => {
+    if (kind === "skill_npm") return t.reviewQueue.kindSkillNpm;
+    if (kind === "workflow_npm") return t.reviewQueue.kindWorkflowNpm;
+    return t.reviewQueue.kindPush;
+  };
 
   return (
     <section className="stack">
@@ -386,32 +433,25 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.reviewQueue.title}</h1>
         </div>
         <span>
-          {proposals.length + skillProposals.length} {t.reviewQueue.waiting}
+          {items.length} {t.reviewQueue.waiting}
         </span>
       </div>
-      {proposals.length === 0 && skillProposals.length === 0 ? (
+      {items.length === 0 ? (
         <Empty>{t.reviewQueue.clear}</Empty>
       ) : (
-        <>{skillProposals.map((proposal) => (
-          <Link className="proposal-card" href={`/skills/${proposal.skill_slug}`} key={proposal.proposal_id}>
-            <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug}</code></div>
-            <div><span>{t.reviewQueue.canonicalSkillIR}</span><Status value={proposal.status} /></div>
-          </Link>
-        ))}{proposals.map((proposal) => (
+        <>{items.map((item) => (
           <Link
             className="proposal-card"
-            href={`/proposals/${proposal.proposal_id}`}
-            key={proposal.proposal_id}
+            href={item.href}
+            key={item.id}
           >
             <div>
-              <strong>{proposal.proposal_id}</strong>
-              <code>{proposal.project_id}</code>
+              <strong>{item.title}</strong>
+              <code>{item.subtitle}</code>
             </div>
             <div>
-              <span>
-                {proposal.changed_item_count} {t.reviewQueue.changes}
-              </span>
-              <Status value={proposal.status} />
+              <span>{kindLabel(item.kind)}</span>
+              <Status value={item.kind === "project_push" ? "approved" : "published"} />
             </div>
           </Link>
         ))}</>
@@ -537,9 +577,6 @@ export function ProposalDetail({
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [proposal, setProposal] = useState<ProposalDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState("");
-  const [result, setResult] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -570,41 +607,6 @@ export function ProposalDetail({
 
   if (error !== null) return <Empty>{error}</Empty>;
   if (proposal === null) return <Empty>{t.proposal.loading}</Empty>;
-
-  async function decide(decision: ReviewInput["decision"]): Promise<void> {
-    setBusy(true);
-    setResult(null);
-    try {
-      const splitGroups =
-        decision === "split"
-          ? proposal?.items.map((item, index) => ({
-              name: "item-" + (index + 1),
-              item_ids: [item.item_id],
-              target_scope: "project",
-            })) ?? []
-          : [];
-      const reviewed = await api.reviewProposal(proposalId, {
-        decision,
-        comment: comment.trim() === "" ? null : comment.trim(),
-        target_scope: "project",
-        split_groups: splitGroups,
-      });
-      setResult(
-        decision === "approve" && reviewed.artifact_id !== null
-          ? t.proposal.approvedAs + " " + reviewed.artifact_id
-          : decision === "split"
-            ? t.proposal.splitInto +
-              " " +
-              reviewed.child_proposal_ids.length +
-              t.proposal.proposals
-            : t.proposal.decisionRecorded + decision.replaceAll("_", " ")
-      );
-    } catch (reason) {
-      setError(apiError(reason, t));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <section className="stack">
@@ -652,42 +654,22 @@ export function ProposalDetail({
           </div>
         ))}
       </div>
-      <div className="decision-panel">
-        <label htmlFor="review-comment">
-          {t.proposal.reviewRationale}
-        </label>
-        <textarea
-          id="review-comment"
-          value={comment}
-          onChange={(event) => setComment(event.target.value)}
-          placeholder={t.proposal.placeholder}
-        />
-        <div className="actions">
-          <button
-            disabled={busy}
-            onClick={() => void decide("approve")}
-          >
-            {t.proposal.approve}
-          </button>
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() => void decide("reject")}
-          >
-            {t.proposal.reject}
-          </button>
-          <button
-            className="secondary"
-            disabled={busy || proposal.items.length < 2}
-            onClick={() => void decide("split")}
-          >
-            {t.proposal.split}
-          </button>
+      {proposal.review_history.length === 0 ? null : (
+        <div className="panel">
+          <div className="panel-title">
+            <h2>{t.proposal.reviewEvents}</h2>
+          </div>
+          {proposal.review_history.map((review) => (
+            <div className="change" key={review.review_id}>
+              <div>
+                <Status value={review.decision} />
+                <strong>{review.review_id}</strong>
+              </div>
+              <span>{review.created_at}</span>
+            </div>
+          ))}
         </div>
-        {result === null ? null : (
-          <p className="success">{result}</p>
-        )}
-      </div>
+      )}
     </section>
   );
 }

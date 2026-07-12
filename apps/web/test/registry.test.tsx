@@ -4,7 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SkillDetail, SkillRegistry, WorkflowRegistry } from "../components/registry";
+import { SkillDetail, SkillRegistry } from "../components/registry";
 import type { HunterApi } from "../lib/api";
 
 const SKILL_DESCRIPTION = "Evidence based review";
@@ -37,7 +37,8 @@ const skill = {
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-21T00:00:00Z",
   sourceFiles: [{ path: "SKILL.md", content: skillMd }],
-  examples: []
+  examples: [],
+  npmReleases: []
 };
 
 const securityTag = {
@@ -51,16 +52,16 @@ const securityTag = {
   updated_at: "2026-06-20T00:00:00Z"
 };
 
-const workflow = {
-  workflow_id: "wf_review",
-  key: "review",
-  name: "Review",
-  description: "Review workflow",
-  profile: "general",
-  default_agent: "claude-code" as const,
-  enabled: true,
-  skill_slugs: ["harness-review"],
+const workflowFamily = {
+  family_id: "wff_review",
+  slug: "review",
+  displayName: "Review",
+  description: "Review workflow family",
+  tags: ["review"],
+  latest_version: "1.0.0",
+  required_profiles: ["general"],
   revision: 1,
+  npmReleases: [],
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z"
 };
@@ -120,7 +121,7 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       adapter: "claude-code"
     })),
     listTags: vi.fn(async () => [securityTag]),
-    listWorkflows: vi.fn(async () => [workflow]),
+    listWorkflowFamilies: vi.fn(async () => [workflowFamily]),
     getSkillDraft: vi.fn(async () => draft),
     runSkillDraftChecks: vi.fn(async () => draftChecks),
     diffSkillDraft: vi.fn(async () => []),
@@ -167,7 +168,7 @@ describe("governed workflow and Skill Center", () => {
     expect(screen.getAllByText(/1\.1\.0/).length).toBeGreaterThan(0);
     // source tab 展示 SKILL.md body（frontmatter 剥离后的内容），取代旧 canonical IR JSON 展示
     expect(await screen.findByText(/Review workflow body/)).toBeInTheDocument();
-    expect(screen.getByText(/npx @hunter-harness\/skill-cli install harness-review --agent claude-code/)).toBeInTheDocument();
+    expect(screen.getByText("npx @hunter-harness/skill-cli install harness-review --agent claude-code")).toBeInTheDocument();
   });
 
   it("removes a Skill tag locally without creating a proposal", async () => {
@@ -177,26 +178,6 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(remove);
     await waitFor(() => expect(screen.queryByRole("button", { name: /security/ })).not.toBeInTheDocument());
     expect(bindSkillTag).not.toHaveBeenCalled();
-  });
-
-  it("creates workflows directly without a review proposal", async () => {
-    const createWorkflow = vi.fn(async (input) => ({
-      ...input,
-      workflow_id: "wf_general",
-      revision: 1,
-      created_at: "2026-06-21T00:00:00Z",
-      updated_at: "2026-06-21T00:00:00Z"
-    }));
-    render(<WorkflowRegistry api={api({ createWorkflow, listWorkflows: vi.fn(async () => []) })} />);
-    await screen.findByText(/暂无工作流|No workflows/i);
-    expect(screen.getByLabelText(/搜索工作流|Search workflows/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/搜索可用技能|Search available skills/i)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /新建工作流|New workflow/i }));
-    fireEvent.change(screen.getByLabelText(/名称|Name/i), { target: { value: "General" } });
-    fireEvent.change(screen.getByLabelText(/标识|Key/i), { target: { value: "general" } });
-    fireEvent.change(screen.getByLabelText(/描述|Description/i), { target: { value: "Default workflow" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存|Save/i }));
-    await waitFor(() => expect(createWorkflow).toHaveBeenCalledTimes(1));
   });
 
   it("uploads a skill draft via the API as FormData and refreshes the list", async () => {

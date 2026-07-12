@@ -1786,6 +1786,55 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             item = json.loads((outbox / "failed" / f"{archive_id}.json").read_text(encoding="utf-8"))
             self.assertEqual(item["attempts"], 1)
             self.assertIn("supersede failed", item["lastError"])
+            self.assertIn("supersede failed", item["lastError"])
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CONTRACT_ENTRY_FIXTURE = REPO_ROOT / "packages" / "contracts" / "test" / "fixtures" / "knowledge-ingest-entry.json"
+CONTRACT_INDEX_FIXTURE = REPO_ROOT / "packages" / "contracts" / "test" / "fixtures" / "knowledge-ingest-index.json"
+
+
+class KnowledgeContractParityTest(unittest.TestCase):
+    def test_shared_entry_fixture_matches_runtime_shape(self) -> None:
+        payload = json.loads(CONTRACT_ENTRY_FIXTURE.read_text(encoding="utf-8"))
+        required = {
+            "schemaVersion", "id", "projectId", "type", "status", "title", "summary", "body",
+            "keywords", "source", "scope", "lifecycle",
+        }
+        self.assertTrue(required.issubset(payload.keys()))
+        self.assertEqual(payload["schemaVersion"], 1)
+
+    def test_shared_index_fixture_matches_manifest_shape(self) -> None:
+        payload = json.loads(CONTRACT_INDEX_FIXTURE.read_text(encoding="utf-8"))
+        required = {
+            "schemaVersion", "generatedAt", "projectId", "projectRoot", "archives",
+            "stats", "byType", "duplicatesSkipped", "ingestMode", "failures", "entries",
+        }
+        self.assertTrue(required.issubset(payload.keys()))
+        self.assertEqual(payload["schemaVersion"], 1)
+
+    def test_make_entry_emits_schema_version_one(self) -> None:
+        module = HarnessKnowledgeCliTest()._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "sample-project"
+            project.mkdir(parents=True)
+            summary_path = project / ".harness" / "archive" / "2026-06-30-sample" / "reports" / "final" / "summary-data.json"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            write_json(summary_path, {"changeName": "sample", "finalStatus": "OK"})
+            entry = module.make_entry(
+                project=project,
+                project_name="sample",
+                summary_path=summary_path,
+                summary_hash="abc",
+                summary={"changeName": "sample", "finalStatus": "OK"},
+                entry_type="decision",
+                title="title",
+                body="body",
+                source_files=["apps/server/src/registry/store.ts"],
+                keywords=["sample"],
+            )
+            self.assertEqual(entry["schemaVersion"], 1)
+            self.assertEqual(entry["type"], "decision")
 
 
 if __name__ == "__main__":

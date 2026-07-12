@@ -27,7 +27,6 @@ const userDiff: WebFilePolicy = {
   update_policy: "skip-if-local-dirty",
   conflict_policy: "skip-and-report"
 };
-const userFull: WebFilePolicy = { ...userDiff, push_policy: "full-diff-proposal" };
 const projectLocal: WebFilePolicy = {
   file_kind: "user_editable",
   edit_policy: "allow",
@@ -80,7 +79,7 @@ export function classifyManagedFile(input: string): WebFilePolicy {
   if (path === "CLAUDE.md" || path === "AGENTS.md") return managedBlock;
   if (under(path, ".claude/rules/") || under(path, ".claude/skills/harness-")) return userDiff;
   if (under(path, ".harness/knowledge/project-local/")) return projectLocal;
-  if (under(path, ".harness/knowledge/")) return userFull;
+  if (under(path, ".harness/knowledge/")) return userDiff;
   if (under(path, ".harness/codebase/map/") ||
       path === ".harness/codebase/map-summary.md" ||
       path === ".harness/codebase/map-manifest.json") return generatedReviewable;

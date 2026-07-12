@@ -17,6 +17,7 @@ export default tseslint.config(
       // 生成 Bundle 与复制产物（harness_deploy.py 输出，字节一致，不应 lint）
       "resources/**",
       "packages/cli/resources/**",
+      "packages/workflow-data-harness/harness/**",
       "packages/core/test/fixtures/**"
     ]
   },

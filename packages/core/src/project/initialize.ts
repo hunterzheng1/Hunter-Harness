@@ -276,6 +276,7 @@ export async function initializeProject(
     project_id: projectConfig.project.project_id,
     complete_project_version: null,
     artifact_manifest_hash: null,
+    latest_artifact_id: null,
     files: {}
   });
 

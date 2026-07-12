@@ -75,7 +75,7 @@ export interface ReviewRecord {
   reviewId: string;
   proposalId: string;
   actorId: string;
-  decision: "approve" | "reject" | "need_more_evidence" | "split";
+  decision: "approve" | "reject" | "need_more_evidence" | "split" | "auto-approved";
   comment: string | null;
   targetScope: string;
   createdAt: string;
@@ -154,6 +154,11 @@ export interface ServerRepository extends TransactionRepository {
   getProposalSession(actorId: string, sessionId: string): Promise<ProposalSessionRecord>;
   updateProposalSession(session: ProposalSessionRecord): Promise<void>;
   createProposalFromSession(session: ProposalSessionRecord): Promise<ProposalRecord>;
+  /** finalize 同事务：创建 proposal 并 auto-approve 写 artifact + reviews.decision=auto-approved */
+  finalizeSessionAutoApprove(session: ProposalSessionRecord): Promise<{
+    proposal: ProposalRecord;
+    review: ReviewRecord;
+  }>;
   getProposal(actorId: string, proposalId: string): Promise<ProposalRecord>;
   listProposals(input: {
     actorId: string;

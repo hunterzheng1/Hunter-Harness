@@ -74,7 +74,7 @@ export async function buildDashboardOverview(input: {
     input.repository.listAuditEvents({ actorId: input.actorId, limit: 12 })
   ]);
   const skills = input.registry.listSkills();
-  const workflows = input.registry.listWorkflows();
+  const families = input.registry.listWorkflowFamilies();
   const skillProposals = input.registry.listProposals();
   const skillArtifacts = input.registry.listArtifacts();
   const trend = daysBetween(now, input.days);
@@ -88,7 +88,7 @@ export async function buildDashboardOverview(input: {
     add(proposal.createdAt, "submitted");
     if (proposal.status === "pending_review") add(proposal.createdAt, "pending");
     for (const review of proposal.reviewHistory) {
-      if (review.decision === "approve") add(review.createdAt, "approved");
+      if (review.decision === "approve" || review.decision === "auto-approved") add(review.createdAt, "approved");
       if (review.decision === "reject") add(review.createdAt, "rejected");
     }
   }
@@ -152,7 +152,7 @@ export async function buildDashboardOverview(input: {
     },
     metrics: {
       projects: projects.length,
-      workflows: workflows.length,
+      workflows: families.length,
       skills: skills.length,
       published_skills: skills.filter((skill) => skill.status === "published").length,
       pending_reviews: pendingReviews,
@@ -165,7 +165,7 @@ export async function buildDashboardOverview(input: {
     trend,
     distributions: {
       skill_categories: countBy(skills.map((skill) => skill.kind ?? "unknown")),
-      workflow_profiles: countBy(workflows.map((workflow) => workflow.profile))
+      workflow_profiles: countBy(families.flatMap((family) => family.required_profiles))
     },
     health,
     services: [

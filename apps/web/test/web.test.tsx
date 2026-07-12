@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -31,7 +31,7 @@ const projects: ProjectSummary[] = [{
 const proposals: ProposalSummary[] = [{
   proposal_id: "prp_one",
   project_id: "prj_one",
-  status: "pending_review",
+  status: "approved",
   created_at: "2026-06-20T01:00:00Z",
   changed_item_count: 2,
   risk_count: 0,
@@ -52,7 +52,7 @@ const detail: ProposalDetailModel = {
   schema_version: 1,
   proposal_id: "prp_one",
   project_id: "prj_one",
-  status: "pending_review",
+  status: "approved",
   created_by: "actor_owner",
   created_at: "2026-06-20T01:00:00Z",
   items: [
@@ -104,6 +104,8 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
     listProjects: vi.fn(async () => projects),
     listProjectProposals: vi.fn(async () => proposals),
     listAllProposals: vi.fn(async () => proposals),
+    listSkills: vi.fn(async () => []),
+    listWorkflowFamilies: vi.fn(async () => []),
     listProjectArtifacts: vi.fn(async () => artifacts),
     listAllArtifacts: vi.fn(async () => artifacts),
     getProject: vi.fn(async () => ({
@@ -206,15 +208,15 @@ describe("Web Console", () => {
     expect(document.body.textContent).not.toContain("super-secret-token");
   });
 
-  it("renders the review queue with loading and empty states", async () => {
+  it("renders change history with loading and empty states", async () => {
     const client = api();
     const view = render(<ReviewQueue api={client} />);
-    expect(screen.getByText(/loading review queue|正在加载审核队列/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading change history|正在加载变更历史/i)).toBeInTheDocument();
     expect(await screen.findByText("prp_one")).toBeInTheDocument();
     view.unmount();
 
     render(<ReviewQueue api={api({ listAllProposals: vi.fn(async () => []) })} />);
-    expect(await screen.findByText(/review queue is clear|审核队列为空/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no change history|暂无变更历史/i)).toBeInTheDocument();
   });
 
   it("renders approved artifact history without artifact content", async () => {
@@ -225,36 +227,11 @@ describe("Web Console", () => {
     expect(document.body.textContent).not.toContain("approved rule");
   });
 
-  it("approves, rejects, and splits proposal items through review decisions", async () => {
-    const reviewProposal = vi.fn(async (_id, input) => ({
-      review_id: "rev_action",
-      proposal_id: "prp_one",
-      decision: input.decision,
-      artifact_id: input.decision === "approve" ? "art_two" : null,
-      child_proposal_ids: input.decision === "split" ? ["prp_a", "prp_b"] : []
-    }));
-    render(<ProposalDetail api={api({ reviewProposal })} proposalId="prp_one" />);
+  it("renders proposal detail as read-only change history", async () => {
+    render(<ProposalDetail api={api()} proposalId="prp_one" />);
     expect(await screen.findByText(".claude/rules/one.md")).toBeInTheDocument();
     expect(screen.getByText(/content is redacted|内容.*隐去/i)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /approve|批准/i }));
-    await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
-      "prp_one", expect.objectContaining({ decision: "approve" })
-    ));
-    fireEvent.click(screen.getByRole("button", { name: /reject|拒绝/i }));
-    await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
-      "prp_one", expect.objectContaining({ decision: "reject" })
-    ));
-    fireEvent.click(screen.getByRole("button", { name: /split|拆分/i }));
-    await waitFor(() => expect(reviewProposal).toHaveBeenCalledWith(
-      "prp_one",
-      expect.objectContaining({
-        decision: "split",
-        split_groups: expect.arrayContaining([
-          expect.objectContaining({ item_ids: ["item_one"] }),
-          expect.objectContaining({ item_ids: ["item_two"] })
-        ])
-      })
-    ));
+    expect(screen.queryByRole("button", { name: /approve|批准/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /reject|拒绝/i })).toBeNull();
   });
 });

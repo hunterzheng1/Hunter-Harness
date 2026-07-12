@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "sample.dup.decision.aaaaaaaaaa",
+  "projectId": "sample",
+  "type": "decision",
+  "status": "candidate",
+  "title": "AI job 复用 LlmClient",
+  "summary": "AI 检查 job 复用 LlmClient，不新增 provider 抽象。",
+  "body": "AI 检查 job 复用 LlmClient，不新增 provider 抽象。",
+  "keywords": ["llm", "sample"],
+  "source": {
+    "archive": ".harness/archive/2026-06-30-sample",
+    "summaryData": ".harness/archive/2026-06-30-sample/reports/final/summary-data.json",
+    "summarySha256": "abc",
+    "sourceCommit": "",
+    "baseCommit": "",
+    "changeName": "sample",
+    "finalStatus": "OK"
+  },
+  "scope": {
+    "sourceFiles": ["apps/server/src/registry/store.ts"],
+    "staleIfPathsChanged": ["apps/server/src/**"]
+  },
+  "lifecycle": {
+    "createdAt": "2026-06-30T00:00:00+08:00",
+    "verifiedAt": "2026-06-30T00:00:00+08:00",
+    "lastCheckedAt": "2026-06-30T00:00:00+08:00",
+    "confidence": "medium",
+    "supersedes": [],
+    "supersededBy": null,
+    "conflictsWith": [],
+    "staleReasons": []
+  },
+  "confidence": {
+    "score": 0.72,
+    "level": "medium",
+    "signals": ["base:medium", "type_bonus:decision:+0.14"],
+    "lastCalculatedAt": "2026-06-30T00:00:00+08:00"
+  }
+}

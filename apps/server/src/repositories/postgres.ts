@@ -351,6 +351,119 @@ export class PostgresRepository implements ServerRepository {
     });
   }
 
+  async finalizeSessionAutoApprove(session: ProposalSessionRecord): Promise<{
+    proposal: ProposalRecord;
+    review: ReviewRecord;
+  }> {
+    return this.transaction(async (client) => {
+      const locked = await client.query(
+        `SELECT * FROM proposal_sessions WHERE session_id = $1 FOR UPDATE`,
+        [session.sessionId]
+      );
+      if (locked.rowCount === 0 || locked.rows[0]?.status !== "open") {
+        throw new ServerDomainError(409, "UPLOAD_SESSION_FINALIZED", "session is finalized");
+      }
+      const proposalId = id("prp_");
+      await client.query(
+        `INSERT INTO proposals(
+          proposal_id, project_id, created_by, base_project_version,
+          base_manifest_hash, status
+        ) VALUES ($1,$2,$3,$4,$5,'pending_review')`,
+        [
+          proposalId,
+          session.projectId,
+          session.actorId,
+          session.baseProjectVersion,
+          session.baseManifestHash
+        ]
+      );
+      for (let index = 0; index < session.operations.length; index += 1) {
+        await client.query(
+          `INSERT INTO proposal_items(item_id, proposal_id, item_index, operation)
+           VALUES ($1,$2,$3,$4::jsonb)`,
+          [id("item_"), proposalId, index, JSON.stringify(session.operations[index])]
+        );
+      }
+      await client.query(
+        `UPDATE proposal_sessions SET status = 'finalized' WHERE session_id = $1`,
+        [session.sessionId]
+      );
+
+      const proposal = await this.getProposalWith(client, session.actorId, proposalId, true);
+      const project = await client.query(
+        `SELECT latest_project_version FROM projects WHERE project_id = $1 FOR UPDATE`,
+        [proposal.projectId]
+      );
+      const latest = project.rows[0]?.latest_project_version === null
+        ? null
+        : String(project.rows[0]?.latest_project_version);
+      if (proposal.baseProjectVersion !== latest) {
+        throw new ServerDomainError(
+          409,
+          "PROJECT_VERSION_CONFLICT",
+          "proposal base version is stale"
+        );
+      }
+      const projectVersion = id("pv_");
+      const artifactId = id("art_");
+      const payload = {
+        schema_version: 1 as const,
+        project_id: proposal.projectId,
+        project_version: projectVersion,
+        artifact_id: artifactId,
+        files: proposal.items.map((item) => item.operation)
+      };
+      const manifest = artifactManifestSchema.parse({
+        ...payload,
+        manifest_sha256: sha256Bytes(canonicalJson(payload))
+      });
+      await client.query(
+        `INSERT INTO artifacts(
+          artifact_id, project_id, project_version, base_project_version,
+          proposal_id, manifest
+        ) VALUES ($1,$2,$3,$4,$5,$6::jsonb)`,
+        [
+          artifactId,
+          proposal.projectId,
+          projectVersion,
+          proposal.baseProjectVersion,
+          proposal.proposalId,
+          JSON.stringify(manifest)
+        ]
+      );
+      await client.query(
+        `UPDATE projects SET latest_project_version = $2, latest_artifact_id = $3
+         WHERE project_id = $1`,
+        [proposal.projectId, projectVersion, artifactId]
+      );
+      await client.query(
+        `UPDATE proposals SET status = $2 WHERE proposal_id = $1`,
+        [proposal.proposalId, "approved"]
+      );
+      const reviewId = id("rev_");
+      const inserted = await client.query(
+        `INSERT INTO reviews(
+          review_id, proposal_id, actor_id, decision, comment, target_scope,
+          artifact_id, child_proposal_ids
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING *`,
+        [
+          reviewId,
+          proposal.proposalId,
+          session.actorId,
+          "auto-approved",
+          null,
+          "auto-approved",
+          artifactId,
+          JSON.stringify([])
+        ]
+      );
+      return {
+        proposal: await this.getProposalWith(client, session.actorId, proposalId),
+        review: reviewFrom(inserted.rows[0] ?? {})
+      };
+    });
+  }
+
   private async getProposalWith(
     client: Pool | PoolClient,
     actorId: string,
@@ -453,7 +566,7 @@ export class PostgresRepository implements ServerRepository {
       let status: ProposalRecord["status"];
       let artifactId: string | null = null;
       const childProposalIds: string[] = [];
-      if (input.decision === "approve") {
+      if (input.decision === "approve" || input.decision === "auto-approved") {
         status = "approved";
         const project = await client.query(
           `SELECT latest_project_version FROM projects WHERE project_id = $1 FOR UPDATE`,

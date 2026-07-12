@@ -75,7 +75,7 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     };
   }
 
-  it("lists canonical bootstrap skills and directly maintains tags and workflows", async () => {
+  it("lists canonical bootstrap skills and directly maintains tags and workflow families", async () => {
     const skills = await app.inject({ method: "GET", url: "/api/v1/skills", headers: headers() });
     expect(skills.statusCode).toBe(200);
     expect(skills.json().items).toMatchObject([{ slug: "harness-sync", latest_version: "1.0.0" }]);
@@ -88,55 +88,72 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     });
     expect(tag.statusCode).toBe(201);
 
-    const workflow = await app.inject({
+    const family = await app.inject({
       method: "POST",
-      url: "/api/v1/workflows",
+      url: "/api/v1/workflow-families",
       headers: headers(),
       payload: {
         schema_version: 1,
-        key: "general",
-        name: "General",
-        description: "Default governed workflow",
-        profile: "general",
-        default_agent: "claude-code",
-        enabled: true,
-        skill_slugs: ["harness-sync"]
+        slug: "harness",
+        displayName: "Harness",
+        description: "Default harness workflow family",
+        tags: [],
+        required_profiles: ["general"]
       }
     });
-    expect(workflow.statusCode).toBe(201);
-    expect(workflow.json()).toMatchObject({ key: "general", revision: 1 });
+    expect(family.statusCode).toBe(201);
+    expect(family.json()).toMatchObject({ slug: "harness", revision: 1 });
 
-    const updated = await app.inject({
-      method: "PATCH",
-      url: `/api/v1/workflows/${workflow.json().workflow_id}`,
-      headers: headers(),
-      payload: { revision: 1, description: "Updated without review" }
+    const upload = multipart([
+      { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+      { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+    ]);
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
     });
-    expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ revision: 2, description: "Updated without review" });
+    expect(draft.statusCode).toBe(201);
+    expect(draft.json()).toMatchObject({ family_slug: "harness", revision: 1 });
 
     const audit = await repository.listAuditEvents();
     expect(audit.map((event) => event.action)).toEqual(expect.arrayContaining([
       "tag.created",
-      "workflow.created",
-      "workflow.updated"
+      "workflow.family.created",
+      "workflow.family.draft.created"
     ]));
   });
 
-  it("publishes a reviewed Skill from source files and its Claude artifact only after owner review", async () => {
-    // 新模型：proposal 上传 source_files（SKILL.md frontmatter 驱动），不再 POST skill_ir。
+  function multipart(files: Array<{ path: string; content: string }>): {
+    payload: string;
+    headers: Record<string, string>;
+  } {
+    const boundary = "----registry-api-test";
+    let body = "";
+    for (const f of files) {
+      body += `--${boundary}\r\n`;
+      body += `Content-Disposition: form-data; name="file"; filename="${f.path}"\r\n`;
+      body += "Content-Type: application/octet-stream\r\n\r\n";
+      body += f.content + "\r\n";
+    }
+    body += `--${boundary}--\r\n`;
+    return { payload: body, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+  }
+
+  it("publishes a Skill from source files via Direct Publish and serves Claude artifacts", async () => {
     const proposedFiles: SourceFile[] = [
       { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.1.0", description: "Updated safely." }) },
       { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "1.1.0") }
     ];
-    const proposal = await app.inject({
+    const upload = multipart(proposedFiles);
+    const draft = await app.inject({
       method: "POST",
-      url: "/api/v1/skill-proposals",
-      headers: headers(),
-      payload: { schema_version: 1, source_files: proposedFiles, slug: "harness-sync", version: "1.1.0", agent: "claude-code" }
+      url: "/api/v1/skills/draft?agent=claude-code",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
     });
-    expect(proposal.statusCode).toBe(201);
-    expect(proposal.json()).toMatchObject({ status: "pending_review", skill_slug: "harness-sync" });
+    expect(draft.statusCode).toBe(201);
 
     const before = await app.inject({
       method: "GET",
@@ -145,14 +162,14 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     });
     expect(before.json().latest_version).toBe("1.0.0");
 
-    const review = await app.inject({
+    const publish = await app.inject({
       method: "POST",
-      url: `/api/v1/skill-proposals/${proposal.json().proposal_id}/review`,
+      url: "/api/v1/skills/harness-sync/draft/claude-code/publish",
       headers: headers(),
-      payload: { schema_version: 1, decision: "approve", comment: "Owner reviewed" }
+      payload: { version: "1.1.0", releaseNote: "Owner published" }
     });
-    expect(review.statusCode).toBe(201);
-    expect(review.json()).toMatchObject({ decision: "approve", published_version: "1.1.0" });
+    expect(publish.statusCode).toBe(200);
+    expect(publish.json()).toMatchObject({ version: "1.1.0" });
 
     const download = await app.inject({
       method: "GET",
@@ -168,23 +185,167 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
       url: "/api/v1/skills/harness-sync",
       headers: headers()
     });
-    // description 从已批准 proposal 的 SKILL.md frontmatter 派生
     expect(detail.json()).toMatchObject({ latest_version: "1.1.0", description: "Updated safely." });
   });
 
-  it("rejects non-monotonic Skill versions before creating a proposal", async () => {
+  it("rejects non-monotonic Skill versions on Direct Publish", async () => {
     const lowFiles: SourceFile[] = [
       { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "0.9.0" }) },
       { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "0.9.0") }
     ];
+    const upload = multipart(lowFiles);
+    const draft = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/draft?agent=claude-code",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    expect(draft.statusCode).toBe(201);
+
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/skill-proposals",
+      url: "/api/v1/skills/harness-sync/draft/claude-code/publish",
       headers: headers(),
-      payload: { schema_version: 1, source_files: lowFiles, slug: "harness-sync", version: "0.9.0", agent: "claude-code" }
+      payload: { version: "0.9.0" }
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json().error.code).toBe("SKILL_VERSION_NOT_FORWARD");
+  });
+
+  it("releases the latest published skill version to npm with injected publisher", async () => {
+    const npmConfig = { scope: "@hunter-skills", token: "npm-test-token" };
+    const appWithNpm = await createServer({
+      repository,
+      storage: new MemoryArtifactStorage(),
+      bootstrapBundle: bundle,
+      npmPublishConfig: npmConfig,
+      npmPublisherDeps: {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => undefined
+      }
+    });
+
+    const release = await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/skills/harness-sync/npm-release",
+      headers: headers()
+    });
+    expect(release.statusCode).toBe(200);
+    expect(release.json()).toMatchObject({
+      slug: "harness-sync",
+      release: {
+        version: "1.0.0",
+        packageName: "@hunter-skills/harness-sync",
+        status: "published"
+      }
+    });
+
+    const detail = await appWithNpm.inject({
+      method: "GET",
+      url: "/api/v1/skills/harness-sync",
+      headers: headers()
+    });
+    expect(detail.json()).toMatchObject({
+      npm_publish_available: true,
+      npmReleases: [{ version: "1.0.0", status: "published", packageName: "@hunter-skills/harness-sync" }]
+    });
+
+    const idempotent = await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/skills/harness-sync/npm-release",
+      headers: headers()
+    });
+    expect(idempotent.statusCode).toBe(200);
+    expect(idempotent.json().release.status).toBe("published");
+
+    await appWithNpm.close();
+  });
+
+  it("returns 503 when npm publish is not configured", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/harness-sync/npm-release",
+      headers: headers()
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json().error.code).toBe("NPM_PUBLISH_NOT_CONFIGURED");
+  });
+
+  it("releases the latest published workflow family version to npm with injected publisher", async () => {
+    const npmConfig = { scope: "@hunter-skills", token: "npm-test-token" };
+    const appWithNpm = await createServer({
+      repository,
+      storage: new MemoryArtifactStorage(),
+      bootstrapBundle: bundle,
+      npmPublishConfig: npmConfig,
+      npmPublisherDeps: {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => undefined
+      }
+    });
+
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families",
+      headers: headers(),
+      payload: {
+        schema_version: 1,
+        slug: "harness",
+        displayName: "Harness",
+        description: "Default harness workflow family",
+        tags: [],
+        required_profiles: ["general"]
+      }
+    });
+    const upload = multipart([
+      { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+      { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+    ]);
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/publish",
+      headers: headers(),
+      payload: { version: "1.0.0" }
+    });
+
+    const release = await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/npm-release",
+      headers: headers()
+    });
+    expect(release.statusCode).toBe(200);
+    expect(release.json()).toMatchObject({
+      slug: "harness",
+      release: {
+        version: "1.0.0",
+        packageName: "@hunter-skills/workflow-harness",
+        status: "published"
+      }
+    });
+
+    const detail = await appWithNpm.inject({
+      method: "GET",
+      url: "/api/v1/workflow-families/harness",
+      headers: headers()
+    });
+    expect(detail.json()).toMatchObject({
+      npmReleases: [{ version: "1.0.0", status: "published", packageName: "@hunter-skills/workflow-harness" }]
+    });
+
+    const notConfigured = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/npm-release",
+      headers: headers()
+    });
+    expect(notConfigured.statusCode).toBe(503);
+
+    await appWithNpm.close();
   });
 });

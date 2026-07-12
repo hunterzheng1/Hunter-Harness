@@ -66,7 +66,8 @@ const skill: RegistrySkillDetail = {
       result: "staged draft produced",
       files: ["SKILL.md"]
     }
-  ]
+  ],
+  npmReleases: []
 };
 
 const checksResult: SkillCheckResult = {
@@ -504,15 +505,15 @@ describe("skill-center 前端接线端到端（mock API）", () => {
 describe("workflow center 前端接线（T19）", () => {
   function wpApi(overrides: Partial<HunterApi> = {}): HunterApi {
     return {
-      listWorkflowPackages: vi.fn(async () => []),
-      listWorkflowPackageVersions: vi.fn(async () => []),
+      listWorkflowFamilies: vi.fn(async () => []),
+      listWorkflowFamilyVersions: vi.fn(async () => []),
       ...overrides
     } as unknown as HunterApi;
   }
 
-  it("WorkflowCenter 挂载并调用 listWorkflowPackages", async () => {
+  it("WorkflowCenter 挂载并调用 listWorkflowFamilies", async () => {
     const a = wpApi();
     render(<WorkflowCenter api={a} />);
-    await waitFor(() => expect(a.listWorkflowPackages).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(a.listWorkflowFamilies).toHaveBeenCalledTimes(1));
   });
 });

@@ -134,7 +134,7 @@ describe("hunter-harness initialization", () => {
     expect(project.adapters.enabled).toEqual(["claude-code", "codex"]);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
-  });
+  }, 90_000);
 
   it("non-interactive --agents all projects four agent roots", async () => {
     const code = await run([
@@ -152,7 +152,7 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
-  }, 120_000);
+  }, 240_000);
 
   it("rejects unknown agent without writing files", async () => {
     const code = await run([

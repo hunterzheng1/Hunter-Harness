@@ -22,6 +22,8 @@ export default defineConfig({
     environment: "node",
     testTimeout: 30000,
     hookTimeout: 30000,
+    // 四 Agent 初始化等 I/O 重测试在默认高并行下易互相拖垮超时
+    maxWorkers: "50%",
     include: [
       "packages/**/*.test.ts",
       "apps/**/*.test.ts",

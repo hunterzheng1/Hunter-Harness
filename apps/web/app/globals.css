@@ -1467,6 +1467,19 @@ tbody tr:last-child td {
   font-family: var(--font-mono);
 }
 
+.npm-badge {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  border: 1px solid var(--line-dim);
+}
+.npm-badge-published { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.npm-badge-failed { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.npm-badge-conflict { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.npm-badge-unpublished { color: var(--muted); background: var(--bg-raised); }
+.npm-command-code { opacity: 0.85; }
+
 .command-panel {
   display: flex;
   align-items: center;
@@ -1576,6 +1589,8 @@ tbody tr:last-child td {
 .skill-detail-tabs button { flex: 0 0 auto; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--muted); font-size: 13px; font-weight: 650; }
 .skill-detail-tabs button:hover { color: var(--text); background: var(--panel-hover); }
 .skill-detail-tabs button.selected { color: var(--text-heading); background: var(--panel); box-shadow: var(--shadow-xs); }
+
+.semantic-graph { width: 100%; max-width: 720px; height: auto; color: var(--muted); background: var(--code-surface); border: 1px solid var(--line-dim); border-radius: var(--radius-md); }
 
 .source-package { overflow: hidden; }
 .source-package-grid { display: grid; grid-template-columns: fit-content(240px) minmax(0, 1fr); gap: 12px; }

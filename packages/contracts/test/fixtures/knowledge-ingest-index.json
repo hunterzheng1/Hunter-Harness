@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-30T12:00:00+08:00",
+  "projectId": "sample",
+  "projectRoot": "/tmp/sample",
+  "headCommit": "abc123",
+  "archives": {
+    "scanned": 1,
+    "indexed": 1,
+    "failed": 0,
+    "items": [
+      {
+        "archive": ".harness/archive/2026-06-30-sample",
+        "summaryData": ".harness/archive/2026-06-30-sample/reports/final/summary-data.json",
+        "summarySha256": "abc",
+        "mtime": "2026-06-30T10:00:00+08:00"
+      }
+    ]
+  },
+  "stats": {
+    "candidate": 1,
+    "active": 0,
+    "stale": 0,
+    "superseded": 0,
+    "deprecated": 0,
+    "conflicted": 0
+  },
+  "byType": {
+    "api-contract": 0,
+    "decision": 1,
+    "implementation": 0,
+    "pitfall": 0,
+    "requirement": 0,
+    "risk": 0,
+    "test-evidence": 0
+  },
+  "duplicatesSkipped": 0,
+  "ingestMode": {
+    "incremental": false,
+    "archivesExtracted": 1,
+    "archivesReused": 0,
+    "cacheWrites": 0,
+    "activeAutoDemoted": 0,
+    "confidenceScored": 1,
+    "candidateAutoPromoted": 0,
+    "validationChecked": 0,
+    "validationFailed": 0,
+    "validationAutoDemoted": 0
+  },
+  "failures": [],
+  "entries": [
+    {
+      "id": "sample.dup.decision.aaaaaaaaaa",
+      "type": "decision",
+      "status": "candidate",
+      "title": "AI job 复用 LlmClient",
+      "sourceArchive": ".harness/archive/2026-06-30-sample",
+      "sourceCommit": "",
+      "sourceFiles": ["apps/server/src/registry/store.ts"],
+      "confidence": {
+        "score": 0.72,
+        "level": "medium",
+        "signals": ["base:medium"],
+        "lastCalculatedAt": "2026-06-30T00:00:00+08:00"
+      }
+    }
+  ]
+}

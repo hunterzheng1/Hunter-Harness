@@ -551,4 +551,40 @@ describe("@hunter-harness/skill-cli", () => {
     expect(exitCode).toBe(0);
     expect(await readFile(join(cwd, "notes..v1.md"), "utf8")).toBe("# notes\n");
   });
+
+  it("installs from npm with injected pacote extract fixture", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-npm-install-"));
+    const skillContent = DEFAULT_SKILL_CONTENT;
+    const guide = "# guide\n";
+    const files = [
+      { path: "SKILL.md", content: skillContent },
+      { path: "references/guide.md", content: guide }
+    ];
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--agent", "claude-code",
+      "--from", "npm", "--npm-scope", "@hunter-skills"
+    ], {
+      cwd,
+      env: { ...tokenEnv, HUNTER_HARNESS_NPM_SCOPE: "@hunter-skills" },
+      pacoteTarball: async () => zipBytes(skillContent),
+      pacoteExtract: async (_packageName, destination) => {
+        await mkdir(join(destination, "references"), { recursive: true });
+        await writeFile(join(destination, "SKILL.md"), skillContent, "utf8");
+        await writeFile(join(destination, "references", "guide.md"), guide, "utf8");
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 2,
+          slug: "harness-sync",
+          version: "1.0.0",
+          agent: "claude-code",
+          source_sha256: sourceHashOf(files),
+          target_path: ".claude/skills/harness-sync/",
+          install_mode: "folder"
+        }), "utf8");
+      },
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+    expect(exitCode).toBe(0);
+    expect(await readFile(join(cwd, ".claude", "skills", "harness-sync", "SKILL.md"), "utf8")).toBe(skillContent);
+  });
 });

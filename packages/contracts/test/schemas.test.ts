@@ -41,7 +41,6 @@ import {
   registrySkillSummarySchema,
   registrySkillVersionSchema,
   registryTagSchema,
-  registryWorkflowSchema,
   setDefaultAgentRequestSchema,
   skillCheckItemSchema,
   skillCheckResultSchema,
@@ -54,11 +53,12 @@ import {
   SKILL_NAME_REGEX,
   SKILL_ERROR_CODE,
   sourceFileSchema,
-  publishWorkflowPackageRequestSchema,
-  workflowPackageDraftStateSchema,
-  workflowPackageManifestSchema,
-  workflowPackageSchema,
-  workflowPackageVersionSchema
+  workflowFamilySchema,
+  publishWorkflowFamilyRequestSchema,
+  registryProjectWorkflowBindingSchema,
+  workflowFamilyDraftStateSchema,
+  workflowFamilyVersionSchema,
+  workflowBundleManifestSchema,
 } from "../src/index.js";
 
 describe("multi-agent contracts", () => {
@@ -215,16 +215,16 @@ describe("shared contracts", () => {
       updated_at: "2026-06-21T00:00:00Z"
     }).tags).toEqual(["review", "security"]);
 
-    expect(registryWorkflowSchema.parse({
-      workflow_id: "wf_general",
-      key: "general",
-      name: "General",
-      description: "Default governance workflow",
-      profile: "general",
-      default_agent: "claude-code",
-      enabled: true,
-      skill_slugs: ["harness-sync", "harness-review"],
+    expect(workflowFamilySchema.parse({
+      family_id: "wff_harness",
+      slug: "harness",
+      displayName: "Harness",
+      description: "Default harness workflow family",
+      tags: ["core"],
+      latest_version: "1.0.0",
+      required_profiles: ["general", "java"],
       revision: 2,
+      npmReleases: [],
       created_at: "2026-06-20T00:00:00Z",
       updated_at: "2026-06-21T00:00:00Z"
     }).revision).toBe(2);
@@ -937,7 +937,6 @@ describe("OpenAPI v1", () => {
       "/api/v1/proposal-sessions/{session_id}/blobs:query",
       "/api/v1/proposal-sessions/{session_id}/blobs/{content_sha256}",
       "/api/v1/proposal-sessions/{session_id}:finalize",
-      "/api/v1/proposals/{proposal_id}/review-decisions",
       "/api/v1/projects/{project_id}/update-manifest",
       "/api/v1/artifacts/{artifact_id}/manifest",
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}"
@@ -1084,41 +1083,28 @@ describe("cursor adapter + managed-block block_id (T1)", () => {
   });
 });
 
-describe("workflow package schemas", () => {
-  const validManifest = {
-    key: "release-flow",
-    name: "Release Flow",
-    description: "End-to-end release workflow",
+describe("workflow family schemas", () => {
+  const manifest = {
+    schema_version: 1 as const,
     profile: "general",
-    skills: [{ slug: "harness-sync", ref: "1.0.0" }],
-    agents: [{ path: "agents/release.md", ref: "main" }],
-    protocols: [{ path: "protocols/review.md", ref: "main" }],
-    templates: [{ path: "templates/report.md", ref: "main" }],
-    execution_order: ["harness-sync"],
-    strategy: "sequential"
+    files: [{ path: ".harness-build.json", sha256: "sha256:" + "a".repeat(64) }]
   };
 
-  it("manifest parses skills/agents/protocols/templates refs + execution_order + strategy", () => {
-    const m = workflowPackageManifestSchema.parse(validManifest);
-    expect(m.strategy).toBe("sequential");
-    expect(m.execution_order).toEqual(["harness-sync"]);
-    expect(m.skills[0].slug).toBe("harness-sync");
-    expect(m.agents[0].path).toBe("agents/release.md");
+  it("bundle manifest parses profile + file hashes", () => {
+    const parsed = workflowBundleManifestSchema.parse(manifest);
+    expect(parsed.profile).toBe("general");
+    expect(parsed.files).toHaveLength(1);
   });
 
-  it("manifest rejects invalid strategy", () => {
-    expect(() => workflowPackageManifestSchema.parse({ ...validManifest, strategy: "teleport" })).toThrow();
-  });
-
-  it("manifest rejects extra fields (strict)", () => {
-    expect(() => workflowPackageManifestSchema.parse({ ...validManifest, extra: 1 })).toThrow();
-  });
-
-  it("draftState requires key/manifest/sourceFiles/revision and accepts nullable checks", () => {
-    const d = workflowPackageDraftStateSchema.parse({
-      key: "release-flow",
-      manifest: validManifest,
-      sourceFiles: [{ path: "workflow.yaml", content: "key: release-flow" }],
+  it("draft state tracks per-profile bundles", () => {
+    const draft = workflowFamilyDraftStateSchema.parse({
+      family_slug: "harness",
+      profiles: [{
+        profile: "general",
+        sourceFiles: [{ path: ".harness-build.json", content: "{}" }],
+        bundle_manifest: manifest
+      }],
+      required_profiles: ["general"],
       draftVersion: "0.1.0",
       checks: null,
       releaseNote: null,
@@ -1126,49 +1112,52 @@ describe("workflow package schemas", () => {
       created_at: "2026-06-30T00:00:00Z",
       updated_at: "2026-06-30T00:00:00Z"
     });
-    expect(d.checks).toBeNull();
-    expect(d.revision).toBe(1);
+    expect(draft.profiles[0].profile).toBe("general");
   });
 
-  it("version carries manifest + artifacts + nullable changeNote", () => {
-    const v = workflowPackageVersionSchema.parse({
-      package_key: "release-flow",
+  it("version carries profiles + artifacts + nullable changeNote", () => {
+    const version = workflowFamilyVersionSchema.parse({
+      family_slug: "harness",
       version: "1.0.0",
-      manifest: validManifest,
+      profiles: [{
+        profile: "general",
+        bundle_manifest: manifest,
+        artifact_id: "wfb_1",
+        sourceFiles: []
+      }],
       artifacts: [{
-        artifact_id: "wfa_1",
-        package_key: "release-flow",
+        artifact_id: "wfb_1",
+        family_slug: "harness",
+        profile: "general",
         version: "1.0.0",
         content_sha256: "sha256:" + "a".repeat(64),
         size_bytes: 10,
+        bundle_manifest: manifest,
         created_at: "2026-06-30T00:00:00Z"
       }],
-      sourceFiles: [],
       changeNote: null,
       created_at: "2026-06-30T00:00:00Z"
     });
-    expect(v.artifacts).toHaveLength(1);
-    expect(v.changeNote).toBeNull();
+    expect(version.profiles).toHaveLength(1);
+    expect(version.changeNote).toBeNull();
   });
 
-  it("package has package_id/key/manifest/latestVersion/revision and rejects extras", () => {
-    const p = workflowPackageSchema.parse({
-      package_id: "wfp_1",
-      key: "release-flow",
-      manifest: validManifest,
-      latestVersion: "1.0.0",
+  it("project binding uses family_slug + profile", () => {
+    const binding = registryProjectWorkflowBindingSchema.parse({
+      project_id: "prj_1",
+      family_slug: "harness",
+      profile: "general",
+      version: "1.0.0",
       revision: 1,
-      created_at: "2026-06-30T00:00:00Z",
       updated_at: "2026-06-30T00:00:00Z"
     });
-    expect(p.latestVersion).toBe("1.0.0");
-    expect(() => workflowPackageSchema.parse({ ...p, extra: 1 })).toThrow();
+    expect(binding.family_slug).toBe("harness");
   });
 
-  it("publishWorkflowPackageRequest requires version and accepts optional releaseNote", () => {
-    expect(() => publishWorkflowPackageRequestSchema.parse({})).toThrow();
-    expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0" }).releaseNote).toBeUndefined();
-    expect(publishWorkflowPackageRequestSchema.parse({ version: "1.0.0", releaseNote: "init" }).releaseNote).toBe("init");
+  it("publishWorkflowFamilyRequest requires version and accepts optional releaseNote", () => {
+    expect(() => publishWorkflowFamilyRequestSchema.parse({})).toThrow();
+    expect(publishWorkflowFamilyRequestSchema.parse({ version: "1.0.0" }).releaseNote).toBeUndefined();
+    expect(publishWorkflowFamilyRequestSchema.parse({ version: "1.0.0", releaseNote: "init" }).releaseNote).toBe("init");
   });
 });
 

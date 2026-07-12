@@ -133,7 +133,7 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
         ],
         actorId: "owner",
         agent: CC
-      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT", details: { redirect: "workflow-packages" } });
+      })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT", details: { redirect: "workflow-families" } });
     });
 
     it("redirects workflow package with agents/ dir (UT-022)", async () => {
@@ -614,7 +614,7 @@ describe("RegistryStore uploadDraft validation", () => {
         { path: "skills/foo.md", content: "x" }
       ],
       actorId: "owner", agent: CC
-    })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT", details: { redirect: "workflow-packages" } });
+    })).rejects.toMatchObject({ code: "WORKFLOW_PACKAGE_REDIRECT", details: { redirect: "workflow-families" } });
   });
 
   it("uploadDraft derives draftVersion from that agent's latestVersion", async () => {
@@ -1003,70 +1003,51 @@ describe("RegistryStore AI content generation", () => {
   });
 });
 
-describe("createProposal + reviewProposal gate (per-agent)", () => {
-  it("createProposal agent=cursor passes gate + records requestedAgent", () => {
+describe("skill proposal track removed (Direct Publish)", () => {
+  it("createProposal and reviewProposal are gone", async () => {
     const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    expect(proposal.requestedAgent).toBe(CURSOR);
-    expect(proposal.status).toBe("pending_review");
+    try {
+      store.createProposal({
+        sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR
+      });
+      expect.unreachable("createProposal should throw");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "SKILL_PROPOSAL_REMOVED" });
+    }
+    await expect(store.reviewProposal({
+      proposalId: "skp_x", actorId: "reviewer", decision: "approve", comment: null
+    })).rejects.toMatchObject({ code: "SKILL_PROPOSAL_REMOVED" });
   });
 
-  it("createProposal agent=mcp rejected 422 ADAPTER_NOT_INSTALLABLE", () => {
+  it("publish publishes only the requested agent artifact (per-agent)", async () => {
     const store = newStore();
-    let caught: unknown = null;
-    try { store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: "mcp" as RegistryAgent }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
-  });
-
-  it("createProposal agent=cursor without .mdc entry rejected 422 SKILL_ENTRY_NOT_FOUND", () => {
-    const store = newStore();
-    let caught: unknown = null;
-    try { store.createProposal({ sourceFiles: files, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "SKILL_ENTRY_NOT_FOUND", status: 422 });
-  });
-
-  it("reviewProposal approve publishes only requestedAgent artifact (per-agent)", async () => {
-    const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "approve", comment: null });
-    expect(review.status).toBe("approved");
-    expect(review.publishedArtifacts).toHaveLength(1);
-    expect(review.publishedArtifacts[0]?.agent).toBe(CURSOR);
+    await store.upsertDraft({
+      slug: "harness-x",
+      agent: CURSOR,
+      sourceFiles: filesMulti,
+      draftVersion: "1.0.0"
+    });
+    const version = await store.publish({
+      slug: "harness-x",
+      agent: CURSOR,
+      version: "1.0.0",
+      actorId: "owner",
+      releaseNote: null
+    });
+    expect(version.agent).toBe(CURSOR);
+    expect(version.artifacts).toHaveLength(1);
+    expect(version.artifacts[0]?.agent).toBe(CURSOR);
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
     expect(byAgent.get(CURSOR)?.latestVersion).toBe("1.0.0");
     expect(byAgent.get(CC)?.latestVersion).toBeNull();
   });
-
-  it("reviewProposal reject produces no artifacts", async () => {
-    const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "reject", comment: "no" });
-    expect(review.status).toBe("rejected");
-    expect(review.publishedArtifacts).toEqual([]);
-  });
 });
 
-describe("RegistryStore workflow package boundary + persistence (UT-021, UT-030~031)", () => {
-  const wpYaml = `key: release-flow
-name: Release Flow
-description: End-to-end release workflow
-profile: general
-skills:
-  - slug: harness-sync
-    ref: "1.0.0"
-agents:
-  - path: agents/release.md
-    ref: main
-protocols: []
-templates: []
-execution_order:
-  - harness-sync
-strategy: sequential
-`;
-  const wpFiles: SourceFile[] = [
-    { path: "workflow.yaml", content: wpYaml },
-    { path: "agents/release.md", content: "# Release agent" }
+describe("RegistryStore workflow family boundary + persistence (UT-021, UT-030~031)", () => {
+  const generalFiles: SourceFile[] = [
+    { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+    { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
   ];
 
   it("uploadDraft single skill goes to skill draft, not redirect (UT-021)", async () => {
@@ -1075,36 +1056,54 @@ strategy: sequential
     expect(draft.slug).toBe("harness-x");
   });
 
-  it("old snapshot without workflowPackages migrates to empty (UT-030)", async () => {
+  it("old snapshot without workflowFamilies migrates to empty (UT-030)", async () => {
     const p = new MemoryPersistence();
     p.snapshot = {
       compilerVersion: "1.0.0",
-      skills: [], proposals: [], tags: [], workflows: [], drafts: []
+      skills: [], proposals: [], tags: [], drafts: []
     };
     const store = newStore(p);
     await store.initialize();
-    expect(store.listWorkflowPackages()).toEqual([]);
+    expect(store.listWorkflowFamilies()).toEqual([]);
   });
 
-  it("persist serializes workflowPackages + drafts (UT-031)", async () => {
+  it("persist serializes workflowFamilies + drafts (UT-031)", async () => {
     const p = new MemoryPersistence();
     const store = newStore(p);
-    await store.uploadWorkflowPackage({ files: wpFiles, actorId: "owner" });
-    await store.publishWorkflowPackage("release-flow", { version: "1.0.0", actorId: "owner" });
-    const snap = p.snapshot as { workflowPackages: unknown[]; workflowPackageDrafts: unknown[] };
-    expect(Array.isArray(snap.workflowPackages)).toBe(true);
-    expect(snap.workflowPackages.length).toBe(1);
+    store.createWorkflowFamily({
+      slug: "harness",
+      displayName: "Harness",
+      description: "Default harness workflow family",
+      tags: [],
+      required_profiles: ["general"]
+    });
+    await store.uploadWorkflowFamilyProfileDraft({
+      slug: "harness", profile: "general", files: generalFiles, actorId: "owner"
+    });
+    await store.publishWorkflowFamily("harness", { version: "1.0.0", actorId: "owner" });
+    const snap = p.snapshot as { workflowFamilies: unknown[]; workflowFamilyDrafts: unknown[] };
+    expect(Array.isArray(snap.workflowFamilies)).toBe(true);
+    expect(snap.workflowFamilies.length).toBe(1);
   });
 
-  it("workflow package survives reload round-trip", async () => {
+  it("workflow family survives reload round-trip", async () => {
     const p = new MemoryPersistence();
     let store = newStore(p);
-    await store.uploadWorkflowPackage({ files: wpFiles, actorId: "owner" });
-    await store.publishWorkflowPackage("release-flow", { version: "1.0.0", actorId: "owner" });
+    store.createWorkflowFamily({
+      slug: "harness",
+      displayName: "Harness",
+      description: "Default harness workflow family",
+      tags: [],
+      required_profiles: ["general"]
+    });
+    await store.uploadWorkflowFamilyProfileDraft({
+      slug: "harness", profile: "general", files: generalFiles, actorId: "owner"
+    });
+    await store.publishWorkflowFamily("harness", { version: "1.0.0", actorId: "owner" });
     store = newStore(p);
     await store.initialize();
-    const pkg = store.getWorkflowPackage("release-flow");
-    expect(pkg?.latestVersion).toBe("1.0.0");
-    expect(store.listWorkflowPackageVersions("release-flow").map((v) => v.version)).toEqual(["1.0.0"]);
+    const family = store.getWorkflowFamily("harness");
+    expect(family.latest_version).toBe("1.0.0");
+    expect(store.listWorkflowFamilyVersions("harness").map((v) => v.version)).toEqual(["1.0.0"]);
   });
 });

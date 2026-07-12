@@ -34,7 +34,10 @@ export const apiErrorCodeSchema = z.enum([
   "DRAFT_NOT_FOUND",
   "REVISION_CONFLICT",
   "ADAPTER_NOT_INSTALLABLE",
-  "WORKFLOW_PACKAGE_REDIRECT"
+  "WORKFLOW_PACKAGE_REDIRECT",
+  "NPM_PUBLISH_NOT_CONFIGURED",
+  "NPM_PUBLISH_NOT_PUBLISHED",
+  "NPM_PUBLISH_CONFLICT"
 ]);
 
 export const apiErrorEnvelopeSchema = z.object({

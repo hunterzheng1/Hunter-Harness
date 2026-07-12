@@ -1,0 +1,15 @@
+{
+  "name": "@hunter-harness/workflow-harness",
+  "version": "0.2.0",
+  "description": "Harness workflow family data package (bundles, manifests, migrations)",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "harness",
+    "hunter-workflow-family.json",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/sync-harness.mjs"
+  }
+}

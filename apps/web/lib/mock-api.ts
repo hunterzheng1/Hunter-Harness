@@ -2,26 +2,31 @@ import type {
   AiProviderConfig,
   AiProviderWithKeySet,
   AiQuotaUsage,
+  CreateExternalSkillRequest,
   DashboardOverview,
   DraftState,
+  ExternalSkill,
+  PatchExternalSkillRequest,
   RegistryAgent,
   RegistrySkillDetail,
-  RegistrySkillProposal,
   RegistrySkillVersion,
   RegistryTag,
-  RegistryWorkflow,
-  RegistryWorkflowMutation,
+  WorkflowFamily,
+  WorkflowFamilyDraftState,
+  WorkflowFamilyMutation,
+  WorkflowFamilyVersion,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
   FixPlan,
   PublishSkillRequest,
-  WorkflowPackage,
-  WorkflowPackageDraftState,
-  WorkflowPackageVersion
+  NpmReleaseResponse,
+  SemanticDocument,
+  SemanticEdge,
+  SemanticOverview
 } from "@hunter-harness/contracts";
 
-import { bootstrapSkills, workflowOrder } from "./catalog";
+import { bootstrapSkills } from "./catalog";
 import { findDemoSourceSkill, sapFieldMapper } from "./demo-skills/sap-field-mapper";
 import { ApiClientError } from "./api";
 import type {
@@ -214,7 +219,8 @@ const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) =>
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z",
   sourceFiles: skill.sourceFiles.map((f) => ({ path: f.path, content: f.content })),
-  examples: []
+  examples: [],
+  npmReleases: []
 }));
 
 MOCK_SKILLS.push({
@@ -235,7 +241,8 @@ MOCK_SKILLS.push({
   created_at: "2026-06-25T00:00:00Z",
   updated_at: "2026-06-25T00:00:00Z",
   sourceFiles: sapFieldMapper.source.files.map((f) => ({ path: f.path, content: f.content })),
-  examples: []
+  examples: [],
+  npmReleases: []
 });
 
 const MOCK_TAGS: RegistryTag[] = [
@@ -243,19 +250,86 @@ const MOCK_TAGS: RegistryTag[] = [
   { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
 ];
 
-const MOCK_WORKFLOWS: RegistryWorkflow[] = [{
-  workflow_id: "wf_demo_general",
-  key: "general",
-  name: "General",
-  description: "Explicit read-only demo workflow",
-  profile: "general",
-  default_agent: "claude-code",
-  enabled: true,
-  skill_slugs: [...workflowOrder],
+const MOCK_EXTERNAL_SKILLS: ExternalSkill[] = [
+  {
+    id: "ext_demo_firecrawl",
+    source: { type: "npm", ref: "@mendable/firecrawl-js" },
+    snapshot: {
+      name: "@mendable/firecrawl-js",
+      description: "Official Firecrawl JS SDK for web scraping and crawling.",
+      version: "1.21.0",
+      readme: "# Firecrawl JS\n\nInstall via npm and follow the upstream docs.",
+      installCommand: "npm install @mendable/firecrawl-js",
+      license: "MIT",
+      homepage: "https://www.npmjs.com/package/@mendable/firecrawl-js",
+      releaseUrl: "https://www.npmjs.com/package/@mendable/firecrawl-js",
+      fetchedAt: "2026-07-12T00:00:00.000Z"
+    },
+    curationNote: "Useful for research skills that need reliable page extraction.",
+    tags: ["research"],
+    updateAvailable: true,
+    lastCheckedAt: "2026-07-12T00:00:00.000Z",
+    revision: 1,
+    created_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-12T00:00:00.000Z"
+  },
+  {
+    id: "ext_demo_superpowers",
+    source: { type: "github", ref: "obra/superpowers" },
+    snapshot: {
+      name: "obra/superpowers",
+      description: "Composable agent skills and workflows.",
+      version: "v4.0.0",
+      readme: "# Superpowers\n\nInstall from the official GitHub repository.",
+      installCommand: "https://github.com/obra/superpowers",
+      license: "MIT",
+      homepage: "https://github.com/obra/superpowers",
+      releaseUrl: "https://github.com/obra/superpowers/releases/tag/v4.0.0",
+      fetchedAt: "2026-07-12T00:00:00.000Z"
+    },
+    curationNote: "Keep as upstream reference; do not mirror into the registry.",
+    tags: ["skills"],
+    updateAvailable: false,
+    lastCheckedAt: "2026-07-12T00:00:00.000Z",
+    revision: 1,
+    created_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-12T00:00:00.000Z"
+  }
+];
+
+const MOCK_WORKFLOW_FAMILIES: WorkflowFamily[] = [{
+  family_id: "wff_demo_general",
+  slug: "general",
+  displayName: "General",
+  description: "Explicit read-only demo workflow family",
+  tags: ["bootstrap"],
+  latest_version: "1.0.0",
+  required_profiles: ["general"],
   revision: 1,
+  npmReleases: [],
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z"
 }];
+
+function mockSemanticDoc(
+  projectId: string,
+  kind: SemanticDocument["kind"],
+  title: string,
+  body: string,
+  path: string
+): SemanticDocument {
+  return {
+    document_id: `sem_${kind}_${title.replaceAll(/\W+/g, "_").toLowerCase()}`,
+    project_id: projectId,
+    artifact_id: "art_demo",
+    kind,
+    source_path: path,
+    title,
+    body,
+    metadata: {},
+    content_sha256: "sha256:" + "a".repeat(64)
+  };
+}
 
 const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
   { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, daily_request_limit: 1000, daily_token_limit: 500000, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z", models: [{ id: "ds-chat", display_model: "DeepSeek Chat", request_model: "deepseek-chat", input_cost: 0.27, output_cost: 1.1, cache_hit_cost: 0.07, cache_create_cost: 0.27 }, { id: "ds-reasoner", display_model: "DeepSeek Reasoner", request_model: "deepseek-reasoner", input_cost: 0.55, output_cost: 2.19, cache_hit_cost: 0.14, cache_create_cost: 0.55 }], api_format: "openai", note: "主力供应商", website: "https://platform.deepseek.com", selected_model_id: "ds-chat", sort_order: 0 },
@@ -351,6 +425,37 @@ export class MockApiClient implements HunterApi {
     return delay(clone(MOCK_SKILLS));
   }
 
+  async listExternalSkills(): Promise<ExternalSkill[]> {
+    return delay(clone(MOCK_EXTERNAL_SKILLS));
+  }
+
+  async getExternalSkill(id: string): Promise<ExternalSkill> {
+    const skill = MOCK_EXTERNAL_SKILLS.find((item) => item.id === id);
+    if (skill === undefined) throw new ApiClientError(404, "EXTERNAL_SKILL_NOT_FOUND", "Demo external skill not found.");
+    return delay(clone(skill));
+  }
+
+  async createExternalSkill(_input: CreateExternalSkillRequest): Promise<ExternalSkill> {
+    void _input;
+    return demoReadOnly();
+  }
+
+  async patchExternalSkill(_id: string, _input: PatchExternalSkillRequest): Promise<ExternalSkill> {
+    void _id;
+    void _input;
+    return demoReadOnly();
+  }
+
+  async refreshExternalSkill(_id: string): Promise<ExternalSkill> {
+    void _id;
+    return demoReadOnly();
+  }
+
+  async deleteExternalSkill(_id: string): Promise<{ id: string; deleted: boolean }> {
+    void _id;
+    return demoReadOnly();
+  }
+
   async getSkill(slug: string): Promise<RegistrySkillDetail> {
     const skill = MOCK_SKILLS.find((item) => item.slug === slug);
     if (skill === undefined) throw new ApiClientError(404, "SKILL_NOT_FOUND", "Demo Skill not found.");
@@ -378,20 +483,59 @@ export class MockApiClient implements HunterApi {
     return delay({ path: `.claude/skills/${slug}/SKILL.md`, content: `# ${slug}\n\n${skill.description}\n`, sourceIrHash: "sha256:" + "d".repeat(64), compilerVersion: "1.0.0", adapter: agent });
   }
 
-  async listSkillProposals(): Promise<RegistrySkillProposal[]> { return delay([]); }
   async listTags(): Promise<RegistryTag[]> { return delay(clone(MOCK_TAGS)); }
-  async listWorkflows(): Promise<RegistryWorkflow[]> { return delay(clone(MOCK_WORKFLOWS)); }
+  async listWorkflowFamilies(): Promise<WorkflowFamily[]> { return delay(clone(MOCK_WORKFLOW_FAMILIES)); }
   async listSkillArtifacts() { return delay([]); }
-  async createSkillProposal(): Promise<RegistrySkillProposal> { return demoReadOnly(); }
-  async reviewSkillProposal(): Promise<Record<string, unknown>> { return demoReadOnly(); }
   async downloadSkillArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
   async createTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async updateTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async mergeTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async bindSkillTag(): Promise<RegistrySkillDetail> { return demoReadOnly(); }
-  async createWorkflow(input: RegistryWorkflowMutation): Promise<RegistryWorkflow> { void input; return demoReadOnly(); }
-  async updateWorkflow(): Promise<RegistryWorkflow> { return demoReadOnly(); }
-  async deleteWorkflow(): Promise<void> { return demoReadOnly(); }
+  async createWorkflowFamily(input: WorkflowFamilyMutation): Promise<WorkflowFamily> { void input; return demoReadOnly(); }
+  async getWorkflowFamily(slug: string): Promise<WorkflowFamily> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined) throw new ApiClientError(404, "WORKFLOW_FAMILY_NOT_FOUND", "Demo workflow family not found.");
+    return delay(clone(family));
+  }
+  async uploadWorkflowFamilyProfileDraft(): Promise<WorkflowFamilyDraftState> { return demoReadOnly(); }
+  async getWorkflowFamilyDraft(slug: string): Promise<WorkflowFamilyDraftState> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined) throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow family draft not found.");
+    return delay({
+      family_slug: family.slug,
+      profiles: [],
+      required_profiles: family.required_profiles,
+      draftVersion: null,
+      checks: null,
+      releaseNote: null,
+      revision: 1,
+      created_at: "2026-06-25T00:00:00Z",
+      updated_at: "2026-06-25T00:00:00Z"
+    });
+  }
+  async discardWorkflowFamilyDraft(): Promise<{ slug: string; discarded: boolean }> { return demoReadOnly(); }
+  async runWorkflowFamilyDraftChecks(slug: string): Promise<SkillCheckResult> {
+    void slug;
+    return delay(demoChecksToResult([
+      { id: "WF_BUNDLE_MANIFEST", label: "Bundle manifest", status: "green", message: "ok", filePath: null, fixable: false }
+    ]));
+  }
+  async publishWorkflowFamilyDraft(): Promise<WorkflowFamilyVersion> { return demoReadOnly(); }
+  async diffWorkflowFamilyDraft(): Promise<SkillDiffFile[]> { return []; }
+  async listWorkflowFamilyVersions(slug: string): Promise<WorkflowFamilyVersion[]> {
+    const family = MOCK_WORKFLOW_FAMILIES.find((item) => item.slug === slug);
+    if (family === undefined || family.latest_version === null) return delay([]);
+    return delay([{
+      family_slug: family.slug,
+      version: family.latest_version,
+      profiles: [{ profile: "general", bundle_manifest: { schema_version: 1, profile: "general", files: [{ path: "workflow.yaml", sha256: "sha256:" + "a".repeat(64) }] }, artifact_id: "wfb_demo_general", sourceFiles: [] }],
+      artifacts: [],
+      changeNote: "Demo release",
+      created_at: "2026-06-20T00:00:00Z"
+    }]);
+  }
+  async downloadWorkflowFamilyArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
+  async releaseWorkflowFamilyToNpm(slug: string): Promise<NpmReleaseResponse> { void slug; return demoReadOnly(); }
   async listProjects(): Promise<ProjectSummary[]> {
     return delay([...MOCK_PROJECTS]);
   }
@@ -403,6 +547,56 @@ export class MockApiClient implements HunterApi {
       ...project,
       request_id: "mock-" + crypto.randomUUID(),
     });
+  }
+
+  async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
+    return delay({
+      project_id: projectId,
+      artifact_id: "art_demo",
+      counts: { documents: 4, knowledge: 1, rules: 1, changes: 1, agent_instructions: 1, edges: 1 }
+    });
+  }
+
+  async listProjectSemanticKnowledge(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "knowledge_entry", "Reuse LlmClient", "Reuse LlmClient for AI jobs.", ".harness/knowledge/entries/active/decision.json")]);
+  }
+
+  async listProjectSemanticRules(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "rule", "harness-general.md", "general rule body", ".claude/rules/harness-general.md")]);
+  }
+
+  async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "archive_record", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
+  }
+
+  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
+    const knowledge = await this.listProjectSemanticKnowledge(projectId);
+    const rules = await this.listProjectSemanticRules(projectId);
+    const nodes = [...knowledge, ...rules];
+    const from = nodes[0];
+    const to = nodes[1];
+    return delay({
+      nodes,
+      edges: from === undefined || to === undefined ? [] : [{
+        edge_id: "sed_demo",
+        project_id: projectId,
+        artifact_id: "art_demo",
+        from_document_id: from.document_id,
+        to_document_id: to.document_id,
+        kind: "references_path",
+        metadata: {}
+      }]
+    });
+  }
+
+  async searchSemanticDocuments(query: string, projectId?: string): Promise<Array<{ document: SemanticDocument; project_id: string }>> {
+    const fallback = MOCK_PROJECTS[0];
+    const id = projectId ?? fallback?.project_id ?? "agent-harness";
+    const items = await this.listProjectSemanticKnowledge(id);
+    const needle = query.toLowerCase();
+    return delay(items
+      .filter((document) => document.title.toLowerCase().includes(needle) || document.body.toLowerCase().includes(needle))
+      .map((document) => ({ document, project_id: id })));
   }
 
   async listProjectProposals(projectId: string): Promise<ProposalSummary[]> {
@@ -614,17 +808,6 @@ export class MockApiClient implements HunterApi {
   }
 
   async deleteSkill(): Promise<{ slug: string; deleted: boolean }> { return demoReadOnly(); }
-
-  // workflow package：demo 模式禁写（mutation 走 demoReadOnly），get 返回空/404（无 mock 数据；真实模式调 /workflow-packages）。
-  async uploadWorkflowPackage(): Promise<WorkflowPackageDraftState> { return demoReadOnly(); }
-  async getWorkflowPackageDraft(): Promise<WorkflowPackageDraftState> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
-  async discardWorkflowPackageDraft(): Promise<{ key: string; discarded: boolean }> { return demoReadOnly(); }
-  async runWorkflowPackageChecks(): Promise<SkillCheckResult> { throw new ApiClientError(404, "DRAFT_NOT_FOUND", "Demo workflow package draft not found."); }
-  async publishWorkflowPackage(): Promise<WorkflowPackageVersion> { return demoReadOnly(); }
-  async diffWorkflowPackageDraft(): Promise<SkillDiffFile[]> { return []; }
-  async listWorkflowPackages(): Promise<WorkflowPackage[]> { return []; }
-  async getWorkflowPackage(): Promise<WorkflowPackage> { throw new ApiClientError(404, "PACKAGE_NOT_FOUND", "Demo workflow package not found."); }
-  async listWorkflowPackageVersions(): Promise<WorkflowPackageVersion[]> { return []; }
 
   async listAiProviders(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }> {
     return delay({ items: clone(MOCK_AI_PROVIDERS).map((p) => ({ ...p, key_set: p.provider_id === "deepseek" })), default_provider: "deepseek" });

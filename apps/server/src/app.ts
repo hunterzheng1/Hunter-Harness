@@ -4,15 +4,17 @@ import {
   aiProviderReorderRequestSchema,
   canonicalJson,
   fileOperationSchema,
+  finalizeProposalSchema,
   providerModelSchema,
   publishSkillRequestSchema,
-  publishWorkflowPackageRequestSchema,
+  publishWorkflowFamilyRequestSchema,
   registryAgentSchema,
-  registrySemverSchema,
   registrySlugSchema,
-  registryWorkflowMutationSchema,
   setDefaultAgentRequestSchema,
-  sourceFileSchema,
+  workflowFamilyMutationSchema,
+  bindProjectWorkflowFamilyRequestSchema,
+  createExternalSkillRequestSchema,
+  patchExternalSkillRequestSchema,
   SKILL_ERROR_CODE,
   type AiProviderConfig,
   type FileOperation,
@@ -54,6 +56,12 @@ import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
 import { buildDashboardOverview } from "./dashboard/overview.js";
+import { isNpmPublishConfigured, loadNpmPublishConfig } from "./npm/config.js";
+import {
+  publishSkillNpmPackage,
+  publishWorkflowFamilyNpmPackage,
+  type NpmPublisherDeps
+} from "./npm/publisher.js";
 import { RegistryStore } from "./registry/store.js";
 import type { RegistryPersistence } from "./registry/persistence.js";
 import type {
@@ -63,6 +71,10 @@ import type {
 } from "./repositories/interfaces.js";
 import { ServerDomainError } from "./repositories/interfaces.js";
 import type { ArtifactStorage } from "./storage/interface.js";
+import { buildSemanticIndex } from "./semantic/indexer.js";
+import { SemanticMemoryStore } from "./semantic/memory-store.js";
+import type { SemanticStore } from "./semantic/store.js";
+import { registerSemanticMcpRoutes } from "./mcp/register.js";
 
 export interface CreateServerOptions {
   repository: ServerRepository;
@@ -71,10 +83,15 @@ export interface CreateServerOptions {
   logger?: boolean;
   bootstrapBundle?: BootstrapBundle;
   registryPersistence?: RegistryPersistence;
-  // AiJobStore 注入（PG 环境传 PgAiJobStore 多实例共享 + 启动 recoverOrphans；缺省 MemoryAiJobStore 单进程 fallback）
+  semanticStore?: SemanticStore;
+  // AiJobStore ???PG ??? PgAiJobStore ????? + ?? recoverOrphans??? MemoryAiJobStore ??? fallback?
   aiJobStore?: AiJobStore;
-  // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
+  // AI LlmClient ????? createLlmClient ?? DeepSeek?????? mock?
   aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient | null;
+  npmPublisherDeps?: NpmPublisherDeps;
+  npmPublishConfig?: ReturnType<typeof loadNpmPublishConfig>;
+  /** External Skill ?? fetch ??????? */
+  externalFetch?: typeof fetch;
 }
 
 interface MutationResult {
@@ -115,37 +132,6 @@ const blobQuerySchema = z.object({
   content_sha256: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/))
 }).strict();
 
-const finalizeSchema = z.object({
-  schema_version: z.literal(1),
-  manifest_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/)
-}).strict();
-
-const reviewSchema = z.object({
-  schema_version: z.literal(1),
-  decision: z.enum(["approve", "reject", "need_more_evidence", "split"]),
-  comment: z.string().max(4000).nullable().optional(),
-  target_scope: z.string().min(1),
-  split_groups: z.array(z.object({
-    name: z.string().min(1),
-    item_ids: z.array(z.string().regex(/^item_/)).min(1),
-    target_scope: z.string().min(1)
-  }).strict()).default([])
-}).strict();
-
-const registryProposalCreateSchema = z.object({
-  schema_version: z.literal(1),
-  source_files: z.array(sourceFileSchema),
-  slug: registrySlugSchema,
-  version: registrySemverSchema,
-  agent: registryAgentSchema
-}).strict();
-
-const registryReviewSchema = z.object({
-  schema_version: z.literal(1),
-  decision: z.enum(["approve", "reject"]),
-  comment: z.string().max(4000).nullable().optional()
-}).strict();
-
 const tagCreateSchema = z.object({
   schema_version: z.literal(1),
   slug: registrySlugSchema,
@@ -163,21 +149,9 @@ const tagMergeSchema = z.object({
   target_tag_id: z.string().regex(/^tag_/)
 }).strict();
 
-const workflowCreateSchema = registryWorkflowMutationSchema.extend({
-  schema_version: z.literal(1)
-}).strict();
+const projectWorkflowBindingSchema = bindProjectWorkflowFamilyRequestSchema;
 
-const workflowUpdateSchema = registryWorkflowMutationSchema.partial().extend({
-  revision: z.number().int().positive()
-}).strict();
-
-const projectWorkflowBindingSchema = z.object({
-  schema_version: z.literal(1),
-  workflow_id: z.string().regex(/^wf_/),
-  revision: z.number().int().positive().nullable()
-}).strict();
-
-// 解析 provider 当前 selected model 的 request_model（fallback models[0] → provider.model）；test/ai-checks/release-note/fix-suggestions 共用（Y3 去重）。
+// ?? provider ?? selected model ? request_model?fallback models[0] ? provider.model??test/ai-checks/release-note/fix-suggestions ???Y3 ????
 function resolveRequestModel(provider: AiProviderConfig): string {
   return provider.models.find((m) => m.id === provider.selected_model_id)?.request_model
     ?? provider.models[0]?.request_model
@@ -251,13 +225,13 @@ function operationSize(operation: FileOperation): number {
   return "size_bytes" in operation ? operation.size_bytes : 0;
 }
 
-// 上传路径安全正则 — 与 RegistryStore.DANGEROUS_PATH / checker DANGEROUS_PATH 保持一致
-// （含 ^\\ 分支以拦截 UNC 前缀，避免与 store 层校验产生维护歧义）
+// ???????? ? ? RegistryStore.DANGEROUS_PATH / checker DANGEROUS_PATH ????
+// ?? ^\\ ????? UNC ?????? store ??????????
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 
-// fix-suggestions 路由的空 FixPlan summary（无 aiChecks / LLM 全降级时返回）。
-// Object.freeze 防御：模块级共享常量，避免未来有路径在 send 前变异 summary 字段造成跨请求别名污染
-// （与同文件 WRITABLE_APPLIES_TO 的 as const 不可变风格对齐）。
+// fix-suggestions ???? FixPlan summary?? aiChecks / LLM ????????
+// Object.freeze ??????????????????? send ??? summary ???????????
+// ????? WRITABLE_APPLIES_TO ? as const ?????????
 const emptySummary = Object.freeze({ autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 });
 
 function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buffer }>): SourceFile[] {
@@ -352,12 +326,17 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   const { repository, storage } = options;
   const registry = new RegistryStore(storage, options.registryPersistence);
   await registry.initialize(options.bootstrapBundle);
-  // AiJobStore 注入（§3.2）：PG 环境传 PgAiJobStore 多实例共享；缺省 MemoryAiJobStore 单进程 fallback。
+  registry.setExternalFetcherDeps({
+    ...(options.externalFetch !== undefined ? { fetch: options.externalFetch } : {}),
+    githubToken: config.githubToken
+  });
+  // AiJobStore ???�3.2??PG ??? PgAiJobStore ???????? MemoryAiJobStore ??? fallback?
   const aiJobStore = options.aiJobStore ?? new MemoryAiJobStore();
-  // R3：启动时清理孤儿 running/pending job（PG 实现标 failed 释放 partial unique index；memory no-op）。
+  const semanticStore = options.semanticStore ?? new SemanticMemoryStore();
+  // R3???????? running/pending job?PG ??? failed ?? partial unique index?memory no-op??
   await aiJobStore.recoverOrphans();
-  // AI LlmClient 装配（§12.9）：按 defaultProvider 或指定 provider + secret file key 构造 DeepSeek 客户端。
-  // 无配置/无 key/未启用 → null（路由层返回 AI_NOT_CONFIGURED）；key 只内存用，不写 store/log/响应。
+  // AI LlmClient ???�12.9??? defaultProvider ??? provider + secret file key ?? DeepSeek ????
+  // ???/? key/??? ? null?????? AI_NOT_CONFIGURED??key ??????? store/log/???
   const llmFactory = options.aiLlmClientFactory ?? createLlmClient;
   const resolveLlmClient = async (providerId: string | null): Promise<{
     client: LlmClient;
@@ -376,7 +355,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     };
     const client = llmFactory(merged, secret.apiKey);
     if (client === null) {
-      // api_format=anthropic|custom 暂无 client 实现 → 422 ADAPTER_NOT_IMPLEMENTED（区别于无配置 AI_NOT_CONFIGURED）
+      // api_format=anthropic|custom ?? client ?? ? 422 ADAPTER_NOT_IMPLEMENTED??????? AI_NOT_CONFIGURED?
       throw new ServerDomainError(422, "ADAPTER_NOT_IMPLEMENTED", "ai provider api_format not supported", {
         provider_id: provider.provider_id, api_format: provider.api_format
       });
@@ -684,11 +663,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { sessionId } = request.params as { sessionId: string };
-    const body = finalizeSchema.parse(request.body);
+    const body = finalizeProposalSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
       const session = await repository.getProposalSession(actor.actorId, sessionId);
       if (body.manifest_sha256 !== sha256Bytes(canonicalJson(session.operations))) {
         throw new ServerDomainError(422, "ARTIFACT_HASH_MISMATCH", "proposal manifest hash mismatch");
+      }
+      const project = await repository.getProject(actor.actorId, session.projectId);
+      if (project.latestArtifactId !== null &&
+          body.base_artifact_id !== project.latestArtifactId) {
+        throw new ServerDomainError(
+          409,
+          "STALE_PUSH",
+          "server already has a newer artifact; sync before pushing",
+          { latest_artifact_id: project.latestArtifactId }
+        );
       }
       const files: Record<string, string> = {};
       for (const operation of session.operations) {
@@ -720,7 +709,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           { finding_count: scan.findings.length, scanner_version: scan.scanner_version }
         );
       }
-      const proposal = await repository.createProposalFromSession(session);
+      const { proposal, review } = await repository.finalizeSessionAutoApprove(session);
       await storage.deleteSession(sessionId);
       await writeAudit(repository, {
         actorId: actor.actorId,
@@ -728,13 +717,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         action: "proposal.finalized",
         targetId: proposal.proposalId,
         requestId,
-        details: { item_count: proposal.items.length }
+        details: { item_count: proposal.items.length, artifact_id: review.artifactId }
       });
+      if (review.artifactId !== null) {
+        await semanticStore.rebuild(buildSemanticIndex({
+          projectId: proposal.projectId,
+          artifactId: review.artifactId,
+          files
+        }));
+      }
       return {
         statusCode: 201,
         body: {
           proposal_id: proposal.proposalId,
-          status: proposal.status,
+          status: "approved" as const,
+          artifact_id: review.artifactId,
           received_files: proposal.items.length
         }
       };
@@ -825,60 +822,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       review_history: proposal.reviewHistory.map((review) => ({
         review_id: review.reviewId,
         decision: review.decision,
-        created_at: review.createdAt
+        created_at: review.createdAt,
+        artifact_id: review.artifactId
       })),
       request_id: requestId
     };
-  });
-
-  app.post("/api/v1/proposals/:proposalId/review-decisions", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    const body = reviewSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const review = await repository.reviewProposal({
-        actorId: actor.actorId,
-        proposalId,
-        decision: body.decision,
-        comment: body.comment ?? null,
-        targetScope: body.target_scope,
-        splitGroups: body.split_groups.map((group) => ({
-          name: group.name,
-          itemIds: group.item_ids,
-          targetScope: group.target_scope
-        }))
-      });
-      const proposal = await repository.getProposal(actor.actorId, proposalId);
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: proposal.projectId,
-        action: body.decision === "approve"
-          ? "proposal.approved"
-          : body.decision === "reject"
-            ? "proposal.rejected"
-            : body.decision === "split"
-              ? "proposal.split"
-              : "proposal.needs_evidence",
-        targetId: proposalId,
-        requestId,
-        details: {
-          review_id: review.reviewId,
-          artifact_id: review.artifactId,
-          child_proposal_ids: review.childProposalIds
-        }
-      });
-      return {
-        statusCode: 201,
-        body: {
-          review_id: review.reviewId,
-          proposal_id: proposalId,
-          decision: review.decision,
-          artifact_id: review.artifactId,
-          child_proposal_ids: review.childProposalIds
-        }
-      };
-    });
-    return send(reply, requestId, result);
   });
 
   app.get("/api/v1/projects/:projectId/update-manifest", async (request, reply) => {
@@ -976,7 +924,12 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
     reply.header("X-Request-Id", requestId);
-    return { ...registry.getSkill(slug), request_id: requestId };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    return {
+      ...registry.getSkill(slug),
+      npm_publish_available: isNpmPublishConfigured(npmConfig),
+      request_id: requestId
+    };
   });
 
   app.get("/api/v1/skills/:slug/adapter-preview/:agent", async (request, reply) => {
@@ -995,8 +948,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   app.get("/api/v1/skills/:slug/versions", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
-    // agent 可选过滤：未传 → 返回全部版本；传了则按 agent 过滤（store.listVersions 支持）。
-    // 修复 #1 路由缺口：原实现 registry.listVersions(slug) 丢弃 ?agent= query，前端被迫客户端补偿。
+    // agent ??????? ? ??????????? agent ???store.listVersions ????
+    // ?? #1 ???????? registry.listVersions(slug) ?? ?agent= query???????????
     const query = request.query as Record<string, string | undefined>;
     const agentResult = registryAgentSchema.safeParse(query.agent);
     if (query.agent !== undefined && !agentResult.success) {
@@ -1044,7 +997,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
     }
     const files = resolveUploadFiles(collected);
-    // agent 计入 bodyHash：同 Idempotency-Key 换 agent 应判为 IDEMPOTENCY_KEY_REUSED 而非命中缓存
+    // agent ?? bodyHash?? Idempotency-Key ? agent ??? IDEMPOTENCY_KEY_REUSED ??????
     const bodyHash = sha256Bytes(canonicalJson({ agent, files: files.map((f) => ({ path: f.path, content: f.content })) }));
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = await registry.uploadDraft({ files, actorId: actor.actorId, agent });
@@ -1121,9 +1074,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const agent = agentResult.data;
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = publishSkillRequestSchema.parse(request.body);
-      // R3 事务化：publish（含内部 persist(tx)）+ writeAudit(tx) 包入 withTransaction，
-      // audit 与 registry_state 原子（治 R3）。memory fallback withTransaction no-op（串行无真回滚）；
-      // PG 失败 → registry_state/audit 都不写 + version 不持久（in-memory 污染风险 design §3.5 接受，重启从 registry_state 恢复）。
+      // R3 ????publish???? persist(tx)?+ writeAudit(tx) ?? withTransaction?
+      // audit ? registry_state ???? R3??memory fallback withTransaction no-op?????????
+      // PG ?? ? registry_state/audit ??? + version ????in-memory ???? design �3.5 ?????? registry_state ????
       const version = await repository.withTransaction(async (tx) => {
         const v = await registry.publish({
           slug, agent, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
@@ -1135,6 +1088,92 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         return v;
       });
       return { statusCode: 200, body: version };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/skills/:slug/npm-release", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    if (!isNpmPublishConfigured(npmConfig)) {
+      throw new ServerDomainError(
+        503,
+        "NPM_PUBLISH_NOT_CONFIGURED",
+        "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN)"
+      );
+    }
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const release = await registry.releaseSkillToNpm(
+        slug,
+        npmConfig,
+        async (input) => publishSkillNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {})
+      );
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "skill.npm-released",
+        targetId: slug,
+        requestId,
+        details: {
+          slug,
+          version: release.version,
+          packageName: release.packageName,
+          status: release.status
+        }
+      });
+      if (release.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          release.error ?? "npm registry already has this package version",
+          { release }
+        );
+      }
+      return { statusCode: 200, body: { slug, release } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/workflow-families/:slug/npm-release", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    if (!isNpmPublishConfigured(npmConfig)) {
+      throw new ServerDomainError(
+        503,
+        "NPM_PUBLISH_NOT_CONFIGURED",
+        "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN)"
+      );
+    }
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const release = await registry.releaseFamilyToNpm(
+        slug,
+        npmConfig,
+        async (input) => publishWorkflowFamilyNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {})
+      );
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "workflow.family.npm-released",
+        targetId: slug,
+        requestId,
+        details: {
+          slug,
+          version: release.version,
+          packageName: release.packageName,
+          status: release.status
+        }
+      });
+      if (release.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          release.error ?? "npm registry already has this package version",
+          { release }
+        );
+      }
+      return { statusCode: 200, body: { slug, release } };
     });
     return send(reply, requestId, result);
   });
@@ -1151,8 +1190,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { items: diff, request_id: requestId };
   });
 
-  // 切换默认 agent（§3.4）：mutation 四件套 → setDefaultAgent（校验 enabled + revision 乐观并发 + 重算 agents）→ audit。
-  // 422 AGENT_NOT_ENABLED / 409 REVISION_CONFLICT / 404 SKILL_NOT_FOUND 由 store 层抛 ServerDomainError，错误处理器映射。
+  // ???? agent?�3.4??mutation ??? ? setDefaultAgent??? enabled + revision ???? + ?? agents?? audit?
+  // 422 AGENT_NOT_ENABLED / 409 REVISION_CONFLICT / 404 SKILL_NOT_FOUND ? store ?? ServerDomainError?????????
   app.patch("/api/v1/skills/:slug/default-agent", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
@@ -1179,83 +1218,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: slug, requestId, details: { slug }
       });
       return { statusCode: 200, body: { slug, deleted: true } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.get("/api/v1/skill-proposals", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const query = request.query as Record<string, string | undefined>;
-    reply.header("X-Request-Id", requestId);
-    return { items: registry.listProposals(query.status), request_id: requestId };
-  });
-
-  app.get("/api/v1/skill-proposals/:proposalId", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    reply.header("X-Request-Id", requestId);
-    return { ...registry.getProposal(proposalId), request_id: requestId };
-  });
-
-  app.post("/api/v1/skill-proposals", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const body = registryProposalCreateSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const proposal = registry.createProposal({
-        sourceFiles: body.source_files,
-        slug: body.slug,
-        version: body.version,
-        actorId: actor.actorId,
-        agent: body.agent
-      });
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: null,
-        action: "skill.proposal.created",
-        targetId: proposal.proposal_id,
-        requestId,
-        details: { skill_slug: proposal.skill_slug, version: proposal.version }
-      });
-      return { statusCode: 201, body: { ...proposal } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.post("/api/v1/skill-proposals/:proposalId/review", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    const body = registryReviewSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const proposal = await registry.reviewProposal({
-        proposalId,
-        actorId: actor.actorId,
-        decision: body.decision,
-        comment: body.comment ?? null
-      });
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: null,
-        action: body.decision === "approve" ? "skill.proposal.approved" : "skill.proposal.rejected",
-        targetId: proposalId,
-        requestId,
-        details: {
-          skill_slug: proposal.skill_slug,
-          published_version: body.decision === "approve" ? proposal.version : null,
-          artifact_ids: proposal.publishedArtifacts.map((item) => item.artifact_id)
-        }
-      });
-      return {
-        statusCode: 201,
-        body: {
-          proposal_id: proposalId,
-          decision: body.decision,
-          status: proposal.status,
-          published_version: body.decision === "approve" ? proposal.version : null,
-          artifacts: proposal.publishedArtifacts
-        }
-      };
     });
     return send(reply, requestId, result);
   });
@@ -1335,10 +1297,38 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   }
 
-  app.get("/api/v1/workflows", async (request, reply) => {
+  app.get("/api/v1/workflow-families", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     reply.header("X-Request-Id", requestId);
-    return { items: registry.listWorkflows(), request_id: requestId };
+    return { items: registry.listWorkflowFamilies(), request_id: requestId };
+  });
+
+  app.post("/api/v1/workflow-families", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = workflowFamilyMutationSchema.extend({ schema_version: z.literal(1) }).strict().parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const family = registry.createWorkflowFamily({
+        slug: body.slug,
+        displayName: body.displayName,
+        description: body.description,
+        tags: body.tags,
+        required_profiles: body.required_profiles
+      });
+      await registry.persist();
+      await writeAudit(repository, {
+        actorId: actor.actorId, projectId: null, action: "workflow.family.created",
+        targetId: family.family_id, requestId, details: { slug: family.slug }
+      });
+      return { statusCode: 201, body: family };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/workflow-families/:slug", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getWorkflowFamily(slug), request_id: requestId };
   });
 
   app.get("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {
@@ -1349,94 +1339,111 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { binding: registry.getProjectBinding(projectId), request_id: requestId };
   });
 
+  app.get("/api/v1/projects/:projectId/semantic/overview", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return { ...(await semanticStore.overview(projectId)), request_id: requestId };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/knowledge", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["knowledge_entry", "knowledge_markdown"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/rules", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["rule"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/changes", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["archive_record"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/graph", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      nodes: await semanticStore.listByKinds(projectId, [
+        "knowledge_entry",
+        "knowledge_markdown",
+        "rule",
+        "archive_record",
+        "agent_instruction"
+      ]),
+      edges: await semanticStore.listEdges(projectId),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/semantic/search", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    const q = query.q?.trim() ?? "";
+    if (q.length === 0) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "q is required");
+    }
+    const projectId = query.project_id;
+    if (projectId !== undefined) {
+      await repository.getProject(actor.actorId, projectId);
+    }
+    const items = await semanticStore.search(q, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: items.map((document) => ({ document, project_id: document.project_id })),
+      request_id: requestId
+    };
+  });
+
   app.put("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { projectId } = request.params as { projectId: string };
     await repository.getProject(actor.actorId, projectId);
     const body = projectWorkflowBindingSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const binding = registry.bindProjectWorkflow({
-        projectId, workflowId: body.workflow_id, revision: body.revision
+      const binding = registry.bindProjectWorkflowFamily({
+        projectId,
+        familySlug: body.family_slug,
+        profile: body.profile,
+        version: body.version ?? null,
+        revision: body.revision
       });
       await registry.persist();
       await writeAudit(repository, {
         actorId: actor.actorId, projectId, action: "project.workflow.bound",
         targetId: projectId, requestId,
-        details: { workflow_id: binding.workflow_id, revision: binding.revision }
+        details: { family_slug: binding.family_slug, profile: binding.profile, revision: binding.revision }
       });
       return { statusCode: 200, body: binding };
     });
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    reply.header("X-Request-Id", requestId);
-    return { ...registry.getWorkflow(workflowId), request_id: requestId };
-  });
-
-  app.post("/api/v1/workflows", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/draft/profiles/:profile", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const parsed = workflowCreateSchema.parse(request.body);
-    const body = {
-      key: parsed.key,
-      name: parsed.name,
-      description: parsed.description,
-      profile: parsed.profile,
-      default_agent: parsed.default_agent,
-      enabled: parsed.enabled,
-      skill_slugs: parsed.skill_slugs
-    };
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const workflow = registry.createWorkflow(body);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.created",
-        targetId: workflow.workflow_id, requestId, details: { key: workflow.key }
-      });
-      return { statusCode: 201, body: workflow };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.patch("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    const body = workflowUpdateSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const workflow = registry.updateWorkflow(workflowId, body);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.updated",
-        targetId: workflowId, requestId, details: { revision: workflow.revision }
-      });
-      return { statusCode: 200, body: workflow };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.delete("/api/v1/workflows/:workflowId", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { workflowId } = request.params as { workflowId: string };
-    const query = z.object({ revision: z.coerce.number().int().positive() }).parse(request.query);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      registry.deleteWorkflow(workflowId, query.revision);
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.deleted",
-        targetId: workflowId, requestId
-      });
-      return { statusCode: 200, body: { workflow_id: workflowId, deleted: true } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  // ---- AI 配置 + AI 检查（§12.9 / §6.2）----
-
-  // ---- Workflow package 路由（T13；独立 /workflow-packages 端点，与清单 /workflows 并存；上传走 multipart ZIP）----
-  app.post("/api/v1/workflow-packages", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
+    const { slug, profile } = request.params as { slug: string; profile: string };
     const collected: Array<{ path: string; buffer: Buffer }> = [];
     for await (const part of request.parts()) {
       if (part.type !== "file") continue;
@@ -1445,102 +1452,117 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const files = resolveUploadFiles(collected);
     const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = await registry.uploadWorkflowPackage({ files, actorId: actor.actorId });
+      const draft = await registry.uploadWorkflowFamilyProfileDraft({
+        slug, profile, files, actorId: actor.actorId
+      });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null,
-        action: draft.revision === 1 ? "workflow.package.draft.created" : "workflow.package.draft.updated",
-        targetId: draft.key, requestId,
-        details: { key: draft.key, draft_version: draft.draftVersion, revision: draft.revision }
+        action: draft.revision === 1 ? "workflow.family.draft.created" : "workflow.family.draft.updated",
+        targetId: slug, requestId,
+        details: { slug, profile, revision: draft.revision }
       });
       return { statusCode: 201, body: draft };
     }, bodyHash);
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflow-packages", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/draft", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const items = registry.listWorkflowPackages();
-    reply.header("X-Request-Id", requestId);
-    return { items, request_id: requestId };
-  });
-
-  app.get("/api/v1/workflow-packages/:key", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const pkg = registry.getWorkflowPackage(key);
-    reply.header("X-Request-Id", requestId);
-    return { ...pkg, request_id: requestId };
-  });
-
-  app.get("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const draft = registry.getWorkflowPackageDraft(key);
+    const { slug } = request.params as { slug: string };
+    const draft = registry.getWorkflowFamilyDraft(slug);
     reply.header("X-Request-Id", requestId);
     return { ...draft, request_id: requestId };
   });
 
-  app.delete("/api/v1/workflow-packages/:key/draft", async (request, reply) => {
+  app.delete("/api/v1/workflow-families/:slug/draft", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = z.object({ revision: z.number().int().positive() }).strict().parse(request.body);
-      await registry.discardWorkflowPackageDraft(key, body.revision);
+      await registry.discardWorkflowFamilyDraft(slug, body.revision);
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.discarded",
-        targetId: key, requestId, details: { key }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.draft.discarded",
+        targetId: slug, requestId, details: { slug }
       });
-      return { statusCode: 200, body: { key, discarded: true } };
+      return { statusCode: 200, body: { slug, discarded: true } };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/workflow-packages/:key/draft/checks", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/draft/checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const checks = await registry.runWorkflowPackageChecks({ key, checkedAt: new Date().toISOString() });
+      const checks = await registry.runWorkflowFamilyChecks({ slug, checkedAt: new Date().toISOString() });
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.draft.checked",
-        targetId: key, requestId, details: { key, red: checks.summary.red }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.draft.checked",
+        targetId: slug, requestId, details: { slug, red: checks.summary.red }
       });
       return { statusCode: 200, body: checks };
     });
     return send(reply, requestId, result);
   });
 
-  app.post("/api/v1/workflow-packages/:key/publish", async (request, reply) => {
+  app.post("/api/v1/workflow-families/:slug/publish", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
+    const { slug } = request.params as { slug: string };
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const body = publishWorkflowPackageRequestSchema.parse(request.body);
-      const version = await registry.publishWorkflowPackage(key, {
+      const body = publishWorkflowFamilyRequestSchema.parse(request.body);
+      const version = await registry.publishWorkflowFamily(slug, {
         version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
       });
       await writeAudit(repository, {
-        actorId: actor.actorId, projectId: null, action: "workflow.package.published",
-        targetId: key, requestId, details: { key, version: version.version }
+        actorId: actor.actorId, projectId: null, action: "workflow.family.published",
+        targetId: slug, requestId, details: { slug, version: version.version }
       });
       return { statusCode: 200, body: version };
     });
     return send(reply, requestId, result);
   });
 
-  app.get("/api/v1/workflow-packages/:key/draft/diff", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/draft/diff", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const diff = registry.diffWorkflowPackageDraft(key);
+    const { slug } = request.params as { slug: string };
+    const query = z.object({ profile: registrySlugSchema.optional() }).strict().parse(request.query);
+    const diff = registry.diffWorkflowFamilyDraft(slug, query.profile);
     reply.header("X-Request-Id", requestId);
     return { items: diff, request_id: requestId };
   });
 
-  app.get("/api/v1/workflow-packages/:key/versions", async (request, reply) => {
+  app.get("/api/v1/workflow-families/:slug/versions", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
-    const { key } = request.params as { key: string };
-    const versions = registry.listWorkflowPackageVersions(key);
+    const { slug } = request.params as { slug: string };
+    const versions = registry.listWorkflowFamilyVersions(slug);
     reply.header("X-Request-Id", requestId);
     return { items: versions, request_id: requestId };
   });
+
+  app.get("/api/v1/workflow-families/:slug/artifacts/:profile/download", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug, profile } = request.params as { slug: string; profile: string };
+    const query = z.object({ version: z.string().optional() }).strict().parse(request.query);
+    const bytes = await registry.getWorkflowFamilyProfileArtifactBytes(slug, profile, query.version);
+    const family = registry.getWorkflowFamily(slug);
+    const version = query.version ?? family.latest_version ?? "draft";
+    const hash = sha256Bytes(bytes);
+    await writeAudit(repository, {
+      actorId: actor.actorId,
+      projectId: null,
+      action: "workflow.family.artifact.downloaded",
+      targetId: slug,
+      requestId,
+      details: { slug, profile, version }
+    });
+    reply
+      .header("Content-Type", "application/zip")
+      .header("Content-Disposition", `attachment; filename="${slug}-${profile}-${version}.zip"`)
+      .header("X-Content-SHA256", hash)
+      .header("ETag", hash)
+      .header("X-Request-Id", requestId);
+    return Buffer.from(bytes);
+  });
+
+  // ---- AI ?? + AI ???�12.9 / �6.2?----
 
   app.get("/api/v1/ai-config/providers", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
@@ -1631,7 +1653,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           throw err;
         }
       }
-      // enabled 单选互斥：enabled=true 时该 provider true、其他 false（一次请求保证，API-04）
+      // enabled ?????enabled=true ?? provider true??? false????????API-04?
       let exclusiveDisabled: string[] = [];
       if (body.enabled === true) {
         const before = await registry.listProviders();
@@ -1698,7 +1720,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // 写入 provider API key 到 secret file（不进 DB/日志/响应；只写文件 + 审计 key-set 事件）。
+  // ?? provider API key ? secret file??? DB/??/??????? + ?? key-set ????
   app.post("/api/v1/ai-config/providers/:providerId/key", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { providerId } = request.params as { providerId: string };
@@ -1734,7 +1756,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { usage, request_id: requestId };
   });
 
-  // 拖拽重排 providers：body {schema_version:1, provider_ids} 有序完整列表；不全/多余 422 VALIDATION_FAILED（store.reorderProviders 校验）。
+  // ???? providers?body {schema_version:1, provider_ids} ?????????/?? 422 VALIDATION_FAILED?store.reorderProviders ????
   app.post("/api/v1/ai-config/providers/reorder", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const body = aiProviderReorderRequestSchema.parse(request.body);
@@ -1749,11 +1771,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // 异步 AI 检查（§3.3）：POST 启动后台 job 返回 jobId + status:pending；前端轮询 GET /ai-jobs/:id。
-  // mutation 锁内创建 job（Idempotency-Key 防重复 POST 返回同 jobId）；job 后台执行在锁外。
-  // 同步阶段：验证 draft + resolveLlmClient + checkQuota 预检（超限 429 不调 LLM，INT-002）。
-  // job 后台：buildAiCheckPrompt → analyze → recordUsage → parseAiCheckResult → setDraftAiChecks + audit。
-  // LLM 抛错 → job.failed（draft.aiChecks 不写 degraded，前端轮询 failed 提示，INT-003）。
+  // ?? AI ???�3.3??POST ???? job ?? jobId + status:pending????? GET /ai-jobs/:id?
+  // mutation ???? job?Idempotency-Key ??? POST ??? jobId??job ????????
+  // ??????? draft + resolveLlmClient + checkQuota ????? 429 ?? LLM?INT-002??
+  // job ???buildAiCheckPrompt ? analyze ? recordUsage ? parseAiCheckResult ? setDraftAiChecks + audit?
+  // LLM ?? ? job.failed?draft.aiChecks ?? degraded????? failed ???INT-003??
   app.post("/api/v1/skills/:slug/draft/:agent/ai-checks", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1771,9 +1793,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (resolved === null) {
         throw new ServerDomainError(422, "AI_NOT_CONFIGURED", "no default ai provider configured or missing secret");
       }
-      // 配额预检（INT-002）：已达 daily_limit → 429 不调 LLM。
+      // ?????INT-002???? daily_limit ? 429 ?? LLM?
       registry.checkQuota({ provider_id: resolved.provider.provider_id, requests: 1, tokens: 0 });
-      // AiJobStore.startJob(slug,agent,fn) dedup：同 slug+agent active job 返已有 jobId（治 R2）。
+      // AiJobStore.startJob(slug,agent,fn) dedup?? slug+agent active job ??? jobId?? R2??
       const job = await aiJobStore.startJob(slug, agent, async () => {
         const entry = findEntryFile(draft.sourceFiles, agent);
         const meta = parseFrontmatter(entry.content);
@@ -1802,7 +1824,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // 轮询 job 状态（§3.3）：completed 含 result；过期/不存在 404 JOB_NOT_FOUND。
+  // ?? job ???�3.3??completed ? result???/??? 404 JOB_NOT_FOUND?
   app.get("/api/v1/ai-jobs/:jobId", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { jobId } = request.params as { jobId: string };
@@ -1825,11 +1847,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
-  // AI 生成发布变更信息（§5.3）：读 diffDraft + ir → LLM 生成 releaseNote → 持久化 draft.releaseNote + audit。
-  // 持久化 = mutation（走 Idempotency-Key+lock，与 ai-checks 一致；避免重复 LLM 花费）。
-  // ⚠️ LLM 调用在 mutation 锁内（持有可达 60s）——权衡：Idempotency-Key 防重复花费，draft 流程并发低可接受；
-  //    后续可评估"先 analyze 再进 mutation 持久化"以缩短锁持有（review YELLOW #1，当前不阻塞）。
-  // 失败降级 AI_TIMEOUT/AI_PARSE_FAILED（200 degraded:true，不 500，不阻塞发布；前端提示手填）。
+  // AI ?????????�5.3??? diffDraft + ir ? LLM ?? releaseNote ? ??? draft.releaseNote + audit?
+  // ??? = mutation?? Idempotency-Key+lock?? ai-checks ??????? LLM ????
+  // ?? LLM ??? mutation ??????? 60s??????Idempotency-Key ??????draft ?????????
+  //    ?????"? analyze ?? mutation ???"???????review YELLOW #1????????
+  // ???? AI_TIMEOUT/AI_PARSE_FAILED?200 degraded:true?? 500???????????????
   app.post("/api/v1/skills/:slug/draft/:agent/release-note:generate", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1865,7 +1887,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         });
         const releaseNote = parseReleaseNote(res.content);
         if (releaseNote === null) {
-          // LLM 返回空/不可解析 → 降级 AI_PARSE_FAILED（不 500，不阻塞发布；前端提示手填）
+          // LLM ???/???? ? ?? AI_PARSE_FAILED?? 500??????????????
           await writeAudit(repository, {
             actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
             targetId: slug, requestId, details: { slug, agent, degraded: true, reason: "AI_PARSE_FAILED" }
@@ -1879,7 +1901,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         });
         return { statusCode: 200, body: { releaseNote, generatedAt } };
       } catch (err) {
-        // LLM 超时/网络错 → 降级 AI_TIMEOUT（不 500，不阻塞发布；err.message 只进 audit 不进响应，防 key 泄露）
+        // LLM ??/??? ? ?? AI_TIMEOUT?? 500???????err.message ?? audit ?????? key ???
         await writeAudit(repository, {
           actorId: actor.actorId, projectId: null, action: "skill.draft.release-note.generated",
           targetId: slug, requestId, details: { slug, agent, degraded: true, reason: "AI_TIMEOUT", error: err instanceof Error ? err.message : "unknown" }
@@ -1890,9 +1912,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // AI 生成修复内容（§6.3 第4步）：对 draft.aiChecks.fixable 项逐项调 LLM 生成
-  // {suggestedContent,explanation,appliesTo}，组装 FixPlan（只读预览，不 persist；采纳走 apply-fix-suggestion）。
-  // 无 aiChecks → 空 FixPlan；LLM 失败/解析失败 → 该项降级 message-only（不 500，不阻断）。
+  // AI ???????�6.3 ?4???? draft.aiChecks.fixable ???? LLM ??
+  // {suggestedContent,explanation,appliesTo}??? FixPlan??????? persist???? apply-fix-suggestion??
+  // ? aiChecks ? ? FixPlan?LLM ??/???? ? ???? message-only?? 500??????
   app.post("/api/v1/skills/:slug/draft/:agent/fix-suggestions", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1908,7 +1930,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
     }
     if (draft.aiChecks === null) {
-      // 无 aiChecks → 空 FixPlan（提示先跑 ai-checks；只读预览不 422）
+      // ? aiChecks ? ? FixPlan????? ai-checks?????? 422?
       return send(reply, requestId, { statusCode: 200, body: { items: [], mergedFiles: [], summary: emptySummary } });
     }
     const resolved = await resolveLlmClient(null);
@@ -1936,7 +1958,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         });
         parsed = parseFixSuggestionResult(res.content);
       } catch {
-        // LLM 失败 → 降级 message-only（不 500）
+        // LLM ?? ? ?? message-only?? 500?
         parsed = null;
       }
       const item: FixPlanItem = {
@@ -1965,8 +1987,8 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
-  // AI 修复建议采纳（§6.3 第4步/§3.6）：mutation 四件套 → applyFixSuggestion（白名单+写 ir/examples+scanSensitive+清 aiChecks+revision+1）→ audit。
-  // appliesTo 可写白名单由 store 层强制（examples/allowed_capabilities/instructions/description；tags/null/非法 → 422 SKILL_VALIDATION_FAILED）。
+  // AI ???????�6.3 ?4?/�3.6??mutation ??? ? applyFixSuggestion????+? ir/examples+scanSensitive+? aiChecks+revision+1?? audit?
+  // appliesTo ?????? store ????examples/allowed_capabilities/instructions/description?tags/null/?? ? 422 SKILL_VALIDATION_FAILED??
   app.post("/api/v1/skills/:slug/draft/:agent/apply-fix-suggestion", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -2029,6 +2051,125 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       return { statusCode: 200, body: draft };
     });
     return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/external-skills", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: registry.listExternalSkills({
+        ...(query.search !== undefined ? { search: query.search } : {}),
+        ...(query.source_type !== undefined ? { sourceType: query.source_type } : {})
+      }),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/external-skills/:id", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getExternalSkill(id), request_id: requestId };
+  });
+
+  app.post("/api/v1/external-skills", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = createExternalSkillRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const skill = await registry.createExternalSkill(body);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.created",
+        targetId: skill.id,
+        requestId,
+        details: { source: skill.source }
+      });
+      return { statusCode: 201, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.patch("/api/v1/external-skills/:id", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const body = patchExternalSkillRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const skill = await registry.patchExternalSkill({
+        id,
+        revision: body.revision,
+        ...(body.curationNote !== undefined ? { curationNote: body.curationNote } : {}),
+        ...(body.tags !== undefined ? { tags: body.tags } : {}),
+        ...(body.acknowledgeUpdate !== undefined ? { acknowledgeUpdate: body.acknowledgeUpdate } : {})
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.updated",
+        targetId: skill.id,
+        requestId,
+        details: { revision: skill.revision }
+      });
+      return { statusCode: 200, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/external-skills/:id/refresh", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const before = registry.getExternalSkill(id);
+      const skill = await registry.refreshExternalSkill(id);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.refreshed",
+        targetId: skill.id,
+        requestId,
+        details: {
+          previous_version: before.snapshot.version,
+          version: skill.snapshot.version,
+          update_available: skill.updateAvailable
+        }
+      });
+      return { statusCode: 200, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.delete("/api/v1/external-skills/:id", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const deleted = await registry.deleteExternalSkill(id);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.deleted",
+        targetId: id,
+        requestId,
+        details: {}
+      });
+      return { statusCode: 200, body: deleted };
+    });
+    return send(reply, requestId, result);
+  });
+
+  registerSemanticMcpRoutes(app, { repository, semanticStore });
+
+  let externalRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  if (config.externalSkillRefreshIntervalMs > 0) {
+    externalRefreshTimer = setInterval(() => {
+      void registry.refreshAllExternalSkills().catch((error: unknown) => {
+        app.log.error({ err: error }, "external skill upstream refresh failed");
+      });
+    }, config.externalSkillRefreshIntervalMs);
+    externalRefreshTimer.unref?.();
+  }
+  app.addHook("onClose", async () => {
+    if (externalRefreshTimer !== null) clearInterval(externalRefreshTimer);
   });
 
   await app.ready();

@@ -209,12 +209,17 @@ export class HunterHarnessApiClient {
 
   async finalizeProposal(
     sessionId: string,
-    body: object,
+    body: {
+      schema_version: 1;
+      manifest_sha256: string;
+      base_artifact_id: string | null;
+    },
     requestId: string,
     idempotencyKey: string
   ): Promise<{
     proposal_id: string;
-    status: "pending_review";
+    status: "approved";
+    artifact_id: string | null;
     received_files: number;
     request_id: string;
   }> {

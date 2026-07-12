@@ -1,8 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import type { RegistryProjectWorkflowBinding, RegistryWorkflow } from "@hunter-harness/contracts";
+import type { RegistryProjectWorkflowBinding, WorkflowFamily } from "@hunter-harness/contracts";
 
 import {
   ApiClientError,
@@ -13,13 +12,14 @@ import {
 } from "../lib/api";
 import { classifyManagedFile, isProposalEditable, type WebFilePolicy } from "../lib/file-policy";
 import { reconstructWorkspace, type WorkspaceArtifact, type WorkspaceFile } from "../lib/workspace";
+import { ProjectSemanticPanels } from "./project-semantic-panels";
 
 interface WorkspaceData {
   project: ProjectDetailModel;
   artifacts: ArtifactSummary[];
   files: WorkspaceFile[];
   latestManifest: ArtifactManifestModel | null;
-  workflows: RegistryWorkflow[];
+  workflows: WorkflowFamily[];
   workflowBinding: RegistryProjectWorkflowBinding | null;
 }
 
@@ -52,7 +52,7 @@ async function loadWorkspace(api: HunterApi, projectId: string): Promise<Workspa
   const [project, artifacts, workflows, workflowBinding] = await Promise.all([
     api.getProject(projectId),
     api.listProjectArtifacts(projectId),
-    api.listWorkflows?.() ?? Promise.resolve([]),
+    api.listWorkflowFamilies?.() ?? Promise.resolve([]),
     api.getProjectWorkflowBinding?.(projectId) ?? Promise.resolve(null)
   ]);
   const loadedArtifacts: WorkspaceArtifact[] = await Promise.all(artifacts.map(async (artifact) => {
@@ -184,17 +184,19 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
     }
   }
 
-  async function bindWorkflow(workflowId: string): Promise<void> {
+  async function bindWorkflow(familySlug: string, profile: string): Promise<void> {
     if (data === null || api.bindProjectWorkflow === undefined) return;
     setBusy(true);
     try {
       const binding = await api.bindProjectWorkflow(
         data.project.project_id,
-        workflowId,
-        data.workflowBinding?.revision ?? null
+        familySlug,
+        profile,
+        data.workflowBinding?.revision ?? null,
+        data.workflowBinding?.version ?? null
       );
       setData({ ...data, workflowBinding: binding });
-      setResult("Workflow binding saved directly with optimistic revision and audit evidence.");
+      setResult("Workflow family binding saved directly with optimistic revision and audit evidence.");
     } catch (reason) {
       setError(safeError(reason));
     } finally {
@@ -205,7 +207,10 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
   if (error !== null) return <section className="empty-state">{error}</section>;
   if (data === null) return <section className="empty-state">Loading managed project workspace…</section>;
   const selectedEditable = selected !== null && isProposalEditable(selected.policy);
-  const boundWorkflow = data.workflows.find((item) => item.workflow_id === data.workflowBinding?.workflow_id) ?? null;
+  const boundFamily = data.workflows.find((item) => item.slug === data.workflowBinding?.family_slug) ?? null;
+  const bindingKey = data.workflowBinding === null
+    ? ""
+    : `${data.workflowBinding.family_slug}:${data.workflowBinding.profile}`;
 
   return <section className="stack">
     <div className="page-heading"><div><p className="eyebrow">Managed project</p><h1>{data.project.display_name}</h1><code>{data.project.project_id}</code></div><span className="status status-clear">{data.project.role}</span></div>
@@ -213,13 +218,37 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
     {data.latestManifest === null ? <div className="notice">No approved baseline artifact exists. Create the first project proposal with the CLI; this console will not invent a baseline.</div> : null}
     <div className="panel project-governance">
       <div>
-        <p className="eyebrow">Workflow Profile</p>
-        <h2>{boundWorkflow?.name ?? "No workflow bound"}</h2>
-        <p>Workflow metadata is direct-maintenance; managed project files still require proposal review.</p>
-        {boundWorkflow === null ? null : <div className="effective-skills" aria-label="Effective ordered Skills">{boundWorkflow.skill_slugs.map((slug, index) => <Link href={`/skills/${slug}`} aria-label={`${String(index + 1).padStart(2, "0")} ${slug}`} key={slug}><span>{String(index + 1).padStart(2, "0")}</span>{slug}</Link>)}</div>}
+        <p className="eyebrow">Workflow Family</p>
+        <h2>{boundFamily?.displayName ?? "No workflow family bound"}</h2>
+        <p>Workflow family metadata is direct-maintenance; managed project files still require proposal review.</p>
+        {data.workflowBinding === null ? null : (
+          <p><code>{data.workflowBinding.family_slug}</code> · profile <strong>{data.workflowBinding.profile}</strong>{data.workflowBinding.version === null || data.workflowBinding.version === undefined ? null : <> · v{data.workflowBinding.version}</>}</p>
+        )}
       </div>
-      <label>Bound workflow<select aria-label="Bound workflow" disabled={busy} value={data.workflowBinding?.workflow_id ?? ""} onChange={(event) => event.target.value !== "" && void bindWorkflow(event.target.value)}><option value="">Select workflow</option>{data.workflows.filter((workflow) => workflow.enabled).map((workflow) => <option value={workflow.workflow_id} key={workflow.workflow_id}>{workflow.name} · {workflow.skill_slugs.length} skills</option>)}</select></label>
+      <label>Bound workflow family
+        <select
+          aria-label="Bound workflow family"
+          disabled={busy}
+          value={bindingKey}
+          onChange={(event) => {
+            const [familySlug, profile] = event.target.value.split(":");
+            if (familySlug !== undefined && profile !== undefined && familySlug !== "" && profile !== "") {
+              void bindWorkflow(familySlug, profile);
+            }
+          }}
+        >
+          <option value="">Select family · profile</option>
+          {data.workflows.flatMap((family) =>
+            family.required_profiles.map((profile) => (
+              <option value={`${family.slug}:${profile}`} key={`${family.family_id}:${profile}`}>
+                {family.displayName} · {profile}
+              </option>
+            ))
+          )}
+        </select>
+      </label>
     </div>
+    <ProjectSemanticPanels api={api} projectId={projectId} />
     <div className="workspace-grid">
       <article className="panel file-browser"><div className="panel-title"><h2>Managed files</h2><button className="secondary-button" type="button" onClick={startAdd} disabled={data.latestManifest === null}>Propose new file</button></div>
         {data.files.length === 0 ? <div className="empty-state">No files are present in the approved artifact chain.</div> : <ul className="file-list">{data.files.map((file) => <li key={file.path}><button type="button" aria-label={file.path} className={file.path === selected?.path ? "selected" : ""} onClick={() => choose(file)}>{file.path}<small>{file.policy.file_kind}</small></button></li>)}</ul>}

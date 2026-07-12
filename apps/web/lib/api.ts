@@ -7,26 +7,30 @@ import {
   type ProviderModel,
   type DashboardOverview,
   type DraftState,
+  type ExternalSkill,
+  type CreateExternalSkillRequest,
+  type PatchExternalSkillRequest,
   type FileOperation,
   type FixPlan,
+  type NpmReleaseResponse,
   type PublishSkillRequest,
   type RegistryAgent,
   type RegistryArtifact,
+  type PublishWorkflowFamilyRequest,
   type RegistryProjectWorkflowBinding,
   type RegistrySkillDetail,
-  type RegistrySkillProposal,
   type RegistrySkillVersion,
   type RegistryTag,
-  type RegistryWorkflow,
-  type RegistryWorkflowMutation,
   type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
-  type SourceFile,
-  type PublishWorkflowPackageRequest,
-  type WorkflowPackage,
-  type WorkflowPackageDraftState,
-  type WorkflowPackageVersion
+  type WorkflowFamily,
+  type WorkflowFamilyDraftState,
+  type WorkflowFamilyMutation,
+  type WorkflowFamilyVersion,
+  type SemanticDocument,
+  type SemanticEdge,
+  type SemanticOverview
 } from "@hunter-harness/contracts";
 
 import type { WebFileKind } from "./file-policy";
@@ -121,7 +125,7 @@ export interface ProposalDetailModel {
 }
 
 export interface ReviewInput {
-  decision: "approve" | "reject" | "need_more_evidence" | "split";
+  decision: "approve" | "reject" | "need_more_evidence" | "split" | "auto-approved";
   comment: string | null;
   target_scope: string;
   split_groups: Array<{
@@ -151,44 +155,53 @@ export interface HunterApi {
   getArtifactText(artifactId: string, contentHash: string): Promise<string>;
   createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult>;
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
-  reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
+  reviewProposal?(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
   listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
+  listExternalSkills?(filters?: Record<string, string>): Promise<ExternalSkill[]>;
+  getExternalSkill?(id: string): Promise<ExternalSkill>;
+  createExternalSkill?(input: CreateExternalSkillRequest): Promise<ExternalSkill>;
+  patchExternalSkill?(id: string, input: PatchExternalSkillRequest): Promise<ExternalSkill>;
+  refreshExternalSkill?(id: string): Promise<ExternalSkill>;
+  deleteExternalSkill?(id: string): Promise<{ id: string; deleted: boolean }>;
   listSkillArtifacts?(): Promise<RegistryArtifact[]>;
   getSkill?(slug: string): Promise<RegistrySkillDetail>;
   listSkillVersions?(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]>;
   getSkillAdapterPreview?(slug: string, agent: RegistryAgent): Promise<{ path: string; content: string; sourceIrHash: string; compilerVersion: string; adapter: string }>;
-  listSkillProposals?(status?: string): Promise<RegistrySkillProposal[]>;
-  createSkillProposal?(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal>;
-  reviewSkillProposal?(proposalId: string, decision: "approve" | "reject", comment: string | null): Promise<Record<string, unknown>>;
   downloadSkillArtifact?(slug: string, agent: RegistryAgent): Promise<{ blob: Blob; hash: string; filename: string }>;
   listTags?(): Promise<RegistryTag[]>;
   createTag?(slug: string, label: string): Promise<RegistryTag>;
   updateTag?(tagId: string, input: { revision: number; label?: string; active?: boolean }): Promise<RegistryTag>;
   mergeTag?(tagId: string, targetTagId: string, revision: number): Promise<RegistryTag>;
   bindSkillTag?(skillSlug: string, tagId: string, remove?: boolean): Promise<RegistrySkillDetail>;
-  listWorkflows?(): Promise<RegistryWorkflow[]>;
-  createWorkflow?(input: RegistryWorkflowMutation): Promise<RegistryWorkflow>;
-  updateWorkflow?(workflowId: string, input: Partial<RegistryWorkflowMutation> & { revision: number }): Promise<RegistryWorkflow>;
-  deleteWorkflow?(workflowId: string, revision: number): Promise<void>;
+  listWorkflowFamilies?(): Promise<WorkflowFamily[]>;
+  createWorkflowFamily?(input: WorkflowFamilyMutation): Promise<WorkflowFamily>;
+  getWorkflowFamily?(slug: string): Promise<WorkflowFamily>;
+  uploadWorkflowFamilyProfileDraft?(slug: string, profile: string, form: FormData): Promise<WorkflowFamilyDraftState>;
+  getWorkflowFamilyDraft?(slug: string): Promise<WorkflowFamilyDraftState>;
+  discardWorkflowFamilyDraft?(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }>;
+  runWorkflowFamilyDraftChecks?(slug: string): Promise<SkillCheckResult>;
+  publishWorkflowFamilyDraft?(slug: string, req: PublishWorkflowFamilyRequest): Promise<WorkflowFamilyVersion>;
+  diffWorkflowFamilyDraft?(slug: string, profile?: string): Promise<SkillDiffFile[]>;
+  listWorkflowFamilyVersions?(slug: string): Promise<WorkflowFamilyVersion[]>;
+  downloadWorkflowFamilyArtifact?(slug: string, profile: string, version?: string): Promise<{ blob: Blob; hash: string; filename: string }>;
   getProjectWorkflowBinding?(projectId: string): Promise<RegistryProjectWorkflowBinding | null>;
-  bindProjectWorkflow?(projectId: string, workflowId: string, revision: number | null): Promise<RegistryProjectWorkflowBinding>;
+  bindProjectWorkflow?(projectId: string, familySlug: string, profile: string, revision: number | null, version?: string | null): Promise<RegistryProjectWorkflowBinding>;
+  getProjectSemanticOverview?(projectId: string): Promise<SemanticOverview>;
+  listProjectSemanticKnowledge?(projectId: string): Promise<SemanticDocument[]>;
+  listProjectSemanticRules?(projectId: string): Promise<SemanticDocument[]>;
+  listProjectSemanticChanges?(projectId: string): Promise<SemanticDocument[]>;
+  getProjectSemanticGraph?(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }>;
+  searchSemanticDocuments?(query: string, projectId?: string): Promise<Array<{ document: SemanticDocument; project_id: string }>>;
   uploadSkillDraft?(form: FormData, agent: RegistryAgent): Promise<DraftState>;
   getSkillDraft?(slug: string, agent: RegistryAgent): Promise<DraftState>;
   discardSkillDraft?(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }>;
   runSkillDraftChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
   publishSkillDraft?(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
+  releaseSkillToNpm?(slug: string): Promise<NpmReleaseResponse>;
+  releaseWorkflowFamilyToNpm?(slug: string): Promise<NpmReleaseResponse>;
   diffSkillDraft?(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]>;
   setDefaultAgent?(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail>;
   deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
-  uploadWorkflowPackage?(form: FormData): Promise<WorkflowPackageDraftState>;
-  getWorkflowPackageDraft?(key: string): Promise<WorkflowPackageDraftState>;
-  discardWorkflowPackageDraft?(key: string, revision: number): Promise<{ key: string; discarded: boolean }>;
-  runWorkflowPackageChecks?(key: string): Promise<SkillCheckResult>;
-  publishWorkflowPackage?(key: string, req: PublishWorkflowPackageRequest): Promise<WorkflowPackageVersion>;
-  diffWorkflowPackageDraft?(key: string): Promise<SkillDiffFile[]>;
-  listWorkflowPackages?(): Promise<WorkflowPackage[]>;
-  getWorkflowPackage?(key: string): Promise<WorkflowPackage>;
-  listWorkflowPackageVersions?(key: string): Promise<WorkflowPackageVersion[]>;
   listAiProviders?(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }>;
   createAiProvider?(input: {
     provider_id: string; label: string; base_url: string; model: string;
@@ -473,20 +486,40 @@ export class HttpHunterApi implements HunterApi {
     );
   }
 
-  async reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult> {
-    return this.request(
-      "POST",
-      "/api/v1/proposals/" + encodeURIComponent(proposalId) + "/review-decisions",
-      { schema_version: 1, ...input }
-    );
-  }
-
   async listSkills(filters: Record<string, string> = {}): Promise<RegistrySkillDetail[]> {
     const query = new URLSearchParams(filters);
     const result = await this.request<{ items: RegistrySkillDetail[] }>(
       "GET", "/api/v1/skills" + (query.size === 0 ? "" : "?" + query.toString())
     );
     return result.items;
+  }
+
+  async listExternalSkills(filters: Record<string, string> = {}): Promise<ExternalSkill[]> {
+    const query = new URLSearchParams(filters);
+    const result = await this.request<{ items: ExternalSkill[] }>(
+      "GET", "/api/v1/external-skills" + (query.size === 0 ? "" : "?" + query.toString())
+    );
+    return result.items;
+  }
+
+  async getExternalSkill(id: string): Promise<ExternalSkill> {
+    return this.request("GET", "/api/v1/external-skills/" + encodeURIComponent(id));
+  }
+
+  async createExternalSkill(input: CreateExternalSkillRequest): Promise<ExternalSkill> {
+    return this.request("POST", "/api/v1/external-skills", input);
+  }
+
+  async patchExternalSkill(id: string, input: PatchExternalSkillRequest): Promise<ExternalSkill> {
+    return this.request("PATCH", "/api/v1/external-skills/" + encodeURIComponent(id), input);
+  }
+
+  async refreshExternalSkill(id: string): Promise<ExternalSkill> {
+    return this.request("POST", "/api/v1/external-skills/" + encodeURIComponent(id) + "/refresh");
+  }
+
+  async deleteExternalSkill(id: string): Promise<{ id: string; deleted: boolean }> {
+    return this.request("DELETE", "/api/v1/external-skills/" + encodeURIComponent(id));
   }
 
   async listSkillArtifacts(): Promise<RegistryArtifact[]> {
@@ -515,27 +548,6 @@ export class HttpHunterApi implements HunterApi {
       "GET",
       "/api/v1/skills/" + encodeURIComponent(slug) + "/adapter-preview/" + encodeURIComponent(agent)
     );
-  }
-  async listSkillProposals(status?: string): Promise<RegistrySkillProposal[]> {
-    const suffix = status === undefined ? "" : "?status=" + encodeURIComponent(status);
-    const result = await this.request<{ items: RegistrySkillProposal[] }>("GET", "/api/v1/skill-proposals" + suffix);
-    return result.items;
-  }
-
-  async createSkillProposal(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal> {
-    return this.request("POST", "/api/v1/skill-proposals", {
-      schema_version: 1, source_files: sourceFiles, agent
-    });
-  }
-
-  async reviewSkillProposal(
-    proposalId: string,
-    decision: "approve" | "reject",
-    comment: string | null
-  ): Promise<Record<string, unknown>> {
-    return this.request("POST", "/api/v1/skill-proposals/" + encodeURIComponent(proposalId) + "/review", {
-      schema_version: 1, decision, comment
-    });
   }
 
   async downloadSkillArtifact(
@@ -578,23 +590,74 @@ export class HttpHunterApi implements HunterApi {
     return this.request(remove ? "DELETE" : "PUT", "/api/v1/skills/" + encodeURIComponent(skillSlug) + "/tags/" + encodeURIComponent(tagId), {});
   }
 
-  async listWorkflows(): Promise<RegistryWorkflow[]> {
-    return (await this.request<{ items: RegistryWorkflow[] }>("GET", "/api/v1/workflows")).items;
+  async listWorkflowFamilies(): Promise<WorkflowFamily[]> {
+    return (await this.request<{ items: WorkflowFamily[] }>("GET", "/api/v1/workflow-families")).items;
   }
 
-  async createWorkflow(input: RegistryWorkflowMutation): Promise<RegistryWorkflow> {
-    return this.request("POST", "/api/v1/workflows", { schema_version: 1, ...input });
+  async createWorkflowFamily(input: WorkflowFamilyMutation): Promise<WorkflowFamily> {
+    return this.request("POST", "/api/v1/workflow-families", { schema_version: 1, ...input });
   }
 
-  async updateWorkflow(
-    workflowId: string,
-    input: Partial<RegistryWorkflowMutation> & { revision: number }
-  ): Promise<RegistryWorkflow> {
-    return this.request("PATCH", "/api/v1/workflows/" + encodeURIComponent(workflowId), input);
+  async getWorkflowFamily(slug: string): Promise<WorkflowFamily> {
+    return this.request("GET", "/api/v1/workflow-families/" + encodeURIComponent(slug));
   }
 
-  async deleteWorkflow(workflowId: string, revision: number): Promise<void> {
-    await this.request("DELETE", "/api/v1/workflows/" + encodeURIComponent(workflowId) + "?revision=" + revision, {});
+  async uploadWorkflowFamilyProfileDraft(slug: string, profile: string, form: FormData): Promise<WorkflowFamilyDraftState> {
+    return this.multipartRequest<WorkflowFamilyDraftState>(
+      "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/draft/profiles/" + encodeURIComponent(profile),
+      form
+    );
+  }
+
+  async getWorkflowFamilyDraft(slug: string): Promise<WorkflowFamilyDraftState> {
+    return this.request("GET", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/draft");
+  }
+
+  async discardWorkflowFamilyDraft(slug: string, revision: number): Promise<{ slug: string; discarded: boolean }> {
+    return this.request("DELETE", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/draft", { revision });
+  }
+
+  async runWorkflowFamilyDraftChecks(slug: string): Promise<SkillCheckResult> {
+    return this.request("POST", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/draft/checks", {});
+  }
+
+  async publishWorkflowFamilyDraft(slug: string, req: PublishWorkflowFamilyRequest): Promise<WorkflowFamilyVersion> {
+    return this.request("POST", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/publish", req);
+  }
+
+  async diffWorkflowFamilyDraft(slug: string, profile?: string): Promise<SkillDiffFile[]> {
+    const suffix = profile === undefined ? "" : "?profile=" + encodeURIComponent(profile);
+    const result = await this.request<{ items: SkillDiffFile[] }>(
+      "GET", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/draft/diff" + suffix
+    );
+    return result.items;
+  }
+
+  async listWorkflowFamilyVersions(slug: string): Promise<WorkflowFamilyVersion[]> {
+    const result = await this.request<{ items: WorkflowFamilyVersion[] }>(
+      "GET", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/versions"
+    );
+    return result.items;
+  }
+
+  async downloadWorkflowFamilyArtifact(
+    slug: string,
+    profile: string,
+    version?: string
+  ): Promise<{ blob: Blob; hash: string; filename: string }> {
+    const token = this.tokenProvider();
+    if (token === null || token === "") throw new ApiClientError(401, "AUTH_REQUIRED", "Authentication required.");
+    const query = version === undefined ? "" : "?version=" + encodeURIComponent(version);
+    const response = await this.fetch(
+      this.baseUrl + "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/artifacts/" + encodeURIComponent(profile) + "/download" + query,
+      { headers: { Authorization: "Bearer " + token, "X-Request-Id": uuid() } }
+    );
+    if (!response.ok) throw new ApiClientError(response.status, "DOWNLOAD_FAILED", "Workflow family artifact download failed.");
+    return {
+      blob: await response.blob(),
+      hash: response.headers.get("X-Content-SHA256") ?? "",
+      filename: /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? slug + "-" + profile + ".zip"
+    };
   }
 
   async getProjectWorkflowBinding(projectId: string): Promise<RegistryProjectWorkflowBinding | null> {
@@ -606,12 +669,59 @@ export class HttpHunterApi implements HunterApi {
 
   async bindProjectWorkflow(
     projectId: string,
-    workflowId: string,
-    revision: number | null
+    familySlug: string,
+    profile: string,
+    revision: number | null,
+    version?: string | null
   ): Promise<RegistryProjectWorkflowBinding> {
     return this.request("PUT", "/api/v1/projects/" + encodeURIComponent(projectId) + "/workflow-binding", {
-      schema_version: 1, workflow_id: workflowId, revision
+      schema_version: 1,
+      family_slug: familySlug,
+      profile,
+      revision,
+      ...(version === undefined ? {} : { version })
     });
+  }
+
+  async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/overview");
+  }
+
+  async listProjectSemanticKnowledge(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/knowledge"
+    );
+    return result.items;
+  }
+
+  async listProjectSemanticRules(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/rules"
+    );
+    return result.items;
+  }
+
+  async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/changes"
+    );
+    return result.items;
+  }
+
+  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/graph");
+  }
+
+  async searchSemanticDocuments(
+    query: string,
+    projectId?: string
+  ): Promise<Array<{ document: SemanticDocument; project_id: string }>> {
+    const params = new URLSearchParams({ q: query });
+    if (projectId !== undefined) params.set("project_id", projectId);
+    const result = await this.request<{ items: Array<{ document: SemanticDocument; project_id: string }> }>(
+      "GET", "/api/v1/semantic/search?" + params.toString()
+    );
+    return result.items;
   }
 
   private async multipartRequest<T>(path: string, formData: FormData): Promise<T> {
@@ -670,6 +780,14 @@ export class HttpHunterApi implements HunterApi {
     return this.request("POST", this.draftPath(slug, agent, "/publish"), req);
   }
 
+  async releaseSkillToNpm(slug: string): Promise<NpmReleaseResponse> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/npm-release", {});
+  }
+
+  async releaseWorkflowFamilyToNpm(slug: string): Promise<NpmReleaseResponse> {
+    return this.request("POST", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/npm-release", {});
+  }
+
   async diffSkillDraft(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]> {
     const result = await this.request<{ items: SkillDiffFile[] }>("GET", this.draftPath(slug, agent, "/diff"));
     return result.items;
@@ -682,37 +800,6 @@ export class HttpHunterApi implements HunterApi {
 
   async deleteSkill(slug: string): Promise<{ slug: string; deleted: boolean }> {
     return this.request("DELETE", "/api/v1/skills/" + encodeURIComponent(slug), {});
-  }
-
-  async uploadWorkflowPackage(form: FormData): Promise<WorkflowPackageDraftState> {
-    return this.multipartRequest<WorkflowPackageDraftState>("/api/v1/workflow-packages", form);
-  }
-  async getWorkflowPackageDraft(key: string): Promise<WorkflowPackageDraftState> {
-    return this.request("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft");
-  }
-  async discardWorkflowPackageDraft(key: string, revision: number): Promise<{ key: string; discarded: boolean }> {
-    return this.request("DELETE", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft", { revision });
-  }
-  async runWorkflowPackageChecks(key: string): Promise<SkillCheckResult> {
-    return this.request("POST", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft/checks", {});
-  }
-  async publishWorkflowPackage(key: string, req: PublishWorkflowPackageRequest): Promise<WorkflowPackageVersion> {
-    return this.request("POST", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/publish", req);
-  }
-  async diffWorkflowPackageDraft(key: string): Promise<SkillDiffFile[]> {
-    const result = await this.request<{ items: SkillDiffFile[] }>("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/draft/diff");
-    return result.items;
-  }
-  async listWorkflowPackages(): Promise<WorkflowPackage[]> {
-    const result = await this.request<{ items: WorkflowPackage[] }>("GET", "/api/v1/workflow-packages");
-    return result.items;
-  }
-  async getWorkflowPackage(key: string): Promise<WorkflowPackage> {
-    return this.request("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key));
-  }
-  async listWorkflowPackageVersions(key: string): Promise<WorkflowPackageVersion[]> {
-    const result = await this.request<{ items: WorkflowPackageVersion[] }>("GET", "/api/v1/workflow-packages/" + encodeURIComponent(key) + "/versions");
-    return result.items;
   }
 
   async listAiProviders(): Promise<{ items: AiProviderWithKeySet[]; default_provider: string | null }> {

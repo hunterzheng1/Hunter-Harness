@@ -413,30 +413,40 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it("POST /skill-proposals agent=cursor creates proposal (API-101); agent=codex passes gate (API-102 修正: codex installable=true)", async () => {
-    // 新模型：proposal 上传 source_files（SKILL.md + .mdc frontmatter），不再 POST skill_ir
-    // API-101: cursor createProposal → 201
-    const cursorProposal = await app.inject({
-      method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "cursor" },
-      headers: headers()
+  it("uploads cursor and codex drafts and publishes them directly", async () => {
+    const cursorUpload = multipart(proposalFiles);
+    const cursorDraft = await app.inject({
+      method: "POST", url: "/api/v1/skills/draft?agent=cursor",
+      payload: cursorUpload.payload,
+      headers: { ...headers(), ...cursorUpload.headers }
     });
-    expect(cursorProposal.statusCode).toBe(201);
-    expect(cursorProposal.json().requestedAgent).toBe("cursor");
-    expect(cursorProposal.json().status).toBe("pending_review");
+    expect(cursorDraft.statusCode).toBe(201);
 
-    // API-102 (修正): codex installable=true → 201 通过
-    const codexProposal = await app.inject({
-      method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "codex" },
+    const cursorPublish = await app.inject({
+      method: "POST", url: "/api/v1/skills/harness-proposal/draft/cursor/publish",
+      payload: { version: "1.0.0" },
       headers: headers()
     });
-    expect(codexProposal.statusCode).toBe(201);
-    expect(codexProposal.json().requestedAgent).toBe("codex");
+    expect(cursorPublish.statusCode).toBe(200);
+
+    const codexUpload = multipart(proposalFiles);
+    const codexDraft = await app.inject({
+      method: "POST", url: "/api/v1/skills/draft?agent=codex",
+      payload: codexUpload.payload,
+      headers: { ...headers(), ...codexUpload.headers }
+    });
+    expect(codexDraft.statusCode).toBe(201);
+
+    const codexPublish = await app.inject({
+      method: "POST", url: "/api/v1/skills/harness-proposal/draft/codex/publish",
+      payload: { version: "1.0.0" },
+      headers: headers()
+    });
+    expect(codexPublish.statusCode).toBe(200);
   });
 });
 
-describe("workflow package end-to-end (T13+T15, API-001~008, INT-001~002, INT-004)", () => {
+describe("workflow family end-to-end (API-001~008, INT-001~002, INT-004)", () => {
   let repository: MemoryRepository;
   let app: Awaited<ReturnType<typeof createServer>>;
 
@@ -444,6 +454,20 @@ describe("workflow package end-to-end (T13+T15, API-001~008, INT-001~002, INT-00
     repository = new MemoryRepository();
     await repository.createActorWithToken({ actorId: "actor_owner", token });
     app = await createServer({ repository, storage: new MemoryArtifactStorage() });
+    const family = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families",
+      headers: headers(),
+      payload: {
+        schema_version: 1,
+        slug: "harness",
+        displayName: "Harness",
+        description: "Default harness workflow family",
+        tags: [],
+        required_profiles: ["general"]
+      }
+    });
+    expect(family.statusCode).toBe(201);
   });
   afterEach(async () => app.close());
 
@@ -451,81 +475,87 @@ describe("workflow package end-to-end (T13+T15, API-001~008, INT-001~002, INT-00
     return { authorization: "Bearer " + token, "x-request-id": uuidV7(), "idempotency-key": uuidV7(), ...extra };
   }
 
-  const wpYaml = `key: release-flow
-name: Release Flow
-description: End-to-end release workflow
-profile: general
-skills:
-  - slug: harness-sync
-    ref: "1.0.0"
-agents:
-  - path: agents/release.md
-    ref: main
-protocols: []
-templates: []
-execution_order:
-  - harness-sync
-strategy: sequential
-`;
+  const bundleFiles = [
+    { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+    { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+  ];
 
-  async function uploadWp(files: Array<{ path: string; content: string }>): Promise<number> {
+  async function uploadProfile(files: Array<{ path: string; content: string }>): Promise<number> {
     const up = multipartZip(files);
-    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: { ...headers(), ...up.headers } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: up.payload,
+      headers: { ...headers(), ...up.headers }
+    });
     return res.statusCode;
   }
 
   it("upload → draft → checks → diff → publish → list → versions (API-001~006, INT-001)", async () => {
-    expect(await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# Release agent" }])).toBe(201);
+    expect(await uploadProfile(bundleFiles)).toBe(201);
 
-    const draftRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/draft", headers: headers() });
+    const draftRes = await app.inject({ method: "GET", url: "/api/v1/workflow-families/harness/draft", headers: headers() });
     expect(draftRes.statusCode).toBe(200);
 
-    const checksRes = await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/draft/checks", payload: {}, headers: headers() });
+    const checksRes = await app.inject({ method: "POST", url: "/api/v1/workflow-families/harness/draft/checks", payload: {}, headers: headers() });
     expect(checksRes.statusCode).toBe(200);
 
-    const diffRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/draft/diff", headers: headers() });
+    const diffRes = await app.inject({ method: "GET", url: "/api/v1/workflow-families/harness/draft/diff?profile=general", headers: headers() });
     expect(diffRes.statusCode).toBe(200);
 
-    const pubRes = await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.0", releaseNote: "init" }, headers: headers() });
+    const pubRes = await app.inject({ method: "POST", url: "/api/v1/workflow-families/harness/publish", payload: { version: "1.0.0", releaseNote: "init" }, headers: headers() });
     expect(pubRes.statusCode).toBe(200);
     expect(pubRes.json().version).toBe("1.0.0");
 
-    const listRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages", headers: headers() });
+    const listRes = await app.inject({ method: "GET", url: "/api/v1/workflow-families", headers: headers() });
     expect(listRes.statusCode).toBe(200);
     expect(listRes.json().items).toHaveLength(1);
 
-    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/versions", headers: headers() });
+    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-families/harness/versions", headers: headers() });
     expect(verRes.statusCode).toBe(200);
     expect(verRes.json().items.map((v: { version: string }) => v.version)).toEqual(["1.0.0"]);
   });
 
   it("version sequence after re-publish (INT-004)", async () => {
-    await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# a" }]);
-    await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.0" }, headers: headers() });
-    await uploadWp([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# b" }]);
-    await app.inject({ method: "POST", url: "/api/v1/workflow-packages/release-flow/publish", payload: { version: "1.0.1" }, headers: headers() });
-    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-packages/release-flow/versions", headers: headers() });
+    await uploadProfile(bundleFiles);
+    await app.inject({ method: "POST", url: "/api/v1/workflow-families/harness/publish", payload: { version: "1.0.0" }, headers: headers() });
+    await uploadProfile([
+      { path: ".harness-build.json", content: '{"profile":"general","rev":2}\n' },
+      bundleFiles[1] ?? { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+    ]);
+    await app.inject({ method: "POST", url: "/api/v1/workflow-families/harness/publish", payload: { version: "1.0.1" }, headers: headers() });
+    const verRes = await app.inject({ method: "GET", url: "/api/v1/workflow-families/harness/versions", headers: headers() });
     expect(verRes.json().items.map((v: { version: string }) => v.version)).toEqual(["1.0.1", "1.0.0"]);
   });
 
-  it("upload without workflow.yaml → 422 WORKFLOW_MANIFEST_MISSING (API-007)", async () => {
-    const up = multipartZip([{ path: "agents/release.md", content: "# x" }]);
-    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: { ...headers(), ...up.headers } });
+  it("upload empty bundle → 422 WORKFLOW_BUNDLE_EMPTY (API-007)", async () => {
+    const up = multipartZip([]);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: up.payload,
+      headers: { ...headers(), ...up.headers }
+    });
     expect(res.statusCode).toBe(422);
-    expect(res.json().error.code).toBe("WORKFLOW_MANIFEST_MISSING");
+    expect(res.json().error.code).toBe("WORKFLOW_BUNDLE_EMPTY");
   });
 
   it("upload without token → 401 (API-008)", async () => {
-    const up = multipart([{ path: "workflow.yaml", content: wpYaml }, { path: "agents/release.md", content: "# x" }]);
-    const res = await app.inject({ method: "POST", url: "/api/v1/workflow-packages", payload: up.payload, headers: up.headers });
+    const up = multipart(bundleFiles);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: up.payload,
+      headers: up.headers
+    });
     expect(res.statusCode).toBe(401);
   });
 
-  it("uploadDraft boundary redirects workflow package zip (INT-002)", async () => {
+  it("uploadDraft boundary redirects workflow bundle zip (INT-002)", async () => {
     const up = multipartZip([{ path: "workflow.yaml", content: "name: w" }, { path: "skills/foo.md", content: "x" }]);
     const res = await app.inject({ method: "POST", url: "/api/v1/skills/draft?agent=claude-code", payload: up.payload, headers: { ...headers(), ...up.headers } });
     expect(res.statusCode).toBe(422);
     expect(res.json().error.code).toBe("WORKFLOW_PACKAGE_REDIRECT");
-    expect(res.json().error.details.redirect).toBe("workflow-packages");
+    expect(res.json().error.details.redirect).toBe("workflow-families");
   });
 });
