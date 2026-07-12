@@ -11,15 +11,13 @@
     "hunter-harness": "dist/bin.js"
   },
   "files": [
-    "dist/bin.js",
-    "resources"
+    "dist/bin.js"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run bundle && npm run copy-resources",
+    "build": "tsc -p tsconfig.json && npm run bundle",
     "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --outfile=dist/bin.js",
-    "copy-resources": "node scripts/copy-resources.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepack": "node ../../scripts/sync-harness.mjs && npm run build"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "commander": "15.0.0",

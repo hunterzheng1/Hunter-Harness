@@ -59,6 +59,7 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/workflow-families/{slug}/draft/diff",
       "/api/v1/workflow-families/{slug}/draft/profiles/{profile}",
       "/api/v1/workflow-families/{slug}/publish",
+      "/api/v1/workflow-families/{slug}/npm-release",
       "/api/v1/workflow-families/{slug}/versions",
       "/api/v1/workflow-families/{slug}/artifacts/{profile}/download",
       "/api/v1/ai-config/providers",

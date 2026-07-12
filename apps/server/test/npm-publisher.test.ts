@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { isNpmPublishConfigured, loadNpmPublishConfig, packageNameForSkill } from "../src/npm/config.js";
+import { isNpmPublishConfigured, loadNpmPublishConfig, packageNameForSkill, packageNameForWorkflowFamily } from "../src/npm/config.js";
 import {
   buildSkillNpmPackageJson,
+  buildWorkflowFamilyNpmPackageJson,
   publishSkillNpmPackage,
-  type SkillNpmPackageInput
+  publishWorkflowFamilyNpmPackage,
+  type SkillNpmPackageInput,
+  type WorkflowFamilyNpmPackageInput
 } from "../src/npm/publisher.js";
 
 const sampleInput: SkillNpmPackageInput = {
@@ -30,6 +33,8 @@ describe("npm publish config", () => {
     expect(config).toEqual({ scope: "@hunter-skills", token: "secret-token" });
     expect(isNpmPublishConfigured(config)).toBe(true);
     expect(packageNameForSkill(config, "harness-sync")).toBe("@hunter-skills/harness-sync");
+    expect(packageNameForWorkflowFamily(config, "harness")).toBe("@hunter-skills/workflow-harness");
+    expect(packageNameForWorkflowFamily(config, "enterprise")).toBe("@hunter-skills/workflow-enterprise");
   });
 
   it("reports unconfigured when scope or token is missing", () => {
@@ -85,5 +90,70 @@ describe("skill npm publisher", () => {
     );
     expect(result.status).toBe("conflict");
     expect(result.error).toContain("newer registry version");
+  });
+});
+
+const workflowFamilyInput: WorkflowFamilyNpmPackageInput = {
+  packageName: "@hunter-skills/workflow-harness",
+  version: "1.0.0",
+  familySlug: "harness",
+  description: "Default harness workflow family",
+  requiredProfiles: ["general"],
+  files: [
+    { path: "harness/manifests/general/claude-code.json", content: '{"schema_version":2}\n' },
+    { path: "harness/bundles/general/claude-code/harness-plan/SKILL.md", content: "# plan\n" }
+  ]
+};
+
+describe("workflow family npm publisher", () => {
+  it("builds a data-only package.json without bin or scripts", () => {
+    const packageJson = buildWorkflowFamilyNpmPackageJson(workflowFamilyInput);
+    expect(packageJson).toMatchObject({
+      name: "@hunter-skills/workflow-harness",
+      version: "1.0.0",
+      license: "MIT",
+      files: expect.arrayContaining([
+        "hunter-workflow-family.json",
+        "harness/manifests/general/claude-code.json"
+      ])
+    });
+    expect(packageJson).not.toHaveProperty("bin");
+    expect(packageJson).not.toHaveProperty("scripts");
+  });
+
+  it("publishes via injected fake publish and records published status", async () => {
+    let publishedManifest: Record<string, unknown> | null = null;
+    const result = await publishWorkflowFamilyNpmPackage(
+      workflowFamilyInput,
+      { scope: "@hunter-skills", token: "secret-token" },
+      {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async (manifest) => {
+          publishedManifest = manifest;
+        }
+      }
+    );
+    expect(result).toEqual({ status: "published", error: null });
+    expect(publishedManifest).toMatchObject({
+      name: "@hunter-skills/workflow-harness",
+      version: "1.0.0"
+    });
+  });
+
+  it("maps npm 409 conflicts without throwing", async () => {
+    const result = await publishWorkflowFamilyNpmPackage(
+      workflowFamilyInput,
+      { scope: "@hunter-skills", token: "secret-token" },
+      {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => {
+          const error = new Error("version conflict") as Error & { statusCode?: number };
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+    );
+    expect(result.status).toBe("conflict");
+    expect(result.error).toContain("newer family version");
   });
 });

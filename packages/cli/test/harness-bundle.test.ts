@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const resources = join(root, "resources", "harness");
-const packagedResources = join(root, "packages", "cli", "resources");
+const packagedResources = join(root, "packages", "workflow-data-harness");
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
 const PROFILES = ["general", "java"] as const;
 
@@ -64,7 +64,7 @@ describe("embedded Harness Bundles", () => {
     }
   });
 
-  it("keeps legacy bootstrap resources out of the CLI package staging tree", async () => {
+  it("keeps legacy bootstrap resources out of the workflow data package staging tree", async () => {
     expect(await exists(join(
       packagedResources, "harness", "bundles", "general", "claude-code", "harness-plan", "SKILL.md"
     ))).toBe(true);

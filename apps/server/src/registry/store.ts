@@ -64,8 +64,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ServerDomainError, type TransactionRepository } from "../repositories/interfaces.js";
 import type { ArtifactStorage } from "../storage/interface.js";
 import type { RegistryPersistence } from "./persistence.js";
-import type { NpmPublishAttemptResult, SkillNpmPackageInput } from "../npm/publisher.js";
-import { skillNpmPackageInput } from "../npm/publisher.js";
+import type { NpmPublishAttemptResult, SkillNpmPackageInput, WorkflowFamilyNpmPackageInput } from "../npm/publisher.js";
+import { layoutWorkflowFamilyNpmFiles, skillNpmPackageInput, workflowFamilyNpmPackageInput } from "../npm/publisher.js";
 import type { NpmPublishConfig } from "../npm/config.js";
 import { WorkflowFamilyStore, type WorkflowFamilyState } from "./workflow-family-store.js";
 
@@ -1632,6 +1632,64 @@ export class RegistryStore {
     const index = state.npmReleases.findIndex((entry) => entry.version === version);
     if (index >= 0) state.npmReleases[index] = record;
     else state.npmReleases.push(record);
+    await this.persist();
+    return structuredClone(record);
+  }
+
+  async releaseFamilyToNpm(
+    slug: string,
+    config: NpmPublishConfig,
+    publish: (input: WorkflowFamilyNpmPackageInput) => Promise<NpmPublishAttemptResult>,
+    extraFiles: SourceFile[] = []
+  ): Promise<NpmReleaseRecord> {
+    const family = this.workflowFamilyStore.getFamily(slug);
+    if (family.latest_version === null) {
+      throw new ServerDomainError(422, "NPM_PUBLISH_NOT_PUBLISHED", "workflow family has no published version to release");
+    }
+    const version = family.latest_version;
+    const state = this.workflowFamilies.get(slug);
+    const versionRecord = state?.versions.find((entry) => entry.version === version);
+    if (versionRecord === undefined) {
+      throw new ServerDomainError(422, "NPM_PUBLISH_NOT_PUBLISHED", "published family version not found");
+    }
+    const existing = family.npmReleases.find((entry) => entry.version === version);
+    if (existing !== undefined) {
+      if (existing.status === "published") return structuredClone(existing);
+      if (existing.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          existing.error ?? "npm registry already has this package version",
+          { release: existing }
+        );
+      }
+    }
+    const packageInput = workflowFamilyNpmPackageInput(config, {
+      familySlug: slug,
+      version,
+      description: family.description,
+      requiredProfiles: family.required_profiles,
+      files: layoutWorkflowFamilyNpmFiles(versionRecord, extraFiles)
+    });
+    const result = await publish(packageInput);
+    const record = npmReleaseRecordSchema.parse({
+      version,
+      packageName: packageInput.packageName,
+      status: result.status,
+      publishedAt: new Date().toISOString(),
+      error: result.error
+    });
+    const detail = this.workflowFamilies.get(slug)?.detail;
+    if (detail !== undefined) {
+      const releases = [...detail.npmReleases];
+      const index = releases.findIndex((entry) => entry.version === version);
+      if (index >= 0) releases[index] = record;
+      else releases.push(record);
+      this.workflowFamilies.set(slug, {
+        detail: workflowFamilySchema.parse({ ...detail, npmReleases: releases }),
+        versions: state?.versions ?? []
+      });
+    }
     await this.persist();
     return structuredClone(record);
   }

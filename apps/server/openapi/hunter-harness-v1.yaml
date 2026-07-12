@@ -559,6 +559,16 @@ paths:
       responses:
         "200": { description: Published workflow family version sequence }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/{slug}/npm-release:
+    post:
+      operationId: releaseWorkflowFamilyToNpm
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Latest published workflow family version released to npm as a data-only package }
+        "503": { description: npm publish is not configured on the server (NPM_PUBLISH_NOT_CONFIGURED) }
+        "409": { description: npm registry already has this package version (NPM_PUBLISH_CONFLICT) }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families/{slug}/artifacts/{profile}/download:
     get:
       operationId: downloadWorkflowFamilyProfileArtifact

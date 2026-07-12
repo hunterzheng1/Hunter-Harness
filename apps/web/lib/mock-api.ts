@@ -17,7 +17,8 @@ import type {
   SkillCheckResult,
   SkillDiffFile,
   FixPlan,
-  PublishSkillRequest
+  PublishSkillRequest,
+  NpmReleaseResponse
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills } from "./catalog";
@@ -434,6 +435,7 @@ export class MockApiClient implements HunterApi {
     }]);
   }
   async downloadWorkflowFamilyArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
+  async releaseWorkflowFamilyToNpm(slug: string): Promise<NpmReleaseResponse> { void slug; return demoReadOnly(); }
   async listProjects(): Promise<ProjectSummary[]> {
     return delay([...MOCK_PROJECTS]);
   }

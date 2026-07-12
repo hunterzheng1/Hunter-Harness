@@ -34,3 +34,13 @@ export function packageNameForSkill(config: NpmPublishConfig, slug: string): str
   }
   return `${scope.replace(/\/$/, "")}/${slug}`;
 }
+
+export function packageNameForWorkflowFamily(config: NpmPublishConfig, familySlug: string): string {
+  const scope = config.scope;
+  if (scope === null || scope === "") {
+    throw new Error("npm scope is required to build a package name");
+  }
+  const normalized = scope.replace(/\/$/, "");
+  if (familySlug === "harness") return `${normalized}/workflow-harness`;
+  return `${normalized}/workflow-${familySlug}`;
+}

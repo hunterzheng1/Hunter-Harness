@@ -271,4 +271,81 @@ describe("/api/v1 Skill Registry and direct workflow metadata", () => {
     expect(response.statusCode).toBe(503);
     expect(response.json().error.code).toBe("NPM_PUBLISH_NOT_CONFIGURED");
   });
+
+  it("releases the latest published workflow family version to npm with injected publisher", async () => {
+    const npmConfig = { scope: "@hunter-skills", token: "npm-test-token" };
+    const appWithNpm = await createServer({
+      repository,
+      storage: new MemoryArtifactStorage(),
+      bootstrapBundle: bundle,
+      npmPublishConfig: npmConfig,
+      npmPublisherDeps: {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => undefined
+      }
+    });
+
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families",
+      headers: headers(),
+      payload: {
+        schema_version: 1,
+        slug: "harness",
+        displayName: "Harness",
+        description: "Default harness workflow family",
+        tags: [],
+        required_profiles: ["general"]
+      }
+    });
+    const upload = multipart([
+      { path: ".harness-build.json", content: '{"profile":"general"}\n' },
+      { path: "manifests/claude-code.json", content: '{"schema_version":1}\n' }
+    ]);
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/draft/profiles/general",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/publish",
+      headers: headers(),
+      payload: { version: "1.0.0" }
+    });
+
+    const release = await appWithNpm.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/npm-release",
+      headers: headers()
+    });
+    expect(release.statusCode).toBe(200);
+    expect(release.json()).toMatchObject({
+      slug: "harness",
+      release: {
+        version: "1.0.0",
+        packageName: "@hunter-skills/workflow-harness",
+        status: "published"
+      }
+    });
+
+    const detail = await appWithNpm.inject({
+      method: "GET",
+      url: "/api/v1/workflow-families/harness",
+      headers: headers()
+    });
+    expect(detail.json()).toMatchObject({
+      npmReleases: [{ version: "1.0.0", status: "published", packageName: "@hunter-skills/workflow-harness" }]
+    });
+
+    const notConfigured = await app.inject({
+      method: "POST",
+      url: "/api/v1/workflow-families/harness/npm-release",
+      headers: headers()
+    });
+    expect(notConfigured.statusCode).toBe(503);
+
+    await appWithNpm.close();
+  });
 });

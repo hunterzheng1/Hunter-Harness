@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 
 import { Command, CommanderError } from "commander";
@@ -14,18 +14,22 @@ import { runPush, type PushOptions } from "./commands/push.js";
 import { runRefresh, type RefreshCommandOptions } from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
 import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
+import {
+  resolveWorkflowResourcesRoot,
+  WorkflowDataResolutionError
+} from "./workflow-data/resolve.js";
+import type { ResolveWorkflowDataOptions } from "./workflow-data/resolve.js";
 
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
   resourcesRoot?: string;
+  fetchWorkflowTarball?: ResolveWorkflowDataOptions["fetchWorkflowTarball"];
 }
 
 function defaultDependencies(overrides: CliDependencies): CommandDependencies {
   return {
     cwd: overrides.cwd ?? process.cwd(),
-    resourcesRoot: overrides.resourcesRoot ?? fileURLToPath(
-      new URL("../resources", import.meta.url)
-    ),
+    resourcesRoot: overrides.resourcesRoot ?? "",
     stdout: overrides.stdout ?? ((value) => process.stdout.write(value)),
     stderr: overrides.stderr ?? ((value) => process.stderr.write(value)),
     prompt: overrides.prompt ?? (async (question) => {
@@ -50,7 +54,9 @@ function addCommonOptions(command: Command): Command {
     .option("--token-env <ENV_NAME>")
     .option("--non-interactive")
     .option("--agents <csv>")
-    .option("--codebuddy-surface <surface>");
+    .option("--codebuddy-surface <surface>")
+    .option("--workflow-family <slug>")
+    .option("--workflow-version <version>");
 }
 
 export async function runCli(
@@ -58,6 +64,25 @@ export async function runCli(
   overrides: CliDependencies = {}
 ): Promise<number> {
   const dependencies = defaultDependencies(overrides);
+  try {
+    const resolveOptions: ResolveWorkflowDataOptions = {
+      cwd: dependencies.cwd,
+      env: dependencies.env,
+      override: overrides.resourcesRoot,
+      fetch: dependencies.fetch
+    };
+    if (overrides.fetchWorkflowTarball !== undefined) {
+      resolveOptions.fetchWorkflowTarball = overrides.fetchWorkflowTarball;
+    }
+    dependencies.resourcesRoot = await resolveWorkflowResourcesRoot(resolveOptions, argv);
+  } catch (error) {
+    if (error instanceof WorkflowDataResolutionError) {
+      dependencies.stderr(error.message + "\n");
+      return error.exitCode;
+    }
+    throw error;
+  }
+
   const program = addCommonOptions(new Command())
     .name("hunter-harness")
     .description("Local-first, server-governed agent harness")

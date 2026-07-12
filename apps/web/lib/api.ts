@@ -185,6 +185,7 @@ export interface HunterApi {
   runSkillDraftChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
   publishSkillDraft?(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
   releaseSkillToNpm?(slug: string): Promise<NpmReleaseResponse>;
+  releaseWorkflowFamilyToNpm?(slug: string): Promise<NpmReleaseResponse>;
   diffSkillDraft?(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]>;
   setDefaultAgent?(slug: string, agent: RegistryAgent, revision: number): Promise<RegistrySkillDetail>;
   deleteSkill?(slug: string): Promise<{ slug: string; deleted: boolean }>;
@@ -728,6 +729,10 @@ export class HttpHunterApi implements HunterApi {
 
   async releaseSkillToNpm(slug: string): Promise<NpmReleaseResponse> {
     return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/npm-release", {});
+  }
+
+  async releaseWorkflowFamilyToNpm(slug: string): Promise<NpmReleaseResponse> {
+    return this.request("POST", "/api/v1/workflow-families/" + encodeURIComponent(slug) + "/npm-release", {});
   }
 
   async diffSkillDraft(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]> {

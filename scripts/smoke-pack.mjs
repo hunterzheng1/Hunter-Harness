@@ -36,32 +36,44 @@ async function exists(path) {
 }
 
 try {
+  run(process.execPath, [npmCli, "pack", "-w", "packages/workflow-data-harness", "--pack-destination", temporary]);
+  const dataArchive = (await readdir(temporary)).find((name) =>
+    name.startsWith("hunter-harness-workflow-harness-") && name.endsWith(".tgz")
+  );
+  if (dataArchive === undefined) throw new Error("npm pack did not create the workflow data archive");
+  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, dataArchive)]);
+
   run(process.execPath, [npmCli, "pack", "-w", "packages/cli", "--pack-destination", temporary]);
-  const archive = (await readdir(temporary)).find((name) => name.endsWith(".tgz"));
-  if (archive === undefined) throw new Error("npm pack did not create an archive");
+  const archive = (await readdir(temporary)).find((name) =>
+    name.startsWith("hunter-harness-") && name.endsWith(".tgz") && !name.includes("workflow-harness")
+  );
+  if (archive === undefined) throw new Error("npm pack did not create the CLI archive");
   run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, archive)]);
 
   const packagedRoot = join(temporary, "node_modules", "hunter-harness");
-  // 无 legacy CLI resource 树。
+  const workflowDataRoot = join(temporary, "node_modules", "@hunter-harness", "workflow-harness");
+  // CLI tarball 不再内嵌 harness 资源树。
+  assert(await exists(join(packagedRoot, "resources", "harness")) === false,
+    "packaged CLI must not embed resources/harness");
   for (const legacyResource of ["bootstrap-ir", "skills"]) {
     assert(await exists(join(packagedRoot, "resources", legacyResource)) === false,
       `packaged CLI must not contain legacy resource: ${legacyResource}`);
   }
-  // tarball 含 2 profile × 4 agent Bundles + 可信迁移 manifest。
+  // 工作流数据包含 2 profile × 4 agent Bundles + 可信迁移 manifest。
   for (const profile of ["general", "java"]) {
     for (const agent of ["claude-code", "codex", "cursor", "codebuddy"]) {
       assert(await exists(join(
-        packagedRoot, "resources", "harness", "bundles", profile, agent
-      )), `packaged CLI missing ${profile}/${agent} bundle`);
+        workflowDataRoot, "harness", "bundles", profile, agent
+      )), `workflow data package missing ${profile}/${agent} bundle`);
       assert(await exists(join(
-        packagedRoot, "resources", "harness", "manifests", profile, `${agent}.json`
-      )), `packaged CLI missing ${profile}/${agent} manifest`);
+        workflowDataRoot, "harness", "manifests", profile, `${agent}.json`
+      )), `workflow data package missing ${profile}/${agent} manifest`);
     }
   }
-  assert(await exists(join(packagedRoot, "resources", "harness", "migrations", "0.1.1", "general.json")),
-    "packaged CLI missing 0.1.1 general migration manifest");
-  assert(await exists(join(packagedRoot, "resources", "harness", "migrations", "0.1.1", "java.json")),
-    "packaged CLI missing 0.1.1 java migration manifest");
+  assert(await exists(join(workflowDataRoot, "harness", "migrations", "0.1.1", "general.json")),
+    "workflow data package missing 0.1.1 general migration manifest");
+  assert(await exists(join(workflowDataRoot, "harness", "migrations", "0.1.1", "java.json")),
+    "workflow data package missing 0.1.1 java migration manifest");
 
   const bin = join(packagedRoot, "dist", "bin.js");
   const preview = run(process.execPath, [bin, "--agents", "all", "--profile", "java", "--non-interactive", "--dry-run", "--json"],
@@ -75,11 +87,16 @@ try {
   // 四 Agent general 安装 + 幂等 refresh + 冲突保留 + Agent transition。
   const project = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
+    run(process.execPath, [
+      npmCli, "install", "--prefix", project, "--ignore-scripts",
+      join(temporary, dataArchive), join(temporary, archive)
+    ]);
+    const projectBin = join(project, "node_modules", "hunter-harness", "dist", "bin.js");
     // 用户既有 AGENTS/CLAUDE 内容必须保留。
     await writeFile(join(project, "CLAUDE.md"), "# User Claude\nkeep this.\n");
     await writeFile(join(project, "AGENTS.md"), "# User Agents\nkeep this too.\n");
 
-    run(process.execPath, [bin, "--agents", "all", "--profile", "general", "--non-interactive", "--yes"],
+    run(process.execPath, [projectBin, "--agents", "all", "--profile", "general", "--non-interactive", "--yes"],
       { cwd: project, capture: true });
     await stat(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
@@ -112,7 +129,7 @@ try {
       readFile(join(project, ".cursor", "skills", "harness-review", "SKILL.md")),
       readFile(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"))
     ]);
-    run(process.execPath, [bin, "--agents", "all", "--non-interactive", "--yes"], { cwd: project, capture: true });
+    run(process.execPath, [projectBin, "--agents", "all", "--non-interactive", "--yes"], { cwd: project, capture: true });
     const afterProject = await readFile(join(project, ".harness", "project.yaml"), "utf8");
     assert(beforeProject === afterProject, "refresh must not reset project identity");
     const afterSkills = await Promise.all([
@@ -128,19 +145,19 @@ try {
     const reviewer = join(project, ".agents", "skills", "harness-review", "SKILL.md");
     await writeFile(reviewer, "user modified\n");
     const conflictRun = spawnSync(process.execPath,
-      [bin, "refresh", "--non-interactive", "--yes", "--json"],
+      [projectBin, "refresh", "--non-interactive", "--yes", "--json"],
       { cwd: project, encoding: "utf8", shell: false });
     assert(conflictRun.status === 5, `modified-managed refresh should exit 5, got ${conflictRun.status}`);
     assert((await readFile(reviewer, "utf8")) === "user modified\n",
       "modified managed file must be preserved");
     // --force-managed 替换。
-    run(process.execPath, [bin, "refresh", "--non-interactive", "--yes", "--force-managed"],
+    run(process.execPath, [projectBin, "refresh", "--non-interactive", "--yes", "--force-managed"],
       { cwd: project, capture: true });
     assert((await readFile(reviewer, "utf8")) !== "user modified\n",
       "--force-managed must replace modified managed file");
 
     // all → cursor：其余干净 Harness 目标删除，CLAUDE.md 用户正文保留。
-    run(process.execPath, [bin, "refresh", "--agents", "cursor", "--non-interactive", "--yes"],
+    run(process.execPath, [projectBin, "refresh", "--agents", "cursor", "--non-interactive", "--yes"],
       { cwd: project, capture: true });
     await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
     assert(await exists(join(project, ".claude", "skills", "harness-review", "SKILL.md")) === false,
@@ -158,7 +175,12 @@ try {
   // Java 首次安装独立校验（harness-apidoc 存在）。
   const javaProject = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
-    run(process.execPath, [bin, "--profile", "java", "--non-interactive", "--yes"],
+    run(process.execPath, [
+      npmCli, "install", "--prefix", javaProject, "--ignore-scripts",
+      join(temporary, dataArchive), join(temporary, archive)
+    ]);
+    const javaBin = join(javaProject, "node_modules", "hunter-harness", "dist", "bin.js");
+    run(process.execPath, [javaBin, "--profile", "java", "--non-interactive", "--yes"],
       { cwd: javaProject, capture: true });
     await stat(join(javaProject, ".claude", "skills", "harness-apidoc", "SKILL.md"));
     assert(await exists(join(javaProject, ".claude", "skills", "agents")) === false,

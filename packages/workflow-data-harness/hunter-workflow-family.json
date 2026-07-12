@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "family_slug": "harness",
+  "display_name": "Harness",
+  "required_profiles": ["general", "java"],
+  "bundle_version": "0.2.0"
+}

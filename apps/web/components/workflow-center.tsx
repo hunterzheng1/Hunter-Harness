@@ -42,8 +42,13 @@ export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [publishingNpm, setPublishingNpm] = useState(false);
 
   const selected = families?.find((family) => family.slug === selectedSlug) ?? null;
+  const latestNpmRelease = selected?.npmReleases.find((entry) => entry.version === selected.latest_version) ?? null;
+  const npmPublishDisabled = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true"
+    || selected?.latest_version === null
+    || latestNpmRelease?.status === "published";
 
   async function refreshFamilies(): Promise<void> {
     try {
@@ -146,6 +151,21 @@ export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {
     }
   }
 
+  async function publishToNpm(): Promise<void> {
+    if (selectedSlug === null || npmPublishDisabled) return;
+    setPublishingNpm(true);
+    try {
+      await required(api, "releaseWorkflowFamilyToNpm")(selectedSlug);
+      setMessage(t.workflows.npmPublished);
+      await refreshFamilies();
+      await loadFamilyDetail(selectedSlug);
+    } catch (reason) {
+      setError(apiError(reason, t));
+    } finally {
+      setPublishingNpm(false);
+    }
+  }
+
   async function discardDraft(): Promise<void> {
     if (selectedSlug === null || draft === null) return;
     setBusy(true);
@@ -231,6 +251,28 @@ export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {
             </div>
             <p>{selected.description}</p>
             <p><small>{t.workflows.requiredProfiles}: {selected.required_profiles.join(", ")}</small></p>
+            {selected.latest_version === null ? null : (
+              <div className="actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy || publishingNpm || npmPublishDisabled}
+                  title={process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? t.workflows.npmComingSoon : undefined}
+                  onClick={() => void publishToNpm()}
+                >
+                  {publishingNpm ? t.workflows.npmPublishing : t.workflows.npmRelease}
+                </button>
+                <span className="meta-pill">
+                  {latestNpmRelease?.status === "published"
+                    ? `${t.workflows.npmBadgePublished} v${latestNpmRelease.version}`
+                    : latestNpmRelease?.status === "failed"
+                      ? t.workflows.npmBadgeFailed
+                      : latestNpmRelease?.status === "conflict"
+                        ? t.workflows.npmBadgeConflict
+                        : t.workflows.npmBadgeUnpublished}
+                </span>
+              </div>
+            )}
 
             <div className="panel-title"><h3>{t.workflows.profileUploads}</h3></div>
             {selected.required_profiles.map((profile) => (
@@ -266,7 +308,6 @@ export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {
                   <input value={releaseNote} onChange={(e) => setReleaseNote(e.target.value)} placeholder={t.workflows.releaseNotePlaceholder} />
                   <button type="button" disabled={busy || publishVersion === ""} onClick={() => void publish()}>{t.workflows.publish}</button>
                   <button type="button" className="secondary danger" disabled={busy} onClick={() => void discardDraft()}>{t.workflows.discardDraft}</button>
-                  <button type="button" className="secondary" disabled title={t.workflows.npmComingSoon}>{t.workflows.npmRelease}</button>
                 </div>
                 {draft.checks === null ? null : (
                   <ul className="check-list">

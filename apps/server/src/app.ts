@@ -57,6 +57,7 @@ import { buildDashboardOverview } from "./dashboard/overview.js";
 import { isNpmPublishConfigured, loadNpmPublishConfig } from "./npm/config.js";
 import {
   publishSkillNpmPackage,
+  publishWorkflowFamilyNpmPackage,
   type NpmPublisherDeps
 } from "./npm/publisher.js";
 import { RegistryStore } from "./registry/store.js";
@@ -1098,6 +1099,49 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         actorId: actor.actorId,
         projectId: null,
         action: "skill.npm-released",
+        targetId: slug,
+        requestId,
+        details: {
+          slug,
+          version: release.version,
+          packageName: release.packageName,
+          status: release.status
+        }
+      });
+      if (release.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          release.error ?? "npm registry already has this package version",
+          { release }
+        );
+      }
+      return { statusCode: 200, body: { slug, release } };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/workflow-families/:slug/npm-release", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    if (!isNpmPublishConfigured(npmConfig)) {
+      throw new ServerDomainError(
+        503,
+        "NPM_PUBLISH_NOT_CONFIGURED",
+        "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN)"
+      );
+    }
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const release = await registry.releaseFamilyToNpm(
+        slug,
+        npmConfig,
+        async (input) => publishWorkflowFamilyNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {})
+      );
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "workflow.family.npm-released",
         targetId: slug,
         requestId,
         details: {
