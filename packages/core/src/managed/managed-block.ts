@@ -104,7 +104,8 @@ export function upsertManagedBlockById(
   content: string
 ): string {
   const newline = original.includes("\r\n") ? "\r\n" : "\n";
-  const block = startById(id) + newline + content + newline + endById(id);
+  const normalized = content.replace(/\r\n/g, "\n").replace(/\n/g, newline);
+  const block = startById(id) + newline + normalized + newline + endById(id);
   const re = new RegExp(escapeRe(startById(id)) + "[\\s\\S]*?" + escapeRe(endById(id)));
   if (re.test(original)) {
     return original.replace(re, block);
@@ -113,4 +114,93 @@ export function upsertManagedBlockById(
     ? ""
     : (original.endsWith(newline) ? newline : newline + newline);
   return original + separator + block + newline;
+}
+
+export interface ManagedBlockByIdRefresh {
+  content: string;
+  action: ManagedBlockAction;
+  conflict: boolean;
+}
+
+/**
+ * Refresh a per-id managed block. With `upgradeLegacy`, a single valid no-id
+ * legacy block is replaced in-place by the id-marked block (no double inject).
+ */
+export function refreshManagedBlockById(
+  original: string,
+  id: string,
+  blockContent: string,
+  options: { upgradeLegacy?: boolean } = {}
+): ManagedBlockByIdRefresh {
+  const idStart = startById(id);
+  const idEnd = endById(id);
+  const idStarts = markerCount(original, idStart);
+  const idEnds = markerCount(original, idEnd);
+  if (idStarts > 0 || idEnds > 0) {
+    if (idStarts !== 1 || idEnds !== 1 ||
+        original.indexOf(idStart) > original.indexOf(idEnd)) {
+      return { content: original, action: "preserved_conflict", conflict: true };
+    }
+    return {
+      content: upsertManagedBlockById(original, id, blockContent),
+      action: "refreshed",
+      conflict: false
+    };
+  }
+
+  const legacyStarts = markerCount(original, MANAGED_BLOCK_START);
+  const legacyEnds = markerCount(original, MANAGED_BLOCK_END);
+  const legacyAbsent = legacyStarts === 0 && legacyEnds === 0;
+  const legacyMalformed = !legacyAbsent &&
+    (legacyStarts !== 1 || legacyEnds !== 1 ||
+      original.indexOf(MANAGED_BLOCK_START) > original.indexOf(MANAGED_BLOCK_END));
+
+  if (legacyMalformed) {
+    return { content: original, action: "preserved_conflict", conflict: true };
+  }
+
+  if (!legacyAbsent && options.upgradeLegacy === true) {
+    const newline = original.includes("\r\n") ? "\r\n" : "\n";
+    const normalized = blockContent.replace(/\r\n/g, "\n").replace(/\n/g, newline);
+    const block = idStart + newline + normalized + newline + idEnd;
+    const start = original.indexOf(MANAGED_BLOCK_START);
+    const end = original.indexOf(MANAGED_BLOCK_END) + MANAGED_BLOCK_END.length;
+    return {
+      content: original.slice(0, start) + block + original.slice(end),
+      action: "refreshed",
+      conflict: false
+    };
+  }
+
+  if (!legacyAbsent) {
+    // Legacy block present but upgrade not requested: append id block (coexist).
+    return {
+      content: upsertManagedBlockById(original, id, blockContent),
+      action: "appended",
+      conflict: false
+    };
+  }
+
+  return {
+    content: upsertManagedBlockById(original, id, blockContent),
+    action: "appended",
+    conflict: false
+  };
+}
+
+export function removeManagedBlockById(original: string, id: string): string {
+  const idStart = startById(id);
+  const idEnd = endById(id);
+  if (markerCount(original, idStart) === 0 && markerCount(original, idEnd) === 0) {
+    return original;
+  }
+  if (markerCount(original, idStart) !== 1 || markerCount(original, idEnd) !== 1 ||
+      original.indexOf(idStart) > original.indexOf(idEnd)) {
+    throw new Error("managed block markers are malformed or duplicated");
+  }
+  const start = original.indexOf(idStart);
+  const end = original.indexOf(idEnd) + idEnd.length;
+  const before = original.slice(0, start).replace(/(?:\r?\n){2}$/, "\n");
+  const after = original.slice(end).replace(/^(?:\r?\n){1,2}/, "");
+  return before + after;
 }

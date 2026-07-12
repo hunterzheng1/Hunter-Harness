@@ -105,3 +105,157 @@ describe("minimal first installation", () => {
     expect(await exists(join(root, ".harness", "cache", "server-artifacts", "art_1", "manifest.json"))).toBe(true);
   });
 });
+
+describe("multi-agent initialize", () => {
+  it("INS-CODEX: projects only Codex roots", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-codex-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["codex"], profile: "general" },
+      dryRun: false
+    });
+    expect(await exists(join(root, "AGENTS.md"))).toBe(true);
+    expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, "CLAUDE.md"))).toBe(false);
+    expect(await exists(join(root, ".claude"))).toBe(false);
+    expect(await exists(join(root, ".codex"))).toBe(false);
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agents).toContain("id=hunter-harness-core");
+  });
+
+  it("INS-CURSOR: emits .mdc rules and cursor skills", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cursor-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["cursor"], profile: "general" },
+      dryRun: false
+    });
+    const mdc = await readFile(join(root, ".cursor", "rules", "harness-general.mdc"), "utf8");
+    expect(mdc.startsWith("---\n")).toBe(true);
+    expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".cursor", "rules", "harness-general.md"))).toBe(false);
+  });
+
+  it("INS-CB: projects CodeBuddy skills/agents and CODEBUDDY.md", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cb-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
+      dryRun: false
+    });
+    const cb = await readFile(join(root, "CODEBUDDY.md"), "utf8");
+    expect(cb).toContain("id=hunter-harness-codebuddy");
+    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".codebuddy", "agents", "harness-reviewer.md"))).toBe(true);
+    expect(await exists(join(root, ".codebuddy", "settings.json"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy", "rules"))).toBe(false);
+  });
+
+  it("installs all four agents with shared AGENTS block, context v2, state v3", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-all-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: {
+        agents: ["claude-code", "codex", "cursor", "codebuddy"],
+        profile: "general"
+      },
+      dryRun: false
+    });
+    expect(await exists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect((agents.match(/hunter-harness:start/g) ?? []).length).toBe(1);
+
+    const index = JSON.parse(
+      await readFile(join(root, ".harness", "context-index.json"), "utf8")
+    ) as {
+      schema_version: number;
+      project: { adapters: Record<string, unknown> };
+      skill_bundles: Record<string, unknown>;
+    };
+    expect(index.schema_version).toBe(2);
+    expect(Object.keys(index.project.adapters).sort()).toEqual(
+      ["claude-code", "codebuddy", "codex", "cursor"]
+    );
+    expect(Object.keys(index.skill_bundles).sort()).toEqual(
+      Object.keys(index.project.adapters).sort()
+    );
+
+    const state = JSON.parse(
+      await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
+    ) as {
+      schema_version: number;
+      files: Array<{ owner: string; target_path: string }>;
+      managed_blocks: Array<{ block_id: string }>;
+    };
+    expect(state.schema_version).toBe(3);
+    const owners = new Set(state.files.map((f) => f.owner));
+    expect(owners.has("claude-code")).toBe(true);
+    expect(owners.has("codex")).toBe(true);
+    expect(owners.has("cursor")).toBe(true);
+    expect(owners.has("codebuddy")).toBe(true);
+    const targets = state.files.map((f) => f.target_path);
+    expect(new Set(targets).size).toBe(targets.length);
+    expect(state.managed_blocks.some((b) => b.block_id === "hunter-harness-core")).toBe(true);
+  }, 120_000);
+
+  it("is idempotent across two installs except installed_at", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-idem-"));
+    const config = {
+      agents: ["claude-code", "codex"] as const,
+      profile: "general" as const
+    };
+    await initializeProject({ projectRoot: root, resourcesRoot, config: { ...config }, dryRun: false });
+    const firstState = JSON.parse(
+      await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
+    ) as { installed_at: string };
+    const snapshot = async (): Promise<Map<string, string>> => {
+      const { createHash } = await import("node:crypto");
+      const { readdir } = await import("node:fs/promises");
+      const walk = async (dir: string, base = dir): Promise<string[]> => {
+        const out: string[] = [];
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) out.push(...await walk(full, base));
+          else out.push(full.slice(base.length + 1).replaceAll("\\", "/"));
+        }
+        return out;
+      };
+      const map = new Map<string, string>();
+      for (const rel of await walk(root)) {
+        if (rel === ".harness/state/local/installed-harness-bundle.json") continue;
+        if (rel.startsWith(".harness/state/transactions/")) continue;
+        if (rel.startsWith(".harness/state/locks/")) continue;
+        const bytes = await readFile(join(root, rel));
+        map.set(rel, createHash("sha256").update(bytes).digest("hex"));
+      }
+      return map;
+    };
+    const before = await snapshot();
+    await initializeProject({ projectRoot: root, resourcesRoot, config: { ...config }, dryRun: false });
+    const after = await snapshot();
+    expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
+    for (const [path, hash] of before) {
+      expect(after.get(path), path).toBe(hash);
+    }
+    const secondState = JSON.parse(
+      await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
+    ) as { installed_at: string; files: unknown; manifests: unknown; managed_blocks: unknown };
+    expect(secondState.installed_at).not.toBe(firstState.installed_at);
+    expect(secondState.files).toEqual(
+      (firstState as unknown as { files: unknown }).files
+    );
+    expect(secondState.manifests).toEqual(
+      (firstState as unknown as { manifests: unknown }).manifests
+    );
+    expect(secondState.managed_blocks).toEqual(
+      (firstState as unknown as { managed_blocks: unknown }).managed_blocks
+    );
+  }, 120_000);
+});

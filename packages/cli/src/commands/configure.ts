@@ -1,5 +1,6 @@
 import {
   initializeProject,
+  TargetCollisionError,
   uuidV7
 } from "@hunter-harness/core";
 
@@ -99,8 +100,16 @@ async function runFirstInstall(
       : "Hunter Harness 初始化完成，共处理 " + result.paths.length + " 个文件。\n");
     return 0;
   } catch (error) {
-    const exitCode = error instanceof InitConfigurationError ? error.exitCode : 1;
-    const code = error instanceof InitConfigurationError ? error.code : undefined;
+    const exitCode = error instanceof TargetCollisionError
+      ? 7
+      : error instanceof InitConfigurationError
+        ? error.exitCode
+        : 1;
+    const code = error instanceof TargetCollisionError
+      ? error.code
+      : error instanceof InitConfigurationError
+        ? error.code
+        : undefined;
     const message = error instanceof Error ? error.message : String(error);
     dependencies.stderr((code !== undefined ? code + ": " : "") + message + "\n");
     if (options.json === true) {

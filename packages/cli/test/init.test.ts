@@ -131,11 +131,12 @@ describe("hunter-harness initialization", () => {
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { adapters: { enabled: string[] } };
-    // Temporary bridge (Task 8): projection still Claude-only; project.yaml records full selection.
     expect(project.adapters.enabled).toEqual(["claude-code", "codex"]);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
   });
 
-  it("non-interactive --agents all records four agents in project.yaml", async () => {
+  it("non-interactive --agents all projects four agent roots", async () => {
     const code = await run([
       "--agents", "all", "--profile", "general", "--non-interactive", "--yes"
     ]);
@@ -146,7 +147,12 @@ describe("hunter-harness initialization", () => {
     expect(project.adapters.enabled).toEqual([
       "claude-code", "codex", "cursor", "codebuddy"
     ]);
-  });
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
+  }, 120_000);
 
   it("rejects unknown agent without writing files", async () => {
     const code = await run([

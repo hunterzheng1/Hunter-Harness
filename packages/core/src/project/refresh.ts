@@ -6,11 +6,13 @@ import { canonicalJson, projectConfigSchema } from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { sha256Bytes } from "../fs/hash.js";
-import { refreshManagedBlock } from "../managed/managed-block.js";
+import { refreshManagedBlockById } from "../managed/managed-block.js";
 import { runTransaction } from "../transaction/transaction.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import {
+  AGENTS_CORE_BLOCK_ID,
   AGENTS_MANAGED_BLOCK_CONTENT,
+  CLAUDE_BLOCK_ID,
   CLAUDE_MANAGED_BLOCK_CONTENT
 } from "./managed-content.js";
 import {
@@ -129,7 +131,8 @@ async function readInstalledState(root: string): Promise<InstalledState> {
   }
   const profile = parseHarnessProfile(parsed.profile);
   const trusted = new Map<string, string>();
-  if (parsed.schema_version === 2 && Array.isArray(parsed.files)) {
+  if ((parsed.schema_version === 2 || parsed.schema_version === 3) &&
+      Array.isArray(parsed.files)) {
     for (const entry of parsed.files) {
       if (entry !== null && typeof entry === "object" &&
           "target_path" in entry && "sha256" in entry) {
@@ -225,6 +228,7 @@ function sortByTarget<T extends { target_path: string }>(items: T[]): T[] {
 async function refreshMarkdownBlock(
   root: string,
   fileName: string,
+  blockId: string,
   blockContent: string,
   ops: TransactionOperation[],
   conflicts: RefreshConflict[],
@@ -232,7 +236,9 @@ async function refreshMarkdownBlock(
 ): Promise<void> {
   const original = await readOptionalText(join(root, fileName));
   const current = original === "" ? null : createHash("sha256").update(original).digest("hex");
-  const refresh = refreshManagedBlock(original, blockContent);
+  const refresh = refreshManagedBlockById(original, blockId, blockContent, {
+    upgradeLegacy: true
+  });
   const synthetic: ProjectedBundleFile = {
     source_path: fileName,
     target_path: fileName,
@@ -412,10 +418,10 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   }
 
   await refreshMarkdownBlock(
-    root, "AGENTS.md", AGENTS_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
+    root, "AGENTS.md", AGENTS_CORE_BLOCK_ID, AGENTS_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
   );
   await refreshMarkdownBlock(
-    root, "CLAUDE.md", CLAUDE_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
+    root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
   );
 
   const profileOperation = await profileTransitionOperation(root, previousProfile, profile);
