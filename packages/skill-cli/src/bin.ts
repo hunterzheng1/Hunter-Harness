@@ -229,30 +229,6 @@ async function walkSourceFiles(root: string, relative = ""): Promise<SourceFile[
   return files;
 }
 
-async function fetchNpmTarballFromRegistry(
-  packageName: string,
-  fetchImpl: typeof globalThis.fetch
-): Promise<Buffer> {
-  const metaResponse = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
-  if (!metaResponse.ok) {
-    throw new CliFailure(4, "NPM_PACKAGE_NOT_FOUND", `npm package ${packageName} was not found`);
-  }
-  const packument = await metaResponse.json() as {
-    "dist-tags"?: { latest?: string };
-    versions?: Record<string, { dist?: { tarball?: string } }>;
-  };
-  const version = packument["dist-tags"]?.latest;
-  const tarballUrl = version === undefined ? undefined : packument.versions?.[version]?.dist?.tarball;
-  if (tarballUrl === undefined) {
-    throw new CliFailure(4, "NPM_PACKAGE_NOT_FOUND", `npm package ${packageName} has no publishable version`);
-  }
-  const tarballResponse = await fetchImpl(tarballUrl);
-  if (!tarballResponse.ok) {
-    throw new CliFailure(4, "NETWORK_ERROR", `failed to download npm tarball for ${packageName}`);
-  }
-  return Buffer.from(await tarballResponse.arrayBuffer());
-}
-
 async function extractTarGzToDirectory(tarball: Buffer, destination: string): Promise<void> {
   const tarPath = join(destination, "package.tgz");
   const extractDir = join(destination, "extracted");
@@ -293,20 +269,22 @@ async function extractNpmSkillPackage(
   try {
     if (dependencies.pacoteExtract !== undefined) {
       await dependencies.pacoteExtract(packageName, directory);
-    } else {
-      const fetchImpl = dependencies.fetch ?? globalThis.fetch;
+    } else if (dependencies.fetchNpmTarball !== undefined || dependencies.pacoteTarball !== undefined) {
       const tarball = dependencies.fetchNpmTarball !== undefined
         ? await dependencies.fetchNpmTarball(packageName)
         : dependencies.pacoteTarball !== undefined
           ? await dependencies.pacoteTarball(packageName)
-          : await fetchNpmTarballFromRegistry(packageName, fetchImpl);
+          : Buffer.alloc(0);
       await extractTarGzToDirectory(tarball, directory);
+    } else {
+      const pacote = await import("pacote");
+      await pacote.default.extract(packageName, directory);
     }
     const bytes = dependencies.pacoteTarball !== undefined
       ? await dependencies.pacoteTarball(packageName)
       : dependencies.fetchNpmTarball !== undefined
         ? await dependencies.fetchNpmTarball(packageName)
-        : Buffer.from("npm:" + packageName);
+        : await (await import("pacote")).default.tarball(packageName);
     const manifestRaw = await readFile(join(directory, "hunter-skill.json"), "utf8");
     const metadata = JSON.parse(manifestRaw) as {
       slug: string;

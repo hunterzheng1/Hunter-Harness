@@ -1003,47 +1003,44 @@ describe("RegistryStore AI content generation", () => {
   });
 });
 
-describe("createProposal + reviewProposal gate (per-agent)", () => {
-  it("createProposal agent=cursor passes gate + records requestedAgent", () => {
+describe("skill proposal track removed (Direct Publish)", () => {
+  it("createProposal and reviewProposal are gone", async () => {
     const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    expect(proposal.requestedAgent).toBe(CURSOR);
-    expect(proposal.status).toBe("pending_review");
+    try {
+      store.createProposal({
+        sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR
+      });
+      expect.unreachable("createProposal should throw");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "SKILL_PROPOSAL_REMOVED" });
+    }
+    await expect(store.reviewProposal({
+      proposalId: "skp_x", actorId: "reviewer", decision: "approve", comment: null
+    })).rejects.toMatchObject({ code: "SKILL_PROPOSAL_REMOVED" });
   });
 
-  it("createProposal agent=mcp rejected 422 ADAPTER_NOT_INSTALLABLE", () => {
+  it("publish publishes only the requested agent artifact (per-agent)", async () => {
     const store = newStore();
-    let caught: unknown = null;
-    try { store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: "mcp" as RegistryAgent }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "ADAPTER_NOT_INSTALLABLE", status: 422 });
-  });
-
-  it("createProposal agent=cursor without .mdc entry rejected 422 SKILL_ENTRY_NOT_FOUND", () => {
-    const store = newStore();
-    let caught: unknown = null;
-    try { store.createProposal({ sourceFiles: files, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR }); } catch (e) { caught = e; }
-    expect(caught).toMatchObject({ code: "SKILL_ENTRY_NOT_FOUND", status: 422 });
-  });
-
-  it("reviewProposal approve publishes only requestedAgent artifact (per-agent)", async () => {
-    const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "approve", comment: null });
-    expect(review.status).toBe("approved");
-    expect(review.publishedArtifacts).toHaveLength(1);
-    expect(review.publishedArtifacts[0]?.agent).toBe(CURSOR);
+    await store.upsertDraft({
+      slug: "harness-x",
+      agent: CURSOR,
+      sourceFiles: filesMulti,
+      draftVersion: "1.0.0"
+    });
+    const version = await store.publish({
+      slug: "harness-x",
+      agent: CURSOR,
+      version: "1.0.0",
+      actorId: "owner",
+      releaseNote: null
+    });
+    expect(version.agent).toBe(CURSOR);
+    expect(version.artifacts).toHaveLength(1);
+    expect(version.artifacts[0]?.agent).toBe(CURSOR);
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
     expect(byAgent.get(CURSOR)?.latestVersion).toBe("1.0.0");
     expect(byAgent.get(CC)?.latestVersion).toBeNull();
-  });
-
-  it("reviewProposal reject produces no artifacts", async () => {
-    const store = newStore();
-    const proposal = store.createProposal({ sourceFiles: filesMulti, slug: "harness-x", version: "1.0.0", actorId: "owner", agent: CURSOR });
-    const review = await store.reviewProposal({ proposalId: proposal.proposal_id, actorId: "reviewer", decision: "reject", comment: "no" });
-    expect(review.status).toBe("rejected");
-    expect(review.publishedArtifacts).toEqual([]);
   });
 });
 

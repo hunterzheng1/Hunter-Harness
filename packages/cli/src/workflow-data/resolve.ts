@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
-import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { cp, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export class WorkflowDataResolutionError extends Error {
@@ -21,8 +21,8 @@ export interface ResolveWorkflowDataOptions {
   override?: string | undefined;
   workflowFamily?: string | undefined;
   workflowVersion?: string | undefined;
-  fetch?: typeof globalThis.fetch;
-  fetchWorkflowTarball?: (packageSpec: string) => Promise<Buffer>;
+  /** 测试注入：覆盖 pacote.extract */
+  pacoteExtract?: (spec: string, destination: string) => Promise<void>;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -52,64 +52,53 @@ export function workflowPackageName(
   return `${scope}/workflow-${family}`;
 }
 
-async function extractTarGzToDirectory(tarball: Buffer, destination: string): Promise<void> {
-  const tarPath = join(destination, "package.tgz");
-  const extractDir = join(destination, "extracted");
-  await mkdir(extractDir, { recursive: true });
-  await writeFile(tarPath, tarball);
-  await new Promise<void>((resolve, reject) => {
-    execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
-      if (error !== null) reject(error);
-      else resolve();
-    });
-  });
-  const packageDir = join(extractDir, "package");
-  if (!(await pathExists(packageDir))) {
-    throw new WorkflowDataResolutionError("工作流数据包结构无效：缺少 package/ 根目录", "WORKFLOW_DATA_INVALID", 7);
+async function listFilesRecursive(root: string, base = root): Promise<Array<{ path: string; content: string }>> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files: Array<{ path: string; content: string }> = [];
+  for (const entry of entries) {
+    const absolute = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listFilesRecursive(absolute, base));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const rel = relative(base, absolute).replaceAll("\\", "/");
+    files.push({ path: rel, content: await readFile(absolute, "utf8") });
   }
-  await cp(packageDir, destination, { recursive: true });
+  return files;
 }
 
-async function fetchNpmTarball(
-  packageName: string,
-  version: string,
-  fetchImpl: typeof globalThis.fetch
-): Promise<Buffer> {
-  const metaResponse = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
-  if (!metaResponse.ok) {
+function sha256Canonical(files: Array<{ path: string; content: string }>): string {
+  const payload = JSON.stringify(
+    [...files]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file) => ({ path: file.path, content: file.content }))
+  );
+  return "sha256:" + createHash("sha256").update(payload, "utf8").digest("hex");
+}
+
+/** 校验 hunter-workflow-family.json 中的 content_sha256（若存在）。 */
+export async function verifyWorkflowPackageIntegrity(resourcesRoot: string): Promise<void> {
+  const manifest = await readWorkflowFamilyManifest(resourcesRoot);
+  const expected = manifest.content_sha256;
+  if (typeof expected !== "string" || expected.length === 0) return;
+  const harnessRoot = join(resourcesRoot, "harness");
+  if (!(await pathExists(harnessRoot))) {
     throw new WorkflowDataResolutionError(
-      `无法从 npm 获取工作流数据包 ${packageName}（registry 返回 ${metaResponse.status}）`,
-      "WORKFLOW_DATA_NOT_FOUND"
+      "工作流数据包缺少 harness/，无法校验 SHA-256",
+      "WORKFLOW_DATA_INTEGRITY",
+      7
     );
   }
-  const packument = await metaResponse.json() as {
-    "dist-tags"?: { latest?: string };
-    versions?: Record<string, { dist?: { tarball?: string } }>;
-  };
-  const resolvedVersion = version === "latest"
-    ? packument["dist-tags"]?.latest
-    : version;
-  if (resolvedVersion === undefined) {
+  const files = await listFilesRecursive(harnessRoot, resourcesRoot);
+  const actual = sha256Canonical(files);
+  if (actual !== expected) {
     throw new WorkflowDataResolutionError(
-      `工作流数据包 ${packageName} 没有可用版本`,
-      "WORKFLOW_DATA_NOT_FOUND"
+      `工作流数据包 SHA-256 校验失败（期望 ${expected}，实际 ${actual}）`,
+      "WORKFLOW_DATA_INTEGRITY",
+      7
     );
   }
-  const tarballUrl = packument.versions?.[resolvedVersion]?.dist?.tarball;
-  if (tarballUrl === undefined) {
-    throw new WorkflowDataResolutionError(
-      `工作流数据包 ${packageName}@${resolvedVersion} 缺少 tarball`,
-      "WORKFLOW_DATA_NOT_FOUND"
-    );
-  }
-  const tarballResponse = await fetchImpl(tarballUrl);
-  if (!tarballResponse.ok) {
-    throw new WorkflowDataResolutionError(
-      `下载工作流数据包失败：${packageName}@${resolvedVersion}`,
-      "WORKFLOW_DATA_NETWORK"
-    );
-  }
-  return Buffer.from(await tarballResponse.arrayBuffer());
 }
 
 async function monorepoResourcesRoot(): Promise<string | null> {
@@ -145,10 +134,16 @@ export async function resolveWorkflowResourcesRoot(
   if (envRoot !== undefined && envRoot.length > 0) return envRoot;
 
   const sibling = await siblingWorkflowPackage(options.cwd);
-  if (sibling !== null) return sibling;
+  if (sibling !== null) {
+    await verifyWorkflowPackageIntegrity(sibling);
+    return sibling;
+  }
 
   const monorepo = await monorepoResourcesRoot();
-  if (monorepo !== null) return monorepo;
+  if (monorepo !== null) {
+    await verifyWorkflowPackageIntegrity(monorepo);
+    return monorepo;
+  }
 
   const family = options.workflowFamily
     ?? readOption(argv, "workflow-family")
@@ -162,22 +157,33 @@ export async function resolveWorkflowResourcesRoot(
   const packageSpec = version === "latest" ? packageName : `${packageName}@${version}`;
   const cacheKey = packageSpec.replace("/", "+");
   const cacheRoot = join(options.cwd, ".harness", "cache", "workflow-packages", cacheKey);
-  if (await pathExists(join(cacheRoot, "harness", "manifests"))) return cacheRoot;
+  if (await pathExists(join(cacheRoot, "harness", "manifests"))) {
+    await verifyWorkflowPackageIntegrity(cacheRoot);
+    return cacheRoot;
+  }
 
-  const fetchImpl = options.fetch ?? globalThis.fetch;
   try {
-    const tarball = options.fetchWorkflowTarball !== undefined
-      ? await options.fetchWorkflowTarball(packageSpec)
-      : await fetchNpmTarball(packageName, version, fetchImpl);
     await mkdir(cacheRoot, { recursive: true });
-    await extractTarGzToDirectory(tarball, cacheRoot);
-    if (!(await pathExists(join(cacheRoot, "harness", "manifests")))) {
+    const extract = options.pacoteExtract ?? (async (spec: string, destination: string) => {
+      const pacote = await import("pacote");
+      await pacote.default.extract(spec, destination);
+    });
+    const staging = join(cacheRoot, ".extract");
+    await mkdir(staging, { recursive: true });
+    await extract(packageSpec, staging);
+    // pacote 解压到 destination，内容在根或 package/ 下
+    const packageDir = (await pathExists(join(staging, "harness", "manifests")))
+      ? staging
+      : join(staging, "package");
+    if (!(await pathExists(join(packageDir, "harness", "manifests")))) {
       throw new WorkflowDataResolutionError(
         "工作流数据包内容无效：缺少 harness/manifests",
         "WORKFLOW_DATA_INVALID",
         7
       );
     }
+    await cp(packageDir, cacheRoot, { recursive: true });
+    await verifyWorkflowPackageIntegrity(cacheRoot);
     return cacheRoot;
   } catch (error) {
     if (error instanceof WorkflowDataResolutionError) throw error;

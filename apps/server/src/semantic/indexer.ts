@@ -153,7 +153,7 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
           document_id: documentId(input.projectId, sourcePath),
           project_id: input.projectId,
           artifact_id: input.artifactId,
-          kind: "archive_change",
+          kind: "archive_record",
           source_path: sourcePath,
           title,
           body: JSON.stringify(summary, null, 2),

@@ -74,7 +74,7 @@ export async function runPush(
       ? serializeCliResult(output)
       : options.dryRun === true
         ? "Push preview contains " + items.length + " operations.\n"
-        : "Proposal " + result.proposalId + " created.\n");
+        : "Pushed artifact " + result.artifactId + " (proposal " + result.proposalId + ").\n");
     return 0;
   } catch (error) {
     const exitCode = error instanceof PushWorkflowError ? error.exitCode : 1;

@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import process from "node:process";
-import { URL } from "node:url";
+import { URL, fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
+const rootDir = fileURLToPath(root);
 const temporary = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
 const npmCli = process.env.npm_execpath;
 if (npmCli === undefined) {
@@ -14,11 +15,26 @@ if (npmCli === undefined) {
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
-    cwd: options.cwd ?? root,
+    cwd: options.cwd ?? rootDir,
     encoding: "utf8",
     stdio: options.capture ? "pipe" : "inherit",
-    shell: false
+    shell: false,
+    timeout: options.timeout ?? 0,
+    env: {
+      ...process.env,
+      npm_config_prefer_offline: "true",
+      npm_config_fetch_retries: "2",
+      npm_config_fetch_timeout: "60000",
+      npm_config_fetch_retry_mintimeout: "10000",
+      npm_config_fetch_retry_maxtimeout: "20000",
+      ...(options.env ?? {})
+    }
   });
+  if (result.error !== undefined) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed to start: ${result.error.message}`
+    );
+  }
   if (result.status !== 0) {
     throw new Error(
       `${command} ${args.join(" ")} failed\n${result.stdout ?? ""}\n${result.stderr ?? ""}`
@@ -41,14 +57,14 @@ try {
     name.startsWith("hunter-harness-workflow-harness-") && name.endsWith(".tgz")
   );
   if (dataArchive === undefined) throw new Error("npm pack did not create the workflow data archive");
-  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, dataArchive)]);
+  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, dataArchive)], { timeout: 180_000 });
 
   run(process.execPath, [npmCli, "pack", "-w", "packages/cli", "--pack-destination", temporary]);
   const archive = (await readdir(temporary)).find((name) =>
     name.startsWith("hunter-harness-") && name.endsWith(".tgz") && !name.includes("workflow-harness")
   );
   if (archive === undefined) throw new Error("npm pack did not create the CLI archive");
-  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, archive)]);
+  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional", join(temporary, archive)], { timeout: 180_000 });
 
   const packagedRoot = join(temporary, "node_modules", "hunter-harness");
   const workflowDataRoot = join(temporary, "node_modules", "@hunter-harness", "workflow-harness");
@@ -88,9 +104,9 @@ try {
   const project = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
     run(process.execPath, [
-      npmCli, "install", "--prefix", project, "--ignore-scripts",
+      npmCli, "install", "--prefix", project, "--ignore-scripts", "--omit=optional",
       join(temporary, dataArchive), join(temporary, archive)
-    ]);
+    ], { timeout: 180_000 });
     const projectBin = join(project, "node_modules", "hunter-harness", "dist", "bin.js");
     // 用户既有 AGENTS/CLAUDE 内容必须保留。
     await writeFile(join(project, "CLAUDE.md"), "# User Claude\nkeep this.\n");
@@ -176,9 +192,9 @@ try {
   const javaProject = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
     run(process.execPath, [
-      npmCli, "install", "--prefix", javaProject, "--ignore-scripts",
+      npmCli, "install", "--prefix", javaProject, "--ignore-scripts", "--omit=optional",
       join(temporary, dataArchive), join(temporary, archive)
-    ]);
+    ], { timeout: 180_000 });
     const javaBin = join(javaProject, "node_modules", "hunter-harness", "dist", "bin.js");
     run(process.execPath, [javaBin, "--profile", "java", "--non-interactive", "--yes"],
       { cwd: javaProject, capture: true });
@@ -194,7 +210,7 @@ try {
     name.startsWith("hunter-harness-skill-cli-") && name.endsWith(".tgz")
   );
   if (skillArchive === undefined) throw new Error("npm pack did not create the Skill CLI archive");
-  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, skillArchive)]);
+  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional", join(temporary, skillArchive)], { timeout: 180_000 });
   const skillBin = join(temporary, "node_modules", "@hunter-harness", "skill-cli", "dist", "bin.js");
   const skillHelp = run(process.execPath, [skillBin, "--help"], { cwd: temporary, capture: true });
   if (!skillHelp.includes("install") || !skillHelp.includes("upload") ||

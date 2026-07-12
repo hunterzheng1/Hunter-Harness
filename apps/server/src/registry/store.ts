@@ -9,7 +9,6 @@ import {
   externalSkillSchema,
   npmReleaseRecordSchema,
   registrySkillDetailSchema,
-  registrySkillProposalSchema,
   registrySkillVersionSchema,
   registryProjectWorkflowBindingSchema,
   registryTagSchema,
@@ -293,17 +292,6 @@ function buildArtifactFor(
   return { agent, bytes: zip.toBuffer() };
 }
 
-// 多 agent 制品构建（createProposal 验证闸门保留）：遍历 installable agent 各构建 zip。
-// per-agent publish 路径用 buildArtifactFor（单 agent）；此处保留用于 createProposal "至少 1 制品可构建" 校验。
-function buildArtifacts(sourceFiles: SourceFile[], slug: string, version: string): BuiltArtifact[] {
-  const built: BuiltArtifact[] = [];
-  for (const agent of INSTALLABLE_AGENTS) {
-    const artifact = buildArtifactFor(sourceFiles, slug, version, agent);
-    if (artifact !== null) built.push(artifact);
-  }
-  return built;
-}
-
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 
 function parseSuggestedStringArray(raw: unknown): string[] {
@@ -405,6 +393,8 @@ export class RegistryStore {
         if (state !== null) this.skills.set(key, state);
       }
       for (const [key, state] of value.proposals) this.proposals.set(key, state);
+      // skill-proposal 轨已删除：旧快照 proposals 可读但不保留业务状态（兼容读后清空）
+      this.proposals.clear();
       for (const [key, raw] of value.tags) this.tags.set(key, migrateTag(raw));
       for (const [key, raw] of value.projectBindings ?? []) {
         const parsed = registryProjectWorkflowBindingSchema.safeParse(raw);
@@ -504,7 +494,7 @@ export class RegistryStore {
       schemaVersion: 4,
       compilerVersion: this.compilerVersion,
       skills: [...this.skills.entries()],
-      proposals: [...this.proposals.entries()],
+      proposals: [],
       tags: [...this.tags.entries()],
       projectBindings: [...this.projectBindings.entries()],
       // 嵌套 drafts：[[slug, [[agent, DraftState]]]]（UT-031）
@@ -1369,66 +1359,9 @@ export class RegistryStore {
     };
   }
 
-  createProposal(input: { sourceFiles: SourceFile[]; slug: string; version: string; actorId: string; agent: RegistryAgent }): ProposalState {
-    // 新模型：agent installable + entry 存在即可建 proposal（去 ir.adapters 声明）
-    if (!AGENT_DESCRIPTORS[input.agent].installable) {
-      throw new ServerDomainError(422, SKILL_ERROR_CODE.ADAPTER_NOT_INSTALLABLE, "agent is not installable");
-    }
-    try {
-      findEntryFile(input.sourceFiles, input.agent);
-    } catch (error) {
-      if (error instanceof SkillEntryError) {
-        throw new ServerDomainError(422, SKILL_ERROR_CODE.ENTRY_NOT_FOUND, error.message, { agent: input.agent });
-      }
-      throw error;
-    }
-    const existing = this.skills.get(input.slug);
-    requireForwardVersion(existing, input.agent, input.version);
-    const fileMap: Record<string, string> = {};
-    for (const f of input.sourceFiles) fileMap[f.path] = f.content;
-    const findings = scanSensitiveFiles(fileMap);
-    const validation = {
-      schema_valid: true,
-      sensitive_findings: findings.findings.length,
-      claude_compilable: false
-    };
-    if (findings.blocked) {
-      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
-        finding_count: findings.findings.length
-      });
-    }
-    try {
-      // 验证闸门：至少一个 installable adapter 可构建（buildArtifacts 多制品路径保留）
-      const built = buildArtifacts(input.sourceFiles, input.slug, input.version);
-      if (built.length === 0) {
-        throw new Error("skill has no installable adapter");
-      }
-      validation.claude_compilable = true;
-    } catch (error) {
-      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "skill adapter validation failed", {
-        reason: error instanceof Error ? error.message : "unknown"
-      });
-    }
-    const proposal = registrySkillProposalSchema.parse({
-      proposal_id: id("skp_"),
-      skill_slug: input.slug,
-      status: "pending_review",
-      created_by: input.actorId,
-      validation,
-      created_at: new Date().toISOString(),
-      reviewed_at: null
-    });
-    const state: ProposalState = {
-      ...proposal,
-      requestedAgent: input.agent,
-      reviewedBy: null,
-      reviewComment: null,
-      publishedArtifacts: [],
-      sourceFiles: input.sourceFiles,
-      version: input.version
-    };
-    this.proposals.set(state.proposal_id, state);
-    return structuredClone(state);
+  createProposal(_input: { sourceFiles: SourceFile[]; slug: string; version: string; actorId: string; agent: RegistryAgent }): ProposalState {
+    void _input;
+    throw new ServerDomainError(410, "SKILL_PROPOSAL_REMOVED", "skill proposal track was removed; use draft publish");
   }
 
   listProposals(status?: string): ProposalState[] {
@@ -1446,30 +1379,14 @@ export class RegistryStore {
     return structuredClone(proposal);
   }
 
-  async reviewProposal(input: {
+  async reviewProposal(_input: {
     proposalId: string;
     actorId: string;
     decision: "approve" | "reject";
     comment: string | null;
   }): Promise<ProposalState> {
-    const proposal = this.proposals.get(input.proposalId);
-    if (proposal === undefined) {
-      throw new ServerDomainError(404, "SKILL_PROPOSAL_NOT_FOUND", "skill proposal not found");
-    }
-    if (proposal.status !== "pending_review") {
-      throw new ServerDomainError(409, "SKILL_PROPOSAL_NOT_REVIEWABLE", "skill proposal is not pending review");
-    }
-    const reviewedAt = new Date().toISOString();
-    // approve → 按 proposal.requestedAgent 发布（per-agent，只产该 agent 制品）
-    const artifacts = input.decision === "approve"
-      ? await this.publishIr(proposal.sourceFiles, proposal.skill_slug, proposal.version, proposal.proposal_id, reviewedAt, proposal.requestedAgent)
-      : [];
-    proposal.status = input.decision === "approve" ? "approved" : "rejected";
-    proposal.reviewed_at = reviewedAt;
-    proposal.reviewedBy = input.actorId;
-    proposal.reviewComment = input.comment;
-    proposal.publishedArtifacts = artifacts;
-    return structuredClone(proposal);
+    void _input;
+    throw new ServerDomainError(410, "SKILL_PROPOSAL_REMOVED", "skill proposal track was removed; use draft publish");
   }
 
   // per-agent publishIr：按指定 agent 产 1 制品 + 写 version（含 agent）+ 前进该 agent latestVersion。

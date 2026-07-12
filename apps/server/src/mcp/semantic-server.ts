@@ -109,7 +109,7 @@ export function createSemanticMcpServer(deps: SemanticMcpDeps): McpServer {
     },
     async ({ project_id, limit }) => {
       await assertProjectAccess(deps.repository, deps.actorId, project_id);
-      const items = await deps.semanticStore.listByKinds(project_id, ["archive_change"]);
+      const items = await deps.semanticStore.listByKinds(project_id, ["archive_record"]);
       const capped = items.slice(0, limit ?? 20);
       return textResult({ items: capped });
     }

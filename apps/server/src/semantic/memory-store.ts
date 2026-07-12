@@ -38,7 +38,7 @@ export class SemanticMemoryStore implements SemanticStore {
       "knowledge_entry",
       "knowledge_markdown",
       "rule",
-      "archive_change",
+      "archive_record",
       "agent_instruction"
     ]);
     return overviewFromDocuments(

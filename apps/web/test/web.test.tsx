@@ -209,12 +209,12 @@ describe("Web Console", () => {
   it("renders change history with loading and empty states", async () => {
     const client = api();
     const view = render(<ReviewQueue api={client} />);
-    expect(screen.getByText(/loading review queue|正在加载审核队列/i)).toBeInTheDocument();
+    expect(screen.getByText(/loading change history|正在加载变更历史/i)).toBeInTheDocument();
     expect(await screen.findByText("prp_one")).toBeInTheDocument();
     view.unmount();
 
     render(<ReviewQueue api={api({ listAllProposals: vi.fn(async () => []) })} />);
-    expect(await screen.findByText(/review queue is clear|审核队列为空/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no change history|暂无变更历史/i)).toBeInTheDocument();
   });
 
   it("renders approved artifact history without artifact content", async () => {

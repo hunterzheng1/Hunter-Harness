@@ -5,7 +5,6 @@ import type {
   ExternalSkill,
   RegistryAgent,
   RegistrySkillDetail,
-  RegistrySkillProposal,
   RegistrySkillVersion,
   RegistryTag
 } from "@hunter-harness/contracts";
@@ -390,12 +389,10 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const api = useApi(apiValue);
   const [skill, setSkill] = useState<RegistrySkillDetail | null>(null);
   const [versions, setVersions] = useState<RegistrySkillVersion[]>([]);
-  const [proposals] = useState<RegistrySkillProposal[]>([]);
   const [tags, setTags] = useState<RegistryTag[]>([]);
   const [agent, setAgent] = useState<DemoAgent>("claude-code");
   const [currentAgent, setCurrentAgent] = useState<RegistryAgent>("claude-code");
   const [selectedTag, setSelectedTag] = useState("");
-  const [draft, setDraft] = useState("");
   const [demoDefaultAgent, setDemoDefaultAgent] = useState<DemoAgent | null>(null);
   const [settingDefault, setSettingDefault] = useState(false);
   const [sourcePath, setSourcePath] = useState("SKILL.md");
@@ -529,14 +526,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       const anchor = document.createElement("a"); anchor.href = url; anchor.download = artifact.filename; anchor.click();
       URL.revokeObjectURL(url); setMessage(`{t.skillDetail.downloadedAudit}${artifact.hash.slice(0, 20)}…`);
     } catch (reason) { setError(apiError(reason, t)); }
-  }
-  async function submitDraft(): Promise<void> {
-    setMessage(t.skillDetail.localDraftOnly);
-  }
-  async function review(proposalId: string, decision: "approve" | "reject"): Promise<void> {
-    void proposalId;
-    void decision;
-    setMessage(t.skillDetail.localDraftOnly);
   }
   function saveLocalMeta(next: { description: string; tags: string[] }): void {
     setSkill((current) => current === null ? current : {
@@ -674,10 +663,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
 
       {activeTab === "governance" ? <>
         <article className="panel compact-form"><div className="panel-title"><h2>{t.skillDetail.tagBinding}</h2><span>{t.skillDetail.noReview}</span></div><div className="inline-form"><select aria-label={t.skillDetail.selectTag} value={selectedTag} onChange={(event) => setSelectedTag(event.target.value)}><option value="">{t.skillDetail.selectTag}</option>{tags.filter((tag) => tag.active && !skill.tags.includes(tag.slug)).map((tag) => <option value={tag.tag_id} key={tag.tag_id}>{tag.label}</option>)}</select><button onClick={() => void bindTag()}>{t.skillDetail.addTag}</button></div></article>
-
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.createProposal}</h2><Status value="review-required" /></div><textarea className="ir-editor" aria-label="Skill IR draft" value={draft} onChange={(event) => setDraft(event.target.value)} /><div className="actions"><button onClick={() => void submitDraft()}>{t.skillDetail.validateSubmit}</button></div></article>
-
-        <article className="panel"><div className="panel-title"><h2>{t.skillDetail.reviewRecord}</h2><span>{proposals.length}</span></div>{proposals.length === 0 ? <Empty>{t.skillDetail.noProposalLinked}</Empty> : proposals.map((proposal) => <div className="proposal-card" key={proposal.proposal_id}><div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug}</code><small>schema {proposal.validation.schema_valid ? "valid" : "invalid"} · sensitive findings {proposal.validation.sensitive_findings} · Claude compile {proposal.validation.claude_compilable ? "passed" : "failed"}</small></div><div><Status value={proposal.status} />{proposal.status === "pending_review" ? <><button onClick={() => void review(proposal.proposal_id, "approve")}>{t.skillDetail.approve}</button><button className="secondary" onClick={() => void review(proposal.proposal_id, "reject")}>{t.skillDetail.reject}</button></> : null}</div></div>)}</article>
       </> : null}
       {message === null ? null : <div className="notice success">{message}</div>}{error === null ? null : <div className="notice danger">{error}</div>}
     </section>

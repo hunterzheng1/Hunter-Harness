@@ -100,6 +100,10 @@ temp/
 AGENTS.md
 CLAUDE.md
 
-# ===== 需求/设计文档（本地保留，暂不纳入版本库）=====
+# ===== 需求/设计文档（默认忽略；白名单纳入版本库的规格与 BACKLOG）=====
 requirements/
-docs/
+docs/*
+!docs/BACKLOG.md
+!docs/superpowers/
+!docs/superpowers/**
+!docs/SERVER-DEPLOYMENT.md

@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && npm run bundle",
-    "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --outfile=dist/bin.js",
+    "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --external:pacote --outfile=dist/bin.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build"
   },
@@ -24,9 +24,13 @@
     "yaml": "2.9.0",
     "zod": "4.4.3"
   },
+  "optionalDependencies": {
+    "pacote": "^21.0.0"
+  },
   "devDependencies": {
     "@hunter-harness/contracts": "*",
     "@hunter-harness/core": "*",
+    "@types/pacote": "^11.1.8",
     "esbuild": "^0.25.12"
   }
 }

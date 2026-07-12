@@ -12,6 +12,7 @@ import {
   type WorkflowFamilyVersion
 } from "@hunter-harness/contracts";
 import { AGENT_DESCRIPTORS, sha256Bytes } from "@hunter-harness/core";
+import { publish as libnpmPublish } from "libnpmpublish";
 
 import type { NpmPublishConfig } from "./config.js";
 import { packageNameForSkill, packageNameForWorkflowFamily } from "./config.js";
@@ -155,22 +156,10 @@ async function defaultPublish(
   tarball: Buffer,
   options: { token: string }
 ): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "hunter-skill-npm-publish-"));
-  const packageName = String(manifest.name ?? "package");
-  const version = String(manifest.version ?? "0.0.0");
-  const tarballPath = join(directory, `${packageName.replace("@", "").replace("/", "-")}-${version}.tgz`);
-  try {
-    await writeFile(tarballPath, tarball);
-    await execFileAsync("npm", ["publish", tarballPath], {
-      env: {
-        ...process.env,
-        NPM_TOKEN: options.token,
-        NPM_CONFIG_TOKEN: options.token
-      }
-    });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  await libnpmPublish(manifest as Parameters<typeof libnpmPublish>[0], tarball, {
+    token: options.token,
+    forceAuth: { token: options.token }
+  });
 }
 
 export async function publishSkillNpmPackage(
@@ -257,11 +246,17 @@ export function buildWorkflowFamilyNpmPackageJson(input: WorkflowFamilyNpmPackag
 }
 
 export function buildWorkflowFamilyManifest(input: WorkflowFamilyNpmPackageInput): Record<string, unknown> {
+  const contentSha256 = sha256Bytes(canonicalJson(
+    [...input.files]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file) => ({ path: file.path, content: file.content }))
+  ));
   return {
     schema_version: 1,
     family_slug: input.familySlug,
     version: input.version,
-    required_profiles: input.requiredProfiles
+    required_profiles: input.requiredProfiles,
+    content_sha256: contentSha256
   };
 }
 

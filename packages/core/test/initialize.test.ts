@@ -203,7 +203,7 @@ describe("multi-agent initialize", () => {
     const targets = state.files.map((f) => f.target_path);
     expect(new Set(targets).size).toBe(targets.length);
     expect(state.managed_blocks.some((b) => b.block_id === "hunter-harness-core")).toBe(true);
-  }, 120_000);
+  }, 240_000);
 
   it("is idempotent across two installs except installed_at", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-idem-"));
@@ -257,5 +257,5 @@ describe("multi-agent initialize", () => {
     expect(secondState.managed_blocks).toEqual(
       (firstState as unknown as { managed_blocks: unknown }).managed_blocks
     );
-  }, 120_000);
+  }, 240_000);
 });

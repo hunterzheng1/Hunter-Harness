@@ -19,13 +19,11 @@ import {
   type PublishWorkflowFamilyRequest,
   type RegistryProjectWorkflowBinding,
   type RegistrySkillDetail,
-  type RegistrySkillProposal,
   type RegistrySkillVersion,
   type RegistryTag,
   type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
-  type SourceFile,
   type WorkflowFamily,
   type WorkflowFamilyDraftState,
   type WorkflowFamilyMutation,
@@ -157,7 +155,7 @@ export interface HunterApi {
   getArtifactText(artifactId: string, contentHash: string): Promise<string>;
   createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult>;
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
-  reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
+  reviewProposal?(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
   listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
   listExternalSkills?(filters?: Record<string, string>): Promise<ExternalSkill[]>;
   getExternalSkill?(id: string): Promise<ExternalSkill>;
@@ -169,9 +167,6 @@ export interface HunterApi {
   getSkill?(slug: string): Promise<RegistrySkillDetail>;
   listSkillVersions?(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]>;
   getSkillAdapterPreview?(slug: string, agent: RegistryAgent): Promise<{ path: string; content: string; sourceIrHash: string; compilerVersion: string; adapter: string }>;
-  listSkillProposals?(status?: string): Promise<RegistrySkillProposal[]>;
-  createSkillProposal?(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal>;
-  reviewSkillProposal?(proposalId: string, decision: "approve" | "reject", comment: string | null): Promise<Record<string, unknown>>;
   downloadSkillArtifact?(slug: string, agent: RegistryAgent): Promise<{ blob: Blob; hash: string; filename: string }>;
   listTags?(): Promise<RegistryTag[]>;
   createTag?(slug: string, label: string): Promise<RegistryTag>;
@@ -491,14 +486,6 @@ export class HttpHunterApi implements HunterApi {
     );
   }
 
-  async reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult> {
-    return this.request(
-      "POST",
-      "/api/v1/proposals/" + encodeURIComponent(proposalId) + "/review-decisions",
-      { schema_version: 1, ...input }
-    );
-  }
-
   async listSkills(filters: Record<string, string> = {}): Promise<RegistrySkillDetail[]> {
     const query = new URLSearchParams(filters);
     const result = await this.request<{ items: RegistrySkillDetail[] }>(
@@ -561,27 +548,6 @@ export class HttpHunterApi implements HunterApi {
       "GET",
       "/api/v1/skills/" + encodeURIComponent(slug) + "/adapter-preview/" + encodeURIComponent(agent)
     );
-  }
-  async listSkillProposals(status?: string): Promise<RegistrySkillProposal[]> {
-    const suffix = status === undefined ? "" : "?status=" + encodeURIComponent(status);
-    const result = await this.request<{ items: RegistrySkillProposal[] }>("GET", "/api/v1/skill-proposals" + suffix);
-    return result.items;
-  }
-
-  async createSkillProposal(sourceFiles: SourceFile[], agent: RegistryAgent): Promise<RegistrySkillProposal> {
-    return this.request("POST", "/api/v1/skill-proposals", {
-      schema_version: 1, source_files: sourceFiles, agent
-    });
-  }
-
-  async reviewSkillProposal(
-    proposalId: string,
-    decision: "approve" | "reject",
-    comment: string | null
-  ): Promise<Record<string, unknown>> {
-    return this.request("POST", "/api/v1/skill-proposals/" + encodeURIComponent(proposalId) + "/review", {
-      schema_version: 1, decision, comment
-    });
   }
 
   async downloadSkillArtifact(

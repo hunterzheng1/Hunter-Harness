@@ -30,7 +30,7 @@ export function overviewFromDocuments(
       documents: documents.length,
       knowledge: kindCount("knowledge_entry") + kindCount("knowledge_markdown"),
       rules: kindCount("rule"),
-      changes: kindCount("archive_change"),
+      changes: kindCount("archive_record"),
       agent_instructions: kindCount("agent_instruction"),
       edges: edges.length
     }

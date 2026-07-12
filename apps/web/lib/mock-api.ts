@@ -9,7 +9,6 @@ import type {
   PatchExternalSkillRequest,
   RegistryAgent,
   RegistrySkillDetail,
-  RegistrySkillProposal,
   RegistrySkillVersion,
   RegistryTag,
   WorkflowFamily,
@@ -484,12 +483,9 @@ export class MockApiClient implements HunterApi {
     return delay({ path: `.claude/skills/${slug}/SKILL.md`, content: `# ${slug}\n\n${skill.description}\n`, sourceIrHash: "sha256:" + "d".repeat(64), compilerVersion: "1.0.0", adapter: agent });
   }
 
-  async listSkillProposals(): Promise<RegistrySkillProposal[]> { return delay([]); }
   async listTags(): Promise<RegistryTag[]> { return delay(clone(MOCK_TAGS)); }
   async listWorkflowFamilies(): Promise<WorkflowFamily[]> { return delay(clone(MOCK_WORKFLOW_FAMILIES)); }
   async listSkillArtifacts() { return delay([]); }
-  async createSkillProposal(): Promise<RegistrySkillProposal> { return demoReadOnly(); }
-  async reviewSkillProposal(): Promise<Record<string, unknown>> { return demoReadOnly(); }
   async downloadSkillArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
   async createTag(): Promise<RegistryTag> { return demoReadOnly(); }
   async updateTag(): Promise<RegistryTag> { return demoReadOnly(); }
@@ -570,7 +566,7 @@ export class MockApiClient implements HunterApi {
   }
 
   async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
-    return delay([mockSemanticDoc(projectId, "archive_change", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
+    return delay([mockSemanticDoc(projectId, "archive_record", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
   }
 
   async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {

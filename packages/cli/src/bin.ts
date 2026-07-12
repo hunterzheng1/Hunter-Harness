@@ -23,7 +23,7 @@ import type { ResolveWorkflowDataOptions } from "./workflow-data/resolve.js";
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
   resourcesRoot?: string;
-  fetchWorkflowTarball?: ResolveWorkflowDataOptions["fetchWorkflowTarball"];
+  pacoteExtract?: ResolveWorkflowDataOptions["pacoteExtract"];
 }
 
 function defaultDependencies(overrides: CliDependencies): CommandDependencies {
@@ -68,11 +68,10 @@ export async function runCli(
     const resolveOptions: ResolveWorkflowDataOptions = {
       cwd: dependencies.cwd,
       env: dependencies.env,
-      override: overrides.resourcesRoot,
-      fetch: dependencies.fetch
+      override: overrides.resourcesRoot
     };
-    if (overrides.fetchWorkflowTarball !== undefined) {
-      resolveOptions.fetchWorkflowTarball = overrides.fetchWorkflowTarball;
+    if (overrides.pacoteExtract !== undefined) {
+      resolveOptions.pacoteExtract = overrides.pacoteExtract;
     }
     dependencies.resourcesRoot = await resolveWorkflowResourcesRoot(resolveOptions, argv);
   } catch (error) {

@@ -178,5 +178,151 @@ describe("Hunter Harness end-to-end governance", () => {
     } finally {
       await app.close();
     }
-  }, 20_000);
+  }, 90_000);
+
+  it("rejects stale push with STALE_PUSH when base_artifact_id is outdated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-e2e-stale-"));
+    const repository = new MemoryRepository();
+    const storage = new MemoryArtifactStorage();
+    const token = "e2e-stale-token";
+    await repository.createActorWithToken({ actorId: "actor_e2e", token });
+    const app = await createServer({ repository, storage });
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const headers = Object.fromEntries(new Headers(init?.headers).entries());
+      const body = init?.body;
+      let payload: string | Buffer | undefined;
+      if (typeof body === "string") {
+        payload = body;
+      } else if (body instanceof Uint8Array) {
+        payload = Buffer.from(body);
+      }
+      const response = await app.inject({
+        method: (init?.method ?? "GET") as "GET",
+        url: url.pathname + url.search,
+        headers,
+        ...(payload === undefined ? {} : { payload })
+      });
+      const responseHeaders = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (value !== undefined) {
+          responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+        }
+      }
+      return new Response(response.rawPayload, {
+        status: response.statusCode,
+        headers: responseHeaders
+      });
+    };
+    const env = { E2E_HUNTER_TOKEN: token };
+    const silent = { stdout: () => undefined, stderr: () => undefined };
+    try {
+      expect(await runCli([
+        "--profile", "general",
+        "--non-interactive", "--yes"
+      ], { cwd: root, resourcesRoot, env, ...silent })).toBe(0);
+      expect(await runCli([
+        "push", "--server-url", "https://e2e.example.test",
+        "--token-env", "E2E_HUNTER_TOKEN", "--non-interactive", "--yes"
+      ], { cwd: root, resourcesRoot, fetch, env, ...silent })).toBe(0);
+      const boundProject = parseYaml(await readFile(
+        join(root, ".harness/project.yaml"), "utf8"
+      )) as { project: { project_id: string } };
+      const projectId = boundProject.project.project_id;
+      const projectDetail = await app.inject({
+        method: "GET",
+        url: `/api/v1/projects/${projectId}`,
+        headers: {
+          authorization: "Bearer " + token,
+          "x-request-id": uuidV7()
+        }
+      });
+      expect(projectDetail.statusCode).toBe(200);
+      const latestVersion = projectDetail.json().latest_project_version as string;
+      const latestArtifactId = projectDetail.json().latest_artifact_id as string;
+      expect(latestArtifactId).toMatch(/^art_/);
+
+      const content = "stale-push-probe\n";
+      const operation = {
+        operation: "add" as const,
+        path: ".claude/rules/stale-push-probe.md",
+        file_kind: "user_editable" as const,
+        content_sha256: sha256Bytes(content),
+        size_bytes: Buffer.byteLength(content)
+      };
+      await storage.putBlob(operation.content_sha256, Buffer.from(content));
+      const session = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/proposal-sessions`,
+        headers: {
+          authorization: "Bearer " + token,
+          "x-request-id": uuidV7(),
+          "idempotency-key": uuidV7()
+        },
+        payload: {
+          schema_version: 1,
+          request_id: uuidV7(),
+          client_id: "cli_e2e",
+          base_project_version: latestVersion,
+          base_manifest_hash: sha256Bytes(canonicalJson({})),
+          proposal_manifest: { files: [operation] },
+          artifact_manifest: { schema_version: 1, files: [operation] }
+        }
+      });
+      expect(session.statusCode).toBe(201);
+      const finalize = await app.inject({
+        method: "POST",
+        url: `/api/v1/proposal-sessions/${session.json().session_id}:finalize`,
+        headers: {
+          authorization: "Bearer " + token,
+          "x-request-id": uuidV7(),
+          "idempotency-key": uuidV7()
+        },
+        payload: {
+          schema_version: 1,
+          manifest_sha256: sha256Bytes(canonicalJson([operation])),
+          base_artifact_id: "art_stale_not_latest"
+        }
+      });
+      expect(finalize.statusCode).toBe(409);
+      expect(finalize.json()).toMatchObject({ error: { code: "STALE_PUSH" } });
+      // sanity: correct baseline artifact still accepts
+      const okSession = await app.inject({
+        method: "POST",
+        url: `/api/v1/projects/${projectId}/proposal-sessions`,
+        headers: {
+          authorization: "Bearer " + token,
+          "x-request-id": uuidV7(),
+          "idempotency-key": uuidV7()
+        },
+        payload: {
+          schema_version: 1,
+          request_id: uuidV7(),
+          client_id: "cli_e2e",
+          base_project_version: latestVersion,
+          base_manifest_hash: sha256Bytes(canonicalJson({})),
+          proposal_manifest: { files: [operation] },
+          artifact_manifest: { schema_version: 1, files: [operation] }
+        }
+      });
+      expect(okSession.statusCode).toBe(201);
+      const okFinalize = await app.inject({
+        method: "POST",
+        url: `/api/v1/proposal-sessions/${okSession.json().session_id}:finalize`,
+        headers: {
+          authorization: "Bearer " + token,
+          "x-request-id": uuidV7(),
+          "idempotency-key": uuidV7()
+        },
+        payload: {
+          schema_version: 1,
+          manifest_sha256: sha256Bytes(canonicalJson([operation])),
+          base_artifact_id: latestArtifactId
+        }
+      });
+      expect(okFinalize.statusCode).toBe(201);
+    } finally {
+      await app.close();
+    }
+  }, 90_000);
 });

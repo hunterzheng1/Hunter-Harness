@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { browserApi, type HunterApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
-import { Empty, Status, apiError, required } from "./skill-shared";
+import { Empty, Status, apiError, required, MarkdownDocument } from "./skill-shared";
 
 function useApi(value?: HunterApi): HunterApi {
   return useMemo(() => value ?? (
@@ -156,7 +156,9 @@ export function ExternalSkillDetail({ api: apiValue, skillId }: { api?: HunterAp
           </div>
 
           <div className="panel-title"><h2>{t.skills.externalReadme}</h2></div>
-          <pre className="code-block">{skill.snapshot.readme ?? "—"}</pre>
+          {skill.snapshot.readme !== null && skill.snapshot.readme.length > 0
+            ? <MarkdownDocument content={skill.snapshot.readme} />
+            : <pre className="code-block">—</pre>}
         </div>
 
         <aside className="hub-rail">

@@ -1382,7 +1382,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     await repository.getProject(actor.actorId, projectId);
     reply.header("X-Request-Id", requestId);
     return {
-      items: await semanticStore.listByKinds(projectId, ["archive_change"]),
+      items: await semanticStore.listByKinds(projectId, ["archive_record"]),
       request_id: requestId
     };
   });
@@ -1397,7 +1397,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         "knowledge_entry",
         "knowledge_markdown",
         "rule",
-        "archive_change",
+        "archive_record",
         "agent_instruction"
       ]),
       edges: await semanticStore.listEdges(projectId),
