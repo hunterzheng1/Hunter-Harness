@@ -109,13 +109,32 @@ describe("/api/v1/dashboard/overview", () => {
       { path: "SKILL.md", content: skillMd({ name: "harness-sync", version: "1.1.0", description: "Dashboard-reviewed Skill." }) },
       { path: "harness-sync.mdc", content: cursorMdc("harness-sync", "1.1.0") }
     ];
-    const proposal = await app.inject({
+    const boundary = "----dashboard-draft";
+    let body = "";
+    for (const f of proposedFiles) {
+      body += `--${boundary}\r\n`;
+      body += `Content-Disposition: form-data; name="file"; filename="${f.path}"\r\n`;
+      body += "Content-Type: application/octet-stream\r\n\r\n";
+      body += f.content + "\r\n";
+    }
+    body += `--${boundary}--\r\n`;
+    const draft = await app.inject({
       method: "POST",
-      url: "/api/v1/skill-proposals",
-      headers: headers(),
-      payload: { schema_version: 1, source_files: proposedFiles, slug: "harness-sync", version: "1.1.0", agent: "claude-code" }
+      url: "/api/v1/skills/draft?agent=claude-code",
+      headers: {
+        ...headers(),
+        "content-type": `multipart/form-data; boundary=${boundary}`
+      },
+      payload: body
     });
-    expect(proposal.statusCode).toBe(201);
+    expect(draft.statusCode).toBe(201);
+    const publish = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/harness-sync/draft/claude-code/publish",
+      headers: headers(),
+      payload: { version: "1.1.0", releaseNote: "dashboard" }
+    });
+    expect(publish.statusCode).toBe(200);
 
     const overview = await app.inject({
       method: "GET",
@@ -130,8 +149,9 @@ describe("/api/v1/dashboard/overview", () => {
         projects: 1,
         workflows: 1,
         skills: 1,
-        pending_reviews: 1,
-        artifacts: 1
+        pending_reviews: 0,
+        artifacts: 2,
+        published_skills: 1
       }),
       distributions: {
         // kind 从 frontmatter 反范式化到 detail（与 description 同理），dashboard 分类分布按真实 kind
@@ -140,9 +160,9 @@ describe("/api/v1/dashboard/overview", () => {
       }
     });
     expect(overview.json().trend).toHaveLength(7);
-    expect(overview.json().trend.at(-1)).toEqual(expect.objectContaining({ submitted: 1, pending: 1 }));
+    expect(overview.json().trend.at(-1)).toEqual(expect.objectContaining({ submitted: 0, pending: 0 }));
     expect(overview.json().health).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "review_backlog", status: "attention" }),
+      expect.objectContaining({ key: "review_backlog", status: "healthy" }),
       expect.objectContaining({ key: "artifact_traceability", status: "healthy" })
     ]));
     expect(overview.json().services).toEqual(expect.arrayContaining([

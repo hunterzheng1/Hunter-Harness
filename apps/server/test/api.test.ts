@@ -52,6 +52,23 @@ describe("/api/v1 governed server", () => {
     return response.json().project_id as string;
   }
 
+  async function finalizeSession(
+    sessionId: string,
+    operations: object[],
+    baseArtifactId: string | null = null
+  ) {
+    return app.inject({
+      method: "POST",
+      url: `/api/v1/proposal-sessions/${sessionId}:finalize`,
+      headers: headers(),
+      payload: {
+        schema_version: 1,
+        manifest_sha256: sha256Bytes(canonicalJson(operations)),
+        base_artifact_id: baseArtifactId
+      }
+    });
+  }
+
   it("enforces authentication, ownership, and idempotent project binding", async () => {
     const unauthenticated = await app.inject({
       method: "POST",
@@ -115,7 +132,7 @@ describe("/api/v1 governed server", () => {
     expect(forbidden.statusCode).toBe(403);
   });
 
-  it("uploads verified blobs, finalizes, owner self-approves, and publishes artifacts", async () => {
+  it("uploads verified blobs, auto-approves on finalize, and publishes artifacts", async () => {
     const projectId = await resolveProject();
     const content = "# approved rule\n";
     const hash = sha256Bytes(content);
@@ -179,50 +196,14 @@ describe("/api/v1 governed server", () => {
     expect(uploaded.statusCode).toBe(201);
     expect(uploaded.json()).toMatchObject({ verified: true });
 
-    const finalized = await app.inject({
-      method: "POST",
-      url: `/api/v1/proposal-sessions/${sessionId}:finalize`,
-      headers: headers(),
-      payload: { schema_version: 1, manifest_sha256: sha256Bytes(canonicalJson([operation])) }
-    });
+    const finalized = await finalizeSession(sessionId, [operation], null);
     expect(finalized.statusCode).toBe(201);
+    expect(finalized.json()).toMatchObject({
+      status: "approved",
+      artifact_id: expect.stringMatching(/^art_/)
+    });
     const proposalId = finalized.json().proposal_id as string;
-
-    const beforeApproval = await app.inject({
-      method: "GET",
-      url: `/api/v1/projects/${projectId}/update-manifest?base_manifest_hash=${encodeURIComponent(sha256Bytes(canonicalJson({})))}&adapter=claude-code&profile=java`,
-      headers: headers()
-    });
-    expect(beforeApproval.json()).toMatchObject({ delta_available: false });
-
-    const proposal = await app.inject({
-      method: "GET",
-      url: `/api/v1/proposals/${proposalId}`,
-      headers: headers()
-    });
-    const itemId = proposal.json().items[0].item_id as string;
-    expect(itemId).toMatch(/^item_/);
-
-    const reviewKey = uuidV7();
-    const reviewRequest = {
-      method: "POST",
-      url: `/api/v1/proposals/${proposalId}/review-decisions`,
-      headers: headers(token, reviewKey),
-      payload: {
-        schema_version: 1,
-        decision: "approve",
-        comment: "owner reviewed",
-        target_scope: "project",
-        split_groups: []
-      }
-    } as const;
-    const review = await app.inject(reviewRequest);
-    expect(review.statusCode).toBe(201);
-    expect(review.json()).toMatchObject({ decision: "approve", artifact_id: expect.stringMatching(/^art_/) });
-    const artifactId = review.json().artifact_id as string;
-    const reviewReplay = await app.inject(reviewRequest);
-    expect(reviewReplay.statusCode).toBe(201);
-    expect(reviewReplay.json().review_id).toBe(review.json().review_id);
+    const artifactId = finalized.json().artifact_id as string;
 
     const update = await app.inject({
       method: "GET",
@@ -269,11 +250,11 @@ describe("/api/v1 governed server", () => {
     });
     expect(caughtUp.json()).toMatchObject({ delta_available: false, artifact_id: null });
     expect((await repository.listAuditEvents()).map((event) => event.action)).toEqual(
-      expect.arrayContaining(["project.resolved", "proposal.finalized", "proposal.approved"])
+      expect.arrayContaining(["project.resolved", "proposal.finalized"])
     );
   });
 
-  it("supports reject, split, pagination, and never exposes unapproved artifacts", async () => {
+  it("rejects stale pushes and supports proposal pagination", async () => {
     const projectId = await resolveProject();
     const operations = ["one", "two"].map((name) => {
       const content = `# ${name}\n`;
@@ -305,55 +286,64 @@ describe("/api/v1 governed server", () => {
     for (const item of operations) {
       await storage.putBlob(item.operation.content_sha256, Buffer.from(item.content));
     }
-    const finalized = await app.inject({
-      method: "POST",
-      url: `/api/v1/proposal-sessions/${session.json().session_id}:finalize`,
-      headers: headers(),
-      payload: {
-        schema_version: 1,
-        manifest_sha256: sha256Bytes(canonicalJson(
-          operations.map((item) => item.operation)
-        ))
-      }
+    const finalized = await finalizeSession(
+      session.json().session_id,
+      operations.map((item) => item.operation),
+      null
+    );
+    expect(finalized.statusCode).toBe(201);
+    const artifactId = finalized.json().artifact_id as string;
+    const projectDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/projects/${projectId}`,
+      headers: headers()
     });
-    const proposalId = finalized.json().proposal_id as string;
-    const detail = await app.inject({
-      method: "GET", url: `/api/v1/proposals/${proposalId}`, headers: headers()
-    });
-    const itemIds = detail.json().items.map((item: { item_id: string }) => item.item_id);
-    const split = await app.inject({
-      method: "POST",
-      url: `/api/v1/proposals/${proposalId}/review-decisions`,
-      headers: headers(),
-      payload: {
-        schema_version: 1,
-        decision: "split",
-        comment: "separate review",
-        target_scope: "project",
-        split_groups: itemIds.map((itemId: string, index: number) => ({
-          name: "group-" + index,
-          item_ids: [itemId],
-          target_scope: "project"
-        }))
-      }
-    });
-    expect(split.statusCode).toBe(201);
-    expect(split.json().child_proposal_ids).toHaveLength(2);
+    const latestVersion = projectDetail.json().latest_project_version as string;
 
-    const child = split.json().child_proposal_ids[0] as string;
-    const rejected = await app.inject({
+    const staleSession = await app.inject({
       method: "POST",
-      url: `/api/v1/proposals/${child}/review-decisions`,
+      url: `/api/v1/projects/${projectId}/proposal-sessions`,
       headers: headers(),
       payload: {
         schema_version: 1,
-        decision: "reject",
-        comment: "not accepted",
-        target_scope: "project",
-        split_groups: []
+        request_id: uuidV7(),
+        client_id: "cli_test",
+        base_project_version: latestVersion,
+        base_manifest_hash: sha256Bytes(canonicalJson({})),
+        proposal_manifest: { files: [operations[0].operation] },
+        artifact_manifest: { schema_version: 1, files: [operations[0].operation] }
       }
     });
-    expect(rejected.json()).toMatchObject({ decision: "reject", artifact_id: null });
+    expect(staleSession.statusCode).toBe(201);
+    const staleFinalize = await finalizeSession(
+      staleSession.json().session_id,
+      [operations[0].operation],
+      null
+    );
+    expect(staleFinalize.statusCode).toBe(409);
+    expect(staleFinalize.json()).toMatchObject({ error: { code: "STALE_PUSH" } });
+
+    const freshSession = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${projectId}/proposal-sessions`,
+      headers: headers(),
+      payload: {
+        schema_version: 1,
+        request_id: uuidV7(),
+        client_id: "cli_test",
+        base_project_version: latestVersion,
+        base_manifest_hash: sha256Bytes(canonicalJson({})),
+        proposal_manifest: { files: [operations[0].operation] },
+        artifact_manifest: { schema_version: 1, files: [operations[0].operation] }
+      }
+    });
+    expect(freshSession.statusCode).toBe(201);
+    const freshFinalize = await finalizeSession(
+      freshSession.json().session_id,
+      [operations[0].operation],
+      artifactId
+    );
+    expect(freshFinalize.statusCode).toBe(201);
 
     const list = await app.inject({
       method: "GET",
@@ -449,12 +439,7 @@ describe("/api/v1 governed server", () => {
       }
     });
     await storage.putBlob(hash, Buffer.from(secret));
-    const finalized = await app.inject({
-      method: "POST",
-      url: `/api/v1/proposal-sessions/${session.json().session_id}:finalize`,
-      headers: headers(),
-      payload: { schema_version: 1, manifest_sha256: sha256Bytes(canonicalJson([operation])) }
-    });
+    const finalized = await finalizeSession(session.json().session_id, [operation], null);
     expect(finalized.statusCode).toBe(422);
     expect(finalized.json().error).toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
     expect(finalized.body).not.toContain("PRIVATE KEY");

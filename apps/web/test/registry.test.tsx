@@ -37,7 +37,8 @@ const skill = {
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-21T00:00:00Z",
   sourceFiles: [{ path: "SKILL.md", content: skillMd }],
-  examples: []
+  examples: [],
+  npmReleases: []
 };
 
 const securityTag = {
@@ -167,7 +168,7 @@ describe("governed workflow and Skill Center", () => {
     expect(screen.getAllByText(/1\.1\.0/).length).toBeGreaterThan(0);
     // source tab 展示 SKILL.md body（frontmatter 剥离后的内容），取代旧 canonical IR JSON 展示
     expect(await screen.findByText(/Review workflow body/)).toBeInTheDocument();
-    expect(screen.getByText(/npx @hunter-harness\/skill-cli install harness-review --agent claude-code/)).toBeInTheDocument();
+    expect(screen.getByText("npx @hunter-harness/skill-cli install harness-review --agent claude-code")).toBeInTheDocument();
   });
 
   it("removes a Skill tag locally without creating a proposal", async () => {

@@ -214,7 +214,8 @@ const MOCK_SKILLS: RegistrySkillDetail[] = bootstrapSkills.map((skill, index) =>
   created_at: "2026-06-20T00:00:00Z",
   updated_at: "2026-06-20T00:00:00Z",
   sourceFiles: skill.sourceFiles.map((f) => ({ path: f.path, content: f.content })),
-  examples: []
+  examples: [],
+  npmReleases: []
 }));
 
 MOCK_SKILLS.push({
@@ -235,7 +236,8 @@ MOCK_SKILLS.push({
   created_at: "2026-06-25T00:00:00Z",
   updated_at: "2026-06-25T00:00:00Z",
   sourceFiles: sapFieldMapper.source.files.map((f) => ({ path: f.path, content: f.content })),
-  examples: []
+  examples: [],
+  npmReleases: []
 });
 
 const MOCK_TAGS: RegistryTag[] = [

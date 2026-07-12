@@ -85,7 +85,14 @@ export const baselineManifestSchema = z.object({
   project_id: z.string().regex(/^prj_/).nullable(),
   complete_project_version: z.string().regex(/^pv_/).nullable(),
   artifact_manifest_hash: sha256Schema.nullable(),
+  latest_artifact_id: z.string().regex(/^art_/).nullable().optional(),
   files: z.record(z.string(), baselineFileSchema)
+}).strict();
+
+export const finalizeProposalSchema = z.object({
+  schema_version: z.literal(1),
+  manifest_sha256: sha256Schema,
+  base_artifact_id: z.string().regex(/^art_/).nullable()
 }).strict();
 
 export const requestMetadataSchema = z.object({
@@ -101,3 +108,4 @@ export const requestMetadataSchema = z.object({
 export type FileOperation = z.infer<typeof fileOperationSchema>;
 export type ArtifactManifest = z.infer<typeof artifactManifestSchema>;
 export type BaselineManifest = z.infer<typeof baselineManifestSchema>;
+export type FinalizeProposalRequest = z.infer<typeof finalizeProposalSchema>;

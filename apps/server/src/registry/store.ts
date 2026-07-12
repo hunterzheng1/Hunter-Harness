@@ -6,6 +6,7 @@ import {
   aiProviderConfigSchema,
   canonicalJson,
   draftStateSchema,
+  npmReleaseRecordSchema,
   registrySkillDetailSchema,
   registrySkillProposalSchema,
   registrySkillVersionSchema,
@@ -26,6 +27,7 @@ import {
   type AgentSkillConfig,
   type DraftState,
   type FixPlan,
+  type NpmReleaseRecord,
   type RegistryAgent,
   type RegistryArtifact,
   type RegistryProjectWorkflowBinding,
@@ -65,6 +67,9 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ServerDomainError, type TransactionRepository } from "../repositories/interfaces.js";
 import type { ArtifactStorage } from "../storage/interface.js";
 import type { RegistryPersistence } from "./persistence.js";
+import type { NpmPublishAttemptResult, SkillNpmPackageInput } from "../npm/publisher.js";
+import { skillNpmPackageInput } from "../npm/publisher.js";
+import type { NpmPublishConfig } from "../npm/config.js";
 import { WorkflowPackageStore, type WorkflowPackageState } from "./workflow-package-store.js";
 
 // applyFixSuggestion 可写白名单（examples/allowed_capabilities/instructions/description）；
@@ -86,6 +91,7 @@ export interface BootstrapBundle {
 interface SkillState {
   detail: RegistrySkillDetail;
   versions: RegistrySkillVersion[];
+  npmReleases: NpmReleaseRecord[];
 }
 
 interface ProposalState extends RegistrySkillProposal {
@@ -513,9 +519,19 @@ export class RegistryStore {
         ...detail,
         defaultAgent,
         agents: recomputedAgents,
-        latest_version: latestVersion
+        latest_version: latestVersion,
+        npmReleases: Array.isArray(obj.npmReleases)
+          ? obj.npmReleases.map((entry) => npmReleaseRecordSchema.parse(entry))
+          : Array.isArray((obj.detail as { npmReleases?: unknown } | undefined)?.npmReleases)
+            ? ((obj.detail as { npmReleases: unknown[] }).npmReleases)
+              .map((entry) => npmReleaseRecordSchema.parse(entry))
+            : []
       });
-      return { detail: detailFinal, versions };
+      return {
+        detail: detailFinal,
+        versions,
+        npmReleases: detailFinal.npmReleases
+      };
     } catch (error) {
       // 损坏 skill（如旧 snapshot 的 ir:null）无法迁移为合法 detail — 跳过该条目并记录警告，
       // 避免单个损坏条目阻塞整体 initialize（与旧数据兼容迁移的不报错语义一致）
@@ -545,7 +561,10 @@ export class RegistryStore {
   getSkill(slug: string): RegistrySkillDetail {
     const state = this.skills.get(slug);
     if (state === undefined) throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
-    return structuredClone(state.detail);
+    return registrySkillDetailSchema.parse({
+      ...structuredClone(state.detail),
+      npmReleases: structuredClone(state.npmReleases)
+    });
   }
 
   listVersions(slug: string, agent?: RegistryAgent): RegistrySkillVersion[] {
@@ -937,7 +956,7 @@ export class RegistryStore {
         created_at: createdAt,
         updated_at: createdAt
       });
-      this.skills.set(input.slug, { detail, versions });
+      this.skills.set(input.slug, { detail, versions, npmReleases: [] });
     } else {
       existing.versions.push(version);
       const latestVersion = maxVersionOf(existing.versions);
@@ -1492,7 +1511,7 @@ export class RegistryStore {
         created_at: createdAt,
         updated_at: createdAt
       });
-      this.skills.set(slug, { detail, versions });
+      this.skills.set(slug, { detail, versions, npmReleases: [] });
     } else {
       existing.versions.push(versionRecord);
       const latestVersion = maxVersionOf(existing.versions);
@@ -1546,6 +1565,64 @@ export class RegistryStore {
       .flatMap((state) => state.versions.flatMap((version) => version.artifacts))
       .sort((left, right) => right.created_at.localeCompare(left.created_at))
       .map((artifact) => structuredClone(artifact));
+  }
+
+  async releaseSkillToNpm(
+    slug: string,
+    config: NpmPublishConfig,
+    publish: (input: SkillNpmPackageInput) => Promise<NpmPublishAttemptResult>
+  ): Promise<NpmReleaseRecord> {
+    const state = this.skills.get(slug);
+    if (state === undefined) {
+      throw new ServerDomainError(404, SKILL_ERROR_CODE.NOT_FOUND, "skill not found");
+    }
+    if (state.detail.status !== "published" || state.detail.latest_version === null) {
+      throw new ServerDomainError(422, "NPM_PUBLISH_NOT_PUBLISHED", "skill has no published version to release");
+    }
+    const version = state.detail.latest_version;
+    const existing = state.npmReleases.find((entry) => entry.version === version);
+    if (existing !== undefined) {
+      if (existing.status === "published") return structuredClone(existing);
+      if (existing.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          existing.error ?? "npm registry already has this package version",
+          { release: existing }
+        );
+      }
+    }
+
+    const defaultAgent = state.detail.defaultAgent ?? defaultAgentOf(state.detail, state.versions);
+    if (defaultAgent === null) {
+      throw new ServerDomainError(422, SKILL_ERROR_CODE.ADAPTER_NOT_INSTALLABLE, "skill has no installable agent");
+    }
+    const versionRecord = state.versions.find((entry) => entry.version === version && entry.agent === defaultAgent)
+      ?? state.versions.find((entry) => entry.version === version);
+    if (versionRecord === undefined || versionRecord.sourceFiles.length === 0) {
+      throw new ServerDomainError(422, "NPM_PUBLISH_NOT_PUBLISHED", "published version source files not found");
+    }
+
+    const packageInput = skillNpmPackageInput(config, {
+      slug,
+      version,
+      description: state.detail.description,
+      agent: versionRecord.agent,
+      sourceFiles: versionRecord.sourceFiles
+    });
+    const result = await publish(packageInput);
+    const record = npmReleaseRecordSchema.parse({
+      version,
+      packageName: packageInput.packageName,
+      status: result.status,
+      publishedAt: new Date().toISOString(),
+      error: result.error
+    });
+    const index = state.npmReleases.findIndex((entry) => entry.version === version);
+    if (index >= 0) state.npmReleases[index] = record;
+    else state.npmReleases.push(record);
+    await this.persist();
+    return structuredClone(record);
   }
 
   async artifactBytes(artifact: RegistryArtifact): Promise<Uint8Array> {

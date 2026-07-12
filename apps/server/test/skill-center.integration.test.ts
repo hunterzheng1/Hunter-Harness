@@ -413,26 +413,36 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it("POST /skill-proposals agent=cursor creates proposal (API-101); agent=codex passes gate (API-102 修正: codex installable=true)", async () => {
-    // 新模型：proposal 上传 source_files（SKILL.md + .mdc frontmatter），不再 POST skill_ir
-    // API-101: cursor createProposal → 201
-    const cursorProposal = await app.inject({
-      method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "cursor" },
-      headers: headers()
+  it("uploads cursor and codex drafts and publishes them directly", async () => {
+    const cursorUpload = multipart(proposalFiles);
+    const cursorDraft = await app.inject({
+      method: "POST", url: "/api/v1/skills/draft?agent=cursor",
+      payload: cursorUpload.payload,
+      headers: { ...headers(), ...cursorUpload.headers }
     });
-    expect(cursorProposal.statusCode).toBe(201);
-    expect(cursorProposal.json().requestedAgent).toBe("cursor");
-    expect(cursorProposal.json().status).toBe("pending_review");
+    expect(cursorDraft.statusCode).toBe(201);
 
-    // API-102 (修正): codex installable=true → 201 通过
-    const codexProposal = await app.inject({
-      method: "POST", url: "/api/v1/skill-proposals",
-      payload: { schema_version: 1, source_files: proposalFiles, slug: "harness-proposal", version: "1.0.0", agent: "codex" },
+    const cursorPublish = await app.inject({
+      method: "POST", url: "/api/v1/skills/harness-proposal/draft/cursor/publish",
+      payload: { version: "1.0.0" },
       headers: headers()
     });
-    expect(codexProposal.statusCode).toBe(201);
-    expect(codexProposal.json().requestedAgent).toBe("codex");
+    expect(cursorPublish.statusCode).toBe(200);
+
+    const codexUpload = multipart(proposalFiles);
+    const codexDraft = await app.inject({
+      method: "POST", url: "/api/v1/skills/draft?agent=codex",
+      payload: codexUpload.payload,
+      headers: { ...headers(), ...codexUpload.headers }
+    });
+    expect(codexDraft.statusCode).toBe(201);
+
+    const codexPublish = await app.inject({
+      method: "POST", url: "/api/v1/skills/harness-proposal/draft/codex/publish",
+      payload: { version: "1.0.0" },
+      headers: headers()
+    });
+    expect(codexPublish.statusCode).toBe(200);
   });
 });
 

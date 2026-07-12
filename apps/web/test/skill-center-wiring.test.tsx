@@ -66,7 +66,8 @@ const skill: RegistrySkillDetail = {
       result: "staged draft produced",
       files: ["SKILL.md"]
     }
-  ]
+  ],
+  npmReleases: []
 };
 
 const checksResult: SkillCheckResult = {

@@ -937,7 +937,6 @@ describe("OpenAPI v1", () => {
       "/api/v1/proposal-sessions/{session_id}/blobs:query",
       "/api/v1/proposal-sessions/{session_id}/blobs/{content_sha256}",
       "/api/v1/proposal-sessions/{session_id}:finalize",
-      "/api/v1/proposals/{proposal_id}/review-decisions",
       "/api/v1/projects/{project_id}/update-manifest",
       "/api/v1/artifacts/{artifact_id}/manifest",
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}"

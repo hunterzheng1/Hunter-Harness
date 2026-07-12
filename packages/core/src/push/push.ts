@@ -500,7 +500,11 @@ export async function pushProject(options: PushProjectOptions) {
     }
     const finalized = await client.finalizeProposal(
       session.session_id,
-      { schema_version: 1, manifest_sha256: proposalManifestHash },
+      {
+        schema_version: 1,
+        manifest_sha256: proposalManifestHash,
+        base_artifact_id: baseline.latest_artifact_id ?? null
+      },
       requestId,
       workflow.finalize_idempotency_key
     );
@@ -517,16 +521,24 @@ export async function pushProject(options: PushProjectOptions) {
       project_id: projectId,
       proposal_id: finalized.proposal_id,
       status: finalized.status,
+      artifact_id: finalized.artifact_id,
       operation_count: preview.operations.length,
       recorded_at: new Date().toISOString()
     });
     await rm(workflowPath, { force: true });
-    return { preview, proposalId: finalized.proposal_id, projectId };
+    return { preview, proposalId: finalized.proposal_id, projectId, artifactId: finalized.artifact_id };
   } catch (error) {
     if (error instanceof PushWorkflowError) {
       throw error;
     }
     if (error instanceof ApiError) {
+      if (error.code === "STALE_PUSH") {
+        throw new PushWorkflowError(
+          "服务端已有更新的推送，请先 git pull 后执行 npx hunter-harness update 再推",
+          5,
+          "STALE_PUSH"
+        );
+      }
       const exitCode = error.status === 401 ? 8 : error.status === 409 ? 5 : 4;
       throw new PushWorkflowError(error.message, exitCode, error.code);
     }

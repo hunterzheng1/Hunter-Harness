@@ -6,7 +6,6 @@ import type {
   DashboardOverview,
   RegistrySkillDetail,
   RegistryArtifact,
-  RegistrySkillProposal
 } from "@hunter-harness/contracts";
 
 import {
@@ -16,7 +15,6 @@ import {
   type ProjectSummary,
   type ProposalDetailModel,
   type ProposalSummary,
-  type ReviewInput,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
@@ -351,20 +349,15 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
-  const [skillProposals, setSkillProposals] = useState<RegistrySkillProposal[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void Promise.all([
-      api.listAllProposals(),
-      api.listSkillProposals?.("pending_review") ?? Promise.resolve([])
-    ])
-      .then(([items, skillItems]) => {
+    void api.listAllProposals()
+      .then((items) => {
         if (active) {
-          setProposals(items.filter((item) => item.status === "pending_review"));
-          setSkillProposals(skillItems);
+          setProposals(items.filter((item) => item.status === "approved"));
         }
       })
       .catch((reason: unknown) => {
@@ -386,18 +379,13 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.reviewQueue.title}</h1>
         </div>
         <span>
-          {proposals.length + skillProposals.length} {t.reviewQueue.waiting}
+          {proposals.length} {t.reviewQueue.waiting}
         </span>
       </div>
-      {proposals.length === 0 && skillProposals.length === 0 ? (
+      {proposals.length === 0 ? (
         <Empty>{t.reviewQueue.clear}</Empty>
       ) : (
-        <>{skillProposals.map((proposal) => (
-          <Link className="proposal-card" href={`/skills/${proposal.skill_slug}`} key={proposal.proposal_id}>
-            <div><strong>{proposal.proposal_id}</strong><code>{proposal.skill_slug}</code></div>
-            <div><span>{t.reviewQueue.canonicalSkillIR}</span><Status value={proposal.status} /></div>
-          </Link>
-        ))}{proposals.map((proposal) => (
+        <>{proposals.map((proposal) => (
           <Link
             className="proposal-card"
             href={`/proposals/${proposal.proposal_id}`}
@@ -537,9 +525,6 @@ export function ProposalDetail({
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [proposal, setProposal] = useState<ProposalDetailModel | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState("");
-  const [result, setResult] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -570,41 +555,6 @@ export function ProposalDetail({
 
   if (error !== null) return <Empty>{error}</Empty>;
   if (proposal === null) return <Empty>{t.proposal.loading}</Empty>;
-
-  async function decide(decision: ReviewInput["decision"]): Promise<void> {
-    setBusy(true);
-    setResult(null);
-    try {
-      const splitGroups =
-        decision === "split"
-          ? proposal?.items.map((item, index) => ({
-              name: "item-" + (index + 1),
-              item_ids: [item.item_id],
-              target_scope: "project",
-            })) ?? []
-          : [];
-      const reviewed = await api.reviewProposal(proposalId, {
-        decision,
-        comment: comment.trim() === "" ? null : comment.trim(),
-        target_scope: "project",
-        split_groups: splitGroups,
-      });
-      setResult(
-        decision === "approve" && reviewed.artifact_id !== null
-          ? t.proposal.approvedAs + " " + reviewed.artifact_id
-          : decision === "split"
-            ? t.proposal.splitInto +
-              " " +
-              reviewed.child_proposal_ids.length +
-              t.proposal.proposals
-            : t.proposal.decisionRecorded + decision.replaceAll("_", " ")
-      );
-    } catch (reason) {
-      setError(apiError(reason, t));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <section className="stack">
@@ -652,42 +602,22 @@ export function ProposalDetail({
           </div>
         ))}
       </div>
-      <div className="decision-panel">
-        <label htmlFor="review-comment">
-          {t.proposal.reviewRationale}
-        </label>
-        <textarea
-          id="review-comment"
-          value={comment}
-          onChange={(event) => setComment(event.target.value)}
-          placeholder={t.proposal.placeholder}
-        />
-        <div className="actions">
-          <button
-            disabled={busy}
-            onClick={() => void decide("approve")}
-          >
-            {t.proposal.approve}
-          </button>
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() => void decide("reject")}
-          >
-            {t.proposal.reject}
-          </button>
-          <button
-            className="secondary"
-            disabled={busy || proposal.items.length < 2}
-            onClick={() => void decide("split")}
-          >
-            {t.proposal.split}
-          </button>
+      {proposal.review_history.length === 0 ? null : (
+        <div className="panel">
+          <div className="panel-title">
+            <h2>{t.proposal.reviewEvents}</h2>
+          </div>
+          {proposal.review_history.map((review) => (
+            <div className="change" key={review.review_id}>
+              <div>
+                <Status value={review.decision} />
+                <strong>{review.review_id}</strong>
+              </div>
+              <span>{review.created_at}</span>
+            </div>
+          ))}
         </div>
-        {result === null ? null : (
-          <p className="success">{result}</p>
-        )}
-      </div>
+      )}
     </section>
   );
 }

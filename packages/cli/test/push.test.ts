@@ -195,9 +195,12 @@ describe("hunter-harness push", () => {
         return json({ verified: true }, 201);
       }
       if (url.endsWith("ups_demo:finalize")) {
+        const body = JSON.parse(String(init?.body)) as { base_artifact_id: string | null };
+        expect(body.base_artifact_id).toBeNull();
         return json({
           proposal_id: "prp_demo",
-          status: "pending_review",
+          status: "approved",
+          artifact_id: "art_demo",
           received_files: 1,
           request_id: "req"
         }, 201);
@@ -318,7 +321,8 @@ describe("hunter-harness push", () => {
       if (url.endsWith("ups_resume:finalize")) {
         return json({
           proposal_id: "prp_resume",
-          status: "pending_review",
+          status: "approved",
+          artifact_id: "art_resume",
           received_files: 1,
           request_id: "req"
         }, 201);

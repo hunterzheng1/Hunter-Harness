@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   access,
+  copyFile,
+  cp,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   rename,
@@ -10,6 +14,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -23,6 +28,20 @@ export interface SkillCliDependencies {
   fetch?: typeof globalThis.fetch;
   stdout?: (value: string) => void;
   stderr?: (value: string) => void;
+  pacoteTarball?: (packageName: string) => Promise<Buffer>;
+  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
+}
+
+interface ResolvedSkillCliDependencies {
+  cwd: string;
+  env: Readonly<Record<string, string | undefined>>;
+  fetch: typeof globalThis.fetch;
+  stdout: (value: string) => void;
+  stderr: (value: string) => void;
+  pacoteTarball?: (packageName: string) => Promise<Buffer>;
+  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
 }
 
 interface CommonOptions {
@@ -31,6 +50,8 @@ interface CommonOptions {
   tokenEnv?: string;
   json?: boolean;
   force?: boolean;
+  from?: string;
+  npmScope?: string;
 }
 
 interface InstallManifest {
@@ -182,10 +203,135 @@ async function atomicInstall(input: {
   }
 }
 
+function npmPackageName(
+  slug: string,
+  env: Readonly<Record<string, string | undefined>>,
+  explicitScope?: string
+): string {
+  const scope = explicitScope ?? env.HUNTER_HARNESS_NPM_SCOPE;
+  if (scope === undefined || scope.trim() === "") {
+    throw new CliFailure(3, "CONFIG_INVALID", "--npm-scope or HUNTER_HARNESS_NPM_SCOPE is required for --from npm");
+  }
+  return `${scope.replace(/\/$/, "")}/${slug}`;
+}
+
+async function walkSourceFiles(root: string, relative = ""): Promise<SourceFile[]> {
+  const files: SourceFile[] = [];
+  const entries = await readdir(join(root, relative), { withFileTypes: true });
+  for (const entry of entries) {
+    const relPath = relative === "" ? entry.name : relative + "/" + entry.name;
+    if (entry.isDirectory()) {
+      files.push(...await walkSourceFiles(root, relPath));
+    } else if (relPath !== "package.json") {
+      files.push({ path: relPath, content: await readFile(join(root, relPath), "utf8") });
+    }
+  }
+  return files;
+}
+
+async function fetchNpmTarballFromRegistry(
+  packageName: string,
+  fetchImpl: typeof globalThis.fetch
+): Promise<Buffer> {
+  const metaResponse = await fetchImpl(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
+  if (!metaResponse.ok) {
+    throw new CliFailure(4, "NPM_PACKAGE_NOT_FOUND", `npm package ${packageName} was not found`);
+  }
+  const packument = await metaResponse.json() as {
+    "dist-tags"?: { latest?: string };
+    versions?: Record<string, { dist?: { tarball?: string } }>;
+  };
+  const version = packument["dist-tags"]?.latest;
+  const tarballUrl = version === undefined ? undefined : packument.versions?.[version]?.dist?.tarball;
+  if (tarballUrl === undefined) {
+    throw new CliFailure(4, "NPM_PACKAGE_NOT_FOUND", `npm package ${packageName} has no publishable version`);
+  }
+  const tarballResponse = await fetchImpl(tarballUrl);
+  if (!tarballResponse.ok) {
+    throw new CliFailure(4, "NETWORK_ERROR", `failed to download npm tarball for ${packageName}`);
+  }
+  return Buffer.from(await tarballResponse.arrayBuffer());
+}
+
+async function extractTarGzToDirectory(tarball: Buffer, destination: string): Promise<void> {
+  const tarPath = join(destination, "package.tgz");
+  const extractDir = join(destination, "extracted");
+  await writeFile(tarPath, tarball);
+  await mkdir(extractDir, { recursive: true });
+  await new Promise<void>((resolve, reject) => {
+    execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
+      if (error !== null) reject(error);
+      else resolve();
+    });
+  });
+  const packageDir = join(extractDir, "package");
+  const entries = await readdir(packageDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const source = join(packageDir, entry.name);
+    const target = join(destination, entry.name);
+    if (entry.isDirectory()) {
+      await cp(source, target, { recursive: true });
+    } else {
+      await copyFile(source, target);
+    }
+  }
+}
+
+async function extractNpmSkillPackage(
+  packageName: string,
+  dependencies: ResolvedSkillCliDependencies
+): Promise<{ bytes: Buffer; metadata: {
+  slug: string;
+  version: string;
+  agent: string;
+  target_path: string;
+  source_sha256?: string;
+  source_ir_sha256?: string;
+  install_mode?: string;
+}; sourceFiles: SourceFile[] }> {
+  const directory = await mkdtemp(join(tmpdir(), "hunter-skill-npm-install-"));
+  try {
+    if (dependencies.pacoteExtract !== undefined) {
+      await dependencies.pacoteExtract(packageName, directory);
+    } else {
+      const fetchImpl = dependencies.fetch ?? globalThis.fetch;
+      const tarball = dependencies.fetchNpmTarball !== undefined
+        ? await dependencies.fetchNpmTarball(packageName)
+        : dependencies.pacoteTarball !== undefined
+          ? await dependencies.pacoteTarball(packageName)
+          : await fetchNpmTarballFromRegistry(packageName, fetchImpl);
+      await extractTarGzToDirectory(tarball, directory);
+    }
+    const bytes = dependencies.pacoteTarball !== undefined
+      ? await dependencies.pacoteTarball(packageName)
+      : dependencies.fetchNpmTarball !== undefined
+        ? await dependencies.fetchNpmTarball(packageName)
+        : Buffer.from("npm:" + packageName);
+    const manifestRaw = await readFile(join(directory, "hunter-skill.json"), "utf8");
+    const metadata = JSON.parse(manifestRaw) as {
+      slug: string;
+      version: string;
+      agent: string;
+      target_path: string;
+      source_sha256?: string;
+      source_ir_sha256?: string;
+      install_mode?: string;
+    };
+    const sourceFiles = (await walkSourceFiles(directory))
+      .filter((file) => file.path !== "hunter-skill.json");
+    if (sourceFiles.length === 0) {
+      throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "npm package is missing skill source files");
+    }
+    return { bytes, metadata, sourceFiles };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 async function runInstall(
   slug: string,
   options: CommonOptions,
-  dependencies: Required<SkillCliDependencies>
+  dependencies: ResolvedSkillCliDependencies
 ): Promise<void> {
   if (!SKILL_NAME_REGEX.test(slug)) {
     throw new CliFailure(3, SKILL_ERROR_CODE.SLUG_INVALID, "skill slug is invalid: must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric with single hyphens, at most 64 chars)");
@@ -193,24 +339,10 @@ async function runInstall(
   if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
     throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install supports claude-code and cursor only");
   }
-  const { serverUrl, token } = configuration(options, dependencies.env);
-  const response = await request(
-    dependencies.fetch,
-    `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/${encodeURIComponent(options.agent)}/download`,
-    token
-  );
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const actualArtifactHash = sha256(bytes);
-  const declaredHash = response.headers.get("x-content-sha256");
-  if (declaredHash === null || declaredHash !== actualArtifactHash) {
-    throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "downloaded artifact failed SHA-256 verification");
-  }
-  const zip = new AdmZip(Buffer.from(bytes));
-  const metadataEntry = zip.getEntry("hunter-skill.json");
-  if (metadataEntry === null || metadataEntry.isDirectory) {
-    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
-  }
-  const metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as {
+
+  const installFrom = options.from ?? "server";
+  let bytes: Uint8Array;
+  let metadata: {
     slug: string;
     version: string;
     agent: string;
@@ -219,6 +351,52 @@ async function runInstall(
     source_ir_sha256?: string;
     install_mode?: string;
   };
+  let sourceFiles: SourceFile[];
+  let sourceUrl: string;
+
+  if (installFrom === "npm") {
+    const packageName = npmPackageName(slug, dependencies.env, options.npmScope);
+    const npmPackage = await extractNpmSkillPackage(packageName, dependencies);
+    bytes = npmPackage.bytes;
+    metadata = npmPackage.metadata;
+    sourceFiles = npmPackage.sourceFiles;
+    sourceUrl = `npm:${packageName}`;
+  } else if (installFrom === "server") {
+    const { serverUrl, token } = configuration(options, dependencies.env);
+    const response = await request(
+      dependencies.fetch,
+      `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/${encodeURIComponent(options.agent)}/download`,
+      token
+    );
+    bytes = new Uint8Array(await response.arrayBuffer());
+    sourceUrl = serverUrl;
+    const declaredHash = response.headers.get("x-content-sha256");
+    const actualArtifactHash = sha256(bytes);
+    if (declaredHash === null || declaredHash !== actualArtifactHash) {
+      throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "downloaded artifact failed SHA-256 verification");
+    }
+    const zip = new AdmZip(Buffer.from(bytes));
+    const metadataEntry = zip.getEntry("hunter-skill.json");
+    if (metadataEntry === null || metadataEntry.isDirectory) {
+      throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
+    }
+    metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as typeof metadata;
+    sourceFiles = [];
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory || entry.entryName === "hunter-skill.json") continue;
+      if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
+        throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path: " + entry.entryName);
+      }
+      sourceFiles.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
+    }
+    if (sourceFiles.length === 0) {
+      throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
+    }
+  } else {
+    throw new CliFailure(3, "CONFIG_INVALID", "--from must be 'server' or 'npm'");
+  }
+
+  const actualArtifactHash = sha256(bytes);
   // identity 校验 agent 与请求一致；target_path 提供 install 目录（folder=文件夹根，file=文件路径）。
   if (
     metadata.slug !== slug ||
@@ -236,20 +414,6 @@ async function runInstall(
     metadata.target_path.startsWith("/")
   ) {
     throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path is unsafe");
-  }
-
-  // 收集 zip 内全部源文件（hunter-skill.json 除外），保留相对目录结构。
-  // folder 模式全部落地；file 模式只装 entry；zip-slip 防御与 server DANGEROUS_PATH 对齐。
-  const sourceFiles: SourceFile[] = [];
-  for (const entry of zip.getEntries()) {
-    if (entry.isDirectory || entry.entryName === "hunter-skill.json") continue;
-    if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
-      throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path: " + entry.entryName);
-    }
-    sourceFiles.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
-  }
-  if (sourceFiles.length === 0) {
-    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
   }
 
   // source hash 校验：优先 source_sha256（新），回退 source_ir_sha256（旧 zip 兼容）；均缺则跳过（极旧 zip）。
@@ -324,7 +488,7 @@ async function runInstall(
     slug,
     version: metadata.version,
     agent: options.agent as RegistryAgent,
-    source_url: serverUrl,
+    source_url: sourceUrl,
     artifact_sha256: actualArtifactHash,
     files: manifestFiles,
     installed_at: new Date().toISOString()
@@ -380,7 +544,7 @@ async function readSourceFiles(source: string): Promise<SourceFile[]> {
 async function runUpload(
   sourceValue: string,
   options: CommonOptions,
-  dependencies: Required<SkillCliDependencies>
+  dependencies: ResolvedSkillCliDependencies
 ): Promise<void> {
   if (!UPLOADABLE_AGENTS.has(options.agent as RegistryAgent)) {
     throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports claude-code, cursor, codex and generic only");
@@ -414,12 +578,15 @@ export async function runSkillCli(
   argv: readonly string[],
   overrides: SkillCliDependencies = {}
 ): Promise<number> {
-  const dependencies: Required<SkillCliDependencies> = {
+  const dependencies: ResolvedSkillCliDependencies = {
     cwd: overrides.cwd ?? process.cwd(),
     env: overrides.env ?? process.env,
     fetch: overrides.fetch ?? globalThis.fetch,
     stdout: overrides.stdout ?? ((value) => process.stdout.write(value)),
-    stderr: overrides.stderr ?? ((value) => process.stderr.write(value))
+    stderr: overrides.stderr ?? ((value) => process.stderr.write(value)),
+    ...(overrides.pacoteTarball !== undefined ? { pacoteTarball: overrides.pacoteTarball } : {}),
+    ...(overrides.pacoteExtract !== undefined ? { pacoteExtract: overrides.pacoteExtract } : {}),
+    ...(overrides.fetchNpmTarball !== undefined ? { fetchNpmTarball: overrides.fetchNpmTarball } : {})
   };
   const program = new Command()
     .name("hunter-harness-skill")
@@ -433,6 +600,8 @@ export async function runSkillCli(
     .option("--token-env <ENV_NAME>")
     .option("--json");
   addOptions(program.command("install <skill-slug>"))
+    .option("--from <source>", "install source: server or npm", "server")
+    .option("--npm-scope <scope>", "npm scope for --from npm (default: HUNTER_HARNESS_NPM_SCOPE)")
     .option("--force", "confirm overwrite of a locally modified installed skill")
     .action(async (slug: string, options: CommonOptions) => runInstall(slug, options, dependencies));
   addOptions(program.command("upload <skill-directory-or-zip>"))

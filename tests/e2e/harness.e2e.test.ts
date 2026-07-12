@@ -79,26 +79,9 @@ describe("Hunter Harness end-to-end governance", () => {
         projectId,
         limit: 10,
         cursor: null,
-        status: "pending_review"
+        status: "approved"
       })).items;
-      if (firstProposal === undefined) throw new Error("first proposal was not created");
-      const firstReview = await app.inject({
-        method: "POST",
-        url: `/api/v1/proposals/${firstProposal.proposalId}/review-decisions`,
-        headers: {
-          authorization: "Bearer " + token,
-          "x-request-id": uuidV7(),
-          "idempotency-key": uuidV7()
-        },
-        payload: {
-          schema_version: 1,
-          decision: "approve",
-          comment: "e2e owner approval",
-          target_scope: "project",
-          split_groups: []
-        }
-      });
-      expect(firstReview.statusCode).toBe(201);
+      if (firstProposal === undefined) throw new Error("first proposal was not auto-approved");
 
       expect(await runCli([
         "update", "--server-url", "https://e2e.example.test",
@@ -106,6 +89,7 @@ describe("Hunter Harness end-to-end governance", () => {
       ], { cwd: root, resourcesRoot, fetch, env, ...silent })).toBe(0);
       const firstBaseline = await readBaseline(root);
       expect(firstBaseline.complete_project_version).toMatch(/^pv_/);
+      expect(firstBaseline.latest_artifact_id).toMatch(/^art_/);
 
       const rulePath = ".claude/rules/harness-general.md";
       const ruleBaseline = firstBaseline.files[rulePath];
@@ -164,27 +148,13 @@ describe("Hunter Harness end-to-end governance", () => {
         },
         payload: {
           schema_version: 1,
-          manifest_sha256: sha256Bytes(canonicalJson(operations))
+          manifest_sha256: sha256Bytes(canonicalJson(operations)),
+          base_artifact_id: firstBaseline.latest_artifact_id ?? null
         }
       });
       expect(secondFinalize.statusCode).toBe(201);
-      const secondReview = await app.inject({
-        method: "POST",
-        url: `/api/v1/proposals/${secondFinalize.json().proposal_id}/review-decisions`,
-        headers: {
-          authorization: "Bearer " + token,
-          "x-request-id": uuidV7(),
-          "idempotency-key": uuidV7()
-        },
-        payload: {
-          schema_version: 1,
-          decision: "approve",
-          comment: "approve mixed dirty/eligible artifact",
-          target_scope: "project",
-          split_groups: []
-        }
-      });
-      expect(secondReview.statusCode).toBe(201);
+      expect(secondFinalize.json().status).toBe("approved");
+      expect(secondFinalize.json().artifact_id).toMatch(/^art_/);
       await writeFile(join(root, rulePath), ruleCurrent + "\n- Local unpushed edit.\n");
 
       expect(await runCli([

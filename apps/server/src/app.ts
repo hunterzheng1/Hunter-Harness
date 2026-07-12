@@ -4,15 +4,14 @@ import {
   aiProviderReorderRequestSchema,
   canonicalJson,
   fileOperationSchema,
+  finalizeProposalSchema,
   providerModelSchema,
   publishSkillRequestSchema,
   publishWorkflowPackageRequestSchema,
   registryAgentSchema,
-  registrySemverSchema,
   registrySlugSchema,
   registryWorkflowMutationSchema,
   setDefaultAgentRequestSchema,
-  sourceFileSchema,
   SKILL_ERROR_CODE,
   type AiProviderConfig,
   type FileOperation,
@@ -54,6 +53,11 @@ import { writeAudit } from "./audit/audit.js";
 import { authenticateRequest } from "./auth/tokens.js";
 import { defaultServerConfig, type ServerConfig } from "./config.js";
 import { buildDashboardOverview } from "./dashboard/overview.js";
+import { isNpmPublishConfigured, loadNpmPublishConfig } from "./npm/config.js";
+import {
+  publishSkillNpmPackage,
+  type NpmPublisherDeps
+} from "./npm/publisher.js";
 import { RegistryStore } from "./registry/store.js";
 import type { RegistryPersistence } from "./registry/persistence.js";
 import type {
@@ -75,6 +79,8 @@ export interface CreateServerOptions {
   aiJobStore?: AiJobStore;
   // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
   aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient | null;
+  npmPublisherDeps?: NpmPublisherDeps;
+  npmPublishConfig?: ReturnType<typeof loadNpmPublishConfig>;
 }
 
 interface MutationResult {
@@ -113,37 +119,6 @@ const sessionSchema = z.object({
 
 const blobQuerySchema = z.object({
   content_sha256: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/))
-}).strict();
-
-const finalizeSchema = z.object({
-  schema_version: z.literal(1),
-  manifest_sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/)
-}).strict();
-
-const reviewSchema = z.object({
-  schema_version: z.literal(1),
-  decision: z.enum(["approve", "reject", "need_more_evidence", "split"]),
-  comment: z.string().max(4000).nullable().optional(),
-  target_scope: z.string().min(1),
-  split_groups: z.array(z.object({
-    name: z.string().min(1),
-    item_ids: z.array(z.string().regex(/^item_/)).min(1),
-    target_scope: z.string().min(1)
-  }).strict()).default([])
-}).strict();
-
-const registryProposalCreateSchema = z.object({
-  schema_version: z.literal(1),
-  source_files: z.array(sourceFileSchema),
-  slug: registrySlugSchema,
-  version: registrySemverSchema,
-  agent: registryAgentSchema
-}).strict();
-
-const registryReviewSchema = z.object({
-  schema_version: z.literal(1),
-  decision: z.enum(["approve", "reject"]),
-  comment: z.string().max(4000).nullable().optional()
 }).strict();
 
 const tagCreateSchema = z.object({
@@ -684,11 +659,21 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { sessionId } = request.params as { sessionId: string };
-    const body = finalizeSchema.parse(request.body);
+    const body = finalizeProposalSchema.parse(request.body);
     const result = await mutation(request, repository, actor, requestId, async () => {
       const session = await repository.getProposalSession(actor.actorId, sessionId);
       if (body.manifest_sha256 !== sha256Bytes(canonicalJson(session.operations))) {
         throw new ServerDomainError(422, "ARTIFACT_HASH_MISMATCH", "proposal manifest hash mismatch");
+      }
+      const project = await repository.getProject(actor.actorId, session.projectId);
+      if (project.latestArtifactId !== null &&
+          body.base_artifact_id !== project.latestArtifactId) {
+        throw new ServerDomainError(
+          409,
+          "STALE_PUSH",
+          "server already has a newer artifact; sync before pushing",
+          { latest_artifact_id: project.latestArtifactId }
+        );
       }
       const files: Record<string, string> = {};
       for (const operation of session.operations) {
@@ -721,6 +706,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         );
       }
       const proposal = await repository.createProposalFromSession(session);
+      const review = await repository.reviewProposal({
+        actorId: actor.actorId,
+        proposalId: proposal.proposalId,
+        decision: "approve",
+        comment: null,
+        targetScope: "auto-approved",
+        splitGroups: []
+      });
       await storage.deleteSession(sessionId);
       await writeAudit(repository, {
         actorId: actor.actorId,
@@ -728,13 +721,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         action: "proposal.finalized",
         targetId: proposal.proposalId,
         requestId,
-        details: { item_count: proposal.items.length }
+        details: { item_count: proposal.items.length, artifact_id: review.artifactId }
       });
       return {
         statusCode: 201,
         body: {
           proposal_id: proposal.proposalId,
-          status: proposal.status,
+          status: "approved" as const,
+          artifact_id: review.artifactId,
           received_files: proposal.items.length
         }
       };
@@ -829,56 +823,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       })),
       request_id: requestId
     };
-  });
-
-  app.post("/api/v1/proposals/:proposalId/review-decisions", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    const body = reviewSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const review = await repository.reviewProposal({
-        actorId: actor.actorId,
-        proposalId,
-        decision: body.decision,
-        comment: body.comment ?? null,
-        targetScope: body.target_scope,
-        splitGroups: body.split_groups.map((group) => ({
-          name: group.name,
-          itemIds: group.item_ids,
-          targetScope: group.target_scope
-        }))
-      });
-      const proposal = await repository.getProposal(actor.actorId, proposalId);
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: proposal.projectId,
-        action: body.decision === "approve"
-          ? "proposal.approved"
-          : body.decision === "reject"
-            ? "proposal.rejected"
-            : body.decision === "split"
-              ? "proposal.split"
-              : "proposal.needs_evidence",
-        targetId: proposalId,
-        requestId,
-        details: {
-          review_id: review.reviewId,
-          artifact_id: review.artifactId,
-          child_proposal_ids: review.childProposalIds
-        }
-      });
-      return {
-        statusCode: 201,
-        body: {
-          review_id: review.reviewId,
-          proposal_id: proposalId,
-          decision: review.decision,
-          artifact_id: review.artifactId,
-          child_proposal_ids: review.childProposalIds
-        }
-      };
-    });
-    return send(reply, requestId, result);
   });
 
   app.get("/api/v1/projects/:projectId/update-manifest", async (request, reply) => {
@@ -976,7 +920,12 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
     reply.header("X-Request-Id", requestId);
-    return { ...registry.getSkill(slug), request_id: requestId };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    return {
+      ...registry.getSkill(slug),
+      npm_publish_available: isNpmPublishConfigured(npmConfig),
+      request_id: requestId
+    };
   });
 
   app.get("/api/v1/skills/:slug/adapter-preview/:agent", async (request, reply) => {
@@ -1139,6 +1088,49 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
+  app.post("/api/v1/skills/:slug/npm-release", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    if (!isNpmPublishConfigured(npmConfig)) {
+      throw new ServerDomainError(
+        503,
+        "NPM_PUBLISH_NOT_CONFIGURED",
+        "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN)"
+      );
+    }
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const release = await registry.releaseSkillToNpm(
+        slug,
+        npmConfig,
+        async (input) => publishSkillNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {})
+      );
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "skill.npm-released",
+        targetId: slug,
+        requestId,
+        details: {
+          slug,
+          version: release.version,
+          packageName: release.packageName,
+          status: release.status
+        }
+      });
+      if (release.status === "conflict") {
+        throw new ServerDomainError(
+          409,
+          "NPM_PUBLISH_CONFLICT",
+          release.error ?? "npm registry already has this package version",
+          { release }
+        );
+      }
+      return { statusCode: 200, body: { slug, release } };
+    });
+    return send(reply, requestId, result);
+  });
+
   app.get("/api/v1/skills/:slug/draft/:agent/diff", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1179,83 +1171,6 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         targetId: slug, requestId, details: { slug }
       });
       return { statusCode: 200, body: { slug, deleted: true } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.get("/api/v1/skill-proposals", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const query = request.query as Record<string, string | undefined>;
-    reply.header("X-Request-Id", requestId);
-    return { items: registry.listProposals(query.status), request_id: requestId };
-  });
-
-  app.get("/api/v1/skill-proposals/:proposalId", async (request, reply) => {
-    const { requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    reply.header("X-Request-Id", requestId);
-    return { ...registry.getProposal(proposalId), request_id: requestId };
-  });
-
-  app.post("/api/v1/skill-proposals", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const body = registryProposalCreateSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const proposal = registry.createProposal({
-        sourceFiles: body.source_files,
-        slug: body.slug,
-        version: body.version,
-        actorId: actor.actorId,
-        agent: body.agent
-      });
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: null,
-        action: "skill.proposal.created",
-        targetId: proposal.proposal_id,
-        requestId,
-        details: { skill_slug: proposal.skill_slug, version: proposal.version }
-      });
-      return { statusCode: 201, body: { ...proposal } };
-    });
-    return send(reply, requestId, result);
-  });
-
-  app.post("/api/v1/skill-proposals/:proposalId/review", async (request, reply) => {
-    const { actor, requestId } = await authenticated(request, repository);
-    const { proposalId } = request.params as { proposalId: string };
-    const body = registryReviewSchema.parse(request.body);
-    const result = await mutation(request, repository, actor, requestId, async () => {
-      const proposal = await registry.reviewProposal({
-        proposalId,
-        actorId: actor.actorId,
-        decision: body.decision,
-        comment: body.comment ?? null
-      });
-      await registry.persist();
-      await writeAudit(repository, {
-        actorId: actor.actorId,
-        projectId: null,
-        action: body.decision === "approve" ? "skill.proposal.approved" : "skill.proposal.rejected",
-        targetId: proposalId,
-        requestId,
-        details: {
-          skill_slug: proposal.skill_slug,
-          published_version: body.decision === "approve" ? proposal.version : null,
-          artifact_ids: proposal.publishedArtifacts.map((item) => item.artifact_id)
-        }
-      });
-      return {
-        statusCode: 201,
-        body: {
-          proposal_id: proposalId,
-          decision: body.decision,
-          status: proposal.status,
-          published_version: body.decision === "approve" ? proposal.version : null,
-          artifacts: proposal.publishedArtifacts
-        }
-      };
     });
     return send(reply, requestId, result);
   });

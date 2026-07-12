@@ -165,7 +165,24 @@ export const registrySkillSummarySchema = z.object({
   agents: z.array(agentSkillConfigSchema),
   revision: z.number().int().positive(),
   created_at: z.iso.datetime(),
-  updated_at: z.iso.datetime()
+  updated_at: z.iso.datetime(),
+  // npm 发布记录（registry snapshot 可选字段，旧快照缺省为 []）
+  npmReleases: z.array(z.lazy(() => npmReleaseRecordSchema)).optional().default([])
+}).strict();
+
+export const npmReleaseStatusSchema = z.enum(["published", "failed", "conflict"]);
+
+export const npmReleaseRecordSchema = z.object({
+  version: registrySemverSchema,
+  packageName: z.string().min(1),
+  status: npmReleaseStatusSchema,
+  publishedAt: z.iso.datetime(),
+  error: z.string().nullable().optional().default(null)
+}).strict();
+
+export const npmReleaseResponseSchema = z.object({
+  slug: registrySlugSchema,
+  release: npmReleaseRecordSchema
 }).strict();
 
 export const registrySkillDetailSchema = registrySkillSummarySchema.extend({
@@ -237,6 +254,9 @@ export type RegistryTag = z.infer<typeof registryTagSchema>;
 export type RegistryWorkflow = z.infer<typeof registryWorkflowSchema>;
 export type RegistryWorkflowMutation = z.infer<typeof registryWorkflowMutationSchema>;
 export type RegistryProjectWorkflowBinding = z.infer<typeof registryProjectWorkflowBindingSchema>;
+export type NpmReleaseStatus = z.infer<typeof npmReleaseStatusSchema>;
+export type NpmReleaseRecord = z.infer<typeof npmReleaseRecordSchema>;
+export type NpmReleaseResponse = z.infer<typeof npmReleaseResponseSchema>;
 export type CheckStatus = z.infer<typeof checkStatusSchema>;
 export type SourceFile = z.infer<typeof sourceFileSchema>;
 export type SkillUsageExample = z.infer<typeof skillUsageExampleSchema>;

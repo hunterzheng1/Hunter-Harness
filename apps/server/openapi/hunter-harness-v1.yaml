@@ -114,7 +114,7 @@ paths:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "201":
-          description: Proposal created
+          description: Proposal auto-approved and artifact published
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/proposals:
@@ -149,17 +149,6 @@ paths:
       responses:
         "200":
           description: Proposal details
-        default:
-          $ref: "#/components/responses/Error"
-  /api/v1/proposals/{proposal_id}/review-decisions:
-    post:
-      operationId: createReviewDecision
-      parameters:
-        - $ref: "#/components/parameters/ProposalId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201":
-          description: Review decision recorded
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/update-manifest:
@@ -346,6 +335,17 @@ paths:
       responses:
         "200": { description: Per-agent Skill draft promoted to a new published version with one artifact for the specified agent }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/npm-release:
+    post:
+      operationId: releaseSkillToNpm
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Latest published skill version released to npm as a data-only package }
+        "503": { description: npm publish is not configured on the server (NPM_PUBLISH_NOT_CONFIGURED) }
+        "409": { description: npm registry already has this package version (NPM_PUBLISH_CONFLICT) }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/draft/{agent}/diff:
     get:
       operationId: diffSkillDraft
@@ -446,33 +446,6 @@ paths:
       operationId: listSkillArtifacts
       responses:
         "200": { description: Published Skill adapter artifacts }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals:
-    get:
-      operationId: listSkillProposals
-      responses:
-        "200": { description: Skill proposal queue }
-        default: { $ref: "#/components/responses/Error" }
-    post:
-      operationId: createSkillProposal
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201": { description: Validated Skill proposal created }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals/{proposal_id}:
-    get:
-      operationId: getSkillProposal
-      responses:
-        "200": { description: Skill proposal detail and validation }
-        default: { $ref: "#/components/responses/Error" }
-  /api/v1/skill-proposals/{proposal_id}/review:
-    post:
-      operationId: reviewSkillProposal
-      parameters:
-        - $ref: "#/components/parameters/IdempotencyKey"
-      responses:
-        "201": { description: Review recorded and approved artifact published when approved }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/tags:
     get:

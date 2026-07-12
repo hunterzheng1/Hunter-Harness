@@ -313,6 +313,8 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [skillDraft, setSkillDraft] = useState<DraftState | null>(null);
+  const [npmPublishAvailable, setNpmPublishAvailable] = useState(false);
+  const [publishingNpm, setPublishingNpm] = useState(false);
   const userTouchedRef = useRef(false);
 
   async function refresh(forAgent: RegistryAgent = currentAgent): Promise<void> {
@@ -322,6 +324,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         required(api, "listTags")()
       ]);
       setSkill(detail); setVersions(history); setTags(allTags);
+      setNpmPublishAvailable((detail as { npm_publish_available?: boolean }).npm_publish_available === true);
       setError(null);
     } catch (reason) {
       setError(apiError(reason, t));
@@ -399,6 +402,33 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
 
   useEffect(() => { setSourcePath("SKILL.md"); }, [skillId]);
   const command = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent}`;
+  const npmCommand = `npx @hunter-harness/skill-cli install ${skillId} --agent ${agent} --from npm`;
+  const latestNpmRelease = skill?.npmReleases.find((entry) => entry.version === skill.latest_version) ?? null;
+  const npmBadgeLabel = latestNpmRelease?.status === "published"
+    ? `${t.skillDetail.npmBadgePublished} v${latestNpmRelease.version}`
+    : latestNpmRelease?.status === "failed"
+      ? t.skillDetail.npmBadgeFailed
+      : latestNpmRelease?.status === "conflict"
+        ? t.skillDetail.npmBadgeConflict
+        : t.skillDetail.npmBadgeUnpublished;
+  const npmPublishDisabled = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true"
+    || !npmPublishAvailable
+    || skill?.status !== "published"
+    || skill?.latest_version === null
+    || latestNpmRelease?.status === "published";
+  async function publishToNpm(): Promise<void> {
+    if (skill === null || npmPublishDisabled) return;
+    try {
+      setPublishingNpm(true);
+      await required(api, "releaseSkillToNpm")(skillId);
+      await refresh();
+      setMessage(t.skillDetail.npmPublished);
+    } catch (reason) {
+      setError(apiError(reason, t));
+    } finally {
+      setPublishingNpm(false);
+    }
+  }
   async function copyCommand(): Promise<void> {
     await navigator.clipboard.writeText(command); setMessage(t.skillDetail.installCopied);
   }
@@ -468,7 +498,11 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
             <div className="tag-row">{skill.tags.map((tag) => <button type="button" className="tag tag-remove" aria-label={`remove-tag  ${tag}`} onClick={() => removeLocalTag(tag)} key={tag}>{tag}<span aria-hidden="true">×</span></button>)}</div>
           </div>
         </div>
-        <div className="skill-meta skill-detail-meta"><Status value={skill.status} /><code className="skill-detail-version">v{skill.latest_version}</code></div>
+        <div className="skill-meta skill-detail-meta">
+          <Status value={skill.status} />
+          <code className="skill-detail-version">v{skill.latest_version}</code>
+          <span className={`npm-badge npm-badge-${latestNpmRelease?.status ?? "unpublished"}`}>{npmBadgeLabel}</span>
+        </div>
       </header>
 
       <div className="command-panel skill-command-panel panel">
@@ -476,6 +510,15 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         <code className="command-code">{command}</code>
         <button onClick={() => void copyCommand()}>{t.skillDetail.copyCommand}</button>
         <button className="secondary" onClick={() => void download()}>{t.skillDetail.downloadZip}</button>
+        <button
+          className="secondary"
+          disabled={npmPublishDisabled || publishingNpm}
+          title={npmPublishAvailable ? undefined : t.skillDetail.npmPublishUnavailable}
+          onClick={() => void publishToNpm()}
+        >
+          {publishingNpm ? "…" : t.skillDetail.npmPublish}
+        </button>
+        <code className="command-code npm-command-code">{npmCommand}</code>
       </div>
 
       {fallback ? <div className="notice warning agent-fallback-banner">{t.skillDetail.fallbackBanner.replace("{agent}", selectedAgent.label).replace("{defaultAgent}", defaultAgent.label).replace("{path}", selectedAgent.targetPath)}</div> : null}
