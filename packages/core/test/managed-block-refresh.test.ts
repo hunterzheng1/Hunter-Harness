@@ -69,7 +69,7 @@ describe("managed block conflicts during refresh", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-conflict-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
     });
     // 破坏 AGENTS.md 标记（重复 start）。
     await writeFile(
@@ -97,7 +97,7 @@ describe("managed block conflicts during refresh", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-force-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
     });
     const before = "# Top user\n\n";
     const after = "\n## Bottom user\n";

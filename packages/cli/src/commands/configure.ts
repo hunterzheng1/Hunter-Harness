@@ -46,15 +46,22 @@ async function runFirstInstall(
 ): Promise<number> {
   const requestId = uuidV7();
   try {
+    const warnings: string[] = [];
     const config = await resolveInitConfig(
       dependencies.cwd,
       options,
       options.nonInteractive === true
-        ? undefined
-        : () => dependencies.prompt(
-          "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
-        ).then((answer) => answer.trim())
+        ? {}
+        : {
+          profile: () => dependencies.prompt(
+            "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
+          ).then((answer) => answer.trim())
+        },
+      warnings
     );
+    for (const warning of warnings) {
+      dependencies.stderr(warning + "\n");
+    }
     if (options.nonInteractive === true && options.yes !== true &&
         options.dryRun !== true) {
       dependencies.stderr("非交互模式执行写入操作需要 --yes\n");

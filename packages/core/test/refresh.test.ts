@@ -30,7 +30,7 @@ async function installFirst(root: string, profile: "general" | "java"): Promise<
   await initializeProject({
     projectRoot: root,
     resourcesRoot,
-    config: { adapter: "claude-code", profile },
+    config: { agents: ["claude-code"], profile },
     dryRun: false
   });
 }

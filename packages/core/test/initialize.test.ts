@@ -47,7 +47,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" },
+      config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
 
@@ -68,7 +68,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" },
+      config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
 
@@ -93,7 +93,7 @@ describe("minimal first installation", () => {
     await initializeProject({
       projectRoot: root,
       resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" },
+      config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
 

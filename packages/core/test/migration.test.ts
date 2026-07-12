@@ -171,7 +171,7 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-gj-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
     });
     expect(await exists(join(root, ".claude", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
 
@@ -190,7 +190,7 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-jg-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "java" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
     });
 
     const result = await refreshProject({
@@ -207,7 +207,7 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-modified-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "java" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
     });
     const apidoc = join(root, ".claude", "skills", "harness-apidoc", "SKILL.md");
     await writeFile(apidoc, "user edited apidoc\n");

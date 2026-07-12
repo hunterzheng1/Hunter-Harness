@@ -123,7 +123,8 @@ export async function initializeProject(
       token_env: config.token_env ?? existing?.server.token_env ??
         "HUNTER_HARNESS_TOKEN"
     },
-    adapters: { enabled: [config.adapter] }
+    // Temporary bridge until multi-agent initialize (Task 8): first agent only.
+    adapters: { enabled: [config.agents[0] ?? "claude-code"] }
   });
 
   const baseline = baselineManifestSchema.parse({
