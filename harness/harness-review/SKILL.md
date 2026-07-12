@@ -1,6 +1,6 @@
 ---
 name: harness-review
-description: "6维度代码审查（架构/安全/规范/兼容/测试/性能），对照.claude/rules/和测试场景表，在隔离上下文运行。使用场景：代码审查、提交前检查、合并评审"
+description: "6维度代码审查（架构/安全/规范/兼容/测试/性能），对照项目规则（见 .harness/context-index.json）和测试场景表，在隔离上下文运行。使用场景：代码审查、提交前检查、合并评审"
 argument-hint: "变更名或留空自动检测"
 effort: high
 allowed-tools: [Read, Write, Edit, Glob, Grep, Agent, Bash(powershell.exe:*)]
@@ -39,7 +39,7 @@ disallowed-tools:
 ## Inputs
 
 - `$ARGUMENTS`：变更名（可选，留空时自动扫描 `.harness/changes/*/plans/` 确定）
-- 相关文件：`.harness/changes/*/plans/*-plan.md`、`.claude/rules/`、测试场景表
+- 相关文件：`.harness/changes/*/plans/*-plan.md`、`项目规则（见 .harness/context-index.json）/`、测试场景表
 
 ## 前置条件
 
@@ -54,7 +54,11 @@ disallowed-tools:
 
 0. **启动准备** — 确定变更名（Glob `.harness/changes/*/plans/*-plan.md`，排除 `.harness/archive/*/`，读 frontmatter 提取 change-name）；**append `phase.start` 事件**（不得等审查完成才补）
 1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-run`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更
-2. **委派 harness-reviewer** — 先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。`usable=false` → **直接主会话审查**，记 `decision` 事件，**不委派**。`usable=true` 时用 Agent spawn `harness-reviewer`（只读, 6 维度）。返回空 / 无报告正文 → **不 retry**，降级主会话审查。
+<!-- @section-id review.delegate -->
+### 2. 委派 harness-reviewer
+
+先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。`usable=false` → **直接主会话审查**，记 `decision` 事件，**不委派**。`usable=true` 时用 Agent spawn `harness-reviewer`（只读, 6 维度）。返回空 / 无报告正文 → **不 retry**，降级主会话审查。
+
 3. **持久化报告（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`。未 Write → 🟡WARN，不得宣称 review 完成。
 4. **生成修复反馈（原生协议）** — 若报告存在 RED/YELLOW 问题，执行 `protocols.md` 的 `review-fixback-protocol`，将问题转化为结构化 fixback 清单并落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`。若无 RED/YELLOW，记录 `review-fixback-protocol: skipped(no findings)`。不调用 Superpowers `receiving-code-review`，也不记录外部 skill 降级。
 5. **收尾** — append `phase.end` / `artifact` 事件；控制台输出摘要

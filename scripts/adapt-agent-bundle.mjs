@@ -16,7 +16,8 @@ const AGENT_FILE_ALLOW = {
   codebuddy: ["name", "description", "permissionMode", "skills"]
 };
 
-const FORBIDDEN_SHARED = ["<!-- @include", "{{"];
+const FORBIDDEN_SHARED = ["<!-- @include"];
+const UNFINISHED_PLACEHOLDER = /\{\{[A-Z][A-Z0-9_]*\}\}/;
 const FORBIDDEN_NON_CLAUDE_PATHS = [
   ".claude/rules/",
   ".claude/agents/",
@@ -74,6 +75,9 @@ function scanForbidden(haystack, agent, pathLabel) {
       throw new Error(`ADAPTER_SEMANTIC_INVALID: ${pathLabel} contains forbidden token ${token}`);
     }
   }
+  if (UNFINISHED_PLACEHOLDER.test(haystack)) {
+    throw new Error(`ADAPTER_SEMANTIC_INVALID: ${pathLabel} contains unfinished {{PLACEHOLDER}}`);
+  }
   if (agent !== "claude-code") {
     for (const token of FORBIDDEN_NON_CLAUDE_PATHS) {
       if (haystack.includes(token)) {
@@ -128,10 +132,14 @@ export async function adaptBundleDir(dir, agent) {
 
   for (const rel of files) {
     if (!rel.endsWith(".md") && !rel.endsWith(".mdc")) continue;
+    // Runtime docs outside skills/agents are not Agent-adapted surfaces.
+    if (!rel.startsWith("harness-") && !rel.startsWith("agents/")) continue;
+
     const isSkill = /^harness-[^/]+\/SKILL\.md$/.test(rel);
     const isAgent = /^agents\/[^/]+\.md$/.test(rel);
     if (!isSkill && !isAgent) {
       const text = await readFile(join(dir, rel), "utf8");
+      // Supporting docs (checklist/reference) still must not leak Claude-only paths.
       scanForbidden(text, agent, rel);
       validated.push(rel);
       continue;

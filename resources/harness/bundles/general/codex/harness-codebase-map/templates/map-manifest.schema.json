@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hunter Harness Codebase Map Manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generator",
+    "generated_at",
+    "mode",
+    "profile",
+    "last_mapped_commit",
+    "path_scope",
+    "documents",
+    "summary",
+    "warnings",
+    "stale_policy"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "generator": { "type": "string", "const": "harness-codebase-map" },
+    "generated_at": { "type": "string" },
+    "mode": { "type": "string" },
+    "profile": { "type": "string" },
+    "project_root": { "type": "string" },
+    "last_mapped_commit": { "type": "string" },
+    "path_scope": {
+      "type": "object",
+      "required": ["type", "paths"],
+      "properties": {
+        "type": { "type": "string" },
+        "paths": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["document_type", "path", "sha256", "line_count", "focus", "status"],
+        "properties": {
+          "document_type": { "type": "string" },
+          "path": { "type": "string" },
+          "sha256": { "type": "string" },
+          "line_count": { "type": "integer" },
+          "focus": { "type": "string" },
+          "status": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["path", "sha256", "line_count"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "type": "string" },
+        "line_count": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "stale_policy": {
+      "type": "object",
+      "required": ["max_age_days", "changed_files_threshold"],
+      "properties": {
+        "max_age_days": { "type": "integer" },
+        "changed_files_threshold": { "type": "integer" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

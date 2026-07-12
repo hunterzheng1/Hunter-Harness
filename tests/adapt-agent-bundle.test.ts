@@ -159,6 +159,6 @@ describe("adaptBundleDir", () => {
       "name: harness-demo\ndescription: demo",
       "Hello {{NAME}}\n"
     );
-    await expect(adaptBundleDir(dir2, "codex")).rejects.toThrow(/\{\{/);
+    await expect(adaptBundleDir(dir2, "codex")).rejects.toThrow(/PLACEHOLDER|NAME|\{\{/);
   });
 });

@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "overlay": "java",
+  "agent": "claude-code",
+  "coreHash": "c7f197c6a6f1ff5a"
+}
