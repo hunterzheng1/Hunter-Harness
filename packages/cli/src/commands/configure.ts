@@ -140,6 +140,7 @@ async function runExistingProject(
 ): Promise<number> {
   // exactOptionalPropertyTypes: 可选属性不接受显式 undefined，按字段条件赋值。
   const refreshOptions: RefreshCommandOptions = {};
+  if (options.agents !== undefined) refreshOptions.agents = options.agents;
   if (options.profile !== undefined) refreshOptions.profile = options.profile;
   if (options.nonInteractive !== undefined) refreshOptions.nonInteractive = options.nonInteractive;
   if (options.yes !== undefined) refreshOptions.yes = options.yes;

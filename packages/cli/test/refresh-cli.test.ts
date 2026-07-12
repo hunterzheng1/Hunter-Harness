@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 
 import { runCli } from "../src/bin.js";
 
@@ -114,5 +115,61 @@ describe("hunter-harness refresh CLI", () => {
     expect(code).toBe(0);
     expect(outputBeforeConfirmation).toContain("配置切换预览");
     expect(outputBeforeConfirmation).toContain("harness-apidoc");
+  });
+
+  it("switches the enabled agent set with --agents", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-"));
+    stdout = []; stderr = [];
+    expect(await run([
+      "--agents", "claude-code",
+      "--profile", "general",
+      "--non-interactive",
+      "--yes"
+    ])).toBe(0);
+
+    const code = await run([
+      "refresh",
+      "--agents", "codex,cursor",
+      "--non-interactive",
+      "--yes"
+    ]);
+
+    expect(code).toBe(0);
+    const project = parseYaml(await readFile(join(root, ".harness", "project.yaml"), "utf8")) as {
+      adapters: { enabled: string[] };
+    };
+    expect(project.adapters.enabled).toEqual(["codex", "cursor"]);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
+  });
+
+  it("rejects an unknown --agents value without changing the project", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-invalid-"));
+    stdout = []; stderr = [];
+    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    const before = await readFile(join(root, ".harness", "project.yaml"), "utf8");
+
+    const code = await run(["refresh", "--agents", "gpt", "--non-interactive", "--yes"]);
+
+    expect(code).toBe(3);
+    expect(stderr.join("")).toContain("AGENT_UNSUPPORTED");
+    expect(await readFile(join(root, ".harness", "project.yaml"), "utf8")).toBe(before);
+  });
+
+  it("uses the project agent set when --agents is omitted", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-default-"));
+    stdout = []; stderr = [];
+    expect(await run([
+      "--agents", "codex,cursor",
+      "--profile", "general",
+      "--non-interactive",
+      "--yes"
+    ])).toBe(0);
+    await rm(join(root, ".agents", "skills", "harness-review", "SKILL.md"), { force: true });
+
+    expect(await run(["refresh", "--non-interactive", "--yes"])).toBe(0);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
   });
 });

@@ -17,9 +17,11 @@ import {
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
+import { InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 
 export interface RefreshCommandOptions {
+  agents?: string;
   profile?: string;
   nonInteractive?: boolean;
   yes?: boolean;
@@ -141,22 +143,29 @@ export async function runRefresh(
 
   const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;
   let targetProfile: HarnessProfile;
+  let targetAgents: ReturnType<typeof refreshAgents>;
   try {
     targetProfile = parseProfile(options.profile, currentProfile);
+    targetAgents = options.agents === undefined
+      ? refreshAgents(detection.config)
+      : parseAgentsInput(options.agents);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
-    return 3;
+    const code = error instanceof InitConfigurationError ? error.code : undefined;
+    dependencies.stderr((code === undefined ? "" : code + ": ") + message + "\n");
+    return error instanceof InitConfigurationError ? error.exitCode : 3;
   }
 
   const dryRun = options.dryRun === true;
-  if (targetProfile !== currentProfile && !dryRun) {
+  if ((targetProfile !== currentProfile ||
+      targetAgents.some((agent, index) => agent !== refreshAgents(detection.config)[index]) ||
+      targetAgents.length !== refreshAgents(detection.config).length) && !dryRun) {
     try {
       const preview = await refreshProject({
         projectRoot: dependencies.cwd,
         resourcesRoot: dependencies.resourcesRoot,
         profile: targetProfile,
-        agents: refreshAgents(detection.config),
+        agents: targetAgents,
         codebuddySurface: codebuddySurface(detection.config),
         dryRun: true,
         forceManaged: options.forceManaged === true
@@ -195,7 +204,7 @@ export async function runRefresh(
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
       profile: targetProfile,
-      agents: refreshAgents(detection.config),
+      agents: targetAgents,
       codebuddySurface: codebuddySurface(detection.config),
       dryRun,
       forceManaged: options.forceManaged === true
