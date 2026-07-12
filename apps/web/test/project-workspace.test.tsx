@@ -87,7 +87,7 @@ describe("ProjectWorkspace", () => {
 
     expect(await screen.findByRole("button", { name: ".harness/knowledge/architecture.md" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: ".harness/knowledge/architecture.md" }));
-    expect(screen.getByText("full-diff-proposal")).toBeInTheDocument();
+    expect(screen.getByText("diff-proposal")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /edit current file/i }));
     fireEvent.change(screen.getByLabelText(/draft content/i), { target: { value: "# Revised architecture" } });
     fireEvent.click(screen.getByRole("button", { name: /create review proposal/i }));

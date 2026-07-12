@@ -125,7 +125,7 @@ export interface ProposalDetailModel {
 }
 
 export interface ReviewInput {
-  decision: "approve" | "reject" | "need_more_evidence" | "split";
+  decision: "approve" | "reject" | "need_more_evidence" | "split" | "auto-approved";
   comment: string | null;
   target_scope: string;
   split_groups: Array<{

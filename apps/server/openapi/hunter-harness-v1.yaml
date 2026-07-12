@@ -115,6 +115,8 @@ paths:
       responses:
         "201":
           description: Proposal auto-approved and artifact published
+        "409":
+          description: Server already has a newer artifact for this project; re-sync base_artifact_id before finalizing again (STALE_PUSH)
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/proposals:
@@ -670,6 +672,28 @@ paths:
       responses:
         "200": { description: Semantic graph nodes and edges for a project }
         default: { $ref: "#/components/responses/Error" }
+  /mcp:
+    post:
+      operationId: semanticMcpStreamableHttp
+      summary: Semantic MCP server (Streamable HTTP transport). GET/DELETE return 405; use POST only.
+      description: >-
+        JSON-RPC 2.0 endpoint for the read-only Semantic MCP server (tools: search_knowledge,
+        get_project_overview, get_knowledge_entry, list_recent_changes). Stateless per request;
+        no MCP session id is issued or required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 request envelope (initialize, tools/list, tools/call, ...)
+      responses:
+        "200":
+          description: JSON-RPC 2.0 response (or an SSE stream) for the invoked Semantic MCP method
+        "401":
+          description: Auth required (AUTH_REQUIRED)
+        default:
+          $ref: "#/components/responses/Error"
   /api/v1/semantic/search:
     get:
       operationId: searchSemanticDocuments

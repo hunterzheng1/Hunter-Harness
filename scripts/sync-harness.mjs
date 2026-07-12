@@ -90,6 +90,44 @@ async function copyMigrations() {
   }
 }
 
+// Mirrors packages/contracts/src/canonical-json.ts normalize()/canonicalJson() so this
+// hash matches apps/server/src/npm/publisher.ts buildWorkflowFamilyManifest exactly.
+function normalizeForCanonicalJson(value) {
+  if (Array.isArray(value)) return value.map(normalizeForCanonicalJson);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, normalizeForCanonicalJson(item)])
+    );
+  }
+  return value;
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(normalizeForCanonicalJson(value));
+}
+
+function sha256Bytes(content) {
+  return "sha256:" + createHash("sha256").update(content).digest("hex");
+}
+
+async function writeWorkflowFamilyManifest() {
+  const manifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const files = (await filesUnder(dataPackageRoot))
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((item) => ({ path: `harness/${item.path}` }));
+  const withContent = [];
+  for (const file of files) {
+    const full = join(dataPackageRoot, file.path.slice("harness/".length));
+    withContent.push({ path: file.path, content: await readFile(full, "utf8") });
+  }
+  manifest.content_sha256 = sha256Bytes(canonicalJson(withContent));
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+}
+
 for (const profile of PROFILES) {
   for (const agent of AGENTS) {
     await generate(profile, agent);
@@ -97,4 +135,5 @@ for (const profile of PROFILES) {
   }
 }
 await copyMigrations();
+await writeWorkflowFamilyManifest();
 process.stdout.write("generated 2 profiles × 4 agents Harness Bundles\n");

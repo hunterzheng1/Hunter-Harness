@@ -14,7 +14,6 @@ import {
   type ArtifactSummary,
   type ProjectSummary,
   type ProposalDetailModel,
-  type ProposalSummary,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
@@ -350,17 +349,64 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
 export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [proposals, setProposals] = useState<ProposalSummary[] | null>(null);
+  type HistoryItem = {
+    id: string;
+    kind: "project_push" | "skill_npm" | "workflow_npm";
+    title: string;
+    subtitle: string;
+    createdAt: string;
+    href: string;
+  };
+  const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
-    void api.listAllProposals()
-      .then((items) => {
-        if (active) {
-          setProposals(items.filter((item) => item.status === "approved"));
+    void Promise.all([
+      api.listAllProposals(),
+      api.listSkills?.() ?? Promise.resolve([]),
+      api.listWorkflowFamilies?.() ?? Promise.resolve([])
+    ])
+      .then(([proposals, skills, families]) => {
+        if (!active) return;
+        const next: HistoryItem[] = [];
+        for (const proposal of proposals.filter((item) => item.status === "approved")) {
+          next.push({
+            id: proposal.proposal_id,
+            kind: "project_push",
+            title: proposal.proposal_id,
+            subtitle: `${proposal.project_id} · ${proposal.changed_item_count} ${t.reviewQueue.changes}`,
+            createdAt: proposal.created_at,
+            href: `/proposals/${proposal.proposal_id}`
+          });
         }
+        for (const skill of skills) {
+          for (const release of skill.npmReleases ?? []) {
+            next.push({
+              id: `skill-npm-${skill.slug}-${release.version}-${release.publishedAt}`,
+              kind: "skill_npm",
+              title: `${skill.slug}@${release.version}`,
+              subtitle: `${release.packageName} · ${release.status}`,
+              createdAt: release.publishedAt,
+              href: `/skills/${encodeURIComponent(skill.slug)}`
+            });
+          }
+        }
+        for (const family of families) {
+          for (const release of family.npmReleases ?? []) {
+            next.push({
+              id: `wf-npm-${family.slug}-${release.version}-${release.publishedAt}`,
+              kind: "workflow_npm",
+              title: `${family.slug}@${release.version}`,
+              subtitle: `${release.packageName} · ${release.status}`,
+              createdAt: release.publishedAt,
+              href: `/workflows`
+            });
+          }
+        }
+        next.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+        setItems(next);
       })
       .catch((reason: unknown) => {
         if (active) setError(apiError(reason, t));
@@ -371,7 +417,13 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
   }, [api, t]);
 
   if (error !== null) return <Empty>{error}</Empty>;
-  if (proposals === null) return <Empty>{t.reviewQueue.loading}</Empty>;
+  if (items === null) return <Empty>{t.reviewQueue.loading}</Empty>;
+
+  const kindLabel = (kind: HistoryItem["kind"]): string => {
+    if (kind === "skill_npm") return t.reviewQueue.kindSkillNpm;
+    if (kind === "workflow_npm") return t.reviewQueue.kindWorkflowNpm;
+    return t.reviewQueue.kindPush;
+  };
 
   return (
     <section className="stack">
@@ -381,27 +433,25 @@ export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
           <h1>{t.reviewQueue.title}</h1>
         </div>
         <span>
-          {proposals.length} {t.reviewQueue.waiting}
+          {items.length} {t.reviewQueue.waiting}
         </span>
       </div>
-      {proposals.length === 0 ? (
+      {items.length === 0 ? (
         <Empty>{t.reviewQueue.clear}</Empty>
       ) : (
-        <>{proposals.map((proposal) => (
+        <>{items.map((item) => (
           <Link
             className="proposal-card"
-            href={`/proposals/${proposal.proposal_id}`}
-            key={proposal.proposal_id}
+            href={item.href}
+            key={item.id}
           >
             <div>
-              <strong>{proposal.proposal_id}</strong>
-              <code>{proposal.project_id}</code>
+              <strong>{item.title}</strong>
+              <code>{item.subtitle}</code>
             </div>
             <div>
-              <span>
-                {proposal.changed_item_count} {t.reviewQueue.changes}
-              </span>
-              <Status value={proposal.status} />
+              <span>{kindLabel(item.kind)}</span>
+              <Status value={item.kind === "project_push" ? "approved" : "published"} />
             </div>
           </Link>
         ))}</>

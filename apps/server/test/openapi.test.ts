@@ -20,6 +20,7 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/external-skills",
       "/api/v1/external-skills/{id}",
       "/api/v1/external-skills/{id}/refresh",
+      "/mcp",
       "/api/v1/projects",
       "/api/v1/projects/{project_id}",
       "/api/v1/projects/{project_id}/artifacts",
@@ -82,6 +83,21 @@ describe("OpenAPI v1 contract", () => {
       Object.values(path).map((operation) => operation.operationId).filter(Boolean)
     );
     expect(new Set(operationIds).size).toBe(operationIds.length);
+  });
+
+  it("documents STALE_PUSH as a 409 response on finalizeProposal", async () => {
+    const document = parseYaml(await readFile(
+      new URL("../openapi/hunter-harness-v1.yaml", import.meta.url),
+      "utf8"
+    )) as {
+      paths: Record<string, Record<string, {
+        operationId?: string;
+        responses?: Record<string, { description?: string }>;
+      }>>;
+    };
+    const finalize = document.paths["/api/v1/proposal-sessions/{session_id}:finalize"]?.post;
+    expect(finalize?.operationId).toBe("finalizeProposal");
+    expect(finalize?.responses?.["409"]?.description).toContain("STALE_PUSH");
   });
 
   it("ai-jobs GET 200 response schema includes slug+agent dedup key (Y9)", async () => {

@@ -88,7 +88,7 @@ export async function buildDashboardOverview(input: {
     add(proposal.createdAt, "submitted");
     if (proposal.status === "pending_review") add(proposal.createdAt, "pending");
     for (const review of proposal.reviewHistory) {
-      if (review.decision === "approve") add(review.createdAt, "approved");
+      if (review.decision === "approve" || review.decision === "auto-approved") add(review.createdAt, "approved");
       if (review.decision === "reject") add(review.createdAt, "rejected");
     }
   }

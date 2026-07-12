@@ -209,6 +209,22 @@ export class MemoryRepository implements ServerRepository {
     return proposal;
   }
 
+  async finalizeSessionAutoApprove(session: ProposalSessionRecord): Promise<{
+    proposal: ProposalRecord;
+    review: ReviewRecord;
+  }> {
+    const proposal = await this.createProposalFromSession(session);
+    const review = await this.reviewProposal({
+      actorId: session.actorId,
+      proposalId: proposal.proposalId,
+      decision: "auto-approved",
+      comment: null,
+      targetScope: "auto-approved",
+      splitGroups: []
+    });
+    return { proposal: this.requireProposal(session.actorId, proposal.proposalId), review };
+  }
+
   private requireProposal(actorId: string, proposalId: string): ProposalRecord {
     const proposal = this.proposals.get(proposalId);
     if (proposal === undefined) {
@@ -270,7 +286,7 @@ export class MemoryRepository implements ServerRepository {
     }
     let artifactId: string | null = null;
     const childProposalIds: string[] = [];
-    if (input.decision === "approve") {
+    if (input.decision === "approve" || input.decision === "auto-approved") {
       const project = this.requireProject(input.actorId, proposal.projectId);
       if (proposal.parentProposalId === null &&
           proposal.baseProjectVersion !== project.latestProjectVersion) {

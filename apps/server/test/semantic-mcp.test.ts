@@ -110,33 +110,57 @@ describe("semantic MCP", () => {
 
     const search = await client.callTool({
       name: "search_knowledge",
-      arguments: { query: "LlmClient", project_id: projectId }
+      arguments: { query: "LlmClient", project: projectId }
     });
     expect(search.isError).toBeFalsy();
     const searchText = (search.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
     expect(searchText).toContain("Reuse LlmClient");
 
+    const filteredSearch = await client.callTool({
+      name: "search_knowledge",
+      arguments: { query: "LlmClient", project: projectId, status: "active", type: "decision", limit: 5 }
+    });
+    const filteredSearchText = (filteredSearch.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(filteredSearchText).toContain("Reuse LlmClient");
+
+    const noMatchSearch = await client.callTool({
+      name: "search_knowledge",
+      arguments: { query: "LlmClient", project: projectId, status: "stale" }
+    });
+    const noMatchSearchText = (noMatchSearch.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(JSON.parse(noMatchSearchText).items).toHaveLength(0);
+
     const overview = await client.callTool({
       name: "get_project_overview",
-      arguments: { project_id: projectId }
+      arguments: { project: projectId }
     });
     const overviewText = (overview.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
     expect(overviewText).toContain(projectId);
     expect(overviewText).toContain("\"knowledge\": 1");
 
+    const overviewByAlias = await client.callTool({
+      name: "get_project_overview",
+      arguments: { project_id: projectId }
+    });
+    const overviewAliasText = (overviewByAlias.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(overviewAliasText).toContain(projectId);
+
     const entry = await client.callTool({
       name: "get_knowledge_entry",
-      arguments: {
-        project_id: projectId,
-        source_path: ".harness/knowledge/entries/active/decision.json"
-      }
+      arguments: { id: "sample.decision.aaaaaaaaaa" }
     });
     const entryText = (entry.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
     expect(entryText).toContain("Reuse LlmClient");
 
+    const missingEntry = await client.callTool({
+      name: "get_knowledge_entry",
+      arguments: { id: "does.not.exist" }
+    });
+    expect(missingEntry.isError).toBeTruthy();
+
     const changes = await client.callTool({
       name: "list_recent_changes",
-      arguments: { project_id: projectId, limit: 5 }
+      arguments: { project: projectId, limit: 5 }
     });
     const changesText = (changes.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
     expect(changesText).toContain("sample");

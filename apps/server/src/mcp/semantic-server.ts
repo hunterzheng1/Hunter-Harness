@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { SemanticStore } from "../semantic/store.js";
-import type { ServerRepository } from "../repositories/interfaces.js";
+import type { SemanticDocument } from "@hunter-harness/contracts";
+import type { ProjectRecord, ServerRepository } from "../repositories/interfaces.js";
 import { ServerDomainError } from "../repositories/interfaces.js";
+import type { SemanticStore } from "../semantic/store.js";
 
 export interface SemanticMcpDeps {
   semanticStore: SemanticStore;
@@ -24,6 +25,32 @@ async function assertProjectAccess(
   await repository.getProject(actorId, projectId);
 }
 
+async function listAccessibleProjects(
+  repository: ServerRepository,
+  actorId: string
+): Promise<ProjectRecord[]> {
+  const projects: ProjectRecord[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await repository.listProjects({ actorId, limit: 100, cursor });
+    projects.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return projects;
+}
+
+function documentType(document: SemanticDocument): unknown {
+  return document.metadata.entry_type ?? document.metadata.knowledge_type ?? document.metadata.type;
+}
+
+function requireProjectId(project: string | undefined, projectId: string | undefined): string {
+  const value = project ?? projectId;
+  if (value === undefined || value === "") {
+    throw new ServerDomainError(400, "VALIDATION_FAILED", "project is required");
+  }
+  return value;
+}
+
 export function createSemanticMcpServer(deps: SemanticMcpDeps): McpServer {
   const server = new McpServer({
     name: "hunter-harness-semantic",
@@ -35,14 +62,25 @@ export function createSemanticMcpServer(deps: SemanticMcpDeps): McpServer {
     "Search semantic knowledge documents across projects or within one project (read-only).",
     {
       query: z.string().min(1).describe("Search query text"),
-      project_id: z.string().optional().describe("Optional project id to scope the search")
+      project: z.string().optional().describe("Optional project id to scope the search"),
+      project_id: z.string().optional().describe("Deprecated alias for project"),
+      status: z.string().optional().describe("Filter results by knowledge status (e.g. active, candidate, stale)"),
+      type: z.string().optional().describe("Filter results by knowledge/entry type (e.g. decision, architecture)"),
+      limit: z.number().int().min(1).max(100).optional().describe("Max items (default 20)")
     },
-    async ({ query, project_id }) => {
-      if (project_id !== undefined) {
-        await assertProjectAccess(deps.repository, deps.actorId, project_id);
+    async ({ query, project, project_id, status, type, limit }) => {
+      const projectId = project ?? project_id;
+      if (projectId !== undefined) {
+        await assertProjectAccess(deps.repository, deps.actorId, projectId);
       }
-      const documents = await deps.semanticStore.search(query, project_id);
-      const items = documents.map((document) => ({
+      const documents = await deps.semanticStore.search(query, projectId);
+      const filtered = documents.filter((document) => {
+        if (status !== undefined && document.metadata.status !== status) return false;
+        if (type !== undefined && documentType(document) !== type) return false;
+        return true;
+      });
+      const capped = filtered.slice(0, limit ?? 20);
+      const items = capped.map((document) => ({
         document,
         project_id: document.project_id
       }));
@@ -54,49 +92,40 @@ export function createSemanticMcpServer(deps: SemanticMcpDeps): McpServer {
     "get_project_overview",
     "Get semantic index overview counts for a project (read-only).",
     {
-      project_id: z.string().min(1).describe("Project id")
+      project: z.string().optional().describe("Project id"),
+      project_id: z.string().optional().describe("Deprecated alias for project")
     },
-    async ({ project_id }) => {
-      await assertProjectAccess(deps.repository, deps.actorId, project_id);
-      const overview = await deps.semanticStore.overview(project_id);
+    async ({ project, project_id }) => {
+      const projectId = requireProjectId(project, project_id);
+      await assertProjectAccess(deps.repository, deps.actorId, projectId);
+      const overview = await deps.semanticStore.overview(projectId);
       return textResult(overview);
     }
   );
 
   server.tool(
     "get_knowledge_entry",
-    "Fetch one knowledge document by document_id or source_path within a project (read-only).",
+    "Fetch one knowledge document by id (matches document_id, metadata.entry_id, or metadata.knowledge_id) across accessible projects (read-only).",
     {
-      project_id: z.string().min(1).describe("Project id"),
-      document_id: z.string().optional().describe("Semantic document id"),
-      source_path: z.string().optional().describe("Managed file path under the project artifact")
+      id: z.string().min(1).describe("document_id, metadata.entry_id, or metadata.knowledge_id")
     },
-    async ({ project_id, document_id, source_path }) => {
-      await assertProjectAccess(deps.repository, deps.actorId, project_id);
-      if ((document_id === undefined || document_id === "") &&
-          (source_path === undefined || source_path === "")) {
-        throw new ServerDomainError(
-          400,
-          "VALIDATION_FAILED",
-          "document_id or source_path is required"
+    async ({ id }) => {
+      const projects = await listAccessibleProjects(deps.repository, deps.actorId);
+      for (const project of projects) {
+        const documents = await deps.semanticStore.listByKinds(project.projectId, [
+          "knowledge_entry",
+          "knowledge_markdown"
+        ]);
+        const match = documents.find((document) =>
+          document.document_id === id ||
+          document.metadata.entry_id === id ||
+          document.metadata.knowledge_id === id
         );
+        if (match !== undefined) {
+          return textResult({ document: match });
+        }
       }
-      const documents = await deps.semanticStore.listByKinds(project_id, [
-        "knowledge_entry",
-        "knowledge_markdown"
-      ]);
-      const match = documents.find((document) =>
-        (document_id !== undefined && document.document_id === document_id) ||
-        (source_path !== undefined && document.source_path === source_path)
-      );
-      if (match === undefined) {
-        throw new ServerDomainError(404, "NOT_FOUND", "knowledge entry not found", {
-          project_id,
-          document_id: document_id ?? null,
-          source_path: source_path ?? null
-        });
-      }
-      return textResult({ document: match });
+      throw new ServerDomainError(404, "NOT_FOUND", "knowledge entry not found", { id });
     }
   );
 
@@ -104,12 +133,14 @@ export function createSemanticMcpServer(deps: SemanticMcpDeps): McpServer {
     "list_recent_changes",
     "List archive change documents for a project (read-only).",
     {
-      project_id: z.string().min(1).describe("Project id"),
+      project: z.string().optional().describe("Project id"),
+      project_id: z.string().optional().describe("Deprecated alias for project"),
       limit: z.number().int().min(1).max(100).optional().describe("Max items (default 20)")
     },
-    async ({ project_id, limit }) => {
-      await assertProjectAccess(deps.repository, deps.actorId, project_id);
-      const items = await deps.semanticStore.listByKinds(project_id, ["archive_record"]);
+    async ({ project, project_id, limit }) => {
+      const projectId = requireProjectId(project, project_id);
+      await assertProjectAccess(deps.repository, deps.actorId, projectId);
+      const items = await deps.semanticStore.listByKinds(projectId, ["archive_record"]);
       const capped = items.slice(0, limit ?? 20);
       return textResult({ items: capped });
     }

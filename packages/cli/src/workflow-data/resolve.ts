@@ -1,7 +1,9 @@
-import { createHash } from "node:crypto";
 import { cp, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { canonicalJson } from "@hunter-harness/contracts";
+import { sha256Bytes } from "@hunter-harness/core";
 
 export class WorkflowDataResolutionError extends Error {
   readonly code: string;
@@ -69,12 +71,11 @@ async function listFilesRecursive(root: string, base = root): Promise<Array<{ pa
 }
 
 function sha256Canonical(files: Array<{ path: string; content: string }>): string {
-  const payload = JSON.stringify(
+  return sha256Bytes(canonicalJson(
     [...files]
       .sort((left, right) => left.path.localeCompare(right.path))
       .map((file) => ({ path: file.path, content: file.content }))
-  );
-  return "sha256:" + createHash("sha256").update(payload, "utf8").digest("hex");
+  ));
 }
 
 /** 校验 hunter-workflow-family.json 中的 content_sha256（若存在）。 */

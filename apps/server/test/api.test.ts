@@ -204,6 +204,15 @@ describe("/api/v1 governed server", () => {
     });
     const proposalId = finalized.json().proposal_id as string;
     const artifactId = finalized.json().artifact_id as string;
+    const proposalDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/proposals/${proposalId}`,
+      headers: headers()
+    });
+    expect(proposalDetail.statusCode).toBe(200);
+    expect(proposalDetail.json().review_history).toEqual([
+      expect.objectContaining({ decision: "auto-approved", artifact_id: artifactId })
+    ]);
 
     const update = await app.inject({
       method: "GET",

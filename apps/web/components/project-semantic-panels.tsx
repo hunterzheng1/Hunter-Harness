@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { SemanticDocument, SemanticEdge, SemanticOverview } from "@hunter-harness/contracts";
 
 import type { HunterApi } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import { MarkdownDocument } from "./skill-shared";
 
 type SemanticTab = "overview" | "knowledge" | "rules" | "changes" | "graph";
 
@@ -44,14 +45,17 @@ function DocumentList({
   items,
   selectedId,
   onSelect,
-  empty
+  empty,
+  renderBody
 }: {
   items: SemanticDocument[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   empty: string;
+  renderBody?: (document: SemanticDocument) => ReactNode;
 }) {
   if (items.length === 0) return <div className="empty-state">{empty}</div>;
+  const selected = items.find((item) => item.document_id === selectedId) ?? null;
   return (
     <div className="source-package-grid">
       <div className="source-file-tree">
@@ -68,12 +72,12 @@ function DocumentList({
         ))}
       </div>
       <div className="file-preview">
-        {selectedId === null ? (
+        {selected === null ? (
           <div className="empty-state">—</div>
+        ) : renderBody !== undefined ? (
+          renderBody(selected)
         ) : (
-          <pre className="code-view content-preview">
-            {items.find((item) => item.document_id === selectedId)?.body ?? ""}
-          </pre>
+          <pre className="code-view content-preview">{selected.body}</pre>
         )}
       </div>
     </div>
@@ -249,6 +253,7 @@ export function ProjectSemanticPanels({
             selectedId={selectedId}
             onSelect={setSelectedId}
             empty={t.semantic.noKnowledge}
+            renderBody={(document) => <MarkdownDocument content={document.body} />}
           />
         </div>
       ) : null}

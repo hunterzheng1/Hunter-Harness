@@ -145,6 +145,9 @@ const zh = {
     loading: "正在加载变更历史…",
     changes: "项变更",
     canonicalSkillIR: "规范技能 IR",
+    kindPush: "项目推送",
+    kindSkillNpm: "技能 npm 发布",
+    kindWorkflowNpm: "工作流 npm 发布",
   },
   artifacts: {
     eyebrow: "已批准发布",
@@ -848,6 +851,9 @@ const en: typeof zh = {
     loading: "Loading change history…",
     changes: "changes",
     canonicalSkillIR: "Canonical Skill IR",
+    kindPush: "Project push",
+    kindSkillNpm: "Skill npm release",
+    kindWorkflowNpm: "Workflow npm release",
   },
   artifacts: {
     eyebrow: "Approved Releases",

@@ -11,7 +11,8 @@ export const semanticDocumentKindSchema = z.enum([
 export const semanticEdgeKindSchema = z.enum([
   "references_path",
   "supersedes",
-  "related_archive"
+  "related_archive",
+  "tag_cooccurrence"
 ]);
 
 export const semanticDocumentSchema = z.object({
@@ -44,6 +45,7 @@ export const semanticIndexBuildSchema = z.object({
 }).strict();
 
 export type SemanticDocumentKind = z.infer<typeof semanticDocumentKindSchema>;
+export type SemanticEdgeKind = z.infer<typeof semanticEdgeKindSchema>;
 export type SemanticDocument = z.infer<typeof semanticDocumentSchema>;
 export type SemanticEdge = z.infer<typeof semanticEdgeSchema>;
 export type SemanticIndexBuild = z.infer<typeof semanticIndexBuildSchema>;
