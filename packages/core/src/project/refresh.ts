@@ -2,27 +2,39 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, rmdir, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { canonicalJson, projectConfigSchema } from "@hunter-harness/contracts";
+import {
+  canonicalJson,
+  sortHarnessAgents,
+  type CodeBuddySurface,
+  type HarnessAgent
+} from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { sha256Bytes } from "../fs/hash.js";
-import { refreshManagedBlockById } from "../managed/managed-block.js";
+import {
+  refreshManagedBlockById,
+  removeManagedBlock,
+  removeManagedBlockById
+} from "../managed/managed-block.js";
 import { runTransaction } from "../transaction/transaction.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import {
   AGENTS_CORE_BLOCK_ID,
   AGENTS_MANAGED_BLOCK_CONTENT,
   CLAUDE_BLOCK_ID,
-  CLAUDE_MANAGED_BLOCK_CONTENT
+  CLAUDE_MANAGED_BLOCK_CONTENT,
+  CODEBUDDY_BLOCK_ID,
+  CODEBUDDY_MANAGED_BLOCK_CONTENT
 } from "./managed-content.js";
 import {
   loadMigrationManifests,
-  loadProfileBundle,
-  managedTargets,
+  loadAgentBundle,
   parseHarnessProfile,
   type HarnessProfile,
   type ProjectedBundleFile
 } from "./profile-bundle.js";
+import { getAdapter, getAdapters, managedTargetsFor } from "./agent-adapters.js";
+import { TargetCollisionError, type InstalledBundleStateV3 } from "./initialize.js";
 
 // Conservative Refresh：本地安全协调，不触碰 server-backed update 语义（design §2/§3）。
 // 分类依据 design §4.3：absent→add；current==incoming→unchanged；current==trusted→干净替换；
@@ -71,6 +83,8 @@ export interface RefreshOptions {
   projectRoot: string;
   resourcesRoot: string;
   profile: HarnessProfile;
+  agents: HarnessAgent[];
+  codebuddySurface?: CodeBuddySurface;
   dryRun: boolean;
   forceManaged: boolean;
 }
@@ -81,6 +95,7 @@ const CONTEXT_INDEX_PATH = ".harness/context-index.json";
 interface InstalledState {
   profile: HarnessProfile | null;
   schemaVersion: number | null;
+  adapters: HarnessAgent[];
   trusted: Map<string, string>;
 }
 
@@ -121,13 +136,13 @@ async function readOptionalText(path: string): Promise<string> {
 async function readInstalledState(root: string): Promise<InstalledState> {
   const content = await readOptionalText(join(root, INSTALLED_STATE_PATH));
   if (content === "") {
-    return { profile: null, schemaVersion: null, trusted: new Map() };
+    return { profile: null, schemaVersion: null, adapters: [], trusted: new Map() };
   }
-  let parsed: { schema_version?: number; profile?: unknown; files?: unknown };
+  let parsed: { schema_version?: number; profile?: unknown; adapters?: unknown; files?: unknown };
   try {
-    parsed = JSON.parse(content) as { schema_version?: number; profile?: unknown; files?: unknown };
+    parsed = JSON.parse(content) as typeof parsed;
   } catch {
-    return { profile: null, schemaVersion: null, trusted: new Map() };
+    return { profile: null, schemaVersion: null, adapters: [], trusted: new Map() };
   }
   const profile = parseHarnessProfile(parsed.profile);
   const trusted = new Map<string, string>();
@@ -144,8 +159,14 @@ async function readInstalledState(root: string): Promise<InstalledState> {
       }
     }
   }
+  const schemaVersion = typeof parsed.schema_version === "number" ? parsed.schema_version : null;
+  const adapters = schemaVersion === 3 && Array.isArray(parsed.adapters)
+    ? sortHarnessAgents(parsed.adapters.filter((value): value is HarnessAgent =>
+      value === "claude-code" || value === "codex" || value === "cursor" || value === "codebuddy"
+    ))
+    : schemaVersion === 1 || schemaVersion === 2 ? ["claude-code"] : [];
   // schema v1（仅记路径无 hash）：profile 可读，但无 per-file trusted hash → 需迁移 manifest 补足。
-  return { profile, schemaVersion: typeof parsed.schema_version === "number" ? parsed.schema_version : null, trusted };
+  return { profile, schemaVersion, adapters, trusted };
 }
 
 async function readContextIndexBundleHash(root: string): Promise<string | null> {
@@ -162,16 +183,13 @@ async function readContextIndexBundleHash(root: string): Promise<string | null> 
 
 // 删除旧 profile 独有目标后剪除因之变空的父目录（如 .claude/skills/agents/）。
 // 边界止于 .claude、.claude/skills、.claude/agents——不删除这些顶层目录，也不越出 .claude。
-async function pruneEmptyParentDirs(root: string, deletedPaths: readonly string[]): Promise<void> {
-  const claudeRoot = join(root, ".claude");
-  const boundaries = new Set([
-    claudeRoot,
-    join(claudeRoot, "skills"),
-    join(claudeRoot, "agents")
-  ]);
+async function pruneEmptyParentDirs(
+  root: string, deletedPaths: readonly string[], boundaryPaths: readonly string[]
+): Promise<void> {
+  const boundaries = new Set(boundaryPaths.map((path) => join(root, path)));
   for (const deleted of deletedPaths) {
     let dir = dirname(join(root, deleted));
-    while (dir.startsWith(claudeRoot) && !boundaries.has(dir)) {
+    while (dir.startsWith(root) && !boundaries.has(dir)) {
       let entries: string[];
       try {
         entries = await readdir(dir);
@@ -262,66 +280,141 @@ async function refreshMarkdownBlock(
 
 async function reconcileContextIndex(
   root: string,
-  bundleVersion: string,
-  bundleManifestHash: string
-): Promise<TransactionOperation> {
+  profile: HarnessProfile,
+  agents: HarnessAgent[],
+  manifests: InstalledBundleStateV3["manifests"],
+  codebuddySurface: CodeBuddySurface
+): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
-  let record: Record<string, unknown> = {};
-  if (existing !== "") {
-    try {
-      record = JSON.parse(existing) as Record<string, unknown>;
-    } catch {
-      record = {};
-    }
-  }
-  if (Object.keys(record).length === 0) {
-    record = {
-      schema_version: 1,
-      project: { claude_md: "CLAUDE.md", agents_md: "AGENTS.md" },
-      rules: [".claude/rules/harness-general.md"],
-      knowledge: { index: ".harness/knowledge/index.json" },
-      codebase: { map: ".harness/codebase/map", status: "missing" }
-    };
-  }
-  record.skill_bundle = {
-    registry_version: bundleVersion,
-    bundle_hash: bundleManifestHash
+  const context = { profile, codebuddySurface };
+  const record = {
+    schema_version: 2,
+    project: {
+      shared_instructions: "AGENTS.md",
+      adapters: Object.fromEntries(agents.map((agent) => [
+        agent, getAdapter(agent).contextIndex(context)
+      ]))
+    },
+    knowledge: { index: ".harness/knowledge/index.json" },
+    codebase: { map: ".harness/codebase/map", status: "missing" },
+    skill_bundles: Object.fromEntries(manifests.map((manifest) => [
+      manifest.adapter,
+      { registry_version: manifest.bundle_version, bundle_hash: manifest.bundle_manifest_hash }
+    ]))
   };
+  const next = JSON.stringify(record, null, 2) + "\n";
+  if (existing === next) return null;
   return {
     operation: existing === "" ? "add" : "modify",
     path: CONTEXT_INDEX_PATH,
-    content: JSON.stringify(record, null, 2) + "\n"
+    content: next
   };
 }
 
-async function profileTransitionOperation(
+async function projectTransitionOperation(
   root: string,
   previousProfile: HarnessProfile | null,
-  profile: HarnessProfile
+  profile: HarnessProfile,
+  oldAgents: HarnessAgent[],
+  agents: HarnessAgent[],
+  codebuddySurface: CodeBuddySurface
 ): Promise<TransactionOperation | null> {
-  if (previousProfile === null || previousProfile === profile) return null;
+  if (previousProfile === profile && oldAgents.length === agents.length &&
+      oldAgents.every((agent, index) => agent === agents[index])) return null;
   const path = ".harness/project.yaml";
   const content = await readOptionalText(join(root, path));
-  const project = projectConfigSchema.parse(parseYaml(content));
+  if (content === "") return null;
+  const project = parseYaml(content) as Record<string, unknown>;
   return {
     operation: "modify",
     path,
     content: stringifyYaml({
       ...project,
-      project: { ...project.project, profiles: [profile] }
+      project: { ...(project.project as object), profiles: [profile] },
+      adapters: { enabled: agents },
+      ...(agents.includes("codebuddy")
+        ? { adapter_options: { codebuddy: { surface: codebuddySurface } } }
+        : { adapter_options: undefined })
     }, { sortMapEntries: true })
   };
+}
+
+interface OwnedTarget extends ProjectedBundleFile {
+  owner: HarnessAgent;
+}
+
+function mergeTargets(targets: OwnedTarget[]): Array<OwnedTarget & { owner: HarnessAgent | "shared" }> {
+  const grouped = new Map<string, OwnedTarget[]>();
+  for (const target of targets) {
+    grouped.set(target.target_path, [...(grouped.get(target.target_path) ?? []), target]);
+  }
+  return [...grouped.entries()].map(([path, values]) => {
+    const first = values[0]!;
+    if (values.some((value) => value.sha256 !== first.sha256)) throw new TargetCollisionError(path);
+    return { ...first, owner: new Set(values.map((value) => value.owner)).size === 1 ? first.owner : "shared" };
+  }).sort((left, right) => left.target_path.localeCompare(right.target_path));
+}
+
+async function reconcileMarkdownBlock(
+  root: string, fileName: string, blockId: string, content: string, remove: boolean,
+  ops: TransactionOperation[], conflicts: RefreshConflict[], preserved: RefreshItem[]
+): Promise<void> {
+  const original = await readOptionalText(join(root, fileName));
+  const synthetic: ProjectedBundleFile = {
+    source_path: fileName, target_path: fileName,
+    sha256: createHash("sha256").update(content).digest("hex"),
+    bytes: new TextEncoder().encode(content)
+  };
+  let next: string;
+  try {
+    if (remove) {
+      const hasId = original.includes(`<!-- hunter-harness:start id=${blockId} -->`);
+      next = hasId ? removeManagedBlockById(original, blockId) : removeManagedBlock(original);
+    } else {
+      const refreshed = refreshManagedBlockById(original, blockId, content, { upgradeLegacy: true });
+      if (refreshed.conflict) throw new Error("managed block conflict");
+      next = refreshed.content;
+    }
+  } catch {
+    const current = original === "" ? null : createHash("sha256").update(original).digest("hex");
+    preserved.push(item(synthetic, "preserve", "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
+    conflicts.push(conflict(synthetic, "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
+    return;
+  }
+  if (next !== original) ops.push({
+    operation: original === "" ? "add" : "modify", path: fileName, content: next
+  });
+}
+
+function stateWithoutInstalledAt(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const { installed_at: _, ...rest } = value as Record<string, unknown>;
+  return rest;
 }
 
 export async function refreshProject(options: RefreshOptions): Promise<RefreshResult> {
   const root = resolve(options.projectRoot);
   const profile = options.profile;
-  const newManaged = await managedTargets(options.resourcesRoot, profile);
-  const newBundle = await loadProfileBundle(options.resourcesRoot, profile);
-  const bundleManifestHash = sha256Bytes(canonicalJson(newBundle.manifest.files));
-
   const installed = await readInstalledState(root);
   const previousProfile = installed.profile;
+  const agents = sortHarnessAgents(options.agents);
+  const oldAgents = installed.adapters.length > 0 ? installed.adapters : ["claude-code"];
+  const codebuddySurface = options.codebuddySurface ?? "both";
+  const context = { profile, codebuddySurface };
+  const owned: OwnedTarget[] = [];
+  const manifests: InstalledBundleStateV3["manifests"] = [];
+  for (const agent of agents) {
+    const bundle = await loadAgentBundle(options.resourcesRoot, profile, agent);
+    manifests.push({
+      adapter: agent,
+      bundle_version: bundle.manifest.bundle_version,
+      bundle_manifest_hash: sha256Bytes(canonicalJson(bundle.manifest.files))
+    });
+    for (const target of managedTargetsFor(getAdapter(agent), bundle, context)) {
+      owned.push({ ...target, owner: agent });
+    }
+  }
+  const newManaged = mergeTargets(owned);
   let trusted = installed.trusted;
   // v1 state 无 per-file hash：按 context-index bundle_hash 匹配 0.1.1 迁移 manifest，
   // 命中则补足可信 hash + 旧投影目标集（含 .claude/skills/agents/* 重复项）。
@@ -340,7 +433,6 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     }
   }
 
-  // Profile Transition：旧 profile 独有目标（仅来自 Bundle 差集或迁移 manifest，绝不来自 state）。
   const newTargetSet = new Set(newManaged.map((target) => target.target_path));
   let oldOnly: ProjectedBundleFile[] = [];
   if (migrationOldPaths !== null) {
@@ -354,9 +446,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
         });
       }
     }
-  } else if (previousProfile !== null && previousProfile !== profile) {
-    const oldManaged = await managedTargets(options.resourcesRoot, previousProfile);
-    oldOnly = oldManaged.filter((target) => !newTargetSet.has(target.target_path));
+  } else if (previousProfile !== null) {
+    const oldContext = { profile: previousProfile, codebuddySurface };
+    const oldTargets: ProjectedBundleFile[] = [];
+    for (const agent of oldAgents) {
+      const bundle = await loadAgentBundle(options.resourcesRoot, previousProfile, agent);
+      oldTargets.push(...managedTargetsFor(getAdapter(agent), bundle, oldContext));
+    }
+    oldOnly = oldTargets.filter((target) => !newTargetSet.has(target.target_path));
   }
 
   const applied: RefreshItem[] = [];
@@ -365,7 +462,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const unchanged: RefreshItem[] = [];
   const conflicts: RefreshConflict[] = [];
   const ops: TransactionOperation[] = [];
-  const newStateFiles: Array<{ source_path: string; target_path: string; sha256: string }> = [];
+  const newStateFiles: InstalledBundleStateV3["files"] = [];
 
   for (const target of newManaged) {
     const incoming = target.sha256;
@@ -373,12 +470,12 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     if (current === null) {
       applied.push(item(target, "add", "MISSING_TARGET", null, incoming));
       ops.push({ operation: "add", path: target.target_path, content: target.bytes });
-      newStateFiles.push({ source_path: target.source_path, target_path: target.target_path, sha256: incoming });
+      newStateFiles.push({ owner: target.owner, source_path: target.source_path, target_path: target.target_path, sha256: incoming });
       continue;
     }
     if (current === incoming) {
       unchanged.push(item(target, "unchanged", "ALREADY_CURRENT", current, incoming));
-      newStateFiles.push({ source_path: target.source_path, target_path: target.target_path, sha256: incoming });
+      newStateFiles.push({ owner: target.owner, source_path: target.source_path, target_path: target.target_path, sha256: incoming });
       continue;
     }
     const trustedHash = trusted.get(target.target_path);
@@ -386,13 +483,13 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       const reason: RefreshReason = options.forceManaged ? "FORCE_MANAGED" : "BASELINE_CLEAN";
       applied.push(item(target, "replace", reason, current, incoming));
       ops.push({ operation: "modify", path: target.target_path, content: target.bytes });
-      newStateFiles.push({ source_path: target.source_path, target_path: target.target_path, sha256: incoming });
+      newStateFiles.push({ owner: target.owner, source_path: target.source_path, target_path: target.target_path, sha256: incoming });
     } else {
       const reason: RefreshReason = trustedHash === undefined ? "LEGACY_BASELINE_UNKNOWN" : "LOCAL_MODIFICATION";
       preserved.push(item(target, "preserve", reason, current, incoming));
       conflicts.push(conflict(target, reason, current, incoming));
       if (trustedHash !== undefined) {
-        newStateFiles.push({ source_path: target.source_path, target_path: target.target_path, sha256: trustedHash });
+        newStateFiles.push({ owner: target.owner, source_path: target.source_path, target_path: target.target_path, sha256: trustedHash });
       }
     }
   }
@@ -417,37 +514,55 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     }
   }
 
-  await refreshMarkdownBlock(
-    root, "AGENTS.md", AGENTS_CORE_BLOCK_ID, AGENTS_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
-  );
-  await refreshMarkdownBlock(
-    root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, ops, conflicts, preserved
-  );
+  await reconcileMarkdownBlock(root, "AGENTS.md", AGENTS_CORE_BLOCK_ID, AGENTS_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
+  await reconcileMarkdownBlock(root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, !agents.includes("claude-code"), ops, conflicts, preserved);
+  await reconcileMarkdownBlock(root, "CODEBUDDY.md", CODEBUDDY_BLOCK_ID, CODEBUDDY_MANAGED_BLOCK_CONTENT, !agents.includes("codebuddy"), ops, conflicts, preserved);
 
-  const profileOperation = await profileTransitionOperation(root, previousProfile, profile);
-  if (profileOperation !== null) ops.push(profileOperation);
+  const projectOperation = await projectTransitionOperation(root, previousProfile, profile, oldAgents, agents, codebuddySurface);
+  if (projectOperation !== null) ops.push(projectOperation);
+  const contextOperation = await reconcileContextIndex(root, profile, agents, manifests, codebuddySurface);
+  if (contextOperation !== null) ops.push(contextOperation);
 
-  ops.push(await reconcileContextIndex(root, newBundle.manifest.bundle_version, bundleManifestHash));
-
-  const installedState = {
-    schema_version: 2,
+  const managedBlocks: InstalledBundleStateV3["managed_blocks"] = [
+    {
+      owner: "shared", target_path: "AGENTS.md", block_id: AGENTS_CORE_BLOCK_ID,
+      content_sha256: createHash("sha256").update(AGENTS_MANAGED_BLOCK_CONTENT).digest("hex")
+    },
+    ...(agents.includes("claude-code") ? [{
+      owner: "claude-code" as const, target_path: "CLAUDE.md", block_id: CLAUDE_BLOCK_ID,
+      content_sha256: createHash("sha256").update(CLAUDE_MANAGED_BLOCK_CONTENT).digest("hex")
+    }] : []),
+    ...(agents.includes("codebuddy") ? [{
+      owner: "codebuddy" as const, target_path: "CODEBUDDY.md", block_id: CODEBUDDY_BLOCK_ID,
+      content_sha256: createHash("sha256").update(CODEBUDDY_MANAGED_BLOCK_CONTENT).digest("hex")
+    }] : [])
+  ].sort((left, right) => left.target_path.localeCompare(right.target_path) || left.block_id.localeCompare(right.block_id));
+  const installedState: InstalledBundleStateV3 = {
+    schema_version: 3,
     profile,
-    bundle_version: newBundle.manifest.bundle_version,
-    bundle_manifest_hash: bundleManifestHash,
+    adapters: agents,
     installed_at: new Date().toISOString(),
-    files: newStateFiles.sort((left, right) => left.target_path.localeCompare(right.target_path))
+    manifests,
+    files: newStateFiles.sort((left, right) => left.target_path.localeCompare(right.target_path) || left.source_path.localeCompare(right.source_path)),
+    managed_blocks: managedBlocks
   };
-  ops.push({
-    operation: (await exists(join(root, INSTALLED_STATE_PATH))) ? "modify" : "add",
-    path: INSTALLED_STATE_PATH,
-    content: JSON.stringify(installedState, null, 2) + "\n"
-  });
+  const existingState = await readOptionalText(join(root, INSTALLED_STATE_PATH));
+  let existingParsed: unknown = null;
+  try { existingParsed = existingState === "" ? null : JSON.parse(existingState); } catch { /* rewrite invalid state */ }
+  if (JSON.stringify(stateWithoutInstalledAt(existingParsed)) !== JSON.stringify(stateWithoutInstalledAt(installedState))) {
+    ops.push({
+      operation: existingState === "" ? "add" : "modify",
+      path: INSTALLED_STATE_PATH,
+      content: JSON.stringify(installedState, null, 2) + "\n"
+    });
+  }
 
   if (!options.dryRun) {
     await runTransaction(root, ops, { kind: "refresh" });
     await pruneEmptyParentDirs(
       root,
-      removed.map((item) => item.target_path)
+      removed.map((item) => item.target_path),
+      getAdapters([...new Set([...agents, ...oldAgents])]).flatMap((adapter) => adapter.pruneBoundaries(context))
     );
   }
 

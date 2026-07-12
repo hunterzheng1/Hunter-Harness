@@ -80,7 +80,7 @@ describe("managed block conflicts during refresh", () => {
     await rm(join(root, ".claude", "agents", "harness-reviewer.md"), { force: true });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.some((c) => c.target_path === "AGENTS.md")).toBe(true);
@@ -105,7 +105,7 @@ describe("managed block conflicts during refresh", () => {
     await writeFile(join(root, "AGENTS.md"), validWithUser);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: true
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: true
     });
     const refreshed = await readFile(join(root, "AGENTS.md"), "utf8");
     // force-managed 只替换块内，块外用户字节逐字保留。

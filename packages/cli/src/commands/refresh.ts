@@ -2,7 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  harnessAgentSchema,
   projectConfigSchema,
+  sortHarnessAgents,
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import { parse as parseYaml } from "yaml";
@@ -56,6 +58,18 @@ function parseProfile(value: string | undefined, current: HarnessProfile): Harne
   if (value === "1" || value === "general") return "general";
   if (value === "2" || value === "java") return "java";
   throw new Error("配置类型必须为 general 或 java");
+}
+
+function refreshAgents(config: ProjectConfig): ReturnType<typeof sortHarnessAgents> {
+  const agents = sortHarnessAgents(config.adapters.enabled.flatMap((agent) => {
+    const parsed = harnessAgentSchema.safeParse(agent);
+    return parsed.success ? [parsed.data] : [];
+  }));
+  return agents.length > 0 ? agents : ["claude-code"];
+}
+
+function codebuddySurface(config: ProjectConfig): "both" | "ide" | "cli" {
+  return config.adapter_options?.codebuddy?.surface ?? "both";
 }
 
 function summarize(result: RefreshResult): CliResult {
@@ -142,6 +156,8 @@ export async function runRefresh(
         projectRoot: dependencies.cwd,
         resourcesRoot: dependencies.resourcesRoot,
         profile: targetProfile,
+        agents: refreshAgents(detection.config),
+        codebuddySurface: codebuddySurface(detection.config),
         dryRun: true,
         forceManaged: options.forceManaged === true
       });
@@ -179,6 +195,8 @@ export async function runRefresh(
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
       profile: targetProfile,
+      agents: refreshAgents(detection.config),
+      codebuddySurface: codebuddySurface(detection.config),
       dryRun,
       forceManaged: options.forceManaged === true
     });

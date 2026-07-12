@@ -133,7 +133,7 @@ describe("0.1.1 migration", () => {
     expect(await exists(join(root, ".claude", "skills", "agents", "harness-reviewer.md"))).toBe(true);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts).toHaveLength(0);
@@ -145,9 +145,9 @@ describe("0.1.1 migration", () => {
       resourcesRoot, "harness", "bundles", "general", "claude-code", "agents", "harness-reviewer.md"
     ));
     expect(reviewer).toEqual(incoming);
-    // schema v2 state 已写入。
+    // schema v3 state 已写入。
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as { schema_version: number };
-    expect(state.schema_version).toBe(2);
+    expect(state.schema_version).toBe(3);
   });
 
   it("real 0.1.1 java fixture refreshes and removes clean duplicate skills agents", async () => {
@@ -155,7 +155,7 @@ describe("0.1.1 migration", () => {
     await installV1Style(root, "java");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "java", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "java", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts).toHaveLength(0);
@@ -170,7 +170,7 @@ describe("0.1.1 migration", () => {
     await writeFile(dupTarget, "user modified duplicate\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.length).toBeGreaterThan(0);
@@ -180,7 +180,7 @@ describe("0.1.1 migration", () => {
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as {
       schema_version: number; files: Array<{ target_path: string }>;
     };
-    expect(state.schema_version).toBe(2);
+    expect(state.schema_version).toBe(3);
     expect(state.files.some((f) => f.target_path === ".claude/skills/agents/harness-reviewer.md")).toBe(false);
   });
 
@@ -193,7 +193,7 @@ describe("0.1.1 migration", () => {
     await writeFile(join(root, ".harness", "context-index.json"), JSON.stringify(ci, null, 2) + "\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     // 无可信 hash → 不删除旧重复目标（design §7.5）。
@@ -212,7 +212,7 @@ describe("Profile Transition", () => {
     expect(await exists(join(root, ".claude", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "java", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "java", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.applied.some((i) => i.target_path === ".claude/skills/harness-apidoc/SKILL.md")).toBe(true);
@@ -230,7 +230,7 @@ describe("Profile Transition", () => {
     });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.removed.some((r) => r.target_path === ".claude/skills/harness-apidoc/SKILL.md")).toBe(true);
@@ -249,7 +249,7 @@ describe("Profile Transition", () => {
     await writeFile(apidoc, "user edited apidoc\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.length).toBeGreaterThan(0);
