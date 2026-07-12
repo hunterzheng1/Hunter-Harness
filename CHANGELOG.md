@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2]
+
+### Fixed
+
+- 重新发布 CLI：`0.2.1` 因本地 `tsc`/`esbuild` PATH 问题打进了未重建的旧 bundle；`0.2.2` 含完整敏感扫描误报修复。
+
 ## [0.2.1]
 
 ### Fixed
