@@ -17,7 +17,7 @@ import {
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
-import { InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
+import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 
 export interface RefreshCommandOptions {
@@ -222,8 +222,11 @@ export async function runRefresh(
     }
     return output.exit_code;
   } catch (error) {
+    const info = harnessErrorInfo(error);
+    const exitCode = info.exitCode ?? 1;
+    const code = info.code;
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
+    dependencies.stderr((code !== undefined ? code + ": " : "") + message + "\n");
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({
         schema_version: 1,
@@ -231,14 +234,14 @@ export async function runRefresh(
         request_id: requestId,
         dry_run: dryRun,
         ok: false,
-        exit_code: 1,
+        exit_code: exitCode,
         project_id: null,
         summary: { applied: 0, removed: 0, preserved: 0, unchanged: 0, conflicts: 0 },
         items: [],
         warnings: [],
-        errors: [{ message }]
+        errors: [{ ...(code === undefined ? {} : { code }), message }]
       }));
     }
-    return 1;
+    return exitCode;
   }
 }

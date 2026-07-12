@@ -461,7 +461,10 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     if (current === null) {
       continue; // 已不存在，无需操作
     }
-    const trustedHash = trusted.get(target.target_path);
+    // 删除授权只能来自受信旧 Bundle 投影 / migration manifest 的哈希（target.sha256），
+    // 不得来自 installed state（§14 / §19.5）。否则被篡改的 state 可让本地已改文件
+    // 被误判为 clean 而删除。
+    const trustedHash = target.sha256 !== "" ? target.sha256 : undefined;
     const clean = trustedHash !== undefined && current === trustedHash;
     if (clean || options.forceManaged) {
       const reason: RefreshReason = clean ? "BASELINE_CLEAN" : "FORCE_MANAGED";

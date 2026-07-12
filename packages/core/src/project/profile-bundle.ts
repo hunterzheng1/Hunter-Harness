@@ -44,6 +44,31 @@ export interface LoadedAgentBundle {
   files: Map<string, Uint8Array>;
 }
 
+/**
+ * Offline Agent Bundle 完整性错误。exitCode 7 对应设计 §18 的
+ * Bundle 完整性/安全错误退出码。
+ */
+export class AdapterBundleError extends Error {
+  readonly exitCode = 7;
+
+  constructor(
+    readonly code: "ADAPTER_BUNDLE_MISSING" | "ADAPTER_BUNDLE_INVALID",
+    message: string
+  ) {
+    super(message);
+    this.name = "AdapterBundleError";
+  }
+}
+
+function isEnoent(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
 /** @deprecated Prefer LoadedAgentBundle */
 export type ProfileBundle = {
   manifest: ProfileBundleManifest;
@@ -72,26 +97,72 @@ export async function loadAgentBundle(
   profile: HarnessProfile,
   agent: HarnessAgent
 ): Promise<LoadedAgentBundle> {
-  const raw = JSON.parse(await readFile(
-    join(resourcesRoot, "harness", "manifests", profile, `${agent}.json`), "utf8"
-  )) as Partial<AgentBundleManifestV2>;
+  const manifestPath = join(resourcesRoot, "harness", "manifests", profile, `${agent}.json`);
+  let manifestText: string;
+  try {
+    manifestText = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (isEnoent(error)) {
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_MISSING",
+        `offline Harness Bundle manifest missing: ${profile}/${agent}`
+      );
+    }
+    throw error;
+  }
+  let raw: Partial<AgentBundleManifestV2>;
+  try {
+    raw = JSON.parse(manifestText) as Partial<AgentBundleManifestV2>;
+  } catch {
+    throw new AdapterBundleError(
+      "ADAPTER_BUNDLE_INVALID",
+      `unparseable ${profile}/${agent} Harness Bundle manifest`
+    );
+  }
   if (raw.schema_version !== 2 || raw.profile !== profile || raw.adapter !== agent ||
       typeof raw.bundle_version !== "string" || raw.generator !== "harness_deploy.py" ||
       !Array.isArray(raw.files)) {
-    throw new Error(`invalid ${profile}/${agent} Harness Bundle manifest`);
+    throw new AdapterBundleError(
+      "ADAPTER_BUNDLE_INVALID",
+      `invalid ${profile}/${agent} Harness Bundle manifest`
+    );
   }
   const files = new Map<string, Uint8Array>();
   for (const item of raw.files) {
-    validateRelativeBundlePath(item.path);
+    try {
+      validateRelativeBundlePath(item.path);
+    } catch {
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `invalid ${profile}/${agent} Harness Bundle path`
+      );
+    }
     if (typeof item.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(item.sha256) ||
         files.has(item.path)) {
-      throw new Error(`invalid ${profile}/${agent} Harness Bundle manifest entry`);
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `invalid ${profile}/${agent} Harness Bundle manifest entry`
+      );
     }
-    const bytes = await readFile(
-      join(resourcesRoot, "harness", "bundles", profile, agent, item.path)
-    );
+    let bytes: Uint8Array;
+    try {
+      bytes = await readFile(
+        join(resourcesRoot, "harness", "bundles", profile, agent, item.path)
+      );
+    } catch (error) {
+      if (isEnoent(error)) {
+        throw new AdapterBundleError(
+          "ADAPTER_BUNDLE_MISSING",
+          `offline Harness Bundle file missing: ${profile}/${agent}/${item.path}`
+        );
+      }
+      throw error;
+    }
     if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) {
-      throw new Error(`Harness Bundle hash mismatch: ${item.path}`);
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `Harness Bundle hash mismatch: ${profile}/${agent}/${item.path}`
+      );
     }
     files.set(item.path, bytes);
   }

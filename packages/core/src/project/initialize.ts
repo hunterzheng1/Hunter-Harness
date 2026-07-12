@@ -87,6 +87,7 @@ export interface InstalledBundleStateV3 {
 
 export class TargetCollisionError extends Error {
   readonly code = "TARGET_COLLISION";
+  readonly exitCode = 7;
 
   constructor(targetPath: string) {
     super(`TARGET_COLLISION: conflicting bytes for ${targetPath}`);

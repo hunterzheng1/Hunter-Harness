@@ -396,6 +396,45 @@ describe("Conservative Refresh", () => {
     expect(await exists(join(root, ".claude", "rules", "harness-profile-java.md"))).toBe(false);
     expect(await exists(join(root, ".cursor", "rules", "harness-profile-java.mdc"))).toBe(false);
   }, 120_000);
+
+  it("does not let a forged state hash authorize deleting a locally modified old-agent target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-forged-delete-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
+    });
+    const state = await readInstalledState(root);
+    const codexTarget = state.files
+      .map((entry) => (typeof entry === "string" ? entry : entry.target_path))
+      .find((target) => target.startsWith(".agents/skills/"));
+    expect(codexTarget).toBeDefined();
+    const targetPath = codexTarget as string;
+
+    const edited = "user rewrote this codex skill\n";
+    await writeFile(join(root, targetPath), edited);
+    // 攻击者篡改 installed state：把该目标的 sha256 设为“用户已改内容”的哈希，
+    // 企图让删除分支把脏文件误判为 clean（§19.5）。
+    await writeInstalledState(root, {
+      ...state,
+      files: (state.files as Array<{ target_path: string; sha256?: string }>).map((entry) =>
+        typeof entry === "string"
+          ? entry
+          : entry.target_path === targetPath
+            ? { ...entry, sha256: hex(edited) }
+            : entry
+      )
+    });
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+
+    expect(await exists(join(root, targetPath))).toBe(true);
+    expect(await readFile(join(root, targetPath), "utf8")).toBe(edited);
+    expect(result.removed.some((entry) => entry.target_path === targetPath)).toBe(false);
+    expect(result.conflicts.some((entry) => entry.target_path === targetPath)).toBe(true);
+  }, 120_000);
 });
 
 // silence unused import in some runs

@@ -72,9 +72,10 @@ const HARNESS_AGENT_ORDER = [
 - 交互式首次安装：显示多选菜单；空输入仍选择 `claude-code`。
 - 非交互式首次安装：未提供 Agent 参数时仍使用 `claude-code`，避免旧脚本突然失败。
 - 新参数：`--agents <csv>`，例如 `--agents claude-code,codex,cursor`。
-- 旧参数：`--adapter <name>` 保留一个小版本周期，等价于只选择一个 Agent，并输出 deprecation warning。
-- 同时提供 `--agents` 和 `--adapter`：配置错误，退出码 `3`，不得猜测优先级。
-- JSON 配置同时存在 `agents` 和旧 `adapter`：配置错误，退出码 `3`。
+- 当前 CLI 从未发布过 `--adapter` 命令行参数（`bin.ts` 无此 option），因此**不新增**该 flag，也不存在弃用它的问题。
+- 旧字段兼容只针对 `--config` JSON 中的 `adapter` 字段：normalization 阶段把 `"adapter": "claude-code"` 等价为 `"agents": ["claude-code"]` 并输出 deprecation warning。历史版本只接受过 `claude-code`，因此 legacy `adapter` 出现其他值时报 `AGENT_UNSUPPORTED`，退出码 `3`。
+- 同一 JSON 配置同时存在 `agents` 和旧 `adapter`：配置错误 `AGENT_OPTIONS_CONFLICT`，退出码 `3`，不得猜测优先级。
+- JSON `adapter` 与 CLI `--agents` 同时出现时按 §9.3 既有优先级处理（配置文件字段优先），不报错。
 
 ### 3.3 CodeBuddy 默认兼容 IDE 与 CLI
 
@@ -237,23 +238,22 @@ rules/                             该平台确认支持的原生规则模板
 
 ### 7.2 合成顺序
 
-`harness_deploy.py build` 的确定顺序：
+Bundle 编译是两级流水线。约束来源：`harness_deploy.py` 保持 Python 3.10+ stdlib-only（无 PyYAML），而 frontmatter 禁止正则拼接、必须真实解析——因此 **frontmatter 重写与语义扫描放在 Node 侧**（仓库已有 `yaml` 依赖），Markdown 正文合成与文件复制保留在 Python 侧。
+
+第一级：`harness_deploy.py build`（新增 `--agent claude-code|codex|cursor|codebuddy`）：
 
 1. 展开 canonical `shared/` includes。
 2. 应用 profile overlay，例如 Java。
-3. 应用 Agent skill overlay。
-4. 重写并严格校验 frontmatter。
-5. 验证正文中不存在禁止的跨 Agent 路径或能力调用。
-6. 复制该 Agent 允许的 Agent/Rule/Command 文件。
-7. 生成 manifest 和所有文件 SHA-256。
+3. 应用 Agent skill overlay（`harness/adapters/<agent>/skill-overlays/<skill>.overlay.md`，复用现有 `@override`/`@append` 机制）。
+4. 复制该 Agent 允许的 Agent 文件：`claude-code` 与 `codebuddy` 复制 canonical `agents/`（CodeBuddy 版本由第二级按 §7.3 重写 frontmatter，不手工维护副本）；`codex`、`cursor` 不复制任何 agents。`harness/adapters/<agent>/agents/*.md` 存在时按文件名覆盖 canonical 同名文件。
 
-增加参数：
+第二级：`scripts/sync-harness.mjs` 对 2 profile × 4 agent 的每个构建输出执行：
 
-```text
---agent claude-code|codex|cursor|codebuddy
-```
+5. 用 `yaml` npm 包解析每个 `SKILL.md` 与 `agents/*.md` 的 frontmatter，按 §7.3 词表重建对象并重新序列化；解析失败即构建失败。`claude-code` 目标保留原字节不重写。
+6. 语义扫描：验证正文与 frontmatter 中不存在禁止的跨 Agent 路径或能力调用（§7.4）；任何命中即构建失败。
+7. 生成 schema-v2 manifest 和所有文件 SHA-256（在 frontmatter 重写之后计算）。
 
-缺少 `--agent` 时只允许内部兼容路径使用 `claude-code`，并输出 deprecation warning。`scripts/sync-harness.mjs` 必须显式传四个 Agent，不能依赖默认值。
+`harness_deploy.py` 缺少 `--agent` 时只允许内部兼容路径使用 `claude-code`，并输出 deprecation warning。`scripts/sync-harness.mjs` 必须显式传四个 Agent，不能依赖默认值。
 
 ### 7.3 Frontmatter 规范
 
@@ -272,6 +272,7 @@ Adapter 生成规则：
 - Codex：只保留 `name`、`description`。首期不生成 `agents/openai.yaml`。
 - Cursor：保留 `name`、`description`；只有确有需要时增加官方字段 `paths`、`disable-model-invocation`、`metadata`。
 - CodeBuddy：至少保留 `name`、`description`；可增加已确认支持的 `allowed-tools`、`context`、`agent` 等，但首期不得增加 frontmatter hooks。
+- Agent 定义文件（`agents/*.md`）：Claude Code 原样保留；CodeBuddy 仅保留官方确认且值可迁移的字段 `name`、`description`、`permissionMode`、`skills`；删除 `effort`、`maxTurns`、`memory`，删除 `model`（`sonnet` 是 Claude 别名值，无法映射）；`tools`/`disallowedTools` 值为 Claude 工具语法（如 `Bash(git *)`），无法确认 CodeBuddy 语义，整字段删除，行为约束保留在正文。
 
 禁止事项：
 
@@ -360,6 +361,8 @@ const initConfigSchema = z.object({
 旧 `adapter` 不能直接加入严格新 schema。兼容逻辑必须先把 legacy input 规范化为 `agents`，再进入 `initConfigSchema`。
 
 ### 9.2 project.yaml
+
+注意现状：`packages/contracts/src/project.ts` 的 `adapterNameSchema` 当前为 `["claude-code","codex","cursor","generic","mcp"]`，**缺少 `codebuddy`**。必须在该枚举加入 `codebuddy`；`generic`、`mcp` 保留在 project.yaml 读取枚举以兼容旧文件，但 Agent 选择层（`harnessAgentSchema`）不包含它们。
 
 现有结构已经支持数组，继续使用：
 
@@ -526,6 +529,8 @@ hunter-harness-codebuddy
 
 同一文件同一 ID 最多一个块。遇到重复开始/结束标记必须报告 conflict 并保留原文件。
 
+Legacy 标记升级（必须实现）：0.1.x 安装的 `AGENTS.md`/`CLAUDE.md` 使用无 ID 标记 `<!-- hunter-harness:start -->`。refresh 遇到无 ID 块、且该文件尚无对应 ID 块时，必须把该块**原位升级**为本文件的规范 ID 块（`AGENTS.md` → `hunter-harness-core`，`CLAUDE.md` → `hunter-harness-claude-code`）并写入新内容；不得追加新 ID 块留下双重注入。无 ID 标记畸形（重复/倒序）时按既有规则整文件保留并报告 conflict。
+
 ## 13. Context index v2
 
 `.harness/context-index.json` 升级为 schema 2：
@@ -562,12 +567,14 @@ hunter-harness-codebuddy
   "codebase": { "map": ".harness/codebase/map", "status": "missing" },
   "skill_bundles": {
     "claude-code": { "registry_version": "0.2.0", "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
-    "codex": { "registry_version": "0.2.0", "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+    "codex": { "registry_version": "0.2.0", "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "cursor": { "registry_version": "0.2.0", "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000" },
+    "codebuddy": { "registry_version": "0.2.0", "bundle_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
   }
 }
 ```
 
-只输出已启用 Agent。Java 规则按实际文件追加。所有 key 顺序确定。
+只输出已启用 Agent（`project.adapters` 与 `skill_bundles` 的 Agent 集合必须一致）。Java 规则按实际文件追加。所有 key 顺序确定。
 
 ## 14. Installed state v3
 
@@ -806,9 +813,11 @@ npx vitest run packages/contracts/test/schemas.test.ts packages/cli/test/init.te
 
 修改：
 
-- `harness/scripts/harness_deploy.py`
+- `harness/scripts/harness_deploy.py`（新增 `--agent`，正文 overlay 与文件复制）
 - `harness/scripts/tests/test_harness_deploy.py`
-- `scripts/sync-harness.mjs`
+- `scripts/sync-harness.mjs`（2×4 矩阵调度 + 新布局输出）
+- 新增 `scripts/adapt-agent-bundle.mjs`（Node 侧 frontmatter 重写 + 语义扫描，用 `yaml` 包）
+- 新增 `tests/adapt-agent-bundle.test.ts`
 - 新增 `harness/adapters/**`
 
 产出：2 profiles × 4 agents 的离线 Bundle 和 schema-v2 manifests。
@@ -817,6 +826,7 @@ npx vitest run packages/contracts/test/schemas.test.ts packages/cli/test/init.te
 
 ```powershell
 python harness/scripts/tests/test_harness_deploy.py
+npx vitest run tests/adapt-agent-bundle.test.ts
 npm run sync:harness
 ```
 
@@ -902,8 +912,8 @@ npm run check
 | CLI-003 | 输入 `all` | 四个 Agent，固定顺序 |
 | CLI-004 | 输入重复项 | 去重 |
 | CLI-005 | 含未知项 | 整体失败，不写文件 |
-| CLI-006 | `--agents` 与 `--adapter` 同时出现 | exit 3 + `AGENT_OPTIONS_CONFLICT` |
-| CLI-007 | legacy `--adapter cursor` | 只选 Cursor + warning |
+| CLI-006 | JSON 配置同时含 `agents` 与旧 `adapter` | exit 3 + `AGENT_OPTIONS_CONFLICT` |
+| CLI-007 | JSON 配置仅含旧 `adapter: claude-code` | 等价单选 Claude Code + deprecation warning |
 | CLI-008 | 非交互无 Agent 参数 | 保持旧默认 Claude Code |
 | CLI-009 | 未选 CodeBuddy 提供 surface | exit 3 |
 
@@ -966,10 +976,10 @@ java -> general
 
 ## 22. 人工 smoke 验收
 
-自动测试全部通过后，在临时 Git 仓库执行：
+自动测试全部通过后，在临时 Git 仓库执行（包名为 `hunter-harness`；本次改造在 WP6 将 `packages/cli` 版本从 0.1.3 升到 0.2.0）：
 
 ```powershell
-npx .\hunter-harness-cli-0.2.0.tgz --agents all --profile general --non-interactive --yes
+npx .\hunter-harness-0.2.0.tgz --agents all --profile general --non-interactive --yes
 ```
 
 检查：

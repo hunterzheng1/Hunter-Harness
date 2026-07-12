@@ -43,6 +43,25 @@ export class InitConfigurationError extends Error {
   }
 }
 
+type HarnessExitCode = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+
+/**
+ * 从任意错误中提取稳定错误码与退出码（若其携带 `code`/`exitCode` 字段）。
+ * 统一 InitConfigurationError、TargetCollisionError、AdapterBundleError 的 CLI 映射。
+ */
+export function harnessErrorInfo(
+  error: unknown
+): { code?: string; exitCode?: HarnessExitCode } {
+  const info: { code?: string; exitCode?: HarnessExitCode } = {};
+  if (error === null || typeof error !== "object") return info;
+  const record = error as { code?: unknown; exitCode?: unknown };
+  if (typeof record.code === "string") info.code = record.code;
+  if (typeof record.exitCode === "number") {
+    info.exitCode = record.exitCode as HarnessExitCode;
+  }
+  return info;
+}
+
 const AGENT_BY_INDEX: Record<string, HarnessAgent> = {
   "1": "claude-code",
   "2": "codex",
