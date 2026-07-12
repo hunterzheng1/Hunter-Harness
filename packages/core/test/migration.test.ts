@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,13 +17,39 @@ import {
 import { initializeProject } from "../src/project/initialize.js";
 import {
   loadMigrationManifests,
-  loadProfileBundle,
   type HarnessProfile
 } from "../src/project/profile-bundle.js";
 import { refreshProject } from "../src/project/refresh.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const v011BundlesRoot = fileURLToPath(
+  new URL("./fixtures/v0.1.1-bundles", import.meta.url)
+);
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
+
+async function walkFiles(directory: string, base = directory): Promise<string[]> {
+  const paths: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) paths.push(...await walkFiles(full, base));
+    if (entry.isFile()) {
+      paths.push(full.slice(base.length + 1).replaceAll("\\", "/"));
+    }
+  }
+  return paths;
+}
+
+/** Load frozen 0.1.1 published bytes (pre semantic-adaptation) for migration fixtures. */
+async function loadV011BundleFiles(
+  profile: HarnessProfile
+): Promise<Map<string, Uint8Array>> {
+  const root = join(v011BundlesRoot, profile);
+  const files = new Map<string, Uint8Array>();
+  for (const relative of await walkFiles(root)) {
+    files.set(relative, await readFile(join(root, relative)));
+  }
+  return files;
+}
 
 function uuid(): string {
   return randomUUID();
@@ -36,11 +62,11 @@ async function exists(path: string): Promise<boolean> {
 // 模拟已发布的 0.1.1 安装：旧投影（agents 双重安装到 .claude/skills/agents/ 与 .claude/agents/）、
 // schema-v1 state（仅路径无 hash）、context-index bundle_hash 指向 0.1.1 迁移 manifest。
 async function installV1Style(root: string, profile: HarnessProfile): Promise<void> {
-  const bundle = await loadProfileBundle(resourcesRoot, profile);
+  const legacyFiles = await loadV011BundleFiles(profile);
   const migration = (await loadMigrationManifests(resourcesRoot)).find((m) => m.profile === profile);
   if (migration === undefined) throw new Error(`no migration manifest for ${profile}`);
 
-  for (const [path, bytes] of bundle.files) {
+  for (const [path, bytes] of legacyFiles) {
     const skillTarget = join(root, ".claude", "skills", path);
     await mkdir(dirname(skillTarget), { recursive: true });
     await writeFile(skillTarget, bytes);
@@ -73,16 +99,24 @@ async function installV1Style(root: string, profile: HarnessProfile): Promise<vo
     rules: [".claude/rules/harness-general.md"],
     knowledge: { index: ".harness/knowledge/index.json" },
     codebase: { map: ".harness/codebase/map", status: "missing" },
-    skill_bundle: { registry_version: bundle.manifest.bundle_version, bundle_hash: migration.bundle_manifest_hash }
+    skill_bundle: { registry_version: migration.bundle_version, bundle_hash: migration.bundle_manifest_hash }
   }, null, 2) + "\n");
   await writeFile(join(root, ".harness", "knowledge", "index.json"), JSON.stringify({ schema_version: 1, generated_at: null, entries: [] }, null, 2) + "\n");
   await writeFile(join(root, ".harness", "state", "baseline", "manifest.json"), JSON.stringify({ schema_version: 1, project_id: null, complete_project_version: null, artifact_manifest_hash: null, files: {} }, null, 2) + "\n");
 
   const v1Files: string[] = [];
-  for (const [path] of bundle.files) {
-    v1Files.push(`.claude/skills/${path}`);
+  for (const [path, bytes] of legacyFiles) {
+    const skillPath = `.claude/skills/${path}`;
+    v1Files.push(skillPath);
     const agent = /^agents\/([^/]+\.md)$/.exec(path);
     if (agent) v1Files.push(`.claude/agents/${agent[1]}`);
+    const expected = migration.projection.find((entry) => entry.target_path === skillPath);
+    if (expected !== undefined) {
+      const actual = createHash("sha256").update(bytes).digest("hex");
+      if (actual !== expected.sha256) {
+        throw new Error(`v0.1.1 fixture hash drift for ${skillPath}`);
+      }
+    }
   }
   if (profile === "java") v1Files.push(".claude/rules/harness-profile-java.md");
   v1Files.sort();
@@ -99,7 +133,7 @@ describe("0.1.1 migration", () => {
     expect(await exists(join(root, ".claude", "skills", "agents", "harness-reviewer.md"))).toBe(true);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts).toHaveLength(0);
@@ -107,11 +141,13 @@ describe("0.1.1 migration", () => {
     expect(await exists(join(root, ".claude", "skills", "agents"))).toBe(false);
     // .claude/agents/* 共享目标保留且为当前字节。
     const reviewer = await readFile(join(root, ".claude", "agents", "harness-reviewer.md"));
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", "agents", "harness-reviewer.md"));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", "agents", "harness-reviewer.md"
+    ));
     expect(reviewer).toEqual(incoming);
-    // schema v2 state 已写入。
+    // schema v3 state 已写入。
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as { schema_version: number };
-    expect(state.schema_version).toBe(2);
+    expect(state.schema_version).toBe(3);
   });
 
   it("real 0.1.1 java fixture refreshes and removes clean duplicate skills agents", async () => {
@@ -119,7 +155,7 @@ describe("0.1.1 migration", () => {
     await installV1Style(root, "java");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "java", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "java", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts).toHaveLength(0);
@@ -134,7 +170,7 @@ describe("0.1.1 migration", () => {
     await writeFile(dupTarget, "user modified duplicate\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.length).toBeGreaterThan(0);
@@ -144,7 +180,7 @@ describe("0.1.1 migration", () => {
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as {
       schema_version: number; files: Array<{ target_path: string }>;
     };
-    expect(state.schema_version).toBe(2);
+    expect(state.schema_version).toBe(3);
     expect(state.files.some((f) => f.target_path === ".claude/skills/agents/harness-reviewer.md")).toBe(false);
   });
 
@@ -157,7 +193,7 @@ describe("0.1.1 migration", () => {
     await writeFile(join(root, ".harness", "context-index.json"), JSON.stringify(ci, null, 2) + "\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     // 无可信 hash → 不删除旧重复目标（design §7.5）。
@@ -171,12 +207,12 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-gj-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "general" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
     });
     expect(await exists(join(root, ".claude", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "java", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "java", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.applied.some((i) => i.target_path === ".claude/skills/harness-apidoc/SKILL.md")).toBe(true);
@@ -190,11 +226,11 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-jg-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "java" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
     });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.removed.some((r) => r.target_path === ".claude/skills/harness-apidoc/SKILL.md")).toBe(true);
@@ -207,13 +243,13 @@ describe("Profile Transition", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-modified-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
-      config: { adapter: "claude-code", profile: "java" }, dryRun: false
+      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
     });
     const apidoc = join(root, ".claude", "skills", "harness-apidoc", "SKILL.md");
     await writeFile(apidoc, "user edited apidoc\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.length).toBeGreaterThan(0);

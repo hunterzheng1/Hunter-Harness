@@ -88,10 +88,17 @@ function under(path: string, prefix: string): boolean {
 
 export function classifyFile(input: string): FilePolicy {
   const path = normalizeManagedPath(input);
-  if (path === "CLAUDE.md" || path === "AGENTS.md") {
+  if (path === "CLAUDE.md" || path === "AGENTS.md" || path === "CODEBUDDY.md") {
     return USER_MANAGED_BLOCK;
   }
-  if (under(path, ".claude/rules/") || under(path, ".claude/skills/harness-")) {
+  if (
+    under(path, ".claude/rules/") ||
+    under(path, ".claude/skills/harness-") ||
+    under(path, ".agents/skills/harness-") ||
+    under(path, ".cursor/skills/harness-") ||
+    under(path, ".codebuddy/skills/harness-") ||
+    under(path, ".codebuddy/agents/harness-")
+  ) {
     return USER_DIFF;
   }
   if (under(path, ".cursor/rules/") || under(path, ".agent-skills/")) {

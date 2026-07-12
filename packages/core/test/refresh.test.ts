@@ -30,7 +30,7 @@ async function installFirst(root: string, profile: "general" | "java"): Promise<
   await initializeProject({
     projectRoot: root,
     resourcesRoot,
-    config: { adapter: "claude-code", profile },
+    config: { agents: ["claude-code"], profile },
     dryRun: false
   });
 }
@@ -67,6 +67,7 @@ describe("Conservative Refresh", () => {
       projectRoot: root,
       resourcesRoot,
       profile: "general",
+      agents: ["claude-code"],
       dryRun: false,
       forceManaged: false
     });
@@ -87,7 +88,7 @@ describe("Conservative Refresh", () => {
     await rm(join(root, REVIEWER_TARGET), { force: true });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     const added = result.applied.find((item) => item.target_path === REVIEWER_TARGET);
@@ -113,14 +114,16 @@ describe("Conservative Refresh", () => {
     await writeInstalledState(root, state);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     const replaced = result.applied.find((item) => item.target_path === REVIEWER_TARGET);
     expect(replaced, "reviewer should be replaced").toBeDefined();
     expect(replaced?.action).toBe("replace");
     expect(replaced?.reason).toBe("BASELINE_CLEAN");
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", REVIEWER_SOURCE));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", REVIEWER_SOURCE
+    ));
     expect(await readFile(join(root, REVIEWER_TARGET))).toEqual(incoming);
     expect(result.conflicts).toHaveLength(0);
   });
@@ -144,7 +147,7 @@ describe("Conservative Refresh", () => {
     await writeInstalledState(root, state);
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(result.conflicts.some((c) => c.target_path === REVIEWER_TARGET)).toBe(true);
@@ -164,12 +167,14 @@ describe("Conservative Refresh", () => {
     await writeFile(join(root, "notes.txt"), "keep\n");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: true
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: true
     });
 
     const replaced = result.applied.find((item) => item.target_path === REVIEWER_TARGET);
     expect(replaced?.reason).toBe("FORCE_MANAGED");
-    const incoming = await readFile(join(resourcesRoot, "harness", "general", REVIEWER_SOURCE));
+    const incoming = await readFile(join(
+      resourcesRoot, "harness", "bundles", "general", "claude-code", REVIEWER_SOURCE
+    ));
     expect(await readFile(join(root, REVIEWER_TARGET))).toEqual(incoming);
     expect(await readFile(join(root, "notes.txt"), "utf8")).toBe("keep\n");
   });
@@ -189,7 +194,7 @@ describe("Conservative Refresh", () => {
     });
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(await readFile(join(root, "notes.txt"), "utf8")).toBe("keep this user file\n");
@@ -213,7 +218,7 @@ describe("Conservative Refresh", () => {
     );
 
     await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
     expect(await readFile(join(root, ".harness", "knowledge", "project-local", "note.md"), "utf8")).toBe("keep\n");
@@ -232,7 +237,7 @@ describe("Conservative Refresh", () => {
     const stateBefore = await readFile(join(root, INSTALLED_STATE_PATH), "utf8");
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: true, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: true, forceManaged: false
     });
 
     expect(result.dry_run).toBe(true);
@@ -241,16 +246,16 @@ describe("Conservative Refresh", () => {
     expect(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")).toBe(stateBefore);
   });
 
-  it("writes schema-v2 installed state with per-file hashes sorted by target path", async () => {
+  it("writes schema-v3 installed state with per-file hashes sorted by target path", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-schema-"));
     await installFirst(root, "general");
     await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general", dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
     const state = await readInstalledState(root);
-    expect(state.schema_version).toBe(2);
+    expect(state.schema_version).toBe(3);
     expect(state.profile).toBe("general");
-    expect(typeof state.bundle_manifest_hash).toBe("string");
+    expect((state as typeof state & { manifests?: unknown[] }).manifests).toHaveLength(1);
     const targets = state.files.map((f) => (typeof f === "string" ? f : f.target_path));
     expect([...targets].sort((a, b) => a.localeCompare(b))).toEqual(targets);
     for (const file of state.files) {
@@ -260,6 +265,176 @@ describe("Conservative Refresh", () => {
       }
     }
   });
+
+  it("adds only the newly enabled codex projection and keeps one shared AGENTS block", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-add-codex-"));
+    await installFirst(root, "general");
+    const claudeTarget = await readFile(join(root, REVIEWER_TARGET), "utf8");
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code", "codex"], dryRun: false, forceManaged: false
+    });
+
+    expect(result.applied.some((entry) => entry.target_path.startsWith(".agents/skills/"))).toBe(true);
+    expect(await readFile(join(root, REVIEWER_TARGET), "utf8")).toBe(claudeTarget);
+    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agents.match(/hunter-harness:start id=hunter-harness-core/g)).toHaveLength(1);
+  });
+
+  it("removes clean old-agent targets but preserves user content and dirty targets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-transition-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
+    });
+    await writeFile(join(root, "CLAUDE.md"), "# User Claude notes\n\n" +
+      await readFile(join(root, "CLAUDE.md"), "utf8"));
+    await writeFile(join(root, REVIEWER_TARGET), "user edited claude skill\n");
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["cursor", "codebuddy"], dryRun: false, forceManaged: false
+    });
+
+    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("# User Claude notes\n");
+    expect(await exists(join(root, ".agents", "skills", "harness-reviewer", "SKILL.md"))).toBe(false);
+    expect(await exists(join(root, ".agents"))).toBe(true);
+    expect(await readFile(join(root, REVIEWER_TARGET), "utf8")).toBe("user edited claude skill\n");
+    expect(result.conflicts.some((entry) => entry.target_path === REVIEWER_TARGET)).toBe(true);
+    expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+  }, 120_000);
+
+  it("upgrades a v2 Claude state and legacy blocks in place to v3", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-v2-v3-"));
+    await installFirst(root, "general");
+    const initial = await readInstalledState(root);
+    await writeInstalledState(root, {
+      schema_version: 2, profile: "general", bundle_version: "0.1.1",
+      bundle_manifest_hash: initial.bundle_manifest_hash ?? "unknown",
+      installed_at: "2026-07-11T00:00:00.000Z",
+      files: initial.files.map((entry) => {
+        if (typeof entry === "string") return entry;
+        return { source_path: entry.source_path, target_path: entry.target_path, sha256: entry.sha256 };
+      })
+    });
+    await writeFile(join(root, "AGENTS.md"), "<!-- hunter-harness:start -->\nold\n<!-- hunter-harness:end -->\n");
+    await writeFile(join(root, "CLAUDE.md"), "<!-- hunter-harness:start -->\nold\n<!-- hunter-harness:end -->\n");
+
+    await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+
+    const state = await readInstalledState(root) as typeof initial & {
+      adapters: string[]; files: Array<{ owner?: string; target_path: string }>;
+    };
+    expect(state.schema_version).toBe(3);
+    expect(state.adapters).toEqual(["claude-code"]);
+    expect(state.files.every((entry) => entry.owner === "claude-code")).toBe(true);
+    for (const file of ["AGENTS.md", "CLAUDE.md"]) {
+      const content = await readFile(join(root, file), "utf8");
+      expect(content).toContain("hunter-harness:start id=");
+      expect(content.match(/hunter-harness:start/g)).toHaveLength(1);
+    }
+  });
+
+  it("does not let forged v3 paths authorize unrelated changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-forged-v3-"));
+    await installFirst(root, "general");
+    await writeFile(join(root, "notes.txt"), "keep notes\n");
+    await writeFile(join(root, ".env"), "SECRET=keep\n");
+    await writeInstalledState(root, {
+      schema_version: 3, profile: "general", adapters: ["claude-code"],
+      installed_at: "2026-07-11T00:00:00.000Z", manifests: [],
+      managed_blocks: [], files: [
+        { owner: "claude-code", source_path: "notes.txt", target_path: "notes.txt", sha256: "forged" },
+        { owner: "claude-code", source_path: ".env", target_path: ".env", sha256: "forged" },
+        { owner: "claude-code", source_path: "x", target_path: "C:/absolute.txt", sha256: "forged" }
+      ]
+    });
+
+    await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+    expect(await readFile(join(root, "notes.txt"), "utf8")).toBe("keep notes\n");
+    expect(await readFile(join(root, ".env"), "utf8")).toBe("SECRET=keep\n");
+  });
+
+  it("keeps installed_at and state bytes unchanged for an idempotent refresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-idempotent-"));
+    await installFirst(root, "general");
+    const before = await readFile(join(root, INSTALLED_STATE_PATH), "utf8");
+    const beforeStat = await stat(join(root, INSTALLED_STATE_PATH));
+    await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+    expect(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")).toBe(before);
+    expect((await stat(join(root, INSTALLED_STATE_PATH))).mtimeMs).toBe(beforeStat.mtimeMs);
+  });
+
+  it("applies a profile transition across every enabled agent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-multi-profile-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code", "cursor"], profile: "general" }, dryRun: false
+    });
+    await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "java",
+      agents: ["claude-code", "cursor"], dryRun: false, forceManaged: false
+    });
+    expect(await exists(join(root, ".claude", "rules", "harness-profile-java.md"))).toBe(true);
+    expect(await exists(join(root, ".cursor", "rules", "harness-profile-java.mdc"))).toBe(true);
+
+    await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code", "cursor"], dryRun: false, forceManaged: false
+    });
+    expect(await exists(join(root, ".claude", "rules", "harness-profile-java.md"))).toBe(false);
+    expect(await exists(join(root, ".cursor", "rules", "harness-profile-java.mdc"))).toBe(false);
+  }, 120_000);
+
+  it("does not let a forged state hash authorize deleting a locally modified old-agent target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-forged-delete-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
+    });
+    const state = await readInstalledState(root);
+    const codexTarget = state.files
+      .map((entry) => (typeof entry === "string" ? entry : entry.target_path))
+      .find((target) => target.startsWith(".agents/skills/"));
+    expect(codexTarget).toBeDefined();
+    const targetPath = codexTarget as string;
+
+    const edited = "user rewrote this codex skill\n";
+    await writeFile(join(root, targetPath), edited);
+    // 攻击者篡改 installed state：把该目标的 sha256 设为“用户已改内容”的哈希，
+    // 企图让删除分支把脏文件误判为 clean（§19.5）。
+    await writeInstalledState(root, {
+      ...state,
+      files: (state.files as Array<{ target_path: string; sha256?: string }>).map((entry) =>
+        typeof entry === "string"
+          ? entry
+          : entry.target_path === targetPath
+            ? { ...entry, sha256: hex(edited) }
+            : entry
+      )
+    });
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+
+    expect(await exists(join(root, targetPath))).toBe(true);
+    expect(await readFile(join(root, targetPath), "utf8")).toBe(edited);
+    expect(result.removed.some((entry) => entry.target_path === targetPath)).toBe(false);
+    expect(result.conflicts.some((entry) => entry.target_path === targetPath)).toBe(true);
+  }, 120_000);
 });
 
 // silence unused import in some runs

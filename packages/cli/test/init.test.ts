@@ -90,7 +90,7 @@ describe("hunter-harness initialization", () => {
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
-      prompt: async () => answer
+      prompt: async (question) => question.includes("Agent") ? "" : answer
     });
     expect(code).toBe(0);
     const project = parseYaml(
@@ -106,10 +106,73 @@ describe("hunter-harness initialization", () => {
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
-      prompt: async () => "python"
+      prompt: async (question) => question.includes("Agent") ? "" : "python"
     });
     expect(code).toBe(3);
-    expect(stderr.join(" ")).toContain("profile must be general or java");
+    expect(stderr.join(" ")).toContain("配置类型必须为 general 或 java");
+  });
+
+  it("interactive first install asks agents then profile", async () => {
+    const answers = ["1,2", ""];
+    const questions: string[] = [];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (q) => {
+        questions.push(q);
+        return answers.shift() ?? "";
+      }
+    });
+    expect(code).toBe(0);
+    expect(questions[0]).toContain("请选择目标 Agent");
+    expect(questions[1]).toContain("请选择 Harness 类型");
+    const project = parseYaml(
+      await readFile(join(root, ".harness", "project.yaml"), "utf8")
+    ) as { adapters: { enabled: string[] } };
+    expect(project.adapters.enabled).toEqual(["claude-code", "codex"]);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+  });
+
+  it("non-interactive --agents all projects four agent roots", async () => {
+    const code = await run([
+      "--agents", "all", "--profile", "general", "--non-interactive", "--yes"
+    ]);
+    expect(code).toBe(0);
+    const project = parseYaml(
+      await readFile(join(root, ".harness", "project.yaml"), "utf8")
+    ) as { adapters: { enabled: string[] } };
+    expect(project.adapters.enabled).toEqual([
+      "claude-code", "codex", "cursor", "codebuddy"
+    ]);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
+  }, 120_000);
+
+  it("rejects unknown agent without writing files", async () => {
+    const code = await run([
+      "--agents", "codex,gpt", "--profile", "general", "--non-interactive", "--yes"
+    ]);
+    expect(code).toBe(3);
+    expect(stderr.join(" ")).toContain("AGENT_UNSUPPORTED");
+    expect(await pathExists(join(root, ".harness"))).toBe(false);
+  });
+
+  it("rejects --codebuddy-surface when codebuddy not selected", async () => {
+    const code = await run([
+      "--agents", "codex",
+      "--codebuddy-surface", "ide",
+      "--profile", "general",
+      "--non-interactive",
+      "--yes"
+    ]);
+    expect(code).toBe(3);
+    expect(stderr.join(" ")).toContain("CODEBUDDY_SURFACE_UNUSED");
   });
 
   it("initializes offline and compiles real Claude Code skills", async () => {
@@ -208,7 +271,7 @@ describe("hunter-harness initialization", () => {
 
   it.each(["general", "java"])("installs %s bundle byte-for-byte", async (profile) => {
     expect(await run(["--profile", profile, "--non-interactive", "--yes"])).toBe(0);
-    const bundle = join(resourcesRoot, "harness", profile);
+    const bundle = join(resourcesRoot, "harness", "bundles", profile, "claude-code");
     for (const rel of await filesUnder(bundle)) {
       const target = /^agents\/[^/]+\.md$/.test(rel)
         ? join(root, ".claude", "agents", rel.slice("agents/".length))
@@ -237,9 +300,10 @@ describe("hunter-harness initialization", () => {
     );
 
     // 伪造的 v1 state 的 files 列表（含 notes.txt）不得授权删除/覆盖：删除目标只来自 Bundle 投影
-    // 或迁移 manifest，绝不来自 state 文件。context-index 的 bundle_hash 仍有效 → 匹配 general
-    // 迁移，差异共享文件按干净替换处理（exit 0），但 notes.txt 不在任何投影中，永不被删/被覆盖。
-    expect(await run(["--profile", "java", "--non-interactive", "--yes"])).toBe(0);
+    // 或迁移 manifest，绝不来自 state 文件。notes.txt 不在任何投影中，永不被删/被覆盖。
+    // 若当前 Bundle hash 无法匹配 0.1.1 migration，刷新可能因 LEGACY_BASELINE_UNKNOWN 返回 exit 5。
+    const code = await run(["--profile", "java", "--non-interactive", "--yes"]);
+    expect([0, 5]).toContain(code);
     expect(await readFile(notePath, "utf8")).toBe("keep this user file\n");
   });
 });

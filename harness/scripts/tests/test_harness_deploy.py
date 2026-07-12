@@ -294,5 +294,82 @@ class DeploySafetyReproTests(unittest.TestCase):
         self.assertIn("submit.workflow", str(cm.exception))
 
 
+class AgentAdapterBuildTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-agent-"))
+        self.root = _fixture_root(self.tmp)
+        _write(
+            self.root / "agents" / "demo-agent.md",
+            "---\nname: demo-agent\ndescription: demo\n---\n# Demo Agent\n",
+        )
+        _write(
+            self.root / "adapters" / "codex" / "skill-overlays" / "harness-demo.overlay.md",
+            '<!-- @override section:"构建验证" -->\n## 构建验证\n\ncodex adapted build section\n',
+        )
+        _write(
+            self.root / "adapters" / "codebuddy" / "agents" / "demo-agent.md",
+            "---\nname: demo-agent\ndescription: codebuddy override\n---\n# CB\n",
+        )
+        # Ensure adapters/ never ends up in output even if present as top-level content.
+        _write(self.root / "adapters" / "codex" / "README.md", "adapter docs\n")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_agent_flag_applies_adapter_overlay(self) -> None:
+        out = self.tmp / "out-codex"
+        result = hd.cmd_build(self.root, out, None, agent="codex")
+        self.assertTrue(result["ok"])
+        skill = (out / "harness-demo" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("codex adapted build section", skill)
+        self.assertNotIn("old build section", skill)
+        self.assertIn("agent=codex", skill)
+
+    def test_agents_dir_copied_only_for_claude_and_codebuddy(self) -> None:
+        for agent, expect_agents in (
+            ("claude-code", True),
+            ("codebuddy", True),
+            ("codex", False),
+            ("cursor", False),
+        ):
+            out = self.tmp / f"out-{agent}"
+            hd.cmd_build(self.root, out, None, agent=agent)
+            self.assertEqual(
+                (out / "agents").is_dir(),
+                expect_agents,
+                f"agents/ presence mismatch for {agent}",
+            )
+
+    def test_adapters_dir_never_copied_into_bundle(self) -> None:
+        for agent in hd.HARNESS_AGENTS:
+            out = self.tmp / f"out-no-adapters-{agent}"
+            hd.cmd_build(self.root, out, None, agent=agent)
+            self.assertFalse((out / "adapters").exists(), f"adapters leaked for {agent}")
+
+    def test_missing_agent_defaults_claude_with_warning(self) -> None:
+        out = self.tmp / "out-default"
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            result = hd.cmd_build(self.root, out, None, agent=None)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["agent"], "claude-code")
+        self.assertRegex(buf.getvalue(), r"(?i)deprecat")
+        self.assertTrue((out / "agents" / "demo-agent.md").is_file())
+
+    def test_unknown_agent_rejected(self) -> None:
+        with self.assertRaises(ValueError) as cm:
+            hd.cmd_build(self.root, self.tmp / "bad", None, agent="gpt")
+        self.assertIn("unknown agent", str(cm.exception))
+
+    def test_codebuddy_adapter_agents_override_canonical(self) -> None:
+        out = self.tmp / "out-cb"
+        hd.cmd_build(self.root, out, None, agent="codebuddy")
+        body = (out / "agents" / "demo-agent.md").read_text(encoding="utf-8")
+        self.assertIn("codebuddy override", body)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

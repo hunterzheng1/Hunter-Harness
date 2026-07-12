@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractManagedBlock,
+  refreshManagedBlockById,
+  removeManagedBlockById,
   upsertManagedBlock,
   upsertManagedBlockById
 } from "../src/managed/managed-block.js";
@@ -89,5 +91,65 @@ describe("per-id managed blocks (T8)", () => {
     expect(out).toContain("<!-- hunter-harness:end -->");
     expect(out).toContain("<!-- hunter-harness:start id=harness-skill-x -->");
     expect(out).toContain("<!-- hunter-harness:end id=harness-skill-x -->");
+  });
+});
+
+describe("refreshManagedBlockById", () => {
+  it("upgrades a legacy no-id block in place", () => {
+    const original = "user text\n\n<!-- hunter-harness:start -->\nold\n<!-- hunter-harness:end -->\n";
+    const result = refreshManagedBlockById(original, "hunter-harness-core", "new", {
+      upgradeLegacy: true
+    });
+    expect(result.conflict).toBe(false);
+    expect(result.content).toContain("<!-- hunter-harness:start id=hunter-harness-core -->");
+    expect(result.content).not.toMatch(/<!-- hunter-harness:start -->/);
+    expect((result.content.match(/hunter-harness:start/g) ?? []).length).toBe(1);
+    expect(result.content).toContain("user text");
+    expect(result.content).toContain("new");
+  });
+
+  it("malformed legacy markers preserve file and report conflict", () => {
+    const original =
+      "<!-- hunter-harness:start -->\na\n<!-- hunter-harness:end -->\n" +
+      "<!-- hunter-harness:start -->\nb\n<!-- hunter-harness:end -->\n";
+    const result = refreshManagedBlockById(original, "hunter-harness-core", "new", {
+      upgradeLegacy: true
+    });
+    expect(result.conflict).toBe(true);
+    expect(result.content).toBe(original);
+    expect(result.action).toBe("preserved_conflict");
+  });
+
+  it("replaces an existing id block", () => {
+    const original =
+      "keep\n<!-- hunter-harness:start id=hunter-harness-core -->\nold\n<!-- hunter-harness:end id=hunter-harness-core -->\n";
+    const result = refreshManagedBlockById(original, "hunter-harness-core", "fresh");
+    expect(result.conflict).toBe(false);
+    expect(result.content).toContain("fresh");
+    expect(result.content).not.toContain("old");
+    expect(result.content).toContain("keep");
+  });
+
+  it("appends when no block exists", () => {
+    const result = refreshManagedBlockById("user only\n", "hunter-harness-core", "body");
+    expect(result.conflict).toBe(false);
+    expect(result.action).toBe("appended");
+    expect(result.content).toContain("user only");
+    expect(result.content).toContain("<!-- hunter-harness:start id=hunter-harness-core -->");
+  });
+});
+
+describe("removeManagedBlockById", () => {
+  it("removes only the given id block", () => {
+    const original =
+      "A\n<!-- hunter-harness:start id=hunter-harness-core -->\ncore\n<!-- hunter-harness:end id=hunter-harness-core -->\n" +
+      "B\n<!-- hunter-harness:start id=hunter-harness-claude-code -->\nclaude-only\n<!-- hunter-harness:end id=hunter-harness-claude-code -->\nC\n";
+    const out = removeManagedBlockById(original, "hunter-harness-claude-code");
+    expect(out).toContain("hunter-harness-core");
+    expect(out).toContain("core");
+    expect(out).not.toContain("hunter-harness-claude-code");
+    expect(out).not.toContain("claude-only");
+    expect(out).toContain("A\n");
+    expect(out).toContain("C\n");
   });
 });

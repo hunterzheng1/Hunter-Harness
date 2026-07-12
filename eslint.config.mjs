@@ -16,7 +16,8 @@ export default tseslint.config(
       "harness/**",
       // 生成 Bundle 与复制产物（harness_deploy.py 输出，字节一致，不应 lint）
       "resources/**",
-      "packages/cli/resources/**"
+      "packages/cli/resources/**",
+      "packages/core/test/fixtures/**"
     ]
   },
   eslint.configs.recommended,

@@ -21,7 +21,8 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function explicitConfigure(options: ConfigureOptions): boolean {
-  return options.adapter !== undefined || options.profile !== undefined ||
+  return options.agents !== undefined || options.adapter !== undefined ||
+    options.profile !== undefined ||
     options.config !== undefined || options.serverUrl !== undefined ||
     options.tokenEnv !== undefined;
 }

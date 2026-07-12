@@ -4,8 +4,10 @@ import { join, relative, resolve } from "node:path";
 import {
   baselineManifestSchema,
   canonicalJson,
+  harnessAgentSchema,
   projectConfigSchema,
   type BaselineManifest,
+  type HarnessAgent,
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -21,6 +23,7 @@ import {
   managedBundleTargets,
   parseHarnessProfile
 } from "../project/profile-bundle.js";
+import { getAdapters } from "../project/agent-adapters.js";
 import { uuidV7 } from "../project/uuid-v7.js";
 import { atomicWriteJson } from "../state/atomic.js";
 import { readBaseline } from "../state/baseline.js";
@@ -70,13 +73,11 @@ interface PushWorkflowState {
   chunk_idempotency_keys: Record<string, string>;
 }
 
-const MANAGED_ROOTS = [
-  ".claude/rules",
+const SHARED_MANAGED_ROOTS = [
   ".harness/knowledge",
   ".harness/codebase"
 ];
-const MANAGED_FILES = [
-  "CLAUDE.md",
+const SHARED_MANAGED_FILES = [
   "AGENTS.md",
   ".harness/project.yaml",
   ".harness/context-index.json"
@@ -114,23 +115,58 @@ async function walkFiles(root: string, current: string, output: string[]): Promi
   }
 }
 
-async function managedFiles(projectRoot: string): Promise<Record<string, string>> {
+function enabledHarnessAgents(project: ProjectConfig): HarnessAgent[] {
+  return project.adapters.enabled.flatMap((agent) => {
+    const parsed = harnessAgentSchema.safeParse(agent);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+async function walkHarnessEntries(
+  root: string,
+  directory: string,
+  output: string[]
+): Promise<void> {
+  if (!await exists(directory)) return;
+  for (const item of await readdir(directory, { withFileTypes: true })) {
+    if (item.name.startsWith("harness-")) {
+      const path = join(directory, item.name);
+      if (item.isDirectory()) {
+        await walkFiles(root, path, output);
+      } else if (item.isFile()) {
+        output.push(normalizeManagedPath(relative(root, path).replaceAll("\\", "/")));
+      }
+    }
+  }
+}
+
+async function managedFiles(
+  projectRoot: string,
+  project: ProjectConfig
+): Promise<Record<string, string>> {
   const root = resolve(projectRoot);
   const paths = [];
-  for (const path of MANAGED_FILES) {
+  const adapters = getAdapters(enabledHarnessAgents(project));
+  const managedFiles = [
+    ...SHARED_MANAGED_FILES,
+    ...(adapters.some((adapter) => adapter.name === "claude-code") ? ["CLAUDE.md"] : []),
+    ...(adapters.some((adapter) => adapter.name === "codebuddy") ? ["CODEBUDDY.md"] : [])
+  ];
+  for (const path of managedFiles) {
     if (await exists(join(root, path))) {
       paths.push(path);
     }
   }
-  for (const path of MANAGED_ROOTS) {
+  for (const path of SHARED_MANAGED_ROOTS) {
     await walkFiles(root, join(root, path), paths);
   }
-  const skillsRoot = join(root, ".claude", "skills");
-  if (await exists(skillsRoot)) {
-    for (const item of await readdir(skillsRoot, { withFileTypes: true })) {
-      if (item.isDirectory() && item.name.startsWith("harness-")) {
-        await walkFiles(root, join(skillsRoot, item.name), paths);
-      }
+  for (const adapter of adapters) {
+    if (adapter.rulesRoot !== null) {
+      await walkFiles(root, join(root, adapter.rulesRoot), paths);
+    }
+    await walkHarnessEntries(root, join(root, adapter.skillsRoot), paths);
+    if (adapter.agentsRoot !== null) {
+      await walkHarnessEntries(root, join(root, adapter.agentsRoot), paths);
     }
   }
   const result: Record<string, string> = {};
@@ -287,10 +323,14 @@ export async function pushProject(options: PushProjectOptions) {
   const profile = parseHarnessProfile(project.project.profiles[0]);
   const installedPaths = profile === null
     ? new Set<string>()
-    : await managedBundleTargets(options.resourcesRoot, profile);
+    : new Set(await Promise.all(
+      enabledHarnessAgents(project).map((agent) =>
+        managedBundleTargets(options.resourcesRoot, profile, agent)
+      )
+    ).then((targets) => targets.flatMap((target) => [...target])));
   let preview = makePreview(
     baseline,
-    await managedFiles(root),
+    await managedFiles(root, project),
     options.confirmedProjectLocal ?? [],
     installedPaths
   );
@@ -347,7 +387,7 @@ export async function pushProject(options: PushProjectOptions) {
     await atomicWriteJson(workflowPath, workflow);
     preview = makePreview(
       baseline,
-      await managedFiles(root),
+      await managedFiles(root, project),
       options.confirmedProjectLocal ?? [],
       installedPaths,
       workflow.created_at
@@ -373,7 +413,7 @@ export async function pushProject(options: PushProjectOptions) {
       await atomicWriteJson(workflowPath, workflow);
       preview = makePreview(
         baseline,
-        await managedFiles(root),
+        await managedFiles(root, project),
         options.confirmedProjectLocal ?? [],
         installedPaths,
         workflow.created_at

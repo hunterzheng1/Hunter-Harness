@@ -4,7 +4,7 @@ import {
 } from "@hunter-harness/core";
 
 import {
-  InitConfigurationError,
+  harnessErrorInfo,
   resolveInitConfig,
   type InitFlagValues
 } from "../config/init-config.js";
@@ -46,15 +46,30 @@ async function runFirstInstall(
 ): Promise<number> {
   const requestId = uuidV7();
   try {
+    const warnings: string[] = [];
     const config = await resolveInitConfig(
       dependencies.cwd,
       options,
       options.nonInteractive === true
-        ? undefined
-        : () => dependencies.prompt(
-          "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
-        ).then((answer) => answer.trim())
+        ? {}
+        : {
+          agents: () => dependencies.prompt(
+            "请选择目标 Agent（可多选，使用逗号分隔）\n" +
+            "  1. Claude Code\n" +
+            "  2. Codex\n" +
+            "  3. Cursor\n" +
+            "  4. CodeBuddy\n" +
+            "请输入编号 [1]: "
+          ).then((answer) => answer.trim()),
+          profile: () => dependencies.prompt(
+            "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
+          ).then((answer) => answer.trim())
+        },
+      warnings
     );
+    for (const warning of warnings) {
+      dependencies.stderr(warning + "\n");
+    }
     if (options.nonInteractive === true && options.yes !== true &&
         options.dryRun !== true) {
       dependencies.stderr("非交互模式执行写入操作需要 --yes\n");
@@ -84,9 +99,11 @@ async function runFirstInstall(
       : "Hunter Harness 初始化完成，共处理 " + result.paths.length + " 个文件。\n");
     return 0;
   } catch (error) {
-    const exitCode = error instanceof InitConfigurationError ? error.exitCode : 1;
+    const info = harnessErrorInfo(error);
+    const exitCode = info.exitCode ?? 1;
+    const code = info.code;
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
+    dependencies.stderr((code !== undefined ? code + ": " : "") + message + "\n");
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({
         schema_version: 1,
@@ -99,7 +116,7 @@ async function runFirstInstall(
         summary: { planned: 0, applied: 0 },
         items: [],
         warnings: [],
-        errors: [{ message }]
+        errors: [{ ...(code === undefined ? {} : { code }), message }]
       }));
     }
     return exitCode;
@@ -115,6 +132,7 @@ async function runExistingProject(
 ): Promise<number> {
   // exactOptionalPropertyTypes: 可选属性不接受显式 undefined，按字段条件赋值。
   const refreshOptions: RefreshCommandOptions = {};
+  if (options.agents !== undefined) refreshOptions.agents = options.agents;
   if (options.profile !== undefined) refreshOptions.profile = options.profile;
   if (options.nonInteractive !== undefined) refreshOptions.nonInteractive = options.nonInteractive;
   if (options.yes !== undefined) refreshOptions.yes = options.yes;

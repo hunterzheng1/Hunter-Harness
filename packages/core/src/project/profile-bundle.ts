@@ -2,18 +2,17 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { assertNoCaseCollisions, normalizeManagedPath } from "../fs/path-safety.js";
+import type { HarnessAgent } from "@hunter-harness/contracts";
 
+import { assertNoCaseCollisions, normalizeManagedPath } from "../fs/path-safety.js";
 import {
-  HARNESS_GENERAL_RULES_CONTENT,
-  HARNESS_JAVA_RULES_CONTENT
-} from "./managed-content.js";
+  getAdapter,
+  managedTargetsFor,
+  type AdapterContext
+} from "./agent-adapters.js";
 
 export type HarnessProfile = "general" | "java";
 
-// Installation Projection：Bundle source_path → 运行时 target_path 的确定性映射。
-// agents/<name>.md 仅投射到 .claude/agents/<name>.md（不再重复安装到 .claude/skills/agents/）；
-// 其余路径投射到 .claude/skills/<source_path>。字节原样保留，不重序列化、不注入 header。
 export interface ProjectedBundleFile {
   source_path: string;
   target_path: string;
@@ -21,21 +20,68 @@ export interface ProjectedBundleFile {
   bytes: Uint8Array;
 }
 
-export interface ProfileBundleManifest {
-  schema_version: 1;
+export interface AgentBundleManifestV2 {
+  schema_version: 2;
   profile: HarnessProfile;
+  adapter: HarnessAgent;
   bundle_version: string;
   generator: "harness_deploy.py";
   files: Array<{ path: string; sha256: string }>;
 }
 
-export interface ProfileBundle {
-  manifest: ProfileBundleManifest;
+/** @deprecated Prefer AgentBundleManifestV2 */
+export interface ProfileBundleManifest {
+  schema_version: 1 | 2;
+  profile: HarnessProfile;
+  adapter?: HarnessAgent;
+  bundle_version: string;
+  generator: "harness_deploy.py";
+  files: Array<{ path: string; sha256: string }>;
+}
+
+export interface LoadedAgentBundle {
+  manifest: AgentBundleManifestV2;
   files: Map<string, Uint8Array>;
 }
 
+/**
+ * Offline Agent Bundle 完整性错误。exitCode 7 对应设计 §18 的
+ * Bundle 完整性/安全错误退出码。
+ */
+export class AdapterBundleError extends Error {
+  readonly exitCode = 7;
+
+  constructor(
+    readonly code: "ADAPTER_BUNDLE_MISSING" | "ADAPTER_BUNDLE_INVALID",
+    message: string
+  ) {
+    super(message);
+    this.name = "AdapterBundleError";
+  }
+}
+
+function isEnoent(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
+}
+
+/** @deprecated Prefer LoadedAgentBundle */
+export type ProfileBundle = {
+  manifest: ProfileBundleManifest;
+  files: Map<string, Uint8Array>;
+};
+
 function isProfile(value: unknown): value is HarnessProfile {
   return value === "general" || value === "java";
+}
+
+function isAgent(value: unknown): value is HarnessAgent {
+  return value === "claude-code" || value === "codex" ||
+    value === "cursor" || value === "codebuddy";
 }
 
 function validateRelativeBundlePath(path: unknown): asserts path is string {
@@ -46,127 +92,148 @@ function validateRelativeBundlePath(path: unknown): asserts path is string {
   }
 }
 
-export async function loadProfileBundle(
+export async function loadAgentBundle(
   resourcesRoot: string,
-  profile: HarnessProfile
-): Promise<ProfileBundle> {
-  const raw = JSON.parse(await readFile(
-    join(resourcesRoot, "harness", "manifests", `${profile}.json`), "utf8"
-  )) as Partial<ProfileBundleManifest>;
-  if (raw.schema_version !== 1 || raw.profile !== profile ||
+  profile: HarnessProfile,
+  agent: HarnessAgent
+): Promise<LoadedAgentBundle> {
+  const manifestPath = join(resourcesRoot, "harness", "manifests", profile, `${agent}.json`);
+  let manifestText: string;
+  try {
+    manifestText = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (isEnoent(error)) {
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_MISSING",
+        `offline Harness Bundle manifest missing: ${profile}/${agent}`
+      );
+    }
+    throw error;
+  }
+  let raw: Partial<AgentBundleManifestV2>;
+  try {
+    raw = JSON.parse(manifestText) as Partial<AgentBundleManifestV2>;
+  } catch {
+    throw new AdapterBundleError(
+      "ADAPTER_BUNDLE_INVALID",
+      `unparseable ${profile}/${agent} Harness Bundle manifest`
+    );
+  }
+  if (raw.schema_version !== 2 || raw.profile !== profile || raw.adapter !== agent ||
       typeof raw.bundle_version !== "string" || raw.generator !== "harness_deploy.py" ||
       !Array.isArray(raw.files)) {
-    throw new Error(`invalid ${profile} Harness Bundle manifest`);
+    throw new AdapterBundleError(
+      "ADAPTER_BUNDLE_INVALID",
+      `invalid ${profile}/${agent} Harness Bundle manifest`
+    );
   }
   const files = new Map<string, Uint8Array>();
   for (const item of raw.files) {
-    validateRelativeBundlePath(item.path);
+    try {
+      validateRelativeBundlePath(item.path);
+    } catch {
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `invalid ${profile}/${agent} Harness Bundle path`
+      );
+    }
     if (typeof item.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(item.sha256) ||
         files.has(item.path)) {
-      throw new Error(`invalid ${profile} Harness Bundle manifest entry`);
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `invalid ${profile}/${agent} Harness Bundle manifest entry`
+      );
     }
-    const bytes = await readFile(join(resourcesRoot, "harness", profile, item.path));
+    let bytes: Uint8Array;
+    try {
+      bytes = await readFile(
+        join(resourcesRoot, "harness", "bundles", profile, agent, item.path)
+      );
+    } catch (error) {
+      if (isEnoent(error)) {
+        throw new AdapterBundleError(
+          "ADAPTER_BUNDLE_MISSING",
+          `offline Harness Bundle file missing: ${profile}/${agent}/${item.path}`
+        );
+      }
+      throw error;
+    }
     if (createHash("sha256").update(bytes).digest("hex") !== item.sha256) {
-      throw new Error(`Harness Bundle hash mismatch: ${item.path}`);
+      throw new AdapterBundleError(
+        "ADAPTER_BUNDLE_INVALID",
+        `Harness Bundle hash mismatch: ${profile}/${agent}/${item.path}`
+      );
     }
     files.set(item.path, bytes);
   }
-  return { manifest: raw as ProfileBundleManifest, files };
+  return { manifest: raw as AgentBundleManifestV2, files };
 }
 
-export async function managedBundleTargets(
+/** Temporary bridge: load Claude Code bundle for callers not yet migrated. */
+export async function loadProfileBundle(
   resourcesRoot: string,
   profile: HarnessProfile
+): Promise<LoadedAgentBundle> {
+  return loadAgentBundle(resourcesRoot, profile, "claude-code");
+}
+
+/**
+ * Paths excluded from push proposal upload/scan: Bundle working copies only.
+ * Generated rules / instruction files stay scannable (see push makePreview).
+ */
+export async function managedBundleTargets(
+  resourcesRoot: string,
+  profile: HarnessProfile,
+  agent: HarnessAgent = "claude-code"
 ): Promise<Set<string>> {
-  const bundle = await loadProfileBundle(resourcesRoot, profile);
-  const targets = new Set(bundleTargetContents(bundle).keys());
-  if (profile === "java") targets.add(".claude/rules/harness-profile-java.md");
+  const bundle = await loadAgentBundle(resourcesRoot, profile, agent);
+  const adapter = getAdapter(agent);
+  const context: AdapterContext = { profile, codebuddySurface: "both" };
+  const targets = new Set(
+    adapter.projectBundle(bundle, context).map((t) => t.target_path)
+  );
+  // Legacy quirk preserved: java profile rule was treated as bundle-adjacent.
+  if (profile === "java" && agent === "claude-code") {
+    targets.add(".claude/rules/harness-profile-java.md");
+  }
   return targets;
 }
 
-const AGENT_SOURCE_PATH = /^agents\/([^/]+\.md)$/;
-
-// 把已加载的 Bundle 投影为受管安装目标记录。集中所有路径与 SHA 校验：
-// 1. 复用 validateRelativeBundlePath 拒绝恶意 source（绝对/驱动器/.. /空段）；
-// 2. 对投射后的 target 再过 normalizeManagedPath，杜绝逃逸；
-// 3. assertNoCaseCollisions 拒绝重复或大小写冲突的 target；
-// 4. sha256 取自 manifest（已在 loadProfileBundle 校验），与 Bundle manifests 一致（纯 hex 无前缀）。
-export function projectBundle(bundle: ProfileBundle): ProjectedBundleFile[] {
-  const records: ProjectedBundleFile[] = [];
-  for (const [sourcePath, bytes] of bundle.files) {
-    validateRelativeBundlePath(sourcePath);
-    const agent = AGENT_SOURCE_PATH.exec(sourcePath);
-    const projectedTarget = agent?.[1] !== undefined
-      ? `.claude/agents/${agent[1]}`
-      : `.claude/skills/${sourcePath}`;
-    const manifestEntry = bundle.manifest.files.find((entry) => entry.path === sourcePath);
-    if (manifestEntry === undefined) {
-      throw new Error(`Harness Bundle missing manifest entry: ${sourcePath}`);
-    }
-    records.push({
-      source_path: sourcePath,
-      target_path: normalizeManagedPath(projectedTarget),
-      sha256: manifestEntry.sha256,
-      bytes
-    });
-  }
-  assertNoCaseCollisions(records.map((record) => record.target_path));
-  return records.sort((left, right) => left.target_path.localeCompare(right.target_path));
+/** Claude-only projection kept for transitional callers. */
+export function projectBundle(bundle: LoadedAgentBundle | ProfileBundle): ProjectedBundleFile[] {
+  const adapter = getAdapter(
+    bundle.manifest.adapter === undefined ? "claude-code" : bundle.manifest.adapter
+  );
+  return [...adapter.projectBundle(bundle as LoadedAgentBundle, {
+    profile: bundle.manifest.profile,
+    codebuddySurface: "both"
+  })];
 }
 
-export function bundleTargetContents(bundle: ProfileBundle): Map<string, Uint8Array> {
+export function bundleTargetContents(
+  bundle: LoadedAgentBundle | ProfileBundle
+): Map<string, Uint8Array> {
   return new Map(projectBundle(bundle).map((record) => [record.target_path, record.bytes]));
 }
 
-function ruleTarget(sourcePath: string, targetPath: string, content: string): ProjectedBundleFile {
-  return {
-    source_path: sourcePath,
-    target_path: targetPath,
-    sha256: createHash("sha256").update(content).digest("hex"),
-    bytes: new TextEncoder().encode(content)
-  };
-}
-
-// 受管安装目标全集 = Bundle 投影 + 生成的 rules 文件（harness-general.md 恒有；java 额外
-// harness-profile-java.md）。initialize 与 refresh 共用此构造，确保 v2 installed state 与
-// 实际写入目标一致；结果按 target_path 排序，确定性输出。
+/** Claude-only managed targets (bridge until initialize uses multi-agent). */
 export async function managedTargets(
   resourcesRoot: string,
   profile: HarnessProfile
 ): Promise<ProjectedBundleFile[]> {
-  const bundle = await loadProfileBundle(resourcesRoot, profile);
-  const records = projectBundle(bundle).map((record) => ({
-    source_path: record.source_path,
-    target_path: record.target_path,
-    sha256: record.sha256,
-    bytes: record.bytes
-  }));
-  records.push(ruleTarget(
-    "rules/harness-general.md",
-    ".claude/rules/harness-general.md",
-    HARNESS_GENERAL_RULES_CONTENT
-  ));
-  if (profile === "java") {
-    records.push(ruleTarget(
-      "rules/harness-profile-java.md",
-      ".claude/rules/harness-profile-java.md",
-      HARNESS_JAVA_RULES_CONTENT
-    ));
-  }
-  assertNoCaseCollisions(records.map((record) => record.target_path));
-  return records.sort((left, right) => left.target_path.localeCompare(right.target_path));
+  const bundle = await loadAgentBundle(resourcesRoot, profile, "claude-code");
+  const adapter = getAdapter("claude-code");
+  return managedTargetsFor(adapter, bundle, { profile, codebuddySurface: "both" });
 }
 
 export function parseHarnessProfile(value: unknown): HarnessProfile | null {
   return isProfile(value) ? value : null;
 }
 
-// 0.1.1 迁移 manifest（design §7）：为已发布的 0.1.1 安装（schema-v1 state，无 per-file hash）
-// 提供可信 per-file hash + 旧投影目标集。bundle_manifest_hash 与 0.1.1 context-index 的
-// skill_bundle.bundle_hash 匹配时启用，仅用于 dirty/clean 分类与旧重复目标的安全删除。
 export interface MigrationManifest {
-  schema_version: 1;
+  schema_version: 1 | 2;
   profile: HarnessProfile;
+  adapter: HarnessAgent;
   bundle_version: string;
   bundle_manifest_hash: string;
   projection: Array<{ source_path: string; target_path: string; sha256: string }>;
@@ -179,16 +246,23 @@ export function parseMigrationManifest(raw: unknown): MigrationManifest {
   const record = raw as {
     schema_version?: unknown;
     profile?: unknown;
+    adapter?: unknown;
     bundle_version?: unknown;
     bundle_manifest_hash?: unknown;
     projection?: unknown;
   };
-  if (record.schema_version !== 1 || !isProfile(record.profile) ||
+  const schemaVersion = record.schema_version;
+  if ((schemaVersion !== 1 && schemaVersion !== 2) || !isProfile(record.profile) ||
       typeof record.bundle_version !== "string" ||
       !/^sha256:[a-f0-9]{64}$/.test(String(record.bundle_manifest_hash)) ||
       !Array.isArray(record.projection)) {
     throw new Error("invalid Harness migration manifest");
   }
+  const adapter: HarnessAgent = schemaVersion === 1
+    ? "claude-code"
+    : (isAgent(record.adapter) ? record.adapter : (() => {
+      throw new Error("invalid Harness migration manifest adapter");
+    })());
   const projection: MigrationManifest["projection"] = [];
   for (const entry of record.projection) {
     if (entry === null || typeof entry !== "object") {
@@ -201,7 +275,7 @@ export function parseMigrationManifest(raw: unknown): MigrationManifest {
       throw new Error("invalid Harness migration manifest entry");
     }
     const targetPath = normalizeManagedPath(item.target_path);
-    if (!targetPath.startsWith(".claude/")) {
+    if (schemaVersion === 1 && !targetPath.startsWith(".claude/")) {
       throw new Error("invalid Harness migration manifest target");
     }
     projection.push({
@@ -212,8 +286,9 @@ export function parseMigrationManifest(raw: unknown): MigrationManifest {
   }
   assertNoCaseCollisions(projection.map((item) => item.target_path));
   return {
-    schema_version: 1,
+    schema_version: schemaVersion,
     profile: record.profile,
+    adapter,
     bundle_version: record.bundle_version,
     bundle_manifest_hash: record.bundle_manifest_hash as string,
     projection

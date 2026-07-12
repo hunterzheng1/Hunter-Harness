@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  AdapterBundleError,
+  loadAgentBundle,
   loadProfileBundle,
   parseMigrationManifest,
   projectBundle,
@@ -25,8 +27,9 @@ function syntheticBundle(
   for (const entry of entries) files.set(entry.path, entry.bytes);
   return {
     manifest: {
-      schema_version: 1,
+      schema_version: 2,
       profile: "general",
+      adapter: "claude-code",
       bundle_version: "0.0.0-test",
       generator: "harness_deploy.py",
       files: entries.map((entry) => ({
@@ -125,6 +128,19 @@ describe("Installation Projection", () => {
         sha256: "b".repeat(64)
       }]
     })).toThrow();
+  });
+
+  it("raises ADAPTER_BUNDLE_MISSING (exit 7) when an offline manifest is absent", async () => {
+    const missingRoot = fileURLToPath(new URL("../test/__no_such_resources__", import.meta.url));
+    let caught: unknown;
+    try {
+      await loadAgentBundle(missingRoot, "general", "codex");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AdapterBundleError);
+    expect((caught as AdapterBundleError).code).toBe("ADAPTER_BUNDLE_MISSING");
+    expect((caught as AdapterBundleError).exitCode).toBe(7);
   });
 
   it("parses a safe migration projection as trusted metadata", () => {

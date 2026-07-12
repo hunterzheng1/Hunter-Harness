@@ -12,6 +12,7 @@ export * from "./knowledge/index.js";
 export * from "./managed/managed-block.js";
 export * from "./policy/file-policy.js";
 export * from "./project/initialize.js";
+export * from "./project/agent-adapters.js";
 export * from "./project/managed-content.js";
 export * from "./project/profile-bundle.js";
 export * from "./project/refresh.js";

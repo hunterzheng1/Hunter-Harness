@@ -43,7 +43,7 @@ disallowed-tools:
 | 4 | CLAUDE.md 完整性/行数 → 超限 AskUserQuestion 瘦身 |
 | 5 | AGENTS.md 与 CLAUDE.md 一致 |
 | 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；可选 `harness_deploy.py diff` 检查已装 skill 是否过期 |
-| 7–9 | `.claude/rules/`、构建配置、测试目录 — **只提示不自动修复** |
+| 7–9 | `项目规则（见 .harness/context-index.json）/`、构建配置、测试目录 — **只提示不自动修复** |
 
 状态判断表格、修复动作、输出示例 → `reference.md`
 

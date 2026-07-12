@@ -12,14 +12,27 @@ cd my-project
 npx hunter-harness
 ```
 
-选择 `1` 安装通用 Harness，或 `2` 安装 Java Harness。安装是本地操作，不需要 Hunter-Harness 服务器、Python 或访问源 Vault。
+交互安装先选择一个或多个目标 Agent，再选择通用或 Java Harness。空输入保持兼容行为，只安装 Claude Code。安装是本地操作，不需要 Hunter-Harness 服务器、Python 或访问源 Vault。
 
 自动化场景：
 
 ```powershell
 npx hunter-harness --profile general --non-interactive --yes
 npx hunter-harness --profile java --non-interactive --yes
+npx hunter-harness --agents claude-code,codex,cursor,codebuddy --profile general --non-interactive --yes
+npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general --non-interactive --yes
 ```
+
+`--agents` 接受逗号分隔的 `claude-code`、`codex`、`cursor`、`codebuddy`，或 `all`；输出顺序固定。`--codebuddy-surface` 接受 `both|ide|cli`，未选择 CodeBuddy 时不能提供该参数。
+
+| 能力 | Claude Code | Codex | Cursor | CodeBuddy `both` |
+|---|---|---|---|---|
+| 项目指令 | `AGENTS.md` + `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` + `CODEBUDDY.md` |
+| Skills | `.claude/skills/` | `.agents/skills/` | `.cursor/skills/` | `.codebuddy/skills/` |
+| 项目规则 | `.claude/rules/*.md` | `AGENTS.md` | `.cursor/rules/*.mdc` | `CODEBUDDY.md` |
+| 自定义 Agent | `.claude/agents/` | 不生成 | 不生成 | `.codebuddy/agents/` |
+
+已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。
 
 ## 项目级 CLI
 

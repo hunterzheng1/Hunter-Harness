@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, identify the component first documented as the single source of truth for billing reconciliation. Answer with the component name only.</question>
+    <answer>LedgerReconciler</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, find the later component that replaced the original billing reconciliation source-of-truth assumption for final published output. Answer with the component name only.</question>
+    <answer>SettlementSnapshot</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what file introduced the final published reconciliation output object? Answer with the exact file path.</question>
+    <answer>src/billing/settlement_snapshot.py</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, which test file validates the original billing reconciliation component? Answer with the exact file path.</question>
+    <answer>tests/test_ledger_reconciler.py</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what migration must run before the January ledger release? Answer with the migration id only.</question>
+    <answer>2026-01-ledger-baseline</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what HTTP header carries the webhook signature? Answer with the header name only.</question>
+    <answer>X-Harness-Signature</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what is the retry backoff cap for partner payout webhook notifications? Answer with the duration phrase only.</question>
+    <answer>30 minutes</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, how many files changed in the webhook contract archive? Answer with a number only.</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what risk can break signature timestamp validation? Answer with the exact risk sentence.</question>
+    <answer>Partner sandbox clock skew may break signature timestamp validation.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the project tests/fixtures/mcp-eval-project, what project id is declared for the fixture project? Answer with the project id only.</question>
+    <answer>harness-knowledge-mcp-eval</answer>
+  </qa_pair>
+</evaluation>

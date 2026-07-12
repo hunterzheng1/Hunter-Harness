@@ -48,7 +48,9 @@ function addCommonOptions(command: Command): Command {
     .option("--json")
     .option("--server-url <url>")
     .option("--token-env <ENV_NAME>")
-    .option("--non-interactive");
+    .option("--non-interactive")
+    .option("--agents <csv>")
+    .option("--codebuddy-surface <surface>");
 }
 
 export async function runCli(

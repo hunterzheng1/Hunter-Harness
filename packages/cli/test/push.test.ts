@@ -71,6 +71,38 @@ describe("hunter-harness push", () => {
     )).toBe(baselineBefore);
   });
 
+  it("excludes every adapter bundle working copy but previews rules and managed blocks", async () => {
+    expect(await runCli([
+      "--agents", "all", "--non-interactive", "--yes"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      stdout: () => undefined,
+      stderr: () => undefined,
+      env: {}
+    })).toBe(0);
+
+    const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: vi.fn(),
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(0);
+    const paths = (JSON.parse(stdout.join("")) as { items: Array<{ path: string }> })
+      .items.map((item) => item.path);
+    expect(paths).toContain("CODEBUDDY.md");
+    expect(paths).toContain(".claude/rules/harness-general.md");
+    expect(paths).toContain(".cursor/rules/harness-general.mdc");
+    expect(paths.some((path) => /^\.claude\/skills\/harness-/.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.agents\/skills\/harness-/.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.cursor\/skills\/harness-/.test(path))).toBe(false);
+    expect(paths.some((path) => /^\.codebuddy\/(?:skills|agents)\/harness-/.test(path))).toBe(false);
+  }, 120000);
+
   it("does not let forged local bundle state skip sensitive scanning", async () => {
     await writeFile(
       join(root, ".claude", "rules", "harness-general.md"),

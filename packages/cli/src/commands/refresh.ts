@@ -2,7 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
+  harnessAgentSchema,
   projectConfigSchema,
+  sortHarnessAgents,
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import { parse as parseYaml } from "yaml";
@@ -15,9 +17,11 @@ import {
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
+import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 
 export interface RefreshCommandOptions {
+  agents?: string;
   profile?: string;
   nonInteractive?: boolean;
   yes?: boolean;
@@ -56,6 +60,18 @@ function parseProfile(value: string | undefined, current: HarnessProfile): Harne
   if (value === "1" || value === "general") return "general";
   if (value === "2" || value === "java") return "java";
   throw new Error("配置类型必须为 general 或 java");
+}
+
+function refreshAgents(config: ProjectConfig): ReturnType<typeof sortHarnessAgents> {
+  const agents = sortHarnessAgents(config.adapters.enabled.flatMap((agent) => {
+    const parsed = harnessAgentSchema.safeParse(agent);
+    return parsed.success ? [parsed.data] : [];
+  }));
+  return agents.length > 0 ? agents : ["claude-code"];
+}
+
+function codebuddySurface(config: ProjectConfig): "both" | "ide" | "cli" {
+  return config.adapter_options?.codebuddy?.surface ?? "both";
 }
 
 function summarize(result: RefreshResult): CliResult {
@@ -127,21 +143,30 @@ export async function runRefresh(
 
   const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;
   let targetProfile: HarnessProfile;
+  let targetAgents: ReturnType<typeof refreshAgents>;
   try {
     targetProfile = parseProfile(options.profile, currentProfile);
+    targetAgents = options.agents === undefined
+      ? refreshAgents(detection.config)
+      : parseAgentsInput(options.agents);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
-    return 3;
+    const code = error instanceof InitConfigurationError ? error.code : undefined;
+    dependencies.stderr((code === undefined ? "" : code + ": ") + message + "\n");
+    return error instanceof InitConfigurationError ? error.exitCode : 3;
   }
 
   const dryRun = options.dryRun === true;
-  if (targetProfile !== currentProfile && !dryRun) {
+  if ((targetProfile !== currentProfile ||
+      targetAgents.some((agent, index) => agent !== refreshAgents(detection.config)[index]) ||
+      targetAgents.length !== refreshAgents(detection.config).length) && !dryRun) {
     try {
       const preview = await refreshProject({
         projectRoot: dependencies.cwd,
         resourcesRoot: dependencies.resourcesRoot,
         profile: targetProfile,
+        agents: targetAgents,
+        codebuddySurface: codebuddySurface(detection.config),
         dryRun: true,
         forceManaged: options.forceManaged === true
       });
@@ -179,6 +204,8 @@ export async function runRefresh(
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
       profile: targetProfile,
+      agents: targetAgents,
+      codebuddySurface: codebuddySurface(detection.config),
       dryRun,
       forceManaged: options.forceManaged === true
     });
@@ -195,8 +222,11 @@ export async function runRefresh(
     }
     return output.exit_code;
   } catch (error) {
+    const info = harnessErrorInfo(error);
+    const exitCode = info.exitCode ?? 1;
+    const code = info.code;
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
+    dependencies.stderr((code !== undefined ? code + ": " : "") + message + "\n");
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({
         schema_version: 1,
@@ -204,14 +234,14 @@ export async function runRefresh(
         request_id: requestId,
         dry_run: dryRun,
         ok: false,
-        exit_code: 1,
+        exit_code: exitCode,
         project_id: null,
         summary: { applied: 0, removed: 0, preserved: 0, unchanged: 0, conflicts: 0 },
         items: [],
         warnings: [],
-        errors: [{ message }]
+        errors: [{ ...(code === undefined ? {} : { code }), message }]
       }));
     }
-    return 1;
+    return exitCode;
   }
 }
