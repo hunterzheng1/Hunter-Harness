@@ -7,6 +7,9 @@ import {
   type ProviderModel,
   type DashboardOverview,
   type DraftState,
+  type ExternalSkill,
+  type CreateExternalSkillRequest,
+  type PatchExternalSkillRequest,
   type FileOperation,
   type FixPlan,
   type NpmReleaseResponse,
@@ -156,6 +159,12 @@ export interface HunterApi {
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
   reviewProposal(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
   listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
+  listExternalSkills?(filters?: Record<string, string>): Promise<ExternalSkill[]>;
+  getExternalSkill?(id: string): Promise<ExternalSkill>;
+  createExternalSkill?(input: CreateExternalSkillRequest): Promise<ExternalSkill>;
+  patchExternalSkill?(id: string, input: PatchExternalSkillRequest): Promise<ExternalSkill>;
+  refreshExternalSkill?(id: string): Promise<ExternalSkill>;
+  deleteExternalSkill?(id: string): Promise<{ id: string; deleted: boolean }>;
   listSkillArtifacts?(): Promise<RegistryArtifact[]>;
   getSkill?(slug: string): Promise<RegistrySkillDetail>;
   listSkillVersions?(slug: string, agent?: RegistryAgent): Promise<RegistrySkillVersion[]>;
@@ -496,6 +505,34 @@ export class HttpHunterApi implements HunterApi {
       "GET", "/api/v1/skills" + (query.size === 0 ? "" : "?" + query.toString())
     );
     return result.items;
+  }
+
+  async listExternalSkills(filters: Record<string, string> = {}): Promise<ExternalSkill[]> {
+    const query = new URLSearchParams(filters);
+    const result = await this.request<{ items: ExternalSkill[] }>(
+      "GET", "/api/v1/external-skills" + (query.size === 0 ? "" : "?" + query.toString())
+    );
+    return result.items;
+  }
+
+  async getExternalSkill(id: string): Promise<ExternalSkill> {
+    return this.request("GET", "/api/v1/external-skills/" + encodeURIComponent(id));
+  }
+
+  async createExternalSkill(input: CreateExternalSkillRequest): Promise<ExternalSkill> {
+    return this.request("POST", "/api/v1/external-skills", input);
+  }
+
+  async patchExternalSkill(id: string, input: PatchExternalSkillRequest): Promise<ExternalSkill> {
+    return this.request("PATCH", "/api/v1/external-skills/" + encodeURIComponent(id), input);
+  }
+
+  async refreshExternalSkill(id: string): Promise<ExternalSkill> {
+    return this.request("POST", "/api/v1/external-skills/" + encodeURIComponent(id) + "/refresh");
+  }
+
+  async deleteExternalSkill(id: string): Promise<{ id: string; deleted: boolean }> {
+    return this.request("DELETE", "/api/v1/external-skills/" + encodeURIComponent(id));
   }
 
   async listSkillArtifacts(): Promise<RegistryArtifact[]> {

@@ -2,6 +2,7 @@
 
 import type {
   DraftState,
+  ExternalSkill,
   RegistryAgent,
   RegistrySkillDetail,
   RegistrySkillProposal,
@@ -105,9 +106,11 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useApi(apiValue);
   const [skills, setSkills] = useState<RegistrySkillDetail[] | null>(null);
+  const [externalSkills, setExternalSkills] = useState<ExternalSkill[]>([]);
   const [tags, setTags] = useState<RegistryTag[]>([]);
   const [search, setSearch] = useState("");
   const [agent, setAgent] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<"" | "registry" | "external" | "npm" | "github">("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [status, setStatus] = useState<"" | "published" | "unpublished">("");
   const [page, setPage] = useState(1);
@@ -115,15 +118,21 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const [upload, setUpload] = useState<File[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [deleteModal, setDeleteModal] = useState<RegistrySkillDetail | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importRef, setImportRef] = useState("");
+  const [importNote, setImportNote] = useState("");
+  const [importing, setImporting] = useState(false);
 
   async function refresh(): Promise<void> {
     try {
-      const [nextSkills, nextTags] = await Promise.all([
+      const [nextSkills, nextTags, nextExternal] = await Promise.all([
         required(api, "listSkills")(),
-        required(api, "listTags")()
+        required(api, "listTags")(),
+        api.listExternalSkills === undefined ? Promise.resolve([]) : required(api, "listExternalSkills")()
       ]);
       setSkills(nextSkills);
       setTags(nextTags);
+      setExternalSkills(nextExternal);
       setError(null);
     } catch (reason) {
       setError(apiError(reason, t));
@@ -131,15 +140,35 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   }
 
   useEffect(() => { void refresh(); }, [api]);
-  useEffect(() => { setPage(1); }, [search, agent, status, selectedTags]);
+  useEffect(() => { setPage(1); }, [search, agent, status, selectedTags, sourceFilter]);
 
   const activeTags = tags.filter((tag) => tag.active);
-  const filtered = (skills ?? []).filter((skill) => {
+  type MixedItem =
+    | { kind: "registry"; skill: RegistrySkillDetail; sortKey: string }
+    | { kind: "external"; skill: ExternalSkill; sortKey: string };
+
+  const mixed: MixedItem[] = [
+    ...(skills ?? []).map((skill) => ({ kind: "registry" as const, skill, sortKey: skill.name.toLowerCase() })),
+    ...externalSkills.map((skill) => ({ kind: "external" as const, skill, sortKey: skill.snapshot.name.toLowerCase() }))
+  ].sort((left, right) => left.sortKey.localeCompare(right.sortKey));
+
+  const filtered = mixed.filter((item) => {
     const needle = search.trim().toLowerCase();
-    return (needle === "" || `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase().includes(needle)) &&
-      (selectedTags.length === 0 || selectedTags.every((tag) => skill.tags.includes(tag))) &&
-      (agent === "" || skill.agents.some((a) => a.agent === agent)) &&
-      (status === "" || skillStatusGroup(skill.status) === status);
+    if (item.kind === "registry") {
+      if (sourceFilter === "external" || sourceFilter === "npm" || sourceFilter === "github") return false;
+      const skill = item.skill;
+      return (needle === "" || `${skill.name} ${skill.slug} ${skill.description}`.toLowerCase().includes(needle)) &&
+        (selectedTags.length === 0 || selectedTags.every((tag) => skill.tags.includes(tag))) &&
+        (agent === "" || skill.agents.some((a) => a.agent === agent)) &&
+        (status === "" || skillStatusGroup(skill.status) === status);
+    }
+    if (sourceFilter === "registry") return false;
+    if (sourceFilter === "npm" && item.skill.source.type !== "npm") return false;
+    if (sourceFilter === "github" && item.skill.source.type !== "github") return false;
+    if (sourceFilter === "" && (agent !== "" || status !== "")) return false;
+    const skill = item.skill;
+    return (needle === "" || `${skill.snapshot.name} ${skill.source.ref} ${skill.snapshot.description} ${skill.curationNote}`.toLowerCase().includes(needle)) &&
+      (selectedTags.length === 0 || selectedTags.every((tag) => skill.tags.includes(tag)));
   });
   const pageSize = 6;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -158,10 +187,6 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     if (upload === null || upload.length === 0) return;
     const files = upload;
     try {
-      // 边界分流（T18）：文件夹含 workflow.yaml → 工作流包端点；否则 → skill draft。
-      // zip 模式前端不解压，走 skill draft，后端检测 workflow 包会抛 WORKFLOW_PACKAGE_REDIRECT 由用户导向 /workflows。
-      // 列表页上传无 per-agent 选择器；默认落到 claude-code（主 installable adapter）。
-      // 详情页 AgentContextSelector 可为其他 agent 单独建立草稿。
       const hasWorkflowYaml = files.some((f) => {
         const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? f.name;
         return /(^|\/)workflow\.ya?ml$/i.test(rel);
@@ -178,6 +203,29 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       setMessage(t.skills.uploadedAsDraft.replace("{name}", previewName));
       setUpload(null);
     } catch (reason) { setError(apiError(reason, t)); }
+  }
+
+  async function submitImport(): Promise<void> {
+    const raw = importRef.trim();
+    if (raw.length === 0 || importing) return;
+    setImporting(true);
+    try {
+      const type = raw.includes("github.com") || /^[^/\s]+\/[^/\s]+$/.test(raw) ? "github" : "npm";
+      const created = await required(api, "createExternalSkill")({
+        source: { type, ref: raw },
+        curationNote: importNote,
+        tags: []
+      });
+      await refresh();
+      setMessage(t.skills.importedExternal.replace("{name}", created.snapshot.name));
+      setImportOpen(false);
+      setImportRef("");
+      setImportNote("");
+    } catch (reason) {
+      setError(apiError(reason, t));
+    } finally {
+      setImporting(false);
+    }
   }
 
   function deleteSkill(skill: RegistrySkillDetail): void {
@@ -207,11 +255,12 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
            <h1>{t.skills.title}</h1>
            <p className="lede">{t.skills.description}</p>
         </div>
-         <div className="hero-actions"><Status value="governed" /><span>{skills?.length ?? 0} {t.skills.publishedCount}</span></div>
+         <div className="hero-actions"><Status value="governed" /><span>{(skills?.length ?? 0) + externalSkills.length} {t.skills.publishedCount}</span></div>
       </header>
 
       <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
         <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t.skills.searchPlaceholder} /></label>
+        <label>{t.skills.source}<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}><option value="">{t.skills.sourceAll}</option><option value="registry">{t.skills.sourceRegistry}</option><option value="external">{t.skills.sourceExternal}</option><option value="npm">{t.skills.sourceNpm}</option><option value="github">{t.skills.sourceGithub}</option></select></label>
         <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="generic">Generic</option><option value="mcp">MCP</option></select></label>
         <label>{t.skills.status}<select value={status} onChange={(event) => setStatus(event.target.value as "" | "published" | "unpublished")}><option value="">{t.common.all}</option><option value="published">{t.skills.statusPublished}</option><option value="unpublished">{t.skills.statusUnpublished}</option></select></label>
         <div className="tag-filter-panel">
@@ -226,7 +275,32 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
         <div className="panel panel-themed panel-list registry-list">
           <div className="panel-title"><h2>{t.skills.skillList}</h2><span>{filtered.length}</span></div>
           <div className="registry-list-body">
-          {skills === null ? <div className="skeleton-block" /> : filtered.length === 0 ? <Empty>{t.skills.noMatch}</Empty> : pageItems.map((skill) => {
+          {skills === null ? <div className="skeleton-block" /> : filtered.length === 0 ? <Empty>{t.skills.noMatch}</Empty> : pageItems.map((item) => {
+            if (item.kind === "external") {
+              const skill = item.skill;
+              return (
+                <div className="skill-row-with-actions" key={skill.id}>
+                  <Link className="skill-row" href={`/external-skills/${skill.id}`}>
+                    <div className="skill-row-main">
+                      <strong className="skill-row-name">{skill.snapshot.name}</strong>
+                      <p className="skill-row-desc" title={skill.snapshot.description}>{skill.snapshot.description || skill.curationNote}</p>
+                      <div className="tag-row">
+                        <span className="tag">{t.skills.externalBadge}</span>
+                        <span className="tag">{skill.source.type}</span>
+                        {skill.updateAvailable ? <span className="tag">{t.skills.updateAvailableBadge}</span> : null}
+                        {skill.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}
+                      </div>
+                    </div>
+                    <div className="skill-meta">
+                      <span className="meta-pill meta-pill-version">{skill.snapshot.version ?? "—"}</span>
+                      <span className="skill-meta-cell" title={`${t.skills.updated} ${skill.updated_at.slice(0, 10)}`}>{skill.updated_at.slice(0, 10)}</span>
+                      <span className="status status-published">{t.skills.externalBadge}</span>
+                    </div>
+                  </Link>
+                </div>
+              );
+            }
+            const skill = item.skill;
             const usageCount = 0;
             return (
               <div className="skill-row-with-actions" key={skill.skill_id}>
@@ -254,12 +328,18 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
             <label className="upload-drop-strip"><input type="file" multiple accept=".zip" onChange={(event: ChangeEvent<HTMLInputElement>) => { const files = event.target.files; setUpload(files === null || files.length === 0 ? null : Array.from(files)); }} {...{ webkitdirectory: "" }} /><strong>{t.skills.chooseFile}</strong><span>{uploadLabel(upload, t.skills.uploadDropHint)}</span></label>
             <button disabled={upload === null} onClick={() => void submitUpload()}>{t.skills.addUnpublishedSkill}</button>
           </div>
+          <div className="panel panel-themed panel-upload compact-form">
+            <div className="panel-title"><h2>{t.skills.importExternal}</h2><span>{t.skills.externalBadge}</span></div>
+            <p>{t.skills.importExternalHint}</p>
+            <button type="button" className="secondary" onClick={() => setImportOpen(true)}>{t.skills.importExternal}</button>
+          </div>
           <div className="panel panel-themed panel-stats skill-stats-panel">
             <div className="panel-title"><h2>{t.skills.stats}</h2><span>{t.skills.liveLocal}</span></div>
             <div className="skill-stat-grid">
-              <article><strong>{skills?.length ?? 0}</strong><span>{t.skills.totalSkills}</span></article>
+              <article><strong>{(skills?.length ?? 0) + externalSkills.length}</strong><span>{t.skills.totalSkills}</span></article>
               <article><strong>{publishedCount}</strong><span>{t.skills.statusPublished}</span></article>
               <article><strong>{unpublishedCount}</strong><span>{t.skills.statusUnpublished}</span></article>
+              <article><strong>{externalSkills.length}</strong><span>{t.skills.sourceExternal}</span></article>
               <article><strong>{activeTags.length}</strong><span>{t.skills.activeTags}</span></article>
               <article><strong>{configuredAgentCount}</strong><span>{t.skills.configuredAgents}</span></article>
               <article><strong>{usedSkillCount}</strong><span>{t.skills.usedInWorkflows}</span></article>
@@ -284,6 +364,23 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
           </div>
         </div>
       )}
+      {importOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setImportOpen(false)}>
+          <div className="check-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="import-external-title" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-title">
+              <h2 id="import-external-title">{t.skills.importExternal}</h2>
+              <button type="button" className="icon-button" aria-label={t.common.cancel} onClick={() => setImportOpen(false)}>×</button>
+            </div>
+            <p>{t.skills.importExternalHint}</p>
+            <label>{t.skills.slug}<input value={importRef} onChange={(event) => setImportRef(event.target.value)} placeholder={t.skills.importExternalPlaceholder} /></label>
+            <label>{t.skills.importExternalNote}<textarea value={importNote} onChange={(event) => setImportNote(event.target.value)} rows={3} /></label>
+            <div className="modal-actions">
+              <button type="button" className="secondary" onClick={() => setImportOpen(false)}>{t.common.cancel}</button>
+              <button type="button" disabled={importRef.trim() === "" || importing} onClick={() => void submitImport()}>{t.skills.importExternalSubmit}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

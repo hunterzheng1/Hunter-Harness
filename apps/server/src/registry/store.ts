@@ -6,6 +6,7 @@ import {
   aiProviderConfigSchema,
   canonicalJson,
   draftStateSchema,
+  externalSkillSchema,
   npmReleaseRecordSchema,
   registrySkillDetailSchema,
   registrySkillProposalSchema,
@@ -24,6 +25,8 @@ import {
   type ProviderModel,
   type AgentSkillConfig,
   type DraftState,
+  type ExternalSkill,
+  type ExternalSkillSource,
   type FixPlan,
   type NpmReleaseRecord,
   type RegistryAgent,
@@ -67,6 +70,11 @@ import type { RegistryPersistence } from "./persistence.js";
 import type { NpmPublishAttemptResult, SkillNpmPackageInput, WorkflowFamilyNpmPackageInput } from "../npm/publisher.js";
 import { layoutWorkflowFamilyNpmFiles, skillNpmPackageInput, workflowFamilyNpmPackageInput } from "../npm/publisher.js";
 import type { NpmPublishConfig } from "../npm/config.js";
+import {
+  ExternalFetchError,
+  fetchExternalSnapshot,
+  type ExternalFetcherDeps
+} from "../external/fetchers.js";
 import { WorkflowFamilyStore, type WorkflowFamilyState } from "./workflow-family-store.js";
 
 // applyFixSuggestion 可写白名单（examples/allowed_capabilities/instructions/description）；
@@ -333,9 +341,11 @@ export class RegistryStore {
   private readonly workflowFamilies = new Map<string, WorkflowFamilyState>();
   private readonly workflowFamilyDrafts = new Map<string, WorkflowFamilyDraftState>();
   private readonly workflowFamilyStore: WorkflowFamilyStore;
+  private readonly externalSkills = new Map<string, ExternalSkill>();
   private compilerVersion = "1.0.0";
   private tagUsageCache: Map<string, number> | null = null;
   private aiConfig: AiConfigState = { defaultProvider: null, providers: [], usage: [] };
+  private externalFetcherDeps: ExternalFetcherDeps = {};
 
   constructor(
     private readonly storage: ArtifactStorage,
@@ -385,6 +395,7 @@ export class RegistryStore {
         drafts?: Array<[string, unknown]>;
         workflowFamilies?: Array<[string, unknown]>;
         workflowFamilyDrafts?: Array<[string, unknown]>;
+        externalSkills?: Array<[string, unknown]>;
         aiConfig?: unknown;
         aiUsage?: unknown;
       };
@@ -445,6 +456,10 @@ export class RegistryStore {
         const parsed = workflowFamilyDraftStateSchema.safeParse(raw);
         if (parsed.success) this.workflowFamilyDrafts.set(key, parsed.data);
       }
+      for (const [key, raw] of value.externalSkills ?? []) {
+        const parsed = externalSkillSchema.safeParse(raw);
+        if (parsed.success) this.externalSkills.set(key, parsed.data);
+      }
       // AI config 反序列化：schemaVersion < 4 时 migrate 每个 provider（旧单 model → models[] + selected_model_id）
       const aiCfgRaw = value.aiConfig as { providers?: unknown[]; defaultProvider?: string | null; usage?: unknown[] } | undefined;
       if (aiCfgRaw !== undefined && (value.schemaVersion ?? 0) < 4) {
@@ -496,8 +511,13 @@ export class RegistryStore {
       drafts: [...this.drafts.entries()].map(([slug, m]) => [slug, [...m.entries()]] as [string, [RegistryAgent, DraftState][]]),
       workflowFamilies: [...this.workflowFamilies.entries()].map(([slug, state]) => [slug, { detail: state.detail, versions: state.versions }]),
       workflowFamilyDrafts: [...this.workflowFamilyDrafts.entries()],
+      externalSkills: [...this.externalSkills.entries()],
       aiConfig: this.aiConfig
     }, tx);
+  }
+
+  setExternalFetcherDeps(deps: ExternalFetcherDeps): void {
+    this.externalFetcherDeps = deps;
   }
 
   private migrateSkillState(raw: unknown): SkillState | null {
@@ -1838,5 +1858,155 @@ export class RegistryStore {
     });
     this.projectBindings.set(input.projectId, binding);
     return structuredClone(binding);
+  }
+
+  listExternalSkills(query: { search?: string; sourceType?: string } = {}): ExternalSkill[] {
+    const search = query.search?.trim().toLowerCase() ?? "";
+    return [...this.externalSkills.values()]
+      .map((item) => structuredClone(item))
+      .filter((item) => query.sourceType === undefined || item.source.type === query.sourceType)
+      .filter((item) => search === ""
+        || item.snapshot.name.toLowerCase().includes(search)
+        || item.snapshot.description.toLowerCase().includes(search)
+        || item.source.ref.toLowerCase().includes(search)
+        || item.curationNote.toLowerCase().includes(search)
+        || item.tags.some((tag) => tag.toLowerCase().includes(search)))
+      .sort((left, right) => left.snapshot.name.localeCompare(right.snapshot.name));
+  }
+
+  getExternalSkill(id: string): ExternalSkill {
+    const item = this.externalSkills.get(id);
+    if (item === undefined) {
+      throw new ServerDomainError(404, "EXTERNAL_SKILL_NOT_FOUND", "external skill not found", { id });
+    }
+    return structuredClone(item);
+  }
+
+  async createExternalSkill(input: {
+    source: ExternalSkillSource;
+    curationNote?: string;
+    tags?: string[];
+  }): Promise<ExternalSkill> {
+    let fetched: Awaited<ReturnType<typeof fetchExternalSnapshot>>;
+    try {
+      fetched = await fetchExternalSnapshot(input.source, this.externalFetcherDeps);
+    } catch (error) {
+      this.rethrowExternalFetch(error);
+    }
+    const duplicate = [...this.externalSkills.values()].find(
+      (item) => item.source.type === fetched.source.type && item.source.ref === fetched.source.ref
+    );
+    if (duplicate !== undefined) {
+      throw new ServerDomainError(409, "EXTERNAL_SKILL_EXISTS", "external skill already registered", {
+        id: duplicate.id,
+        source: duplicate.source
+      });
+    }
+    const now = fetched.snapshot.fetchedAt;
+    const skill = externalSkillSchema.parse({
+      id: id("ext_"),
+      source: fetched.source,
+      snapshot: fetched.snapshot,
+      curationNote: input.curationNote ?? "",
+      tags: [...(input.tags ?? [])].sort(),
+      updateAvailable: false,
+      lastCheckedAt: now,
+      revision: 1,
+      created_at: now,
+      updated_at: now
+    });
+    this.externalSkills.set(skill.id, skill);
+    await this.persist();
+    return structuredClone(skill);
+  }
+
+  async patchExternalSkill(input: {
+    id: string;
+    revision: number;
+    curationNote?: string;
+    tags?: string[];
+    acknowledgeUpdate?: boolean;
+  }): Promise<ExternalSkill> {
+    const existing = this.externalSkills.get(input.id);
+    if (existing === undefined) {
+      throw new ServerDomainError(404, "EXTERNAL_SKILL_NOT_FOUND", "external skill not found", { id: input.id });
+    }
+    if (existing.revision !== input.revision) {
+      throw new ServerDomainError(409, "REVISION_CONFLICT", "external skill revision is stale", {
+        id: input.id,
+        expected: existing.revision,
+        provided: input.revision
+      });
+    }
+    const now = new Date().toISOString();
+    const next = externalSkillSchema.parse({
+      ...existing,
+      curationNote: input.curationNote ?? existing.curationNote,
+      tags: input.tags !== undefined ? [...input.tags].sort() : existing.tags,
+      updateAvailable: input.acknowledgeUpdate === true ? false : existing.updateAvailable,
+      revision: existing.revision + 1,
+      updated_at: now
+    });
+    this.externalSkills.set(next.id, next);
+    await this.persist();
+    return structuredClone(next);
+  }
+
+  async deleteExternalSkill(id: string): Promise<{ id: string; deleted: boolean }> {
+    if (!this.externalSkills.has(id)) {
+      throw new ServerDomainError(404, "EXTERNAL_SKILL_NOT_FOUND", "external skill not found", { id });
+    }
+    this.externalSkills.delete(id);
+    await this.persist();
+    return { id, deleted: true };
+  }
+
+  async refreshExternalSkill(id: string): Promise<ExternalSkill> {
+    const existing = this.externalSkills.get(id);
+    if (existing === undefined) {
+      throw new ServerDomainError(404, "EXTERNAL_SKILL_NOT_FOUND", "external skill not found", { id });
+    }
+    const previousNote = existing.curationNote;
+    let fetched: Awaited<ReturnType<typeof fetchExternalSnapshot>>;
+    try {
+      fetched = await fetchExternalSnapshot(existing.source, this.externalFetcherDeps);
+    } catch (error) {
+      this.rethrowExternalFetch(error);
+    }
+    const versionChanged = fetched.snapshot.version !== existing.snapshot.version;
+    const now = fetched.snapshot.fetchedAt;
+    const next = externalSkillSchema.parse({
+      ...existing,
+      snapshot: fetched.snapshot,
+      curationNote: previousNote,
+      updateAvailable: versionChanged ? true : existing.updateAvailable,
+      lastCheckedAt: now,
+      revision: existing.revision + 1,
+      updated_at: now
+    });
+    this.externalSkills.set(next.id, next);
+    await this.persist();
+    return structuredClone(next);
+  }
+
+  async refreshAllExternalSkills(): Promise<{ refreshed: number; failed: number }> {
+    let refreshed = 0;
+    let failed = 0;
+    for (const id of [...this.externalSkills.keys()]) {
+      try {
+        await this.refreshExternalSkill(id);
+        refreshed += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { refreshed, failed };
+  }
+
+  private rethrowExternalFetch(error: unknown): never {
+    if (error instanceof ExternalFetchError) {
+      throw new ServerDomainError(error.statusCode, error.code, error.message);
+    }
+    throw error;
   }
 }

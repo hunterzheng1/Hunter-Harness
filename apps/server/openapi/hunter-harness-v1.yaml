@@ -575,6 +575,58 @@ paths:
       responses:
         "200": { description: Download published per-profile workflow family ZIP artifact }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills:
+    get:
+      operationId: listExternalSkills
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+        - name: source_type
+          in: query
+          schema: { type: string, enum: [npm, github] }
+      responses:
+        "200": { description: Curated external skill listings (display-only metadata snapshots) }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createExternalSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "201": { description: External skill registered after fetching upstream metadata }
+        "404": { description: Upstream source not found (EXTERNAL_SOURCE_NOT_FOUND) }
+        "409": { description: Same npm/GitHub source already registered (EXTERNAL_SKILL_EXISTS) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}:
+    get:
+      operationId: getExternalSkill
+      responses:
+        "200": { description: External skill detail including curation note and snapshot }
+        "404": { description: External skill not found }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: patchExternalSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Curation note/tags updated, or update badge acknowledged }
+        "409": { description: Revision conflict }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteExternalSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: External skill listing removed (upstream untouched) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}/refresh:
+    post:
+      operationId: refreshExternalSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Upstream metadata refreshed; curationNote is never modified }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/workflow-binding:
     get:
       operationId: getProjectWorkflowBinding

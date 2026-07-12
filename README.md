@@ -152,6 +152,14 @@ Cursor / Claude Desktop 示例（把 `YOUR_TOKEN` 换成真实 `hh_…` token）
 }
 ```
 
+## External Skill（策展列表）
+
+技能中心可混排展示第三方 External Skill：从 npm 包名或 GitHub 仓库 URL 录入后，服务端只抓取公开元数据快照（名称/描述/版本/README/安装命令/license），并保存 owner 策展笔记。
+
+- **不做二次分发**：永不托管、安装或 republish 上游内容；安装始终走官方渠道命令。
+- **上游刷新**：详情页手动刷新 + 每日定时任务（`HUNTER_HARNESS_EXTERNAL_SKILL_REFRESH_MS`，默认 24h；`0` 关闭）。只更新 snapshot 与「有更新」徽章，**绝不改** `curationNote`。
+- **可选 GitHub token**：`HUNTER_HARNESS_GITHUB_TOKEN` 或 `GITHUB_TOKEN`，仅提升公开 API 限额。
+
 ## 安全边界
 
 - token 只从环境变量、secret file 或浏览器 session storage 读取，不写入项目文件或 CLI JSON。

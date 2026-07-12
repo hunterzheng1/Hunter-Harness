@@ -13,6 +13,8 @@ import {
   setDefaultAgentRequestSchema,
   workflowFamilyMutationSchema,
   bindProjectWorkflowFamilyRequestSchema,
+  createExternalSkillRequestSchema,
+  patchExternalSkillRequestSchema,
   SKILL_ERROR_CODE,
   type AiProviderConfig,
   type FileOperation,
@@ -88,6 +90,8 @@ export interface CreateServerOptions {
   aiLlmClientFactory?: (provider: AiProviderConfig, apiKey: string) => LlmClient | null;
   npmPublisherDeps?: NpmPublisherDeps;
   npmPublishConfig?: ReturnType<typeof loadNpmPublishConfig>;
+  /** External Skill 上游 fetch 注入（测试用） */
+  externalFetch?: typeof fetch;
 }
 
 interface MutationResult {
@@ -322,6 +326,10 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   const { repository, storage } = options;
   const registry = new RegistryStore(storage, options.registryPersistence);
   await registry.initialize(options.bootstrapBundle);
+  registry.setExternalFetcherDeps({
+    ...(options.externalFetch !== undefined ? { fetch: options.externalFetch } : {}),
+    githubToken: config.githubToken
+  });
   // AiJobStore 注入（§3.2）：PG 环境传 PgAiJobStore 多实例共享；缺省 MemoryAiJobStore 单进程 fallback。
   const aiJobStore = options.aiJobStore ?? new MemoryAiJobStore();
   const semanticStore = options.semanticStore ?? new SemanticMemoryStore();
@@ -2052,7 +2060,125 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
+  app.get("/api/v1/external-skills", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: registry.listExternalSkills({
+        ...(query.search !== undefined ? { search: query.search } : {}),
+        ...(query.source_type !== undefined ? { sourceType: query.source_type } : {})
+      }),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/external-skills/:id", async (request, reply) => {
+    const { requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    reply.header("X-Request-Id", requestId);
+    return { ...registry.getExternalSkill(id), request_id: requestId };
+  });
+
+  app.post("/api/v1/external-skills", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const body = createExternalSkillRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const skill = await registry.createExternalSkill(body);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.created",
+        targetId: skill.id,
+        requestId,
+        details: { source: skill.source }
+      });
+      return { statusCode: 201, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.patch("/api/v1/external-skills/:id", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const body = patchExternalSkillRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const skill = await registry.patchExternalSkill({
+        id,
+        revision: body.revision,
+        ...(body.curationNote !== undefined ? { curationNote: body.curationNote } : {}),
+        ...(body.tags !== undefined ? { tags: body.tags } : {}),
+        ...(body.acknowledgeUpdate !== undefined ? { acknowledgeUpdate: body.acknowledgeUpdate } : {})
+      });
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.updated",
+        targetId: skill.id,
+        requestId,
+        details: { revision: skill.revision }
+      });
+      return { statusCode: 200, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/external-skills/:id/refresh", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const before = registry.getExternalSkill(id);
+      const skill = await registry.refreshExternalSkill(id);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.refreshed",
+        targetId: skill.id,
+        requestId,
+        details: {
+          previous_version: before.snapshot.version,
+          version: skill.snapshot.version,
+          update_available: skill.updateAvailable
+        }
+      });
+      return { statusCode: 200, body: skill };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.delete("/api/v1/external-skills/:id", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { id } = request.params as { id: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const deleted = await registry.deleteExternalSkill(id);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "external_skill.deleted",
+        targetId: id,
+        requestId,
+        details: {}
+      });
+      return { statusCode: 200, body: deleted };
+    });
+    return send(reply, requestId, result);
+  });
+
   registerSemanticMcpRoutes(app, { repository, semanticStore });
+
+  let externalRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  if (config.externalSkillRefreshIntervalMs > 0) {
+    externalRefreshTimer = setInterval(() => {
+      void registry.refreshAllExternalSkills().catch((error: unknown) => {
+        app.log.error({ err: error }, "external skill upstream refresh failed");
+      });
+    }, config.externalSkillRefreshIntervalMs);
+    externalRefreshTimer.unref?.();
+  }
+  app.addHook("onClose", async () => {
+    if (externalRefreshTimer !== null) clearInterval(externalRefreshTimer);
+  });
+
   await app.ready();
   return app;
 }

@@ -2,8 +2,11 @@ import type {
   AiProviderConfig,
   AiProviderWithKeySet,
   AiQuotaUsage,
+  CreateExternalSkillRequest,
   DashboardOverview,
   DraftState,
+  ExternalSkill,
+  PatchExternalSkillRequest,
   RegistryAgent,
   RegistrySkillDetail,
   RegistrySkillProposal,
@@ -248,6 +251,53 @@ const MOCK_TAGS: RegistryTag[] = [
   { tag_id: "tag_demo_review", slug: "review", label: "Review", active: true, revision: 1, usageCount: 0, created_at: "2026-06-20T00:00:00Z", updated_at: "2026-06-20T00:00:00Z" }
 ];
 
+const MOCK_EXTERNAL_SKILLS: ExternalSkill[] = [
+  {
+    id: "ext_demo_firecrawl",
+    source: { type: "npm", ref: "@mendable/firecrawl-js" },
+    snapshot: {
+      name: "@mendable/firecrawl-js",
+      description: "Official Firecrawl JS SDK for web scraping and crawling.",
+      version: "1.21.0",
+      readme: "# Firecrawl JS\n\nInstall via npm and follow the upstream docs.",
+      installCommand: "npm install @mendable/firecrawl-js",
+      license: "MIT",
+      homepage: "https://www.npmjs.com/package/@mendable/firecrawl-js",
+      releaseUrl: "https://www.npmjs.com/package/@mendable/firecrawl-js",
+      fetchedAt: "2026-07-12T00:00:00.000Z"
+    },
+    curationNote: "Useful for research skills that need reliable page extraction.",
+    tags: ["research"],
+    updateAvailable: true,
+    lastCheckedAt: "2026-07-12T00:00:00.000Z",
+    revision: 1,
+    created_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-12T00:00:00.000Z"
+  },
+  {
+    id: "ext_demo_superpowers",
+    source: { type: "github", ref: "obra/superpowers" },
+    snapshot: {
+      name: "obra/superpowers",
+      description: "Composable agent skills and workflows.",
+      version: "v4.0.0",
+      readme: "# Superpowers\n\nInstall from the official GitHub repository.",
+      installCommand: "https://github.com/obra/superpowers",
+      license: "MIT",
+      homepage: "https://github.com/obra/superpowers",
+      releaseUrl: "https://github.com/obra/superpowers/releases/tag/v4.0.0",
+      fetchedAt: "2026-07-12T00:00:00.000Z"
+    },
+    curationNote: "Keep as upstream reference; do not mirror into the registry.",
+    tags: ["skills"],
+    updateAvailable: false,
+    lastCheckedAt: "2026-07-12T00:00:00.000Z",
+    revision: 1,
+    created_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-12T00:00:00.000Z"
+  }
+];
+
 const MOCK_WORKFLOW_FAMILIES: WorkflowFamily[] = [{
   family_id: "wff_demo_general",
   slug: "general",
@@ -374,6 +424,37 @@ export class MockApiClient implements HunterApi {
 
   async listSkills(): Promise<RegistrySkillDetail[]> {
     return delay(clone(MOCK_SKILLS));
+  }
+
+  async listExternalSkills(): Promise<ExternalSkill[]> {
+    return delay(clone(MOCK_EXTERNAL_SKILLS));
+  }
+
+  async getExternalSkill(id: string): Promise<ExternalSkill> {
+    const skill = MOCK_EXTERNAL_SKILLS.find((item) => item.id === id);
+    if (skill === undefined) throw new ApiClientError(404, "EXTERNAL_SKILL_NOT_FOUND", "Demo external skill not found.");
+    return delay(clone(skill));
+  }
+
+  async createExternalSkill(_input: CreateExternalSkillRequest): Promise<ExternalSkill> {
+    void _input;
+    return demoReadOnly();
+  }
+
+  async patchExternalSkill(_id: string, _input: PatchExternalSkillRequest): Promise<ExternalSkill> {
+    void _id;
+    void _input;
+    return demoReadOnly();
+  }
+
+  async refreshExternalSkill(_id: string): Promise<ExternalSkill> {
+    void _id;
+    return demoReadOnly();
+  }
+
+  async deleteExternalSkill(_id: string): Promise<{ id: string; deleted: boolean }> {
+    void _id;
+    return demoReadOnly();
   }
 
   async getSkill(slug: string): Promise<RegistrySkillDetail> {
