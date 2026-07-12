@@ -47,3 +47,24 @@ export type SemanticDocumentKind = z.infer<typeof semanticDocumentKindSchema>;
 export type SemanticDocument = z.infer<typeof semanticDocumentSchema>;
 export type SemanticEdge = z.infer<typeof semanticEdgeSchema>;
 export type SemanticIndexBuild = z.infer<typeof semanticIndexBuildSchema>;
+
+export const semanticOverviewSchema = z.object({
+  project_id: z.string(),
+  artifact_id: z.string().nullable(),
+  counts: z.object({
+    documents: z.number().int().nonnegative(),
+    knowledge: z.number().int().nonnegative(),
+    rules: z.number().int().nonnegative(),
+    changes: z.number().int().nonnegative(),
+    agent_instructions: z.number().int().nonnegative(),
+    edges: z.number().int().nonnegative()
+  }).strict()
+}).strict();
+
+export const semanticSearchHitSchema = z.object({
+  document: semanticDocumentSchema,
+  project_id: z.string()
+}).strict();
+
+export type SemanticOverview = z.infer<typeof semanticOverviewSchema>;
+export type SemanticSearchHit = z.infer<typeof semanticSearchHitSchema>;

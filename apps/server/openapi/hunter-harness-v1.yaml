@@ -588,6 +588,51 @@ paths:
       responses:
         "200": { description: Project workflow family binding updated with optimistic revision }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/overview:
+    get:
+      operationId: getProjectSemanticOverview
+      responses:
+        "200": { description: Semantic index overview counts for a project }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/knowledge:
+    get:
+      operationId: listProjectSemanticKnowledge
+      responses:
+        "200": { description: Knowledge documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/rules:
+    get:
+      operationId: listProjectSemanticRules
+      responses:
+        "200": { description: Rule documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/changes:
+    get:
+      operationId: listProjectSemanticChanges
+      responses:
+        "200": { description: Archive change documents derived from the latest project artifact }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/graph:
+    get:
+      operationId: getProjectSemanticGraph
+      responses:
+        "200": { description: Semantic graph nodes and edges for a project }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/semantic/search:
+    get:
+      operationId: searchSemanticDocuments
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+        - name: project_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200": { description: Cross-project or project-scoped FTS search over semantic documents }
+        default: { $ref: "#/components/responses/Error" }
 
 components:
   securitySchemes:

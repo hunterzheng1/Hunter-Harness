@@ -53,62 +53,80 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
 
   for (const [sourcePath, content] of Object.entries(input.files).sort(([a], [b]) => a.localeCompare(b))) {
     if (isKnowledgeIngestEntryPath(sourcePath)) {
-      const entry = knowledgeIngestEntrySchema.parse(JSON.parse(content));
-      const doc: SemanticDocument = {
-        document_id: documentId(input.projectId, sourcePath),
-        project_id: input.projectId,
-        artifact_id: input.artifactId,
-        kind: "knowledge_entry",
-        source_path: sourcePath,
-        title: entry.title,
-        body: entry.body,
-        metadata: {
-          entry_id: entry.id,
-          entry_type: entry.type,
-          status: entry.status,
-          keywords: entry.keywords,
-          source_archive: entry.source.archive
-        },
-        content_sha256: sha256Bytes(content)
-      };
-      documents.push(doc);
-      bySourcePath.set(sourcePath, doc);
-      for (const relatedPath of entry.scope.sourceFiles) {
-        const target = [...bySourcePath.values()].find((item) => item.source_path === relatedPath);
-        if (target !== undefined) {
-          edges.push({
-            edge_id: edgeId(doc.document_id, target.document_id, "references_path"),
-            project_id: input.projectId,
-            artifact_id: input.artifactId,
-            from_document_id: doc.document_id,
-            to_document_id: target.document_id,
-            kind: "references_path",
-            metadata: { path: relatedPath }
-          });
+      try {
+        const entry = knowledgeIngestEntrySchema.parse(JSON.parse(content));
+        const doc: SemanticDocument = {
+          document_id: documentId(input.projectId, sourcePath),
+          project_id: input.projectId,
+          artifact_id: input.artifactId,
+          kind: "knowledge_entry",
+          source_path: sourcePath,
+          title: entry.title,
+          body: entry.body,
+          metadata: {
+            entry_id: entry.id,
+            entry_type: entry.type,
+            status: entry.status,
+            keywords: entry.keywords,
+            source_archive: entry.source.archive
+          },
+          content_sha256: sha256Bytes(content)
+        };
+        documents.push(doc);
+        bySourcePath.set(sourcePath, doc);
+        for (const relatedPath of entry.scope.sourceFiles) {
+          const target = [...bySourcePath.values()].find((item) => item.source_path === relatedPath);
+          if (target !== undefined) {
+            edges.push({
+              edge_id: edgeId(doc.document_id, target.document_id, "references_path"),
+              project_id: input.projectId,
+              artifact_id: input.artifactId,
+              from_document_id: doc.document_id,
+              to_document_id: target.document_id,
+              kind: "references_path",
+              metadata: { path: relatedPath }
+            });
+          }
         }
+      } catch {
+        // Invalid ingest JSON must not block push; skip until next rebuild.
       }
       continue;
     }
 
     if (isKnowledgeMarkdownPath(sourcePath)) {
-      const parsed = parseKnowledgeMarkdown(content, sourcePath.replace(/^\.harness\/knowledge\//u, ""));
-      const doc: SemanticDocument = {
-        document_id: documentId(input.projectId, sourcePath),
-        project_id: input.projectId,
-        artifact_id: input.artifactId,
-        kind: "knowledge_markdown",
-        source_path: sourcePath,
-        title: parsed.frontmatter.id,
-        body: parsed.summary,
-        metadata: {
-          knowledge_id: parsed.frontmatter.id,
-          knowledge_type: parsed.frontmatter.type,
-          status: parsed.frontmatter.status
-        },
-        content_sha256: sha256Bytes(content)
-      };
-      documents.push(doc);
-      bySourcePath.set(sourcePath, doc);
+      try {
+        const parsed = parseKnowledgeMarkdown(content, sourcePath.replace(/^\.harness\/knowledge\//u, ""));
+        const doc: SemanticDocument = {
+          document_id: documentId(input.projectId, sourcePath),
+          project_id: input.projectId,
+          artifact_id: input.artifactId,
+          kind: "knowledge_markdown",
+          source_path: sourcePath,
+          title: parsed.frontmatter.id,
+          body: parsed.summary,
+          metadata: {
+            knowledge_id: parsed.frontmatter.id,
+            knowledge_type: parsed.frontmatter.type,
+            status: parsed.frontmatter.status
+          },
+          content_sha256: sha256Bytes(content)
+        };
+        documents.push(doc);
+        bySourcePath.set(sourcePath, doc);
+      } catch {
+        documents.push({
+          document_id: documentId(input.projectId, sourcePath),
+          project_id: input.projectId,
+          artifact_id: input.artifactId,
+          kind: "knowledge_markdown",
+          source_path: sourcePath,
+          title: sourcePath.split("/").pop() ?? sourcePath,
+          body: content,
+          metadata: { parse_status: "best_effort" },
+          content_sha256: sha256Bytes(content)
+        });
+      }
       continue;
     }
 
@@ -128,24 +146,28 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
     }
 
     if (isArchiveSummaryPath(sourcePath)) {
-      const summary = JSON.parse(content) as Record<string, unknown>;
-      const title = String(summary.changeName ?? sourcePath.split("/")[2] ?? "archive");
-      const doc: SemanticDocument = {
-        document_id: documentId(input.projectId, sourcePath),
-        project_id: input.projectId,
-        artifact_id: input.artifactId,
-        kind: "archive_change",
-        source_path: sourcePath,
-        title,
-        body: JSON.stringify(summary, null, 2),
-        metadata: {
-          final_status: summary.finalStatus ?? null,
-          final_commit: summary.finalCommit ?? summary.final_commit ?? null
-        },
-        content_sha256: sha256Bytes(content)
-      };
-      documents.push(doc);
-      bySourcePath.set(sourcePath, doc);
+      try {
+        const summary = JSON.parse(content) as Record<string, unknown>;
+        const title = String(summary.changeName ?? sourcePath.split("/")[2] ?? "archive");
+        const doc: SemanticDocument = {
+          document_id: documentId(input.projectId, sourcePath),
+          project_id: input.projectId,
+          artifact_id: input.artifactId,
+          kind: "archive_change",
+          source_path: sourcePath,
+          title,
+          body: JSON.stringify(summary, null, 2),
+          metadata: {
+            final_status: summary.finalStatus ?? null,
+            final_commit: summary.finalCommit ?? summary.final_commit ?? null
+          },
+          content_sha256: sha256Bytes(content)
+        };
+        documents.push(doc);
+        bySourcePath.set(sourcePath, doc);
+      } catch {
+        // Malformed archive summary is skipped for the derivative index.
+      }
       continue;
     }
 

@@ -54,7 +54,23 @@ describe("semantic indexer", () => {
     });
   });
 
-  it("rebuilds project semantic state idempotently in memory", () => {
+  it("indexes incomplete knowledge markdown as best-effort without throwing", () => {
+    const build = buildSemanticIndex({
+      projectId: "prj_sample",
+      artifactId: "art_sample01",
+      files: {
+        ".harness/knowledge/architecture/e2e.md": "---\nid: knowledge.architecture.e2e\n---\n\nE2E knowledge.\n"
+      }
+    });
+    expect(build.documents).toHaveLength(1);
+    expect(build.documents[0]).toMatchObject({
+      kind: "knowledge_markdown",
+      title: "e2e.md",
+      metadata: { parse_status: "best_effort" }
+    });
+  });
+
+  it("rebuilds project semantic state idempotently in memory", async () => {
     const store = new SemanticMemoryStore();
     const first = buildSemanticIndex({
       projectId: "prj_a",
@@ -66,10 +82,10 @@ describe("semantic indexer", () => {
       artifactId: "art_2",
       files: { "CLAUDE.md": "second\n", "AGENTS.md": "agents\n" }
     });
-    store.rebuild(first);
-    store.rebuild(second);
-    expect(store.listDocuments("prj_a")).toHaveLength(2);
-    expect(store.latestArtifactId("prj_a")).toBe("art_2");
-    expect(store.search("agents", "prj_a")).toHaveLength(1);
+    await store.rebuild(first);
+    await store.rebuild(second);
+    expect(await store.listByKinds("prj_a", ["agent_instruction"])).toHaveLength(2);
+    expect(await store.latestArtifactId("prj_a")).toBe("art_2");
+    expect(await store.search("agents", "prj_a")).toHaveLength(1);
   });
 });

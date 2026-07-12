@@ -12,6 +12,7 @@ import {
 } from "../lib/api";
 import { classifyManagedFile, isProposalEditable, type WebFilePolicy } from "../lib/file-policy";
 import { reconstructWorkspace, type WorkspaceArtifact, type WorkspaceFile } from "../lib/workspace";
+import { ProjectSemanticPanels } from "./project-semantic-panels";
 
 interface WorkspaceData {
   project: ProjectDetailModel;
@@ -247,6 +248,7 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
         </select>
       </label>
     </div>
+    <ProjectSemanticPanels api={api} projectId={projectId} />
     <div className="workspace-grid">
       <article className="panel file-browser"><div className="panel-title"><h2>Managed files</h2><button className="secondary-button" type="button" onClick={startAdd} disabled={data.latestManifest === null}>Propose new file</button></div>
         {data.files.length === 0 ? <div className="empty-state">No files are present in the approved artifact chain.</div> : <ul className="file-list">{data.files.map((file) => <li key={file.path}><button type="button" aria-label={file.path} className={file.path === selected?.path ? "selected" : ""} onClick={() => choose(file)}>{file.path}<small>{file.policy.file_kind}</small></button></li>)}</ul>}

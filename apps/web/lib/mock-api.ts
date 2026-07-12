@@ -18,7 +18,10 @@ import type {
   SkillDiffFile,
   FixPlan,
   PublishSkillRequest,
-  NpmReleaseResponse
+  NpmReleaseResponse,
+  SemanticDocument,
+  SemanticEdge,
+  SemanticOverview
 } from "@hunter-harness/contracts";
 
 import { bootstrapSkills } from "./catalog";
@@ -259,6 +262,26 @@ const MOCK_WORKFLOW_FAMILIES: WorkflowFamily[] = [{
   updated_at: "2026-06-20T00:00:00Z"
 }];
 
+function mockSemanticDoc(
+  projectId: string,
+  kind: SemanticDocument["kind"],
+  title: string,
+  body: string,
+  path: string
+): SemanticDocument {
+  return {
+    document_id: `sem_${kind}_${title.replaceAll(/\W+/g, "_").toLowerCase()}`,
+    project_id: projectId,
+    artifact_id: "art_demo",
+    kind,
+    source_path: path,
+    title,
+    body,
+    metadata: {},
+    content_sha256: "sha256:" + "a".repeat(64)
+  };
+}
+
 const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
   { provider_id: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com", model: "deepseek-v4-pro", enabled: true, is_default: true, api_key_env: "secret-file", revision: 1, daily_request_limit: 1000, daily_token_limit: 500000, created_at: "2026-06-25T09:30:00Z", updated_at: "2026-06-25T09:30:00Z", models: [{ id: "ds-chat", display_model: "DeepSeek Chat", request_model: "deepseek-chat", input_cost: 0.27, output_cost: 1.1, cache_hit_cost: 0.07, cache_create_cost: 0.27 }, { id: "ds-reasoner", display_model: "DeepSeek Reasoner", request_model: "deepseek-reasoner", input_cost: 0.55, output_cost: 2.19, cache_hit_cost: 0.14, cache_create_cost: 0.55 }], api_format: "openai", note: "主力供应商", website: "https://platform.deepseek.com", selected_model_id: "ds-chat", sort_order: 0 },
   { provider_id: "openai", label: "OpenAI", base_url: "https://api.openai.com", model: "gpt-4o", enabled: false, is_default: false, api_key_env: "secret-file", revision: 1, daily_request_limit: null, daily_token_limit: null, created_at: "2026-06-25T09:35:00Z", updated_at: "2026-06-25T09:35:00Z", models: [{ id: "o4o", display_model: "GPT-4o", request_model: "gpt-4o", input_cost: 2.5, output_cost: 10, cache_hit_cost: 1.25, cache_create_cost: 0 }], api_format: "openai", note: "", website: "https://platform.openai.com", selected_model_id: "o4o", sort_order: 1 }
@@ -447,6 +470,56 @@ export class MockApiClient implements HunterApi {
       ...project,
       request_id: "mock-" + crypto.randomUUID(),
     });
+  }
+
+  async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
+    return delay({
+      project_id: projectId,
+      artifact_id: "art_demo",
+      counts: { documents: 4, knowledge: 1, rules: 1, changes: 1, agent_instructions: 1, edges: 1 }
+    });
+  }
+
+  async listProjectSemanticKnowledge(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "knowledge_entry", "Reuse LlmClient", "Reuse LlmClient for AI jobs.", ".harness/knowledge/entries/active/decision.json")]);
+  }
+
+  async listProjectSemanticRules(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "rule", "harness-general.md", "general rule body", ".claude/rules/harness-general.md")]);
+  }
+
+  async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
+    return delay([mockSemanticDoc(projectId, "archive_change", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
+  }
+
+  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
+    const knowledge = await this.listProjectSemanticKnowledge(projectId);
+    const rules = await this.listProjectSemanticRules(projectId);
+    const nodes = [...knowledge, ...rules];
+    const from = nodes[0];
+    const to = nodes[1];
+    return delay({
+      nodes,
+      edges: from === undefined || to === undefined ? [] : [{
+        edge_id: "sed_demo",
+        project_id: projectId,
+        artifact_id: "art_demo",
+        from_document_id: from.document_id,
+        to_document_id: to.document_id,
+        kind: "references_path",
+        metadata: {}
+      }]
+    });
+  }
+
+  async searchSemanticDocuments(query: string, projectId?: string): Promise<Array<{ document: SemanticDocument; project_id: string }>> {
+    const fallback = MOCK_PROJECTS[0];
+    const id = projectId ?? fallback?.project_id ?? "agent-harness";
+    const items = await this.listProjectSemanticKnowledge(id);
+    const needle = query.toLowerCase();
+    return delay(items
+      .filter((document) => document.title.toLowerCase().includes(needle) || document.body.toLowerCase().includes(needle))
+      .map((document) => ({ document, project_id: id })));
   }
 
   async listProjectProposals(projectId: string): Promise<ProposalSummary[]> {

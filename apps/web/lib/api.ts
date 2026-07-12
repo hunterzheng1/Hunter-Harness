@@ -26,7 +26,10 @@ import {
   type WorkflowFamily,
   type WorkflowFamilyDraftState,
   type WorkflowFamilyMutation,
-  type WorkflowFamilyVersion
+  type WorkflowFamilyVersion,
+  type SemanticDocument,
+  type SemanticEdge,
+  type SemanticOverview
 } from "@hunter-harness/contracts";
 
 import type { WebFileKind } from "./file-policy";
@@ -179,6 +182,12 @@ export interface HunterApi {
   downloadWorkflowFamilyArtifact?(slug: string, profile: string, version?: string): Promise<{ blob: Blob; hash: string; filename: string }>;
   getProjectWorkflowBinding?(projectId: string): Promise<RegistryProjectWorkflowBinding | null>;
   bindProjectWorkflow?(projectId: string, familySlug: string, profile: string, revision: number | null, version?: string | null): Promise<RegistryProjectWorkflowBinding>;
+  getProjectSemanticOverview?(projectId: string): Promise<SemanticOverview>;
+  listProjectSemanticKnowledge?(projectId: string): Promise<SemanticDocument[]>;
+  listProjectSemanticRules?(projectId: string): Promise<SemanticDocument[]>;
+  listProjectSemanticChanges?(projectId: string): Promise<SemanticDocument[]>;
+  getProjectSemanticGraph?(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }>;
+  searchSemanticDocuments?(query: string, projectId?: string): Promise<Array<{ document: SemanticDocument; project_id: string }>>;
   uploadSkillDraft?(form: FormData, agent: RegistryAgent): Promise<DraftState>;
   getSkillDraft?(slug: string, agent: RegistryAgent): Promise<DraftState>;
   discardSkillDraft?(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }>;
@@ -669,6 +678,47 @@ export class HttpHunterApi implements HunterApi {
       revision,
       ...(version === undefined ? {} : { version })
     });
+  }
+
+  async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/overview");
+  }
+
+  async listProjectSemanticKnowledge(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/knowledge"
+    );
+    return result.items;
+  }
+
+  async listProjectSemanticRules(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/rules"
+    );
+    return result.items;
+  }
+
+  async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
+    const result = await this.request<{ items: SemanticDocument[] }>(
+      "GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/changes"
+    );
+    return result.items;
+  }
+
+  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/graph");
+  }
+
+  async searchSemanticDocuments(
+    query: string,
+    projectId?: string
+  ): Promise<Array<{ document: SemanticDocument; project_id: string }>> {
+    const params = new URLSearchParams({ q: query });
+    if (projectId !== undefined) params.set("project_id", projectId);
+    const result = await this.request<{ items: Array<{ document: SemanticDocument; project_id: string }> }>(
+      "GET", "/api/v1/semantic/search?" + params.toString()
+    );
+    return result.items;
   }
 
   private async multipartRequest<T>(path: string, formData: FormData): Promise<T> {

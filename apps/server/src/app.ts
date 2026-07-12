@@ -71,6 +71,7 @@ import { ServerDomainError } from "./repositories/interfaces.js";
 import type { ArtifactStorage } from "./storage/interface.js";
 import { buildSemanticIndex } from "./semantic/indexer.js";
 import { SemanticMemoryStore } from "./semantic/memory-store.js";
+import type { SemanticStore } from "./semantic/store.js";
 
 export interface CreateServerOptions {
   repository: ServerRepository;
@@ -79,7 +80,7 @@ export interface CreateServerOptions {
   logger?: boolean;
   bootstrapBundle?: BootstrapBundle;
   registryPersistence?: RegistryPersistence;
-  semanticStore?: SemanticMemoryStore;
+  semanticStore?: SemanticStore;
   // AiJobStore 注入（PG 环境传 PgAiJobStore 多实例共享 + 启动 recoverOrphans；缺省 MemoryAiJobStore 单进程 fallback）
   aiJobStore?: AiJobStore;
   // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
@@ -718,7 +719,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         details: { item_count: proposal.items.length, artifact_id: review.artifactId }
       });
       if (review.artifactId !== null) {
-        semanticStore.rebuild(buildSemanticIndex({
+        await semanticStore.rebuild(buildSemanticIndex({
           projectId: proposal.projectId,
           artifactId: review.artifactId,
           files
@@ -1334,6 +1335,84 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     await repository.getProject(actor.actorId, projectId);
     reply.header("X-Request-Id", requestId);
     return { binding: registry.getProjectBinding(projectId), request_id: requestId };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/overview", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return { ...(await semanticStore.overview(projectId)), request_id: requestId };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/knowledge", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["knowledge_entry", "knowledge_markdown"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/rules", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["rule"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/changes", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: await semanticStore.listByKinds(projectId, ["archive_change"]),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/semantic/graph", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    await repository.getProject(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      nodes: await semanticStore.listByKinds(projectId, [
+        "knowledge_entry",
+        "knowledge_markdown",
+        "rule",
+        "archive_change",
+        "agent_instruction"
+      ]),
+      edges: await semanticStore.listEdges(projectId),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/semantic/search", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const query = request.query as Record<string, string | undefined>;
+    const q = query.q?.trim() ?? "";
+    if (q.length === 0) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "q is required");
+    }
+    const projectId = query.project_id;
+    if (projectId !== undefined) {
+      await repository.getProject(actor.actorId, projectId);
+    }
+    const items = await semanticStore.search(q, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      items: items.map((document) => ({ document, project_id: document.project_id })),
+      request_id: requestId
+    };
   });
 
   app.put("/api/v1/projects/:projectId/workflow-binding", async (request, reply) => {

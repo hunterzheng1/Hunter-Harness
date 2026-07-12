@@ -1,11 +1,19 @@
-import type { SemanticDocument, SemanticEdge, SemanticIndexBuild } from "@hunter-harness/contracts";
+import type {
+  SemanticDocument,
+  SemanticDocumentKind,
+  SemanticEdge,
+  SemanticIndexBuild,
+  SemanticOverview
+} from "@hunter-harness/contracts";
 
-export class SemanticMemoryStore {
+import { overviewFromDocuments, type SemanticStore } from "./store.js";
+
+export class SemanticMemoryStore implements SemanticStore {
   private readonly documents = new Map<string, SemanticDocument>();
   private readonly edges = new Map<string, SemanticEdge>();
   private readonly latestArtifactByProject = new Map<string, string>();
 
-  rebuild(build: SemanticIndexBuild): void {
+  async rebuild(build: SemanticIndexBuild): Promise<void> {
     for (const [documentId, document] of [...this.documents.entries()]) {
       if (document.project_id === build.project_id) {
         this.documents.delete(documentId);
@@ -25,23 +33,43 @@ export class SemanticMemoryStore {
     this.latestArtifactByProject.set(build.project_id, build.artifact_id);
   }
 
-  listDocuments(projectId: string): SemanticDocument[] {
+  async overview(projectId: string): Promise<SemanticOverview> {
+    const documents = await this.listByKinds(projectId, [
+      "knowledge_entry",
+      "knowledge_markdown",
+      "rule",
+      "archive_change",
+      "agent_instruction"
+    ]);
+    return overviewFromDocuments(
+      projectId,
+      await this.latestArtifactId(projectId),
+      documents,
+      await this.listEdges(projectId)
+    );
+  }
+
+  async listByKinds(
+    projectId: string,
+    kinds: readonly SemanticDocumentKind[]
+  ): Promise<SemanticDocument[]> {
+    const allowed = new Set(kinds);
     return [...this.documents.values()]
-      .filter((document) => document.project_id === projectId)
+      .filter((document) => document.project_id === projectId && allowed.has(document.kind))
       .sort((left, right) => left.source_path.localeCompare(right.source_path));
   }
 
-  listEdges(projectId: string): SemanticEdge[] {
+  async listEdges(projectId: string): Promise<SemanticEdge[]> {
     return [...this.edges.values()]
       .filter((edge) => edge.project_id === projectId)
       .sort((left, right) => left.edge_id.localeCompare(right.edge_id));
   }
 
-  latestArtifactId(projectId: string): string | null {
+  async latestArtifactId(projectId: string): Promise<string | null> {
     return this.latestArtifactByProject.get(projectId) ?? null;
   }
 
-  search(query: string, projectId?: string): SemanticDocument[] {
+  async search(query: string, projectId?: string): Promise<SemanticDocument[]> {
     const needle = query.trim().toLowerCase();
     if (needle === "") return [];
     return [...this.documents.values()]

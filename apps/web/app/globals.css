@@ -1590,6 +1590,8 @@ tbody tr:last-child td {
 .skill-detail-tabs button:hover { color: var(--text); background: var(--panel-hover); }
 .skill-detail-tabs button.selected { color: var(--text-heading); background: var(--panel); box-shadow: var(--shadow-xs); }
 
+.semantic-graph { width: 100%; max-width: 720px; height: auto; color: var(--muted); background: var(--code-surface); border: 1px solid var(--line-dim); border-radius: var(--radius-md); }
+
 .source-package { overflow: hidden; }
 .source-package-grid { display: grid; grid-template-columns: fit-content(240px) minmax(0, 1fr); gap: 12px; }
 .source-file-tree { display: grid; align-content: start; gap: 4px; min-width: 150px; max-width: 240px; padding: 12px 0 12px 18px; box-sizing: border-box; }
