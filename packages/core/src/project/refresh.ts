@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, rmdir, stat } from "node:fs/promises";
+import { readFile, readdir, rmdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import {
@@ -99,18 +99,6 @@ interface InstalledState {
   trusted: Map<string, string>;
 }
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
 async function fileHex(path: string): Promise<string | null> {
   try {
     return createHash("sha256").update(await readFile(path)).digest("hex");
@@ -160,7 +148,7 @@ async function readInstalledState(root: string): Promise<InstalledState> {
     }
   }
   const schemaVersion = typeof parsed.schema_version === "number" ? parsed.schema_version : null;
-  const adapters = schemaVersion === 3 && Array.isArray(parsed.adapters)
+  const adapters: HarnessAgent[] = schemaVersion === 3 && Array.isArray(parsed.adapters)
     ? sortHarnessAgents(parsed.adapters.filter((value): value is HarnessAgent =>
       value === "claude-code" || value === "codex" || value === "cursor" || value === "codebuddy"
     ))
@@ -243,41 +231,6 @@ function sortByTarget<T extends { target_path: string }>(items: T[]): T[] {
   return [...items].sort((left, right) => left.target_path.localeCompare(right.target_path));
 }
 
-async function refreshMarkdownBlock(
-  root: string,
-  fileName: string,
-  blockId: string,
-  blockContent: string,
-  ops: TransactionOperation[],
-  conflicts: RefreshConflict[],
-  preserved: RefreshItem[]
-): Promise<void> {
-  const original = await readOptionalText(join(root, fileName));
-  const current = original === "" ? null : createHash("sha256").update(original).digest("hex");
-  const refresh = refreshManagedBlockById(original, blockId, blockContent, {
-    upgradeLegacy: true
-  });
-  const synthetic: ProjectedBundleFile = {
-    source_path: fileName,
-    target_path: fileName,
-    sha256: createHash("sha256").update(blockContent).digest("hex"),
-    bytes: new TextEncoder().encode(blockContent)
-  };
-  if (refresh.conflict) {
-    preserved.push(item(synthetic, "preserve", "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
-    conflicts.push(conflict(synthetic, "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
-    return;
-  }
-  if (refresh.content === original) {
-    return; // 已是当前块，无需写入
-  }
-  ops.push({
-    operation: original === "" ? "add" : "modify",
-    path: fileName,
-    content: refresh.content
-  });
-}
-
 async function reconcileContextIndex(
   root: string,
   profile: HarnessProfile,
@@ -343,15 +296,21 @@ interface OwnedTarget extends ProjectedBundleFile {
   owner: HarnessAgent;
 }
 
-function mergeTargets(targets: OwnedTarget[]): Array<OwnedTarget & { owner: HarnessAgent | "shared" }> {
+function mergeTargets(
+  targets: OwnedTarget[]
+): Array<Omit<OwnedTarget, "owner"> & { owner: HarnessAgent | "shared" }> {
   const grouped = new Map<string, OwnedTarget[]>();
   for (const target of targets) {
     grouped.set(target.target_path, [...(grouped.get(target.target_path) ?? []), target]);
   }
   return [...grouped.entries()].map(([path, values]) => {
-    const first = values[0]!;
+    const first = values[0];
+    if (first === undefined) throw new TargetCollisionError(path);
     if (values.some((value) => value.sha256 !== first.sha256)) throw new TargetCollisionError(path);
-    return { ...first, owner: new Set(values.map((value) => value.owner)).size === 1 ? first.owner : "shared" };
+    const owner: HarnessAgent | "shared" = new Set(values.map((value) => value.owner)).size === 1
+      ? first.owner
+      : "shared";
+    return { ...first, owner };
   }).sort((left, right) => left.target_path.localeCompare(right.target_path));
 }
 
@@ -388,8 +347,9 @@ async function reconcileMarkdownBlock(
 
 function stateWithoutInstalledAt(value: unknown): unknown {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-  const { installed_at: _, ...rest } = value as Record<string, unknown>;
-  return rest;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.installed_at;
+  return copy;
 }
 
 export async function refreshProject(options: RefreshOptions): Promise<RefreshResult> {
@@ -398,7 +358,9 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const installed = await readInstalledState(root);
   const previousProfile = installed.profile;
   const agents = sortHarnessAgents(options.agents);
-  const oldAgents = installed.adapters.length > 0 ? installed.adapters : ["claude-code"];
+  const oldAgents: HarnessAgent[] = installed.adapters.length > 0
+    ? installed.adapters
+    : ["claude-code"];
   const codebuddySurface = options.codebuddySurface ?? "both";
   const context = { profile, codebuddySurface };
   const owned: OwnedTarget[] = [];
@@ -523,7 +485,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const contextOperation = await reconcileContextIndex(root, profile, agents, manifests, codebuddySurface);
   if (contextOperation !== null) ops.push(contextOperation);
 
-  const managedBlocks: InstalledBundleStateV3["managed_blocks"] = [
+  const managedBlocks = ([
     {
       owner: "shared", target_path: "AGENTS.md", block_id: AGENTS_CORE_BLOCK_ID,
       content_sha256: createHash("sha256").update(AGENTS_MANAGED_BLOCK_CONTENT).digest("hex")
@@ -536,7 +498,9 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       owner: "codebuddy" as const, target_path: "CODEBUDDY.md", block_id: CODEBUDDY_BLOCK_ID,
       content_sha256: createHash("sha256").update(CODEBUDDY_MANAGED_BLOCK_CONTENT).digest("hex")
     }] : [])
-  ].sort((left, right) => left.target_path.localeCompare(right.target_path) || left.block_id.localeCompare(right.block_id));
+  ] satisfies InstalledBundleStateV3["managed_blocks"]).sort((left, right) =>
+    left.target_path.localeCompare(right.target_path) || left.block_id.localeCompare(right.block_id)
+  );
   const installedState: InstalledBundleStateV3 = {
     schema_version: 3,
     profile,

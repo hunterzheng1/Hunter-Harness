@@ -174,7 +174,10 @@ function mergeOwnedTargets(owned: OwnedTarget[]): Array<{
   for (const [targetPath, items] of [...byTarget.entries()].sort((a, b) =>
     a[0].localeCompare(b[0])
   )) {
-    const first = items[0]!;
+    const first = items[0];
+    if (first === undefined) {
+      throw new Error(`missing projected targets for ${targetPath}`);
+    }
     for (const item of items.slice(1)) {
       if (!bytesEqual(first.bytes, item.bytes) || first.sha256 !== item.sha256) {
         throw new TargetCollisionError(targetPath);

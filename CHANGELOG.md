@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0]
+
+### Added
+
+- 项目级 Harness 安装支持 Claude Code、Codex、Cursor 与 CodeBuddy 的任意组合，并提供 `--agents` 与 `--codebuddy-surface` 参数。
+- 离线资源改为 2 profile × 4 Agent Bundle 矩阵；刷新支持安全 Agent 集合切换、v3 installed state 与 legacy Claude-only 迁移。
+- Push/update 文件策略覆盖四种 Agent 的 working copy、规则与 CodeBuddy managed block。
+
 ## [Unreleased]
 
 ### Breaking Changes

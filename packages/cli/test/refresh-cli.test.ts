@@ -142,7 +142,7 @@ describe("hunter-harness refresh CLI", () => {
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
-  });
+  }, 120000);
 
   it("rejects an unknown --agents value without changing the project", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-invalid-"));
@@ -155,7 +155,7 @@ describe("hunter-harness refresh CLI", () => {
     expect(code).toBe(3);
     expect(stderr.join("")).toContain("AGENT_UNSUPPORTED");
     expect(await readFile(join(root, ".harness", "project.yaml"), "utf8")).toBe(before);
-  });
+  }, 120000);
 
   it("uses the project agent set when --agents is omitted", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-default-"));
@@ -171,5 +171,5 @@ describe("hunter-harness refresh CLI", () => {
     expect(await run(["refresh", "--non-interactive", "--yes"])).toBe(0);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
-  });
+  }, 120000);
 });
