@@ -69,6 +69,8 @@ import type {
 } from "./repositories/interfaces.js";
 import { ServerDomainError } from "./repositories/interfaces.js";
 import type { ArtifactStorage } from "./storage/interface.js";
+import { buildSemanticIndex } from "./semantic/indexer.js";
+import { SemanticMemoryStore } from "./semantic/memory-store.js";
 
 export interface CreateServerOptions {
   repository: ServerRepository;
@@ -77,6 +79,7 @@ export interface CreateServerOptions {
   logger?: boolean;
   bootstrapBundle?: BootstrapBundle;
   registryPersistence?: RegistryPersistence;
+  semanticStore?: SemanticMemoryStore;
   // AiJobStore 注入（PG 环境传 PgAiJobStore 多实例共享 + 启动 recoverOrphans；缺省 MemoryAiJobStore 单进程 fallback）
   aiJobStore?: AiJobStore;
   // AI LlmClient 工厂（默认 createLlmClient 构造 DeepSeek；测试可注入 mock）
@@ -319,6 +322,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   await registry.initialize(options.bootstrapBundle);
   // AiJobStore 注入（§3.2）：PG 环境传 PgAiJobStore 多实例共享；缺省 MemoryAiJobStore 单进程 fallback。
   const aiJobStore = options.aiJobStore ?? new MemoryAiJobStore();
+  const semanticStore = options.semanticStore ?? new SemanticMemoryStore();
   // R3：启动时清理孤儿 running/pending job（PG 实现标 failed 释放 partial unique index；memory no-op）。
   await aiJobStore.recoverOrphans();
   // AI LlmClient 装配（§12.9）：按 defaultProvider 或指定 provider + secret file key 构造 DeepSeek 客户端。
@@ -713,6 +717,13 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         requestId,
         details: { item_count: proposal.items.length, artifact_id: review.artifactId }
       });
+      if (review.artifactId !== null) {
+        semanticStore.rebuild(buildSemanticIndex({
+          projectId: proposal.projectId,
+          artifactId: review.artifactId,
+          files
+        }));
+      }
       return {
         statusCode: 201,
         body: {

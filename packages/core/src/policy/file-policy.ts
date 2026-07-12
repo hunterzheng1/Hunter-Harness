@@ -107,6 +107,17 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/knowledge/project-local/")) {
     return PROJECT_LOCAL;
   }
+  if (
+    path === ".harness/knowledge/index.sqlite" ||
+    under(path, ".harness/knowledge/cache/") ||
+    under(path, ".harness/knowledge/views/") ||
+    under(path, ".harness/knowledge/context-packs/")
+  ) {
+    return GENERATED_CACHE;
+  }
+  if (under(path, ".harness/knowledge/reports/")) {
+    return REPORT_CACHE;
+  }
   if (under(path, ".harness/knowledge/")) {
     return USER_FULL;
   }

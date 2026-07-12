@@ -11,4 +11,5 @@ export * from "./project.js";
 export * from "./protocol.js";
 export * from "./dashboard.js";
 export * from "./registry.js";
+export * from "./semantic.js";
 export * from "./workflow-family.js";
