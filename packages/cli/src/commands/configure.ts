@@ -53,6 +53,14 @@ async function runFirstInstall(
       options.nonInteractive === true
         ? {}
         : {
+          agents: () => dependencies.prompt(
+            "请选择目标 Agent（可多选，使用逗号分隔）\n" +
+            "  1. Claude Code\n" +
+            "  2. Codex\n" +
+            "  3. Cursor\n" +
+            "  4. CodeBuddy\n" +
+            "请输入编号 [1]: "
+          ).then((answer) => answer.trim()),
           profile: () => dependencies.prompt(
             "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
           ).then((answer) => answer.trim())
@@ -92,8 +100,9 @@ async function runFirstInstall(
     return 0;
   } catch (error) {
     const exitCode = error instanceof InitConfigurationError ? error.exitCode : 1;
+    const code = error instanceof InitConfigurationError ? error.code : undefined;
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
+    dependencies.stderr((code !== undefined ? code + ": " : "") + message + "\n");
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({
         schema_version: 1,
@@ -106,7 +115,7 @@ async function runFirstInstall(
         summary: { planned: 0, applied: 0 },
         items: [],
         warnings: [],
-        errors: [{ message }]
+        errors: [{ ...(code === undefined ? {} : { code }), message }]
       }));
     }
     return exitCode;

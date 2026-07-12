@@ -6,6 +6,7 @@ import {
   baselineManifestSchema,
   initConfigSchema,
   projectConfigSchema,
+  sortHarnessAgents,
   type InitConfig,
   type ProjectConfig
 } from "@hunter-harness/contracts";
@@ -109,6 +110,7 @@ export async function initializeProject(
   const managed = await managedTargets(options.resourcesRoot, profile);
   const bundleHash = sha256Bytes(canonicalJson(bundle.manifest.files));
 
+  const enabledAgents = sortHarnessAgents(config.agents);
   const projectConfig = projectConfigSchema.parse({
     harness: { name: "hunter-harness", schema_version: 1 },
     project: {
@@ -123,8 +125,10 @@ export async function initializeProject(
       token_env: config.token_env ?? existing?.server.token_env ??
         "HUNTER_HARNESS_TOKEN"
     },
-    // Temporary bridge until multi-agent initialize (Task 8): first agent only.
-    adapters: { enabled: [config.agents[0] ?? "claude-code"] }
+    adapters: { enabled: enabledAgents },
+    ...(enabledAgents.includes("codebuddy")
+      ? { adapter_options: { codebuddy: { surface: config.codebuddy_surface } } }
+      : {})
   });
 
   const baseline = baselineManifestSchema.parse({
