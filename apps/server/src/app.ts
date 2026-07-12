@@ -72,6 +72,7 @@ import type { ArtifactStorage } from "./storage/interface.js";
 import { buildSemanticIndex } from "./semantic/indexer.js";
 import { SemanticMemoryStore } from "./semantic/memory-store.js";
 import type { SemanticStore } from "./semantic/store.js";
+import { registerSemanticMcpRoutes } from "./mcp/register.js";
 
 export interface CreateServerOptions {
   repository: ServerRepository;
@@ -2051,6 +2052,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
+  registerSemanticMcpRoutes(app, { repository, semanticStore });
   await app.ready();
   return app;
 }

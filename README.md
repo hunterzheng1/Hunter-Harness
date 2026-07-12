@@ -124,6 +124,34 @@ npm run test:postgres -w apps/server
 
 部署、TLS、secrets、备份、恢复、升级与回滚见 [SERVER-DEPLOYMENT.md](docs/SERVER-DEPLOYMENT.md)。完整 API 合同见 [hunter-harness-v1.yaml](apps/server/openapi/hunter-harness-v1.yaml)。
 
+## Semantic MCP（只读）
+
+治理服务端在 `/mcp` 暴露只读 Semantic MCP（Streamable HTTP），复用 API Bearer Token，不提供写入口。Agent 可查询跨项目语义索引；单项目本地知识写入仍走 CLI push。
+
+可用工具：
+
+| 工具 | 作用 |
+|---|---|
+| `search_knowledge` | 按关键词搜索知识文档（可按 `project_id` 限定） |
+| `get_project_overview` | 项目语义索引概览计数 |
+| `get_knowledge_entry` | 按 `document_id` 或 `source_path` 取单条知识 |
+| `list_recent_changes` | 列出项目 archive 变更记录 |
+
+Cursor / Claude Desktop 示例（把 `YOUR_TOKEN` 换成真实 `hh_…` token）：
+
+```json
+{
+  "mcpServers": {
+    "hunter-harness-semantic": {
+      "url": "http://127.0.0.1:3001/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_TOKEN"
+      }
+    }
+  }
+}
+```
+
 ## 安全边界
 
 - token 只从环境变量、secret file 或浏览器 session storage 读取，不写入项目文件或 CLI JSON。
