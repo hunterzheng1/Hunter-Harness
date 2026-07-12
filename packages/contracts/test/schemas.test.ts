@@ -26,6 +26,8 @@ import {
   fixActionSchema,
   fixPlanItemSchema,
   fixPlanSchema,
+  HARNESS_AGENT_ORDER,
+  harnessAgentSchema,
   initConfigSchema,
   knowledgeFrontmatterSchema,
   mcpToolContractSchema,
@@ -47,6 +49,7 @@ import {
   skillFrontmatterSchema,
   skillNameSchema,
   skillUsageExampleSchema,
+  sortHarnessAgents,
   apiErrorCodeSchema,
   SKILL_NAME_REGEX,
   SKILL_ERROR_CODE,
@@ -57,6 +60,58 @@ import {
   workflowPackageSchema,
   workflowPackageVersionSchema
 } from "../src/index.js";
+
+describe("multi-agent contracts", () => {
+  it("harnessAgentSchema accepts exactly four agents", () => {
+    for (const a of ["claude-code", "codex", "cursor", "codebuddy"] as const) {
+      expect(harnessAgentSchema.parse(a)).toBe(a);
+    }
+    expect(() => harnessAgentSchema.parse("generic")).toThrow();
+    expect(() => harnessAgentSchema.parse("mcp")).toThrow();
+  });
+
+  it("sortHarnessAgents dedupes and orders deterministically", () => {
+    expect(sortHarnessAgents(["codebuddy", "claude-code", "codebuddy", "codex"]))
+      .toEqual(["claude-code", "codex", "codebuddy"]);
+    expect(HARNESS_AGENT_ORDER).toEqual(["claude-code", "codex", "cursor", "codebuddy"]);
+  });
+
+  it("initConfigSchema requires agents array and defaults codebuddy_surface", () => {
+    const parsed = initConfigSchema.parse({ agents: ["codex", "cursor"], profile: "java" });
+    expect(parsed.agents).toEqual(["codex", "cursor"]);
+    expect(parsed.codebuddy_surface).toBe("both");
+    expect(() => initConfigSchema.parse({ agents: [], profile: "java" })).toThrow();
+    expect(() => initConfigSchema.parse({ adapter: "claude-code", profile: "java" })).toThrow();
+  });
+
+  it("adapterNameSchema now includes codebuddy and keeps legacy names", () => {
+    for (const a of ["claude-code", "codex", "cursor", "codebuddy", "generic", "mcp"] as const) {
+      expect(adapterNameSchema.parse(a)).toBe(a);
+    }
+  });
+
+  it("projectConfigSchema accepts optional adapter_options.codebuddy.surface", () => {
+    const base = {
+      harness: { name: "hunter-harness", schema_version: 1 },
+      project: {
+        name: "x",
+        root: ".",
+        local_project_key: "018f6d00-0000-7000-8000-000000000000",
+        project_id: null,
+        profiles: ["general"]
+      },
+      server: { url: null, token_env: "HUNTER_HARNESS_TOKEN" },
+      adapters: { enabled: ["claude-code", "codebuddy"] }
+    };
+    expect(projectConfigSchema.parse(base).adapter_options).toBeUndefined();
+    const withOptions = { ...base, adapter_options: { codebuddy: { surface: "both" } } };
+    expect(projectConfigSchema.parse(withOptions).adapter_options?.codebuddy.surface).toBe("both");
+    expect(() => projectConfigSchema.parse({
+      ...base,
+      adapter_options: { codebuddy: { surface: "web" } }
+    })).toThrow();
+  });
+});
 
 describe("shared contracts", () => {
   it("accepts an offline project configuration", () => {

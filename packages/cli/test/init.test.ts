@@ -109,7 +109,7 @@ describe("hunter-harness initialization", () => {
       prompt: async () => "python"
     });
     expect(code).toBe(3);
-    expect(stderr.join(" ")).toContain("profile must be general or java");
+    expect(stderr.join(" ")).toContain("配置类型必须为 general 或 java");
   });
 
   it("initializes offline and compiles real Claude Code skills", async () => {
