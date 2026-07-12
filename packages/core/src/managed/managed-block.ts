@@ -26,12 +26,12 @@ function renderBlock(content: string, newline: string): string {
 }
 
 export function extractManagedBlock(content: string): string | null {
-  if (validateMarkers(content) === "absent") {
-    return null;
+  if (validateMarkers(content) === "present") {
+    const start = content.indexOf(MANAGED_BLOCK_START) + MANAGED_BLOCK_START.length;
+    const end = content.indexOf(MANAGED_BLOCK_END);
+    return content.slice(start, end).replace(/^\r?\n/, "").replace(/\r?\n$/, "");
   }
-  const start = content.indexOf(MANAGED_BLOCK_START) + MANAGED_BLOCK_START.length;
-  const end = content.indexOf(MANAGED_BLOCK_END);
-  return content.slice(start, end).replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+  return extractSingleManagedBlockById(content)?.content ?? null;
 }
 
 export function upsertManagedBlock(original: string, content: string): string {
@@ -92,6 +92,27 @@ function escapeRe(value: string): string {
 
 const startById = (id: string): string => `<!-- hunter-harness:start id=${id} -->`;
 const endById = (id: string): string => `<!-- hunter-harness:end id=${id} -->`;
+
+export function extractSingleManagedBlockById(
+  content: string
+): { id: string; content: string } | null {
+  const matches = [...content.matchAll(/<!-- hunter-harness:start id=([A-Za-z0-9_-]+) -->/g)];
+  if (matches.length !== 1) return null;
+  const id = matches[0]?.[1];
+  if (id === undefined) return null;
+  const start = startById(id);
+  const end = endById(id);
+  if (markerCount(content, start) !== 1 || markerCount(content, end) !== 1 ||
+      content.indexOf(start) > content.indexOf(end)) {
+    throw new Error("managed block markers are malformed or duplicated");
+  }
+  const bodyStart = content.indexOf(start) + start.length;
+  const bodyEnd = content.indexOf(end);
+  return {
+    id,
+    content: content.slice(bodyStart, bodyEnd).replace(/^\r?\n/, "").replace(/\r?\n$/, "")
+  };
+}
 
 /**
  * 按 id 插入/替换 per-id managed block（marker `<!-- hunter-harness:start id=<id> -->` ... `<!-- hunter-harness:end id=<id> -->`）。

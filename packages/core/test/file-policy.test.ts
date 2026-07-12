@@ -20,7 +20,12 @@ describe("file policy matrix", () => {
     [".codegraph/index.db", "external_unmanaged", "never"],
     ["src/index.ts", "external_unmanaged", "never"],
     [".cursor/rules/harness-general.mdc", "user_editable", "diff-proposal"],
-    [".agent-skills/harness-review.md", "user_editable", "diff-proposal"]
+    [".agent-skills/harness-review.md", "user_editable", "diff-proposal"],
+    ["CODEBUDDY.md", "user_editable", "diff-proposal"],
+    [".agents/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
+    [".cursor/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
+    [".codebuddy/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
+    [".codebuddy/agents/harness-reviewer.md", "user_editable", "diff-proposal"]
   ])("classifies %s uniquely", (path, kind, pushPolicy) => {
     const policy = classifyFile(path);
     expect(policy.file_kind).toBe(kind);
@@ -49,5 +54,30 @@ describe("file policy matrix", () => {
     const policy = classifyFile(".codegraph/index.db");
     expect(decidePush(policy, true).include).toBe(false);
     expect(decideUpdate(policy, false).apply).toBe(false);
+  });
+
+  it("treats CodeBuddy and all adapter working copies as editable diffs", () => {
+    expect(classifyFile("CODEBUDDY.md").edit_policy).toBe("managed-block-only");
+    for (const path of [
+      ".agents/skills/harness-review/SKILL.md",
+      ".cursor/skills/harness-review/SKILL.md",
+      ".cursor/rules/harness-general.mdc",
+      ".codebuddy/skills/harness-review/SKILL.md",
+      ".codebuddy/agents/harness-reviewer.md"
+    ]) {
+      expect(classifyFile(path)).toMatchObject({
+        file_kind: "user_editable",
+        push_policy: "diff-proposal",
+        update_policy: "skip-if-local-dirty"
+      });
+    }
+  });
+
+  it.each([
+    ".codebuddy/settings.json",
+    ".codex/config.toml",
+    ".codex/hooks.json"
+  ])("keeps external configuration unmanaged: %s", (path) => {
+    expect(classifyFile(path).file_kind).toBe("external_unmanaged");
   });
 });

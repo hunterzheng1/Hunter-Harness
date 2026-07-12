@@ -15,6 +15,7 @@ import { ApiError, HunterHarnessApiClient } from "../api/client.js";
 import { sha256Bytes, sha256File } from "../fs/hash.js";
 import {
   extractManagedBlock,
+  extractSingleManagedBlockById,
   removeManagedBlock,
   upsertManagedBlock,
   upsertManagedBlockById
@@ -317,8 +318,9 @@ export async function updateProject(options: UpdateProjectOptions) {
           equivalent = finalContent === sourceContent;
         } else if (incoming !== null) {
           const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
+          const incomingId = extractSingleManagedBlockById(incoming)?.id;
           const blockId = operation.operation === "add" || operation.operation === "modify"
-            ? operation.block_id
+            ? operation.block_id ?? incomingId
             : undefined;
           finalContent = blockId !== undefined
             ? upsertManagedBlockById(targetContent ?? "", blockId, incomingBlock)
