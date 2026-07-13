@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  describeWorkflowDataFetchFailure,
   resolveWorkflowResourcesRoot,
   workflowPackageName
 } from "../src/workflow-data/resolve.js";
@@ -50,5 +51,34 @@ describe("workflow data resolution", () => {
     await mkdir(join(packageRoot, "harness", "manifests", "general"), { recursive: true });
     await writeFile(join(packageRoot, "harness", "manifests", "general", "claude-code.json"), "{}\n", "utf8");
     expect(await resolveWorkflowResourcesRoot({ cwd: tempDir, env: {} })).toBe(packageRoot);
+  });
+
+  it("describes pacote missing, network, and 404 failures with real causes", () => {
+    const missing = describeWorkflowDataFetchFailure(
+      Object.assign(new Error("Cannot find package 'pacote'"), { code: "ERR_MODULE_NOT_FOUND" }),
+      "@hunter-harness/workflow-harness"
+    );
+    expect(missing).toContain("pacote");
+    expect(missing).not.toContain("无网络且本地缓存不存在");
+
+    const network = describeWorkflowDataFetchFailure(
+      Object.assign(new Error("Client network socket disconnected before secure TLS connection was established"), {
+        code: "ECONNRESET"
+      }),
+      "@hunter-harness/workflow-harness"
+    );
+    expect(network).toContain("下载失败");
+    expect(network).toContain("ECONNRESET");
+    expect(network).toContain("ipv4first");
+    expect(network).not.toContain("无网络且本地缓存不存在");
+
+    const notFound = describeWorkflowDataFetchFailure(
+      Object.assign(new Error("404 Not Found - GET https://registry.npmjs.org/@hunter-harness%2fworkflow-harness"), {
+        code: "E404"
+      }),
+      "@hunter-harness/workflow-harness"
+    );
+    expect(notFound).toContain("找不到该包");
+    expect(notFound).not.toContain("无网络且本地缓存不存在");
   });
 });
