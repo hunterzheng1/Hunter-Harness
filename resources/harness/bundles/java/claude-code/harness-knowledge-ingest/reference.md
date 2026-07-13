@@ -10,16 +10,36 @@ description: harness-knowledge-ingest 的命令详细示例、config.json 配置
 
 ### Auto maintenance
 
-如果只是想让 skill 自己完成常规知识库防腐，优先跑 `auto`：
+如果只是想让 skill 自己完成常规知识库防腐，优先跑 `auto`，再执行 **Agent judge 闭环**（见下文）：
 
 ```powershell
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<project-root>'"
 ```
 
-`auto` 会按默认维护顺序执行：首建 `config.json`（若缺失）、`sync --update`、只读 `suggest-validators`、`verify`、`audit`。首次发现 `.harness/knowledge/config.json` 不存在时，`auto` 会自动写入启用版 `autoPromote` 配置，并让本次运行立刻按 confidence 规则提升满足门槛的长期知识。默认不会把 validator 建议写回条目；确认要把建议写入后再执行：
+`auto` 会按默认维护顺序执行：首建 `config.json`（若缺失）、`sync --update`、**默认写回** validator 建议、`verify`、`audit`。首次发现 `.harness/knowledge/config.json` 不存在时，会写入启用版 `autoPromote` + `activeLifecycle.autoDemote` + `knowledgeValidation.autoDemoteActive` + `judge.maxCandidatesPerRun` 配置。
+
+关闭 validator 写回：
 
 ```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<project-root>' --apply-suggestions --suggest-status candidate"
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<project-root>' --no-apply-suggestions"
+```
+
+### Agent judge 闭环（auto 之后）
+
+1. `judge export`（或 maintain 产出的 pending judgements）
+2. Agent 读 export，写 `reports/judge-decisions-<ts>.json`（schema 对齐 `judge apply`）
+3. `judge apply --apply <decisions.json>`
+4. 输出已处理报告，不列人工待办
+
+**启发式**（Agent 侧，非脚本硬编码）：
+
+- **conflicted**：优先 `supersede` 较旧/较弱证据方；对称难判 → `keep-conflict` + reason
+- **candidate**：`decision|api-contract|requirement|pitfall` 且 confidence 高 → `promote`；`implementation|test-evidence` 倾向 `drop` 或保持 candidate
+- 超过 `judge.maxCandidatesPerRun`（默认 100）的低分 candidate：跳过，记入 `skippedCandidates`
+
+```powershell
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' judge --project '<project-root>' --export '<export.json>'"
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' judge --project '<project-root>' --apply '<decisions.json>'"
 ```
 
 常用参数：
@@ -147,20 +167,25 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' demot
 
 `demote` 只处理人工确认后的 `active` 条目，可降级到 `stale` 或 `candidate`。降级到 `stale` 时会写入 `manual demotion` stale reason，并在后续 ingest 中保留该人工维护条目。
 
-### Optional active auto-demotion
+### activeLifecycle 与 validator auto-demotion
 
-默认不会自动改写 `active`。如明确希望脚本根据 `Active Review` 自动降级 active，可在 `.harness/knowledge/config.json` 中启用：
+`auto` 首建的 `config.json` **默认已启用** `activeLifecycle.autoDemote` 与 `knowledgeValidation.autoDemoteActive`。已有项目不会强制覆盖。手动启用示例：
 
 ```json
 {
   "activeLifecycle": {
     "autoDemote": true,
     "targetStatus": "stale"
+  },
+  "knowledgeValidation": {
+    "enabled": true,
+    "autoDemoteActive": true,
+    "defaultTargetStatus": "stale"
   }
 }
 ```
 
-启用后，ingest 会把需要复核的 active 自动移动到 `targetStatus`（`stale` 或 `candidate`），记录 `lifecycle.autoDemoted=true` 和 `activeLifecycle auto-demotion` 原因。该能力只应在项目团队确认接受自动降级策略后启用。
+启用后，ingest/verify 会把需复核或 validator 失败的 active 自动降级，并写入 `lifecycle` 审计字段。
 
 ### Optional confidence scoring and autoPromote
 
@@ -199,13 +224,27 @@ confidence 不是“绝对正确率”，只表示当前证据强弱。分数会
     "validatorFailPenalty": 0.5,
     "supersededPenalty": 0.8,
     "conflictPenalty": 0.8
+  },
+  "activeLifecycle": {
+    "autoDemote": true,
+    "targetStatus": "stale"
+  },
+  "knowledgeValidation": {
+    "enabled": true,
+    "autoDemoteActive": true,
+    "defaultTargetStatus": "stale",
+    "allowCommandValidators": false,
+    "commandTimeoutSeconds": 60
+  },
+  "judge": {
+    "maxCandidatesPerRun": 100
   }
 }
 ```
 
 自动提升只处理配置允许的类型，默认排除 stale/conflicted/superseded，且会写入 `lifecycle.autoPromoted=true`、`promotionNote` 和 `promotedAt`。一次性实现细节、测试证据、风险提醒仍不应自动提升为长期事实。
 
-### Optional validator auto-demotion
+### Optional validator auto-demotion（旧文档兼容）
 
 默认不会因为 validator 失败自动改写 `active`。如明确希望确定性 validator 失败时自动降级 active，可在 `.harness/knowledge/config.json` 中启用：
 
@@ -307,3 +346,10 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge_mcp.py'"
 - `auto` JSON 输出新增 `config` 摘要：`path`、`created`、`autoPromoteEnabled`、`appliedBy`、`candidateAutoPromoted`。
 - `ingest` 单独命令仍不首建 config；项目策略的自动首建只发生在 `auto` 维护入口。
 - 单测扩展到 35 个，覆盖“已有最新 index 但缺 config 时，auto 首建启用配置并立即提升”的路径。
+
+## v1.14 补充能力（knowledge-auto-close-loop）
+
+- `auto` **默认写回** validator 建议（`--no-apply-suggestions` 可关闭）；JSON 新增 `lifecycle` 摘要。
+- 首建 `config.json` 默认含 `activeLifecycle.autoDemote`、`knowledgeValidation.autoDemoteActive`、`judge.maxCandidatesPerRun=100`。
+- SKILL 工作流：`auto` 后由 **Agent** 执行 `judge export` → 裁决 → `judge apply`；禁止默认输出人工待办清单。
+- `harness-sync` 明确知识闭环主入口为 `/harness-knowledge-ingest auto`。

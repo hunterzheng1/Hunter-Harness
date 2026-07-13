@@ -38,7 +38,7 @@ disallowed-tools:
 | 1 | git log/diff 感知变更量 |
 | 2 | CodeGraph 索引是否需重建 |
 | 3 | `.harness/codebase/map/` 是否过期 → 报告建议 `/harness-codebase-map` |
-| 3.5 | `harness_knowledge.py sync`；可 `sync --update`；失败不得假装可用 |
+| 3.5 | `harness_knowledge.py sync`；可 `sync --update`；失败不得假装可用。**知识闭环主入口**是 `/harness-knowledge-ingest auto`（含 Agent judge），sync 不重复列人工知识待办 |
 | 3.6 | 扫描 `.harness/knowledge/maintenance-outbox/{pending,failed}`；对每项运行 `harness_knowledge.py maintain --project . --archive-id <id> --json`（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/completed_rules_pending_judge） |
 | 4 | CLAUDE.md 完整性/行数 → 超限 AskUserQuestion 瘦身 |
 | 5 | AGENTS.md 与 CLAUDE.md 一致 |

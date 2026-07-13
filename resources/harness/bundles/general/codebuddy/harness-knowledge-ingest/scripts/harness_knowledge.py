@@ -58,6 +58,20 @@ DEFAULT_AUTO_KNOWLEDGE_CONFIG = {
         "supersededPenalty": 0.8,
         "conflictPenalty": 0.8,
     },
+    "activeLifecycle": {
+        "autoDemote": True,
+        "targetStatus": "stale",
+    },
+    "knowledgeValidation": {
+        "enabled": True,
+        "autoDemoteActive": True,
+        "defaultTargetStatus": "stale",
+        "allowCommandValidators": False,
+        "commandTimeoutSeconds": 60,
+    },
+    "judge": {
+        "maxCandidatesPerRun": 100,
+    },
 }
 
 
@@ -106,6 +120,9 @@ def ensure_auto_knowledge_config(knowledge: Path) -> dict[str, Any]:
             "path": str(config_path),
             "created": False,
             "autoPromoteEnabled": auto_promote_config(config)["enabled"],
+            "autoDemoteEnabled": active_lifecycle_config(config)["autoDemote"],
+            "autoDemoteActiveEnabled": knowledge_validation_config(config)["autoDemoteActive"],
+            "maxCandidatesPerRun": judge_config(config)["maxCandidatesPerRun"],
             "appliedBy": "existing",
             "candidateAutoPromoted": None,
         }
@@ -115,6 +132,9 @@ def ensure_auto_knowledge_config(knowledge: Path) -> dict[str, Any]:
         "path": str(config_path),
         "created": True,
         "autoPromoteEnabled": True,
+        "autoDemoteEnabled": True,
+        "autoDemoteActiveEnabled": True,
+        "maxCandidatesPerRun": judge_config(config)["maxCandidatesPerRun"],
         "appliedBy": None,
         "candidateAutoPromoted": None,
     }
@@ -182,6 +202,16 @@ def auto_promote_config(config: dict[str, Any]) -> dict[str, Any]:
         "requireValidators": bool(raw.get("requireValidators", False)),
         "allowStale": bool(raw.get("allowStale", False)),
         "maxPerRun": max(0, max_per_run),
+    }
+
+
+def judge_config(config: dict[str, Any]) -> dict[str, Any]:
+    raw = config.get("judge")
+    if not isinstance(raw, dict):
+        raw = {}
+    max_candidates = int(raw.get("maxCandidatesPerRun") or 100)
+    return {
+        "maxCandidatesPerRun": max(1, max_candidates),
     }
 
 
@@ -2513,7 +2543,7 @@ def auto_knowledge(
     *,
     limit: int = 20,
     suggest_statuses: list[str] | None = None,
-    apply_suggestions: bool = False,
+    apply_suggestions: bool = True,
     incremental: bool = True,
     audit_limit: int = 10,
 ) -> dict[str, Any]:
@@ -2539,6 +2569,7 @@ def auto_knowledge(
     )
     verification = verify_knowledge(project)
     audit = audit_entries(project, limit=audit_limit)
+    ingest_mode = sync.get("index", {}).get("ingestMode", {}) if isinstance(sync.get("index"), dict) else {}
     return {
         "project": str(project),
         "generatedAt": now_iso(),
@@ -2577,6 +2608,15 @@ def auto_knowledge(
             "supersededReview": len(audit["supersededReview"]),
             "conflictReview": len(audit["conflictReview"]),
             "activeReview": len(audit["activeReview"]),
+        },
+        "lifecycle": {
+            "validatorsApplied": suggestions["applied"],
+            "candidateAutoPromoted": ingest_mode.get(
+                "candidateAutoPromoted", config_summary.get("candidateAutoPromoted") or 0
+            ),
+            "activeAutoDemoted": ingest_mode.get("activeAutoDemoted", 0),
+            "validationAutoDemoted": ingest_mode.get("validationAutoDemoted", verification["autoDemoted"]),
+            "pendingAgentJudge": len(audit["conflictReview"]) + len(audit["candidateReview"]),
         },
     }
 
@@ -3902,7 +3942,11 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Only suggest validators for this lifecycle status",
     )
-    auto.add_argument("--apply-suggestions", action="store_true", help="Write validator suggestions into entry JSON files")
+    auto.add_argument(
+        "--no-apply-suggestions",
+        action="store_true",
+        help="Do not write validator suggestions into entry JSON files (default applies them)",
+    )
     auto.add_argument("--no-incremental", action="store_true", help="Refresh without reusing the archive entry cache")
 
     audit = sub.add_parser("audit", help="Generate review lists for candidate, stale, and superseded entries")
@@ -3999,7 +4043,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.project),
             limit=args.limit,
             suggest_statuses=args.suggest_statuses,
-            apply_suggestions=args.apply_suggestions,
+            apply_suggestions=not args.no_apply_suggestions,
             incremental=not args.no_incremental,
             audit_limit=args.audit_limit,
         )

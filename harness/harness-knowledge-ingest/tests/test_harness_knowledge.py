@@ -968,22 +968,29 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             ]
             self.assertTrue(applied_entries)
 
-    def test_auto_runs_safe_default_workflow_without_applying_suggestions(self) -> None:
+    def test_auto_no_apply_suggestions_opt_out(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self.make_project(Path(tmp))
             source_file = project / "apps" / "web" / "components" / "registry.tsx"
             source_file.parent.mkdir(parents=True)
             source_file.write_text("export const source = draft.aiChecks;\n", encoding="utf-8")
 
-            result = self.run_cli("auto", "--project", str(project), "--limit", "5")
+            result = self.run_cli(
+                "auto",
+                "--project",
+                str(project),
+                "--limit",
+                "5",
+                "--no-apply-suggestions",
+            )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
             self.assertTrue(payload["sync"]["upToDate"])
             self.assertGreaterEqual(payload["suggestions"]["suggested"], 1)
             self.assertEqual(payload["suggestions"]["applied"], 0)
+            self.assertFalse(payload["mode"]["applySuggestions"])
             self.assertEqual(payload["verification"]["checked"], 0)
-            self.assertIn("candidateReview", payload["audit"])
             knowledge = project / ".harness" / "knowledge"
             entries_with_validators = [
                 path
@@ -991,6 +998,43 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
                 if "validators" in json.loads(path.read_text(encoding="utf-8"))
             ]
             self.assertFalse(entries_with_validators)
+
+    def test_auto_default_applies_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            source_file = project / "apps" / "web" / "components" / "registry.tsx"
+            source_file.parent.mkdir(parents=True)
+            source_file.write_text("export const source = draft.aiChecks;\n", encoding="utf-8")
+
+            result = self.run_cli(
+                "auto",
+                "--project",
+                str(project),
+                "--limit",
+                "5",
+                "--suggest-status",
+                "candidate",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["mode"]["applySuggestions"])
+            self.assertGreaterEqual(payload["suggestions"]["applied"], 1)
+            self.assertGreaterEqual(payload["verification"]["checked"], 1)
+            self.assertGreaterEqual(payload["lifecycle"]["validatorsApplied"], 1)
+
+    def test_auto_bootstraps_full_default_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            result = self.run_cli("auto", "--project", str(project))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            config_path = project / ".harness" / "knowledge" / "config.json"
+            self.assertTrue(config_path.exists())
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(config["activeLifecycle"]["autoDemote"])
+            self.assertTrue(config["knowledgeValidation"]["autoDemoteActive"])
+            self.assertEqual(config["judge"]["maxCandidatesPerRun"], 100)
+            self.assertEqual(config["autoPromote"]["minConfidence"], 0.82)
 
     def test_auto_apply_suggestions_writes_validators_and_verifies_them(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1005,7 +1049,6 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
                 str(project),
                 "--limit",
                 "5",
-                "--apply-suggestions",
                 "--suggest-status",
                 "candidate",
             )

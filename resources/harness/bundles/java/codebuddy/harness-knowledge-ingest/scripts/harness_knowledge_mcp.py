@@ -52,7 +52,7 @@ TOOL_DESCRIPTIONS: list[dict[str, Any]] = [
                 "project": {"type": "string", "description": "Project root containing .harness/archive."},
                 "limit": {"type": "integer", "default": 20, "minimum": 1, "maximum": 100},
                 "suggest_statuses": {"type": "array", "items": {"type": "string"}, "default": []},
-                "apply_suggestions": {"type": "boolean", "default": False, "description": "Write validator suggestions into entry JSON files."},
+                "apply_suggestions": {"type": "boolean", "default": True, "description": "Write validator suggestions into entry JSON files (default on)."},
                 "incremental": {"type": "boolean", "default": True, "description": "Reuse cached archive extraction results when refreshing."},
                 "audit_limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 100},
             },
@@ -181,7 +181,7 @@ def create_server() -> Any:
         project: str,
         limit: int = 20,
         suggest_statuses: list[str] | None = None,
-        apply_suggestions: bool = False,
+        apply_suggestions: bool = True,
         incremental: bool = True,
         audit_limit: int = 10,
     ) -> dict[str, Any]:
