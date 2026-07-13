@@ -1,0 +1,6 @@
+#!/bin/sh
+# Optional local gate: npm run setup:git-hooks  (once per clone)
+set -e
+cd "$(git rev-parse --show-toplevel)"
+echo "pre-push: running npm run check ..."
+npm run check
