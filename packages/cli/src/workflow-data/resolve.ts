@@ -189,10 +189,57 @@ export async function resolveWorkflowResourcesRoot(
   } catch (error) {
     if (error instanceof WorkflowDataResolutionError) throw error;
     throw new WorkflowDataResolutionError(
-      "无法获取工作流数据包：无网络且本地缓存不存在。请先在有网络的环境运行 hunter-harness，或设置 HUNTER_HARNESS_RESOURCES_ROOT 指向含 harness/ 的目录。",
+      describeWorkflowDataFetchFailure(error, packageSpec),
       "WORKFLOW_DATA_UNAVAILABLE"
     );
   }
+}
+
+/** 将 pacote/网络等底层失败转成可读中文说明（不再笼统写成「无网络」）。 */
+export function describeWorkflowDataFetchFailure(error: unknown, packageSpec: string): string {
+  const detailRaw = error instanceof Error ? error.message : String(error);
+  const detail = detailRaw.length > 240 ? detailRaw.slice(0, 240) + "…" : detailRaw;
+  const code = error !== null && typeof error === "object" && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "";
+  const hintRoot = "设置 HUNTER_HARNESS_RESOURCES_ROOT 指向含 harness/ 的目录";
+
+  if (
+    code === "ERR_MODULE_NOT_FOUND" ||
+    /Cannot find package ['"]pacote['"]/i.test(detailRaw)
+  ) {
+    return (
+      `无法获取工作流数据包 ${packageSpec}：缺少可选依赖 pacote（npx/npm 安装 CLI 时未装上）。` +
+      `请重装 hunter-harness，或${hintRoot}。原因：${detail}`
+    );
+  }
+
+  if (
+    code === "ECONNRESET" ||
+    code === "ETIMEDOUT" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ECONNREFUSED" ||
+    /ECONNRESET|ETIMEDOUT|socket disconnected|TLS connection/i.test(detailRaw)
+  ) {
+    return (
+      `无法获取工作流数据包 ${packageSpec}：从 npm 下载失败（网络/TLS）。` +
+      `可先设置 NODE_OPTIONS=--dns-result-order=ipv4first 后重试，或${hintRoot}。` +
+      `原因：${code !== "" ? code + " " : ""}${detail}`
+    );
+  }
+
+  if (code === "E404" || /\b404\b|Not Found/i.test(detailRaw)) {
+    return (
+      `无法获取工作流数据包 ${packageSpec}：npm 上找不到该包或无权访问。` +
+      `请确认已发布对应 scope 的 workflow 数据包，或${hintRoot}。原因：${detail}`
+    );
+  }
+
+  return (
+    `无法获取工作流数据包 ${packageSpec}：本地缓存不存在且获取失败。可${hintRoot}。` +
+    `原因：${code !== "" ? code + " " : ""}${detail}`
+  );
 }
 
 export async function readWorkflowFamilyManifest(resourcesRoot: string): Promise<Record<string, unknown>> {
