@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
 
@@ -147,7 +148,19 @@ export async function runCli(
   }
 }
 
-if (process.argv[1] !== undefined &&
-    import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** Windows npm workspaces 经 junction 调用时 argv 路径与 import.meta.url 实路径不一致。 */
+export function isDirectCliEntrypoint(
+  entry = process.argv[1],
+  metaUrl = import.meta.url
+): boolean {
+  if (entry === undefined) return false;
+  try {
+    return metaUrl === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return metaUrl === pathToFileURL(entry).href;
+  }
+}
+
+if (isDirectCliEntrypoint()) {
   process.exitCode = await runCli(process.argv.slice(2));
 }

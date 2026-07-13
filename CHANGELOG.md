@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4]
+
+### Fixed
+
+- Windows 上经 npm workspace junction / `npx` 调用时，CLI 入口不再因 `import.meta.url` 与 `argv` 实路径不一致而静默退出；monorepo 可用 `npm run hh` dogfood。
+
 ## [0.2.3]
 
 ### Fixed

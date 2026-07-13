@@ -115,6 +115,15 @@ npm run check
 
 `npm run check` 依次执行 lint、TypeScript、全部测试、生产构建和两个 npm 包的 pack/install smoke test。
 
+在本 monorepo 内 dogfood CLI（勿依赖全局 PATH）可用：
+
+```powershell
+npm run hh -- --help
+npx hunter-harness --help
+```
+
+`npm run hh` 直接跑 `packages/cli/dist/bin.js`；改 CLI 源码后需先 `npm run bundle -w packages/cli`。
+
 PostgreSQL 实库测试需要单独设置：
 
 ```powershell

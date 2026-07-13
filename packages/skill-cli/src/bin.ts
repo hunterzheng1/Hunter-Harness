@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
 import {
   access,
   copyFile,
@@ -599,6 +600,14 @@ export async function runSkillCli(
 }
 
 const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  process.exitCode = await runSkillCli(process.argv);
+if (entry !== undefined) {
+  let isEntrypoint = false;
+  try {
+    isEntrypoint = import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    isEntrypoint = import.meta.url === pathToFileURL(entry).href;
+  }
+  if (isEntrypoint) {
+    process.exitCode = await runSkillCli(process.argv);
+  }
 }

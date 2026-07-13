@@ -22,7 +22,9 @@
     "lint": "eslint .",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "sync:harness": "node scripts/sync-harness.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:pack"
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:pack",
+    "hh": "node ./packages/cli/dist/bin.js",
+    "hunter-harness": "node ./packages/cli/dist/bin.js"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
