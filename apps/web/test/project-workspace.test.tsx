@@ -85,12 +85,13 @@ describe("ProjectWorkspace", () => {
     }));
     render(<ProjectWorkspace api={api({ createProjectFileProposal })} projectId="prj_one" />);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "文件管理" }));
     expect(await screen.findByRole("button", { name: ".harness/knowledge/architecture.md" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: ".harness/knowledge/architecture.md" }));
     expect(screen.getByText("diff-proposal")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /edit current file/i }));
-    fireEvent.change(screen.getByLabelText(/draft content/i), { target: { value: "# Revised architecture" } });
-    fireEvent.click(screen.getByRole("button", { name: /create review proposal/i }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑当前文件" }));
+    fireEvent.change(screen.getByLabelText("草稿内容"), { target: { value: "# Revised architecture" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建评审提案" }));
 
     await waitFor(() => expect(createProjectFileProposal).toHaveBeenCalledWith(expect.objectContaining({
       action: "modify",
@@ -99,7 +100,7 @@ describe("ProjectWorkspace", () => {
       baseProjectVersion: "pv_one",
       baseManifestHash: sha("a")
     })));
-    expect(await screen.findByText(/proposal prp_new is pending review/i)).toBeInTheDocument();
+    expect(await screen.findByText(/提案 prp_new 已提交评审/)).toBeInTheDocument();
   });
 
   it("shows the bound workflow family and profile", async () => {
@@ -128,15 +129,16 @@ describe("ProjectWorkspace", () => {
     })} projectId="prj_one" />);
 
     expect(await screen.findByRole("heading", { name: "Review" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Bound workflow family" })).toHaveValue("review:general");
+    expect(screen.getByRole("combobox", { name: "绑定的工作流族" })).toHaveValue("review:general");
   });
 
   it("keeps protocol-only paths inspectable but never editable", async () => {
     render(<ProjectWorkspace api={api()} projectId="prj_one" />);
 
+    fireEvent.click(await screen.findByRole("tab", { name: "文件管理" }));
     expect(await screen.findByRole("button", { name: ".harness/state/local/status.json" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: ".harness/state/local/status.json" }));
-    expect(screen.getByText(/only the protocol layer can write this path/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /edit current file/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/该路径只能由协议层写入/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑当前文件" })).not.toBeInTheDocument();
   });
 });

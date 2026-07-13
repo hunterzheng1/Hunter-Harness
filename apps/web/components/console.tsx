@@ -244,6 +244,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [role, setRole] = useState("all");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     let active = true;
@@ -270,6 +271,8 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     };
   }, [api, t]);
 
+  useEffect(() => { setPage(1); }, [query, role]);
+
   if (error !== null) return <Empty>{error}</Empty>;
   if (projects === null) return <Empty>{t.projects.loading}</Empty>;
 
@@ -279,67 +282,86 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     (role === "all" || project.role === role)
   );
   const roles = [...new Set(projects.map((project) => project.role))].sort();
+  const pageSize = 8;
+  const totalPages = Math.max(1, Math.ceil(filteredProjects.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = filteredProjects.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const withVersion = projects.filter((p) => p.latest_project_version !== null).length;
+  const withArtifact = projects.filter((p) => p.latest_artifact_id !== null).length;
+  const boundWorkflow = Object.keys(workflowInfo).length;
 
   return (
-    <section className="stack">
-      <div className="page-heading">
+    <section className="stack governance-page">
+      <header className="page-heading command-hero">
         <div>
           <p className="eyebrow">{t.projects.eyebrow}</p>
           <h1>{t.projects.title}</h1>
+          <p className="lede">{t.projects.description}</p>
         </div>
-      </div>
-      <div className="registry-toolbar compact-toolbar">
-        <label>
-          {t.projects.searchProjects}
+        <div className="hero-actions">
+          <Status value="governed" />
+          <span>{projects.length} {t.projects.publishedCount}</span>
+        </div>
+      </header>
+
+      <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
+        <label className="search-wide">{t.projects.searchProjects}
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.projects.searchPlaceholder} />
         </label>
-        <label>
-          {t.projects.role}
+        <label>{t.projects.role}
           <select value={role} onChange={(event) => setRole(event.target.value)}>
             <option value="all">{t.common.all}</option>
             {roles.map((item) => <option value={item} key={item}>{item}</option>)}
           </select>
         </label>
       </div>
-      {projects.length === 0 ? (
-        <Empty>{t.projects.noProjects}</Empty>
-      ) : filteredProjects.length === 0 ? (
-        <Empty>{t.projects.noMatch}</Empty>
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t.projects.table.project}</th>
-                <th>{t.projects.table.role}</th>
-                <th>{t.projects.table.workflow}</th>
-                <th>{t.projects.table.skills}</th>
-                <th>{t.projects.table.version}</th>
-                <th>{t.projects.table.artifact}</th>
-                <th>{t.projects.table.registered}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredProjects.map((project) => (
-                <tr key={project.project_id}>
-                  <td>
-                    <Link href={`/projects/${project.project_id}`}>
-                      <strong>{project.display_name}</strong>
-                      <code>{project.project_id}</code>
-                    </Link>
-                  </td>
-                  <td>{project.role}</td>
-                  <td>{workflowInfo[project.project_id]?.name ?? t.common.notBound}</td>
-                  <td>{workflowInfo[project.project_id]?.skillCount ?? 0}</td>
-                  <td>{project.latest_project_version ?? t.projects.table.none}</td>
-                  <td>{project.latest_artifact_id ?? t.projects.table.none}</td>
-                  <td>{project.created_at.slice(0, 10)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+
+      <div className="hub-grid">
+        <div className="panel panel-themed panel-list registry-list">
+          <div className="panel-title"><h2>{t.projects.projectList}</h2><span>{filteredProjects.length}</span></div>
+          <div className="registry-list-body">
+            {filteredProjects.length === 0 ? <Empty>{t.projects.noMatch}</Empty> : pageItems.map((project) => (
+              <div className="skill-row-with-actions" key={project.project_id}>
+                <Link className="skill-row" href={`/projects/${project.project_id}`}>
+                  <div className="skill-row-main">
+                    <strong className="skill-row-name">{project.display_name}</strong>
+                    <code>{project.project_id}</code>
+                    <div className="tag-row">
+                      <span className="tag">{project.role}</span>
+                      <span className="tag">{workflowInfo[project.project_id]?.name ?? t.common.notBound}</span>
+                    </div>
+                  </div>
+                  <div className="skill-meta">
+                    <span className="meta-pill meta-pill-version">{project.latest_project_version ?? t.projects.table.none}</span>
+                    <span className="skill-meta-cell" title={project.latest_artifact_id ?? ""}>{project.latest_artifact_id ?? t.projects.table.none}</span>
+                    <span className="skill-meta-cell">{project.created_at.slice(0, 10)}</span>
+                    <span className="status status-clear">{workflowInfo[project.project_id]?.skillCount ?? 0} {t.common.skills}</span>
+                  </div>
+                </Link>
+              </div>
+            ))}
+          </div>
+          <div className="pagination-bar">
+            <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage(1)}>{t.projects.firstPage}</button>
+            <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage((v) => Math.max(1, v - 1))}>{t.projects.prevPage}</button>
+            <span>{t.projects.pageInfo.replace("{page}", String(currentPage)).replace("{total}", String(totalPages))}</span>
+            <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage((v) => Math.min(totalPages, v + 1))}>{t.projects.nextPage}</button>
+            <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage(totalPages)}>{t.projects.lastPage}</button>
+          </div>
         </div>
-      )}
+
+        <aside className="hub-rail">
+          <div className="panel panel-themed panel-stats skill-stats-panel">
+            <div className="panel-title"><h2>{t.projects.stats.title}</h2><span>{t.projects.stats.liveLocal}</span></div>
+            <div className="skill-stat-grid">
+              <article><strong>{projects.length}</strong><span>{t.projects.stats.totalProjects}</span></article>
+              <article><strong>{withVersion}</strong><span>{t.projects.stats.withVersion}</span></article>
+              <article><strong>{withArtifact}</strong><span>{t.projects.stats.withArtifact}</span></article>
+              <article><strong>{boundWorkflow}</strong><span>{t.projects.stats.boundWorkflow}</span></article>
+            </div>
+          </div>
+        </aside>
+      </div>
     </section>
   );
 }
