@@ -44,7 +44,7 @@ export function highEntropyCandidates(content: string): Array<{
   entropy: number;
 }> {
   // Intentionally omit "/" so relative paths are not treated as opaque secrets.
-  const matches = content.matchAll(/\b[A-Za-z0-9_+.=\-]{24,}\b/g);
+  const matches = content.matchAll(/\b[A-Za-z0-9_+.=-]{24,}\b/g);
   return [...matches]
     .map((match) => ({
       value: match[0],
