@@ -14,9 +14,9 @@
     "dist/bin.js"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run bundle",
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json && npm run bundle",
     "bundle": "esbuild src/bin.ts --bundle --platform=node --format=esm --target=node24 --external:commander --external:yaml --external:zod --external:pacote --outfile=dist/bin.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build"
   },
   "dependencies": {

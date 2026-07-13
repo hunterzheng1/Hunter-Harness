@@ -10,10 +10,10 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json",
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
     "start": "node dist/main.js",
-    "test:postgres": "vitest --root ../.. --config vitest.config.ts run apps/server/test/postgres.integration.test.ts"
+    "test:postgres": "node ../../node_modules/vitest/vitest.mjs --root ../.. --config vitest.config.ts run apps/server/test/postgres.integration.test.ts"
   },
   "dependencies": {
     "@fastify/multipart": "^10.0.0",
