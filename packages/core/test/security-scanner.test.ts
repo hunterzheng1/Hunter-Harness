@@ -100,4 +100,16 @@ describe("sensitive information scanner", () => {
       overridable: true
     });
   });
+
+  it("does not block Windows absolute paths recorded in archive metadata", () => {
+    const result = scanSensitiveFiles({
+      ".harness/archive/2026-07-12-demo/reports/final/summary-data.json": JSON.stringify({
+        projectRoot: "E:\\MyProject\\kld-sdd",
+        summarySha256: "1081c466443c5c50d536ecaa9f1471da66fbec1f42d24d389518f4dfc4fd8bc0",
+        sourceCommit: "fb45a8db539d1096f76d9946024f4e7a60fbf71a"
+      }, null, 2)
+    });
+    expect(result.findings).toEqual([]);
+    expect(result.blocked).toBe(false);
+  });
 });

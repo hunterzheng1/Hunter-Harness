@@ -148,10 +148,13 @@ export function scanSensitiveFiles(
     const ignores = parseInlineIgnores(content);
     const knowledgeMetadata = path === ".harness/knowledge" ||
       path.startsWith(".harness/knowledge/");
+    const archiveMetadata = path === ".harness/archive" ||
+      path.startsWith(".harness/archive/");
     for (const raw of rawFindings(content)) {
-      // Knowledge index/entries routinely record local projectRoot paths; that is
+      // Knowledge/archive index files routinely record local projectRoot paths; that is
       // metadata, not a credential leak worth blocking push.
-      if (knowledgeMetadata && raw.ruleId === "HH_WINDOWS_ABSOLUTE_PATH") {
+      if ((knowledgeMetadata || archiveMetadata) &&
+          raw.ruleId === "HH_WINDOWS_ABSOLUTE_PATH") {
         continue;
       }
       const position = location(content, raw.offset);

@@ -92,12 +92,21 @@ describe("OpenAPI v1 contract", () => {
     )) as {
       paths: Record<string, Record<string, {
         operationId?: string;
+        requestBody?: {
+          content?: { "application/json"?: { schema?: { $ref?: string } } };
+        };
         responses?: Record<string, { description?: string }>;
       }>>;
+      components: { schemas: Record<string, { properties?: Record<string, unknown> }> };
     };
     const finalize = document.paths["/api/v1/proposal-sessions/{session_id}:finalize"]?.post;
     expect(finalize?.operationId).toBe("finalizeProposal");
     expect(finalize?.responses?.["409"]?.description).toContain("STALE_PUSH");
+    expect(finalize?.responses?.["422"]?.description).toContain("SENSITIVE_CONTENT_BLOCKED");
+    expect(finalize?.requestBody?.content?.["application/json"]?.schema?.$ref)
+      .toBe("#/components/schemas/FinalizeProposalRequest");
+    expect(document.components.schemas.FinalizeProposalRequest?.properties?.sensitive_scan_skip)
+      .toMatchObject({ const: true });
   });
 
   it("ai-jobs GET 200 response schema includes slug+agent dedup key (Y9)", async () => {

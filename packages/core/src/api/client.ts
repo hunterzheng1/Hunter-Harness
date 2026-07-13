@@ -213,6 +213,8 @@ export class HunterHarnessApiClient {
       schema_version: 1;
       manifest_sha256: string;
       base_artifact_id: string | null;
+      sensitive_scan_skip?: true;
+      sensitive_scan_skip_reason?: string;
     },
     requestId: string,
     idempotencyKey: string

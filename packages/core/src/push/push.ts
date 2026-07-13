@@ -20,6 +20,11 @@ import {
 } from "../proposal/preview.js";
 import type { ProposalBaselineEntry } from "../proposal/diff.js";
 import {
+  readLocalCredentials,
+  resolvePushAuth
+} from "./credentials.js";
+import type { SensitiveFinding } from "../security/scanner.js";
+import {
   managedBundleTargets,
   parseHarnessProfile
 } from "../project/profile-bundle.js";
@@ -30,15 +35,40 @@ import { readBaseline } from "../state/baseline.js";
 import { acquireProtocolLock } from "../state/locks.js";
 import { runTransaction } from "../transaction/transaction.js";
 
+export interface SensitiveFindingSummary {
+  path: string;
+  rule_id: string;
+  severity: string;
+  overridable: boolean;
+  fingerprint: string;
+  line: number;
+  column: number;
+}
+
+export interface PushWorkflowErrorDetails {
+  findings?: SensitiveFindingSummary[];
+  finding_count?: number;
+  scanner_version?: string;
+}
+
 export class PushWorkflowError extends Error {
   readonly exitCode: 3 | 4 | 5 | 6 | 7 | 8;
   readonly code: string;
+  readonly details?: PushWorkflowErrorDetails;
 
-  constructor(message: string, exitCode: 3 | 4 | 5 | 6 | 7 | 8, code: string) {
+  constructor(
+    message: string,
+    exitCode: 3 | 4 | 5 | 6 | 7 | 8,
+    code: string,
+    details?: PushWorkflowErrorDetails
+  ) {
     super(message);
     this.name = "PushWorkflowError";
     this.exitCode = exitCode;
     this.code = code;
+    if (details !== undefined) {
+      this.details = details;
+    }
   }
 }
 
@@ -53,6 +83,11 @@ export interface PushProjectOptions {
   confirmedProjectLocal?: readonly string[];
   fetch?: typeof globalThis.fetch;
   confirmProposal?: (preview: ReturnType<typeof generateProposalPreview>) => Promise<boolean>;
+  sensitiveScanSkip?: boolean;
+  sensitiveScanSkipReason?: string;
+  confirmSensitiveScanSkip?: (
+    preview: ReturnType<typeof generateProposalPreview>
+  ) => Promise<{ skip: boolean; reason?: string } | "cancelled">;
 }
 
 interface PushWorkflowState {
@@ -264,6 +299,75 @@ function resetSession(
   };
 }
 
+function summarizeFindings(
+  security: { findings: readonly SensitiveFinding[]; scanner_version: string }
+): PushWorkflowErrorDetails {
+  const blocked = security.findings.filter((finding) => finding.disposition === "blocked");
+  return {
+    findings: blocked.map((finding) => ({
+      path: finding.path,
+      rule_id: finding.rule_id,
+      severity: finding.severity,
+      overridable: finding.overridable,
+      fingerprint: finding.fingerprint,
+      line: finding.line,
+      column: finding.column
+    })),
+    finding_count: blocked.length,
+    scanner_version: security.scanner_version
+  };
+}
+
+function sensitiveBlockedError(
+  preview: ReturnType<typeof generateProposalPreview>
+): PushWorkflowError {
+  return new PushWorkflowError(
+    "sensitive information scan blocked the proposal",
+    6,
+    "SENSITIVE_CONTENT_BLOCKED",
+    summarizeFindings(preview.security)
+  );
+}
+
+async function resolveSensitiveScanSkip(
+  preview: ReturnType<typeof generateProposalPreview>,
+  options: PushProjectOptions
+): Promise<{ skip: boolean; reason?: string; cancelled?: boolean }> {
+  if (!preview.blocked) {
+    return { skip: false };
+  }
+  if (options.sensitiveScanSkip === true) {
+    return {
+      skip: true,
+      ...(options.sensitiveScanSkipReason === undefined
+        ? {}
+        : { reason: options.sensitiveScanSkipReason })
+    };
+  }
+  if (options.confirmSensitiveScanSkip !== undefined) {
+    const answer = await options.confirmSensitiveScanSkip(preview);
+    if (answer === "cancelled") {
+      return { skip: false, cancelled: true };
+    }
+    return answer.skip
+      ? { skip: true, ...(answer.reason === undefined ? {} : { reason: answer.reason }) }
+      : { skip: false };
+  }
+  throw sensitiveBlockedError(preview);
+}
+
+function assertPreviewAllowed(
+  preview: ReturnType<typeof generateProposalPreview>,
+  skip: boolean
+): void {
+  if (preview.blocked && !skip) {
+    throw sensitiveBlockedError(preview);
+  }
+}
+
+const CREDENTIALS_HINT =
+  "可在交互模式下录入，或写入 .harness/credentials.local.yaml（勿提交 git）";
+
 function makePreview(
   baseline: BaselineManifest,
   files: Record<string, string>,
@@ -334,13 +438,13 @@ export async function pushProject(options: PushProjectOptions) {
     options.confirmedProjectLocal ?? [],
     installedPaths
   );
-  if (preview.blocked) {
-    throw new PushWorkflowError(
-      "sensitive information scan blocked the proposal",
-      6,
-      "SENSITIVE_CONTENT_BLOCKED"
-    );
+  const initialSkip = await resolveSensitiveScanSkip(preview, options);
+  if (initialSkip.cancelled === true) {
+    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
   }
+  let sensitiveScanSkip = initialSkip.skip;
+  let sensitiveScanSkipReason = initialSkip.reason;
+  assertPreviewAllowed(preview, sensitiveScanSkip);
   if (options.dryRun) {
     return { preview, proposalId: null, projectId: project.project.project_id };
   }
@@ -348,15 +452,34 @@ export async function pushProject(options: PushProjectOptions) {
     return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
   }
 
-  const serverUrl = options.serverUrl ?? project.server.url;
-  if (serverUrl === null || serverUrl === undefined) {
-    throw new PushWorkflowError("server_url is required", 3, "SERVER_URL_REQUIRED");
+  const localCredentials = await readLocalCredentials(root);
+  const auth = resolvePushAuth({
+    ...(options.serverUrl === undefined ? {} : { serverUrlFlag: options.serverUrl }),
+    ...(options.tokenEnv === undefined ? {} : { tokenEnv: options.tokenEnv }),
+    env: options.env,
+    local: localCredentials,
+    projectUrl: project.server.url,
+    projectTokenEnv: project.server.token_env
+  });
+  if ("code" in auth) {
+    if (auth.code === "SERVER_URL_REQUIRED") {
+      throw new PushWorkflowError(
+        "server_url is required; use --server-url, project.yaml server.url, or " +
+          CREDENTIALS_HINT,
+        3,
+        "SERVER_URL_REQUIRED"
+      );
+    }
+    const tokenEnv = options.tokenEnv ?? project.server.token_env;
+    throw new PushWorkflowError(
+      "API token is unset; set " + tokenEnv + " or " + CREDENTIALS_HINT,
+      8,
+      "TOKEN_INVALID"
+    );
   }
+  const serverUrl = auth.serverUrl;
+  const token = auth.token;
   const tokenEnv = options.tokenEnv ?? project.server.token_env;
-  const token = options.env[tokenEnv];
-  if (token === undefined || token.trim() === "") {
-    throw new PushWorkflowError("API token environment variable is unset", 8, "TOKEN_INVALID");
-  }
   if (!/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv)) {
     throw new PushWorkflowError("token_env is invalid", 3, "TOKEN_ENV_INVALID");
   }
@@ -418,13 +541,15 @@ export async function pushProject(options: PushProjectOptions) {
         installedPaths,
         workflow.created_at
       );
-      if (preview.blocked) {
-        throw new PushWorkflowError(
-          "sensitive information scan blocked the proposal",
-          6,
-          "SENSITIVE_CONTENT_BLOCKED"
-        );
+      if (!sensitiveScanSkip) {
+        const reboundSkip = await resolveSensitiveScanSkip(preview, options);
+        if (reboundSkip.cancelled === true) {
+          return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
+        }
+        sensitiveScanSkip = reboundSkip.skip;
+        sensitiveScanSkipReason = reboundSkip.reason;
       }
+      assertPreviewAllowed(preview, sensitiveScanSkip);
     }
     const projectId = project.project.project_id;
     if (projectId === null) {
@@ -503,7 +628,15 @@ export async function pushProject(options: PushProjectOptions) {
       {
         schema_version: 1,
         manifest_sha256: proposalManifestHash,
-        base_artifact_id: baseline.latest_artifact_id ?? null
+        base_artifact_id: baseline.latest_artifact_id ?? null,
+        ...(sensitiveScanSkip
+          ? {
+            sensitive_scan_skip: true as const,
+            ...(sensitiveScanSkipReason === undefined
+              ? {}
+              : { sensitive_scan_skip_reason: sensitiveScanSkipReason })
+          }
+          : {})
       },
       requestId,
       workflow.finalize_idempotency_key
@@ -537,6 +670,27 @@ export async function pushProject(options: PushProjectOptions) {
           "服务端已有更新的推送，请先 git pull 后执行 npx hunter-harness update 再推",
           5,
           "STALE_PUSH"
+        );
+      }
+      if (error.code === "SENSITIVE_CONTENT_BLOCKED") {
+        const details = error.details as Record<string, unknown> | null;
+        throw new PushWorkflowError(
+          error.message,
+          6,
+          "SENSITIVE_CONTENT_BLOCKED",
+          details === null || typeof details !== "object"
+            ? undefined
+            : {
+              ...(typeof details.finding_count === "number"
+                ? { finding_count: details.finding_count }
+                : {}),
+              ...(typeof details.scanner_version === "string"
+                ? { scanner_version: details.scanner_version }
+                : {}),
+              ...(Array.isArray(details.findings)
+                ? { findings: details.findings as SensitiveFindingSummary[] }
+                : {})
+            }
         );
       }
       const exitCode = error.status === 401 ? 8 : error.status === 409 ? 5 : 4;

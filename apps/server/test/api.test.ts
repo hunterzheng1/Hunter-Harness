@@ -55,7 +55,8 @@ describe("/api/v1 governed server", () => {
   async function finalizeSession(
     sessionId: string,
     operations: object[],
-    baseArtifactId: string | null = null
+    baseArtifactId: string | null = null,
+    options: { sensitive_scan_skip?: true; sensitive_scan_skip_reason?: string } = {}
   ) {
     return app.inject({
       method: "POST",
@@ -64,7 +65,8 @@ describe("/api/v1 governed server", () => {
       payload: {
         schema_version: 1,
         manifest_sha256: sha256Bytes(canonicalJson(operations)),
-        base_artifact_id: baseArtifactId
+        base_artifact_id: baseArtifactId,
+        ...options
       }
     });
   }
@@ -450,7 +452,29 @@ describe("/api/v1 governed server", () => {
     await storage.putBlob(hash, Buffer.from(secret));
     const finalized = await finalizeSession(session.json().session_id, [operation], null);
     expect(finalized.statusCode).toBe(422);
-    expect(finalized.json().error).toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
+    expect(finalized.json().error).toMatchObject({
+      code: "SENSITIVE_CONTENT_BLOCKED",
+      details: {
+        finding_count: expect.any(Number),
+        findings: expect.arrayContaining([
+          expect.objectContaining({ rule_id: "HH_PRIVATE_KEY" })
+        ])
+      }
+    });
     expect(finalized.body).not.toContain("PRIVATE KEY");
+
+    const skipped = await finalizeSession(
+      session.json().session_id,
+      [operation],
+      null,
+      { sensitive_scan_skip: true, sensitive_scan_skip_reason: "test fixture" }
+    );
+    expect(skipped.statusCode).toBe(201);
+    expect(skipped.json()).toMatchObject({ status: "approved" });
+    const audits = await repository.listAuditEvents({ actorId: "actor_owner", limit: 20 });
+    expect(audits.some((item) =>
+      item.action === "proposal.finalized" &&
+      (item.details as { sensitive_scan_skip?: boolean }).sensitive_scan_skip === true
+    )).toBe(true);
   });
 });

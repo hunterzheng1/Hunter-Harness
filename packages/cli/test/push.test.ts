@@ -254,6 +254,227 @@ describe("hunter-harness push", () => {
     expect(code).toBe(6);
     expect(fetch).not.toHaveBeenCalled();
     expect(stdout.join("")).not.toContain("unsafe-secret-token");
+    const payload = JSON.parse(stdout.join("")) as {
+      errors: Array<{ code: string; details?: { findings?: unknown[] } }>;
+    };
+    expect(payload.errors[0]).toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
+    expect(payload.errors[0]?.details?.findings?.length).toBeGreaterThan(0);
+  });
+
+  it("passes sensitive_scan_skip to finalize when --skip-sensitive-scan --yes", async () => {
+    await writeFile(
+      join(root, ".claude", "rules", "unsafe.md"),
+      "Authorization: Bearer unsafe-secret-token-1234567890\n"
+    );
+    let finalizeBody: Record<string, unknown> | null = null;
+    const fetch = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/v1/projects:resolve")) {
+        return json({
+          schema_version: 1,
+          project_id: "prj_skip",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {
+            schema_version: 1,
+            project_id: "prj_skip",
+            complete_project_version: null,
+            artifact_manifest_hash: null,
+            files: {}
+          },
+          request_id: "req"
+        });
+      }
+      if (url.endsWith("/proposal-sessions")) {
+        const body = JSON.parse(String(init?.body)) as {
+          proposal_manifest: { files: Array<{ content_sha256?: string }> };
+        };
+        const hash = body.proposal_manifest.files.find(
+          (item) => item.content_sha256 !== undefined
+        )?.content_sha256 ?? "";
+        return json({
+          session_id: "ups_skip",
+          expires_at: "2099-06-21T00:00:00Z",
+          missing_blobs: [hash],
+          max_chunk_bytes: 1024 * 1024,
+          request_id: "req"
+        }, 201);
+      }
+      if (url.endsWith("/blobs:query")) {
+        const body = JSON.parse(String(init?.body)) as { content_sha256: string[] };
+        return json({ present: [], missing: body.content_sha256, request_id: "req" });
+      }
+      if (init?.method === "PUT" && url.includes("/blobs/")) {
+        return json({ verified: true }, 201);
+      }
+      if (url.endsWith("ups_skip:finalize")) {
+        finalizeBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({
+          proposal_id: "prp_skip",
+          status: "approved",
+          artifact_id: "art_skip",
+          received_files: 1,
+          request_id: "req"
+        }, 201);
+      }
+      throw new Error("unexpected request " + url);
+    });
+
+    const code = await runCli([
+      "push", "--non-interactive", "--yes", "--skip-sensitive-scan", "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+    expect(code).toBe(0);
+    expect(finalizeBody).toMatchObject({ sensitive_scan_skip: true });
+  });
+
+  it("INT-002: interactively confirms sensitive scan skip and sends reason to finalize", async () => {
+    await writeFile(
+      join(root, ".claude", "rules", "unsafe.md"),
+      "Authorization: Bearer unsafe-secret-token-1234567890\n"
+    );
+    let finalizeBody: Record<string, unknown> | null = null;
+    const fetch = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/v1/projects:resolve")) {
+        return json({
+          schema_version: 1,
+          project_id: "prj_int2",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {
+            schema_version: 1,
+            project_id: "prj_int2",
+            complete_project_version: null,
+            artifact_manifest_hash: null,
+            files: {}
+          },
+          request_id: "req"
+        });
+      }
+      if (url.endsWith("/proposal-sessions")) {
+        const body = JSON.parse(String(init?.body)) as {
+          proposal_manifest: { files: Array<{ content_sha256?: string }> };
+        };
+        const hash = body.proposal_manifest.files.find(
+          (item) => item.content_sha256 !== undefined
+        )?.content_sha256 ?? "";
+        return json({
+          session_id: "ups_int2",
+          expires_at: "2099-06-21T00:00:00Z",
+          missing_blobs: [hash],
+          max_chunk_bytes: 1024 * 1024,
+          request_id: "req"
+        }, 201);
+      }
+      if (url.endsWith("/blobs:query")) {
+        const body = JSON.parse(String(init?.body)) as { content_sha256: string[] };
+        return json({ present: [], missing: body.content_sha256, request_id: "req" });
+      }
+      if (init?.method === "PUT" && url.includes("/blobs/")) {
+        return json({ verified: true }, 201);
+      }
+      if (url.endsWith("ups_int2:finalize")) {
+        finalizeBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return json({
+          proposal_id: "prp_int2",
+          status: "approved",
+          artifact_id: "art_int2",
+          received_files: 1,
+          request_id: "req"
+        }, 201);
+      }
+      throw new Error("unexpected request " + url);
+    });
+
+    const prompts: string[] = [];
+    const code = await runCli(["push", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        prompts.push(question);
+        if (question.includes("Create this proposal")) return "y\n";
+        if (question.includes("是否显式跳过")) return "y\n";
+        if (question.includes("跳过原因")) return "interactive-fixture\n";
+        return "\n";
+      }
+    });
+    expect(code).toBe(0);
+    expect(prompts.some((item) => item.includes("是否显式跳过"))).toBe(true);
+    expect(finalizeBody).toMatchObject({
+      sensitive_scan_skip: true,
+      sensitive_scan_skip_reason: "interactive-fixture"
+    });
+  });
+
+  it("INT-003: merges interactive token entry with existing credentials.local server_url", async () => {
+    await writeFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://stored.example.test\n"
+    );
+    let sawAuth = false;
+    const fetch = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/v1/projects:resolve")) {
+        const headers = new Headers(init?.headers);
+        if (headers.get("authorization") === "Bearer merged-token") {
+          sawAuth = true;
+        }
+        return json({
+          schema_version: 1,
+          project_id: "prj_int3",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {
+            schema_version: 1,
+            project_id: "prj_int3",
+            complete_project_version: null,
+            artifact_manifest_hash: null,
+            files: {}
+          },
+          request_id: "req"
+        });
+      }
+      throw new Error("unexpected request " + url);
+    });
+
+    const code = await runCli(["push", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        if (question.includes("API Token")) return "merged-token\n";
+        return "y\n";
+      }
+    });
+    expect(code).not.toBe(8);
+    expect(await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8"))
+      .toMatch(/stored\.example\.test[\s\S]*merged-token/);
+    expect(sawAuth).toBe(true);
+    expect(await readFile(join(root, ".gitignore"), "utf8"))
+      .toContain(".harness/credentials.local.yaml");
   });
 
   it("resumes a persisted upload session after interruption", async () => {

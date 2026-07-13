@@ -19,6 +19,7 @@ export * from "./project/refresh.js";
 export * from "./project/uuid-v7.js";
 export * from "./proposal/diff.js";
 export * from "./proposal/preview.js";
+export * from "./push/credentials.js";
 export * from "./push/push.js";
 export * from "./security/allowlist.js";
 export * from "./security/entropy.js";

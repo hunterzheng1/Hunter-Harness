@@ -112,11 +112,19 @@ paths:
       parameters:
         - $ref: "#/components/parameters/SessionId"
         - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinalizeProposalRequest"
       responses:
         "201":
           description: Proposal auto-approved and artifact published
         "409":
           description: Server already has a newer artifact for this project; re-sync base_artifact_id before finalizing again (STALE_PUSH)
+        "422":
+          description: Sensitive content scan blocked the proposal (SENSITIVE_CONTENT_BLOCKED); error.details may include finding_count, scanner_version, and findings summary
         default:
           $ref: "#/components/responses/Error"
   /api/v1/projects/{project_id}/proposals:
@@ -893,6 +901,51 @@ components:
         revision:
           type: integer
           minimum: 1
+    FinalizeProposalRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - manifest_sha256
+        - base_artifact_id
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+        manifest_sha256:
+          type: string
+          pattern: "^sha256:[a-f0-9]{64}$"
+        base_artifact_id:
+          type:
+            - string
+            - "null"
+          pattern: "^art_"
+        sensitive_scan_skip:
+          type: boolean
+          const: true
+          description: Explicit opt-in to finalize despite blocked sensitive scan findings (project push only)
+        sensitive_scan_skip_reason:
+          type: string
+          maxLength: 500
+          description: Optional audit reason; requires sensitive_scan_skip=true
+    SensitiveFindingSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+        rule_id:
+          type: string
+        severity:
+          type: string
+        overridable:
+          type: boolean
+        fingerprint:
+          type: string
+        line:
+          type: integer
+        column:
+          type: integer
   responses:
     Error:
       description: Standard error envelope

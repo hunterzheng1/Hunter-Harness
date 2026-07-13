@@ -701,12 +701,27 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         }
       }
       const scan = scanSensitiveFiles(files, { overrides: session.scanOverrides });
-      if (scan.blocked) {
+      const blockedFindings = scan.findings.filter(
+        (finding) => finding.disposition === "blocked"
+      );
+      if (scan.blocked && body.sensitive_scan_skip !== true) {
         throw new ServerDomainError(
           422,
           "SENSITIVE_CONTENT_BLOCKED",
           "sensitive content scan blocked the proposal",
-          { finding_count: scan.findings.length, scanner_version: scan.scanner_version }
+          {
+            finding_count: blockedFindings.length,
+            scanner_version: scan.scanner_version,
+            findings: blockedFindings.map((finding) => ({
+              path: finding.path,
+              rule_id: finding.rule_id,
+              severity: finding.severity,
+              overridable: finding.overridable,
+              fingerprint: finding.fingerprint,
+              line: finding.line,
+              column: finding.column
+            }))
+          }
         );
       }
       const { proposal, review } = await repository.finalizeSessionAutoApprove(session);
@@ -717,7 +732,19 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         action: "proposal.finalized",
         targetId: proposal.proposalId,
         requestId,
-        details: { item_count: proposal.items.length, artifact_id: review.artifactId }
+        details: {
+          item_count: proposal.items.length,
+          artifact_id: review.artifactId,
+          ...(body.sensitive_scan_skip === true
+            ? {
+              sensitive_scan_skip: true,
+              sensitive_scan_skip_reason: body.sensitive_scan_skip_reason ?? null,
+              finding_count: scan.findings.length,
+              blocked_finding_count: blockedFindings.length,
+              scanner_version: scan.scanner_version
+            }
+            : {})
+        }
       });
       if (review.artifactId !== null) {
         await semanticStore.rebuild(buildSemanticIndex({

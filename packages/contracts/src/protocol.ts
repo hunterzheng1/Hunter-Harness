@@ -92,8 +92,19 @@ export const baselineManifestSchema = z.object({
 export const finalizeProposalSchema = z.object({
   schema_version: z.literal(1),
   manifest_sha256: sha256Schema,
-  base_artifact_id: z.string().regex(/^art_/).nullable()
-}).strict();
+  base_artifact_id: z.string().regex(/^art_/).nullable(),
+  sensitive_scan_skip: z.literal(true).optional(),
+  sensitive_scan_skip_reason: z.string().max(500).optional()
+}).strict().superRefine((value, ctx) => {
+  if (value.sensitive_scan_skip_reason !== undefined &&
+      value.sensitive_scan_skip !== true) {
+    ctx.addIssue({
+      code: "custom",
+      message: "sensitive_scan_skip_reason requires sensitive_scan_skip",
+      path: ["sensitive_scan_skip_reason"]
+    });
+  }
+});
 
 export const requestMetadataSchema = z.object({
   request_id: z.uuid(),

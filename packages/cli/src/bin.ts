@@ -125,6 +125,7 @@ export async function runCli(
     });
   addCommonOptions(program.command("push"))
     .description("创建受治理的变更提案")
+    .option("--skip-sensitive-scan", "显式跳过敏感扫描阻断（非交互需配合 --yes）")
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
     });
