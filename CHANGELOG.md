@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1] — @hunter-harness/workflow-harness
+
+### Changed
+
+- harness-knowledge-ingest：`auto` 默认写回 validator；首建 config 启用 autoDemote / autoDemoteActive / judge 上限；SKILL 要求 Agent judge 闭环。
+- harness-sync：标明知识闭环主入口为 `/harness-knowledge-ingest auto`。
+
 ## [0.2.4]
 
 ### Fixed

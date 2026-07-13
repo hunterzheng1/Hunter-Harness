@@ -2,7 +2,7 @@
   "schema_version": 2,
   "profile": "general",
   "adapter": "codex",
-  "bundle_version": "0.2.0",
+  "bundle_version": "0.2.1",
   "generator": "harness_deploy.py",
   "files": [
     {
