@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,6 +25,8 @@ export interface ResolveWorkflowDataOptions {
   workflowVersion?: string | undefined;
   /** 测试注入：覆盖 pacote.extract */
   pacoteExtract?: (spec: string, destination: string) => Promise<void>;
+  /** 测试注入：覆盖 pacote.manifest（用于 latest 缓存失效判断） */
+  pacoteManifest?: (spec: string) => Promise<{ version: string }>;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -125,6 +127,63 @@ async function siblingWorkflowPackage(cwd: string): Promise<string | null> {
   return null;
 }
 
+export async function readCachedNpmPackageVersion(cacheRoot: string): Promise<string | null> {
+  const manifestPath = join(cacheRoot, "package.json");
+  if (!(await pathExists(manifestPath))) return null;
+  try {
+    const pkg = JSON.parse(await readFile(manifestPath, "utf8")) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** latest 标签：对比 npm 与本地缓存版本，判断是否需要重新拉取。查询失败时保留缓存（离线友好）。 */
+export async function latestWorkflowCacheIsStale(
+  cacheRoot: string,
+  packageName: string,
+  resolveManifest?: (spec: string) => Promise<{ version: string }>
+): Promise<boolean> {
+  const cachedVersion = await readCachedNpmPackageVersion(cacheRoot);
+  if (cachedVersion === null) return true;
+
+  try {
+    const manifest = resolveManifest ?? (async (spec: string) => {
+      const pacote = await import("pacote");
+      const result = await pacote.default.manifest(spec);
+      return { version: String(result.version) };
+    });
+    const remote = await manifest(packageName);
+    return remote.version !== cachedVersion;
+  } catch {
+    return false;
+  }
+}
+
+async function materializeWorkflowPackageCache(
+  cacheRoot: string,
+  packageSpec: string,
+  extract: (spec: string, destination: string) => Promise<void>
+): Promise<void> {
+  await mkdir(cacheRoot, { recursive: true });
+  const staging = join(cacheRoot, ".extract");
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true });
+  await extract(packageSpec, staging);
+  const packageDir = (await pathExists(join(staging, "harness", "manifests")))
+    ? staging
+    : join(staging, "package");
+  if (!(await pathExists(join(packageDir, "harness", "manifests")))) {
+    throw new WorkflowDataResolutionError(
+      "工作流数据包内容无效：缺少 harness/manifests",
+      "WORKFLOW_DATA_INVALID",
+      7
+    );
+  }
+  await cp(packageDir, cacheRoot, { recursive: true });
+  await verifyWorkflowPackageIntegrity(cacheRoot);
+}
+
 export async function resolveWorkflowResourcesRoot(
   options: ResolveWorkflowDataOptions,
   argv: readonly string[] = []
@@ -159,32 +218,26 @@ export async function resolveWorkflowResourcesRoot(
   const cacheKey = packageSpec.replace("/", "+");
   const cacheRoot = join(options.cwd, ".harness", "cache", "workflow-packages", cacheKey);
   if (await pathExists(join(cacheRoot, "harness", "manifests"))) {
-    await verifyWorkflowPackageIntegrity(cacheRoot);
-    return cacheRoot;
+    if (version === "latest") {
+      const stale = await latestWorkflowCacheIsStale(cacheRoot, packageName, options.pacoteManifest);
+      if (stale) {
+        await rm(cacheRoot, { recursive: true, force: true });
+      } else {
+        await verifyWorkflowPackageIntegrity(cacheRoot);
+        return cacheRoot;
+      }
+    } else {
+      await verifyWorkflowPackageIntegrity(cacheRoot);
+      return cacheRoot;
+    }
   }
 
   try {
-    await mkdir(cacheRoot, { recursive: true });
     const extract = options.pacoteExtract ?? (async (spec: string, destination: string) => {
       const pacote = await import("pacote");
       await pacote.default.extract(spec, destination);
     });
-    const staging = join(cacheRoot, ".extract");
-    await mkdir(staging, { recursive: true });
-    await extract(packageSpec, staging);
-    // pacote 解压到 destination，内容在根或 package/ 下
-    const packageDir = (await pathExists(join(staging, "harness", "manifests")))
-      ? staging
-      : join(staging, "package");
-    if (!(await pathExists(join(packageDir, "harness", "manifests")))) {
-      throw new WorkflowDataResolutionError(
-        "工作流数据包内容无效：缺少 harness/manifests",
-        "WORKFLOW_DATA_INVALID",
-        7
-      );
-    }
-    await cp(packageDir, cacheRoot, { recursive: true });
-    await verifyWorkflowPackageIntegrity(cacheRoot);
+    await materializeWorkflowPackageCache(cacheRoot, packageSpec, extract);
     return cacheRoot;
   } catch (error) {
     if (error instanceof WorkflowDataResolutionError) throw error;

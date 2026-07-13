@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.5]
+
+### Fixed
+
+- `latest` 工作流数据包：解析前对比 npm 与 `.harness/cache/workflow-packages/` 缓存版本，npm 有新版时自动失效并重拉，避免 refresh 显示「0 文件更新」却仍是旧 bundle。
+
 ## [0.2.1] — @hunter-harness/workflow-harness
 
 ### Changed

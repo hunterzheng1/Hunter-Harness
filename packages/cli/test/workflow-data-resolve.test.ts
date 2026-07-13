@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   describeWorkflowDataFetchFailure,
+  latestWorkflowCacheIsStale,
+  readCachedNpmPackageVersion,
   resolveWorkflowResourcesRoot,
   workflowPackageName
 } from "../src/workflow-data/resolve.js";
@@ -80,5 +82,54 @@ describe("workflow data resolution", () => {
     );
     expect(notFound).toContain("找不到该包");
     expect(notFound).not.toContain("无网络且本地缓存不存在");
+  });
+
+  it("readCachedNpmPackageVersion reads package.json version from cache root", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "workflow-data-resolve-"));
+    const cacheRoot = join(tempDir, "cache");
+    await mkdir(join(cacheRoot, "harness", "manifests"), { recursive: true });
+    await writeFile(join(cacheRoot, "package.json"), JSON.stringify({ version: "0.2.0" }) + "\n", "utf8");
+    expect(await readCachedNpmPackageVersion(cacheRoot)).toBe("0.2.0");
+  });
+
+  it("latestWorkflowCacheIsStale returns true when npm latest version differs from cache", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "workflow-data-resolve-"));
+    const cacheRoot = join(tempDir, "cache");
+    await mkdir(join(cacheRoot, "harness", "manifests"), { recursive: true });
+    await writeFile(join(cacheRoot, "package.json"), JSON.stringify({ version: "0.2.0" }) + "\n", "utf8");
+    const stale = await latestWorkflowCacheIsStale(
+      cacheRoot,
+      "@hunter-harness/workflow-harness",
+      async () => ({ version: "0.2.1" })
+    );
+    expect(stale).toBe(true);
+  });
+
+  it("latestWorkflowCacheIsStale returns false when versions match", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "workflow-data-resolve-"));
+    const cacheRoot = join(tempDir, "cache");
+    await mkdir(join(cacheRoot, "harness", "manifests"), { recursive: true });
+    await writeFile(join(cacheRoot, "package.json"), JSON.stringify({ version: "0.2.1" }) + "\n", "utf8");
+    const stale = await latestWorkflowCacheIsStale(
+      cacheRoot,
+      "@hunter-harness/workflow-harness",
+      async () => ({ version: "0.2.1" })
+    );
+    expect(stale).toBe(false);
+  });
+
+  it("latestWorkflowCacheIsStale keeps cache when npm manifest lookup fails", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "workflow-data-resolve-"));
+    const cacheRoot = join(tempDir, "cache");
+    await mkdir(join(cacheRoot, "harness", "manifests"), { recursive: true });
+    await writeFile(join(cacheRoot, "package.json"), JSON.stringify({ version: "0.2.0" }) + "\n", "utf8");
+    const stale = await latestWorkflowCacheIsStale(
+      cacheRoot,
+      "@hunter-harness/workflow-harness",
+      async () => {
+        throw new Error("offline");
+      }
+    );
+    expect(stale).toBe(false);
   });
 });
