@@ -99,3 +99,26 @@
 | `knownGoodTestProfile` | 文档/报告引用，非 skill 硬编码 |
 
 测试数据前缀示例：`JAVATEST_<change-name>_`（项目可在 `identifier.prefix` 配置）。
+
+## 凭据配置（spec §3.4 凭据边界）
+
+profile **只声明 env key、cache path、角色，不含凭据值**。测试运行时由 `harness-test/scripts/runtime-helpers.mjs` 的 `readJsonUtf8BomSafe` 读 credential-cache.json，token/SSO 值只存在于运行期 cache，不写入 profile / 规则 / 报告：
+
+```json
+{
+  "credential": {
+    "mode": "token-cache",
+    "envKey": "TEST_TOKEN",
+    "cachePath": ".harness/changes/<change-name>/runtime/credential-cache.json",
+    "role": "admin"
+  }
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `credential.envKey` | 取 token 的环境变量名（值不入 profile） |
+| `credential.cachePath` | 运行期 credential cache 路径（gitignored，含值但不上传） |
+| `credential.role` | 角色（非凭据值） |
+
+发布前用 `findCredentialValues` 扫 profile/规则/Markdown，命中明文 `password`/`token`/`secret`/`Authorization: Bearer` 值即 ❌FAIL；占位符 `<*_REDACTED>` 与 env 引用 `${ENV}`/`$ENV` 不报。
