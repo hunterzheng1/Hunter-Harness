@@ -95,10 +95,13 @@ temp/
 .agents/
 .codex/
 .claude/
+.codebuddy/
+.cursor/
 .codegraph/
 .harness/
 AGENTS.md
 CLAUDE.md
+CODEBUDDY.md
 
 # ===== 需求/设计文档（默认忽略；白名单纳入版本库的规格与 BACKLOG）=====
 requirements/
