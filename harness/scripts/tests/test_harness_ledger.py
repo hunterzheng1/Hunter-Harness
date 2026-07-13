@@ -95,6 +95,8 @@ class CanReuseTests(unittest.TestCase):
                             "evidence": "BUILD SUCCESS",
                             "inputsHash": inputs_hash,
                             "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "module",
                             "durationMs": 1200,
                             "exitCode": 0,
                         }
@@ -133,6 +135,8 @@ class CanReuseTests(unittest.TestCase):
                             "evidence": "Tests run: 1, Failures: 0",
                             "inputsHash": inputs_hash,
                             "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "incremental",
                         }
                     },
                 },
@@ -210,6 +214,8 @@ class CanReuseTests(unittest.TestCase):
                             "evidence": "BUILD SUCCESS",
                             "inputsHash": inputs_hash,
                             "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "module-am",
                         }
                     },
                 },
@@ -311,6 +317,8 @@ class CanReuseTests(unittest.TestCase):
                             "evidence": "Tests run: 5, Failures: 0",
                             "inputsHash": inputs_hash,
                             "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "module",
                         }
                     },
                 },
@@ -601,6 +609,530 @@ class CliSmokeTests(unittest.TestCase):
             payload = json.loads(buf.getvalue())
             self.assertFalse(payload["reuse"])
             self.assertEqual(payload["reason"], "insufficient-evidence")
+
+
+def _init_repo(root: Path, files: dict, *, commit: bool = True) -> str:
+    """Init a git repo, write files, optionally commit as base. Returns base commit."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=root, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=root, check=True)
+    for name, content in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+    if commit and files:
+        subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=root, check=True)
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+
+
+def _head(root: Path) -> str:
+    import subprocess
+
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+    ).strip()
+
+
+class DiffHashTests(unittest.TestCase):
+    """Cluster 2: byte-level, commit-invariant diff-hash (UT-010..013, API-003)."""
+
+    def test_diff_hash_has_algorithm_version_on_dirty_tree(self) -> None:  # UT-010
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {"a.txt": "hello\n"})
+            (root / "a.txt").write_text("hello world\n", encoding="utf-8")  # dirty tracked
+            h, meta = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertTrue(h.startswith("sha256:"))
+            self.assertIn("algorithmVersion", meta)
+            self.assertTrue(str(meta["algorithmVersion"]).strip())
+            self.assertGreater(meta["fileCount"], 0)
+            self.assertEqual(meta["base"], base)
+
+    def test_diff_hash_stable_across_checkpoint_commit(self) -> None:  # UT-011
+        # Same content, first uncommitted then committed -> hash identical.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {"tracked.txt": "v1\n"})
+            (root / "tracked.txt").write_text("v2\n", encoding="utf-8")  # tracked mod
+            (root / "new.txt").write_bytes(b"new file content\n")  # untracked add
+            h1, m1 = harness_ledger.compute_diff_hash(root, base=base)
+
+            import subprocess
+
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "checkpoint"], cwd=root, check=True)
+            h2, m2 = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertEqual(h1, h2)  # commit-invariant
+            self.assertEqual(m1["fileCount"], m2["fileCount"])
+
+    def test_diff_hash_chinese_path_crlf_encoding_independent(self) -> None:  # UT-012
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {"a.txt": "x\n"})
+            chinese = "中文目录/文件.txt"
+            (root / chinese).parent.mkdir(parents=True, exist_ok=True)
+            (root / chinese).write_bytes("内容\r\nCRLF".encode("utf-8"))
+            (root / "a.txt").write_text("xx\n", encoding="utf-8")
+            h1, _ = harness_ledger.compute_diff_hash(root, base=base)
+            h2, _ = harness_ledger.compute_diff_hash(root, base=base)  # deterministic
+            self.assertEqual(h1, h2)
+            # CRLF -> LF changes content bytes -> hash changes
+            (root / chinese).write_bytes("内容\nCRLF".encode("utf-8"))
+            h3, _ = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertNotEqual(h1, h3)
+
+    def test_diff_hash_untracked_binary_sorted_no_collision(self) -> None:  # UT-013
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {"base.txt": "b\n"})
+            (root / "u1.txt").write_bytes(b"alpha")
+            (root / "u2.bin").write_bytes(b"\x00\x01\x02\xff binary")
+            h, meta = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertTrue(h.startswith("sha256:"))
+            # Stable (discovery order independent via sort)
+            h_again, _ = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertEqual(h, h_again)
+            # No collision: different binary content -> different hash
+            (root / "u2.bin").write_bytes(b"\x00\x01\x02\xfe different")
+            h2, _ = harness_ledger.compute_diff_hash(root, base=base)
+            self.assertNotEqual(h, h2)
+
+    def test_diff_hash_cli_json(self) -> None:  # API-003
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {"a.txt": "hi\n"})
+            (root / "a.txt").write_text("hi there\n", encoding="utf-8")
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    ["--json", "diff-hash", "--repo", str(root), "--base", base]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["diffHash"].startswith("sha256:"))
+            self.assertIn("algorithmVersion", payload)
+            self.assertGreater(payload["fileCount"], 0)
+
+
+class LedgerV2Tests(unittest.TestCase):
+    """Cluster 2: v2 schema, coverage lattice, package, structured codes (UT-014..018, COM-002, API-004/005)."""
+
+    def _write_ledger(self, change_dir: Path, data: dict) -> Path:
+        path = change_dir / "evidence" / "verification-ledger.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return path
+
+    def _v2_entry(self, inputs_hash: str, inputs_files: list[str], **over) -> dict:
+        entry = {
+            "status": "OK",
+            "command": "mvn test -pl m -o",
+            "evidence": "Tests run: 5, Failures: 0",
+            "inputsHash": inputs_hash,
+            "inputsFiles": inputs_files,
+            "algorithmVersion": "harness-ledger-2",
+            "coverage": "module",
+        }
+        entry.update(over)
+        return entry
+
+    def test_v1_entry_without_v2_fields_is_insufficient_evidence(self) -> None:  # UT-014
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            # v1 entry: no algorithmVersion, no coverage
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "unitTest": {
+                            "status": "OK",
+                            "command": "mvn test -Dtest=FooTest",
+                            "scope": "FooTest",
+                            "evidence": "Tests run: 1, Failures: 0",
+                            "inputsHash": ih,
+                            "inputsFiles": ifiles,
+                        }
+                    },
+                },
+            )
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTest",
+                files=[str(src)],
+                requested_scope="FooTest",
+            )
+            self.assertFalse(r["reuse"])
+            self.assertEqual(r["reason"], "insufficient-evidence")
+            self.assertEqual(r.get("code"), "MISSING_V2_FIELDS")
+
+    def test_record_unit_test_does_not_create_unit_test_full(self) -> None:  # UT-015
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTest",
+                        "--status",
+                        "ok",
+                        "--command",
+                        "mvn test -Dtest=FooTest",
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "100",
+                        "--files",
+                        str(src),
+                        "--evidence",
+                        "Tests run: 1, Failures: 0",
+                        "--scope",
+                        "FooTest",
+                    ]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            data = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("unitTest", data["validations"])
+            self.assertNotIn("unitTestFull", data["validations"])  # no silent promotion
+            self.assertEqual(data["validations"]["unitTest"]["coverage"], "incremental")
+            self.assertEqual(
+                data["validations"]["unitTest"]["algorithmVersion"],
+                harness_ledger.LEDGER_VERSION,
+            )
+
+    def test_record_unit_test_full_reusable_for_submit(self) -> None:  # UT-016 / API-004
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--status",
+                        "ok",
+                        "--command",
+                        "mvn test -pl m -o",
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "1000",
+                        "--files",
+                        str(src),
+                        "--evidence",
+                        "Tests run: 5, Failures: 0",
+                        "--scope",
+                        "module",
+                    ]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            # submit reuses unitTestFull without a second full test
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_command="mvn test -pl m -o",
+            )
+            self.assertTrue(r["reuse"], msg=r)
+            self.assertEqual(r["reason"], "reuse")
+
+    def test_incremental_unit_test_cannot_be_reused_as_full(self) -> None:  # API-005
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            # unitTest entry (incremental) recorded with v2 fields
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "unitTest": self._v2_entry(
+                            ih, ifiles,
+                            command="mvn test -Dtest=FooTest",
+                            scope="FooTest",
+                            coverage="incremental",
+                            evidence="Tests run: 1, Failures: 0",
+                        )
+                    },
+                },
+            )
+            # submit asks for unitTestFull -> must NOT reuse incremental evidence
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_scope="module",
+            )
+            self.assertFalse(r["reuse"])
+            self.assertEqual(r["reason"], "insufficient-evidence")
+
+    def test_command_change_returns_rerun(self) -> None:  # UT-017 command
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "unitTestFull": self._v2_entry(
+                            ih, ifiles, command="mvn test -pl m -o", scope="module"
+                        ),
+                    },
+                },
+            )
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_command="mvn test -pl m -o -DfailIfNoTests=false",
+            )
+            self.assertFalse(r["reuse"])
+            self.assertEqual(r["reason"], "rerun")
+            self.assertEqual(r.get("code"), "COMMAND_CHANGED")
+
+    def test_toolchain_change_returns_rerun(self) -> None:  # UT-017 toolchain
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "compile": self._v2_entry(
+                            ih, ifiles, command="mvn compile -pl m -o", toolchainHash="sha256:tc-v1"
+                        )
+                    },
+                },
+            )
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="compile",
+                files=[str(src)],
+                requested_toolchain_hash="sha256:tc-v2",
+            )
+            self.assertFalse(r["reuse"])
+            self.assertEqual(r["reason"], "rerun")
+            self.assertEqual(r.get("code"), "TOOLCHAIN_CHANGED")
+
+    def test_profile_change_returns_rerun(self) -> None:  # UT-017 profile
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "unitTest": self._v2_entry(
+                            ih,
+                            ifiles,
+                            command="mvn test -Dtest=FooTest",
+                            scope="FooTest",
+                            coverage="incremental",
+                            profileHash="sha256:prof-a",
+                        )
+                    },
+                },
+            )
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTest",
+                files=[str(src)],
+                requested_scope="FooTest",
+                requested_profile_hash="sha256:prof-b",
+            )
+            self.assertFalse(r["reuse"])
+            self.assertEqual(r["reason"], "rerun")
+            self.assertEqual(r.get("code"), "PROFILE_CHANGED")
+
+    def test_package_record_and_reuse(self) -> None:  # UT-018
+        self.assertIn("package", harness_ledger.VERIFICATIONS)
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "package",
+                        "--status",
+                        "ok",
+                        "--command",
+                        "mvn package -pl m -am -DskipTests",
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "30000",
+                        "--files",
+                        str(src),
+                        "--evidence",
+                        "BUILD SUCCESS (skip-tests)",
+                        "--scope",
+                        "module-am",
+                        "--deploy-artifact",
+                        "m/target/m.jar",
+                        "--artifact-hash",
+                        "sha256:art-1",
+                        "--tests-executed",
+                        "false",
+                    ]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            data = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(encoding="utf-8")
+            )
+            pkg = data["validations"]["package"]
+            self.assertEqual(pkg["status"], "OK")
+            self.assertEqual(pkg["deployArtifact"], "m/target/m.jar")
+            self.assertEqual(pkg["sha256"], "sha256:art-1")
+            self.assertEqual(pkg["testsExecuted"], False)
+            self.assertEqual(pkg["coverage"], "module-am")
+
+            r = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="package",
+                files=[str(src)],
+                requested_command="mvn package -pl m -am -DskipTests",
+            )
+            self.assertTrue(r["reuse"], msg=r)
+            self.assertEqual(r["reason"], "reuse")
+
+    def test_v1_to_v2_one_time_conservative_invalidation(self) -> None:  # COM-002
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "c"
+            change.mkdir()
+            src = change / "F.java"
+            src.write_text("class F {}", encoding="utf-8")
+            ih, ifiles = harness_ledger.compute_inputs_hash([str(src)])
+            # v1 entry -> insufficient (one-time invalidation)
+            self._write_ledger(
+                change,
+                {
+                    "changeName": "c",
+                    "validations": {
+                        "unitTestFull": {
+                            "status": "OK",
+                            "command": "mvn test -pl m -o",
+                            "scope": "module",
+                            "evidence": "Tests run: 5, Failures: 0",
+                            "inputsHash": ih,
+                            "inputsFiles": ifiles,
+                        }
+                    },
+                },
+            )
+            r1 = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_command="mvn test -pl m -o",
+            )
+            self.assertFalse(r1["reuse"])
+            self.assertEqual(r1["reason"], "insufficient-evidence")
+            # re-record with v2 fields -> subsequent reuse works
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--status",
+                        "ok",
+                        "--command",
+                        "mvn test -pl m -o",
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "1000",
+                        "--files",
+                        str(src),
+                        "--evidence",
+                        "Tests run: 5, Failures: 0",
+                        "--scope",
+                        "module",
+                    ]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            r2 = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_command="mvn test -pl m -o",
+            )
+            self.assertTrue(r2["reuse"], msg=r2)
+            self.assertEqual(r2["reason"], "reuse")
 
 
 if __name__ == "__main__":
