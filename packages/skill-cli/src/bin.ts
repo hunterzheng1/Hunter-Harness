@@ -601,7 +601,7 @@ export async function runSkillCli(
 
 const entry = process.argv[1];
 if (entry !== undefined) {
-  let isEntrypoint = false;
+  let isEntrypoint: boolean;
   try {
     isEntrypoint = import.meta.url === pathToFileURL(realpathSync(entry)).href;
   } catch {
