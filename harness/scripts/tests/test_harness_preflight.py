@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Unittests for harness_preflight.py (P0-4)."""
+"""Unittests for harness_preflight.py.
+
+变更簇 4：preflight detect/check 委托 harness_profile (v2)，record-quirk 适配 v2
+commands。测试断言 v2 schema (commands 而非 buildCommands)、delegation (status
+字段)、source=user override 跨 detect 保留。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_preflight as hp  # noqa: E402
+import harness_profile as hprof  # noqa: E402
 
 
 def _write(path: Path, text: str) -> None:
@@ -25,10 +31,12 @@ def _write(path: Path, text: str) -> None:
 
 
 def _read_json(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-class DetectIdempotentTests(unittest.TestCase):
+class DetectDelegationTests(unittest.TestCase):
+    """簇 4：cmd_detect 委托 harness_profile.detect，产出 v2 profile。"""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="preflight-detect-"))
         _write(self.tmp / "pom.xml", "<project><modelVersion>4.0.0</modelVersion></project>\n")
@@ -36,27 +44,38 @@ class DetectIdempotentTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_detect_writes_profile_and_is_idempotent(self) -> None:
+    def test_detect_produces_v2_profile_delegated_to_harness_profile(self) -> None:
         r1 = hp.cmd_detect(self.tmp)
         self.assertTrue(r1["ok"])
+        self.assertEqual(r1["action"], "detect")
         profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
         self.assertTrue(profile_path.is_file())
         p1 = _read_json(profile_path)
-        self.assertEqual(p1["schemaVersion"], 1)
+        # v2 schema
+        self.assertEqual(p1["schemaVersion"], hprof.SCHEMA_VERSION)
+        self.assertEqual(p1["schemaVersion"], 2)
         self.assertIn("toolPaths", p1)
         self.assertIn("fingerprint", p1)
-        self.assertIn("pomHash", p1["fingerprint"])
         self.assertTrue(p1["fingerprint"]["pomHash"])
-        self.assertIn("buildCommands", p1)
-        # Java placeholders when pom present
-        self.assertIn("mvn", p1["buildCommands"]["compile"])
+        # v2: commands 而非 buildCommands
+        self.assertIn("commands", p1)
+        self.assertNotIn("buildCommands", p1)
+        self.assertIn("mvn", p1["commands"]["compile"]["command"])
+        # v2: 排除策略 + identifier 显式声明
+        self.assertEqual(set(p1["excludedRoots"]), set(hprof.DEFAULT_EXCLUDED_ROOTS))
+        self.assertIn("identifier", p1)
+        self.assertIn("pattern", p1["identifier"])
+        # v2: verificationInputs 由 commands 派生（兼容 ledger v1 消费）
+        self.assertEqual(
+            p1["verificationInputs"]["unitTestFull"],
+            p1["commands"]["unitTestFull"]["inputs"],
+        )
 
         r2 = hp.cmd_detect(self.tmp)
         self.assertTrue(r2["ok"])
         p2 = _read_json(profile_path)
-
-        # Idempotent: structural fields stable (ignore detectedAt)
-        for key in ("schemaVersion", "toolPaths", "fingerprint", "buildCommands"):
+        # 幂等：结构字段稳定（忽略 detectedAt）
+        for key in ("schemaVersion", "toolPaths", "fingerprint", "commands", "excludedRoots"):
             self.assertEqual(p1[key], p2[key], msg=f"field {key} drifted across detect")
         self.assertEqual(p1["knownPreexistingErrors"], p2["knownPreexistingErrors"])
         self.assertEqual(p1["shellQuirks"], p2["shellQuirks"])
@@ -75,9 +94,7 @@ class DetectIdempotentTests(unittest.TestCase):
         self.assertIn("BudgetStatusEnum", patterns)
 
     def test_detect_includes_service_start_input_files(self) -> None:
-        # Task 3 §5.1: serviceStart 必须含 inputFiles/profile/overlayPath 字段
-        # （detect 无法猜 module 源，默认空数组；空输入由 resolve_service_input_files
-        # 拒绝，不得生成可复用的空指纹）。
+        # serviceStart 必须含 inputFiles/profile/overlayPath 字段（v2 skeleton 保留）。
         r = hp.cmd_detect(self.tmp)
         self.assertTrue(r["ok"])
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
@@ -86,9 +103,8 @@ class DetectIdempotentTests(unittest.TestCase):
         self.assertIn("profile", svc)
         self.assertIn("overlayPath", svc)
 
-    def test_detect_includes_verification_inputs_for_java(self) -> None:
-        # Task 1: build-profile 必须含 verificationInputs.unitTestFull，
-        # 供 harness_ledger.py can-reuse --profile-input unitTestFull 展开依赖闭包。
+    def test_detect_derives_verification_inputs_for_java(self) -> None:
+        # v2: verificationInputs.<key> 由 commands.<key>.inputs 派生，供 ledger 展开。
         r = hp.cmd_detect(self.tmp)
         self.assertTrue(r["ok"])
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
@@ -98,7 +114,8 @@ class DetectIdempotentTests(unittest.TestCase):
         self.assertIn("unitTestFull", vi)
         self.assertIsInstance(vi["unitTestFull"], list)
         self.assertTrue(vi["unitTestFull"], msg="unitTestFull inputs must be non-empty")
-        # 再 detect 幂等：verificationInputs 稳定（用户可改 module 路径，不被覆盖）
+        self.assertEqual(vi["unitTestFull"], profile["commands"]["unitTestFull"]["inputs"])
+        # 再 detect 幂等：verificationInputs 稳定
         hp.cmd_detect(self.tmp)
         profile2 = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
         self.assertEqual(profile["verificationInputs"], profile2["verificationInputs"])
@@ -107,14 +124,29 @@ class DetectIdempotentTests(unittest.TestCase):
         _write(self.tmp / "module-a" / "pom.xml", "<project/>\n")
         _write(self.tmp / "module-b" / "pom.xml", "<project/>\n")
         profile = hp.cmd_detect(self.tmp)["profile"]
-        inputs = profile["verificationInputs"]["unitTestFull"]
+        inputs = profile["commands"]["unitTestFull"]["inputs"]
         self.assertIn("module-a/pom.xml", inputs)
         self.assertIn("module-a/src/main/**", inputs)
         self.assertIn("module-b/pom.xml", inputs)
         self.assertIn("module-b/src/test/**", inputs)
 
+    def test_detect_excludes_sibling_worktree_and_build_dirs(self) -> None:
+        # UT-003/UT-004：兄弟 worktree / target / node_modules 内 POM 不进 inputs。
+        _write(self.tmp / "module-a" / "pom.xml", "<project/>\n")
+        _write(self.tmp / ".claude" / "worktrees" / "sibling" / "pom.xml", "<project/>\n")
+        _write(self.tmp / "target" / "nested" / "pom.xml", "<project/>\n")
+        _write(self.tmp / "node_modules" / "lib" / "pom.xml", "<project/>\n")
+        profile = hp.cmd_detect(self.tmp)["profile"]
+        inputs = profile["commands"]["unitTestFull"]["inputs"]
+        self.assertNotIn(".claude/worktrees/sibling/pom.xml", inputs)
+        self.assertNotIn("target/nested/pom.xml", inputs)
+        self.assertNotIn("node_modules/lib/pom.xml", inputs)
+        self.assertIn("module-a/pom.xml", inputs)
 
-class CheckStaleTests(unittest.TestCase):
+
+class CheckDelegationTests(unittest.TestCase):
+    """簇 4：cmd_check 委托 harness_profile.check，返回 status 字段。"""
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="preflight-check-"))
         _write(self.tmp / "pom.xml", "<project><modelVersion>4.0.0</modelVersion><n>a</n></project>\n")
@@ -122,13 +154,14 @@ class CheckStaleTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_check_fresh_profile_not_stale_and_fast(self) -> None:
+    def test_check_fresh_profile_ready_and_fast(self) -> None:
         hp.cmd_detect(self.tmp)
         t0 = time.perf_counter()
         result = hp.cmd_check(self.tmp)
         elapsed = time.perf_counter() - t0
         self.assertFalse(result["stale"], msg=result.get("issues"))
         self.assertEqual(result["issues"], [])
+        self.assertEqual(result["status"], "ready")
         self.assertLess(elapsed, 5.0, msg=f"check took {elapsed:.3f}s (>5s)")
 
     def test_check_detects_pom_change(self) -> None:
@@ -142,13 +175,15 @@ class CheckStaleTests(unittest.TestCase):
         )
         stale = hp.cmd_check(self.tmp)
         self.assertTrue(stale["stale"])
+        self.assertEqual(stale["status"], "stale")
         self.assertTrue(any("pomHash" in i for i in stale["issues"]))
         self.assertIn("hint", stale)
 
-    def test_check_missing_profile_is_stale(self) -> None:
+    def test_check_missing_profile_is_missing(self) -> None:
         result = hp.cmd_check(self.tmp)
         self.assertTrue(result["stale"])
         self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "missing")
 
     def test_check_missing_tool_path_is_stale(self) -> None:
         hp.cmd_detect(self.tmp)
@@ -208,10 +243,11 @@ class RecordQuirkTests(unittest.TestCase):
         self.assertIn(hp.PITFALLS_APPENDIX_HEADER, pitfalls)
         self.assertIn("BudgetStatusEnum", pitfalls)
         self.assertIn("OtherError", pitfalls)
-        # Duplicate record still appends a human-readable line
         self.assertGreaterEqual(pitfalls.count("BudgetStatusEnum"), 2)
 
-    def test_fix_command_updates_build_commands_and_shell_quirks(self) -> None:
+    def test_fix_command_writes_user_override_to_commands(self) -> None:
+        # 簇 4：fix-command 写 commands.<key> 为 source=user override（v2），
+        # 不再写 v1 buildCommands 扁平字符串。
         r = hp.cmd_record_quirk(
             self.tmp,
             pattern="compile",
@@ -222,9 +258,43 @@ class RecordQuirkTests(unittest.TestCase):
         self.assertTrue(r["ok"])
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
         self.assertIn("compile", profile["shellQuirks"])
-        self.assertEqual(profile["buildCommands"]["compile"], "mvn -f pom.xml compile -o -q")
+        self.assertEqual(
+            profile["commands"]["compile"]["command"],
+            "mvn -f pom.xml compile -o -q",
+        )
+        self.assertEqual(profile["commands"]["compile"]["source"], "user")
+        self.assertNotIn("buildCommands", profile)
         pitfalls = (self.tmp / ".harness" / "pitfalls.md").read_text(encoding="utf-8")
         self.assertIn("fixed-command", pitfalls)
+
+    def test_fix_command_user_override_preserved_across_detect(self) -> None:
+        # spec §3.1：source=user override 显式保留；detected basis 过期自动重探测。
+        hp.cmd_record_quirk(
+            self.tmp,
+            pattern="compile",
+            reason="user-tuned-command",
+            action="fix-command",
+            fixed_command="mvn -f pom.xml compile -o -q -DskipITs",
+        )
+        hp.cmd_detect(self.tmp)
+        profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
+        self.assertEqual(profile["commands"]["compile"]["source"], "user")
+        self.assertEqual(
+            profile["commands"]["compile"]["command"],
+            "mvn -f pom.xml compile -o -q -DskipITs",
+        )
+
+    def test_record_quirk_does_not_add_v1_buildcommands_field(self) -> None:
+        # 回归：record-quirk 不得向 v2 profile 注入 v1 buildCommands 字段。
+        hp.cmd_record_quirk(
+            self.tmp,
+            pattern="SomeError",
+            reason="x",
+            action="skip-not-block",
+        )
+        profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
+        self.assertNotIn("buildCommands", profile)
+        self.assertIn("commands", profile)
 
 
 class CheckAgentsTests(unittest.TestCase):

@@ -45,7 +45,7 @@
 - [ ] 探测 1：`src/test/java` 目录是否存在
 - [ ] 探测 2：`pom.xml` 是否包含 `spring-boot-starter-test` / `junit` / `mockito` 依赖
 - [ ] 探测 3：是否存在已有测试文件（`*Test.java` 或 `*Tests.java`）
-- [ ] 探测 4：目标模块测试命令是否可运行（`mvn test -pl <module> -o -q` 试运行）
+- [ ] 探测 4：目标模块测试基础设施是否可用（`mvn test-compile -pl <module> -o -q` 验证测试可编译，或测试枚举/秒级 smoke；**禁止完整模块测试**，spec §3.3）
 - [ ] 四项证据收集完毕 → 写结论：✅ 测试基础设施可用 / 🟡 测试基础设施部分可用 / ❌ 测试基础设施不可用
 - [ ] 如果 ❌ 不可用 → 记录 TDD 降级原因（必须引用具体证据，如"模块 X 无 src/test/java 目录"）
 
