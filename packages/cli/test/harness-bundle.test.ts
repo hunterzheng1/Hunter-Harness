@@ -66,7 +66,7 @@ describe("embedded Harness Bundles", () => {
 
   it("keeps legacy bootstrap resources out of the workflow data package staging tree", async () => {
     expect(await exists(join(
-      packagedResources, "harness", "bundles", "general", "claude-code", "harness-plan", "SKILL.md"
+      resources, "bundles", "general", "claude-code", "harness-plan", "SKILL.md"
     ))).toBe(true);
     expect(await exists(join(packagedResources, "bootstrap-ir"))).toBe(false);
     expect(await exists(join(packagedResources, "skills"))).toBe(false);

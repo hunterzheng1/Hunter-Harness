@@ -105,10 +105,10 @@ export async function verifyWorkflowPackageIntegrity(resourcesRoot: string): Pro
 }
 
 async function monorepoResourcesRoot(): Promise<string | null> {
+  const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    fileURLToPath(new URL("../../../resources", import.meta.url)),
-    fileURLToPath(new URL("../../../workflow-data-harness", import.meta.url)),
-    fileURLToPath(new URL("../../../../resources", import.meta.url))
+    join(here, "../../../../resources"),
+    join(here, "../../../../../resources")
   ];
   for (const candidate of candidates) {
     if (await pathExists(join(candidate, "harness", "manifests"))) return candidate;

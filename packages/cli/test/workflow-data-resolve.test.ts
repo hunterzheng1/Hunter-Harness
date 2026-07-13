@@ -12,7 +12,7 @@ import {
   workflowPackageName
 } from "../src/workflow-data/resolve.js";
 
-const monorepoDataPackage = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
+const monorepoDataPackage = fileURLToPath(new URL("../../../resources", import.meta.url));
 
 describe("workflow data resolution", () => {
   let tempDir: string | null = null;
