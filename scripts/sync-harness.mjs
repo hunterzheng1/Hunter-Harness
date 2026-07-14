@@ -12,17 +12,41 @@ const source = join(root, "harness");
 const deploy = join(source, "scripts", "harness_deploy.py");
 const resourceRoot = join(root, "resources", "harness");
 const dataPackageRoot = join(root, "packages", "workflow-data-harness", "harness");
-const bundlesRoot = join(resourceRoot, "bundles");
-const manifestRoot = join(resourceRoot, "manifests");
 const dataBundlesRoot = join(dataPackageRoot, "bundles");
 const dataManifestRoot = join(dataPackageRoot, "manifests");
 const migrationsSource = join(resourceRoot, "migrations");
 const dataMigrationsRoot = join(dataPackageRoot, "migrations");
+const syncStampPath = join(root, ".sync-staging", "harness-input-sha256");
 const python = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
 const BUNDLE_VERSION = "0.2.2";
+
+async function syncInputHash() {
+  const inputs = [
+    ...(await filesUnder(source))
+      .filter((item) => !item.path.split("/").includes("__pycache__") && !item.path.endsWith(".pyc"))
+      .map((item) => ({ ...item, key: `harness/${item.path}` })),
+    ...(await filesUnder(migrationsSource)).map((item) => ({ ...item, key: `migrations/${item.path}` })),
+    {
+      key: "scripts/adapt-agent-bundle.mjs",
+      full: join(root, "scripts", "adapt-agent-bundle.mjs")
+    },
+    {
+      key: "scripts/sync-harness.mjs",
+      full: fileURLToPath(import.meta.url)
+    }
+  ].sort((left, right) => left.key.localeCompare(right.key));
+  const hash = createHash("sha256");
+  for (const input of inputs) {
+    hash.update(input.key);
+    hash.update("\0");
+    hash.update(await readFile(input.full));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
 
 async function filesUnder(directory, base = directory) {
   const result = [];
@@ -88,10 +112,8 @@ export async function atomicSwapDir(stage, target) {
 }
 
 async function generate(profile, agent) {
-  const out = join(bundlesRoot, profile, agent);
-  const dataOut = join(dataBundlesRoot, profile, agent);
+  const out = join(dataBundlesRoot, profile, agent);
   await mkdir(dirname(out), { recursive: true });
-  await mkdir(dirname(dataOut), { recursive: true });
 
   // §3.8 要点1 / INT-005: build entirely in a staging dir; out and dataOut are
   // untouched until staging is fully built, adapted, support-file-checked and
@@ -152,18 +174,14 @@ async function generate(profile, agent) {
     await rm(manifestTmp, { force: true });
   }
 
-  // Atomic swap: validated staging replaces the release bundle, then a mirror
-  // staging replaces the workflow-data bundle (so removed files never linger).
+  // The ignored workflow-data tree is the only generated projection. Keeping
+  // a second tracked resources/ mirror caused hundreds of noisy changes for
+  // every canonical Skill edit without adding release safety.
   await atomicSwapDir(stage, out);
-  const dataStage = join(root, ".sync-staging", `data-${profile}-${agent}-${process.pid}`);
-  await rm(dataStage, { recursive: true, force: true });
-  await cp(out, dataStage, { recursive: true });
-  await atomicSwapDir(dataStage, dataOut);
 
-  for (const manifestDir of [join(manifestRoot, profile), join(dataManifestRoot, profile)]) {
-    await mkdir(manifestDir, { recursive: true });
-    await writeFile(join(manifestDir, `${agent}.json`), manifest);
-  }
+  const manifestDir = join(dataManifestRoot, profile);
+  await mkdir(manifestDir, { recursive: true });
+  await writeFile(join(manifestDir, `${agent}.json`), manifest);
 }
 
 async function copyMigrations() {
@@ -198,6 +216,39 @@ function sha256Bytes(content) {
   return "sha256:" + createHash("sha256").update(content).digest("hex");
 }
 
+async function generatedProjectionIsCurrent(inputHash) {
+  try {
+    if ((await readFile(syncStampPath, "utf8")).trim() !== inputHash) return false;
+    for (const profile of PROFILES) {
+      for (const agent of AGENTS) {
+        const bundleRoot = join(dataBundlesRoot, profile, agent);
+        const manifest = JSON.parse(await readFile(
+          join(dataManifestRoot, profile, `${agent}.json`),
+          "utf8"
+        ));
+        const actual = await filesUnder(bundleRoot);
+        if (actual.length !== manifest.files.length) return false;
+        const expected = new Map(manifest.files.map((file) => [file.path, file.sha256]));
+        for (const item of actual) {
+          const digest = createHash("sha256").update(await readFile(item.full)).digest("hex");
+          if (expected.get(item.path) !== digest) return false;
+        }
+        await assertSupportFilesPresent(bundleRoot);
+      }
+    }
+    const familyManifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
+    const familyManifest = JSON.parse(await readFile(familyManifestPath, "utf8"));
+    const files = (await filesUnder(dataPackageRoot)).sort((a, b) => a.path.localeCompare(b.path));
+    const withContent = [];
+    for (const file of files) {
+      withContent.push({ path: `harness/${file.path}`, content: await readFile(file.full, "utf8") });
+    }
+    return familyManifest.content_sha256 === sha256Bytes(canonicalJson(withContent));
+  } catch {
+    return false;
+  }
+}
+
 async function writeWorkflowFamilyManifest() {
   const manifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
@@ -214,6 +265,11 @@ async function writeWorkflowFamilyManifest() {
 }
 
 async function main() {
+  const inputHash = await syncInputHash();
+  if (!process.argv.includes("--force") && await generatedProjectionIsCurrent(inputHash)) {
+    process.stdout.write("Harness Bundles are up to date (2 profiles × 4 agents)\n");
+    return;
+  }
   for (const profile of PROFILES) {
     for (const agent of AGENTS) {
       await generate(profile, agent);
@@ -222,6 +278,8 @@ async function main() {
   }
   await copyMigrations();
   await writeWorkflowFamilyManifest();
+  await mkdir(dirname(syncStampPath), { recursive: true });
+  await writeFile(syncStampPath, inputHash + "\n");
   process.stdout.write("generated 2 profiles × 4 agents Harness Bundles\n");
 }
 

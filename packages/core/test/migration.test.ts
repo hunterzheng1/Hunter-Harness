@@ -21,7 +21,7 @@ import {
 } from "../src/project/profile-bundle.js";
 import { refreshProject } from "../src/project/refresh.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 const v011BundlesRoot = fileURLToPath(
   new URL("./fixtures/v0.1.1-bundles", import.meta.url)
 );
@@ -145,9 +145,9 @@ describe("0.1.1 migration", () => {
       resourcesRoot, "harness", "bundles", "general", "claude-code", "agents", "harness-reviewer.md"
     ));
     expect(reviewer).toEqual(incoming);
-    // schema v3 state 已写入。
+    // schema v4 state 已写入。
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as { schema_version: number };
-    expect(state.schema_version).toBe(3);
+    expect(state.schema_version).toBe(4);
   });
 
   it("real 0.1.1 java fixture refreshes and removes clean duplicate skills agents", async () => {
@@ -180,7 +180,7 @@ describe("0.1.1 migration", () => {
     const state = JSON.parse(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")) as {
       schema_version: number; files: Array<{ target_path: string }>;
     };
-    expect(state.schema_version).toBe(3);
+    expect(state.schema_version).toBe(4);
     expect(state.files.some((f) => f.target_path === ".claude/skills/agents/harness-reviewer.md")).toBe(false);
   });
 

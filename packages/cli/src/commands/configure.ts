@@ -1,10 +1,16 @@
 import {
   initializeProject,
+  readInstalledAgentConfiguration,
   uuidV7
 } from "@hunter-harness/core";
+import {
+  HARNESS_AGENT_ORDER,
+  type HarnessAgent
+} from "@hunter-harness/contracts";
 
 import {
   harnessErrorInfo,
+  parseAgentsInput,
   resolveInitConfig,
   type InitFlagValues
 } from "../config/init-config.js";
@@ -36,9 +42,12 @@ export interface CommandDependencies {
   env: Readonly<Record<string, string | undefined>>;
 }
 
-function otherProfile(current: "general" | "java"): "general" | "java" {
-  return current === "general" ? "java" : "general";
-}
+const AGENT_LABELS: Record<HarnessAgent, string> = {
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+  codebuddy: "CodeBuddy"
+};
 
 async function runFirstInstall(
   options: ConfigureOptions,
@@ -123,8 +132,8 @@ async function runFirstInstall(
   }
 }
 
-// 既有有效项目：bare 命令进入 Conservative Refresh 流程（design §3.1/§3.3）。
-// 交互式呈现 3 选项（刷新当前/切换 profile/取消），非交互式按 --profile 决定 refresh/transition。
+// 既有项目直接展示真实的多 Agent/Profile 状态，再选择本次要新增或刷新的
+// Agent。未选择的命名空间是严格 no-op；不存在隐式停用或卸载。
 async function runExistingProject(
   options: ConfigureOptions,
   dependencies: CommandDependencies,
@@ -142,21 +151,49 @@ async function runExistingProject(
   if (options.nonInteractive === true) {
     return runRefresh(refreshOptions, dependencies);
   }
-  const menu = await dependencies.prompt(
-    `Hunter Harness 已初始化（profile: ${currentProfile}）。\n` +
-    "1. 刷新当前配置（默认且推荐）\n" +
-    "2. 切换到另一种配置\n" +
-    "3. 取消\n" +
-    "请选择 [1]: "
-  );
-  const choice = menu.trim();
-  if (choice === "3" || /^c/i.test(choice)) {
-    return 2;
+  const installed = await readInstalledAgentConfiguration(dependencies.cwd);
+  const currentAgents = installed.agents.length > 0
+    ? installed.agents
+    : ["claude-code" as const];
+  const currentLines = currentAgents.map((agent) =>
+    `- ${AGENT_LABELS[agent]}：${installed.profiles[agent] ?? currentProfile}`
+  ).join("\n");
+
+  if (refreshOptions.agents === undefined) {
+    const defaultSelection = currentAgents
+      .map((agent) => String(HARNESS_AGENT_ORDER.indexOf(agent) + 1))
+      .join(",");
+    const answer = await dependencies.prompt(
+      `Hunter Harness 当前配置：\n${currentLines}\n` +
+      "请选择本次要新增或刷新的工具（可多选，逗号分隔；未选择的工具保持不变）：\n" +
+      "  1. Claude Code\n" +
+      "  2. Codex\n" +
+      "  3. Cursor\n" +
+      "  4. CodeBuddy\n" +
+      `请输入编号 [${defaultSelection}]，或输入 0 取消：`
+    );
+    if (answer.trim() === "0" || /^c/i.test(answer.trim())) return 2;
+    refreshOptions.agents = answer.trim() === ""
+      ? currentAgents.join(",")
+      : answer.trim();
   }
-  if (choice === "2" || /^s/i.test(choice)) {
-    refreshOptions.profile = otherProfile(currentProfile);
-  } else {
-    refreshOptions.profile = currentProfile;
+
+  if (refreshOptions.profile === undefined) {
+    const selected = parseAgentsInput(refreshOptions.agents);
+    const selectedProfiles = new Set(selected.flatMap((agent) => {
+      const profile = installed.profiles[agent];
+      return profile === undefined ? [] : [profile];
+    }));
+    const defaultProfile = selectedProfiles.size === 1
+      ? [...selectedProfiles][0] ?? currentProfile
+      : currentProfile;
+    const answer = await dependencies.prompt(
+      "请选择所选工具使用的 Harness 配置：\n" +
+      "  1. 通用\n" +
+      "  2. Java\n" +
+      `请输入编号 [${defaultProfile === "java" ? "2" : "1"}]：`
+    );
+    refreshOptions.profile = answer.trim() === "" ? defaultProfile : answer.trim();
   }
   refreshOptions.confirmed = true;
   return runRefresh(refreshOptions, dependencies);

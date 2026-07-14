@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Pre-push gate: skip `npm run check` when a recent check-ok marker matches
-the current HEAD.
+the tree of the commit being pushed.
 
 Triple check (all must pass to skip, else exit 1 → hook runs npm run check):
   1. marker exists and its `ts` is within MAX_AGE_S (10 min) of now
   2. marker `command` == EXPECTED_CMD ("npm run check")
-  3. current `git rev-parse HEAD` == marker `commitHash`
+  3. current `git rev-parse HEAD^{tree}` == marker `treeHash`
 
-The marker is written by harness-submit M5 right after a green `npm run check`.
-Any mismatch (no marker, stale, different command, HEAD moved since the check)
+The marker is written by harness-submit M5 after a green `npm run check` and
+records `git write-tree`. This remains valid after commit because the new HEAD
+has the same tree. Any mismatch (no marker, stale, command or tree changed)
 forces a full re-run — the safe default. This is a local convenience only;
 non-harness pushes have no marker and always run the check.
 
@@ -28,10 +29,10 @@ MAX_AGE_S = 600  # 10 minutes
 EXPECTED_CMD = "npm run check"
 
 
-def _current_head() -> str | None:
+def _git_output(args: list[str]) -> str | None:
     try:
         r = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+            ["git", *args],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -42,20 +43,27 @@ def _current_head() -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _current_index_tree() -> str | None:
+    return _git_output(["write-tree"])
+
+
+def _current_head_tree() -> str | None:
+    return _git_output(["rev-parse", "HEAD^{tree}"])
+
+
 def write_marker() -> int:
-    """Write a check-ok marker for the current HEAD (called by harness-submit M5
-    after a green npm run check). Pre-push gate reads it to skip a re-run."""
-    head = _current_head()
-    if head is None:
+    """Record the verified index tree so the marker survives the next commit."""
+    tree = _current_index_tree()
+    if tree is None:
         return 1
     MARKER.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"ts": time.time(), "commitHash": head, "command": EXPECTED_CMD}
+    payload = {"ts": time.time(), "treeHash": tree, "command": EXPECTED_CMD}
     MARKER.write_text(
         json.dumps(payload, ensure_ascii=False) + "\n",
         encoding="utf-8",
         newline="\n",
     )
-    print(f"check-ok marker written for HEAD {head[:7]}")
+    print(f"check-ok marker written for tree {tree[:7]}")
     return 0
 
 
@@ -84,17 +92,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if data.get("command") != EXPECTED_CMD:
         return 1
-    marker_commit = data.get("commitHash")
-    if not isinstance(marker_commit, str):
+    marker_tree = data.get("treeHash")
+    if not isinstance(marker_tree, str):
         return 1
-    head = _current_head()
-    if head is None or head != marker_commit:
+    tree = _current_head_tree()
+    if tree is None or tree != marker_tree:
         return 1
     # All three checks passed: a green npm run check ran on this exact HEAD
     # within the last 10 minutes. Safe to skip.
     print(
         f"pre-push: skipping npm run check (verified {int(time.time() - ts)}s ago "
-        f"at HEAD {head[:7]})"
+        f"for tree {tree[:7]})"
     )
     return 0
 

@@ -11,8 +11,9 @@ import { randomUUID } from "node:crypto";
 import AdmZip from "adm-zip";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const bundlesRoot = join(root, "resources", "harness", "bundles");
-const manifestsRoot = join(root, "resources", "harness", "manifests");
+const workflowDataRoot = join(root, "packages", "workflow-data-harness", "harness");
+const bundlesRoot = join(workflowDataRoot, "bundles");
+const manifestsRoot = join(workflowDataRoot, "manifests");
 
 function parseArgs(argv) {
   const options = {

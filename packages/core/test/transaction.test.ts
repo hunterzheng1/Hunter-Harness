@@ -95,6 +95,39 @@ describe("protocol state", () => {
     expect(stateLayout(root).transactions).toContain(".harness");
   });
 
+  it("keeps staged payloads out of the durable journal", async () => {
+    const marker = "payload-must-not-be-serialized-";
+    const payload = marker.repeat(40_000);
+
+    await runTransaction(root, [
+      { operation: "add", path: "large.txt", content: payload }
+    ], { id: "tx_compact_journal" });
+
+    const transactionRoot = join(
+      stateLayout(root).transactions,
+      "tx_compact_journal"
+    );
+    const rawJournal = await readFile(join(transactionRoot, "journal.json"), "utf8");
+    const journal = JSON.parse(rawJournal) as {
+      schema_version: number;
+      operations: unknown[];
+      applied_count: number;
+    };
+    const status = JSON.parse(await readFile(
+      join(transactionRoot, "status.json"),
+      "utf8"
+    )) as { state: string; applied_count: number };
+
+    expect(rawJournal).not.toContain(marker);
+    expect(Buffer.byteLength(rawJournal)).toBeLessThan(4_096);
+    expect(journal.schema_version).toBe(2);
+    expect(journal.operations).toEqual([
+      { operation: "add", path: "large.txt" }
+    ]);
+    expect(journal.applied_count).toBe(1);
+    expect(status).toMatchObject({ state: "committed", applied_count: 1 });
+  });
+
   it("rolls every file back when an eligible write fails", async () => {
     await writeFile(join(root, "one.md"), "one-before");
     await writeFile(join(root, "two.md"), "two-before");

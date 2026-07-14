@@ -2,7 +2,7 @@ import { copyFile, cp, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath, URL } from "node:url";
 
 const source = fileURLToPath(
-  new URL("../../../resources/harness", import.meta.url)
+  new URL("../../workflow-data-harness/harness", import.meta.url)
 );
 const target = fileURLToPath(
   new URL("../resources", import.meta.url)

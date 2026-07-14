@@ -8,7 +8,7 @@ import { parse as parseYaml } from "yaml";
 
 import { runCli } from "../src/bin.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 async function pathExists(path: string): Promise<boolean> {
   try { await stat(path); return true; } catch { return false; }
@@ -117,7 +117,7 @@ describe("hunter-harness refresh CLI", () => {
     expect(outputBeforeConfirmation).toContain("harness-apidoc");
   });
 
-  it("switches the enabled agent set with --agents", async () => {
+  it("adds or refreshes --agents without disabling unselected agents", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-agents-"));
     stdout = []; stderr = [];
     expect(await run([
@@ -138,10 +138,10 @@ describe("hunter-harness refresh CLI", () => {
     const project = parseYaml(await readFile(join(root, ".harness", "project.yaml"), "utf8")) as {
       adapters: { enabled: string[] };
     };
-    expect(project.adapters.enabled).toEqual(["codex", "cursor"]);
+    expect(project.adapters.enabled).toEqual(["claude-code", "codex", "cursor"]);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
+    expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
   }, 120000);
 
   it("rejects an unknown --agents value without changing the project", async () => {
@@ -171,5 +171,41 @@ describe("hunter-harness refresh CLI", () => {
     expect(await run(["refresh", "--non-interactive", "--yes"])).toBe(0);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(false);
+  }, 120000);
+
+  it("shows every current Agent/Profile and updates only the interactive selection", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-interactive-"));
+    stdout = []; stderr = [];
+    expect(await run([
+      "--agents", "codex,cursor",
+      "--profile", "general",
+      "--non-interactive",
+      "--yes"
+    ])).toBe(0);
+
+    const questions: string[] = [];
+    const answers = ["1", "3", "2"];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(questions[1]).toContain("Codex：general");
+    expect(questions[1]).toContain("Cursor：general");
+    expect(questions[1]).toContain("未选择的工具保持不变");
+    expect(await pathExists(join(root, ".cursor", "skills", "harness-apidoc", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".agents", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
+    const state = JSON.parse(await readFile(
+      join(root, ".harness", "state", "local", "installed-harness-bundle.json"),
+      "utf8"
+    )) as { profiles: Record<string, string> };
+    expect(state.profiles).toEqual({ codex: "general", cursor: "java" });
   }, 120000);
 });

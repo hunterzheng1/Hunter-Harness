@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const resources = join(root, "resources", "harness");
+const resources = join(root, "packages", "workflow-data-harness", "harness");
 const packagedResources = join(root, "packages", "workflow-data-harness");
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
 const PROFILES = ["general", "java"] as const;

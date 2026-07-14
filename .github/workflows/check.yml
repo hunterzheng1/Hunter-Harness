@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     strategy:
@@ -29,3 +33,22 @@ jobs:
 
       - name: Run full check
         run: npm run check
+
+  package-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run packaged CLI smoke test
+        run: npm run smoke:pack

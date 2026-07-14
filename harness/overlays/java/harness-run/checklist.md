@@ -30,6 +30,8 @@
 - [ ] **读取任务状态**：`.harness/changes/<change>/run-task-status.md`（如存在）— 恢复上次运行状态
 - [ ] 确认 `项目规则（见 .harness/context-index.json）/` 规则已加载
 - [ ] 检查构建配置完整性（worktree 中确认 `.mvn/maven.config`、`settings.xml` 等存在）
+- [ ] 读取 `.mvn/maven.config`，确认命令没有重复或覆盖项目已有的 `-s` / `-o` / 仓库设置
+- [ ] 离线依赖缺失时仅在项目规则允许联网的前提下执行至多一次非离线 `-nsu` 恢复；禁止离线/联网循环重试
 - [ ] 依赖模块预安装（worktree 中检查上游模块是否已 `mvn install`）
 - [ ] 代码探索优先用 `codegraph_explore`，仅在返回不完整时补充 Read
 - [ ] append `phase.start`（`note` 含测试基础设施 CHECKING 直至探测完成）

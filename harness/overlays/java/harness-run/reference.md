@@ -97,6 +97,12 @@ powershell.exe -NoProfile -Command "Test-Path '.claude/worktrees/<change-name>/.
 13. **依赖模块预安装**：如果在 worktree 中执行，检查上游依赖模块是否已 `mvn install` 到本地仓库。缺失时先执行 `powershell.exe -Command "mvn install -pl <upstream-modules> -am -DskipTests -nsu"`
 14. **代码探索优先用 codegraph_explore**：一次调用可获取多个相关符号的源码，替代逐个 Read 文件。违反 `项目 codegraph 规则` 规则逐个 Read 会浪费 3-5 分钟。仅在 codegraph 返回结果不完整时补充 Read
 
+### Maven 项目配置与重试预算
+
+- 运行 Maven 前先读取项目已有的 `.mvn/maven.config`；其中的 `-s`、`-o`、镜像和仓库设置视为项目契约，不在命令行重复追加或覆盖。
+- 若项目配置已启用离线模式，依赖缺失只允许一次有明确原因的恢复尝试：仅在项目规则允许联网时临时执行非离线的 `-nsu` 命令；随后继续遵循项目配置，不得在离线/联网命令之间循环试错。
+- 同一失败命令不得无分析地重复执行。先按“配置/依赖缺失、编译、测试、业务断言”分类，再决定修复或停止；每个变更簇仍遵守一次 RED、一次 GREEN 的 Maven 预算。
+
 ### 步骤 0.1：执行模式（默认 Inline）
 
 默认 **Inline Execution**；仅 `--subagent` 强制 Subagent-Driven。**不询问**任务数/模块数（P1-5）。

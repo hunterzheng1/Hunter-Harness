@@ -13,7 +13,7 @@ import {
   type LoadedAgentBundle
 } from "../src/project/profile-bundle.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 function shaHex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");

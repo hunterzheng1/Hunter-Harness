@@ -23,6 +23,7 @@ import { ensureStateLayout, stateLayout } from "../state/layout.js";
 import type {
   SnapshotRecord,
   TransactionJournal,
+  TransactionJournalOperation,
   TransactionOperation
 } from "./journal.js";
 
@@ -73,6 +74,13 @@ async function writeJournal(
   journal: TransactionJournal
 ): Promise<void> {
   await atomicWriteJson(join(transactionRoot, "journal.json"), journal);
+  await writeStatus(transactionRoot, journal);
+}
+
+async function writeStatus(
+  transactionRoot: string,
+  journal: TransactionJournal
+): Promise<void> {
   await atomicWriteJson(join(transactionRoot, "status.json"), {
     schema_version: 1,
     transaction_id: journal.transaction_id,
@@ -81,6 +89,19 @@ async function writeJournal(
     failure: journal.failure,
     updated_at: new Date().toISOString()
   });
+}
+
+function journalOperation(
+  operation: TransactionOperation
+): TransactionJournalOperation {
+  if (operation.operation === "rename") {
+    return {
+      operation: "rename",
+      from_path: operation.from_path,
+      to_path: operation.to_path
+    };
+  }
+  return { operation: operation.operation, path: operation.path };
 }
 
 // design §10：提交后剪除同 kind 的更早成功事务，仅保留最新一个供回滚。
@@ -258,12 +279,12 @@ export async function runTransaction(
   const snapshots = await snapshotPaths(projectRoot, transactionRoot, paths);
   await stageOperations(transactionRoot, operations);
   const journal: TransactionJournal = {
-    schema_version: 1,
+    schema_version: 2,
     transaction_id: transactionId,
     ...(options.kind === undefined ? {} : { kind: options.kind }),
     state: "prepared",
     created_at: new Date().toISOString(),
-    operations,
+    operations: operations.map(journalOperation),
     snapshots,
     applied_count: 0,
     failure: null
@@ -280,7 +301,10 @@ export async function runTransaction(
       }
       await applyOperation(projectRoot, transactionRoot, operation, index, transactionId);
       journal.applied_count = index + 1;
-      await writeJournal(transactionRoot, journal);
+      // Progress is a small fixed-size status write. journal.json is persisted
+      // only at state transitions, so N files no longer cause N rewrites of an
+      // O(N + payload) document.
+      await writeStatus(transactionRoot, journal);
       if (options.interruptAfterApply === journal.applied_count) {
         journal.state = "interrupted";
         journal.failure = "injected interruption";

@@ -6,6 +6,8 @@ description: harness-test 的 API 测试执行细节、批量 runner、token 缓
 
 ## 命令执行模式 preflight（0.0y）
 
+执行 Maven 前必须读取 `.mvn/maven.config`。项目已声明的 `-s`、`-o`、镜像和仓库设置不得被测试命令重复追加或覆盖。离线依赖缺失时，只有在项目规则允许联网的情况下，才可临时执行至多一次非离线 `-nsu` 恢复；失败后停止并报告缺失依赖，不得在多套 Maven 参数间反复试跑。
+
 `/harness-test` 高度依赖 PowerShell 与 Node。在编译/启动服务/生成 runner **之前**
 必须执行 4 项执行模式检查：
 

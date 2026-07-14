@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { initializeProject } from "../src/project/initialize.js";
 import { pushProject } from "../src/push/push.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("pushProject sensitive scan UX", () => {
   async function initRoot(): Promise<string> {

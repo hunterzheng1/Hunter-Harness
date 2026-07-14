@@ -10,7 +10,7 @@ import { AGENTS_MANAGED_BLOCK_CONTENT } from "../src/project/managed-content.js"
 import { initializeProject } from "../src/project/initialize.js";
 import { refreshProject } from "../src/project/refresh.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 const START = "<!-- hunter-harness:start -->";
 const END = "<!-- hunter-harness:end -->";

@@ -85,6 +85,21 @@ export interface InstalledBundleStateV3 {
   }>;
 }
 
+export interface InstalledBundleStateV4 {
+  schema_version: 4;
+  adapters: HarnessAgent[];
+  profiles: Partial<Record<HarnessAgent, HarnessProfile>>;
+  installed_at: string;
+  manifests: Array<{
+    adapter: HarnessAgent;
+    profile: HarnessProfile;
+    bundle_version: string;
+    bundle_manifest_hash: string;
+  }>;
+  files: InstalledBundleStateV3["files"];
+  managed_blocks: InstalledBundleStateV3["managed_blocks"];
+}
+
 export class TargetCollisionError extends Error {
   readonly code = "TARGET_COLLISION";
   readonly exitCode = 7;
@@ -214,7 +229,7 @@ export async function initializeProject(
   const adapterContext = { profile, codebuddySurface: surface };
 
   const owned: OwnedTarget[] = [];
-  const manifests: InstalledBundleStateV3["manifests"] = [];
+  const manifests: InstalledBundleStateV4["manifests"] = [];
   const adaptersIndex: Record<string, {
     instructions: string;
     skills_root: string;
@@ -236,6 +251,7 @@ export async function initializeProject(
     }
     manifests.push({
       adapter: agent,
+      profile,
       bundle_version: bundle.manifest.bundle_version,
       bundle_manifest_hash: bundleHash
     });
@@ -365,10 +381,13 @@ export async function initializeProject(
     return byTarget !== 0 ? byTarget : left.block_id.localeCompare(right.block_id);
   });
 
-  const installedState: InstalledBundleStateV3 = {
-    schema_version: 3,
-    profile,
+  const installedState: InstalledBundleStateV4 = {
+    schema_version: 4,
     adapters: enabledAgents,
+    profiles: Object.fromEntries(enabledAgents.map((agent) => [agent, profile])) as Partial<Record<
+      HarnessAgent,
+      HarnessProfile
+    >>,
     installed_at: new Date().toISOString(),
     manifests,
     files: mergedTargets.map((target) => ({

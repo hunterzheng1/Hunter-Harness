@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../../resources", import.meta.url)
+  new URL("../../workflow-data-harness", import.meta.url)
 );
 
 function artifact(

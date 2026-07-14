@@ -9,7 +9,7 @@ import { atomicWriteJson } from "../src/state/atomic.js";
 import { ensureStateLayout } from "../src/state/layout.js";
 import { initializeProject } from "../src/project/initialize.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -154,7 +154,7 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".codebuddy", "rules"))).toBe(false);
   });
 
-  it("installs all four agents with shared AGENTS block, context v2, state v3", async () => {
+  it("installs all four agents with shared AGENTS block, context v2, state v4", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-all-"));
     await initializeProject({
       projectRoot: root,
@@ -194,7 +194,7 @@ describe("multi-agent initialize", () => {
       files: Array<{ owner: string; target_path: string }>;
       managed_blocks: Array<{ block_id: string }>;
     };
-    expect(state.schema_version).toBe(3);
+    expect(state.schema_version).toBe(4);
     const owners = new Set(state.files.map((f) => f.owner));
     expect(owners.has("claude-code")).toBe(true);
     expect(owners.has("codex")).toBe(true);

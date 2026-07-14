@@ -17,12 +17,14 @@
   "scripts": {
     "build": "node node_modules/typescript/bin/tsc -b && npm run bundle -w packages/cli && npm run bundle -w packages/skill-cli && npm run build -w apps/web",
     "typecheck": "node node_modules/typescript/bin/tsc -b && npm run typecheck -w apps/web",
+    "pretest": "npm run sync:harness",
     "test": "node node_modules/vitest/vitest.mjs run",
     "test:watch": "node node_modules/vitest/vitest.mjs",
     "lint": "node node_modules/eslint/bin/eslint.js .",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "sync:harness": "node scripts/sync-harness.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:pack",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "check:all": "npm run check && npm run smoke:pack",
     "setup:git-hooks": "git config core.hooksPath scripts/git-hooks",
     "hh": "node ./packages/cli/dist/bin.js",
     "hunter-harness": "node ./packages/cli/dist/bin.js"

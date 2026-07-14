@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { initializeProject } from "../src/project/initialize.js";
 import { refreshProject, type RefreshResult } from "../src/project/refresh.js";
 
-const resourcesRoot = fileURLToPath(new URL("../../../resources", import.meta.url));
+const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
 
@@ -37,7 +37,9 @@ async function installFirst(root: string, profile: "general" | "java"): Promise<
 
 async function readInstalledState(root: string): Promise<{
   schema_version: number;
-  profile: string;
+  profile?: string;
+  profiles?: Record<string, string>;
+  adapters?: string[];
   bundle_manifest_hash?: string;
   files: Array<{ source_path?: string; target_path: string; sha256?: string } | string>;
 }> {
@@ -246,15 +248,15 @@ describe("Conservative Refresh", () => {
     expect(await readFile(join(root, INSTALLED_STATE_PATH), "utf8")).toBe(stateBefore);
   });
 
-  it("writes schema-v3 installed state with per-file hashes sorted by target path", async () => {
+  it("writes schema-v4 installed state with per-agent profiles and sorted hashes", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-schema-"));
     await installFirst(root, "general");
     await refreshProject({
       projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
     const state = await readInstalledState(root);
-    expect(state.schema_version).toBe(3);
-    expect(state.profile).toBe("general");
+    expect(state.schema_version).toBe(4);
+    expect(state.profiles).toEqual({ "claude-code": "general" });
     expect((state as typeof state & { manifests?: unknown[] }).manifests).toHaveLength(1);
     const targets = state.files.map((f) => (typeof f === "string" ? f : f.target_path));
     expect([...targets].sort((a, b) => a.localeCompare(b))).toEqual(targets);
@@ -282,31 +284,42 @@ describe("Conservative Refresh", () => {
     expect(agents.match(/hunter-harness:start id=hunter-harness-core/g)).toHaveLength(1);
   });
 
-  it("removes clean old-agent targets but preserves user content and dirty targets", async () => {
+  it("touches only selected agents and keeps every unselected namespace byte-for-byte", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-transition-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
       config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
     });
-    await writeFile(join(root, "CLAUDE.md"), "# User Claude notes\n\n" +
-      await readFile(join(root, "CLAUDE.md"), "utf8"));
-    await writeFile(join(root, REVIEWER_TARGET), "user edited claude skill\n");
+    const claudeBefore = await readFile(join(root, REVIEWER_TARGET));
+    const codexPath = join(root, ".agents", "skills", "harness-review", "SKILL.md");
+    const codexBefore = await readFile(codexPath);
+    const claudeInstructionsBefore = await readFile(join(root, "CLAUDE.md"));
 
     const result = await refreshProject({
-      projectRoot: root, resourcesRoot, profile: "general",
-      agents: ["cursor", "codebuddy"], dryRun: false, forceManaged: false
+      projectRoot: root, resourcesRoot, profile: "java",
+      agents: ["cursor"], dryRun: false, forceManaged: false
     });
 
-    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe("# User Claude notes\n");
-    expect(await exists(join(root, ".agents", "skills", "harness-reviewer", "SKILL.md"))).toBe(false);
-    expect(await exists(join(root, ".agents"))).toBe(true);
-    expect(await readFile(join(root, REVIEWER_TARGET), "utf8")).toBe("user edited claude skill\n");
-    expect(result.conflicts.some((entry) => entry.target_path === REVIEWER_TARGET)).toBe(true);
+    expect(await readFile(join(root, REVIEWER_TARGET))).toEqual(claudeBefore);
+    expect(await readFile(codexPath)).toEqual(codexBefore);
+    expect(await readFile(join(root, "CLAUDE.md"))).toEqual(claudeInstructionsBefore);
+    expect(await exists(join(root, ".claude", "rules", "harness-profile-java.md"))).toBe(false);
     expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
-    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, ".cursor", "rules", "harness-profile-java.mdc"))).toBe(true);
+    expect(result.removed.some((entry) => entry.target_path.startsWith(".claude/"))).toBe(false);
+    expect(result.removed.some((entry) => entry.target_path.startsWith(".agents/"))).toBe(false);
+
+    const state = await readInstalledState(root);
+    expect(state.schema_version).toBe(4);
+    expect(state.adapters).toEqual(["claude-code", "codex", "cursor"]);
+    expect(state.profiles).toEqual({
+      "claude-code": "general",
+      codex: "general",
+      cursor: "java"
+    });
   }, 120_000);
 
-  it("upgrades a v2 Claude state and legacy blocks in place to v3", async () => {
+  it("upgrades a v2 Claude state and legacy blocks in place to v4", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-v2-v3-"));
     await installFirst(root, "general");
     const initial = await readInstalledState(root);
@@ -330,7 +343,7 @@ describe("Conservative Refresh", () => {
     const state = await readInstalledState(root) as typeof initial & {
       adapters: string[]; files: Array<{ owner?: string; target_path: string }>;
     };
-    expect(state.schema_version).toBe(3);
+    expect(state.schema_version).toBe(4);
     expect(state.adapters).toEqual(["claude-code"]);
     expect(state.files.every((entry) => entry.owner === "claude-code")).toBe(true);
     for (const file of ["AGENTS.md", "CLAUDE.md"]) {
@@ -433,7 +446,7 @@ describe("Conservative Refresh", () => {
     expect(await exists(join(root, targetPath))).toBe(true);
     expect(await readFile(join(root, targetPath), "utf8")).toBe(edited);
     expect(result.removed.some((entry) => entry.target_path === targetPath)).toBe(false);
-    expect(result.conflicts.some((entry) => entry.target_path === targetPath)).toBe(true);
+    expect(result.conflicts.some((entry) => entry.target_path === targetPath)).toBe(false);
   }, 120_000);
 });
 

@@ -57,14 +57,19 @@ try {
     name.startsWith("hunter-harness-workflow-harness-") && name.endsWith(".tgz")
   );
   if (dataArchive === undefined) throw new Error("npm pack did not create the workflow data archive");
-  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", join(temporary, dataArchive)], { timeout: 180_000 });
 
   run(process.execPath, [npmCli, "pack", "-w", "packages/cli", "--pack-destination", temporary]);
   const archive = (await readdir(temporary)).find((name) =>
     name.startsWith("hunter-harness-") && name.endsWith(".tgz") && !name.includes("workflow-harness")
   );
   if (archive === undefined) throw new Error("npm pack did not create the CLI archive");
-  run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional", join(temporary, archive)], { timeout: 180_000 });
+  // Install both local archives in one dependency resolution. The packaged CLI
+  // can then be executed with arbitrary cwd values; isolated projects do not
+  // need their own duplicate node_modules trees.
+  run(process.execPath, [
+    npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional",
+    join(temporary, dataArchive), join(temporary, archive)
+  ], { timeout: 180_000 });
 
   const packagedRoot = join(temporary, "node_modules", "hunter-harness");
   const workflowDataRoot = join(temporary, "node_modules", "@hunter-harness", "workflow-harness");
@@ -103,11 +108,7 @@ try {
   // 四 Agent general 安装 + 幂等 refresh + 冲突保留 + Agent transition。
   const project = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
-    run(process.execPath, [
-      npmCli, "install", "--prefix", project, "--ignore-scripts", "--omit=optional",
-      join(temporary, dataArchive), join(temporary, archive)
-    ], { timeout: 180_000 });
-    const projectBin = join(project, "node_modules", "hunter-harness", "dist", "bin.js");
+    const projectBin = bin;
     // 用户既有 AGENTS/CLAUDE 内容必须保留。
     await writeFile(join(project, "CLAUDE.md"), "# User Claude\nkeep this.\n");
     await writeFile(join(project, "AGENTS.md"), "# User Agents\nkeep this too.\n");
@@ -116,6 +117,9 @@ try {
       { cwd: project, capture: true });
     await stat(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
+    for (const supportFile of ["SKILL.md", "protocols.md", "reference.md", "checklist.md"]) {
+      await stat(join(project, ".agents", "skills", "harness-run", supportFile));
+    }
     await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"));
     await stat(join(project, ".codebuddy", "agents", "harness-reviewer.md"));
@@ -172,18 +176,20 @@ try {
     assert((await readFile(reviewer, "utf8")) !== "user modified\n",
       "--force-managed must replace modified managed file");
 
-    // all → cursor：其余干净 Harness 目标删除，CLAUDE.md 用户正文保留。
-    run(process.execPath, [projectBin, "refresh", "--agents", "cursor", "--non-interactive", "--yes"],
+    // 只选择 Cursor 并切到 Java：其他 Agent 命名空间必须完全保留。
+    const claudeBefore = await readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md"));
+    const codexBefore = await readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md"));
+    run(process.execPath, [projectBin, "refresh", "--agents", "cursor", "--profile", "java", "--non-interactive", "--yes"],
       { cwd: project, capture: true });
     await stat(join(project, ".cursor", "skills", "harness-review", "SKILL.md"));
-    assert(await exists(join(project, ".claude", "skills", "harness-review", "SKILL.md")) === false,
-      "cursor transition must remove clean Claude bundle targets");
-    assert(await exists(join(project, ".agents", "skills", "harness-review", "SKILL.md")) === false,
-      "cursor transition must remove clean Codex bundle targets");
-    assert(await exists(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md")) === false,
-      "cursor transition must remove clean CodeBuddy bundle targets");
+    await stat(join(project, ".cursor", "rules", "harness-profile-java.mdc"));
+    assert((await readFile(join(project, ".claude", "skills", "harness-review", "SKILL.md"))).equals(claudeBefore),
+      "unselected Claude bundle must remain byte-for-byte unchanged");
+    assert((await readFile(join(project, ".agents", "skills", "harness-review", "SKILL.md"))).equals(codexBefore),
+      "unselected Codex bundle must remain byte-for-byte unchanged");
+    await stat(join(project, ".codebuddy", "skills", "harness-review", "SKILL.md"));
     assert((await readFile(join(project, "CLAUDE.md"), "utf8")).includes("# User Claude"),
-      "cursor transition must preserve CLAUDE.md user content");
+      "unselected Claude instructions must remain present");
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -191,11 +197,7 @@ try {
   // Java 首次安装独立校验（harness-apidoc 存在）。
   const javaProject = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
   try {
-    run(process.execPath, [
-      npmCli, "install", "--prefix", javaProject, "--ignore-scripts", "--omit=optional",
-      join(temporary, dataArchive), join(temporary, archive)
-    ], { timeout: 180_000 });
-    const javaBin = join(javaProject, "node_modules", "hunter-harness", "dist", "bin.js");
+    const javaBin = bin;
     run(process.execPath, [javaBin, "--profile", "java", "--non-interactive", "--yes"],
       { cwd: javaProject, capture: true });
     await stat(join(javaProject, ".claude", "skills", "harness-apidoc", "SKILL.md"));

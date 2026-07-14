@@ -18,6 +18,15 @@ export type TransactionOperation =
       content: string | Uint8Array;
     };
 
+/**
+ * Durable transaction metadata deliberately excludes file payloads. The bytes
+ * already live under staged/ while a transaction is active; serializing them
+ * into journal.json made every progress update rewrite the complete Bundle.
+ */
+export type TransactionJournalOperation =
+  | { operation: "add" | "modify" | "delete"; path: string }
+  | { operation: "rename"; from_path: string; to_path: string };
+
 export interface SnapshotRecord {
   path: string;
   existed: boolean;
@@ -25,12 +34,12 @@ export interface SnapshotRecord {
 }
 
 export interface TransactionJournal {
-  schema_version: 1;
+  schema_version: 1 | 2;
   transaction_id: string;
   kind?: "init" | "push-binding" | "update" | "refresh" | "rollback" | "other";
   state: TransactionState;
   created_at: string;
-  operations: TransactionOperation[];
+  operations: TransactionJournalOperation[];
   snapshots: SnapshotRecord[];
   applied_count: number;
   failure: string | null;

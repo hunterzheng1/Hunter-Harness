@@ -380,14 +380,14 @@ powershell.exe -Command "git -C '<项目路径>' diff --name-only --diff-filter=
 
 重跑后写回 ledger 的 `compile`/`unitTest`，更新 `diffHash`/`currentHead`。
 
-**写 check-ok marker**（npm run check exit 0 后强制）：让 pre-push hook 跳过重复 check（省 ~350s）。三重校验（marker ts<10min + command + HEAD），任一不满足照跑。
+**写 check-ok marker**（npm run check exit 0 后强制）：让 pre-push hook 跳过重复 check。三重校验（marker ts<10min + command + commit tree），任一不满足照跑。marker 写入时记录 `git write-tree`，因此验证后创建 commit 不会仅因 HEAD 前移而使缓存失效。
 
 ```powershell
 # npm run check exit 0 后立即写 marker（M5 或 REUSED 后均可）
 powershell.exe -Command "python harness/scripts/harness_check_gate.py --write"
 ```
 
-> marker 写入 `.harness/check-ok.marker`（gitignored，本地）。push 时 pre-push hook 读 marker：HEAD 自写 marker 后未变 + ts<10min + command 匹配 → 跳过 npm run check；否则照跑（安全默认）。
+> marker 写入 `.harness/check-ok.marker`（gitignored，本地）。push 时 pre-push hook 比较 `HEAD^{tree}` 与 marker 的 `treeHash`，再校验 ts<10min + command；commit tree 未变化即可跳过，任何内容变化都照跑（安全默认）。
 
 ### 步骤 M6：push 主分支
 

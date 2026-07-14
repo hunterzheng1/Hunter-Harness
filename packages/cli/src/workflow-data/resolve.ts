@@ -107,8 +107,12 @@ export async function verifyWorkflowPackageIntegrity(resourcesRoot: string): Pro
 async function monorepoResourcesRoot(): Promise<string | null> {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(here, "../../../../resources"),
-    join(here, "../../../../../resources")
+    // TypeScript source: packages/cli/src/workflow-data -> packages/workflow-data-harness.
+    join(here, "../../../workflow-data-harness"),
+    // Bundled CLI: packages/cli/dist -> packages/workflow-data-harness.
+    join(here, "../../workflow-data-harness"),
+    // Test/build layouts that preserve additional source directory levels.
+    join(here, "../../../../packages/workflow-data-harness")
   ];
   for (const candidate of candidates) {
     if (await pathExists(join(candidate, "harness", "manifests"))) return candidate;
@@ -117,9 +121,14 @@ async function monorepoResourcesRoot(): Promise<string | null> {
 }
 
 async function siblingWorkflowPackage(cwd: string): Promise<string | null> {
+  const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(cwd, "node_modules", "@hunter-harness", "workflow-harness"),
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "workflow-data-harness")
+    // Published layout: node_modules/hunter-harness/dist/bin.js alongside the
+    // scoped workflow package in node_modules/@hunter-harness/workflow-harness.
+    join(here, "..", "..", "@hunter-harness", "workflow-harness"),
+    // Monorepo bundled layout: packages/cli/dist/bin.js.
+    join(here, "..", "..", "workflow-data-harness")
   ];
   for (const candidate of candidates) {
     if (await pathExists(join(candidate, "harness", "manifests"))) return candidate;

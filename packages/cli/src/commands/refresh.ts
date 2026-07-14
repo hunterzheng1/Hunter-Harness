@@ -53,9 +53,9 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
   return { status: "valid", config: parsed.data };
 }
 
-function parseProfile(value: string | undefined, current: HarnessProfile): HarnessProfile {
+function parseProfile(value: string | undefined): HarnessProfile | undefined {
   if (value === undefined || value === "") {
-    return current;
+    return undefined;
   }
   if (value === "1" || value === "general") return "general";
   if (value === "2" || value === "java") return "java";
@@ -142,10 +142,10 @@ export async function runRefresh(
   }
 
   const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;
-  let targetProfile: HarnessProfile;
+  let targetProfile: HarnessProfile | undefined;
   let targetAgents: ReturnType<typeof refreshAgents>;
   try {
-    targetProfile = parseProfile(options.profile, currentProfile);
+    targetProfile = parseProfile(options.profile);
     targetAgents = options.agents === undefined
       ? refreshAgents(detection.config)
       : parseAgentsInput(options.agents);
@@ -157,14 +157,14 @@ export async function runRefresh(
   }
 
   const dryRun = options.dryRun === true;
-  if ((targetProfile !== currentProfile ||
+  if (((targetProfile !== undefined && targetProfile !== currentProfile) ||
       targetAgents.some((agent, index) => agent !== refreshAgents(detection.config)[index]) ||
       targetAgents.length !== refreshAgents(detection.config).length) && !dryRun) {
     try {
       const preview = await refreshProject({
         projectRoot: dependencies.cwd,
         resourcesRoot: dependencies.resourcesRoot,
-        profile: targetProfile,
+        ...(targetProfile === undefined ? {} : { profile: targetProfile }),
         agents: targetAgents,
         codebuddySurface: codebuddySurface(detection.config),
         dryRun: true,
@@ -191,7 +191,9 @@ export async function runRefresh(
     } else if (!options.yes && !dryRun) {
       const label = targetProfile === currentProfile
         ? `刷新当前配置（${currentProfile}）`
-        : `切换配置：${currentProfile} → ${targetProfile}`;
+        : targetProfile === undefined
+          ? "刷新所选工具的当前配置"
+          : `更新所选工具配置：${currentProfile} → ${targetProfile}`;
       const answer = await dependencies.prompt(`${label}？[y/N]：`);
       if (!/^(?:y|yes)$/i.test(answer.trim())) {
         return 2;
@@ -203,7 +205,7 @@ export async function runRefresh(
     const result = await refreshProject({
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
-      profile: targetProfile,
+      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
       agents: targetAgents,
       codebuddySurface: codebuddySurface(detection.config),
       dryRun,
@@ -218,7 +220,7 @@ export async function runRefresh(
       if (result.removed.length > 0) parts.push(`已删除 ${result.removed.length} 个`);
       if (result.preserved.length > 0) parts.push(`已保留 ${result.preserved.length} 个`);
       if (result.unchanged.length > 0) parts.push(`无需变更 ${result.unchanged.length} 个`);
-      dependencies.stdout(`Harness 刷新（${targetProfile}）：${parts.join("，") || "没有变更"}。\n`);
+      dependencies.stdout(`Harness 刷新（${result.profile}）：${parts.join("，") || "没有变更"}。\n`);
     }
     return output.exit_code;
   } catch (error) {

@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(
-  new URL("../../../resources", import.meta.url)
+  new URL("../../workflow-data-harness", import.meta.url)
 );
 
 async function pathExists(path: string): Promise<boolean> {
@@ -149,6 +149,12 @@ describe("hunter-harness initialization", () => {
     ]);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    for (const supportFile of ["SKILL.md", "protocols.md", "reference.md", "checklist.md"]) {
+      expect(
+        await pathExists(join(root, ".agents", "skills", "harness-run", supportFile)),
+        `Codex harness-run must install ${supportFile}`
+      ).toBe(true);
+    }
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
