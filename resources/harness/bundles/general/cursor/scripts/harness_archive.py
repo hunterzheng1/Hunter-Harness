@@ -494,16 +494,29 @@ def check_status(change_dir: Path) -> dict[str, Any]:
         if head_hash.startswith(expected_hash) or expected_hash.startswith(head_hash[:7]):
             checks["final_hash_match"] = True
         else:
-            checks["final_hash_match"] = False
-            blockers.append(
-                {
-                    "code": "final-hash-mismatch",
-                    "message": (
-                        f"HEAD={head_hash} != expected={expected_hash} "
-                        f"(source={hash_source})"
-                    ),
-                }
+            # main may have advanced since this change merged (a later change
+            # merged on top); the change's final hash is still pushed as long as
+            # it is an ancestor of HEAD. Strict == would block archiving whenever
+            # the repo moved on, which is the normal case in a multi-change
+            # workflow.
+            anc_code, _, _ = git_run(
+                project, "merge-base", "--is-ancestor", expected_hash, head_hash
             )
+            if anc_code == 0:
+                checks["final_hash_match"] = True
+                checks["final_hash_ancestor"] = True
+            else:
+                checks["final_hash_match"] = False
+                blockers.append(
+                    {
+                        "code": "final-hash-mismatch",
+                        "message": (
+                            f"HEAD={head_hash} != expected={expected_hash} "
+                            f"(source={hash_source}) and expected is not an ancestor "
+                            f"of HEAD (not pushed?)"
+                        ),
+                    }
+                )
     elif head_hash and expected_hash is None:
         warnings.append(
             {

@@ -2,5 +2,5 @@
   "schemaVersion": 1,
   "overlay": "java",
   "agent": "claude-code",
-  "coreHash": "5bf78b2509be0453"
+  "coreHash": "37b62b2fa19bf00f"
 }

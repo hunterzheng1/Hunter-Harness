@@ -2,12 +2,12 @@
   "schema_version": 2,
   "profile": "java",
   "adapter": "codebuddy",
-  "bundle_version": "0.2.1",
+  "bundle_version": "0.2.2",
   "generator": "harness_deploy.py",
   "files": [
     {
       "path": ".harness-build.json",
-      "sha256": "28719fe16112a329cb5bee9e6aaf79445b1cc2f0d27be3873030cf8ab9588c06"
+      "sha256": "3c55d28b57e6c64fa5c638e248879c8ee0c12610a4162e594300bda70bf38861"
     },
     {
       "path": "agents/harness-evaluator.md",
@@ -35,7 +35,7 @@
     },
     {
       "path": "harness-apidoc/SKILL.md",
-      "sha256": "b73738cc5d103bac249eff93dd9082ce93dfa26539a6c7fea6fc90926779aec5"
+      "sha256": "1da4ec361f5ad43234c0c6e990ea0ea862020c1b06b5c4a756c60f4847872cff"
     },
     {
       "path": "harness-archive/checklist.md",
@@ -51,7 +51,7 @@
     },
     {
       "path": "harness-archive/SKILL.md",
-      "sha256": "d5486665d392218693765826158eaac4d62dc03465ac589d3ed94bc60a18c6ba"
+      "sha256": "3ce2f2896ca0b32b7a62afd91c41623d65dddeec6808eabd62f92c96f15da5ad"
     },
     {
       "path": "harness-archive/templates/render-summary.mjs",
@@ -71,7 +71,7 @@
     },
     {
       "path": "harness-codebase-map/SKILL.md",
-      "sha256": "573daaf51e42cb8ff137444f315a986a50d0a32a3ffb2bc23eb7cb107fdac212"
+      "sha256": "ad58bca82c0605d1a3074c9da403c270552fec8670afbc596ba4e781f7138f60"
     },
     {
       "path": "harness-codebase-map/templates/ARCHITECTURE.md",
@@ -135,11 +135,11 @@
     },
     {
       "path": "harness-knowledge-ingest/SKILL.md",
-      "sha256": "3693ad30430948572de690b707ba05eb11cce7e0200e1c1647ed94223b7978c9"
+      "sha256": "bed45fe94978881e9f9807506ef506f43c8a112b565f780274d76ad2c1d684a1"
     },
     {
       "path": "harness-knowledge-query/SKILL.md",
-      "sha256": "0ec0799a8386843e3a7dbc7756bcf10bef606a221132f7302eb522e9cea7a152"
+      "sha256": "597494ba9ef0b6f321be74b81cae081df4a7127de9056a017e7e45bdb747eaf0"
     },
     {
       "path": "harness-package/checklist.md",
@@ -151,7 +151,7 @@
     },
     {
       "path": "harness-package/SKILL.md",
-      "sha256": "0bebad727dc43dee320ba1a18f95881184ffdcea186213fba538c150fc35247d"
+      "sha256": "2bf95003a79537c1768a67342e65b7f8baccd671bed4561716e2804621d7798a"
     },
     {
       "path": "harness-plan/checklist.md",
@@ -167,7 +167,7 @@
     },
     {
       "path": "harness-plan/SKILL.md",
-      "sha256": "757faa5d08a784679b5a071ca961dabe7ab9d34290404d813064699284e8552c"
+      "sha256": "27e556a360c7b6c4a84faf8a038602593e8113f749c4c0c1e7cb698626634ad4"
     },
     {
       "path": "harness-review/checklist.md",
@@ -183,7 +183,7 @@
     },
     {
       "path": "harness-review/SKILL.md",
-      "sha256": "024b969f7b5fafefc94bbe9e773b65a90e1e3ba8efb59b244965960c702b158a"
+      "sha256": "4b535dc3c4202ba67ea8c9b9705e6dacec6ea72501b8b134a1e66af1d7aa525e"
     },
     {
       "path": "harness-run/checklist.md",
@@ -199,7 +199,7 @@
     },
     {
       "path": "harness-run/SKILL.md",
-      "sha256": "c9a37b389a4c37a883443b604a55a3357a0b475317f064b1b26fe976b6ca9f87"
+      "sha256": "7e8ad4781ac8e825485c48dd040d89211bc0d46400a0a21a033ebc306609a022"
     },
     {
       "path": "harness-submit/checklist.md",
@@ -211,7 +211,7 @@
     },
     {
       "path": "harness-submit/SKILL.md",
-      "sha256": "a7931e198714fadd3c522c094e0a42d393e2fe0c21b220c10e6cd851c7769ee7"
+      "sha256": "544e7d3773a442c3fde22d7775d7c75b3c5e0b0fba97f2f0d2ecdf14d0ef2256"
     },
     {
       "path": "harness-sync/reference.md",
@@ -219,7 +219,7 @@
     },
     {
       "path": "harness-sync/SKILL.md",
-      "sha256": "805f89de0fefd3d6686f8f8d5b8b46d665fa951738cd281b7d7f2e235bdd32ca"
+      "sha256": "dba23ba8261085438b756a7eb3db5b089687be88110d1d60633064ca04c28610"
     },
     {
       "path": "harness-test/checklist.md",
@@ -243,7 +243,7 @@
     },
     {
       "path": "harness-test/SKILL.md",
-      "sha256": "ed14f29b30706fdef18b29268ae3d7fd0c27ccfab0c1102c1563aa3ccbe6e4e7"
+      "sha256": "2d12bcc36fff0518ed4e41d1c9404346b49007f48cdb0078c30592f76d6d43c0"
     },
     {
       "path": "protocols/archive-report-protocol.md",
@@ -283,7 +283,7 @@
     },
     {
       "path": "scripts/harness_archive.py",
-      "sha256": "e2d6a38464324283b66b7f975891d7e5dfbe928d367aa53c9b9b5db1b4b7fb9a"
+      "sha256": "ada5f736cd692eab1531288fecdf57ce36ff760b55dd470c4e0553a2c73608c4"
     },
     {
       "path": "scripts/harness_check_gate.py",
