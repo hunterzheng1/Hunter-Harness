@@ -368,5 +368,60 @@ class ExcludedRootsTests(unittest.TestCase):
         self.assertFalse(hp.is_path_excluded("src/main/App.java", excluded))
 
 
+def _make_node_project(tmp: Path, check_script: str | None = "npm run lint") -> None:
+    """Node fixture: package.json with a check script (+ optional harness/ dir)."""
+    scripts = {"lint": "eslint ."}
+    if check_script is not None:
+        scripts["check"] = check_script
+    _write(tmp / "package.json", json.dumps({"name": "demo", "scripts": scripts}))
+    _write(tmp / "vitest.config.ts", "export default {}\n")
+
+
+class NodeCommandsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="profile-node-"))
+
+    def test_detect_node_has_unittestfull_command(self) -> None:
+        _make_node_project(self.tmp, check_script="npm run lint && npm test")
+        profile = hp.detect(self.tmp)["profile"]
+        cmds = profile["commands"]
+        self.assertIn("unitTestFull", cmds)
+        self.assertEqual(cmds["unitTestFull"]["scope"], "full")
+        self.assertEqual(cmds["unitTestFull"]["coverage"], "unitTestFull")
+        self.assertEqual(cmds["unitTestFull"]["command"], "npm run lint && npm test")
+        self.assertEqual(cmds["unitTestFull"]["source"], "detected")
+        self.assertIn("unitTestFull", profile["verificationInputs"])
+
+    def test_detect_node_inputs_closure_covers_ts_sources_and_config(self) -> None:
+        _make_node_project(self.tmp)
+        profile = hp.detect(self.tmp)["profile"]
+        inputs = profile["commands"]["unitTestFull"]["inputs"]
+        for pat in ["package.json", "vitest.config.*", "src/**/*.ts", "test/**/*.ts"]:
+            self.assertIn(pat, inputs)
+        self.assertFalse(any(p.startswith("node_modules") for p in inputs))
+
+    def test_detect_node_harness_dogfood_extends_inputs(self) -> None:
+        _make_node_project(self.tmp)
+        _write(self.tmp / "harness" / "scripts" / "harness_profile.py", "# py\n")
+        profile = hp.detect(self.tmp)["profile"]
+        inputs = profile["commands"]["unitTestFull"]["inputs"]
+        self.assertIn("harness/scripts/*.py", inputs)
+        self.assertIn("harness/harness-test/scripts/*.mjs", inputs)
+
+    def test_detect_node_without_check_or_test_has_no_commands(self) -> None:
+        _write(self.tmp / "package.json", json.dumps({"name": "x", "scripts": {"lint": "eslint ."}}))
+        profile = hp.detect(self.tmp)["profile"]
+        self.assertEqual(profile["commands"], {})
+
+    def test_detect_node_prefers_check_over_test(self) -> None:
+        _write(
+            self.tmp / "package.json",
+            json.dumps({"name": "x", "scripts": {"check": "npm run lint", "test": "vitest"}}),
+        )
+        profile = hp.detect(self.tmp)["profile"]
+        self.assertEqual(profile["commands"]["unitTestFull"]["command"], "npm run lint")
+        self.assertEqual(profile["commands"]["unitTestFull"]["basis"]["packageScript"], "check")
+
+
 if __name__ == "__main__":
     unittest.main()

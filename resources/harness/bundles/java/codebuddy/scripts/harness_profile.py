@@ -234,6 +234,69 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
     }
 
 
+def _node_commands(project: Path) -> dict[str, Any]:
+    """commands for a node project: unitTestFull = `npm run check` (or `npm test`)
+    with an input closure covering TS sources/tests + config (+ harness Python/.mjs
+    when the project dogfoods harness). Lets can-reuse --profile-input unitTestFull
+    reuse a green full check instead of forcing insufficient-evidence."""
+    pkg = project / "package.json"
+    if not pkg.is_file():
+        return {}
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    scripts = data.get("scripts") if isinstance(data, dict) else None
+    if not isinstance(scripts, dict):
+        return {}
+    script_key = "check" if "check" in scripts else ("test" if "test" in scripts else None)
+    if not script_key:
+        return {}
+    full_cmd = scripts[script_key]
+    # Precise globs (avoid node_modules/** which would make the inputs hash unstable).
+    inputs = [
+        "package.json",
+        "tsconfig.json",
+        "tsconfig.*.json",
+        "vitest.config.*",
+        "eslint.config.*",
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "test/**/*.ts",
+        "test/**/*.tsx",
+        "packages/*/src/**/*.ts",
+        "packages/*/src/**/*.tsx",
+        "packages/*/test/**/*.ts",
+        "packages/*/test/**/*.tsx",
+        "apps/*/src/**/*.ts",
+        "apps/*/src/**/*.tsx",
+        "apps/*/test/**/*.ts",
+    ]
+    # harness dogfood: canonical Python + .mjs sources feed npm run check (vitest
+    # imports harness-test/scripts; smoke:pack runs sync-harness.mjs).
+    if (project / "harness").is_dir():
+        inputs.extend(
+            [
+                "harness/scripts/*.py",
+                "harness/harness-knowledge-ingest/scripts/*.py",
+                "harness/harness-test/scripts/*.mjs",
+                "harness/harness-test/scripts/tests/*.mjs",
+                "scripts/*.mjs",
+            ]
+        )
+    return {
+        "unitTestFull": {
+            "command": full_cmd,
+            "argvTemplate": full_cmd.split(),
+            "scope": "full",
+            "inputs": inputs,
+            "coverage": "unitTestFull",
+            "source": "detected",
+            "basis": {"packageScript": script_key},
+        }
+    }
+
+
 def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -329,6 +392,10 @@ def detect(project: Path) -> dict[str, Any]:
         reactor_modules = find_reactor_modules(project, excluded)
         if reactor_modules:
             profile["commands"] = _java_commands(reactor_modules, pom_hash)
+    elif project_type == "node":
+        node_cmds = _node_commands(project)
+        if node_cmds:
+            profile["commands"] = node_cmds
 
     _merge_user_overrides(profile, existing)
     _derive_verification_inputs(profile)

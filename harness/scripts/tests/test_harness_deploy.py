@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -520,6 +522,50 @@ class ValidateManifestTests(unittest.TestCase):
         )
         self.assertFalse(result["ok"])
         self.assertIn("harness-demo/SKILL.md", result["hashMismatch"])
+
+
+class CoreContentHashDeterminismTests(unittest.TestCase):
+    """core_content_hash must be independent of working-copy CRLF state: it uses
+    the git blob sha (CRLF-normalized by .gitattributes) for tracked files, falling
+    back to working-tree bytes only for untracked build inputs."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-core-"))
+        self.root = self.tmp / "core"
+        _write(self.root / "harness-demo" / "SKILL.md", "# demo\nline two\n")
+        # Standalone git repo so _git_repo_root resolves to self.tmp, not the
+        # outer worktree. .gitattributes eol=lf normalizes tracked blobs to LF.
+        subprocess.run(["git", "init", "-q"], cwd=str(self.tmp), check=True)
+        _write(self.tmp / ".gitattributes", "harness/** text eol=lf\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(self.tmp), check=True)
+
+    def test_crlf_working_copy_does_not_change_core_hash(self) -> None:
+        # Tracked file: index blob is LF (eol=lf). Working copy starts LF.
+        lf_hash = hd.core_content_hash(self.root, None)
+        # Rewrite working copy as CRLF. The index blob stays LF, so the blob sha
+        # (used by core_content_hash) must not change.
+        skill = self.root / "harness-demo" / "SKILL.md"
+        skill.write_bytes(skill.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8"))
+        crlf_hash = hd.core_content_hash(self.root, None)
+        self.assertEqual(lf_hash, crlf_hash)
+
+    def test_tracked_content_change_does_change_core_hash(self) -> None:
+        first = hd.core_content_hash(self.root, None)
+        skill = self.root / "harness-demo" / "SKILL.md"
+        _write(skill, "# demo\nchanged content\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(self.tmp), check=True)
+        second = hd.core_content_hash(self.root, None)
+        self.assertNotEqual(first, second)
+
+    def test_untracked_file_falls_back_to_working_copy(self) -> None:
+        # Untracked file (not in index): _git_blob_sha None → sha256_file. A content
+        # change must still be detected via working-tree bytes.
+        ref = self.root / "harness-demo" / "reference.md"
+        _write(ref, "first\n")
+        first = hd.core_content_hash(self.root, None)
+        _write(ref, "second\n")
+        second = hd.core_content_hash(self.root, None)
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

@@ -337,6 +337,21 @@ powershell.exe -Command "git -C '<项目路径>' pull --rebase"
 
 pull 输出非 `Already up to date.` → 引入他人提交 → M4 必须重跑验证。
 
+**CRLF 预检**（pull 后强制）：旧 working copy 的 `.gitattributes eol=lf` 文件可能是 CRLF（.gitattributes 后加未重新检出），曾导致 `core_content_hash` 跨工作树不一致 → sync 产生 dirty → M5 失败重跑。检测并修复：
+
+```powershell
+# 1. renormalize 暴露 CRLF 漂移（仅规范化行尾，不改内容语义）
+powershell.exe -Command "git -C '<项目路径>' add --renormalize ."
+# 2. 若 git status --porcelain 非空 → working copy 存在 CRLF 漂移
+powershell.exe -Command "git -C '<项目路径>' status --porcelain"
+# 3. 有漂移 → 弃 staging + 强制 LF 重检（worktree 合并段 M2 在主仓库 main，应 clean，安全）
+powershell.exe -Command "git -C '<项目路径>' reset -q; git -C '<项目路径>' checkout -- ."
+# 4. 重新 renormalize 确认 clean（git status --porcelain 应空）
+powershell.exe -Command "git -C '<项目路径>' add --renormalize .; git status --porcelain"
+```
+
+> cluster 1 的 `core_content_hash` 改用 git blob sha 后，CRLF 不再影响 core hash，但 working copy CRLF 仍可能影响 workflow-data 包内容 hash，预检仍有价值。
+
 ### 步骤 M3：合并 worktree 分支
 
 ```powershell
@@ -364,6 +379,15 @@ powershell.exe -Command "git -C '<项目路径>' diff --name-only --diff-filter=
 - 否则 diffHash 一致且 post-test 非行为性 → 🔁REUSED
 
 重跑后写回 ledger 的 `compile`/`unitTest`，更新 `diffHash`/`currentHead`。
+
+**写 check-ok marker**（npm run check exit 0 后强制）：让 pre-push hook 跳过重复 check（省 ~350s）。三重校验（marker ts<10min + command + HEAD），任一不满足照跑。
+
+```powershell
+# npm run check exit 0 后立即写 marker（M5 或 REUSED 后均可）
+powershell.exe -Command "python harness/scripts/harness_check_gate.py --write"
+```
+
+> marker 写入 `.harness/check-ok.marker`（gitignored，本地）。push 时 pre-push hook 读 marker：HEAD 自写 marker 后未变 + ts<10min + command 匹配 → 跳过 npm run check；否则照跑（安全默认）。
 
 ### 步骤 M6：push 主分支
 
