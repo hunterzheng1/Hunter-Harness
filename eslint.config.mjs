@@ -19,6 +19,8 @@ export default tseslint.config(
       "resources/**",
       "packages/cli/resources/**",
       "packages/workflow-data-harness/harness/**",
+      // sync-harness.mjs 临时 staging（harness 副本，atomicSwapDir 后应清理，残留不 lint）
+      ".sync-staging/**",
       "packages/core/test/fixtures/**"
     ]
   },

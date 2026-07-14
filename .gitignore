@@ -99,6 +99,7 @@ temp/
 .cursor/
 .codegraph/
 .harness/
+.sync-staging/
 AGENTS.md
 CLAUDE.md
 CODEBUDDY.md
