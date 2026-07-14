@@ -450,6 +450,48 @@ class StatusTests(unittest.TestCase):
         after_files = {p.relative_to(self.change) for p in self.change.rglob("*") if p.is_file()}
         self.assertEqual(before_files, after_files)
 
+    def test_status_archivable_when_final_hash_is_ancestor(self) -> None:
+        # main advanced past the change's mergeFinalHash: the change's commit is
+        # still pushed (ancestor of HEAD), so archivable must be True (multi-change
+        # workflow where a later change merged on top).
+        import os
+        import subprocess
+
+        project = self.tmp / "proj-anc"
+        change = project / ".harness" / "changes" / "anc-change"
+        change.mkdir(parents=True)
+        _seed_change_dir(change)
+        _write_json(change / "meta" / "worktree.json", {"requested": True, "created": True})
+        subprocess.run(["git", "init", "-q"], cwd=str(project), check=True)
+        _write(project / "f.txt", "1\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=str(project), env=env, check=True)
+        change_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(project),
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # advance main past the change commit
+        _write(project / "f.txt", "2\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "later"], cwd=str(project), env=env, check=True)
+        # set mergeFinalHash to the (now ancestor) change commit
+        ledger = change / "evidence" / "verification-ledger.json"
+        data = json.loads(ledger.read_text(encoding="utf-8"))
+        data["mergeFinalHash"] = change_hash
+        ledger.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        code, payload = _run(["status", "--change-dir", str(change), "--json"])
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        self.assertTrue(payload["archivable"], msg=json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(payload["blockers"], [])
+        self.assertTrue(payload["checks"].get("final_hash_ancestor"))
+
 
 class ManifestCompareExcludeTests(unittest.TestCase):
     def test_excludes_execution_log_and_events(self) -> None:
