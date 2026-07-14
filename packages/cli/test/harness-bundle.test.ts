@@ -71,4 +71,54 @@ describe("embedded Harness Bundles", () => {
     expect(await exists(join(packagedResources, "bootstrap-ir"))).toBe(false);
     expect(await exists(join(packagedResources, "skills"))).toBe(false);
   });
+
+  it("bundle actual file set equals manifest declared set — API-012/UT-030", async () => {
+    for (const profile of PROFILES) {
+      for (const agent of AGENTS) {
+        const manifest = JSON.parse(await readFile(
+          join(resources, "manifests", profile, `${agent}.json`), "utf8"
+        )) as ManifestV2;
+        const bundleRoot = join(resources, "bundles", profile, agent);
+        const actual = new Set(await filePaths(bundleRoot));
+        const declared = new Set(manifest.files.map((f) => f.path));
+        const extra = [...actual].filter((p) => !declared.has(p));
+        const missing = [...declared].filter((p) => !actual.has(p));
+        expect(extra, `${profile}/${agent} extra files`).toEqual([]);
+        expect(missing, `${profile}/${agent} missing files`).toEqual([]);
+      }
+    }
+  });
+
+  it.each(PROFILES)(
+    "every adapter bundle carries skill-referenced support files — UT-033",
+    async (profile) => {
+      // design §3.8: every adapter (incl. codex) must carry the reference.md /
+      // checklist.md / protocols.md a Skill's SKILL.md references. Guards
+      // against the ".agents/skills/harness-plan only has SKILL.md" regression.
+      // Only progressive-disclosure "Read `xxx.md`" references count — a skill
+      // that declares "暂无 reference.md" (rules inline in SKILL.md) is fine.
+      for (const agent of AGENTS) {
+        const bundleRoot = join(resources, "bundles", profile, agent);
+        const entries = await readdir(bundleRoot, { withFileTypes: true });
+        const skills = entries
+          .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
+          .map((e) => e.name);
+        expect(skills.length, `${profile}/${agent} has harness-* skills`).toBeGreaterThan(0);
+        for (const skill of skills) {
+          const skillMd = await readFile(join(bundleRoot, skill, "SKILL.md"), "utf8");
+          const refs = new Set<string>();
+          for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
+            refs.add(m[1]);
+          }
+          for (const ref of refs) {
+            if (ref === "SKILL.md") continue;
+            expect(
+              await exists(join(bundleRoot, skill, ref)),
+              `${profile}/${agent}/${skill} references ${ref} but it is missing`
+            ).toBe(true);
+          }
+        }
+      }
+    }
+  );
 });

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,17 +37,74 @@ async function filesUnder(directory, base = directory) {
   return result;
 }
 
+async function assertSupportFilesPresent(bundleDir) {
+  // design §3.8 / cluster 7 point 4: every Skill's progressive-disclosure
+  // "Read `xxx.md`" reference must resolve to a file present in the staged
+  // bundle. A missing support file is a deploy failure (no runtime fallback).
+  const entries = await readdir(bundleDir, { withFileTypes: true });
+  const skills = entries
+    .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
+    .map((e) => e.name);
+  for (const skill of skills) {
+    const skillMd = await readFile(join(bundleDir, skill, "SKILL.md"), "utf8");
+    const refs = new Set();
+    for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
+      refs.add(m[1]);
+    }
+    for (const ref of refs) {
+      if (ref === "SKILL.md") continue;
+      try {
+        await access(join(bundleDir, skill, ref));
+      } catch {
+        throw new Error(
+          `SUPPORT_FILE_MISSING: ${skill} references ${ref} but it is absent from the staged bundle (design §3.8)`
+        );
+      }
+    }
+  }
+}
+
+async function atomicSwapDir(stage, target) {
+  // §3.8 要点1 / INT-005: atomically replace target with the validated staging
+  // dir. target is moved aside first, then staging is renamed into place; on
+  // rename failure the original target is restored. The release tree is never
+  // observed half-written.
+  const backup = `${target}.swap-old-${process.pid}`;
+  await rm(backup, { recursive: true, force: true });
+  let hadTarget = true;
+  try {
+    await rename(target, backup);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    hadTarget = false;
+  }
+  try {
+    await rename(stage, target);
+  } catch (error) {
+    if (hadTarget) await rename(backup, target);
+    throw error;
+  }
+  await rm(backup, { recursive: true, force: true });
+}
+
 async function generate(profile, agent) {
   const out = join(bundlesRoot, profile, agent);
   const dataOut = join(dataBundlesRoot, profile, agent);
-  await rm(out, { recursive: true, force: true });
-  await rm(dataOut, { recursive: true, force: true });
   await mkdir(dirname(out), { recursive: true });
   await mkdir(dirname(dataOut), { recursive: true });
+
+  // §3.8 要点1 / INT-005: build entirely in a staging dir; out and dataOut are
+  // untouched until staging is fully built, adapted, support-file-checked and
+  // manifest-validated, then atomically swapped in.
+  const stage = join(root, ".sync-staging", `${profile}-${agent}-${process.pid}`);
+  await rm(stage, { recursive: true, force: true });
+  // Only ensure the parent staging area exists; stage itself must NOT pre-exist
+  // so harness_deploy.py build can swap its internal staging into place.
+  await mkdir(dirname(stage), { recursive: true });
   const args = [
     deploy, "build",
     "--skills-root", source,
-    "--out", out,
+    "--out", stage,
     "--agent", agent,
     "--json"
   ];
@@ -60,10 +117,11 @@ async function generate(profile, agent) {
       `Harness ${profile}/${agent} build failed\n${result.stdout ?? ""}\n${result.stderr ?? ""}`
     );
   }
-  await adaptBundleDir(out, agent);
-  await cp(out, dataOut, { recursive: true });
+  await adaptBundleDir(stage, agent);
+  await assertSupportFilesPresent(stage);
+
   const files = [];
-  for (const item of (await filesUnder(out)).sort((a, b) => a.path.localeCompare(b.path))) {
+  for (const item of (await filesUnder(stage)).sort((a, b) => a.path.localeCompare(b.path))) {
     const bytes = await readFile(item.full);
     files.push({ path: item.path, sha256: createHash("sha256").update(bytes).digest("hex") });
   }
@@ -75,6 +133,33 @@ async function generate(profile, agent) {
     generator: "harness_deploy.py",
     files
   }, null, 2) + "\n";
+
+  // §3.8 要点2: validate declared set == actual set (missing & extra both fail).
+  const manifestTmp = join(root, ".sync-staging", `manifest-${profile}-${agent}.json`);
+  await writeFile(manifestTmp, manifest);
+  try {
+    const vResult = spawnSync(
+      python,
+      [deploy, "validate-manifest", "--bundle", stage, "--manifest", manifestTmp, "--json"],
+      { cwd: root, encoding: "utf8", shell: false }
+    );
+    if (vResult.status !== 0) {
+      throw new Error(
+        `Harness ${profile}/${agent} manifest validation failed\n${vResult.stdout ?? ""}\n${vResult.stderr ?? ""}`
+      );
+    }
+  } finally {
+    await rm(manifestTmp, { force: true });
+  }
+
+  // Atomic swap: validated staging replaces the release bundle, then a mirror
+  // staging replaces the workflow-data bundle (so removed files never linger).
+  await atomicSwapDir(stage, out);
+  const dataStage = join(root, ".sync-staging", `data-${profile}-${agent}-${process.pid}`);
+  await rm(dataStage, { recursive: true, force: true });
+  await cp(out, dataStage, { recursive: true });
+  await atomicSwapDir(dataStage, dataOut);
+
   for (const manifestDir of [join(manifestRoot, profile), join(dataManifestRoot, profile)]) {
     await mkdir(manifestDir, { recursive: true });
     await writeFile(join(manifestDir, `${agent}.json`), manifest);
