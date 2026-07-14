@@ -2,6 +2,7 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
 
 import { Command, CommanderError } from "commander";
 
@@ -27,6 +28,47 @@ export interface CliDependencies extends Partial<CommandDependencies> {
   pacoteExtract?: ResolveWorkflowDataOptions["pacoteExtract"];
 }
 
+interface SecretInputStream extends NodeJS.ReadableStream {
+  isTTY?: boolean;
+}
+
+interface SecretOutputStream extends NodeJS.WritableStream {
+  isTTY?: boolean;
+}
+
+export async function promptSecret(
+  question: string,
+  input: SecretInputStream = process.stdin,
+  output: SecretOutputStream = process.stdout
+): Promise<string> {
+  if (input.isTTY !== true || output.isTTY !== true) {
+    const terminal = createInterface({ input, output });
+    try {
+      return await terminal.question(question);
+    } finally {
+      terminal.close();
+    }
+  }
+
+  output.write(question);
+  const mutedOutput = new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    }
+  });
+  const terminal = createInterface({
+    input,
+    output: mutedOutput,
+    terminal: true
+  });
+  try {
+    return await terminal.question("");
+  } finally {
+    terminal.close();
+    output.write("\n");
+  }
+}
+
 function defaultDependencies(overrides: CliDependencies): CommandDependencies {
   return {
     cwd: overrides.cwd ?? process.cwd(),
@@ -41,6 +83,7 @@ function defaultDependencies(overrides: CliDependencies): CommandDependencies {
         terminal.close();
       }
     }),
+    promptSecret: overrides.promptSecret ?? overrides.prompt ?? promptSecret,
     fetch: overrides.fetch ?? globalThis.fetch,
     env: overrides.env ?? process.env
   };

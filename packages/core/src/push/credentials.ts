@@ -134,6 +134,17 @@ export async function ensureCredentialsGitignore(projectRoot: string): Promise<v
     }
   }
   const existing = new Set(content.split("\n").map((line) => line.trim()));
+  const harnessDirectoryIgnored = [
+    ".harness",
+    ".harness/",
+    "/.harness",
+    "/.harness/",
+    ".harness/**",
+    "/.harness/**"
+  ].some((line) => existing.has(line));
+  if (harnessDirectoryIgnored) {
+    return;
+  }
   const missing = CREDENTIALS_GITIGNORE_LINES.filter((line) => !existing.has(line));
   if (missing.length === 0) {
     return;
@@ -147,6 +158,11 @@ export interface ResolvedPushAuth {
   token: string;
 }
 
+export interface MissingPushAuth {
+  code: "SERVER_URL_REQUIRED" | "TOKEN_INVALID";
+  missing: Array<"url" | "token">;
+}
+
 export function resolvePushAuth(input: {
   serverUrlFlag?: string;
   tokenEnv?: string;
@@ -154,7 +170,7 @@ export function resolvePushAuth(input: {
   local: LocalCredentials | null;
   projectUrl: string | null;
   projectTokenEnv: string;
-}): ResolvedPushAuth | { code: "SERVER_URL_REQUIRED" | "TOKEN_INVALID" } {
+}): ResolvedPushAuth | MissingPushAuth {
   const tokenEnv = input.tokenEnv ?? input.projectTokenEnv;
   const envToken = input.env[tokenEnv]?.trim();
   const localToken = input.local?.token?.trim();
@@ -169,11 +185,21 @@ export function resolvePushAuth(input: {
     input.projectUrl ??
     undefined;
 
+  const missing: Array<"url" | "token"> = [];
   if (serverUrl === undefined || serverUrl === null || serverUrl.trim() === "") {
-    return { code: "SERVER_URL_REQUIRED" };
+    missing.push("url");
   }
   if (token === undefined) {
-    return { code: "TOKEN_INVALID" };
+    missing.push("token");
+  }
+  if (missing.length > 0) {
+    return {
+      code: missing.includes("url") ? "SERVER_URL_REQUIRED" : "TOKEN_INVALID",
+      missing
+    };
+  }
+  if (serverUrl === undefined || token === undefined) {
+    throw new Error("push auth resolution invariant failed");
   }
   return { serverUrl, token };
 }

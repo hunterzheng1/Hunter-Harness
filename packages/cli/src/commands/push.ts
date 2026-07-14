@@ -62,7 +62,9 @@ async function promptForCredentials(
     : (await dependencies.prompt("服务端 URL (https://...): ")).trim();
   const token = missing === "url"
     ? undefined
-    : (await dependencies.prompt("API Token: ")).trim();
+    : (await (dependencies.promptSecret ?? dependencies.prompt)(
+      "API Token（输入将隐藏）: "
+    )).trim();
   if ((missing === "url" || missing === "both") &&
       (serverUrl === undefined || serverUrl === "")) {
     return null;
@@ -199,11 +201,14 @@ export async function runPush(
           options.dryRun !== true &&
           error instanceof PushWorkflowError &&
           (error.code === "SERVER_URL_REQUIRED" || error.code === "TOKEN_INVALID")) {
-        const missing = error.code === "SERVER_URL_REQUIRED"
-          ? "url"
-          : error.code === "TOKEN_INVALID"
-            ? "token"
-            : "both";
+        const missingCredentials = error.details?.missing_credentials;
+        const missing = missingCredentials?.includes("url") === true &&
+            missingCredentials.includes("token")
+          ? "both"
+          : missingCredentials?.includes("url") === true ||
+              error.code === "SERVER_URL_REQUIRED"
+            ? "url"
+            : "token";
         dependencies.stderr(
           error.message + "\n可在下方录入并写入 .harness/credentials.local.yaml。\n"
         );

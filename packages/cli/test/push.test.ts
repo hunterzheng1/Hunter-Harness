@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
@@ -475,6 +475,64 @@ describe("hunter-harness push", () => {
     expect(sawAuth).toBe(true);
     expect(await readFile(join(root, ".gitignore"), "utf8"))
       .toContain(".harness/credentials.local.yaml");
+  });
+
+  it("prompts once for both missing credentials, hides the token, and confirms once", async () => {
+    const projectPath = join(root, ".harness", "project.yaml");
+    const project = parseYaml(await readFile(projectPath, "utf8")) as {
+      server: { url: string | null };
+    };
+    project.server.url = null;
+    await writeFile(projectPath, stringifyYaml(project, { sortMapEntries: true }), "utf8");
+    const gitignorePath = join(root, ".gitignore");
+    const originalGitignore = "node_modules/\n.harness/\n";
+    await writeFile(gitignorePath, originalGitignore, "utf8");
+
+    const prompts: string[] = [];
+    const secretPrompts: string[] = [];
+    let sawAuth = false;
+    const fetch = vi.fn(async (
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      sawAuth = new Headers(init?.headers).get("authorization") ===
+        "Bearer saved-secret-token";
+      return json({ code: "STOP_AFTER_AUTH", message: "fixture stop" }, 500);
+    });
+
+    const code = await runCli(["push"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        prompts.push(question);
+        if (question.includes("URL")) return "https://stored.example.test\n";
+        if (question.includes("Create this proposal")) return "y\n";
+        return "unexpected-regular-prompt\n";
+      },
+      promptSecret: async (question) => {
+        secretPrompts.push(question);
+        return "saved-secret-token\n";
+      }
+    });
+
+    expect(code).toBe(4);
+    expect(prompts.filter((item) => item.includes("URL"))).toHaveLength(1);
+    expect(secretPrompts).toHaveLength(1);
+    expect(prompts.filter((item) => item.includes("Create this proposal"))).toHaveLength(1);
+    expect(sawAuth).toBe(true);
+    expect(parseYaml(await readFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "utf8"
+    ))).toEqual({
+      server_url: "https://stored.example.test",
+      token: "saved-secret-token"
+    });
+    expect(stdout.join("") + stderr.join("")).not.toContain("saved-secret-token");
+    expect(await readFile(gitignorePath, "utf8")).toBe(originalGitignore);
   });
 
   it("resumes a persisted upload session after interruption", async () => {

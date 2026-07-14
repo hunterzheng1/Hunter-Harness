@@ -49,6 +49,7 @@ export interface PushWorkflowErrorDetails {
   findings?: SensitiveFindingSummary[];
   finding_count?: number;
   scanner_version?: string;
+  missing_credentials?: Array<"url" | "token">;
 }
 
 export class PushWorkflowError extends Error {
@@ -448,10 +449,6 @@ export async function pushProject(options: PushProjectOptions) {
   if (options.dryRun) {
     return { preview, proposalId: null, projectId: project.project.project_id };
   }
-  if (options.confirmProposal !== undefined && !await options.confirmProposal(preview)) {
-    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
-  }
-
   const localCredentials = await readLocalCredentials(root);
   const auth = resolvePushAuth({
     ...(options.serverUrl === undefined ? {} : { serverUrlFlag: options.serverUrl }),
@@ -467,14 +464,16 @@ export async function pushProject(options: PushProjectOptions) {
         "server_url is required; use --server-url, project.yaml server.url, or " +
           CREDENTIALS_HINT,
         3,
-        "SERVER_URL_REQUIRED"
+        "SERVER_URL_REQUIRED",
+        { missing_credentials: auth.missing }
       );
     }
     const tokenEnv = options.tokenEnv ?? project.server.token_env;
     throw new PushWorkflowError(
       "API token is unset; set " + tokenEnv + " or " + CREDENTIALS_HINT,
       8,
-      "TOKEN_INVALID"
+      "TOKEN_INVALID",
+      { missing_credentials: auth.missing }
     );
   }
   const serverUrl = auth.serverUrl;
@@ -491,6 +490,9 @@ export async function pushProject(options: PushProjectOptions) {
   }
   if (parsedServerUrl.protocol !== "https:") {
     throw new PushWorkflowError("server_url must use HTTPS", 3, "SERVER_URL_INVALID");
+  }
+  if (options.confirmProposal !== undefined && !await options.confirmProposal(preview)) {
+    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
   }
   const workflowPath = join(
     root, ".harness", "state", "local", "push-workflow.json"

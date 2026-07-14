@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -60,7 +60,16 @@ describe("push credentials.local", () => {
       local: null,
       projectUrl: "https://project.example.test",
       projectTokenEnv: "HUNTER_HARNESS_TOKEN"
-    })).toEqual({ code: "TOKEN_INVALID" });
+    })).toEqual({ code: "TOKEN_INVALID", missing: ["token"] });
+  });
+
+  it("reports both missing credentials in one result", () => {
+    expect(resolvePushAuth({
+      env: {},
+      local: null,
+      projectUrl: null,
+      projectTokenEnv: "HUNTER_HARNESS_TOKEN"
+    })).toEqual({ code: "SERVER_URL_REQUIRED", missing: ["url", "token"] });
   });
 
   it("ensures credentials paths are gitignored", async () => {
@@ -70,6 +79,16 @@ describe("push credentials.local", () => {
     for (const line of CREDENTIALS_GITIGNORE_LINES) {
       expect(content).toContain(line);
     }
+  });
+
+  it("does not rewrite .gitignore when the whole .harness directory is ignored", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-gitignore-parent-"));
+    const original = "node_modules/\n.harness/\n";
+    await writeFile(join(root, ".gitignore"), original, "utf8");
+
+    await ensureCredentialsGitignore(root);
+
+    expect(await readFile(join(root, ".gitignore"), "utf8")).toBe(original);
   });
 
   it("rejects non-HTTPS server_url on write", async () => {
