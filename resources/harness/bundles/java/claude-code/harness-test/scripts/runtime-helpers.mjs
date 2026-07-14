@@ -206,7 +206,10 @@ export function findCredentialValues(text) {
       if (!m) continue;
       const value = m[group] || '';
       if (SAFE_VALUE.test(value)) continue; // placeholder / env ref — safe
-      findings.push({ line: idx + 1, code, snippet: line.trim().slice(0, 80) });
+      // Redact the captured credential value in the snippet so reports/logs
+      // never leak it; field name + line number remain for locating the finding.
+      const snippet = (value ? line.replace(value, '<REDACTED>') : line).trim().slice(0, 80);
+      findings.push({ line: idx + 1, code, snippet });
     }
   });
   return findings;

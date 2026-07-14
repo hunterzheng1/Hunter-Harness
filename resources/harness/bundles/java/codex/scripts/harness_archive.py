@@ -102,11 +102,15 @@ def read_json(path: Path) -> Any:
 
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    # 强制 LF，UTF-8 无 BOM；原子写 temp+os.replace（与 runtime-helpers.mjs 一致）。
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def sha256_file(path: Path) -> str:
