@@ -7,6 +7,7 @@ import { URL, fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(root);
+const tsc = fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url));
 const temporary = await mkdtemp(join(tmpdir(), "hunter-pack-smoke-"));
 const npmCli = process.env.npm_execpath;
 if (npmCli === undefined) {
@@ -52,6 +53,11 @@ async function exists(path) {
 }
 
 try {
+  // npm pack runs each workspace prepack script in isolation. Build the
+  // internal type dependencies first so this smoke test also works from a
+  // clean checkout where contracts/core dist directories do not exist yet.
+  run(process.execPath, [tsc, "-b", "packages/contracts", "packages/core"]);
+
   run(process.execPath, [npmCli, "pack", "-w", "packages/workflow-data-harness", "--pack-destination", temporary]);
   const dataArchive = (await readdir(temporary)).find((name) =>
     name.startsWith("hunter-harness-workflow-harness-") && name.endsWith(".tgz")
