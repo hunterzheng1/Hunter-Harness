@@ -33,6 +33,25 @@ HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
 FRAGMENT_HINT_RE = re.compile(r"^>\s*片段：\[\[shared/[^\]]+\]\]\s*.*$")
 
 BUILD_MARKER = ".harness-build.json"
+# Install-side managed manifests record which files a prior install owned, so a
+# later conservative install can delete removed managed files while preserving
+# user-owned files (design §3.8 要点4). Skills manifest lives in the skills
+# target dir; agents manifest lives in .claude/agents.
+MANIFEST_NAME = ".harness-managed.json"
+AGENTS_MANAGED_NAME = ".harness-managed-agents.json"
+INSTALL_METADATA = frozenset({MANIFEST_NAME, AGENTS_MANAGED_NAME})
+
+
+def _read_managed_set(path: Path) -> set[str]:
+    """Return the ``managedFiles`` set from a prior install manifest, or empty."""
+    if not path.is_file():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        return set()
+    files = data.get("managedFiles") if isinstance(data, dict) else None
+    return set(files) if isinstance(files, list) else set()
 
 SKIP_DIR_NAMES = {
     "__pycache__",
@@ -560,10 +579,37 @@ def cmd_install(build_out: Path, project: Path, target: Path | None) -> dict[str
     dest = (target or project / ".claude" / "skills").resolve()
     if not (build_out / BUILD_MARKER).is_file():
         raise ValueError(f"install source is not a marked harness build: {build_out}")
+
+    # Managed set = real files in the build (exclude build marker). Recorded so a
+    # later conservative install can delete removed managed files and preserve
+    # user-owned files (design §3.8 要点4). Paths are relative to dest, which
+    # mirrors build_out (agents/ included because copy_tree keeps it there).
+    managed_new = {p for p in collect_files(build_out) if p != BUILD_MARKER}
+    managed_agents_new = {
+        p[len("agents/"):]
+        for p in managed_new
+        if p.startswith("agents/") and "/" not in p[len("agents/"):]
+    }
+
     backup: str | None = None
     staging = dest.parent / f".{dest.name}.staging-{uuid.uuid4().hex[:8]}"
     shutil.copytree(build_out, staging)
     if dest.exists() and any(dest.iterdir()):
+        managed_old = _read_managed_set(dest / MANIFEST_NAME)
+        # Preserve user-owned files: anything in dest that was NOT managed by a
+        # prior install is copied into staging (never overwriting managed files
+        # that staging already carries from build_out). Removed managed files
+        # (in managed_old but not managed_new) are simply not carried over.
+        for rel in collect_files(dest):
+            if rel in (BUILD_MARKER, MANIFEST_NAME) or rel in INSTALL_METADATA:
+                continue
+            if rel in managed_old:
+                continue
+            dst = staging / rel
+            if dst.exists():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dest / rel, dst)
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_path = dest.parent / f"skills-backup-{stamp}"
         os.replace(dest, backup_path)
@@ -576,12 +622,41 @@ def cmd_install(build_out: Path, project: Path, target: Path | None) -> dict[str
             os.replace(Path(backup), dest)
         raise
 
+    # Record the managed set so the next conservative install can distinguish
+    # managed vs user-owned files.
+    (dest / MANIFEST_NAME).write_text(
+        json.dumps(
+            {"schemaVersion": 1, "managedFiles": sorted(managed_new)},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
     agents_src = build_out / "agents"
     agents_dest = project / ".claude" / "agents"
     if agents_src.is_dir():
         agents_dest.mkdir(parents=True, exist_ok=True)
+        agents_old = _read_managed_set(agents_dest / AGENTS_MANAGED_NAME)
+        # Delete managed agents removed since the prior install; user agents
+        # (never in a managed set) are left untouched.
+        for name in list(agents_old):
+            if name not in managed_agents_new:
+                (agents_dest / name).unlink(missing_ok=True)
         for agent in agents_src.glob("*.md"):
             shutil.copy2(agent, agents_dest / agent.name)
+        (agents_dest / AGENTS_MANAGED_NAME).write_text(
+            json.dumps(
+                {"schemaVersion": 1, "managedFiles": sorted(managed_agents_new)},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
 
     return {
         "ok": True,
@@ -613,14 +688,46 @@ def cmd_diff(build_out: Path, project: Path, target: Path | None) -> dict[str, A
     current = collect_files(installed)
     outdated = [p for p, h in built.items() if p in current and current[p] != h]
     missing = [p for p in built if p not in current]
-    extra = [p for p in current if p not in built]
+    # extra includes install-side managed manifests only as metadata, so they
+    # are excluded from the extra set; every other untracked file is a real
+    # extra and must mark the install stale (design §3.8 要点3).
+    extra = [p for p in current if p not in built and p not in INSTALL_METADATA]
     return {
         "ok": True,
         "action": "diff",
-        "stale": bool(outdated or missing),
+        "stale": bool(outdated or missing or extra),
         "outdated": sorted(outdated),
         "missing": sorted(missing),
         "extra": sorted(extra),
+        "comparedAt": now_iso(),
+    }
+
+
+def cmd_validate_manifest(
+    bundle_dir: Path, manifest_entries: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Compare a bundle directory's actual file set against the manifest's
+    declared set. Both missing (declared but absent) and extra (present but
+    undeclared) fail validation (design §3.8 要点2)."""
+    bundle_dir = bundle_dir.resolve()
+    actual = collect_files(bundle_dir)
+    declared: dict[str, str] = {}
+    for entry in manifest_entries:
+        path = entry.get("path")
+        sha = entry.get("sha256")
+        if isinstance(path, str) and isinstance(sha, str):
+            declared[path] = sha
+    missing = sorted(p for p in declared if p not in actual)
+    extra = sorted(p for p in actual if p not in declared)
+    hash_mismatch = sorted(
+        p for p in declared if p in actual and actual[p] != declared[p]
+    )
+    return {
+        "ok": not (missing or extra or hash_mismatch),
+        "action": "validate-manifest",
+        "missing": missing,
+        "extra": extra,
+        "hashMismatch": hash_mismatch,
         "comparedAt": now_iso(),
     }
 
@@ -647,6 +754,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--project", type=Path, required=True)
     d.add_argument("--target", type=Path)
     d.add_argument("--json", action="store_true")
+
+    v = sub.add_parser(
+        "validate-manifest", help="Validate bundle dir vs manifest (missing/extra/hash)"
+    )
+    v.add_argument("--bundle", type=Path, required=True)
+    v.add_argument("--manifest", type=Path, required=True)
+    v.add_argument("--json", action="store_true")
     return p
 
 
@@ -662,6 +776,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "diff":
             result = cmd_diff(args.from_dir, args.project, args.target)
             return emit_json(result) if args.json else 0
+        if args.command == "validate-manifest":
+            manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))
+            entries = (
+                manifest_data.get("files", [])
+                if isinstance(manifest_data, dict)
+                else []
+            )
+            result = cmd_validate_manifest(args.bundle, entries)
+            if args.json:
+                return emit_json(result)
+            return 0 if result["ok"] else 1
     except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
         if getattr(args, "json", False):
             return emit_json({"ok": False, "error": str(exc)}, ok=False)

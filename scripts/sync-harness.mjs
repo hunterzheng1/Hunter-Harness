@@ -64,7 +64,7 @@ async function assertSupportFilesPresent(bundleDir) {
   }
 }
 
-async function atomicSwapDir(stage, target) {
+export async function atomicSwapDir(stage, target) {
   // §3.8 要点1 / INT-005: atomically replace target with the validated staging
   // dir. target is moved aside first, then staging is renamed into place; on
   // rename failure the original target is restored. The release tree is never
@@ -213,12 +213,24 @@ async function writeWorkflowFamilyManifest() {
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
 }
 
-for (const profile of PROFILES) {
-  for (const agent of AGENTS) {
-    await generate(profile, agent);
-    process.stdout.write(`generated ${profile}/${agent}\n`);
+async function main() {
+  for (const profile of PROFILES) {
+    for (const agent of AGENTS) {
+      await generate(profile, agent);
+      process.stdout.write(`generated ${profile}/${agent}\n`);
+    }
   }
+  await copyMigrations();
+  await writeWorkflowFamilyManifest();
+  process.stdout.write("generated 2 profiles × 4 agents Harness Bundles\n");
 }
-await copyMigrations();
-await writeWorkflowFamilyManifest();
-process.stdout.write("generated 2 profiles × 4 agents Harness Bundles\n");
+
+// Run only when executed directly (node scripts/sync-harness.mjs), not when
+// imported by tests. Keeps atomicSwapDir unit-testable without triggering a
+// full 8-bundle sync at import time.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack ?? error}\n`);
+    process.exit(1);
+  });
+}

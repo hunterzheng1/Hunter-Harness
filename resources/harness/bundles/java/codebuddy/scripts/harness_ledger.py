@@ -15,6 +15,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-VERIFICATIONS = frozenset({"compile", "unitTest", "unitTestFull", "apiTest", "install"})
+VERIFICATIONS = frozenset({"compile", "unitTest", "unitTestFull", "apiTest", "install", "package"})
 STATUS_MAP = {
     "ok": "OK",
     "OK": "OK",
@@ -36,6 +37,24 @@ STATUS_MAP = {
     "NOT_RUN": "NOT_RUN",
 }
 BROAD_SCOPES = frozenset({"module", "module-am", "full"})
+
+# --- Ledger v2 (cluster 2) ---
+LEDGER_VERSION = "harness-ledger-2"
+DIFF_HASH_VERSION = "content-changeset-1"
+# Coverage lattice: a recorded verification's coverage rank must meet the
+# verification's required rank. Prevents incremental evidence from satisfying
+# a module/full gate (UT-015 / API-005).
+COVERAGE_RANK = {"incremental": 0, "module": 1, "module-am": 2, "full": 3}
+REQUIRED_COVERAGE = {
+    "unitTest": 0,      # incremental suffices (scope checked separately)
+    "unitTestFull": 1,  # module or broader
+    "compile": 1,
+    "apiTest": 1,
+    "install": 2,       # module-am or broader
+    "package": 2,
+}
+# git empty-tree object id (used as base fallback when no commit exists).
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def now_iso() -> str:
@@ -51,6 +70,8 @@ def emit_json(payload: dict[str, Any], *, as_json: bool) -> None:
         reuse = payload.get("reuse")
         if reuse is not None:
             sys.stdout.write(f"reuse={reuse} reason={payload.get('reason')}\n")
+        elif "diffHash" in payload:
+            sys.stdout.write(f"{payload['diffHash']}\n")
         elif "inputsHash" in payload:
             sys.stdout.write(f"{payload['inputsHash']}\n")
         else:
@@ -109,6 +130,95 @@ def compute_inputs_hash(file_paths: list[str]) -> tuple[str, list[str]]:
         combined.update(by_path[path].encode("ascii"))
         combined.update(b"\n")
     return f"sha256:{combined.hexdigest()}", resolved_files_sorted
+
+
+def _git_bytes(args: list[str], cwd: Path) -> bytes:
+    """Run git, return raw stdout bytes. Raises RuntimeError on non-zero exit."""
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
+    if proc.returncode != 0:
+        msg = proc.stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"git {' '.join(args)} failed: {msg}")
+    return proc.stdout
+
+
+def _root_commit(repo_root: Path) -> str | None:
+    out = _git_bytes(["rev-list", "--max-parents=0", "HEAD"], repo_root)
+    lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+def _changed_paths(repo_root: Path, base: str | None) -> tuple[str, list[str]]:
+    """Commit-invariant change set: tracked files differing from base (working
+    tree) plus untracked files. Sorted by repo-relative path.
+
+    Working-tree content is unchanged by a checkpoint commit, so the change set
+    and its bytes are identical before/after commit (UT-011).
+    """
+    if not base:
+        base = _root_commit(repo_root) or _EMPTY_TREE
+    out = _git_bytes(["diff", "--name-only", "--no-renames", "-z", base], repo_root)
+    paths: set[str] = set()
+    for name in out.split(b"\x00"):
+        if name:
+            paths.add(name.decode("utf-8"))
+    out2 = _git_bytes(["ls-files", "--others", "--exclude-standard", "-z"], repo_root)
+    for name in out2.split(b"\x00"):
+        if name:
+            paths.add(name.decode("utf-8"))
+    return base, sorted(paths)
+
+
+def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Byte-level, commit-invariant diff hash (cluster 2).
+
+    Content-based change set: every file whose working-tree content differs
+    from base, plus untracked files. Each entry is length-framed
+    (path-len | path | exists-flag | content-len | content) so the payload is
+    independent of shell, console encoding, BOM and system newlines. Stable
+    across a checkpoint commit because git does not mutate the working tree.
+    """
+    repo_root = Path(repo_root).resolve()
+    base, paths = _changed_paths(repo_root, base)
+    digest = hashlib.sha256()
+    digest.update(DIFF_HASH_VERSION.encode("utf-8"))
+    digest.update(b"\x00")
+    for rel in paths:
+        path_bytes = rel.encode("utf-8")
+        digest.update(len(path_bytes).to_bytes(4, "big"))
+        digest.update(path_bytes)
+        abs_path = repo_root / rel
+        if abs_path.is_file():
+            content = abs_path.read_bytes()
+            digest.update(b"\x01")
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        else:
+            # Deleted since base: record absence with no content.
+            digest.update(b"\x00")
+            digest.update((0).to_bytes(8, "big"))
+    try:
+        head = _git_bytes(["rev-parse", "HEAD"], repo_root).decode("utf-8", "replace").strip()
+    except RuntimeError:
+        head = ""
+    meta = {
+        "algorithmVersion": DIFF_HASH_VERSION,
+        "fileCount": len(paths),
+        "base": base,
+        "head": head or None,
+    }
+    return f"sha256:{digest.hexdigest()}", meta
+
+
+def derive_coverage(verification: str, scope: str | None) -> str:
+    """Derive coverage lattice value from verification + scope (cluster 2)."""
+    s = str(scope).strip() if scope else ""
+    if verification == "unitTest":
+        return "module" if s in BROAD_SCOPES else "incremental"
+    if verification == "unitTestFull":
+        return "full" if s == "full" else "module"
+    if verification in ("install", "package"):
+        return "module-am"
+    return "module"
 
 
 def expand_profile_input_files(
@@ -275,6 +385,9 @@ def decide_can_reuse(
     files: list[str],
     requested_scope: str | None = None,
     requested_command: str | None = None,
+    requested_toolchain_hash: str | None = None,
+    requested_profile_hash: str | None = None,
+    requested_environment_hash: str | None = None,
 ) -> dict[str, Any]:
     ledger, ledger_path = load_ledger(change_dir)
     if ledger is None:
@@ -282,6 +395,7 @@ def decide_can_reuse(
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "LEDGER_MISSING",
             "verification": verification,
             "detail": "ledger missing",
         }
@@ -292,6 +406,7 @@ def decide_can_reuse(
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "VALIDATIONS_MISSING",
             "verification": verification,
             "detail": "validations missing",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -303,6 +418,7 @@ def decide_can_reuse(
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "VALIDATION_MISSING",
             "verification": verification,
             "detail": f"validation '{verification}' missing",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -314,6 +430,17 @@ def decide_can_reuse(
     evidence = entry.get("evidence")
     command = entry.get("command")
     scope = entry.get("scope")
+    algorithm_version = entry.get("algorithmVersion")
+    coverage = entry.get("coverage")
+
+    # v2 fields: a v1 entry (no algorithmVersion/coverage) is conservatively
+    # invalidated once and must be re-recorded with v2 fields (COM-002). No
+    # silent upgrade of stale evidence.
+    v2_missing: list[str] = []
+    if not _nonempty_str(algorithm_version):
+        v2_missing.append("algorithmVersion")
+    if not (_nonempty_str(coverage) and str(coverage).strip() in COVERAGE_RANK):
+        v2_missing.append("coverage")
 
     missing: list[str] = []
     if not _nonempty_str(stored_hash):
@@ -341,14 +468,32 @@ def decide_can_reuse(
     if verification == "install" and not worktree_ready(ledger, change_dir):
         missing.append("worktree")
 
-    if missing:
+    all_missing = v2_missing + missing
+    if all_missing:
         return {
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "MISSING_V2_FIELDS" if v2_missing else "MISSING_FIELDS",
             "verification": verification,
-            "detail": "missing or invalid: " + ", ".join(missing),
+            "detail": "missing or invalid: " + ", ".join(all_missing),
             "ledger_path": str(ledger_path) if ledger_path else None,
+        }
+
+    # Coverage lattice: recorded coverage rank must meet the verification's
+    # required rank. Stops incremental evidence satisfying a module/full gate
+    # (UT-015 / API-005).
+    required = REQUIRED_COVERAGE.get(verification, 1)
+    if COVERAGE_RANK.get(str(coverage).strip(), -1) < required:
+        return {
+            "ok": True,
+            "reuse": False,
+            "reason": "insufficient-evidence",
+            "code": "COVERAGE_INSUFFICIENT",
+            "verification": verification,
+            "detail": f"coverage '{coverage}' below required rank {required} for {verification}",
+            "ledger_path": str(ledger_path) if ledger_path else None,
+            "stored_coverage": coverage,
         }
 
     if requested_command is not None and str(requested_command).strip():
@@ -357,6 +502,7 @@ def decide_can_reuse(
                 "ok": True,
                 "reuse": False,
                 "reason": "rerun",
+                "code": "COMMAND_CHANGED",
                 "verification": verification,
                 "detail": "command changed",
                 "ledger_path": str(ledger_path) if ledger_path else None,
@@ -364,11 +510,39 @@ def decide_can_reuse(
                 "requested_command": requested_command,
             }
 
+    # Toolchain / profile / environment hash drift -> structured rerun (UT-017).
+    # Only compared when both the stored entry and the request carry the field.
+    for field, requested, code_name in (
+        ("toolchainHash", requested_toolchain_hash, "TOOLCHAIN_CHANGED"),
+        ("profileHash", requested_profile_hash, "PROFILE_CHANGED"),
+        ("environmentHash", requested_environment_hash, "ENVIRONMENT_CHANGED"),
+    ):
+        stored = entry.get(field)
+        if (
+            requested
+            and str(requested).strip()
+            and _nonempty_str(stored)
+            and str(stored).strip() != str(requested).strip()
+        ):
+            return {
+                "ok": True,
+                "reuse": False,
+                "reason": "rerun",
+                "code": code_name,
+                "verification": verification,
+                "detail": f"{field} changed",
+                "ledger_path": str(ledger_path) if ledger_path else None,
+                "field": field,
+                "stored": stored,
+                "requested": requested,
+            }
+
     if verification == "unitTest" and not _scope_covers(scope, requested_scope):
         return {
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "SCOPE_INSUFFICIENT",
             "verification": verification,
             "detail": "scope does not cover requested tests",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -383,6 +557,7 @@ def decide_can_reuse(
             "ok": True,
             "reuse": False,
             "reason": "insufficient-evidence",
+            "code": "INPUT_FILE_MISSING",
             "verification": verification,
             "detail": str(exc),
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -393,6 +568,7 @@ def decide_can_reuse(
             "ok": True,
             "reuse": False,
             "reason": "rerun",
+            "code": "INPUTS_HASH_CHANGED",
             "verification": verification,
             "detail": "inputsHash changed",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -405,6 +581,7 @@ def decide_can_reuse(
         "ok": True,
         "reuse": True,
         "reason": "reuse",
+        "code": "REUSED",
         "verification": verification,
         "ledger_path": str(ledger_path) if ledger_path else None,
         "inputsHash": stored_hash,
@@ -475,6 +652,9 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             files=files,
             requested_scope=getattr(args, "scope", None),
             requested_command=getattr(args, "command", None),
+            requested_toolchain_hash=getattr(args, "toolchain_hash", None),
+            requested_profile_hash=getattr(args, "profile_hash", None),
+            requested_environment_hash=getattr(args, "environment_hash", None),
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
@@ -542,6 +722,32 @@ def cmd_record(args: argparse.Namespace) -> int:
         # would let can-reuse wrongly approve untested classes (D13 guardrail).
         # Missing scope → can-reuse treats unitTest as insufficient-evidence.
 
+        # v2 fields (cluster 2): algorithmVersion + coverage lattice + optional
+        # toolchain/profile/environment hashes. v1 entries missing these are
+        # conservatively invalidated by can-reuse (COM-002).
+        entry["algorithmVersion"] = LEDGER_VERSION
+        coverage = getattr(args, "coverage", None)
+        if not (_nonempty_str(coverage) and str(coverage).strip() in COVERAGE_RANK):
+            coverage = derive_coverage(verification, args.scope)
+        entry["coverage"] = coverage
+        for field, attr in (
+            ("toolchainHash", "toolchain_hash"),
+            ("profileHash", "profile_hash"),
+            ("environmentHash", "environment_hash"),
+        ):
+            val = getattr(args, attr, None)
+            if _nonempty_str(val):
+                entry[field] = str(val).strip()
+        # package verification: record build artifact + test-reuse provenance.
+        if verification == "package":
+            if _nonempty_str(getattr(args, "deploy_artifact", None)):
+                entry["deployArtifact"] = str(args.deploy_artifact).strip()
+            if _nonempty_str(getattr(args, "artifact_hash", None)):
+                entry["sha256"] = str(args.artifact_hash).strip()
+            entry["testsExecuted"] = bool(getattr(args, "tests_executed", False))
+            if _nonempty_str(getattr(args, "tests_reused_from", None)):
+                entry["testsReusedFrom"] = str(args.tests_reused_from).strip()
+
         ledger["validations"][verification] = entry
         if "changeName" not in ledger:
             ledger["changeName"] = change_dir.name
@@ -563,6 +769,21 @@ def cmd_record(args: argparse.Namespace) -> int:
         "ledger_path": str(out_path),
         "diffHash": ledger.get("diffHash"),
     }
+    emit_json(payload, as_json=as_json)
+    return 0
+
+
+def cmd_diff_hash(args: argparse.Namespace) -> int:
+    as_json = bool(args.json)
+    repo_raw = getattr(args, "repo", None)
+    repo = Path(repo_raw).expanduser().resolve() if repo_raw else Path.cwd().resolve()
+    base = getattr(args, "base", None)
+    try:
+        diff_hash, meta = compute_diff_hash(repo, base=base)
+    except (OSError, RuntimeError) as exc:
+        return emit_error(str(exc), as_json=as_json)
+    payload = {"ok": True, "action": "diff-hash", "diffHash": diff_hash}
+    payload.update(meta)
     emit_json(payload, as_json=as_json)
     return 0
 
@@ -630,6 +851,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional command to compare against ledger entry",
     )
+    p_reuse.add_argument(
+        "--toolchain-hash",
+        default=None,
+        help="optional toolchain hash to compare against ledger entry (UT-017)",
+    )
+    p_reuse.add_argument(
+        "--profile-hash",
+        default=None,
+        help="optional profile hash to compare against ledger entry (UT-017)",
+    )
+    p_reuse.add_argument(
+        "--environment-hash",
+        default=None,
+        help="optional environment hash to compare against ledger entry (UT-017)",
+    )
     p_reuse.set_defaults(func=cmd_can_reuse)
 
     p_record = sub.add_parser("record", parents=[shared_json], help="write validation result into ledger")
@@ -656,7 +892,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional scope (default module when absent on new entries)",
     )
+    p_record.add_argument(
+        "--coverage",
+        default=None,
+        help="optional coverage lattice value (incremental|module|module-am|full); derived when absent",
+    )
+    p_record.add_argument("--toolchain-hash", default=None)
+    p_record.add_argument("--profile-hash", default=None)
+    p_record.add_argument("--environment-hash", default=None)
+    p_record.add_argument("--deploy-artifact", default=None, help="package: built artifact path")
+    p_record.add_argument("--artifact-hash", default=None, help="package: artifact sha256")
+    p_record.add_argument(
+        "--tests-executed",
+        type=lambda v: str(v).lower() in ("1", "true", "yes", "y"),
+        default=False,
+        help="package: whether tests ran in this package lifecycle",
+    )
+    p_record.add_argument(
+        "--tests-reused-from",
+        default=None,
+        help="package: prior verifications reused when testsExecuted=false",
+    )
     p_record.set_defaults(func=cmd_record)
+
+    p_diff = sub.add_parser(
+        "diff-hash",
+        parents=[shared_json],
+        help="compute commit-invariant byte-level diff hash for a repo",
+    )
+    p_diff.add_argument("--repo", default=None, help="repo root (default: cwd)")
+    p_diff.add_argument("--base", default=None, help="base commit (default: root commit)")
+    p_diff.set_defaults(func=cmd_diff_hash)
 
     return parser
 
