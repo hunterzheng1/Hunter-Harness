@@ -125,7 +125,14 @@ def read_json(path: Path) -> Any:
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    path.write_text(text, encoding="utf-8", newline="\n")
+    # 原子写 temp+os.replace：崩溃后不留半写文件（与 runtime-helpers.mjs writeJsonUtf8NoBom 一致）。
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_build_profile(project: Path) -> dict[str, Any]:
@@ -151,6 +158,72 @@ def get_service_start(profile: dict[str, Any]) -> dict[str, Any]:
             "configure the service start command explicitly (will not guess)"
         )
     return svc
+
+
+# Worktree/change 路径标记：持久 profile 的 serviceStart 不得含这些具体路径。
+# runtime resolve 把具体 overlay/profile 注入到 session，不写回持久 profile
+# （spec §3.1 持久 profile 只保存模板；§3.4 修复输入端陈旧 profile）。
+STALE_WORKTREE_MARKERS: tuple[str, ...] = (
+    ".claude/worktrees/",
+    ".cursor/worktrees/",
+    ".codeium/worktrees/",
+)
+
+
+def _detect_stale_persistent_values(service_start: dict[str, Any]) -> list[str]:
+    """检测 serviceStart 是否含具体旧 worktree/change 持久路径。
+
+    持久 profile 只保存模板；command/overlayPath/profile 嵌入 worktree 路径
+    说明是 v1 残留或被错误写回的已解析 overlay，必须拒绝（spec §3.4）。
+    """
+    stale: list[str] = []
+    for field in ("command", "overlayPath", "profile"):
+        val = service_start.get(field)
+        if not isinstance(val, str) or not val:
+            continue
+        for marker in STALE_WORKTREE_MARKERS:
+            if marker in val:
+                stale.append(f"{field} contains stale worktree path: {marker}")
+                break
+    return stale
+
+
+def resolve_service_start(
+    profile: dict[str, Any],
+    *,
+    change_name: str | None = None,
+    worktree_root: Path | None = None,
+    overlay_path: str | None = None,
+) -> dict[str, Any]:
+    """从模板 serviceStart + runtime context 生成 resolved serviceStart。
+
+    spec §3.1：持久 profile 的 serviceStart 是模板（profile/overlayPath 留空）；
+    runtime 注入具体 overlay/profile 到返回值，写入 session，**不写回持久 profile**。
+    spec §3.4：含 worktree/change 陈旧持久值时拒绝（修复输入端陈旧 profile）。
+
+    向后兼容：持久 profile.profile 非空（如 v1 残留 "local-dev"）→ 保留；
+    overlay_path 未提供 → 保留持久 overlayPath（可能为空）。
+    """
+    service_start = get_service_start(profile)  # 校验 command 非空
+
+    stale = _detect_stale_persistent_values(service_start)
+    if stale:
+        raise ValueError(
+            "serviceStart contains stale persistent worktree/change values; "
+            "run harness_profile.py migrate to clear: " + "; ".join(stale)
+        )
+
+    resolved = dict(service_start)
+    # runtime overlay 注入：显式 overlay_path 覆盖；否则保留持久模板值
+    if overlay_path is not None:
+        resolved["overlayPath"] = overlay_path
+    # runtime profile 注入：持久 profile 留空时用 change_name；非空则保留
+    if not str(resolved.get("profile") or "").strip():
+        resolved["profile"] = change_name or "local-dev"
+    # worktree_root 预留给未来相对 overlay 路径解析（spec §3.6 state snapshot）；
+    # 不写入返回值，避免污染 session。
+    _ = worktree_root
+    return resolved
 
 
 def resolve_service_input_files(
@@ -934,8 +1007,22 @@ def cmd_ensure(args: argparse.Namespace) -> int:
 
     try:
         profile = load_build_profile(project)
-        service_start = get_service_start(profile)
     except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+        return emit_error(str(exc), as_json=as_json)
+
+    # cluster 3 (spec §3.1/§3.4): resolve 模板 serviceStart + runtime context。
+    # 持久 profile 只保存模板；runtime overlay/profile 注入到 session，不写回持久 profile。
+    # 含 worktree/change 陈旧持久值时拒绝（修复输入端陈旧 profile）。
+    change_name = getattr(args, "change_name", None) or change_dir.name
+    overlay = getattr(args, "overlay", None)
+    try:
+        service_start = resolve_service_start(
+            profile,
+            change_name=change_name,
+            worktree_root=project,
+            overlay_path=overlay,
+        )
+    except ValueError as exc:
         return emit_error(str(exc), as_json=as_json)
 
     command = str(service_start["command"]).strip()
@@ -1291,6 +1378,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--files",
         default=None,
         help="comma-separated service module source files for inputsHash",
+    )
+    p_ensure.add_argument(
+        "--change-name",
+        default=None,
+        help="change-name for runtime profile resolve (default: change-dir name)",
+    )
+    p_ensure.add_argument(
+        "--overlay",
+        default=None,
+        help="runtime overlay path injected into resolved serviceStart",
     )
     p_ensure.add_argument("--json", action="store_true")
     p_ensure.set_defaults(func=cmd_ensure)

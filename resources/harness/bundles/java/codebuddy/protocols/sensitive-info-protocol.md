@@ -90,3 +90,16 @@ spring:
 - API 测试报告的持久化记录中
 
 > 对于 API 测试中获取的 token，在测试执行过程中可临时使用（如 Playwright 请求），但测试报告中必须用 `<TOKEN_REDACTED>` 替换。
+
+## 6. profile / 规则 / Markdown 凭据扫描
+
+profile `build-profile.json`、规则文档、Skill Markdown **不得包含凭据明文值**（spec §3.4 凭据边界：配置只含 env key、cache path、角色，不含值）。发布前用 `harness-test/scripts/runtime-helpers.mjs` 的 `findCredentialValues(text)` 扫描：
+
+- 命中 `password/token/secret/accessKey/Authorization: Bearer/jdbc password=` 等明文值 → ❌FAIL，必须改为占位符 `<*_REDACTED>` 或 env 引用 `${ENV}` / `$ENV`。
+- 占位符 `<TOKEN_REDACTED>` 与 env 引用 `${TEST_TOKEN}` / `$DB_PASSWORD` 不报（credential 配置允许 env key）。
+
+```js
+import { findCredentialValues } from '<skills-root>/harness-test/scripts/runtime-helpers.mjs';
+const findings = findCredentialValues(fs.readFileSync('build-profile.json', 'utf8'));
+if (findings.length > 0) { /* ❌FAIL: 列出 line/code/snippet，改为 env key 或占位符 */ }
+```

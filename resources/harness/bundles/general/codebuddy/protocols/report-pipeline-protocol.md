@@ -24,14 +24,7 @@ python <skills-root>/scripts/harness_archive.py replay --archive-dir ".harness/a
 python <skills-root>/scripts/harness_events.py append --change-dir ".harness/changes/<change-name>" --phase "<phase>" --type <type> [--note "..."]
 ```
 
-若项目安装 Hunter-Harness CLI，collect/validate 亦可使用（与 finalize 内嵌步骤等价）：
-
-```powershell
-powershell.exe -NoProfile -Command "npx hunter-harness report collect --change-id '<change-name>' --json"
-powershell.exe -NoProfile -Command "npx hunter-harness report validate --change-id '<change-name>' --json"
-```
-
-CLI 不可用时，agent 仍必须按本协议生成等价的 `summary-data.json` 并执行一致性校验，不得退回手写汇总。
+归档报告流水线只有两个入口，均由 `harness_archive.py` 提供：`collect`/`render`/`validate` 是 `finalize` 的内嵌同进程步骤，**不再作为独立 CLI 暴露**（不存在 `report collect`/`report validate` 子命令）。`summary-data.json` 只能由 `finalize`（归档时）或 `replay`（回放时）生成；**禁止 agent 临场手写或拼装等价的 `summary-data.json`**。`harness_archive.py` 不可用时归档失败退出，不得退回手写汇总。
 
 ## events.ndjson
 

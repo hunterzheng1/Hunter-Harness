@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Harness preflight: build-profile detect/check + quirk recording + agent precheck.
 
+变更簇 4：detect/check 委托 ``harness_profile``（profile v2 公共内核），不再保留
+v1 重复探测逻辑与 ``buildCommands`` 扁平字符串。record-quirk 适配 v2 ``commands``
+结构：``fix-command`` 写 ``source=user`` override（spec §3.1 显式保留），跨 detect
+保留；``skip-not-block`` 仍写 ``knownPreexistingErrors``。check-agents 与 pitfalls
+附录为本 skill 独有，保留。
+
 Implements DESIGN.md D5 (build-profile) and D8 (subagent precheck).
 Python 3.10+ stdlib only. UTF-8 without BOM. Windows path friendly.
 """
@@ -9,12 +15,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import json
-import os
 import re
-import shutil
-import subprocess
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,20 +29,15 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-SCHEMA_VERSION = 1
-PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
+import harness_profile as hprof  # noqa: E402
+
+
 PITFALLS_REL = Path(".harness") / "pitfalls.md"
 PITFALLS_APPENDIX_HEADER = "## Preflight 附录（自动追加）"
 
-DEFAULT_BUILD_COMMANDS: dict[str, str] = {
-    "compile": "",
-    "unitTest": "",
-    "unitTestFull": "",
-    "install": "",
-    "package": "",
-}
-
 VALID_QUIRK_ACTIONS = {"skip-not-block", "fix-command"}
+
+_DETECT_HINT = "python harness_preflight.py detect --project <root> --json"
 
 
 def now_iso() -> str:
@@ -51,357 +49,29 @@ def emit_json(payload: dict[str, Any], *, ok: bool = True) -> int:
     return 0 if ok else 1
 
 
-def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    path.write_text(text, encoding="utf-8")
-
-
-def sha256_file(path: Path) -> str | None:
-    if not path.is_file():
-        return None
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def find_root_pom(project: Path) -> Path | None:
-    candidates = [project / "pom.xml", project / "pom.xml.example"]
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
-
-
-def which_tool(name: str) -> str | None:
-    found = shutil.which(name)
-    if found:
-        return str(Path(found).resolve())
-    # Windows: try .cmd / .bat / .exe explicitly
-    if os.name == "nt":
-        for ext in (".cmd", ".bat", ".exe"):
-            found = shutil.which(name + ext)
-            if found:
-                return str(Path(found).resolve())
-    return None
-
-
-def run_version(tool_path: str | None, args: list[str], timeout: float = 8.0) -> str:
-    """Best-effort version probe. Empty string if unavailable."""
-    if not tool_path:
-        return ""
-    try:
-        completed = subprocess.run(
-            [tool_path, *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    text = (completed.stdout or "") + "\n" + (completed.stderr or "")
-    return _extract_version(text)
-
-
-def _extract_version(text: str) -> str:
-    # node: v20.11.0 / Apache Maven 3.9.6
-    m = re.search(r"\bv?(\d+\.\d+\.\d+(?:[-+][\w.]+)?)\b", text)
-    if m:
-        return m.group(1)
-    m = re.search(r"version\s+([^\s,]+)", text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-    return line[:120]
-
-
-def is_executable_path(path_str: str | None) -> bool:
-    if not path_str:
-        return False
-    p = Path(path_str)
-    if not p.exists():
-        return False
-    if p.is_file():
-        if os.name == "nt":
-            return True
-        return os.access(p, os.X_OK)
-    # On Windows, shutil.which may return .cmd wrappers that exist
-    return p.exists()
-
-
-def load_existing_profile(project: Path) -> dict[str, Any] | None:
-    path = project / PROFILE_REL
-    if not path.is_file():
-        return None
-    try:
-        data = read_json(path)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def parse_claude_hints(project: Path) -> dict[str, str]:
-    """Extract optional build command hints from CLAUDE.md / AGENTS.md."""
-    hints: dict[str, str] = {}
-    for name in ("CLAUDE.md", "AGENTS.md", ".claude/CLAUDE.md"):
-        path = project / name
-        if not path.is_file():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        # Look for fenced or inline mvn/npm command examples
-        for key, pattern in (
-            ("compile", r"(?:compile|编译)[^\n`]*`([^`]+)`"),
-            ("unitTest", r"(?:unit.?test|单元测试)[^\n`]*`([^`]+)`"),
-            ("package", r"(?:package|打包)[^\n`]*`([^`]+)`"),
-            ("install", r"(?:install|安装依赖)[^\n`]*`([^`]+)`"),
-        ):
-            m = re.search(pattern, text, re.IGNORECASE)
-            if m and key not in hints:
-                hints[key] = m.group(1).strip()
-        # Direct mvn lines
-        for m in re.finditer(r"`(mvn[^`]+)`", text):
-            cmd = m.group(1).strip()
-            if "compile" in cmd and "compile" not in hints:
-                hints["compile"] = cmd
-            elif re.search(r"\btest\b", cmd) and "unitTest" not in hints:
-                hints["unitTest"] = cmd
-            elif "package" in cmd and "package" not in hints:
-                hints["package"] = cmd
-            elif "install" in cmd and "install" not in hints:
-                hints["install"] = cmd
-    return hints
-
-
-def empty_profile_skeleton() -> dict[str, Any]:
-    return {
-        "schemaVersion": SCHEMA_VERSION,
-        "detectedAt": "",
-        "toolPaths": {"node": "", "mvn": ""},
-        "buildCommands": dict(DEFAULT_BUILD_COMMANDS),
-        "verificationInputs": {},
-        "serviceStart": {
-            "command": "",
-            "healthUrl": "",
-            "startTimeoutSec": 120,
-            "inputFiles": [],
-            "profile": "",
-            "overlayPath": "",
-        },
-        "knownPreexistingErrors": [],
-        "shellQuirks": [],
-        "fingerprint": {"mvnVersion": "", "nodeVersion": "", "pomHash": ""},
-    }
-
-
-def merge_preserve_quirks(
-    base: dict[str, Any],
-    existing: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Keep human-curated quirks/errors/commands when re-detecting."""
-    if not existing:
-        return base
-    # Preserve knownPreexistingErrors / shellQuirks / filled buildCommands / serviceStart
-    if isinstance(existing.get("knownPreexistingErrors"), list):
-        base["knownPreexistingErrors"] = list(existing["knownPreexistingErrors"])
-    if isinstance(existing.get("shellQuirks"), list):
-        base["shellQuirks"] = list(existing["shellQuirks"])
-    existing_cmds = existing.get("buildCommands")
-    if isinstance(existing_cmds, dict):
-        for k, v in existing_cmds.items():
-            if isinstance(v, str) and v.strip():
-                base["buildCommands"][k] = v
-    existing_svc = existing.get("serviceStart")
-    if isinstance(existing_svc, dict):
-        merged_svc = dict(base.get("serviceStart") or {})
-        for k, v in existing_svc.items():
-            if v not in (None, ""):
-                merged_svc[k] = v
-        base["serviceStart"] = merged_svc
-    # 保留用户已配置的 verificationInputs（可能含 module 专属 glob），不覆盖。
-    if isinstance(existing.get("verificationInputs"), dict):
-        base["verificationInputs"] = dict(existing["verificationInputs"])
-    return base
-
-
-def build_fingerprint(project: Path, node_path: str | None, mvn_path: str | None) -> dict[str, str]:
-    pom = find_root_pom(project)
-    pom_hash = sha256_file(pom) if pom else ""
-    return {
-        "mvnVersion": run_version(mvn_path, ["--version"]) if mvn_path else "",
-        "nodeVersion": run_version(node_path, ["--version"]) if node_path else "",
-        "pomHash": pom_hash or "",
-    }
-
-
-def current_pom_hash(project: Path) -> str:
-    pom = find_root_pom(project)
-    return (sha256_file(pom) if pom else "") or ""
-
+# ---------------------------------------------------------------------------
+# detect / check — 委托 harness_profile（profile v2 公共内核）
+# ---------------------------------------------------------------------------
 
 def cmd_detect(project: Path) -> dict[str, Any]:
-    project = project.resolve()
-    existing = load_existing_profile(project)
-    profile = empty_profile_skeleton()
-
-    node_path = which_tool("node")
-    mvn_path = which_tool("mvn")
-    profile["toolPaths"] = {
-        "node": node_path or "",
-        "mvn": mvn_path or "",
-    }
-    profile["fingerprint"] = build_fingerprint(project, node_path, mvn_path)
-    profile["detectedAt"] = now_iso()
-
-    hints = parse_claude_hints(project)
-    cmds = dict(DEFAULT_BUILD_COMMANDS)
-    cmds.update({k: v for k, v in hints.items() if k in cmds})
-    # Sensible Java placeholders when pom exists but no hints
-    if find_root_pom(project) and not any(cmds.values()):
-        cmds["compile"] = "mvn -f pom.xml compile -o -q"
-        cmds["unitTest"] = "mvn -f pom.xml test -Dtest={testClasses} -o"
-        cmds["unitTestFull"] = "mvn -f pom.xml test -o"
-        cmds["install"] = "mvn install -pl {modules} -am -DskipTests -nsu"
-        cmds["package"] = "mvn -f pom.xml package '-Dmaven.test.skip=true'"
-    profile["buildCommands"] = cmds
-
-    # Java 项目给 verificationInputs.unitTestFull 一个根级默认闭包
-    # （多 module 项目用户可改为 module/pom.xml + module/src/**）。通用/无 pom
-    # 项目保持空 {} —— can-reuse --profile-input unitTestFull 会返回
-    # insufficient-evidence，执行全量测试但不允许缓存复用，直到 profile 配置好。
-    if find_root_pom(project):
-        # A reactor-level Maven test can run every module, so its reuse
-        # fingerprint must include every module's pom and source roots.
-        module_poms = sorted(
-            pom.relative_to(project).as_posix()
-            for pom in project.rglob("pom.xml")
-            if pom.is_file() and ".harness" not in pom.parts and ".git" not in pom.parts
-        )
-        full_inputs: list[str] = []
-        for pom in module_poms:
-            full_inputs.append(pom)
-            parent = Path(pom).parent
-            prefix = "" if str(parent) == "." else f"{parent.as_posix()}/"
-            full_inputs.extend([f"{prefix}src/main/**", f"{prefix}src/test/**"])
-        profile["verificationInputs"] = {"unitTestFull": full_inputs}
-
-    profile = merge_preserve_quirks(profile, existing)
-
-    # Idempotent fingerprint/toolPaths overwrite from fresh detect;
-    # detectedAt updates each run (tests compare ignoring it).
-    out_path = project / PROFILE_REL
-    write_json(out_path, profile)
-
-    return {
-        "ok": True,
-        "action": "detect",
-        "project": str(project),
-        "profilePath": str(out_path),
-        "profile": profile,
-        "created": existing is None,
-        "updated": True,
-    }
+    """Full probe and write build-profile.json (v2). 委托 hprof.detect。"""
+    return hprof.detect(project)
 
 
 def cmd_check(project: Path) -> dict[str, Any]:
-    """Second-run fast check: existence + executability + fingerprint compare.
+    """Fast stale check (missing/invalid/stale/ready). 委托 hprof.check。
 
-    Does NOT run mvn/node full version probes (≤5s target).
+    兼容：stale 时补 ``hint``（skill canonical 读 hint 引导重新 detect）。
     """
-    project = project.resolve()
-    profile_path = project / PROFILE_REL
-    issues: list[str] = []
-    stale = False
-
-    if not profile_path.is_file():
-        return {
-            "ok": False,
-            "hardFailure": True,
-            "action": "check",
-            "project": str(project),
-            "stale": True,
-            "issues": ["build-profile.json missing; run detect"],
-            "hint": "python harness_preflight.py detect --project <root> --json",
-        }
-
-    try:
-        profile = read_json(profile_path)
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "ok": False,
-            "hardFailure": True,
-            "action": "check",
-            "project": str(project),
-            "stale": True,
-            "issues": [f"build-profile.json unreadable: {exc}"],
-            "hint": "python harness_preflight.py detect --project <root> --json",
-        }
-
-    if not isinstance(profile, dict):
-        return {
-            "ok": False,
-            "hardFailure": True,
-            "action": "check",
-            "project": str(project),
-            "stale": True,
-            "issues": ["build-profile.json is not an object"],
-            "hint": "python harness_preflight.py detect --project <root> --json",
-        }
-
-    tool_paths = profile.get("toolPaths") or {}
-    if not isinstance(tool_paths, dict):
-        tool_paths = {}
-
-    for tool_name in ("node", "mvn"):
-        path_str = tool_paths.get(tool_name) or ""
-        if not path_str:
-            # Empty is allowed (tool not present at detect time)
-            continue
-        if not is_executable_path(path_str):
-            stale = True
-            issues.append(f"toolPaths.{tool_name} missing or not executable: {path_str}")
-
-    fp = profile.get("fingerprint") or {}
-    if not isinstance(fp, dict):
-        fp = {}
-    stored_pom = fp.get("pomHash") or ""
-    current_pom = current_pom_hash(project)
-    if stored_pom != current_pom:
-        stale = True
-        issues.append(
-            f"fingerprint.pomHash changed: stored={stored_pom or '(empty)'} "
-            f"current={current_pom or '(empty)'}"
-        )
-
-    # If profile recorded a tool version but path is now gone → already covered.
-    # If pom appeared/disappeared relative to empty hash → covered above.
-
-    result = {
-        "ok": not stale,
-        "action": "check",
-        "project": str(project),
-        "stale": stale,
-        "issues": issues,
-        "fingerprint": {
-            "stored": {"pomHash": stored_pom, "mvnVersion": fp.get("mvnVersion", ""), "nodeVersion": fp.get("nodeVersion", "")},
-            "current": {"pomHash": current_pom},
-        },
-    }
-    if stale:
-        result["hint"] = "python harness_preflight.py detect --project <root> --json"
+    result = hprof.check(project)
+    if result.get("stale") and "hint" not in result:
+        result["hint"] = _DETECT_HINT
     return result
 
+
+# ---------------------------------------------------------------------------
+# record-quirk — 适配 v2 commands（source=user override）
+# ---------------------------------------------------------------------------
 
 def ensure_pitfalls_appendix(project: Path) -> Path:
     path = project / PITFALLS_REL
@@ -428,10 +98,24 @@ def append_pitfalls_line(project: Path, line: str) -> Path:
     text = path.read_text(encoding="utf-8")
     if not text.endswith("\n"):
         text += "\n"
-    # Append after appendix header block (end of file is fine for append-only)
     text += line.rstrip() + "\n"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _load_or_skeleton(project: Path) -> tuple[dict[str, Any], Path]:
+    """加载 v2 profile；缺失时返回空 skeleton（不自动 detect，避免副作用）。"""
+    profile_path = project / hprof.PROFILE_REL
+    if profile_path.is_file():
+        try:
+            profile = hprof.read_json(profile_path)
+            if isinstance(profile, dict):
+                return profile, profile_path
+        except (OSError, json.JSONDecodeError):
+            pass
+    profile = hprof.empty_profile_skeleton(hprof.DEFAULT_EXCLUDED_ROOTS)
+    profile["detectedAt"] = now_iso()
+    return profile, profile_path
 
 
 def cmd_record_quirk(
@@ -449,28 +133,17 @@ def cmd_record_quirk(
             "issues": [f"invalid action: {action}; expected one of {sorted(VALID_QUIRK_ACTIONS)}"],
         }
 
-    profile_path = project / PROFILE_REL
-    if profile_path.is_file():
-        try:
-            profile = read_json(profile_path)
-            if not isinstance(profile, dict):
-                profile = empty_profile_skeleton()
-        except (OSError, json.JSONDecodeError):
-            profile = empty_profile_skeleton()
-    else:
-        profile = empty_profile_skeleton()
-        profile["detectedAt"] = now_iso()
+    profile, profile_path = _load_or_skeleton(project)
 
     profile.setdefault("knownPreexistingErrors", [])
     profile.setdefault("shellQuirks", [])
-    profile.setdefault("buildCommands", dict(DEFAULT_BUILD_COMMANDS))
-
+    profile.setdefault("commands", {})
     if not isinstance(profile["knownPreexistingErrors"], list):
         profile["knownPreexistingErrors"] = []
     if not isinstance(profile["shellQuirks"], list):
         profile["shellQuirks"] = []
-    if not isinstance(profile["buildCommands"], dict):
-        profile["buildCommands"] = dict(DEFAULT_BUILD_COMMANDS)
+    if not isinstance(profile["commands"], dict):
+        profile["commands"] = {}
 
     changed: list[str] = []
 
@@ -494,16 +167,29 @@ def cmd_record_quirk(
         else:
             changed.append("shellQuirks(already-present)")
         if fixed_command:
-            # Known buildCommands key → update it; otherwise store under a
-            # namespaced custom key to avoid polluting the standard key space.
-            if pattern in DEFAULT_BUILD_COMMANDS:
+            # v2：写 commands.<key> 为 source=user override（spec §3.1 显式保留）。
+            # 已知 verification key 覆写其 command；否则存 namespaced custom key。
+            if pattern in hprof.VERIFICATION_KEYS:
                 key = pattern
             else:
                 key = f"custom:{pattern}"
-            profile["buildCommands"][key] = fixed_command
-            changed.append(f"buildCommands.{key}")
+            existing_cmd = profile["commands"].get(key, {})
+            if not isinstance(existing_cmd, dict):
+                existing_cmd = {}
+            new_cmd = dict(existing_cmd)
+            new_cmd["command"] = fixed_command
+            try:
+                new_cmd["argvTemplate"] = shlex.split(fixed_command)
+            except ValueError:
+                # 不平衡引号回退到空格切分（best-effort；record-quirk 是人工逃逸口）
+                new_cmd["argvTemplate"] = fixed_command.split()
+            new_cmd["source"] = "user"
+            profile["commands"][key] = new_cmd
+            changed.append(f"commands.{key}")
+            # 重派 verificationInputs 兼容字段，保持与 commands 一致
+            hprof._derive_verification_inputs(profile)
 
-    write_json(profile_path, profile)
+    hprof.write_json(profile_path, profile)
 
     date_str = dt.date.today().isoformat()
     pitfalls_line = f"- {date_str}: `{pattern}` — {reason} （action={action}"
@@ -527,6 +213,10 @@ def cmd_record_quirk(
         "profile": profile,
     }
 
+
+# ---------------------------------------------------------------------------
+# check-agents — agent 定义可用性校验（本 skill 独有，不涉及 profile）
+# ---------------------------------------------------------------------------
 
 def parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str | None]:
     """Parse YAML-ish frontmatter between leading --- fences.
@@ -756,9 +446,9 @@ def main(argv: list[str] | None = None) -> int:
         return emit_json(result, ok=bool(result.get("ok", True)))
     if args.command == "check":
         result = cmd_check(args.project)
-        # stale=true with a readable profile still exits 0 (callers branch on JSON);
-        # hard failures (profile missing / unreadable / not an object) exit 1.
-        return emit_json(result, ok=not result.get("hardFailure", False))
+        # missing/invalid = hard failure (exit 1); stale/ready exit 0 (callers branch on JSON)
+        hard = result.get("status") in ("missing", "invalid")
+        return emit_json(result, ok=not hard)
     if args.command == "record-quirk":
         result = cmd_record_quirk(
             args.project,

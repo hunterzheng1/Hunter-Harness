@@ -81,6 +81,7 @@ disallowed-tools:
 | 4 | 不管理 CodeGraph |
 | 5 | 敏感信息脱敏 → `sensitive-info-protocol` |
 | 6 | 证据化输出 → `evidence-based-reporting-protocol` |
+| 7 | 扫描复用 `harness_profile` 的 `excludedRoots`（`DEFAULT_EXCLUDED_ROOTS`：node_modules/target/build/dist/cache 等）与 state snapshot 输入，不重复定义排除集；sync 只建议刷新，不自动触发全量 map（design §3.7） |
 
 ## Output Format
 

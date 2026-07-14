@@ -41,7 +41,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 
 ## summary-data.json 与 harness_archive.py
 
-默认由 `harness_archive.py finalize`（或 `replay`）生成/校验 `reports/final/summary-data.json`；CLI 不可用时按 `../protocols/report-pipeline-protocol.md` 与 `templates/summary-data-template.json`（schemaVersion 2.2）生成等价数据。必须保留原 final report 维度。必须包含：
+`reports/final/summary-data.json` 只能由 `harness_archive.py finalize`（归档时）或 `replay`（回放时）生成/校验；**禁止 agent 临场手写或拼装等价数据**，也不存在独立的 `report collect`/`report validate` CLI（参见 `../protocols/report-pipeline-protocol.md` 与 `templates/summary-data-template.json` schemaVersion 2.2）。必须保留原 final report 维度。必须包含：
 
 - `businessGoal`：本次变更为了做什么；
 - `stageStatus`：plan/run/test/review/submit/archive；
@@ -68,13 +68,7 @@ powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-arch
 
 禁止模型临场手写大段 HTML。确需临时修 HTML，只能修模板，不得让统计数字脱离 `summary-data.json`。
 
-渲染后必须执行：
-
-```powershell
-powershell.exe -NoProfile -Command "npx hunter-harness report validate --change-id '<date-change>' --json"
-```
-
-存在 validate error 时，不得删除原 `.harness/changes/<change>` 目录。
+`validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不再作为独立 `report validate` CLI 调用）。finalize 在 validate error 存在时恢复原 `.harness/changes/<change>` 目录并 exit 非 0，绝不归档未通过校验的变更。
 
 ## archive-meta.md 模板
 

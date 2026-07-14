@@ -258,3 +258,19 @@ $cred = $resp.data.accessToken
 **正确做法**：用 `git diff --binary` 生成 patch 并计算 SHA-256，ledger 只认 `sha256:<hash>` 格式。diffHash 不一致时必须重跑相关测试。
 
 > diffHash/ledger 复用规则遵循 `../protocols/ledger-protocol.md`；结果证据要求遵循 `../protocols/evidence-based-reporting-protocol.md`。
+
+## BOM-safe JSON / identifier sanitizer / 凭据扫描 (runtime-helpers.mjs)
+
+> 变更簇 5 (spec §3.4)：Node runtime helper 集中处理 PS5.1 BOM、非法测试标识符、凭据边界三类返工。源码 `scripts/runtime-helpers.mjs`，测试 `scripts/tests/runtime-helpers.test.mjs`（`node --test`）。
+
+| 函数 | 用途 | 规避的坑 |
+|------|------|----------|
+| `readJsonUtf8BomSafe(path)` | 读 credential-cache.json / api-test-results.json，容忍 U+FEFF BOM | PS5.1 `Out-File -Encoding utf8` 写入 BOM 导致 `JSON.parse` 失败 |
+| `writeJsonUtf8NoBom(path, value)` | 原子写 (temp+rename)，UTF-8 no BOM，LF，2-space 缩进 | 结果文件被 BOM/换行符污染破坏字节稳定；半写入文件被并发读到 |
+| `sanitizeTestIdentifier({name, pattern, maxLength, prefix})` | change-name → 稳定标识（清洗非法字符 + 超长截断 + 原文名短 hash 防碰撞） | 中文/连字符/超长 change-name 生成非法 identifier 触发服务端 400 |
+| `validateRunnerPayload(payload, {identifierPattern})` | Runner 生成前本地校验 payload schema/必填/identifier/重复 id，返回结构化错误码 | 测试脚本错误（缺字段/非法 id）直到请求服务后才暴露，返工成本高 |
+| `findCredentialValues(text)` | 扫描 profile/Markdown/docs 中的凭据明文值（password/token/secret/Authorization/jdbc password），占位符 `<*_REDACTED>` 与 env 引用 `${ENV}`/`$ENV` 不报 | profile/规则文档误含明文凭据被发布 |
+
+**Runner 生成前强制**（spec §3.4 point 3）：生成 `api-test-runner.mjs` 前用 `validateRunnerPayload` 校验全部场景；`ok=false` → 修复脚本错误，**不得带错请求服务**。场景 id 用 `sanitizeTestIdentifier` 生成（profile v2 `identifier.pattern/maxLength/prefix` 已声明）。
+
+**凭据边界**（spec §3.4 point 4）：credential 配置只含 env key（如 `${TEST_TOKEN}`）、cache path、角色，不含值。发布前用 `findCredentialValues` 扫 profile/规则/Markdown，命中即 ❌FAIL。详见 `../protocols/sensitive-info-protocol.md` §6。

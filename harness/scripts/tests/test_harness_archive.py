@@ -536,5 +536,155 @@ class ConditionalOkTests(unittest.TestCase):
         self.assertEqual(ha._compute_final_status(stage, verification), "CONDITIONAL_OK")
 
 
+class ArchiveCliBoundaryTests(unittest.TestCase):
+    """API-013: archive finalize 是唯一归档路径。harness_archive.py CLI 只暴露
+    status/finalize/replay；不存在 collect/validate 子命令（已废弃的旧编排路径，
+    report-pipeline-protocol §标准命令 仅保留 finalize/replay，模型不得手写等价
+    summary-data.json）。"""
+
+    def test_cli_exposes_only_status_finalize_replay(self) -> None:
+        parser = ha.build_parser()
+        group = getattr(parser, "_subparsers", None)
+        actions = getattr(group, "_group_actions", []) if group is not None else []
+        sub_action = actions[0] if actions else None
+        self.assertIsNotNone(sub_action, "parser must register a subparsers action")
+        choices = set(getattr(sub_action, "choices", {}).keys())
+        self.assertEqual(
+            choices,
+            {"status", "finalize", "replay"},
+            f"archive CLI must expose only status/finalize/replay, got {choices}",
+        )
+        # 废弃的 collect/validate 不得作为子命令存在（旧编排路径已删）
+        self.assertNotIn("collect", choices, "collect subcommand must not exist")
+        self.assertNotIn("validate", choices, "validate subcommand must not exist")
+
+    def test_collect_and_validate_subcommands_are_rejected(self) -> None:
+        """未知子命令 collect/validate 被 argparse 拒绝 (exit 2)，证明无旧编排 CLI 路径。"""
+        for bad in ("collect", "validate"):
+            with self.assertRaises(SystemExit) as cm:
+                ha.main([bad, "--change-dir", ".", "--json"])
+            self.assertEqual(
+                cm.exception.code,
+                2,
+                f"{bad} must be rejected as unknown subcommand",
+            )
+
+
+class ReplayLegacyWithoutEventsTests(unittest.TestCase):
+    """COM-003: 历史 archive 无 events.ndjson 时 replay 仍兼容。从
+    ledger/execution-log/summary-data 回放，不要求新事件，不发明 events 来源，
+    只读不改 archive 内容。自包含 fixture（不依赖未 commit 的 mcp-eval-project）。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-legacy-"))
+        self.archive = self.tmp / ".harness" / "archive" / "2026-01-01-legacy-change"
+        self.archive.mkdir(parents=True)
+        _write_json(
+            self.archive / "evidence" / "verification-ledger.json",
+            {
+                "changeName": "legacy-change",
+                "baseCommit": "aaaaaaa",
+                "finalCommit": "bbbbbbb",
+                "validations": {
+                    "unitTest": {
+                        "status": "OK",
+                        "command": "python -m unittest",
+                        "evidence": {
+                            "run": 5,
+                            "failures": 0,
+                            "errors": 0,
+                            "skipped": 0,
+                            "passRate": "5/5",
+                        },
+                    },
+                },
+            },
+        )
+        _write(
+            self.archive / "logs" / "execution-log.md",
+            "# execution log\n\n## [1] harness-run\n\n**结果**: OK\n",
+        )
+        _write_json(
+            self.archive / "reports" / "final" / "summary-data.json",
+            {
+                "schemaVersion": "2.2",
+                "changeName": "legacy-change",
+                "finalStatus": "OK",
+                "baseCommit": "aaaaaaa",
+                "finalCommit": "bbbbbbb",
+                "stageStatus": {"run": "OK"},
+                "verification": {
+                    "unitTests": {
+                        "run": 5,
+                        "failures": 0,
+                        "errors": 0,
+                        "skipped": 0,
+                        "passRate": "5/5",
+                    },
+                    "apiTests": {
+                        "status": "NOT_RUN",
+                        "total": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "blocked": 0,
+                    },
+                    "dbCompatibility": "NOT_RUN",
+                    "coverageDisplay": "not_available",
+                },
+            },
+        )
+        # Legacy archive has NO events.ndjson — the crux of COM-003.
+        self.assertFalse((self.archive / "events.ndjson").exists())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_replay_without_events_is_compatible_and_readonly(self) -> None:
+        out_file = self.tmp / "out" / "replay-out.json"
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        before = {
+            p.relative_to(self.archive).as_posix(): p.read_bytes()
+            for p in self.archive.rglob("*")
+            if p.is_file()
+        }
+        code, payload = _run(
+            [
+                "replay",
+                "--archive-dir",
+                str(self.archive),
+                "--out",
+                str(out_file),
+                "--json",
+            ]
+        )
+        # Replay is a valid operation without events; validate may soft-fail on
+        # missing html (exit 1) — allowed; assert golden fields + sources instead.
+        summary = payload.get("summary_data") or {}
+        self.assertEqual(summary.get("changeName"), "legacy-change")
+        self.assertEqual(summary.get("finalStatus"), "OK")
+        self.assertEqual(
+            (summary.get("verification") or {}).get("unitTests", {}).get("passRate"),
+            "5/5",
+        )
+        # Must not invent events.ndjson as a source.
+        sources = payload.get("sources") or []
+        self.assertNotIn("events.ndjson", sources)
+        self.assertTrue(
+            any(
+                "ledger" in s or "execution-log" in s or "summary-data" in s
+                for s in sources
+            ),
+            f"replay must source from legacy ledger/log/summary, got {sources}",
+        )
+        self.assertTrue(out_file.is_file(), "replay must write out file outside archive")
+        # Read-only: archive contents byte-identical after replay.
+        after = {
+            p.relative_to(self.archive).as_posix(): p.read_bytes()
+            for p in self.archive.rglob("*")
+            if p.is_file()
+        }
+        self.assertEqual(before, after, "replay must not mutate archive contents")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -371,5 +371,156 @@ class AgentAdapterBuildTests(unittest.TestCase):
         self.assertIn("codebuddy override", body)
 
 
+class DiffExtraStaleTests(unittest.TestCase):
+    """UT-031: cmd_diff stale must include extra files (design §3.8 要点3)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-diff-extra-"))
+        self.root = _fixture_root(self.tmp)
+        self.out = self.tmp / "build-out"
+        hd.cmd_build(self.root, self.out, None)
+        self.project = self.tmp / "project"
+        self.project.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_diff_extra_file_marks_stale(self) -> None:
+        target = self.project / ".claude" / "skills"
+        hd.cmd_install(self.out, self.project, target)
+        _write(target / "stray-extra.md", "stray\n")
+        diff = hd.cmd_diff(self.out, self.project, target)
+        self.assertTrue(diff["stale"], "extra file must mark diff stale")
+        self.assertIn("stray-extra.md", diff["extra"])
+
+
+class InstallConservativeTests(unittest.TestCase):
+    """UT-032 + COM-005: conservative install removes removed managed files
+    but preserves user-owned files (design §3.8 要点4)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-conservative-"))
+        self.project = self.tmp / "project"
+        self.project.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_install_removes_removed_managed_agent_keeps_user_agent(self) -> None:
+        root_v1 = _fixture_root(self.tmp / "src-v1")
+        _write(root_v1 / "agents" / "managed-a.md",
+               "---\nname: managed-a\ndescription: a\n---\n# A\n")
+        _write(root_v1 / "agents" / "managed-b.md",
+               "---\nname: managed-b\ndescription: b\n---\n# B\n")
+        out_v1 = self.tmp / "out-v1"
+        hd.cmd_build(root_v1, out_v1, None, agent="claude-code")
+        target = self.project / ".claude" / "skills"
+        hd.cmd_install(out_v1, self.project, target)
+        agents_dest = self.project / ".claude" / "agents"
+        _write(agents_dest / "user-c.md",
+               "---\nname: user-c\ndescription: user\n---\n# C\n")
+
+        root_v2 = _fixture_root(self.tmp / "src-v2")
+        _write(root_v2 / "agents" / "managed-b.md",
+               "---\nname: managed-b\ndescription: b2\n---\n# B2\n")
+        out_v2 = self.tmp / "out-v2"
+        hd.cmd_build(root_v2, out_v2, None, agent="claude-code")
+        hd.cmd_install(out_v2, self.project, target)
+
+        self.assertFalse((agents_dest / "managed-a.md").exists(),
+                         "removed managed agent must be deleted")
+        self.assertEqual(
+            (agents_dest / "managed-b.md").read_text(encoding="utf-8"),
+            "---\nname: managed-b\ndescription: b2\n---\n# B2\n",
+        )
+        self.assertTrue((agents_dest / "user-c.md").exists(),
+                        "user agent must be preserved")
+
+    def test_install_removes_removed_managed_skill_keeps_user_skill(self) -> None:
+        root_v1 = _fixture_root(self.tmp / "core-v1")
+        _write(root_v1 / "harness-extra" / "SKILL.md",
+               "---\nname: harness-extra\n---\n# Extra\n")
+        out_v1 = self.tmp / "out-c1"
+        hd.cmd_build(root_v1, out_v1, None)
+        target = self.project / ".claude" / "skills"
+        hd.cmd_install(out_v1, self.project, target)
+        self.assertTrue((target / "harness-extra" / "SKILL.md").is_file())
+        _write(target / "user-skill" / "SKILL.md", "# user\n")
+
+        root_v2 = _fixture_root(self.tmp / "core-v2")
+        out_v2 = self.tmp / "out-c2"
+        hd.cmd_build(root_v2, out_v2, None)
+        hd.cmd_install(out_v2, self.project, target)
+
+        self.assertFalse((target / "harness-extra").exists(),
+                         "removed managed skill must be deleted")
+        self.assertTrue((target / "user-skill" / "SKILL.md").is_file(),
+                        "user skill must be preserved")
+        self.assertTrue((target / "harness-demo" / "SKILL.md").is_file())
+
+
+class ValidateManifestTests(unittest.TestCase):
+    """UT-030 + API-012: manifest validator — declared set vs actual managed set,
+    missing and extra both fail (design §3.8 要点2)."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-validate-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _bundle(self, files: dict[str, str]) -> Path:
+        bundle = self.tmp / "bundle"
+        for rel, content in files.items():
+            _write(bundle / rel, content)
+        return bundle
+
+    def _manifest(self, bundle: Path, entries: list[tuple[str, str | None]]) -> list[dict]:
+        items: list[dict] = []
+        for path, sha in entries:
+            if sha is None:
+                sha = hd.sha256_file(bundle / Path(path))
+            items.append({"path": path, "sha256": sha})
+        return items
+
+    def test_validate_manifest_ok_when_consistent(self) -> None:
+        bundle = self._bundle({"harness-demo/SKILL.md": "x\n"})
+        result = hd.cmd_validate_manifest(
+            bundle, self._manifest(bundle, [("harness-demo/SKILL.md", None)])
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["missing"], [])
+        self.assertEqual(result["extra"], [])
+        self.assertEqual(result["hashMismatch"], [])
+
+    def test_validate_manifest_detects_extra(self) -> None:
+        bundle = self._bundle({"harness-demo/SKILL.md": "x\n", "stray.txt": "extra\n"})
+        result = hd.cmd_validate_manifest(
+            bundle, self._manifest(bundle, [("harness-demo/SKILL.md", None)])
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("stray.txt", result["extra"])
+
+    def test_validate_manifest_detects_missing(self) -> None:
+        bundle = self._bundle({"harness-demo/SKILL.md": "x\n"})
+        result = hd.cmd_validate_manifest(
+            bundle,
+            self._manifest(
+                bundle,
+                [("harness-demo/SKILL.md", None), ("harness-extra/SKILL.md", "0" * 64)],
+            ),
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("harness-extra/SKILL.md", result["missing"])
+
+    def test_validate_manifest_detects_hash_mismatch(self) -> None:
+        bundle = self._bundle({"harness-demo/SKILL.md": "x\n"})
+        result = hd.cmd_validate_manifest(
+            bundle, [{"path": "harness-demo/SKILL.md", "sha256": "0" * 64}]
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("harness-demo/SKILL.md", result["hashMismatch"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

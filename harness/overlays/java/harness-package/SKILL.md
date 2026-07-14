@@ -44,9 +44,9 @@ disallowed-tools:
 
 ## Workflow
 
-1. 读 ledger + build-profile 的 `buildCommands.package`
+1. 读 ledger + build-profile 的 `commands.package`（v2，按 profile key resolve）
 2. 识别变更模块（git diff + pom 结构）
-3. `mvn package -DskipTests`（ledger 不可复用时先跑必要测试）
+3. **单次** Maven package lifecycle（spec §3.3 去重，不预先 compile/test）：full test 可复用（`can-reuse unitTestFull=true`）→ 按 `commands.package` resolve 执行一次 skip-tests package；不可复用 → 按 `commands.package` resolve 执行一次含测试 package
 4. 写打包报告 + append 事件
 
 <!-- @include shared/p0-trust.md -->

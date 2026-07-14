@@ -97,6 +97,29 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _serialize_json_bytes(data: Any) -> bytes:
+    return (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def write_json_if_changed(path: Path, data: Any) -> bool:
+    """Write only when byte content would differ; returns True iff a write occurred."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _serialize_json_bytes(data)
+    if path.exists() and path.read_bytes() == payload:
+        return False
+    path.write_bytes(payload)
+    return True
+
+
+def write_text_if_changed(path: Path, text: str) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = text.encode("utf-8")
+    if path.exists() and path.read_bytes() == payload:
+        return False
+    path.write_bytes(payload)
+    return True
+
+
 def json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
 
@@ -621,21 +644,7 @@ def looks_like_contract_path(path: str) -> bool:
     return any(part in lower for part in ["openapi", "contract", "schema", "protocol", "api"])
 
 
-def reset_generated_knowledge(knowledge: Path) -> None:
-    for sub in ["entries/candidate", "entries/stale", "entries/conflicted", "entries/superseded"]:
-        path = knowledge / sub
-        if path.exists():
-            if sub in {"entries/candidate", "entries/stale"}:
-                for entry_path in sorted(path.glob("*.json")):
-                    try:
-                        entry = read_json(entry_path)
-                    except (OSError, json.JSONDecodeError):
-                        entry_path.unlink(missing_ok=True)
-                        continue
-                    if not isinstance(entry, dict) or not entry.get("lifecycle", {}).get("demotedAt"):
-                        entry_path.unlink(missing_ok=True)
-            else:
-                shutil.rmtree(path)
+def ensure_knowledge_dirs(knowledge: Path) -> None:
     for sub in [
         "entries/candidate",
         "entries/active",
@@ -648,6 +657,50 @@ def reset_generated_knowledge(knowledge: Path) -> None:
         "context-packs",
     ]:
         (knowledge / sub).mkdir(parents=True, exist_ok=True)
+
+
+def prune_generated_entries(knowledge: Path, current_entries: list[dict[str, Any]]) -> int:
+    """Remove generated entry files that disappeared or moved to another status dir.
+
+    Replaces the old reset-and-rewrite sweep. Preserved entries (active, and
+    candidate/stale carrying a manual ``demotedAt``) are never removed, so the
+    write-if-changed persist step can detect unchanged entries by content.
+    Returns the number of files removed.
+    """
+    current_by_id: dict[str, dict[str, Any]] = {}
+    for entry in current_entries:
+        if isinstance(entry, dict) and entry.get("id"):
+            current_by_id[str(entry["id"])] = entry
+    preserved_ids = {entry["id"] for entry in load_preserved_entries(knowledge)}
+    removed = 0
+    for status in ["candidate", "stale", "superseded", "conflicted"]:
+        status_dir = knowledge / "entries" / status
+        if not status_dir.exists():
+            continue
+        for path in sorted(status_dir.glob("*.json")):
+            try:
+                entry = read_json(path)
+            except (OSError, json.JSONDecodeError):
+                path.unlink(missing_ok=True)
+                removed += 1
+                continue
+            eid = entry.get("id") if isinstance(entry, dict) else None
+            if eid is None:
+                path.unlink(missing_ok=True)
+                removed += 1
+                continue
+            if eid in preserved_ids:
+                continue
+            replacement = current_by_id.get(str(eid))
+            if replacement is None:
+                path.unlink(missing_ok=True)
+                removed += 1
+            elif str(replacement.get("status")) != status:
+                # entry moved to another status dir; the new file was already
+                # written by the persist step, so remove the stale old file.
+                path.unlink(missing_ok=True)
+                removed += 1
+    return removed
 
 
 def load_entries_from_dir(path: Path) -> list[dict[str, Any]]:
@@ -676,7 +729,6 @@ def load_cached_archive_entries(
     *,
     summary_path: str,
     summary_hash: str,
-    head_commit: str | None,
 ) -> list[dict[str, Any]] | None:
     if not cache_path.exists():
         return None
@@ -692,8 +744,9 @@ def load_cached_archive_entries(
         return None
     if payload.get("summarySha256") != summary_hash:
         return None
-    if payload.get("headCommit") != head_commit:
-        return None
+    # headCommit is intentionally ignored: archive extraction depends only on the
+    # summary-data.json content, so an unrelated HEAD change must not invalidate
+    # the extraction cache (design §3.5, cluster 6 — true incremental).
     entries = payload.get("entries")
     if not isinstance(entries, list):
         return None
@@ -707,7 +760,6 @@ def write_cached_archive_entries(
     *,
     summary_path: str,
     summary_hash: str,
-    head_commit: str | None,
     entries: list[dict[str, Any]],
 ) -> None:
     write_json(
@@ -717,7 +769,6 @@ def write_cached_archive_entries(
             "generatedAt": now_iso(),
             "summaryData": summary_path,
             "summarySha256": summary_hash,
-            "headCommit": head_commit,
             "entries": entries,
         },
     )
@@ -863,7 +914,25 @@ def calculate_confidence(entry: dict[str, Any], config: dict[str, Any]) -> dict[
 
 def apply_confidence_scores(entries: list[dict[str, Any]], config: dict[str, Any]) -> None:
     for entry in entries:
-        entry["confidence"] = calculate_confidence(entry, config)
+        fresh = calculate_confidence(entry, config)
+        existing = entry.get("confidence") if isinstance(entry.get("confidence"), dict) else None
+        if existing is not None and (
+            existing.get("score") == fresh["score"]
+            and existing.get("level") == fresh["level"]
+            and existing.get("signals") == fresh["signals"]
+        ):
+            # The inputs that determine confidence are unchanged; keep the previous
+            # lastCalculatedAt so the entry content (and mtime) does not churn on
+            # every ingest. This is what makes write-if-changed effective for
+            # unchanged entries.
+            entry["confidence"] = {
+                "score": fresh["score"],
+                "level": fresh["level"],
+                "signals": fresh["signals"],
+                "lastCalculatedAt": existing.get("lastCalculatedAt"),
+            }
+        else:
+            entry["confidence"] = fresh
 
 
 def should_auto_promote(entry: dict[str, Any], policy: dict[str, Any]) -> bool:
@@ -926,14 +995,47 @@ def apply_auto_promote_policy(entries: list[dict[str, Any]], config: dict[str, A
     return actions
 
 
-def persist_entry_updates(knowledge: Path, entries: list[dict[str, Any]]) -> None:
+def _preserve_confidence_timestamp(target: Path, entry: dict[str, Any]) -> None:
+    """Keep the on-disk ``lastCalculatedAt`` when confidence is otherwise unchanged.
+
+    Extraction cache stores raw entries whose ``confidence`` is still the legacy
+    string, so the first ``apply_confidence_scores`` of every build would mint a
+    fresh ``lastCalculatedAt`` and churn unchanged entries. By re-reading the
+    on-disk entry just before writing, an unchanged entry keeps its previous
+    timestamp and ``write_json_if_changed`` becomes a true no-op (cluster 6).
+    """
+    if not target.exists():
+        return
+    try:
+        disk = read_json(target)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(disk, dict) or disk.get("id") != entry.get("id"):
+        return
+    disk_conf = disk.get("confidence") if isinstance(disk.get("confidence"), dict) else None
+    new_conf = entry.get("confidence") if isinstance(entry.get("confidence"), dict) else None
+    if not (disk_conf and new_conf):
+        return
+    if (
+        disk_conf.get("score") == new_conf.get("score")
+        and disk_conf.get("level") == new_conf.get("level")
+        and disk_conf.get("signals") == new_conf.get("signals")
+    ):
+        entry["confidence"]["lastCalculatedAt"] = disk_conf.get("lastCalculatedAt")
+
+
+def persist_entry_updates(knowledge: Path, entries: list[dict[str, Any]]) -> int:
+    written = 0
     for entry in entries:
         status = str(entry.get("status") or "")
         if status not in {"candidate", "active", "stale", "superseded", "conflicted"}:
             continue
         path = knowledge / "entries" / status / entry_filename(entry)
         if path.exists():
-            write_json(path, entry)
+            _preserve_confidence_timestamp(path, entry)
+            if write_json_if_changed(path, entry):
+                written += 1
+    return written
 
 
 def normalized_entry_text(entry: dict[str, Any]) -> str:
@@ -1614,21 +1716,196 @@ def apply_ttl_stale(entries: list[dict[str, Any]], config: dict[str, Any]) -> No
         lifecycle["lastCheckedAt"] = now_iso()
 
 
-def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
+SQLITE_SCHEMA_VERSION = 1
+
+
+def compute_inputs_hash(
+    records: list[dict[str, Any]], config: dict[str, Any], knowledge: Path
+) -> str:
+    """Stable hash of the inputs that determine knowledge index content.
+
+    Excludes HEAD on purpose: a business-code commit that does not touch any
+    archive must not invalidate the index (design §3.5, cluster 6 — true
+    incremental). Inputs are archive checksums + knowledge config + schema
+    versions + preserved entries (active / manually demoted), so promote/demote
+    correctly invalidate the no-op fast path.
+    """
+    archive_fingerprint = json.dumps(
+        sorted(
+            (
+                {"path": r.get("summaryData"), "sha256": r.get("summarySha256")}
+                for r in records
+            ),
+            key=lambda item: item["path"] or "",
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    config_fingerprint = json.dumps(config, ensure_ascii=False, sort_keys=True)
+    schema_fingerprint = json.dumps(
+        {
+            "entrySchemaVersion": 1,
+            "indexSchemaVersion": 1,
+            "sqliteSchemaVersion": SQLITE_SCHEMA_VERSION,
+        },
+        sort_keys=True,
+    )
+    preserved = load_preserved_entries(knowledge)
+    preserved_fingerprint = json.dumps(
+        sorted(
+            (
+                {
+                    "id": e.get("id"),
+                    "status": e.get("status"),
+                    "lifecycle": e.get("lifecycle", {}),
+                }
+                for e in preserved
+            ),
+            key=lambda item: item["id"] or "",
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    digest = hashlib.sha256()
+    digest.update(archive_fingerprint.encode("utf-8"))
+    digest.update(b"|config|")
+    digest.update(config_fingerprint.encode("utf-8"))
+    digest.update(b"|schema|")
+    digest.update(schema_fingerprint.encode("utf-8"))
+    digest.update(b"|preserved|")
+    digest.update(preserved_fingerprint.encode("utf-8"))
+    return digest.hexdigest()
+
+
+class KnowledgeSnapshot:
+    """Shared per-invocation snapshot (design §3.5 / cluster 6 要点2).
+
+    Loads config + archive records + inputs_hash once so auto/maintain/sync/query
+    can pass it through instead of independently recomputing inputs_hash, reloading
+    config, or rescanning archives. HEAD is intentionally not part of the snapshot
+    -- an unrelated business-code commit must not invalidate the index.
+    """
+
+    __slots__ = (
+        "project",
+        "knowledge",
+        "pname",
+        "config",
+        "summary_paths",
+        "archive_records",
+        "inputs_hash",
+    )
+
+    def __init__(
+        self,
+        project: Path,
+        knowledge: Path,
+        pname: str,
+        config: dict[str, Any],
+        summary_paths: list[Path],
+        archive_records: list[dict[str, Any]],
+        inputs_hash: str,
+    ) -> None:
+        self.project = project
+        self.knowledge = knowledge
+        self.pname = pname
+        self.config = config
+        self.summary_paths = summary_paths
+        self.archive_records = archive_records
+        self.inputs_hash = inputs_hash
+
+
+def build_snapshot(project: Path) -> KnowledgeSnapshot:
+    """Load config + archive records + inputs_hash exactly once for one invocation."""
     project = project.resolve()
-    harness = project / ".harness"
-    archive_root = harness / "archive"
-    knowledge = harness / "knowledge"
+    knowledge = project / ".harness" / "knowledge"
     pname = project_id(project)
     config = load_config(knowledge)
-    current_head = git_head(project)
-    reset_generated_knowledge(knowledge)
+    summary_paths = sorted(
+        (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+    )
+    archive_records = archive_summary_records(project, summary_paths)
+    inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
+    return KnowledgeSnapshot(
+        project, knowledge, pname, config, summary_paths, archive_records, inputs_hash
+    )
 
-    summary_paths = sorted(archive_root.glob("*/reports/final/summary-data.json"))
+
+def build_index(
+    project: Path,
+    incremental: bool = True,
+    *,
+    snapshot: KnowledgeSnapshot | None = None,
+) -> dict[str, Any]:
+    project = project.resolve()
+    if snapshot is not None:
+        # Reuse the single-invocation snapshot: no recomputation of
+        # config / archive records / inputs_hash (design §3.5, cluster 6 要点2).
+        knowledge = snapshot.knowledge
+        pname = snapshot.pname
+        config = snapshot.config
+        summary_paths = snapshot.summary_paths
+        archive_records = snapshot.archive_records
+        inputs_hash = snapshot.inputs_hash
+    else:
+        knowledge = project / ".harness" / "knowledge"
+        pname = project_id(project)
+        config = load_config(knowledge)
+        summary_paths = sorted(
+            (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+        )
+        archive_records = archive_summary_records(project, summary_paths)
+        inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
+    ensure_knowledge_dirs(knowledge)
+
+    # No-op fast path: inputs (archive checksums + config + schema) are unchanged.
+    # Write nothing — entries, sqlite, index and views all stay byte-identical,
+    # so a repeated ingest is a true no-op (design §3.5, cluster 6, UT-025).
+    # Also require index.sqlite to exist so a query never sees a stale index.json
+    # pointing at a missing sqlite (API-009 single ensure-current).
+    if incremental:
+        old_index: dict[str, Any] | None = None
+        index_path = knowledge / "index.json"
+        if index_path.exists():
+            try:
+                old_index = read_json(index_path)
+            except (OSError, json.JSONDecodeError):
+                old_index = None
+        if (
+            isinstance(old_index, dict)
+            and old_index.get("inputsHash") == inputs_hash
+            and (knowledge / "index.sqlite").exists()
+        ):
+            stale_mode = dict(old_index.get("ingestMode", {}))
+            stale_mode.update(
+                {
+                    "mode": "no-op",
+                    "incremental": incremental,
+                    "inputsHash": inputs_hash,
+                    "entriesWritten": 0,
+                    "entriesPruned": 0,
+                    "archivesExtracted": 0,
+                    "archivesReused": len(summary_paths),
+                    "cacheWrites": 0,
+                    "sqliteRebuild": 0,
+                    "sqliteUpsert": 0,
+                    "sqliteDelete": 0,
+                }
+            )
+            result = dict(old_index)
+            result["ingestMode"] = stale_mode
+            return result
+
+    mode = "cold" if not (knowledge / "index.json").exists() else "warm"
+    current_head = git_head(project)  # recorded in manifest only; not an invalidation key
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     ingest_mode: dict[str, Any] = {
         "incremental": incremental,
+        "mode": mode,
+        "inputsHash": inputs_hash,
+        "entriesWritten": 0,
+        "entriesPruned": 0,
         "archivesExtracted": 0,
         "archivesReused": 0,
         "cacheWrites": 0,
@@ -1638,6 +1915,9 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
         "validationChecked": 0,
         "validationFailed": 0,
         "validationAutoDemoted": 0,
+        "sqliteRebuild": 0,
+        "sqliteUpsert": 0,
+        "sqliteDelete": 0,
     }
 
     for summary_path in summary_paths:
@@ -1651,7 +1931,6 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
                     cache_path,
                     summary_path=summary_rel,
                     summary_hash=summary_hash,
-                    head_commit=current_head,
                 )
             if archive_entries is None:
                 archive_entries = extract_entries(project, pname, summary_path)
@@ -1661,7 +1940,6 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
                         cache_path,
                         summary_path=summary_rel,
                         summary_hash=summary_hash,
-                        head_commit=current_head,
                         entries=archive_entries,
                     )
                     ingest_mode["cacheWrites"] += 1
@@ -1716,11 +1994,13 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
                 failures.append({"id": entry["id"], "reason": "filename collision",
                                  "path": str(target), "conflictsWith": existing.get("id")})
                 continue
-        write_json(target, entry)
+        _preserve_confidence_timestamp(target, entry)
+        if write_json_if_changed(target, entry):
+            ingest_mode["entriesWritten"] += 1
 
     indexed_entries = combine_generated_with_preserved(knowledge, deduped)
     apply_confidence_scores(indexed_entries, config)
-    persist_entry_updates(knowledge, indexed_entries)
+    ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     auto_demotions = apply_active_lifecycle_policy(knowledge, indexed_entries, config)
     ingest_mode["activeAutoDemoted"] = len(auto_demotions)
     validation = apply_knowledge_validation(project, knowledge, config)
@@ -1732,10 +2012,12 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
     if validation["checked"]:
         indexed_entries = [entry for _, entry in load_entry_files(knowledge)]
     apply_confidence_scores(indexed_entries, config)
-    persist_entry_updates(knowledge, indexed_entries)
+    ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     ingest_mode["confidenceScored"] = len(indexed_entries)
-    archive_records = archive_summary_records(project, summary_paths)
-    write_sqlite(knowledge / "index.sqlite", indexed_entries)
+    ingest_mode["entriesPruned"] = prune_generated_entries(knowledge, indexed_entries)
+
+    sqlite_stats = write_sqlite(knowledge / "index.sqlite", indexed_entries)
+    ingest_mode.update(sqlite_stats)
     index = make_manifest(
         project,
         pname,
@@ -1746,7 +2028,7 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
         duplicates,
         ingest_mode,
     )
-    write_json(knowledge / "index.json", index)
+    write_json_if_changed(knowledge / "index.json", index)
     write_views(knowledge, index, indexed_entries)
     write_ingest_report(knowledge, index, failures, duplicates)
     return index
@@ -2009,6 +2291,7 @@ def make_manifest(
         "projectId": pname,
         "projectRoot": str(project),
         "headCommit": git_head(project),
+        "inputsHash": (ingest_mode or {}).get("inputsHash"),
         "archives": {
             "scanned": len(summary_paths),
             "indexed": len(summary_paths) - len(failures),
@@ -2035,90 +2318,153 @@ def make_manifest(
     }
 
 
-def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> None:
+def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist entries to SQLite using a transactional dirty-set.
+
+    Reads existing rows, then upserts only changed entries and deletes removed
+    ones within a single transaction. When the schema version changes or the
+    table is missing, performs a full rebuild. If nothing changed the file is
+    not touched (cluster 6, design §3.5 — true incremental).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        path.unlink()
+    stats: dict[str, Any] = {
+        "sqliteRebuild": 0,
+        "sqliteUpsert": 0,
+        "sqliteDelete": 0,
+        "sqliteUnchanged": 0,
+    }
     con = sqlite3.connect(path)
     try:
         con.execute("pragma journal_mode=wal")
-        con.execute(
-            """
-            create table entries (
-              id text primary key,
-              project_id text not null,
-              type text not null,
-              status text not null,
-              title text not null,
-              summary text not null,
-              body text not null,
-              source_archive text not null,
-              source_commit text,
-              source_files_json text not null,
-              keywords_json text not null,
-              entry_json text not null
-            )
-            """
+        table_exists = con.execute(
+            "select name from sqlite_master where type='table' and name='entries'"
+        ).fetchone()
+        existing_version = (
+            con.execute("pragma user_version").fetchone()[0] if table_exists else 0
         )
-        con.execute(
-            """
-            create table entry_files (
-              entry_id text not null,
-              source_file text not null,
-              primary key (entry_id, source_file),
-              foreign key (entry_id) references entries(id)
-            )
-            """
-        )
-        con.execute("create virtual table entries_fts using fts5(id, title, summary, body, keywords)")
-        con.execute("create index idx_entries_status on entries(status)")
-        con.execute("create index idx_entries_type on entries(type)")
-        con.execute("create index idx_entries_source_archive on entries(source_archive)")
-        con.execute("create index idx_entry_files_source_file on entry_files(source_file)")
+        need_rebuild = (not table_exists) or existing_version != SQLITE_SCHEMA_VERSION
+
+        existing_map: dict[str, str] = {}
+        if not need_rebuild:
+            rows = con.execute("select id, entry_json from entries").fetchall()
+            existing_map = {str(row[0]): str(row[1]) for row in rows}
+
+        new_map: dict[str, str] = {}
         for entry in entries:
-            source_files_json = json.dumps(entry["scope"]["sourceFiles"], ensure_ascii=False)
-            keywords_json = json.dumps(entry["keywords"], ensure_ascii=False)
-            entry_json = json.dumps(entry, ensure_ascii=False)
+            if isinstance(entry, dict) and entry.get("id"):
+                new_map[str(entry["id"])] = json.dumps(entry, ensure_ascii=False)
+
+        to_upsert = [eid for eid in new_map if new_map[eid] != existing_map.get(eid)]
+        to_delete = [eid for eid in existing_map if eid not in new_map]
+        stats["sqliteUnchanged"] = len(new_map) - len(to_upsert)
+
+        if not need_rebuild and not to_upsert and not to_delete:
+            # nothing to do; leave the file (and its mtime) untouched
+            return stats
+
+        if need_rebuild:
+            con.execute("drop table if exists entries")
+            con.execute("drop table if exists entry_files")
+            con.execute("drop table if exists entries_fts")
             con.execute(
                 """
-                insert into entries (
-                  id, project_id, type, status, title, summary, body, source_archive,
-                  source_commit, source_files_json, keywords_json, entry_json
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry["id"],
-                    entry["projectId"],
-                    entry["type"],
-                    entry["status"],
-                    entry["title"],
-                    entry["summary"],
-                    entry["body"],
-                    entry["source"]["archive"],
-                    entry["source"]["sourceCommit"],
-                    source_files_json,
-                    keywords_json,
-                    entry_json,
-                ),
+                create table entries (
+                  id text primary key,
+                  project_id text not null,
+                  type text not null,
+                  status text not null,
+                  title text not null,
+                  summary text not null,
+                  body text not null,
+                  source_archive text not null,
+                  source_commit text,
+                  source_files_json text not null,
+                  keywords_json text not null,
+                  entry_json text not null
+                )
+                """
             )
             con.execute(
-                "insert into entries_fts (id, title, summary, body, keywords) values (?, ?, ?, ?, ?)",
-                (
-                    entry["id"],
-                    entry["title"],
-                    entry["summary"],
-                    entry["body"],
-                    " ".join(entry["keywords"]),
-                ),
-            )
-            for source_file in entry["scope"]["sourceFiles"]:
-                con.execute(
-                    "insert or ignore into entry_files (entry_id, source_file) values (?, ?)",
-                    (entry["id"], source_file),
+                """
+                create table entry_files (
+                  entry_id text not null,
+                  source_file text not null,
+                  primary key (entry_id, source_file),
+                  foreign key (entry_id) references entries(id)
                 )
-        con.commit()
+                """
+            )
+            con.execute("create virtual table entries_fts using fts5(id, title, summary, body, keywords)")
+            con.execute("create index idx_entries_status on entries(status)")
+            con.execute("create index idx_entries_type on entries(type)")
+            con.execute("create index idx_entries_source_archive on entries(source_archive)")
+            con.execute("create index idx_entry_files_source_file on entry_files(source_file)")
+            con.execute(f"pragma user_version = {SQLITE_SCHEMA_VERSION}")
+            stats["sqliteRebuild"] = 1
+            # full rebuild => every entry must be (re)inserted
+            to_upsert = list(new_map.keys())
+            to_delete = []
+
+        con.execute("begin")
+        try:
+            for eid in to_delete:
+                con.execute("delete from entries where id=?", (eid,))
+                con.execute("delete from entries_fts where id=?", (eid,))
+                con.execute("delete from entry_files where entry_id=?", (eid,))
+            for entry in entries:
+                eid = str(entry["id"])
+                if eid not in to_upsert:
+                    continue
+                source_files_json = json.dumps(entry["scope"]["sourceFiles"], ensure_ascii=False)
+                keywords_json = json.dumps(entry["keywords"], ensure_ascii=False)
+                con.execute(
+                    """
+                    insert or replace into entries (
+                      id, project_id, type, status, title, summary, body, source_archive,
+                      source_commit, source_files_json, keywords_json, entry_json
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry["id"],
+                        entry["projectId"],
+                        entry["type"],
+                        entry["status"],
+                        entry["title"],
+                        entry["summary"],
+                        entry["body"],
+                        entry["source"]["archive"],
+                        entry["source"]["sourceCommit"],
+                        source_files_json,
+                        keywords_json,
+                        new_map[eid],
+                    ),
+                )
+                con.execute("delete from entries_fts where id=?", (eid,))
+                con.execute(
+                    "insert into entries_fts (id, title, summary, body, keywords) values (?, ?, ?, ?, ?)",
+                    (
+                        entry["id"],
+                        entry["title"],
+                        entry["summary"],
+                        entry["body"],
+                        " ".join(entry["keywords"]),
+                    ),
+                )
+                con.execute("delete from entry_files where entry_id=?", (eid,))
+                for source_file in entry["scope"]["sourceFiles"]:
+                    con.execute(
+                        "insert or ignore into entry_files (entry_id, source_file) values (?, ?)",
+                        (eid, source_file),
+                    )
+            stats["sqliteUpsert"] = len(to_upsert)
+            stats["sqliteDelete"] = len(to_delete)
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
     finally:
         con.close()
+    return stats
 
 
 def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, Any]]) -> None:
@@ -2141,7 +2487,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
     for entry in entries[:50]:
         dashboard.append(f"- **{entry['type']}** `{entry['status']}` {entry['title']}")
         dashboard.append(f"  - source: `{entry['source']['archive']}`")
-    write_text(knowledge / "views" / "knowledge-dashboard.md", "\n".join(dashboard) + "\n")
+    write_text_if_changed(knowledge / "views" / "knowledge-dashboard.md", "\n".join(dashboard) + "\n")
 
     by_file: dict[str, list[dict[str, Any]]] = {}
     for entry in entries:
@@ -2153,7 +2499,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
         for entry in by_file[source_file]:
             lines.append(f"- **{entry['type']}** `{entry['status']}` {entry['title']}")
         lines.append("")
-    write_text(knowledge / "views" / "by-file.md", "\n".join(lines))
+    write_text_if_changed(knowledge / "views" / "by-file.md", "\n".join(lines))
 
     stale = [entry for entry in entries if entry["status"] == "stale"]
     lines = ["# Harness Stale Knowledge", ""]
@@ -2163,7 +2509,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
         lines.append(f"- **{entry['type']}** {entry['title']}")
         for reason in entry["lifecycle"]["staleReasons"]:
             lines.append(f"  - {reason}")
-    write_text(knowledge / "views" / "stale-items.md", "\n".join(lines) + "\n")
+    write_text_if_changed(knowledge / "views" / "stale-items.md", "\n".join(lines) + "\n")
 
     superseded = [entry for entry in entries if entry["status"] == "superseded"]
     lines = ["# Harness Superseded Knowledge", ""]
@@ -2176,7 +2522,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
             lines.append(f"  - supersededBy: `{superseded_by}`")
         for reason in entry["lifecycle"].get("staleReasons") or []:
             lines.append(f"  - {reason}")
-    write_text(knowledge / "views" / "superseded-items.md", "\n".join(lines) + "\n")
+    write_text_if_changed(knowledge / "views" / "superseded-items.md", "\n".join(lines) + "\n")
 
     conflicted = [entry for entry in entries if entry["status"] == "conflicted"]
     lines = ["# Harness Conflicted Knowledge", ""]
@@ -2188,7 +2534,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
             lines.append(f"  - conflictsWith: `{conflict_id}`")
         for reason in entry["lifecycle"].get("staleReasons") or []:
             lines.append(f"  - {reason}")
-    write_text(knowledge / "views" / "conflicted-items.md", "\n".join(lines) + "\n")
+    write_text_if_changed(knowledge / "views" / "conflicted-items.md", "\n".join(lines) + "\n")
 
     active_review = active_review_items(entries)
     lines = ["# Harness Active Review", ""]
@@ -2199,7 +2545,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
         lines.append(f"  - id: `{entry['id']}`")
         for reason in entry.get("reviewReasons") or []:
             lines.append(f"  - {reason}")
-    write_text(knowledge / "views" / "active-review.md", "\n".join(lines) + "\n")
+    write_text_if_changed(knowledge / "views" / "active-review.md", "\n".join(lines) + "\n")
 
     base = [
         'filters:',
@@ -2234,7 +2580,7 @@ def write_views(knowledge: Path, index: dict[str, Any], entries: list[dict[str, 
         '      - file.folder',
         '      - file.mtime',
     ]
-    write_text(knowledge / "views" / "knowledge.base", "\n".join(base) + "\n")
+    write_text_if_changed(knowledge / "views" / "knowledge.base", "\n".join(base) + "\n")
 
 
 def write_ingest_report(
@@ -2639,11 +2985,12 @@ def query_index(
     project = project.resolve()
     knowledge = project / ".harness" / "knowledge"
     sqlite_path = knowledge / "index.sqlite"
-    if not sqlite_path.exists():
-        build_index(project)
-    sync = sync_status(project)
-    if not sync["upToDate"]:
-        build_index(project)
+    # API-009: one ensure-current. Build the shared snapshot once (inputs_hash
+    # computed exactly once) and a single build_index call whose no-op fast path
+    # keeps an up-to-date project a true no-op. Replaces the old sync_status +
+    # build_index double orchestration, which computed inputs_hash twice.
+    snapshot = build_snapshot(project)
+    build_index(project, snapshot=snapshot)
     entries = search_entries(sqlite_path, query, limit, file_filters, statuses, types)
     context_path = write_context_pack(project, knowledge, query, entries)
     filters = {
@@ -2738,9 +3085,14 @@ def sync_status(project: Path, update: bool = False, incremental: bool = True) -
                 if current_by_path[path].get("summarySha256") != indexed_by_path[path].get("summarySha256"):
                     reasons.append("archive checksum changed: " + str(path))
 
-        current_head = git_head(project)
-        if current_head != index.get("headCommit"):
-            reasons.append("head commit changed since last ingest")
+        # HEAD is intentionally not an invalidation key (cluster 6, UT-027): a
+        # business-code commit that does not touch any archive must not force a
+        # rebuild. The archive checksum checks above already cover archive
+        # changes; compare the full input fingerprint to catch config/schema
+        # drift that the per-archive checks would miss.
+        current_inputs_hash = compute_inputs_hash(current_records, load_config(knowledge), knowledge)
+        if current_inputs_hash != index.get("inputsHash") and not reasons:
+            reasons.append("knowledge inputs changed (config or schema)")
 
     action = "none"
     refreshed: dict[str, Any] | None = None

@@ -89,21 +89,21 @@ powershell.exe -NoProfile -Command "<项目测试命令>"
 
 **重跑后必须把结果写回 ledger** 的 `compile`/`unitTest` 项，并更新 `diffHash`/`currentHead`。
 
-**提交前最终门禁**（步骤 2 末尾，commit 前强制，`unitTestFull` 模块级全量）：
+**提交前最终门禁**（步骤 2 末尾，commit 前强制，`unitTestFull` 模块级全量）——**只调 `can-reuse`，删除二次全量门禁**：
 
 ```powershell
 python <skills-root>/scripts/harness_ledger.py can-reuse `
   --change-dir ".harness/changes/<change-name>" `
   --verification unitTestFull --scope module `
   --project . --profile-input unitTestFull `
-  --command "<build-profile.json buildCommands.unitTestFull>" --json
+  --command "<resolved commands.unitTestFull.command>" --json
 ```
 
-- `--profile-input unitTestFull` 从 `build-profile.json` 的 `verificationInputs.unitTestFull` 展开**依赖闭包**文件集，**禁止用仅含 staged 业务文件的 `--files` 快捷方式**冒充全量闭包。
-- `--command` 必须直接读取当前项目 `build-profile.json` 的 `buildCommands.unitTestFull`，禁止原样复制示例模块名。
+- `--command` **按 profile key resolve**：读 `build-profile.json` 的 `commands.unitTestFull.command`（v2），或 `python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTestFull --json` 取 resolved command。**禁止原样复制示例模块名**（命令按 profile key resolve，文档示例只展示 key）。
+- `--profile-input unitTestFull` 从 `build-profile.json` 的 `verificationInputs.unitTestFull`（v2 由 `commands.unitTestFull.inputs` 派生）展开**依赖闭包**文件集，**禁止用仅含 staged 业务文件的 `--files` 快捷方式**冒充全量闭包。
 - 增量 `unitTest`（scope=测试类）永远不能冒充 `unitTestFull` 门禁；ledger 只有 `unitTest` 时返回 `insufficient-evidence`。
-- `reuse=false` → 执行 `buildCommands.unitTestFull`（模块级全量单元测试），成功后用**同一文件集、command、`scope=module`** 写回 ledger 的 `unitTestFull` 项，再继续步骤 3。
-- profile 缺 `verificationInputs.unitTestFull` / glob 无匹配 / 结果为空 → 返回 `insufficient-evidence`（exit 0），仍须执行全量测试但**不允许缓存复用**，直到 profile 正确配置。
+- `reuse=true` → **不再执行二次全量测试**（删除与 coverage 冲突的二次门禁，spec §3.3）；仅 `reuse=false`（can-reuse 明确失败）时执行**同一 resolved verification**（profile `unitTestFull` 命令，模块级全量单元测试），成功后用**同一文件集、command、`scope=module`** 写回 ledger 的 `unitTestFull` 项，再继续步骤 3。
+- profile 缺 `commands.unitTestFull` / `verificationInputs.unitTestFull` / glob 无匹配 / 结果为空 → 返回 `insufficient-evidence`（exit 0），仍须执行全量测试但**不允许缓存复用**，直到 profile 正确配置。
 
 **编译/测试成功必须有明确证据**：
 - 构建命令输出必须包含构建成功证据（如 `BUILD SUCCESS` / `Finished` / exit code 0）

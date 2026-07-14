@@ -890,5 +890,98 @@ class ProbeHelpersTests(unittest.TestCase):
         self.assertIsNone(hs.port_from_health_spec("file:C:/tmp/x"))
 
 
+class ResolveServiceStartTests(unittest.TestCase):
+    """Cluster 3 §3.1/§3.4: resolve_service_start 从模板 serviceStart + runtime
+    context 生成 resolved serviceStart；持久 profile 不被写回；含 worktree/change
+    陈旧持久值时拒绝。对应 UT-019 + design §3.4「修复输入端陈旧 profile」。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-svc-resolve-"))
+        self.project = self.tmp / "project"
+        self.project.mkdir(parents=True)
+        self.health = self.tmp / "change" / "runtime" / "healthy.marker"
+        self.profile_path = self.project / ".harness" / "config" / "build-profile.json"
+        self._pids: list[int] = []
+
+    def tearDown(self) -> None:
+        for pid in self._pids:
+            if hs.is_pid_alive(pid):
+                hs.terminate_process_tree(pid)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_profile(
+        self,
+        *,
+        command: str | None = None,
+        profile: str = "",
+        overlay_path: str = "",
+    ) -> None:
+        cmd = command if command is not None else _fake_service_command(self.health)
+        prof = {
+            "schemaVersion": 2,
+            "serviceStart": {
+                "command": cmd,
+                "healthUrl": f"file:{self.health}",
+                "healthFile": str(self.health),
+                "startTimeoutSec": 20,
+                "inputFiles": ["Svc.java"],
+                "source": "detected",
+                "profile": profile,
+                "overlayPath": overlay_path,
+            },
+        }
+        _write(self.project / "Svc.java", "class Svc {}\n")
+        _write_json(self.profile_path, prof)
+
+    def test_resolve_injects_overlay_and_profile_without_mutating_persistent(self) -> None:
+        # UT-019: 模板（profile/overlay 空）+ change-name/overlay → resolved 含具体值；
+        # 持久 profile 保持模板态（运行期 resolve 不写回持久 profile）。
+        self._write_profile()  # 模板态：profile="", overlayPath=""
+        before = self.profile_path.read_text(encoding="utf-8")
+        profile = hs.load_build_profile(self.project)
+        resolved = hs.resolve_service_start(
+            profile,
+            change_name="my-change",
+            worktree_root=self.tmp / "wt",
+            overlay_path="/runtime/overlays/c1/application.yml",
+        )
+        self.assertEqual(resolved["overlayPath"], "/runtime/overlays/c1/application.yml")
+        self.assertEqual(resolved["profile"], "my-change")
+        # 持久 profile 文件字节未变
+        self.assertEqual(self.profile_path.read_text(encoding="utf-8"), before)
+        persistent = json.loads(before)
+        self.assertEqual(persistent["serviceStart"]["profile"], "")
+        self.assertEqual(persistent["serviceStart"]["overlayPath"], "")
+
+    def test_resolve_keeps_persistent_profile_when_non_empty(self) -> None:
+        # 持久 profile.profile 非空（如 v1 残留 "local-dev"）→ resolved 保留持久值，
+        # 不被 change_name 覆盖（向后兼容 v1 fixture）。
+        self._write_profile(profile="local-dev")
+        profile = hs.load_build_profile(self.project)
+        resolved = hs.resolve_service_start(
+            profile, change_name="my-change", worktree_root=self.tmp
+        )
+        self.assertEqual(resolved["profile"], "local-dev")
+
+    def test_resolve_rejects_stale_worktree_path_in_overlay(self) -> None:
+        # §3.4：serviceStart.overlayPath 含 .claude/worktrees/<change> → 陈旧持久值，拒绝
+        self._write_profile(overlay_path=".claude/worktrees/old-change/overlay.yml")
+        profile = hs.load_build_profile(self.project)
+        with self.assertRaises(ValueError) as ctx:
+            hs.resolve_service_start(
+                profile, change_name="new-change", worktree_root=self.tmp
+            )
+        self.assertIn("stale", str(ctx.exception).lower())
+
+    def test_resolve_rejects_stale_worktree_path_in_command(self) -> None:
+        # §3.4：serviceStart.command 含 .claude/worktrees/<change> → 拒绝
+        self._write_profile(command="java -jar .claude/worktrees/old-change/app.jar")
+        profile = hs.load_build_profile(self.project)
+        with self.assertRaises(ValueError):
+            hs.resolve_service_start(
+                profile, change_name="new-change", worktree_root=self.tmp
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
