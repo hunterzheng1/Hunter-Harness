@@ -208,6 +208,8 @@ test('UT-024 findCredentialValues flags a password value in profile JSON', () =>
   assert.ok(f.length >= 1);
   assert.ok(f.some((x) => x.code === 'PASSWORD_VALUE'));
   assert.equal(f[0].line, 2);
+  assert.ok(!f[0].snippet.includes('MySecretPass123'), 'snippet must not leak the raw credential value');
+  assert.ok(f[0].snippet.includes('<REDACTED>'), 'snippet must redact the captured value');
 });
 
 test('UT-024 findCredentialValues flags token/Authorization/secret values', () => {
