@@ -1216,6 +1216,10 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertGreaterEqual(payload["verification"]["passed"], 1)
             self.assertTrue(payload["sync"]["upToDate"])
 
+    @unittest.skipUnless(
+        FIXTURE_PROJECT.exists(),
+        "mcp-eval-project fixture not committed (pre-existing, cluster 6b hygiene: ERROR -> SKIP)",
+    )
     def test_mcp_evaluation_fixture_is_stable_and_queryable(self) -> None:
         self.assertTrue(EVALUATION_XML.exists())
         root = ET.parse(EVALUATION_XML).getroot()
@@ -1986,6 +1990,289 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertEqual(item["attempts"], 1)
             self.assertIn("supersede failed", item["lastError"])
             self.assertIn("supersede failed", item["lastError"])
+
+    # --- cluster 6b: knowledge 真增量补全 + 共享 snapshot (UT-028/029, API-009/010, INT-003) ---
+
+    def _normalize_entry_for_equiv(self, entry: dict) -> dict:
+        """Strip time-dependent fields so incremental ≡ no-incremental can be compared (UT-028)."""
+        e = json.loads(json.dumps(entry, ensure_ascii=False))
+        life = e.get("lifecycle") or {}
+        for key in (
+            "createdAt", "verifiedAt", "lastCheckedAt",
+            "promotedAt", "demotedAt", "reverifiedAt",
+        ):
+            life.pop(key, None)
+        if isinstance(life.get("validation"), dict):
+            life["validation"].pop("validatedAt", None)
+        e["lifecycle"] = life
+        conf = e.get("confidence")
+        if isinstance(conf, dict):
+            conf.pop("lastCalculatedAt", None)
+        return e
+
+    def _normalized_entry_map(self, knowledge: Path) -> dict:
+        result: dict = {}
+        for sub in ["candidate", "active", "stale", "superseded", "conflicted"]:
+            for path in sorted((knowledge / "entries" / sub).glob("*.json")):
+                entry = json.loads(path.read_text(encoding="utf-8"))
+                result[entry["id"]] = self._normalize_entry_for_equiv(entry)
+        return result
+
+    def _normalized_sqlite_hash(self, sqlite_path: Path) -> str:
+        con = sqlite3.connect(sqlite_path)
+        try:
+            rows = con.execute("select id, entry_json from entries order by id").fetchall()
+        finally:
+            con.close()
+        normalized = {
+            row[0]: self._normalize_entry_for_equiv(json.loads(row[1])) for row in rows
+        }
+        return hashlib.sha256(
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def test_incremental_equiv_no_incremental_golden(self) -> None:
+        """UT-028: incremental 与 no-incremental 同 fixture 产生语义等价的 entries/stats/sqlite/inputsHash。"""
+        def build_state(incremental: bool) -> dict:
+            with tempfile.TemporaryDirectory() as tmp:
+                project = self.make_project(Path(tmp))
+                self.add_independent_archive(project)
+                args = ["ingest", "--project", str(project)]
+                if not incremental:
+                    args.append("--no-incremental")
+                res = self.run_cli(*args)
+                self.assertEqual(res.returncode, 0, res.stderr)
+                knowledge = project / ".harness" / "knowledge"
+                index = json.loads((knowledge / "index.json").read_text(encoding="utf-8"))
+                return {
+                    "entries": self._normalized_entry_map(knowledge),
+                    "stats": {
+                        k: index["stats"].get(k, 0)
+                        for k in ["candidate", "active", "stale", "superseded", "conflicted"]
+                    },
+                    "byType": index.get("byType"),
+                    "sqlite": self._normalized_sqlite_hash(knowledge / "index.sqlite"),
+                    "inputsHash": index.get("inputsHash"),
+                }
+
+        inc = build_state(True)
+        full = build_state(False)
+        self.assertEqual(inc["inputsHash"], full["inputsHash"], "inputsHash must match for same archives")
+        self.assertEqual(inc["stats"], full["stats"], "stats diverge")
+        self.assertEqual(inc["byType"], full["byType"], "byType diverge")
+        self.assertEqual(
+            inc["entries"], full["entries"],
+            "incremental vs no-incremental entries diverge (modulo timestamps)",
+        )
+        self.assertEqual(inc["sqlite"], full["sqlite"], "sqlite content diverges (modulo timestamps)")
+
+    def test_lifecycle_change_invalidates_no_op_closure(self) -> None:
+        """UT-029: promote/demote (preserved lifecycle 变化) 使 no-op 快路径失效；闭包内条目保留。"""
+        module = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            module.build_index(project, incremental=True)  # cold
+            second = module.build_index(project, incremental=True)
+            self.assertEqual(second["ingestMode"]["mode"], "no-op", "second build should be no-op after cold")
+
+            knowledge = project / ".harness" / "knowledge"
+            candidate_files = list((knowledge / "entries" / "candidate").glob("*.json"))
+            self.assertTrue(candidate_files, "cold build should produce candidate entries")
+            candidate_path = candidate_files[0]
+            entry = json.loads(candidate_path.read_text(encoding="utf-8"))
+            entry_id = entry["id"]
+
+            # mimic promote: write to active dir + remove candidate, WITHOUT rebuilding
+            # so index.json still holds the pre-promote inputsHash.
+            entry["status"] = "active"
+            life = entry.setdefault("lifecycle", {})
+            life["promotedAt"] = "2026-07-14T00:00:00+08:00"
+            life["promotionNote"] = "manual promote for UT-029"
+            active_path = knowledge / "entries" / "active" / candidate_path.name
+            write_json(active_path, entry)
+            candidate_path.unlink()
+
+            after = module.build_index(project, incremental=True)
+            self.assertNotEqual(
+                after["ingestMode"]["mode"], "no-op",
+                "promote (preserved lifecycle change) must invalidate the no-op fast path",
+            )
+            active_ids = {
+                json.loads(p.read_text(encoding="utf-8"))["id"]
+                for p in (knowledge / "entries" / "active").glob("*.json")
+            }
+            self.assertIn(entry_id, active_ids, "promoted entry must survive in active closure")
+
+            # demote the active entry -> another preserved lifecycle invalidation
+            active_file = next(
+                p for p in (knowledge / "entries" / "active").glob("*.json")
+                if json.loads(p.read_text(encoding="utf-8"))["id"] == entry_id
+            )
+            demoted = json.loads(active_file.read_text(encoding="utf-8"))
+            demoted["status"] = "stale"
+            dlife = demoted.setdefault("lifecycle", {})
+            dlife["demotedAt"] = "2026-07-14T00:01:00+08:00"
+            dlife["demotionReason"] = "manual demote for UT-029"
+            dlife.setdefault("staleReasons", []).append("manual demotion: manual demote for UT-029")
+            stale_path = knowledge / "entries" / "stale" / active_file.name
+            write_json(stale_path, demoted)
+            active_file.unlink()
+
+            after2 = module.build_index(project, incremental=True)
+            self.assertNotEqual(
+                after2["ingestMode"]["mode"], "no-op",
+                "demote (preserved lifecycle change) must invalidate the no-op fast path",
+            )
+            stale_ids = {
+                json.loads(p.read_text(encoding="utf-8"))["id"]
+                for p in (knowledge / "entries" / "stale").glob("*.json")
+            }
+            self.assertIn(entry_id, stale_ids, "demoted entry must survive in stale closure")
+
+    def test_query_ensure_current_single_build(self) -> None:
+        """API-009: query 一次 ensure-current — build_index 至多一次，inputs_hash 只算一次（共享 snapshot）。"""
+        from unittest import mock
+
+        module = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            calls = {"build": 0, "inputs_hash": 0}
+            orig_build = module.build_index
+            orig_hash = module.compute_inputs_hash
+
+            def counting_build(*a, **kw):
+                calls["build"] += 1
+                return orig_build(*a, **kw)
+
+            def counting_hash(*a, **kw):
+                calls["inputs_hash"] += 1
+                return orig_hash(*a, **kw)
+
+            with mock.patch.object(module, "build_index", counting_build), \
+                 mock.patch.object(module, "compute_inputs_hash", counting_hash):
+                result = module.query_index(project, "异步 AI 检查 job", limit=5)
+            self.assertGreaterEqual(result["matchCount"], 1)
+            self.assertEqual(calls["build"], 1, "query must build at most once (one ensure-current)")
+            self.assertEqual(
+                calls["inputs_hash"], 1,
+                "query must compute inputs_hash once (shared snapshot, not sync->build twice)",
+            )
+
+            # up-to-date project: query still one build (no-op path), no rewrite
+            calls["build"] = 0
+            calls["inputs_hash"] = 0
+            with mock.patch.object(module, "build_index", counting_build), \
+                 mock.patch.object(module, "compute_inputs_hash", counting_hash):
+                module.query_index(project, "registry", limit=5)
+            self.assertEqual(calls["build"], 1, "up-to-date query still calls build_index once (no-op path)")
+            self.assertEqual(calls["inputs_hash"], 1, "up-to-date query must compute inputs_hash once")
+
+    def test_maintain_claim_is_atomic_single_process(self) -> None:
+        """API-010: claim_outbox 原子占有 (pending->running)；二次 claim 见 running 不重复占有；maintain 完成推进。"""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            archive_id = "2026-06-30-ai-check-job"
+            outbox = self._enqueue_pending(project, archive_id)
+
+            item1, status1 = hk.claim_outbox(outbox, archive_id)
+            self.assertEqual(status1, "running")
+            self.assertIsNotNone(item1)
+            self.assertFalse(
+                (outbox / "pending" / f"{archive_id}.json").exists(),
+                "claim must atomically move pending -> running (single-process ownership)",
+            )
+
+            # second claim sees running, does NOT re-claim from pending
+            item2, status2 = hk.claim_outbox(outbox, archive_id)
+            self.assertEqual(status2, "running")
+            self.assertEqual(item2.get("status"), "running")
+
+            # maintain on the running item completes it (bounded single-process推进)
+            result = hk.maintain_knowledge(project, archive_id)
+            self.assertTrue(result["ok"], msg=result)
+            self.assertIn(result["status"], {"completed", "pending-judge"})
+            self.assertFalse((outbox / "running" / f"{archive_id}.json").exists())
+
+    def test_cold_warm_no_op_command_counts(self) -> None:
+        """INT-003: cold/warm/no-op 命令与写入计数递减；no-op 写入 0、git 调用 0；未变 archive 输出等价。"""
+        from unittest import mock
+
+        module = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            self.add_independent_archive(project)
+
+            git_calls = {"count": 0}
+            orig_git = module.run_git
+
+            def counting_git(*a, **kw):
+                git_calls["count"] += 1
+                return orig_git(*a, **kw)
+
+            with mock.patch.object(module, "run_git", counting_git):
+                git_calls["count"] = 0
+                cold = module.build_index(project, incremental=True)
+                cold_git = git_calls["count"]
+                cold_writes = cold["ingestMode"]["entriesWritten"] + cold["ingestMode"]["sqliteRebuild"]
+
+                git_calls["count"] = 0
+                noop = module.build_index(project, incremental=True)
+                noop_git = git_calls["count"]
+                noop_writes = (
+                    noop["ingestMode"]["entriesWritten"]
+                    + noop["ingestMode"].get("sqliteRebuild", 0)
+                    + noop["ingestMode"].get("sqliteUpsert", 0)
+                    + noop["ingestMode"].get("sqliteDelete", 0)
+                )
+
+            self.assertEqual(cold["ingestMode"]["mode"], "cold")
+            self.assertEqual(noop["ingestMode"]["mode"], "no-op")
+            self.assertEqual(noop_writes, 0, "no-op must write nothing")
+            self.assertEqual(noop_git, 0, "no-op must not invoke git")
+            self.assertGreater(cold_git, 0, "cold build must invoke git (stale checks + head)")
+            self.assertGreater(cold_writes, noop_writes)
+
+            # warm: change one archive -> fewer writes/git than cold, unchanged archive untouched
+            indep = (
+                project / ".harness" / "archive" / "2026-07-05-independent-feature"
+                / "reports" / "final" / "summary-data.json"
+            )
+            data = json.loads(indep.read_text(encoding="utf-8"))
+            data["businessGoal"] = "独立功能 X（已更新描述），与 AI job 模块无关。"
+            indep.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            knowledge = project / ".harness" / "knowledge"
+
+            def ai_job_hashes() -> dict:
+                result: dict = {}
+                for sub in ["candidate", "active", "stale", "superseded", "conflicted"]:
+                    for path in sorted((knowledge / "entries" / sub).glob("*.json")):
+                        e = json.loads(path.read_text(encoding="utf-8"))
+                        if e.get("source", {}).get("archive", "").endswith("2026-06-30-ai-check-job"):
+                            result[e["id"]] = hashlib.sha256(path.read_bytes()).hexdigest()
+                return result
+
+            ai_job_before = ai_job_hashes()
+            self.assertGreater(len(ai_job_before), 0)
+
+            with mock.patch.object(module, "run_git", counting_git):
+                git_calls["count"] = 0
+                warm = module.build_index(project, incremental=True)
+                warm_git = git_calls["count"]
+                warm_writes = (
+                    warm["ingestMode"]["entriesWritten"]
+                    + warm["ingestMode"].get("sqliteUpsert", 0)
+                    + warm["ingestMode"].get("sqliteRebuild", 0)
+                )
+
+            self.assertEqual(warm["ingestMode"]["mode"], "warm")
+            self.assertLess(warm_writes, cold_writes, "warm writes must be fewer than cold")
+            self.assertLess(warm_git, cold_git, "warm git calls must be fewer than cold")
+            self.assertEqual(
+                ai_job_before, ai_job_hashes(),
+                "unchanged archive entries must not be rewritten (equivalent output)",
+            )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

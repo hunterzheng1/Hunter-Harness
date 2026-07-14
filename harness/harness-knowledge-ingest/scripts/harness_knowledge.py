@@ -1777,22 +1777,92 @@ def compute_inputs_hash(
     return digest.hexdigest()
 
 
-def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
+class KnowledgeSnapshot:
+    """Shared per-invocation snapshot (design §3.5 / cluster 6 要点2).
+
+    Loads config + archive records + inputs_hash once so auto/maintain/sync/query
+    can pass it through instead of independently recomputing inputs_hash, reloading
+    config, or rescanning archives. HEAD is intentionally not part of the snapshot
+    -- an unrelated business-code commit must not invalidate the index.
+    """
+
+    __slots__ = (
+        "project",
+        "knowledge",
+        "pname",
+        "config",
+        "summary_paths",
+        "archive_records",
+        "inputs_hash",
+    )
+
+    def __init__(
+        self,
+        project: Path,
+        knowledge: Path,
+        pname: str,
+        config: dict[str, Any],
+        summary_paths: list[Path],
+        archive_records: list[dict[str, Any]],
+        inputs_hash: str,
+    ) -> None:
+        self.project = project
+        self.knowledge = knowledge
+        self.pname = pname
+        self.config = config
+        self.summary_paths = summary_paths
+        self.archive_records = archive_records
+        self.inputs_hash = inputs_hash
+
+
+def build_snapshot(project: Path) -> KnowledgeSnapshot:
+    """Load config + archive records + inputs_hash exactly once for one invocation."""
     project = project.resolve()
-    harness = project / ".harness"
-    archive_root = harness / "archive"
-    knowledge = harness / "knowledge"
+    knowledge = project / ".harness" / "knowledge"
     pname = project_id(project)
     config = load_config(knowledge)
-    ensure_knowledge_dirs(knowledge)
-
-    summary_paths = sorted(archive_root.glob("*/reports/final/summary-data.json"))
+    summary_paths = sorted(
+        (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+    )
     archive_records = archive_summary_records(project, summary_paths)
     inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
+    return KnowledgeSnapshot(
+        project, knowledge, pname, config, summary_paths, archive_records, inputs_hash
+    )
+
+
+def build_index(
+    project: Path,
+    incremental: bool = True,
+    *,
+    snapshot: KnowledgeSnapshot | None = None,
+) -> dict[str, Any]:
+    project = project.resolve()
+    if snapshot is not None:
+        # Reuse the single-invocation snapshot: no recomputation of
+        # config / archive records / inputs_hash (design §3.5, cluster 6 要点2).
+        knowledge = snapshot.knowledge
+        pname = snapshot.pname
+        config = snapshot.config
+        summary_paths = snapshot.summary_paths
+        archive_records = snapshot.archive_records
+        inputs_hash = snapshot.inputs_hash
+    else:
+        knowledge = project / ".harness" / "knowledge"
+        pname = project_id(project)
+        config = load_config(knowledge)
+        summary_paths = sorted(
+            (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+        )
+        archive_records = archive_summary_records(project, summary_paths)
+        inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
+    ensure_knowledge_dirs(knowledge)
 
     # No-op fast path: inputs (archive checksums + config + schema) are unchanged.
     # Write nothing — entries, sqlite, index and views all stay byte-identical,
     # so a repeated ingest is a true no-op (design §3.5, cluster 6, UT-025).
+    # Also require index.sqlite to exist so a query never sees a stale index.json
+    # pointing at a missing sqlite (API-009 single ensure-current).
     if incremental:
         old_index: dict[str, Any] | None = None
         index_path = knowledge / "index.json"
@@ -1801,7 +1871,11 @@ def build_index(project: Path, incremental: bool = True) -> dict[str, Any]:
                 old_index = read_json(index_path)
             except (OSError, json.JSONDecodeError):
                 old_index = None
-        if isinstance(old_index, dict) and old_index.get("inputsHash") == inputs_hash:
+        if (
+            isinstance(old_index, dict)
+            and old_index.get("inputsHash") == inputs_hash
+            and (knowledge / "index.sqlite").exists()
+        ):
             stale_mode = dict(old_index.get("ingestMode", {}))
             stale_mode.update(
                 {
@@ -2911,11 +2985,12 @@ def query_index(
     project = project.resolve()
     knowledge = project / ".harness" / "knowledge"
     sqlite_path = knowledge / "index.sqlite"
-    if not sqlite_path.exists():
-        build_index(project)
-    sync = sync_status(project)
-    if not sync["upToDate"]:
-        build_index(project)
+    # API-009: one ensure-current. Build the shared snapshot once (inputs_hash
+    # computed exactly once) and a single build_index call whose no-op fast path
+    # keeps an up-to-date project a true no-op. Replaces the old sync_status +
+    # build_index double orchestration, which computed inputs_hash twice.
+    snapshot = build_snapshot(project)
+    build_index(project, snapshot=snapshot)
     entries = search_entries(sqlite_path, query, limit, file_filters, statuses, types)
     context_path = write_context_pack(project, knowledge, query, entries)
     filters = {
