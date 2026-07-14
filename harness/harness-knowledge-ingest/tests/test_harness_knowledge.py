@@ -1,9 +1,11 @@
+import hashlib
 import json
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -263,6 +265,160 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             third_payload = json.loads(third.stdout)
             self.assertEqual(third_payload["ingestMode"]["archivesExtracted"], 1)
             self.assertEqual(third_payload["ingestMode"]["archivesReused"], 1)
+
+    def add_independent_archive(self, project: Path) -> Path:
+        archive = project / ".harness" / "archive" / "2026-07-05-independent-feature" / "reports" / "final" / "summary-data.json"
+        write_json(
+            archive,
+            {
+                "schemaVersion": "2.1",
+                "changeName": "independent-feature",
+                "businessGoal": "独立功能 X，与 AI job 模块无关。",
+                "finalStatus": "OK",
+                "finalCommit": "ind0001",
+                "baseCommit": "base0000",
+                "changedFiles": [{"path": "docs/feature-x.md", "summary": "独立功能文档"}],
+                "maintenanceNotes": ["功能 X 独立实现，不依赖 AI job。"],
+                "knownRisks": [],
+                "manualActions": [],
+            },
+        )
+        return archive
+
+    def _knowledge_content_hashes(self, knowledge: Path) -> dict[str, str]:
+        """Snapshot content hashes of entry/index/view files (excluding per-run reports)."""
+        hashes: dict[str, str] = {}
+        for sub in ["candidate", "active", "stale", "superseded", "conflicted"]:
+            for path in sorted((knowledge / "entries" / sub).glob("*.json")):
+                hashes[f"entries/{sub}/{path.name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        index_path = knowledge / "index.json"
+        if index_path.exists():
+            hashes["index.json"] = hashlib.sha256(index_path.read_bytes()).hexdigest()
+        for path in sorted((knowledge / "views").glob("*")):
+            if path.is_file():
+                hashes[f"views/{path.name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return hashes
+
+    def _sqlite_content_hash(self, sqlite_path: Path) -> str:
+        con = sqlite3.connect(sqlite_path)
+        try:
+            rows = con.execute("select id, entry_json from entries order by id").fetchall()
+        finally:
+            con.close()
+        return hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def test_no_op_ingest_writes_zero_content_changes(self) -> None:
+        """UT-025: archives/config 未变时，再 ingest 不改写任何 entry/index/view/sqlite 内容。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            first = self.run_cli("ingest", "--project", str(project))
+            self.assertEqual(first.returncode, 0, first.stderr)
+            knowledge = project / ".harness" / "knowledge"
+
+            before = self._knowledge_content_hashes(knowledge)
+            before_sqlite = self._sqlite_content_hash(knowledge / "index.sqlite")
+
+            # ensure lastCalculatedAt/generatedAt would tick across runs, so a
+            # no-op must be detected by input fingerprint, not by same-second luck
+            time.sleep(1.2)
+
+            second = self.run_cli("ingest", "--project", str(project))
+            self.assertEqual(second.returncode, 0, second.stderr)
+            payload = json.loads(second.stdout)
+            self.assertEqual(
+                payload["ingestMode"].get("mode"),
+                "no-op",
+                f"expected no-op mode, got ingestMode: {payload['ingestMode']}",
+            )
+            self.assertEqual(payload["ingestMode"].get("entriesWritten", -1), 0)
+
+            after = self._knowledge_content_hashes(knowledge)
+            self.assertEqual(before, after, "no-op ingest rewrote entry/index/view content")
+            self.assertEqual(
+                self._sqlite_content_hash(knowledge / "index.sqlite"),
+                before_sqlite,
+                "no-op ingest changed sqlite content",
+            )
+
+    def test_single_archive_change_updates_only_dirty_entries(self) -> None:
+        """UT-026: 多 archive 中修改 1 个，只更新受影响 dirty set，未变化 archive 的 entry 内容不变。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            independent_archive = self.add_independent_archive(project)
+            self.run_cli("ingest", "--project", str(project))
+            knowledge = project / ".harness" / "knowledge"
+
+            def hashes_for_archive(archive_suffix: str) -> dict[str, str]:
+                result: dict[str, str] = {}
+                for sub in ["candidate", "active", "stale", "superseded", "conflicted"]:
+                    for path in sorted((knowledge / "entries" / sub).glob("*.json")):
+                        entry = json.loads(path.read_text(encoding="utf-8"))
+                        if entry.get("source", {}).get("archive", "").endswith(archive_suffix):
+                            result[f"{sub}/{path.name}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+                return result
+
+            ai_job_before = hashes_for_archive("2026-06-30-ai-check-job")
+            self.assertGreater(len(ai_job_before), 0, "ai-check-job entries should exist")
+            total_files_before = len(self._knowledge_content_hashes(knowledge))
+
+            # ensure lastCalculatedAt/generatedAt would tick across runs
+            time.sleep(1.2)
+
+            data = json.loads(independent_archive.read_text(encoding="utf-8"))
+            data["businessGoal"] = "独立功能 X（已更新描述），与 AI job 模块无关。"
+            independent_archive.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            second = self.run_cli("ingest", "--project", str(project))
+            self.assertEqual(second.returncode, 0, second.stderr)
+            payload = json.loads(second.stdout)
+            self.assertEqual(payload["ingestMode"]["archivesExtracted"], 1)
+            self.assertEqual(payload["ingestMode"]["archivesReused"], 1)
+            written = payload["ingestMode"].get("entriesWritten")
+            self.assertIsNotNone(written, "ingestMode should report entriesWritten")
+            self.assertLess(
+                written,
+                total_files_before,
+                "dirty set should be smaller than a full rewrite of all entries",
+            )
+
+            ai_job_after = hashes_for_archive("2026-06-30-ai-check-job")
+            self.assertEqual(
+                ai_job_before,
+                ai_job_after,
+                "unchanged archive entries must not be rewritten",
+            )
+
+    def test_head_change_without_archive_change_keeps_index_current(self) -> None:
+        """UT-027: 普通 HEAD 变化但 archive 不变，索引仍 current，不全量 rebuild。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            self.run_git(project, "init", "-q")
+            self.run_git(project, "config", "user.email", "t@t.t")
+            self.run_git(project, "config", "user.name", "t")
+            self.run_git(project, "add", "-A")
+            self.run_git(project, "commit", "-q", "-m", "init")
+            self.run_cli("ingest", "--project", str(project))
+
+            (project / "src").mkdir(exist_ok=True)
+            (project / "src" / "noise.ts").write_text("// unrelated business code\n", encoding="utf-8")
+            self.run_git(project, "add", "-A")
+            self.run_git(project, "commit", "-q", "-m", "noise")
+
+            sync = self.run_cli("sync", "--project", str(project))
+            self.assertEqual(sync.returncode, 0, sync.stderr)
+            payload = json.loads(sync.stdout)
+            reasons_text = " ".join(payload["reasons"]).lower()
+            self.assertNotIn(
+                "head commit",
+                reasons_text,
+                "HEAD change alone must not invalidate the knowledge index",
+            )
+            self.assertTrue(
+                payload["upToDate"],
+                f"index should stay current when only HEAD changed, reasons: {payload['reasons']}",
+            )
 
     def test_mcp_entrypoint_describes_harness_knowledge_tools(self) -> None:
         result = subprocess.run(
