@@ -130,6 +130,10 @@ review 结果默认只作参考，不阻塞 submit/archive；报告措辞遵循 
 
 git diff/log 命令通过 `powershell.exe -Command "..."` 执行；review-report 中如发现明文 token/密码/密钥，必须列入 RED 问题并在报告中以 `<TOKEN_REDACTED>` 等占位符引用；RED/YELLOW/OK 结论必须基于实际 diff 内容，不得凭印象判断。代码探索必须优先使用 CodeGraph MCP 工具（`mcp__codegraph__codegraph_explore`），不允许通过普通 Bash 调 codegraph 命令（已列入 `disallowed-tools`）；MCP 不可用时降级为 Grep/Glob + Read，并在执行日志记录降级原因。遵循 `../protocols/powershell-protocol.md` / `sensitive-info-protocol.md` / `evidence-based-reporting-protocol.md`。
 
+### 五、state snapshot 与源码重验
+
+review 读取 `state-snapshot.json`（`harness_state.py` / state-layout-protocol §state-snapshot.json）的 code/diff 段确定审查范围；snapshot 失效或代码段变化时**必须重新读取实际变更源码**，不得仅凭缓存快照跳过源码审查（design §3.6）。
+
 ## 交互白名单
 
 **无** AskUserQuestion（审查全自动）。委派失败 → 主会话审查 + `decision` 事件。
