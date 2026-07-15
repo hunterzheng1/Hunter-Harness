@@ -71,6 +71,8 @@ jobs:
 
       - name: Build and pack public CLI
         run: |
+          npm run build -w packages/contracts
+          npm run build -w packages/core
           npm run build -w packages/cli
           mkdir -p .compat
           npm pack -w packages/cli --ignore-scripts --pack-destination .compat
