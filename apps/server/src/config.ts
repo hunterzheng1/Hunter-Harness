@@ -10,6 +10,8 @@ export interface ServerConfig {
   aiSecretFile: string;
   /** External Skill 上游刷新间隔；0 表示禁用定时任务（测试默认禁用）。 */
   externalSkillRefreshIntervalMs: number;
+  projectCleanupIntervalMs: number;
+  projectBlobGcGraceMs: number;
   githubToken: string | null;
 }
 
@@ -36,6 +38,24 @@ function defaultExternalSkillRefreshIntervalMs(): number {
   return 24 * 60 * 60 * 1000;
 }
 
+function defaultProjectCleanupIntervalMs(): number {
+  const raw = process.env.HUNTER_HARNESS_PROJECT_CLEANUP_MS;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 24 * 60 * 60 * 1000;
+}
+
+function defaultProjectBlobGcGraceMs(): number {
+  const raw = process.env.HUNTER_HARNESS_PROJECT_BLOB_GC_GRACE_MS;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return 24 * 60 * 60 * 1000;
+}
+
 export const defaultServerConfig: ServerConfig = {
   maxFileBytes: 10 * 1024 * 1024,
   maxUploadFiles: 100,
@@ -44,5 +64,7 @@ export const defaultServerConfig: ServerConfig = {
   sessionTtlMs: 24 * 60 * 60 * 1000,
   aiSecretFile: defaultAiSecretFile(),
   externalSkillRefreshIntervalMs: defaultExternalSkillRefreshIntervalMs(),
+  projectCleanupIntervalMs: defaultProjectCleanupIntervalMs(),
+  projectBlobGcGraceMs: defaultProjectBlobGcGraceMs(),
   githubToken: defaultGithubToken()
 };

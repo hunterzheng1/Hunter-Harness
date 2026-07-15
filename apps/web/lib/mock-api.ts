@@ -22,7 +22,6 @@ import type {
   PublishSkillRequest,
   NpmReleaseResponse,
   SemanticDocument,
-  SemanticEdge,
   SemanticOverview
 } from "@hunter-harness/contracts";
 
@@ -36,6 +35,10 @@ import type {
   ProjectDetailModel,
   ProjectFileProposalInput,
   ProjectFileProposalResult,
+  ProjectFilesSnapshot,
+  ProjectFileContent,
+  ProjectLifecycleResult,
+  ProjectSemanticGraph,
   ProposalSummary,
   ArtifactSummary,
   ArtifactManifestModel,
@@ -54,6 +57,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v2.4.1",
     latest_artifact_id: "art_a7f3c91b",
     created_at: "2025-11-15T08:30:00Z",
+    current_file_count: 1,
+    updated_at: "2026-07-14T08:30:00Z",
   },
   {
     project_id: "skill-registry",
@@ -62,6 +67,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v1.8.0",
     latest_artifact_id: "art_2e6d401f",
     created_at: "2025-12-01T14:00:00Z",
+    current_file_count: 1,
+    updated_at: "2026-07-13T14:00:00Z",
   },
   {
     project_id: "governance-api",
@@ -70,6 +77,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v3.0.2",
     latest_artifact_id: "art_9b4c7e12",
     created_at: "2026-01-10T09:15:00Z",
+    current_file_count: 1,
+    updated_at: "2026-07-09T09:15:00Z",
   },
   {
     project_id: "review-dashboard",
@@ -78,6 +87,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v0.9.3",
     latest_artifact_id: "art_d51e8a06",
     created_at: "2026-03-22T16:45:00Z",
+    current_file_count: 1,
+    updated_at: "2026-07-01T16:45:00Z",
   },
   {
     project_id: "hunter-cli",
@@ -86,6 +97,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v1.2.0",
     latest_artifact_id: null,
     created_at: "2026-05-05T11:00:00Z",
+    current_file_count: 1,
+    updated_at: "2026-06-20T11:00:00Z",
   },
 ];
 
@@ -419,6 +432,13 @@ function delay<T>(value: T): Promise<T> {
 }
 
 export class MockApiClient implements HunterApi {
+  private readonly projectLifecycle = new Map<string, {
+    state: "active" | "archived" | "purged";
+    archivedAt: string | null;
+    purgeAfter: string | null;
+    purgedAt: string | null;
+  }>();
+
   async getDashboardOverview(): Promise<DashboardOverview> { return delay(clone(MOCK_DASHBOARD)); }
 
   async listSkills(): Promise<RegistrySkillDetail[]> {
@@ -536,8 +556,24 @@ export class MockApiClient implements HunterApi {
   }
   async downloadWorkflowFamilyArtifact(): Promise<{ blob: Blob; hash: string; filename: string }> { return demoReadOnly(); }
   async releaseWorkflowFamilyToNpm(slug: string): Promise<NpmReleaseResponse> { void slug; return demoReadOnly(); }
-  async listProjects(): Promise<ProjectSummary[]> {
-    return delay([...MOCK_PROJECTS]);
+  async listProjects(state: "active" | "archived" = "active"): Promise<ProjectSummary[]> {
+    const projects = MOCK_PROJECTS.flatMap((project) => {
+      const lifecycle = this.projectLifecycle.get(project.project_id) ?? {
+        state: "active" as const,
+        archivedAt: null,
+        purgeAfter: null,
+        purgedAt: null
+      };
+      if (lifecycle.state !== state) return [];
+      return [{
+        ...project,
+        lifecycle_state: lifecycle.state,
+        archived_at: lifecycle.archivedAt,
+        purge_after: lifecycle.purgeAfter,
+        purged_at: lifecycle.purgedAt
+      }];
+    });
+    return delay(projects);
   }
 
   async getProject(projectId: string): Promise<ProjectDetailModel> {
@@ -547,6 +583,47 @@ export class MockApiClient implements HunterApi {
       ...project,
       request_id: "mock-" + crypto.randomUUID(),
     });
+  }
+
+  async listProjectFiles(projectId: string): Promise<ProjectFilesSnapshot> {
+    return delay({
+      project_id: projectId,
+      project_version: "v2.4.1",
+      total: 1,
+      items: [{
+        path: ".claude/rules/harness-general.md",
+        file_kind: "user_editable",
+        content_sha256: "sha256:" + "a".repeat(64),
+        size_bytes: 42,
+        project_version: "v2.4.1",
+        updated_at: "2026-06-20T10:00:00Z"
+      }]
+    });
+  }
+
+  async getProjectFileContent(projectId: string, path: string): Promise<ProjectFileContent> {
+    const snapshot = await this.listProjectFiles(projectId);
+    const file = snapshot.items.find((item) => item.path === path);
+    if (file === undefined) throw new ApiClientError(404, "PROJECT_FILE_NOT_FOUND", "Demo file not found.");
+    return delay({ ...file, project_id: projectId, content: "# Harness general\n" });
+  }
+
+  async archiveProject(projectId: string): Promise<ProjectLifecycleResult> {
+    const archivedAt = new Date().toISOString();
+    const purgeAfter = new Date(Date.now() + 30 * 86400000).toISOString();
+    this.projectLifecycle.set(projectId, { state: "archived", archivedAt, purgeAfter, purgedAt: null });
+    return delay({ project_id: projectId, display_name: projectId, lifecycle_state: "archived", archived_at: archivedAt, purge_after: purgeAfter, purged_at: null });
+  }
+
+  async restoreProject(projectId: string): Promise<ProjectLifecycleResult> {
+    this.projectLifecycle.set(projectId, { state: "active", archivedAt: null, purgeAfter: null, purgedAt: null });
+    return delay({ project_id: projectId, display_name: projectId, lifecycle_state: "active", archived_at: null, purge_after: null, purged_at: null });
+  }
+
+  async purgeProject(projectId: string): Promise<ProjectLifecycleResult> {
+    const purgedAt = new Date().toISOString();
+    this.projectLifecycle.set(projectId, { state: "purged", archivedAt: null, purgeAfter: null, purgedAt });
+    return delay({ project_id: projectId, display_name: projectId, lifecycle_state: "purged", archived_at: null, purge_after: null, purged_at: purgedAt });
   }
 
   async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
@@ -569,23 +646,29 @@ export class MockApiClient implements HunterApi {
     return delay([mockSemanticDoc(projectId, "archive_record", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
   }
 
-  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
+  async getProjectSemanticGraph(projectId: string, focusDocumentId?: string): Promise<ProjectSemanticGraph> {
     const knowledge = await this.listProjectSemanticKnowledge(projectId);
     const rules = await this.listProjectSemanticRules(projectId);
     const nodes = [...knowledge, ...rules];
     const from = nodes[0];
     const to = nodes[1];
+    const focusedNodes = focusDocumentId === undefined
+      ? nodes
+      : nodes.filter((node) => node.document_id === focusDocumentId || node.document_id === from?.document_id || node.document_id === to?.document_id);
     return delay({
-      nodes,
+      nodes: focusedNodes,
       edges: from === undefined || to === undefined ? [] : [{
         edge_id: "sed_demo",
         project_id: projectId,
         artifact_id: "art_demo",
         from_document_id: from.document_id,
         to_document_id: to.document_id,
-        kind: "references_path",
+        kind: "references_path" as const,
         metadata: {}
-      }]
+      }],
+      focus_document_id: focusDocumentId ?? null,
+      relation_status: "ready" as const,
+      indexed_documents: nodes.length
     });
   }
 
@@ -668,7 +751,8 @@ export class MockApiClient implements HunterApi {
     void input;
     return delay({
       proposal_id: "prop_mock" + Date.now(),
-      status: "pending_review",
+      status: "approved",
+      artifact_id: "art_mock" + Date.now(),
       received_files: 1,
     });
   }

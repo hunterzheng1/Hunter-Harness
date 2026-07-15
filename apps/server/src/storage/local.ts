@@ -1,10 +1,10 @@
-import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { atomicWriteFile, atomicWriteJson, sha256Bytes } from "@hunter-harness/core";
 
 import { ServerDomainError } from "../repositories/interfaces.js";
-import type { ArtifactStorage, ChunkWriteResult } from "./interface.js";
+import type { ArtifactStorage, ChunkWriteResult, QuarantinedBlob } from "./interface.js";
 
 function hashName(hash: string): string {
   if (!/^sha256:[a-f0-9]{64}$/.test(hash)) {
@@ -50,6 +50,10 @@ export class LocalArtifactStorage implements ArtifactStorage {
     return join(this.root, "blobs", hashName(hash));
   }
 
+  private quarantinePath(hash: string): string {
+    return join(this.root, "quarantine", hashName(hash));
+  }
+
   async hasBlob(contentSha256: string): Promise<boolean> {
     return exists(this.blobPath(contentSha256));
   }
@@ -59,7 +63,14 @@ export class LocalArtifactStorage implements ArtifactStorage {
       return await readFile(this.blobPath(contentSha256));
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-        throw new ServerDomainError(404, "ARTIFACT_NOT_FOUND", "artifact blob not found");
+        try {
+          return await readFile(this.quarantinePath(contentSha256));
+        } catch (quarantineError) {
+          if (quarantineError instanceof Error && "code" in quarantineError && quarantineError.code === "ENOENT") {
+            throw new ServerDomainError(404, "ARTIFACT_NOT_FOUND", "artifact blob not found");
+          }
+          throw quarantineError;
+        }
       }
       throw error;
     }
@@ -71,8 +82,72 @@ export class LocalArtifactStorage implements ArtifactStorage {
     }
     const path = this.blobPath(contentSha256);
     if (!await exists(path)) {
+      const quarantinedPath = this.quarantinePath(contentSha256);
+      if (await exists(quarantinedPath)) {
+        await mkdir(dirname(path), { recursive: true });
+        try {
+          await rename(quarantinedPath, path);
+          return;
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        }
+      }
       await atomicWriteFile(path, content);
     }
+  }
+
+  async quarantineBlob(contentSha256: string, quarantinedAt: string): Promise<boolean> {
+    const source = this.blobPath(contentSha256);
+    const target = this.quarantinePath(contentSha256);
+    if (!await exists(source) || await exists(target)) return false;
+    await mkdir(dirname(target), { recursive: true });
+    try {
+      await rename(source, target);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+      throw error;
+    }
+    const date = new Date(quarantinedAt);
+    await utimes(target, date, date);
+    return true;
+  }
+
+  async listQuarantinedBlobs(): Promise<QuarantinedBlob[]> {
+    const root = join(this.root, "quarantine");
+    let names: string[];
+    try {
+      names = await readdir(root);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    }
+    const items = await Promise.all(names
+      .filter((name) => /^[a-f0-9]{64}$/.test(name))
+      .map(async (name) => ({
+        contentSha256: `sha256:${name}`,
+        quarantinedAt: (await stat(join(root, name))).mtime.toISOString()
+      })));
+    return items;
+  }
+
+  async restoreQuarantinedBlob(contentSha256: string): Promise<void> {
+    const source = this.quarantinePath(contentSha256);
+    if (!await exists(source)) return;
+    const target = this.blobPath(contentSha256);
+    if (await exists(target)) {
+      await rm(source, { force: true });
+      return;
+    }
+    await mkdir(dirname(target), { recursive: true });
+    try {
+      await rename(source, target);
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+  }
+
+  async deleteQuarantinedBlob(contentSha256: string): Promise<void> {
+    await rm(this.quarantinePath(contentSha256), { force: true });
   }
 
   async writeSessionChunk(input: {

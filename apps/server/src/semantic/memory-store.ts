@@ -65,6 +65,34 @@ export class SemanticMemoryStore implements SemanticStore {
       .sort((left, right) => left.edge_id.localeCompare(right.edge_id));
   }
 
+  async graph(projectId: string, focusDocumentId?: string): Promise<{
+    nodes: SemanticDocument[];
+    edges: SemanticEdge[];
+  }> {
+    const allEdges = await this.listEdges(projectId);
+    const edges = (focusDocumentId === undefined
+      ? allEdges
+      : allEdges.filter((edge) =>
+        edge.from_document_id === focusDocumentId || edge.to_document_id === focusDocumentId
+      )).slice(0, 100);
+    const nodeIds = new Set(edges.flatMap((edge) => [edge.from_document_id, edge.to_document_id]));
+    if (focusDocumentId !== undefined) nodeIds.add(focusDocumentId);
+    const nodes = [...this.documents.values()]
+      .filter((document) => document.project_id === projectId && nodeIds.has(document.document_id))
+      .sort((left, right) => left.source_path.localeCompare(right.source_path));
+    return { nodes, edges };
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    for (const [documentId, document] of this.documents) {
+      if (document.project_id === projectId) this.documents.delete(documentId);
+    }
+    for (const [edgeId, edge] of this.edges) {
+      if (edge.project_id === projectId) this.edges.delete(edgeId);
+    }
+    this.latestArtifactByProject.delete(projectId);
+  }
+
   async latestArtifactId(projectId: string): Promise<string | null> {
     return this.latestArtifactByProject.get(projectId) ?? null;
   }

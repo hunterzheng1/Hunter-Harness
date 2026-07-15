@@ -30,7 +30,24 @@ export interface ProjectRecord {
   displayName: string;
   latestProjectVersion: string | null;
   latestArtifactId: string | null;
+  lifecycleState: "active" | "archived" | "purged";
+  archivedAt: string | null;
+  purgeAfter: string | null;
+  purgedAt: string | null;
+  currentFilesVersion: string | null;
+  currentFileCount: number;
+  updatedAt: string;
   createdAt: string;
+}
+
+export interface ProjectFileRecord {
+  projectId: string;
+  path: string;
+  fileKind: FileOperation["file_kind"];
+  contentSha256: string;
+  sizeBytes: number;
+  projectVersion: string;
+  updatedAt: string;
 }
 
 export interface ProposalSessionRecord {
@@ -149,7 +166,19 @@ export interface ServerRepository extends TransactionRepository {
     actorId: string;
     limit: number;
     cursor: string | null;
+    state?: "active" | "archived";
   }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }>;
+  archiveProject(actorId: string, projectId: string, archivedAt: string): Promise<ProjectRecord>;
+  restoreProject(actorId: string, projectId: string): Promise<ProjectRecord>;
+  purgeProject(actorId: string, projectId: string, purgedAt: string): Promise<ProjectRecord>;
+  purgeExpiredProjects(now: string): Promise<Array<{
+    project: ProjectRecord;
+    contentSha256: string[];
+  }>>;
+  listProjectBlobHashes(actorId: string, projectId: string): Promise<string[]>;
+  isBlobReferenced(contentSha256: string): Promise<boolean>;
+  listProjectFiles(actorId: string, projectId: string): Promise<ProjectFileRecord[]>;
+  getProjectFile(actorId: string, projectId: string, path: string): Promise<ProjectFileRecord>;
   createProposalSession(input: Omit<ProposalSessionRecord, "sessionId">): Promise<ProposalSessionRecord>;
   getProposalSession(actorId: string, sessionId: string): Promise<ProposalSessionRecord>;
   updateProposalSession(session: ProposalSessionRecord): Promise<void>;

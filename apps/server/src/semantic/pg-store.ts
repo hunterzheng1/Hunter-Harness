@@ -44,38 +44,31 @@ export class PgSemanticStore implements SemanticStore {
       await client.query("BEGIN");
       await client.query("DELETE FROM semantic_edges WHERE project_id = $1", [build.project_id]);
       await client.query("DELETE FROM semantic_documents WHERE project_id = $1", [build.project_id]);
-      for (const document of build.documents) {
+      if (build.documents.length > 0) {
         await client.query(
           `INSERT INTO semantic_documents(
              document_id, project_id, artifact_id, kind, source_path, title, body, metadata, content_sha256
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
-          [
-            document.document_id,
-            document.project_id,
-            document.artifact_id,
-            document.kind,
-            document.source_path,
-            document.title,
-            document.body,
-            JSON.stringify(document.metadata),
-            document.content_sha256
-          ]
+           )
+           SELECT document_id, project_id, artifact_id, kind, source_path, title, body,
+                  metadata, content_sha256
+           FROM jsonb_to_recordset($1::jsonb) AS document(
+             document_id text, project_id text, artifact_id text, kind text,
+             source_path text, title text, body text, metadata jsonb, content_sha256 text
+           )`,
+          [JSON.stringify(build.documents)]
         );
       }
-      for (const edge of build.edges) {
+      if (build.edges.length > 0) {
         await client.query(
           `INSERT INTO semantic_edges(
              edge_id, project_id, artifact_id, from_document_id, to_document_id, kind, metadata
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
-          [
-            edge.edge_id,
-            edge.project_id,
-            edge.artifact_id,
-            edge.from_document_id,
-            edge.to_document_id,
-            edge.kind,
-            JSON.stringify(edge.metadata)
-          ]
+           )
+           SELECT edge_id, project_id, artifact_id, from_document_id, to_document_id, kind, metadata
+           FROM jsonb_to_recordset($1::jsonb) AS edge(
+             edge_id text, project_id text, artifact_id text, from_document_id text,
+             to_document_id text, kind text, metadata jsonb
+           )`,
+          [JSON.stringify(build.edges)]
         );
       }
       await client.query("COMMIT");
@@ -127,6 +120,53 @@ export class PgSemanticStore implements SemanticStore {
       [projectId]
     );
     return result.rows.map((row) => edgeFromRow(row as Record<string, unknown>));
+  }
+
+  async graph(projectId: string, focusDocumentId?: string): Promise<{
+    nodes: SemanticDocument[];
+    edges: SemanticEdge[];
+  }> {
+    const edgeRows = focusDocumentId === undefined
+      ? await this.pool.query(
+        `SELECT * FROM semantic_edges WHERE project_id = $1 ORDER BY edge_id LIMIT 100`,
+        [projectId]
+      )
+      : await this.pool.query(
+        `SELECT * FROM semantic_edges
+         WHERE project_id = $1 AND (from_document_id = $2 OR to_document_id = $2)
+         ORDER BY edge_id LIMIT 100`,
+        [projectId, focusDocumentId]
+      );
+    const edges = edgeRows.rows.map((row) => edgeFromRow(row as Record<string, unknown>));
+    const nodeIds = new Set(edges.flatMap((edge) => [edge.from_document_id, edge.to_document_id]));
+    if (focusDocumentId !== undefined) nodeIds.add(focusDocumentId);
+    if (nodeIds.size === 0) return { nodes: [], edges };
+    const documentRows = await this.pool.query(
+      `SELECT document_id, project_id, artifact_id, kind, source_path, title, body, metadata, content_sha256
+       FROM semantic_documents
+       WHERE project_id = $1 AND document_id = ANY($2::text[])
+       ORDER BY source_path`,
+      [projectId, [...nodeIds]]
+    );
+    return {
+      nodes: documentRows.rows.map((row) => documentFromRow(row as Record<string, unknown>)),
+      edges
+    };
+  }
+
+  async deleteProject(projectId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM semantic_edges WHERE project_id = $1", [projectId]);
+      await client.query("DELETE FROM semantic_documents WHERE project_id = $1", [projectId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async latestArtifactId(projectId: string): Promise<string | null> {

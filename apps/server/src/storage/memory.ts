@@ -1,7 +1,7 @@
 import { sha256Bytes } from "@hunter-harness/core";
 
 import { ServerDomainError } from "../repositories/interfaces.js";
-import type { ArtifactStorage, ChunkWriteResult } from "./interface.js";
+import type { ArtifactStorage, ChunkWriteResult, QuarantinedBlob } from "./interface.js";
 
 interface PendingBlob {
   bytes: Uint8Array;
@@ -11,6 +11,7 @@ interface PendingBlob {
 
 export class MemoryArtifactStorage implements ArtifactStorage {
   private readonly blobs = new Map<string, Uint8Array>();
+  private readonly quarantined = new Map<string, { bytes: Uint8Array; quarantinedAt: string }>();
   private readonly pending = new Map<string, PendingBlob>();
 
   async hasBlob(contentSha256: string): Promise<boolean> {
@@ -18,7 +19,7 @@ export class MemoryArtifactStorage implements ArtifactStorage {
   }
 
   async getBlob(contentSha256: string): Promise<Uint8Array> {
-    const value = this.blobs.get(contentSha256);
+    const value = this.blobs.get(contentSha256) ?? this.quarantined.get(contentSha256)?.bytes;
     if (value === undefined) {
       throw new ServerDomainError(404, "ARTIFACT_NOT_FOUND", "artifact blob not found");
     }
@@ -29,7 +30,39 @@ export class MemoryArtifactStorage implements ArtifactStorage {
     if (sha256Bytes(content) !== contentSha256) {
       throw new ServerDomainError(422, "ARTIFACT_HASH_MISMATCH", "blob hash mismatch");
     }
+    const quarantined = this.quarantined.get(contentSha256);
+    if (quarantined !== undefined) {
+      this.blobs.set(contentSha256, quarantined.bytes);
+      this.quarantined.delete(contentSha256);
+      return;
+    }
     this.blobs.set(contentSha256, content.slice());
+  }
+
+  async quarantineBlob(contentSha256: string, quarantinedAt: string): Promise<boolean> {
+    const bytes = this.blobs.get(contentSha256);
+    if (bytes === undefined || this.quarantined.has(contentSha256)) return false;
+    this.quarantined.set(contentSha256, { bytes, quarantinedAt });
+    this.blobs.delete(contentSha256);
+    return true;
+  }
+
+  async listQuarantinedBlobs(): Promise<QuarantinedBlob[]> {
+    return [...this.quarantined.entries()].map(([contentSha256, value]) => ({
+      contentSha256,
+      quarantinedAt: value.quarantinedAt
+    }));
+  }
+
+  async restoreQuarantinedBlob(contentSha256: string): Promise<void> {
+    const value = this.quarantined.get(contentSha256);
+    if (value === undefined) return;
+    this.blobs.set(contentSha256, value.bytes);
+    this.quarantined.delete(contentSha256);
+  }
+
+  async deleteQuarantinedBlob(contentSha256: string): Promise<void> {
+    this.quarantined.delete(contentSha256);
   }
 
   async writeSessionChunk(input: {

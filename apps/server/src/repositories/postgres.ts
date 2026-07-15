@@ -9,6 +9,7 @@ import type {
   ArtifactRecord,
   AuditEvent,
   IdempotencyRecord,
+  ProjectFileRecord,
   ProjectRecord,
   ProposalRecord,
   ProposalSessionRecord,
@@ -17,6 +18,7 @@ import type {
   TransactionRepository
 } from "./interfaces.js";
 import { ServerDomainError } from "./interfaces.js";
+import { applyProjectFileOperations } from "./project-files.js";
 import { PgTransactionRepository } from "./transaction-repository.js";
 
 function id(prefix: string): string {
@@ -40,7 +42,28 @@ function projectFrom(row: QueryResultRow): ProjectRecord {
       ? null
       : String(row.latest_project_version),
     latestArtifactId: row.latest_artifact_id === null ? null : String(row.latest_artifact_id),
+    lifecycleState: (row.lifecycle_state ?? "active") as ProjectRecord["lifecycleState"],
+    archivedAt: row.archived_at == null ? null : timestamp(row.archived_at),
+    purgeAfter: row.purge_after == null ? null : timestamp(row.purge_after),
+    purgedAt: row.purged_at == null ? null : timestamp(row.purged_at),
+    currentFilesVersion: row.current_files_version == null
+      ? null
+      : String(row.current_files_version),
+    currentFileCount: Number(row.current_file_count ?? 0),
+    updatedAt: timestamp(row.updated_at ?? row.created_at),
     createdAt: timestamp(row.created_at)
+  };
+}
+
+function projectFileFrom(row: QueryResultRow): ProjectFileRecord {
+  return {
+    projectId: String(row.project_id),
+    path: String(row.path),
+    fileKind: String(row.file_kind) as ProjectFileRecord["fileKind"],
+    contentSha256: String(row.content_sha256),
+    sizeBytes: Number(row.size_bytes),
+    projectVersion: String(row.project_version),
+    updatedAt: timestamp(row.updated_at)
   };
 }
 
@@ -175,6 +198,14 @@ export class PostgresRepository implements ServerRepository {
       );
       if (bound.rowCount !== 0) {
         const project = projectFrom(bound.rows[0] ?? {});
+        if (project.lifecycleState === "archived") {
+          throw new ServerDomainError(410, "PROJECT_ARCHIVED", "project is in the recycle bin", {
+            purge_after: project.purgeAfter
+          });
+        }
+        if (project.lifecycleState === "purged") {
+          throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+        }
         if (input.requestedProjectId !== null && input.requestedProjectId !== project.projectId) {
           throw new ServerDomainError(
             409,
@@ -200,6 +231,9 @@ export class PostgresRepository implements ServerRepository {
           );
         }
         project = projectFrom(requested.rows[0] ?? {});
+        if (project.lifecycleState !== "active") {
+          throw new ServerDomainError(410, project.lifecycleState === "archived" ? "PROJECT_ARCHIVED" : "PROJECT_PURGED", "project is not active");
+        }
         bindingStatus = "bound";
       } else {
         const projectId = id("prj_");
@@ -228,13 +262,23 @@ export class PostgresRepository implements ServerRepository {
     if (result.rowCount === 0) {
       throw new ServerDomainError(404, "PROJECT_NOT_FOUND", "project not found");
     }
-    return projectFrom(result.rows[0] ?? {});
+    const project = projectFrom(result.rows[0] ?? {});
+    if (project.lifecycleState === "archived") {
+      throw new ServerDomainError(410, "PROJECT_ARCHIVED", "project is in the recycle bin", {
+        purge_after: project.purgeAfter
+      });
+    }
+    if (project.lifecycleState === "purged") {
+      throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+    }
+    return project;
   }
 
   async listProjects(input: {
     actorId: string;
     limit: number;
     cursor: string | null;
+    state?: "active" | "archived";
   }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
     const offset = input.cursor === null
       ? 0
@@ -243,9 +287,9 @@ export class PostgresRepository implements ServerRepository {
       throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
     }
     const result = await this.pool.query(
-      `SELECT * FROM projects WHERE owner_actor_id = $1
-       ORDER BY created_at DESC, project_id DESC LIMIT $2 OFFSET $3`,
-      [input.actorId, input.limit + 1, offset]
+      `SELECT * FROM projects WHERE owner_actor_id = $1 AND lifecycle_state = $2
+       ORDER BY created_at DESC, project_id DESC LIMIT $3 OFFSET $4`,
+      [input.actorId, input.state ?? "active", input.limit + 1, offset]
     );
     return {
       items: result.rows.slice(0, input.limit).map(projectFrom),
@@ -253,6 +297,258 @@ export class PostgresRepository implements ServerRepository {
         ? Buffer.from(String(offset + input.limit)).toString("base64url")
         : null
     };
+  }
+
+  private async ownedProject(
+    actorId: string,
+    projectId: string,
+    client: Pool | PoolClient = this.pool,
+    forUpdate = false
+  ): Promise<ProjectRecord> {
+    const result = await client.query(
+      `SELECT * FROM projects WHERE project_id = $1 AND owner_actor_id = $2${forUpdate ? " FOR UPDATE" : ""}`,
+      [projectId, actorId]
+    );
+    if (result.rowCount === 0) {
+      throw new ServerDomainError(404, "PROJECT_NOT_FOUND", "project not found");
+    }
+    return projectFrom(result.rows[0] ?? {});
+  }
+
+  async archiveProject(actorId: string, projectId: string, archivedAt: string): Promise<ProjectRecord> {
+    return this.transaction(async (client) => {
+      const project = await this.ownedProject(actorId, projectId, client, true);
+      if (project.lifecycleState === "purged") {
+        throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+      }
+      if (project.lifecycleState === "archived") return project;
+      const purgeAfter = new Date(Date.parse(archivedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const result = await client.query(
+        `UPDATE projects SET lifecycle_state = 'archived', archived_at = $3, purge_after = $4,
+         updated_at = $3
+         WHERE project_id = $1 AND owner_actor_id = $2 AND lifecycle_state = 'active' RETURNING *`,
+        [projectId, actorId, archivedAt, purgeAfter]
+      );
+      return projectFrom(result.rows[0] ?? {});
+    });
+  }
+
+  async restoreProject(actorId: string, projectId: string): Promise<ProjectRecord> {
+    return this.transaction(async (client) => {
+      const project = await this.ownedProject(actorId, projectId, client, true);
+      if (project.lifecycleState === "purged") {
+        throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+      }
+      if (project.lifecycleState === "active") return project;
+      const result = await client.query(
+        `UPDATE projects SET lifecycle_state = 'active', archived_at = NULL, purge_after = NULL,
+         updated_at = now()
+         WHERE project_id = $1 AND owner_actor_id = $2 AND lifecycle_state = 'archived' RETURNING *`,
+        [projectId, actorId]
+      );
+      return projectFrom(result.rows[0] ?? {});
+    });
+  }
+
+  private async purgeLockedProject(
+    client: PoolClient,
+    project: ProjectRecord,
+    purgedAt: string
+  ): Promise<ProjectRecord> {
+    const projectId = project.projectId;
+    await client.query(
+      `UPDATE projects SET latest_project_version = NULL, latest_artifact_id = NULL,
+       current_files_version = NULL, current_file_count = 0
+       WHERE project_id = $1`,
+      [projectId]
+    );
+    await client.query(`DELETE FROM project_files_current WHERE project_id = $1`, [projectId]);
+    await client.query(
+      `DELETE FROM reviews WHERE proposal_id IN (SELECT proposal_id FROM proposals WHERE project_id = $1)`,
+      [projectId]
+    );
+    await client.query(`DELETE FROM semantic_edges WHERE project_id = $1`, [projectId]);
+    await client.query(`DELETE FROM semantic_documents WHERE project_id = $1`, [projectId]);
+    await client.query(`DELETE FROM artifacts WHERE project_id = $1`, [projectId]);
+    await client.query(`DELETE FROM proposals WHERE project_id = $1`, [projectId]);
+    await client.query(`DELETE FROM proposal_sessions WHERE project_id = $1`, [projectId]);
+    await client.query(`DELETE FROM project_bindings WHERE project_id = $1`, [projectId]);
+    const result = await client.query(
+      `UPDATE projects SET lifecycle_state = 'purged', purge_after = NULL, purged_at = $2,
+       updated_at = $2
+       WHERE project_id = $1 AND lifecycle_state = 'archived' RETURNING *`,
+      [projectId, purgedAt]
+    );
+    return projectFrom(result.rows[0] ?? {});
+  }
+
+  async purgeProject(actorId: string, projectId: string, purgedAt: string): Promise<ProjectRecord> {
+    return this.transaction(async (client) => {
+      const project = await this.ownedProject(actorId, projectId, client, true);
+      if (project.lifecycleState === "purged") return project;
+      if (project.lifecycleState !== "archived") {
+        throw new ServerDomainError(409, "PROJECT_NOT_ARCHIVED", "project must be archived before purge");
+      }
+      return this.purgeLockedProject(client, project, purgedAt);
+    });
+  }
+
+  async purgeExpiredProjects(now: string): Promise<Array<{
+    project: ProjectRecord;
+    contentSha256: string[];
+  }>> {
+    const purged: Array<{ project: ProjectRecord; contentSha256: string[] }> = [];
+    while (purged.length < 100) {
+      const next = await this.transaction(async (client) => {
+        const result = await client.query(
+          `SELECT * FROM projects
+           WHERE lifecycle_state = 'archived' AND purge_after <= $1
+           ORDER BY purge_after, project_id
+           FOR UPDATE SKIP LOCKED LIMIT 1`,
+          [now]
+        );
+        if (result.rowCount === 0) return null;
+        const project = projectFrom(result.rows[0] ?? {});
+        const contentSha256 = await this.projectBlobHashesWith(client, project.projectId);
+        return {
+          project: await this.purgeLockedProject(client, project, now),
+          contentSha256
+        };
+      });
+      if (next === null) break;
+      purged.push(next);
+    }
+    return purged;
+  }
+
+  private async projectBlobHashesWith(client: Pool | PoolClient, projectId: string): Promise<string[]> {
+    const result = await client.query(
+      `SELECT DISTINCT operation->>'content_sha256' AS content_sha256
+       FROM artifacts, LATERAL jsonb_array_elements(manifest->'files') operation
+       WHERE project_id = $1 AND operation ? 'content_sha256'
+       UNION
+       SELECT DISTINCT operation->>'content_sha256' AS content_sha256
+       FROM proposal_sessions, LATERAL jsonb_array_elements(operations) operation
+       WHERE project_id = $1 AND operation ? 'content_sha256'`,
+      [projectId]
+    );
+    return result.rows.map((row) => String(row.content_sha256));
+  }
+
+  async listProjectBlobHashes(actorId: string, projectId: string): Promise<string[]> {
+    await this.ownedProject(actorId, projectId);
+    return this.projectBlobHashesWith(this.pool, projectId);
+  }
+
+  async isBlobReferenced(contentSha256: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM artifacts, LATERAL jsonb_array_elements(manifest->'files') operation
+         WHERE operation->>'content_sha256' = $1
+         UNION ALL
+         SELECT 1 FROM proposal_sessions, LATERAL jsonb_array_elements(operations) operation
+         WHERE operation->>'content_sha256' = $1
+       ) AS referenced`,
+      [contentSha256]
+    );
+    return result.rows[0]?.referenced === true;
+  }
+
+  private async replaceProjectFiles(
+    client: PoolClient,
+    projectId: string,
+    files: ProjectFileRecord[],
+    projectVersion: string | null,
+    updatedAt: string
+  ): Promise<void> {
+    await client.query(`DELETE FROM project_files_current WHERE project_id = $1`, [projectId]);
+    if (files.length > 0) {
+      await client.query(
+        `INSERT INTO project_files_current(
+           project_id, path, file_kind, content_sha256, size_bytes, project_version, updated_at
+         )
+         SELECT $1, snapshot.path, snapshot.file_kind, snapshot.content_sha256,
+                snapshot.size_bytes, snapshot.project_version, snapshot.updated_at
+         FROM jsonb_to_recordset($2::jsonb) AS snapshot(
+           path text,
+           file_kind text,
+           content_sha256 text,
+           size_bytes bigint,
+           project_version text,
+           updated_at timestamptz
+         )`,
+        [projectId, JSON.stringify(files.map((file) => ({
+          path: file.path,
+          file_kind: file.fileKind,
+          content_sha256: file.contentSha256,
+          size_bytes: file.sizeBytes,
+          project_version: file.projectVersion,
+          updated_at: file.updatedAt
+        })))]
+      );
+    }
+    await client.query(
+      `UPDATE projects SET current_files_version = $2, current_file_count = $3, updated_at = $4
+       WHERE project_id = $1`,
+      [projectId, projectVersion, files.length, updatedAt]
+    );
+  }
+
+  private async ensureProjectFiles(
+    client: PoolClient,
+    project: ProjectRecord
+  ): Promise<ProjectFileRecord[]> {
+    if (project.currentFilesVersion === project.latestProjectVersion) {
+      const current = await client.query(
+        `SELECT * FROM project_files_current WHERE project_id = $1 ORDER BY path`,
+        [project.projectId]
+      );
+      return current.rows.map(projectFileFrom);
+    }
+    const artifacts = await client.query(
+      `SELECT * FROM artifacts WHERE project_id = $1 ORDER BY created_at, artifact_id`,
+      [project.projectId]
+    );
+    let files: ProjectFileRecord[] = [];
+    for (const row of artifacts.rows) {
+      const artifact = {
+        manifest: artifactManifestSchema.parse(row.manifest),
+        projectVersion: String(row.project_version),
+        createdAt: timestamp(row.created_at)
+      };
+      files = applyProjectFileOperations(
+        files,
+        artifact.manifest.files,
+        artifact.projectVersion,
+        artifact.createdAt,
+        false
+      ).map((file) => ({ ...file, projectId: project.projectId }));
+    }
+    await this.replaceProjectFiles(
+      client,
+      project.projectId,
+      files,
+      project.latestProjectVersion,
+      project.updatedAt
+    );
+    return files;
+  }
+
+  async listProjectFiles(actorId: string, projectId: string): Promise<ProjectFileRecord[]> {
+    const project = await this.getProject(actorId, projectId);
+    return this.transaction((client) => this.ensureProjectFiles(client, project));
+  }
+
+  async getProjectFile(
+    actorId: string,
+    projectId: string,
+    path: string
+  ): Promise<ProjectFileRecord> {
+    const file = (await this.listProjectFiles(actorId, projectId)).find((item) => item.path === path);
+    if (file === undefined) {
+      throw new ServerDomainError(404, "PROJECT_FILE_NOT_FOUND", "project file not found", { path });
+    }
+    return file;
   }
 
   async createProposalSession(
@@ -390,13 +686,15 @@ export class PostgresRepository implements ServerRepository {
       );
 
       const proposal = await this.getProposalWith(client, session.actorId, proposalId, true);
-      const project = await client.query(
-        `SELECT latest_project_version FROM projects WHERE project_id = $1 FOR UPDATE`,
+      const projectResult = await client.query(
+        `SELECT * FROM projects WHERE project_id = $1 FOR UPDATE`,
         [proposal.projectId]
       );
-      const latest = project.rows[0]?.latest_project_version === null
-        ? null
-        : String(project.rows[0]?.latest_project_version);
+      const project = projectFrom(projectResult.rows[0] ?? {});
+      if (project.lifecycleState !== "active") {
+        throw new ServerDomainError(410, "PROJECT_ARCHIVED", "project is not active");
+      }
+      const latest = project.latestProjectVersion;
       if (proposal.baseProjectVersion !== latest) {
         throw new ServerDomainError(
           409,
@@ -404,8 +702,16 @@ export class PostgresRepository implements ServerRepository {
           "proposal base version is stale"
         );
       }
+      const currentFiles = await this.ensureProjectFiles(client, project);
       const projectVersion = id("pv_");
       const artifactId = id("art_");
+      const publishedAt = new Date().toISOString();
+      const nextFiles = applyProjectFileOperations(
+        currentFiles,
+        session.operations,
+        projectVersion,
+        publishedAt
+      ).map((file) => ({ ...file, projectId: proposal.projectId }));
       const payload = {
         schema_version: 1 as const,
         project_id: proposal.projectId,
@@ -432,9 +738,17 @@ export class PostgresRepository implements ServerRepository {
         ]
       );
       await client.query(
-        `UPDATE projects SET latest_project_version = $2, latest_artifact_id = $3
+        `UPDATE projects SET latest_project_version = $2, latest_artifact_id = $3,
+         updated_at = $4
          WHERE project_id = $1`,
-        [proposal.projectId, projectVersion, artifactId]
+        [proposal.projectId, projectVersion, artifactId, publishedAt]
+      );
+      await this.replaceProjectFiles(
+        client,
+        proposal.projectId,
+        nextFiles,
+        projectVersion,
+        publishedAt
       );
       await client.query(
         `UPDATE proposals SET status = $2 WHERE proposal_id = $1`,
@@ -568,13 +882,15 @@ export class PostgresRepository implements ServerRepository {
       const childProposalIds: string[] = [];
       if (input.decision === "approve" || input.decision === "auto-approved") {
         status = "approved";
-        const project = await client.query(
-          `SELECT latest_project_version FROM projects WHERE project_id = $1 FOR UPDATE`,
+        const projectResult = await client.query(
+          `SELECT * FROM projects WHERE project_id = $1 FOR UPDATE`,
           [proposal.projectId]
         );
-        const latest = project.rows[0]?.latest_project_version === null
-          ? null
-          : String(project.rows[0]?.latest_project_version);
+        const project = projectFrom(projectResult.rows[0] ?? {});
+        if (project.lifecycleState !== "active") {
+          throw new ServerDomainError(410, "PROJECT_ARCHIVED", "project is not active");
+        }
+        const latest = project.latestProjectVersion;
         if (proposal.parentProposalId === null && proposal.baseProjectVersion !== latest) {
           throw new ServerDomainError(
             409,
@@ -591,6 +907,14 @@ export class PostgresRepository implements ServerRepository {
         }
         const projectVersion = id("pv_");
         artifactId = id("art_");
+        const publishedAt = new Date().toISOString();
+        const currentFiles = await this.ensureProjectFiles(client, project);
+        const nextFiles = applyProjectFileOperations(
+          currentFiles,
+          proposal.items.map((item) => item.operation),
+          projectVersion,
+          publishedAt
+        ).map((file) => ({ ...file, projectId: proposal.projectId }));
         const payload = {
           schema_version: 1 as const,
           project_id: proposal.projectId,
@@ -617,9 +941,17 @@ export class PostgresRepository implements ServerRepository {
           ]
         );
         await client.query(
-          `UPDATE projects SET latest_project_version = $2, latest_artifact_id = $3
+          `UPDATE projects SET latest_project_version = $2, latest_artifact_id = $3,
+           updated_at = $4
            WHERE project_id = $1`,
-          [proposal.projectId, projectVersion, artifactId]
+          [proposal.projectId, projectVersion, artifactId, publishedAt]
+        );
+        await this.replaceProjectFiles(
+          client,
+          proposal.projectId,
+          nextFiles,
+          projectVersion,
+          publishedAt
         );
       } else if (input.decision === "reject") {
         status = "rejected";

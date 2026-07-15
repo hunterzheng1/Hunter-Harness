@@ -37,4 +37,26 @@ describe("local artifact storage", () => {
       /hash/i
     );
   });
+
+  it("keeps quarantined blobs readable until they are restored or swept", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-artifacts-quarantine-"));
+    const storage = new LocalArtifactStorage(root);
+    const content = new TextEncoder().encode("quarantine me");
+    const hash = sha256Bytes(content);
+    const quarantinedAt = new Date(Date.now() - 60_000).toISOString();
+
+    await storage.putBlob(hash, content);
+    expect(await storage.quarantineBlob(hash, quarantinedAt)).toBe(true);
+    expect(await storage.hasBlob(hash)).toBe(false);
+    expect([...await storage.getBlob(hash)]).toEqual([...content]);
+    expect(await storage.listQuarantinedBlobs()).toEqual([
+      expect.objectContaining({ contentSha256: hash })
+    ]);
+
+    await storage.restoreQuarantinedBlob(hash);
+    expect(await storage.listQuarantinedBlobs()).toEqual([]);
+    expect(await storage.quarantineBlob(hash, quarantinedAt)).toBe(true);
+    await storage.deleteQuarantinedBlob(hash);
+    expect(await storage.hasBlob(hash)).toBe(false);
+  });
 });

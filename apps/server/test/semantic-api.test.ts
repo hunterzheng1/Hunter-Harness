@@ -135,7 +135,25 @@ describe("/api/v1 semantic query routes", () => {
       headers: headers()
     });
     expect(graph.statusCode).toBe(200);
-    expect(graph.json().nodes).toHaveLength(4);
+    expect(graph.json()).toMatchObject({
+      nodes: [],
+      edges: [],
+      relation_status: "no_relations",
+      indexed_documents: 4
+    });
+
+    const knowledgeDocumentId = knowledge.json().items[0].document_id as string;
+    const focusedGraph = await app.inject({
+      method: "GET",
+      url: `/api/v1/projects/${projectId}/semantic/graph?focus_document_id=${encodeURIComponent(knowledgeDocumentId)}`,
+      headers: headers()
+    });
+    expect(focusedGraph.statusCode).toBe(200);
+    expect(focusedGraph.json()).toMatchObject({
+      focus_document_id: knowledgeDocumentId,
+      relation_status: "no_relations"
+    });
+    expect(focusedGraph.json().nodes).toHaveLength(1);
 
     const search = await app.inject({
       method: "GET",

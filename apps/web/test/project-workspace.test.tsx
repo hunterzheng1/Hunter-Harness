@@ -5,39 +5,33 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectWorkspace } from "../components/project-workspace";
-import type { ArtifactManifestModel, HunterApi } from "../lib/api";
+import type { HunterApi, ProjectFileContent, ProjectFileMetadata } from "../lib/api";
 
 const sha = (character: string) => "sha256:" + character.repeat(64);
-
-const manifest: ArtifactManifestModel = {
-  schema_version: 1,
-  project_id: "prj_one",
-  project_version: "pv_one",
-  artifact_id: "art_one",
-  manifest_sha256: sha("a"),
-  files: [
-    {
-      operation: "add",
-      path: ".harness/knowledge/architecture.md",
-      file_kind: "user_editable",
-      content_sha256: sha("b"),
-      size_bytes: 12
-    },
-    {
-      operation: "add",
-      path: ".harness/state/local/status.json",
-      file_kind: "internal_state",
-      content_sha256: sha("c"),
-      size_bytes: 2
-    }
-  ]
-};
+const files: ProjectFileMetadata[] = [
+  {
+    path: ".harness/knowledge/architecture.md",
+    file_kind: "user_editable",
+    content_sha256: sha("b"),
+    size_bytes: 12,
+    project_version: "pv_one",
+    updated_at: "2026-06-20T00:00:00Z"
+  },
+  {
+    path: ".harness/state/local/status.json",
+    file_kind: "internal_state",
+    content_sha256: sha("c"),
+    size_bytes: 2,
+    project_version: "pv_one",
+    updated_at: "2026-06-20T00:00:00Z"
+  }
+];
 
 afterEach(cleanup);
 
 function api(overrides: Partial<HunterApi> = {}): HunterApi {
   return {
-    getDashboardOverview: vi.fn(async () => { throw new Error("dashboard snapshot is not used by this test"); }),
+    getDashboardOverview: vi.fn(async () => { throw new Error("not used"); }),
     listProjects: vi.fn(async () => []),
     getProject: vi.fn(async () => ({
       project_id: "prj_one",
@@ -45,8 +39,21 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       role: "owner" as const,
       latest_project_version: "pv_one",
       latest_artifact_id: "art_one",
+      current_file_count: 2,
+      updated_at: "2026-06-20T00:00:00Z",
       created_at: "2026-06-20T00:00:00Z",
       request_id: "req_one"
+    })),
+    listProjectFiles: vi.fn(async () => ({
+      project_id: "prj_one",
+      project_version: "pv_one",
+      total: 2,
+      items: files
+    })),
+    getProjectFileContent: vi.fn(async (_projectId, path) => ({
+      ...(files.find((file) => file.path === path) ?? files[0] as ProjectFileMetadata),
+      project_id: "prj_one",
+      content: path.endsWith(".md") ? "# Architecture" : "{}"
     })),
     listProjectProposals: vi.fn(async () => []),
     listAllProposals: vi.fn(async () => []),
@@ -61,84 +68,90 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       created_at: "2026-06-20T00:00:00Z"
     }]),
     listAllArtifacts: vi.fn(async () => []),
-    getArtifactManifest: vi.fn(async () => manifest),
-    getArtifactText: vi.fn(async (_artifactId, contentHash) =>
-      contentHash === sha("b") ? "# Architecture" : "{}"
-    ),
+    getArtifactManifest: vi.fn(async () => { throw new Error("browser artifact replay must not run"); }),
+    getArtifactText: vi.fn(async () => { throw new Error("browser artifact replay must not run"); }),
     createProjectFileProposal: vi.fn(async () => ({
       proposal_id: "prp_new",
-      status: "pending_review" as const,
+      status: "approved" as const,
+      artifact_id: "art_two",
       received_files: 1
     })),
     getProposal: vi.fn(async () => { throw new Error("not used"); }),
-    reviewProposal: vi.fn(async () => { throw new Error("not used"); }),
     ...overrides
   };
 }
 
 describe("ProjectWorkspace", () => {
-  it("reconstructs managed files and submits an editable change as a review proposal", async () => {
+  it("loads only file metadata, then saves an edit directly", async () => {
+    const getProjectFileContent = vi.fn(async (_projectId: string, path: string) => ({
+      ...(files.find((file) => file.path === path) ?? files[0] as ProjectFileMetadata),
+      project_id: "prj_one",
+      content: "# Architecture"
+    }));
     const createProjectFileProposal = vi.fn(async () => ({
       proposal_id: "prp_new",
-      status: "pending_review" as const,
+      status: "approved" as const,
+      artifact_id: "art_two",
       received_files: 1
     }));
-    render(<ProjectWorkspace api={api({ createProjectFileProposal })} projectId="prj_one" />);
+    render(<ProjectWorkspace api={api({ getProjectFileContent, createProjectFileProposal })} projectId="prj_one" />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "文件管理" }));
-    expect(await screen.findByRole("button", { name: ".harness/knowledge/architecture.md" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: ".harness/knowledge/architecture.md" }));
-    expect(screen.getByText("diff-proposal")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "编辑当前文件" }));
-    fireEvent.change(screen.getByLabelText("草稿内容"), { target: { value: "# Revised architecture" } });
-    fireEvent.click(screen.getByRole("button", { name: "创建评审提案" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "文件" }));
+    expect(getProjectFileContent).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: ".harness/knowledge/architecture.md" }));
+    expect(await screen.findByText("# Architecture")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("文件内容"), { target: { value: "# Revised architecture" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => expect(createProjectFileProposal).toHaveBeenCalledWith(expect.objectContaining({
       action: "modify",
       path: ".harness/knowledge/architecture.md",
       content: "# Revised architecture",
       baseProjectVersion: "pv_one",
+      baseArtifactId: "art_one",
       baseManifestHash: sha("a")
     })));
-    expect(await screen.findByText(/提案 prp_new 已提交评审/)).toBeInTheDocument();
+    expect(await screen.findByText(/文件已保存并生成新版本/)).toBeInTheDocument();
   });
 
-  it("shows the bound workflow family and profile", async () => {
-    render(<ProjectWorkspace api={api({
-      listWorkflowFamilies: vi.fn(async () => [{
-        family_id: "wff_review",
-        slug: "review",
-        displayName: "Review",
-        description: "Review workflow family",
-        tags: ["review"],
-        latest_version: "1.0.0",
-        required_profiles: ["general"],
-        revision: 1,
-        npmReleases: [],
-        created_at: "2026-06-20T00:00:00Z",
-        updated_at: "2026-06-20T00:00:00Z"
-      }]),
-      getProjectWorkflowBinding: vi.fn(async () => ({
-        project_id: "prj_one",
-        family_slug: "review",
-        profile: "general",
-        version: "1.0.0",
-        revision: 1,
-        updated_at: "2026-06-20T00:00:00Z"
-      }))
-    })} projectId="prj_one" />);
-
-    expect(await screen.findByRole("heading", { name: "Review" })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "绑定的工作流族" })).toHaveValue("review:general");
-  });
-
-  it("keeps protocol-only paths inspectable but never editable", async () => {
+  it("keeps system paths visible but read-only", async () => {
     render(<ProjectWorkspace api={api()} projectId="prj_one" />);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "文件管理" }));
-    expect(await screen.findByRole("button", { name: ".harness/state/local/status.json" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: ".harness/state/local/status.json" }));
-    expect(screen.getByText(/该路径只能由协议层写入/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "编辑当前文件" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("tab", { name: "文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: ".harness/state/local/status.json" }));
+    expect((await screen.findAllByText("系统只读")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "编辑" })).not.toBeInTheDocument();
+  });
+
+  it("keeps edit and rename disabled until lazy content is available", async () => {
+    let release: (() => void) | undefined;
+    const getProjectFileContent = vi.fn((_projectId: string, path: string) =>
+      new Promise<ProjectFileContent>((resolve) => {
+        release = () => resolve({
+          ...(files.find((file) => file.path === path) ?? files[0] as ProjectFileMetadata),
+          project_id: "prj_one",
+          content: "# Architecture"
+        });
+      })
+    );
+    render(<ProjectWorkspace api={api({ getProjectFileContent })} projectId="prj_one" />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "文件" }));
+    fireEvent.click(await screen.findByRole("button", { name: ".harness/knowledge/architecture.md" }));
+    expect(screen.getByRole("button", { name: "编辑" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重命名" })).toBeDisabled();
+
+    release?.();
+    expect(await screen.findByText("# Architecture")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "编辑" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "重命名" })).toBeEnabled();
+  });
+
+  it("shows version records without exposing raw ids in the main row", async () => {
+    render(<ProjectWorkspace api={api()} projectId="prj_one" />);
+    fireEvent.click(await screen.findByRole("tab", { name: "版本记录" }));
+    expect(await screen.findByText(/2 个文件变更/)).toBeInTheDocument();
+    expect(screen.getByText("art_one").closest("details")).not.toHaveAttribute("open");
   });
 });

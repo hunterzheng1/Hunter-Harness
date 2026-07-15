@@ -67,11 +67,12 @@ import type { RegistryPersistence } from "./registry/persistence.js";
 import type {
   Actor,
   IdempotencyRecord,
+  ProjectRecord,
   ServerRepository
 } from "./repositories/interfaces.js";
 import { ServerDomainError } from "./repositories/interfaces.js";
 import type { ArtifactStorage } from "./storage/interface.js";
-import { buildSemanticIndex } from "./semantic/indexer.js";
+import { buildSemanticIndex, isSemanticSourcePath } from "./semantic/indexer.js";
 import { SemanticMemoryStore } from "./semantic/memory-store.js";
 import type { SemanticStore } from "./semantic/store.js";
 import { registerSemanticMcpRoutes } from "./mcp/register.js";
@@ -225,6 +226,17 @@ function operationSize(operation: FileOperation): number {
   return "size_bytes" in operation ? operation.size_bytes : 0;
 }
 
+function projectLifecycleBody(project: ProjectRecord): Record<string, unknown> {
+  return {
+    project_id: project.projectId,
+    display_name: project.displayName,
+    lifecycle_state: project.lifecycleState,
+    archived_at: project.archivedAt,
+    purge_after: project.purgeAfter,
+    purged_at: project.purgedAt
+  };
+}
+
 // ???????? ? ? RegistryStore.DANGEROUS_PATH / checker DANGEROUS_PATH ????
 // ?? ^\\ ????? UNC ?????? store ??????????
 const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
@@ -330,12 +342,12 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     ...(options.externalFetch !== undefined ? { fetch: options.externalFetch } : {}),
     githubToken: config.githubToken
   });
-  // AiJobStore ???§3.2??PG ??? PgAiJobStore ???????? MemoryAiJobStore ??? fallback?
+  // AiJobStore ???ï¿½3.2??PG ??? PgAiJobStore ???????? MemoryAiJobStore ??? fallback?
   const aiJobStore = options.aiJobStore ?? new MemoryAiJobStore();
   const semanticStore = options.semanticStore ?? new SemanticMemoryStore();
   // R3???????? running/pending job?PG ??? failed ?? partial unique index?memory no-op??
   await aiJobStore.recoverOrphans();
-  // AI LlmClient ???§12.9??? defaultProvider ??? provider + secret file key ?? DeepSeek ????
+  // AI LlmClient ???ï¿½12.9??? defaultProvider ??? provider + secret file key ?? DeepSeek ????
   // ???/? key/??? ? null?????? AI_NOT_CONFIGURED??key ??????? store/log/???
   const llmFactory = options.aiLlmClientFactory ?? createLlmClient;
   const resolveLlmClient = async (providerId: string | null): Promise<{
@@ -407,6 +419,51 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
+  const quarantineProjectBlobs = async (candidates: string[]): Promise<{
+    candidates: number;
+    quarantined: number;
+    referenced: number;
+    failed: number;
+  }> => {
+    const hashes = [...new Set(candidates)];
+    const registryReferences = registry.referencedBlobHashes();
+    let quarantined = 0;
+    let referenced = 0;
+    let failed = 0;
+    for (const hash of hashes) {
+      try {
+        if (registryReferences.has(hash) || await repository.isBlobReferenced(hash)) {
+          referenced += 1;
+          continue;
+        }
+        if (await storage.quarantineBlob(hash, new Date().toISOString())) quarantined += 1;
+      } catch (error) {
+        failed += 1;
+        app.log.error({ error, contentSha256: hash }, "project blob quarantine failed");
+      }
+    }
+    return { candidates: hashes.length, quarantined, referenced, failed };
+  };
+
+  const sweepQuarantinedProjectBlobs = async (): Promise<void> => {
+    const registryReferences = registry.referencedBlobHashes();
+    const cutoff = Date.now() - config.projectBlobGcGraceMs;
+    for (const blob of await storage.listQuarantinedBlobs()) {
+      const quarantinedAt = Date.parse(blob.quarantinedAt);
+      if (!Number.isFinite(quarantinedAt) || quarantinedAt > cutoff) continue;
+      try {
+        if (registryReferences.has(blob.contentSha256) ||
+            await repository.isBlobReferenced(blob.contentSha256)) {
+          await storage.restoreQuarantinedBlob(blob.contentSha256);
+        } else {
+          await storage.deleteQuarantinedBlob(blob.contentSha256);
+        }
+      } catch (error) {
+        app.log.error({ error, contentSha256: blob.contentSha256 }, "project blob sweep failed");
+      }
+    }
+  };
+
   app.get("/health", async () => ({ status: "ok" }));
 
   app.get("/api/v1/dashboard/overview", async (request, reply) => {
@@ -472,6 +529,11 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       role: "owner",
       latest_project_version: project.latestProjectVersion,
       latest_artifact_id: project.latestArtifactId,
+      lifecycle_state: project.lifecycleState,
+      current_files_version: project.currentFilesVersion,
+      current_file_count: project.currentFileCount,
+      updated_at: project.updatedAt,
+      created_at: project.createdAt,
       request_id: requestId
     };
   });
@@ -483,10 +545,15 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new ServerDomainError(400, "VALIDATION_FAILED", "limit must be between 1 and 100");
     }
+    const state = query.state ?? "active";
+    if (state !== "active" && state !== "archived") {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "state must be active or archived");
+    }
     const listed = await repository.listProjects({
       actorId: actor.actorId,
       limit,
-      cursor: query.cursor ?? null
+      cursor: query.cursor ?? null,
+      state
     });
     reply.header("X-Request-Id", requestId);
     return {
@@ -496,9 +563,134 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         role: "owner",
         latest_project_version: project.latestProjectVersion,
         latest_artifact_id: project.latestArtifactId,
+        lifecycle_state: project.lifecycleState,
+        archived_at: project.archivedAt,
+        purge_after: project.purgeAfter,
+        current_files_version: project.currentFilesVersion ?? project.latestProjectVersion,
+        current_file_count: project.currentFileCount,
+        updated_at: project.updatedAt,
         created_at: project.createdAt
       })),
       page: { next_cursor: listed.nextCursor, limit },
+      request_id: requestId
+    };
+  });
+
+  app.delete("/api/v1/projects/:projectId", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const project = await repository.archiveProject(actor.actorId, projectId, new Date().toISOString());
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId,
+        action: "project.archived",
+        targetId: projectId,
+        requestId,
+        details: { purge_after: project.purgeAfter }
+      });
+      return { statusCode: 200, body: projectLifecycleBody(project) };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.post("/api/v1/projects/:projectId/restore", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const project = await repository.restoreProject(actor.actorId, projectId);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId,
+        action: "project.restored",
+        targetId: projectId,
+        requestId,
+        details: {}
+      });
+      return { statusCode: 200, body: projectLifecycleBody(project) };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.delete("/api/v1/projects/:projectId/purge", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const blobCandidates = await repository.listProjectBlobHashes(actor.actorId, projectId);
+      const project = await repository.purgeProject(actor.actorId, projectId, new Date().toISOString());
+      try {
+        await semanticStore.deleteProject(projectId);
+      } catch (error) {
+        request.log.error({ error, projectId }, "purged project semantic cleanup failed");
+      }
+      const blobCleanup = await quarantineProjectBlobs(blobCandidates);
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId,
+        action: "project.purged",
+        targetId: projectId,
+        requestId,
+        details: {
+          blob_candidates: blobCleanup.candidates,
+          blobs_quarantined: blobCleanup.quarantined,
+          blobs_still_referenced: blobCleanup.referenced,
+          blob_quarantine_failures: blobCleanup.failed,
+          blob_gc_grace_ms: config.projectBlobGcGraceMs
+        }
+      });
+      return { statusCode: 200, body: projectLifecycleBody(project) };
+    });
+    return send(reply, requestId, result);
+  });
+
+  app.get("/api/v1/projects/:projectId/files", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const project = await repository.getProject(actor.actorId, projectId);
+    const files = await repository.listProjectFiles(actor.actorId, projectId);
+    reply.header("X-Request-Id", requestId);
+    return {
+      project_id: projectId,
+      project_version: project.currentFilesVersion ?? project.latestProjectVersion,
+      total: files.length,
+      items: files.map((file) => ({
+        path: file.path,
+        file_kind: file.fileKind,
+        content_sha256: file.contentSha256,
+        size_bytes: file.sizeBytes,
+        project_version: file.projectVersion,
+        updated_at: file.updatedAt
+      })),
+      request_id: requestId
+    };
+  });
+
+  app.get("/api/v1/projects/:projectId/files/content", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { projectId } = request.params as { projectId: string };
+    const query = request.query as Record<string, string | undefined>;
+    if (query.path === undefined || query.path.length === 0) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "path is required");
+    }
+    const file = await repository.getProjectFile(actor.actorId, projectId, query.path);
+    const bytes = await storage.getBlob(file.contentSha256);
+    let content: string;
+    try {
+      content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new ServerDomainError(422, "PROJECT_FILE_INVALID", "project file is not UTF-8 text");
+    }
+    reply.header("X-Request-Id", requestId);
+    reply.header("ETag", file.contentSha256);
+    return {
+      project_id: projectId,
+      path: file.path,
+      file_kind: file.fileKind,
+      content_sha256: file.contentSha256,
+      size_bytes: file.sizeBytes,
+      project_version: file.projectVersion,
+      updated_at: file.updatedAt,
+      content,
       request_id: requestId
     };
   });
@@ -628,6 +820,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           "upload chunk integrity check failed"
         );
       }
+      if (operationSize(operation) === 0 && content.byteLength === 0 &&
+          request.headers["content-range"] === "bytes */0") {
+        await storage.putBlob(hash, content);
+        return {
+          statusCode: 201,
+          body: { received_ranges: [], verified: true }
+        };
+      }
       const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
         String(request.headers["content-range"] ?? "")
       );
@@ -747,11 +947,30 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         }
       });
       if (review.artifactId !== null) {
-        await semanticStore.rebuild(buildSemanticIndex({
-          projectId: proposal.projectId,
-          artifactId: review.artifactId,
-          files
-        }));
+        try {
+          const currentFiles = await repository.listProjectFiles(actor.actorId, proposal.projectId);
+          const semanticFiles = await Promise.all(
+            currentFiles
+              .filter((file) => isSemanticSourcePath(file.path))
+              .map(async (file): Promise<readonly [string, string] | null> => {
+                if (!await storage.hasBlob(file.contentSha256)) return null;
+                try {
+                  const content = new TextDecoder("utf-8", { fatal: true })
+                    .decode(await storage.getBlob(file.contentSha256));
+                  return [file.path, content] as const;
+                } catch {
+                  return null;
+                }
+              })
+          );
+          await semanticStore.rebuild(buildSemanticIndex({
+            projectId: proposal.projectId,
+            artifactId: review.artifactId,
+            files: Object.fromEntries(semanticFiles.filter((item) => item !== null))
+          }));
+        } catch (error) {
+          request.log.error({ error, projectId: proposal.projectId }, "semantic index rebuild failed");
+        }
       }
       return {
         statusCode: 201,
@@ -1103,7 +1322,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       const body = publishSkillRequestSchema.parse(request.body);
       // R3 ????publish???? persist(tx)?+ writeAudit(tx) ?? withTransaction?
       // audit ? registry_state ???? R3??memory fallback withTransaction no-op?????????
-      // PG ?? ? registry_state/audit ??? + version ????in-memory ???? design §3.5 ?????? registry_state ????
+      // PG ?? ? registry_state/audit ??? + version ????in-memory ???? design ï¿½3.5 ?????? registry_state ????
       const version = await repository.withTransaction(async (tx) => {
         const v = await registry.publish({
           slug, agent, version: body.version, releaseNote: body.releaseNote ?? null, actorId: actor.actorId
@@ -1217,7 +1436,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return { items: diff, request_id: requestId };
   });
 
-  // ???? agent?§3.4??mutation ??? ? setDefaultAgent??? enabled + revision ???? + ?? agents?? audit?
+  // ???? agent?ï¿½3.4??mutation ??? ? setDefaultAgent??? enabled + revision ???? + ?? agents?? audit?
   // 422 AGENT_NOT_ENABLED / 409 REVISION_CONFLICT / 404 SKILL_NOT_FOUND ? store ?? ServerDomainError?????????
   app.patch("/api/v1/skills/:slug/default-agent", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
@@ -1411,16 +1630,16 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { actor, requestId } = await authenticated(request, repository);
     const { projectId } = request.params as { projectId: string };
     await repository.getProject(actor.actorId, projectId);
+    const query = request.query as Record<string, string | undefined>;
+    const focusDocumentId = query.focus_document_id?.trim() || undefined;
+    const graph = await semanticStore.graph(projectId, focusDocumentId);
+    const overview = await semanticStore.overview(projectId);
     reply.header("X-Request-Id", requestId);
     return {
-      nodes: await semanticStore.listByKinds(projectId, [
-        "knowledge_entry",
-        "knowledge_markdown",
-        "rule",
-        "archive_record",
-        "agent_instruction"
-      ]),
-      edges: await semanticStore.listEdges(projectId),
+      ...graph,
+      focus_document_id: focusDocumentId ?? null,
+      relation_status: graph.edges.length === 0 ? "no_relations" : "ready",
+      indexed_documents: overview.counts.documents,
       request_id: requestId
     };
   });
@@ -1589,7 +1808,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return Buffer.from(bytes);
   });
 
-  // ---- AI ?? + AI ???§12.9 / §6.2?----
+  // ---- AI ?? + AI ???ï¿½12.9 / ï¿½6.2?----
 
   app.get("/api/v1/ai-config/providers", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
@@ -1798,7 +2017,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // ?? AI ???§3.3??POST ???? job ?? jobId + status:pending????? GET /ai-jobs/:id?
+  // ?? AI ???ï¿½3.3??POST ???? job ?? jobId + status:pending????? GET /ai-jobs/:id?
   // mutation ???? job?Idempotency-Key ??? POST ??? jobId??job ????????
   // ??????? draft + resolveLlmClient + checkQuota ????? 429 ?? LLM?INT-002??
   // job ???buildAiCheckPrompt ? analyze ? recordUsage ? parseAiCheckResult ? setDraftAiChecks + audit?
@@ -1851,7 +2070,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // ?? job ???§3.3??completed ? result???/??? 404 JOB_NOT_FOUND?
+  // ?? job ???ï¿½3.3??completed ? result???/??? 404 JOB_NOT_FOUND?
   app.get("/api/v1/ai-jobs/:jobId", async (request, reply) => {
     const { requestId } = await authenticated(request, repository);
     const { jobId } = request.params as { jobId: string };
@@ -1874,7 +2093,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
-  // AI ?????????§5.3??? diffDraft + ir ? LLM ?? releaseNote ? ??? draft.releaseNote + audit?
+  // AI ?????????ï¿½5.3??? diffDraft + ir ? LLM ?? releaseNote ? ??? draft.releaseNote + audit?
   // ??? = mutation?? Idempotency-Key+lock?? ai-checks ??????? LLM ????
   // ?? LLM ??? mutation ??????? 60s??????Idempotency-Key ??????draft ?????????
   //    ?????"? analyze ?? mutation ???"???????review YELLOW #1????????
@@ -1939,7 +2158,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
-  // AI ???????§6.3 ?4???? draft.aiChecks.fixable ???? LLM ??
+  // AI ???????ï¿½6.3 ?4???? draft.aiChecks.fixable ???? LLM ??
   // {suggestedContent,explanation,appliesTo}??? FixPlan??????? persist???? apply-fix-suggestion??
   // ? aiChecks ? ? FixPlan?LLM ??/???? ? ???? message-only?? 500??????
   app.post("/api/v1/skills/:slug/draft/:agent/fix-suggestions", async (request, reply) => {
@@ -2014,7 +2233,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     });
   });
 
-  // AI ???????§6.3 ?4?/§3.6??mutation ??? ? applyFixSuggestion????+? ir/examples+scanSensitive+? aiChecks+revision+1?? audit?
+  // AI ???????ï¿½6.3 ?4?/ï¿½3.6??mutation ??? ? applyFixSuggestion????+? ir/examples+scanSensitive+? aiChecks+revision+1?? audit?
   // appliesTo ?????? store ????examples/allowed_capabilities/instructions/description?tags/null/?? ? 422 SKILL_VALIDATION_FAILED??
   app.post("/api/v1/skills/:slug/draft/:agent/apply-fix-suggestion", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
@@ -2186,6 +2405,46 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
 
   registerSemanticMcpRoutes(app, { repository, semanticStore });
 
+  const cleanupExpiredProjects = async (): Promise<void> => {
+    const now = new Date().toISOString();
+    while (true) {
+      const purged = await repository.purgeExpiredProjects(now);
+      for (const result of purged) {
+        const project = result.project;
+        try {
+          await semanticStore.deleteProject(project.projectId);
+        } catch (error) {
+          app.log.error({ error, projectId: project.projectId }, "auto-purged project semantic cleanup failed");
+        }
+        const blobCleanup = await quarantineProjectBlobs(result.contentSha256);
+        try {
+          await writeAudit(repository, {
+            actorId: project.ownerActorId,
+            projectId: project.projectId,
+            action: "project.auto-purged",
+            targetId: project.projectId,
+            requestId: uuidV7(),
+            details: {
+              purged_at: project.purgedAt,
+              blob_candidates: blobCleanup.candidates,
+              blobs_quarantined: blobCleanup.quarantined,
+              blobs_still_referenced: blobCleanup.referenced,
+              blob_quarantine_failures: blobCleanup.failed,
+              blob_gc_grace_ms: config.projectBlobGcGraceMs
+            }
+          });
+        } catch (error) {
+          app.log.error({ error, projectId: project.projectId }, "auto-purge audit write failed");
+        }
+      }
+      if (purged.length < 100) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+
+  await cleanupExpiredProjects();
+  await sweepQuarantinedProjectBlobs();
+
   let externalRefreshTimer: ReturnType<typeof setInterval> | null = null;
   if (config.externalSkillRefreshIntervalMs > 0) {
     externalRefreshTimer = setInterval(() => {
@@ -2195,8 +2454,18 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     }, config.externalSkillRefreshIntervalMs);
     externalRefreshTimer.unref?.();
   }
+  let projectCleanupTimer: ReturnType<typeof setInterval> | null = null;
+  if (config.projectCleanupIntervalMs > 0) {
+    projectCleanupTimer = setInterval(() => {
+      void cleanupExpiredProjects().then(sweepQuarantinedProjectBlobs).catch((error: unknown) => {
+        app.log.error({ err: error }, "project recycle-bin cleanup failed");
+      });
+    }, config.projectCleanupIntervalMs);
+    projectCleanupTimer.unref?.();
+  }
   app.addHook("onClose", async () => {
     if (externalRefreshTimer !== null) clearInterval(externalRefreshTimer);
+    if (projectCleanupTimer !== null) clearInterval(projectCleanupTimer);
   });
 
   await app.ready();

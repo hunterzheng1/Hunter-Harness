@@ -19,6 +19,8 @@ import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
 import { apiError } from "./skill-shared";
 
+export { ProjectRegistry } from "./project-registry";
+
 // ── Resolve API: real (with token) or mock (offline demo) ──
 
 function resolveApi(): HunterApi {
@@ -236,7 +238,7 @@ function DistributionChart({ items }: { items: DashboardOverview["distributions"
 
 // ── Project Registry ──────────────────────────────────────
 
-export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
+export function LegacyProjectRegistry({ api: propApi }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);

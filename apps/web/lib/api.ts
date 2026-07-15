@@ -51,6 +51,12 @@ export interface ProjectSummary {
   role: "owner" | "contributor" | "reviewer" | "admin";
   latest_project_version: string | null;
   latest_artifact_id: string | null;
+  lifecycle_state?: "active" | "archived" | "purged";
+  archived_at?: string | null;
+  purge_after?: string | null;
+  current_files_version?: string | null;
+  current_file_count?: number;
+  updated_at?: string;
   created_at: string;
 }
 
@@ -71,6 +77,7 @@ export interface ProjectFileProposalInput {
   projectId: string;
   baseProjectVersion: string | null;
   baseManifestHash: string;
+  baseArtifactId?: string | null;
   action: "add" | "modify" | "rename" | "delete";
   path: string;
   targetPath?: string;
@@ -82,8 +89,47 @@ export interface ProjectFileProposalInput {
 
 export interface ProjectFileProposalResult {
   proposal_id: string;
-  status: "pending_review";
+  status: "approved" | "pending_review";
+  artifact_id?: string | null;
   received_files: number;
+}
+
+export interface ProjectFileMetadata {
+  path: string;
+  file_kind: WebFileKind;
+  content_sha256: string;
+  size_bytes: number;
+  project_version: string;
+  updated_at: string;
+}
+
+export interface ProjectFilesSnapshot {
+  project_id: string;
+  project_version: string | null;
+  total: number;
+  items: ProjectFileMetadata[];
+}
+
+export interface ProjectFileContent extends ProjectFileMetadata {
+  project_id: string;
+  content: string;
+}
+
+export interface ProjectLifecycleResult {
+  project_id: string;
+  display_name: string;
+  lifecycle_state: "active" | "archived" | "purged";
+  archived_at: string | null;
+  purge_after: string | null;
+  purged_at: string | null;
+}
+
+export interface ProjectSemanticGraph {
+  nodes: SemanticDocument[];
+  edges: SemanticEdge[];
+  focus_document_id: string | null;
+  relation_status: "ready" | "no_relations";
+  indexed_documents: number;
 }
 
 export interface ProposalSummary {
@@ -145,7 +191,7 @@ export interface ReviewResult {
 
 export interface HunterApi {
   getDashboardOverview(days?: number): Promise<DashboardOverview>;
-  listProjects(): Promise<ProjectSummary[]>;
+  listProjects(state?: "active" | "archived"): Promise<ProjectSummary[]>;
   getProject(projectId: string): Promise<ProjectDetailModel>;
   listProjectProposals(projectId: string): Promise<ProposalSummary[]>;
   listAllProposals(): Promise<ProposalSummary[]>;
@@ -154,6 +200,11 @@ export interface HunterApi {
   getArtifactManifest(artifactId: string): Promise<ArtifactManifestModel>;
   getArtifactText(artifactId: string, contentHash: string): Promise<string>;
   createProjectFileProposal(input: ProjectFileProposalInput): Promise<ProjectFileProposalResult>;
+  listProjectFiles?(projectId: string): Promise<ProjectFilesSnapshot>;
+  getProjectFileContent?(projectId: string, path: string): Promise<ProjectFileContent>;
+  archiveProject?(projectId: string): Promise<ProjectLifecycleResult>;
+  restoreProject?(projectId: string): Promise<ProjectLifecycleResult>;
+  purgeProject?(projectId: string): Promise<ProjectLifecycleResult>;
   getProposal(proposalId: string): Promise<ProposalDetailModel>;
   reviewProposal?(proposalId: string, input: ReviewInput): Promise<ReviewResult>;
   listSkills?(filters?: Record<string, string>): Promise<RegistrySkillDetail[]>;
@@ -190,7 +241,7 @@ export interface HunterApi {
   listProjectSemanticKnowledge?(projectId: string): Promise<SemanticDocument[]>;
   listProjectSemanticRules?(projectId: string): Promise<SemanticDocument[]>;
   listProjectSemanticChanges?(projectId: string): Promise<SemanticDocument[]>;
-  getProjectSemanticGraph?(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }>;
+  getProjectSemanticGraph?(projectId: string, focusDocumentId?: string): Promise<ProjectSemanticGraph>;
   searchSemanticDocuments?(query: string, projectId?: string): Promise<Array<{ document: SemanticDocument; project_id: string }>>;
   uploadSkillDraft?(form: FormData, agent: RegistryAgent): Promise<DraftState>;
   getSkillDraft?(slug: string, agent: RegistryAgent): Promise<DraftState>;
@@ -357,11 +408,20 @@ export class HttpHunterApi implements HunterApi {
     }
   }
 
-  async listProjects(): Promise<ProjectSummary[]> {
-    const result = await this.request<{
-      items: ProjectSummary[];
-    }>("GET", "/api/v1/projects?limit=100");
-    return result.items;
+  async listProjects(state: "active" | "archived" = "active"): Promise<ProjectSummary[]> {
+    const items: ProjectSummary[] = [];
+    let cursor: string | null = null;
+    do {
+      const query = new URLSearchParams({ limit: "100", state });
+      if (cursor !== null) query.set("cursor", cursor);
+      const result = await this.request<{
+        items: ProjectSummary[];
+        page: { next_cursor: string | null };
+      }>("GET", "/api/v1/projects?" + query.toString());
+      items.push(...result.items);
+      cursor = result.page.next_cursor;
+    } while (cursor !== null);
+    return items;
   }
 
   async getDashboardOverview(days = 7): Promise<DashboardOverview> {
@@ -370,6 +430,29 @@ export class HttpHunterApi implements HunterApi {
 
   async getProject(projectId: string): Promise<ProjectDetailModel> {
     return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId));
+  }
+
+  async listProjectFiles(projectId: string): Promise<ProjectFilesSnapshot> {
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/files");
+  }
+
+  async getProjectFileContent(projectId: string, path: string): Promise<ProjectFileContent> {
+    return this.request(
+      "GET",
+      "/api/v1/projects/" + encodeURIComponent(projectId) + "/files/content?path=" + encodeURIComponent(path)
+    );
+  }
+
+  async archiveProject(projectId: string): Promise<ProjectLifecycleResult> {
+    return this.request("DELETE", "/api/v1/projects/" + encodeURIComponent(projectId));
+  }
+
+  async restoreProject(projectId: string): Promise<ProjectLifecycleResult> {
+    return this.request("POST", "/api/v1/projects/" + encodeURIComponent(projectId) + "/restore", {});
+  }
+
+  async purgeProject(projectId: string): Promise<ProjectLifecycleResult> {
+    return this.request("DELETE", "/api/v1/projects/" + encodeURIComponent(projectId) + "/purge");
   }
 
   async listProjectProposals(projectId: string): Promise<ProposalSummary[]> {
@@ -469,13 +552,16 @@ export class HttpHunterApi implements HunterApi {
     if (contentHash !== undefined && encoded !== undefined && session.missing_blobs.includes(contentHash)) {
       await this.binaryRequest("PUT", "/api/v1/proposal-sessions/" + encodeURIComponent(session.session_id) + "/blobs/" + encodeURIComponent(contentHash), encoded, {
         "Content-Type": "application/octet-stream",
-        "Content-Range": "bytes 0-" + Math.max(0, encoded.byteLength - 1) + "/" + encoded.byteLength,
+        "Content-Range": encoded.byteLength === 0
+          ? "bytes */0"
+          : "bytes 0-" + (encoded.byteLength - 1) + "/" + encoded.byteLength,
         "X-Chunk-SHA256": contentHash
       });
     }
     return this.request("POST", "/api/v1/proposal-sessions/" + encodeURIComponent(session.session_id) + ":finalize", {
       schema_version: 1,
-      manifest_sha256: await sha256Text(canonicalJson([operation]))
+      manifest_sha256: await sha256Text(canonicalJson([operation])),
+      base_artifact_id: input.baseArtifactId ?? null
     });
   }
 
@@ -708,8 +794,11 @@ export class HttpHunterApi implements HunterApi {
     return result.items;
   }
 
-  async getProjectSemanticGraph(projectId: string): Promise<{ nodes: SemanticDocument[]; edges: SemanticEdge[] }> {
-    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/graph");
+  async getProjectSemanticGraph(projectId: string, focusDocumentId?: string): Promise<ProjectSemanticGraph> {
+    const query = focusDocumentId === undefined
+      ? ""
+      : "?focus_document_id=" + encodeURIComponent(focusDocumentId);
+    return this.request("GET", "/api/v1/projects/" + encodeURIComponent(projectId) + "/semantic/graph" + query);
   }
 
   async searchSemanticDocuments(

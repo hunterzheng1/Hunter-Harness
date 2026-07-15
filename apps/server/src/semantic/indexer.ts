@@ -47,6 +47,14 @@ function isAgentInstructionPath(path: string): boolean {
   return path === "CLAUDE.md" || path === "AGENTS.md" || path === "CODEBUDDY.md";
 }
 
+export function isSemanticSourcePath(path: string): boolean {
+  return isKnowledgeIngestEntryPath(path) ||
+    isKnowledgeMarkdownPath(path) ||
+    isRulePath(path) ||
+    isArchiveSummaryPath(path) ||
+    isAgentInstructionPath(path);
+}
+
 /** Documents whose bodies may contain markdown/wiki links worth resolving. */
 const LINK_SOURCE_KINDS = new Set<SemanticDocument["kind"]>([
   "knowledge_markdown",
@@ -219,6 +227,13 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
   const documents: SemanticDocument[] = [];
   const bySourcePath = new Map<string, SemanticDocument>();
   const knowledgeEntrySourceFiles = new Map<string, readonly string[]>();
+  const knowledgeEntries: Array<{
+    document: SemanticDocument;
+    entryId: string;
+    supersedes: readonly string[];
+    conflictsWith: readonly string[];
+    sourceFiles: readonly string[];
+  }> = [];
 
   for (const [sourcePath, content] of Object.entries(input.files).sort(([a], [b]) => a.localeCompare(b))) {
     if (isKnowledgeIngestEntryPath(sourcePath)) {
@@ -237,13 +252,24 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
             entry_type: entry.type,
             status: entry.status,
             keywords: entry.keywords,
-            source_archive: entry.source.archive
+            source_archive: entry.source.archive,
+            source_files: entry.scope.sourceFiles,
+            supersedes: entry.lifecycle.supersedes,
+            superseded_by: entry.lifecycle.supersededBy,
+            conflicts_with: entry.lifecycle.conflictsWith
           },
           content_sha256: sha256Bytes(content)
         };
         documents.push(doc);
         bySourcePath.set(sourcePath, doc);
         knowledgeEntrySourceFiles.set(doc.document_id, entry.scope.sourceFiles);
+        knowledgeEntries.push({
+          document: doc,
+          entryId: entry.id,
+          supersedes: entry.lifecycle.supersedes,
+          conflictsWith: entry.lifecycle.conflictsWith,
+          sourceFiles: entry.scope.sourceFiles
+        });
       } catch {
         // Invalid ingest JSON must not block push; skip until next rebuild.
       }
@@ -364,6 +390,61 @@ export function buildSemanticIndex(input: BuildSemanticIndexInput): SemanticInde
   }
 
   const collector = new EdgeCollector();
+
+  const knowledgeByEntryId = new Map(
+    knowledgeEntries.map((entry) => [entry.entryId, entry.document])
+  );
+  for (const entry of knowledgeEntries) {
+    for (const supersededId of entry.supersedes) {
+      const target = knowledgeByEntryId.get(supersededId);
+      if (target !== undefined) {
+        collector.add(
+          input.projectId,
+          input.artifactId,
+          entry.document,
+          target,
+          "supersedes",
+          { entry_id: supersededId }
+        );
+      }
+    }
+    for (const conflictId of entry.conflictsWith) {
+      const target = knowledgeByEntryId.get(conflictId);
+      if (target !== undefined) {
+        const [from, to] = orderedPair(entry.document, target);
+        collector.add(
+          input.projectId,
+          input.artifactId,
+          from,
+          to,
+          "conflicts_with",
+          { entry_ids: [entry.entryId, conflictId].sort() }
+        );
+      }
+    }
+  }
+
+  for (let index = 0; index < knowledgeEntries.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < knowledgeEntries.length; otherIndex += 1) {
+      const left = knowledgeEntries[index];
+      const right = knowledgeEntries[otherIndex];
+      if (left === undefined || right === undefined) continue;
+      const rightPaths = new Set(right.sourceFiles);
+      const sharedPaths = [...new Set(left.sourceFiles)]
+        .filter((path) => rightPaths.has(path))
+        .sort();
+      if (sharedPaths.length === 0) continue;
+      const [from, to] = orderedPair(left.document, right.document);
+      collector.add(
+        input.projectId,
+        input.artifactId,
+        from,
+        to,
+        "shared_scope",
+        { shared_paths: sharedPaths }
+      );
+    }
+  }
 
   for (const [documentIdValue, sourceFiles] of knowledgeEntrySourceFiles.entries()) {
     const from = documents.find((doc) => doc.document_id === documentIdValue);

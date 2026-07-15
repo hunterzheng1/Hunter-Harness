@@ -11,6 +11,8 @@ export const semanticDocumentKindSchema = z.enum([
 export const semanticEdgeKindSchema = z.enum([
   "references_path",
   "supersedes",
+  "conflicts_with",
+  "shared_scope",
   "related_archive",
   "tag_cooccurrence"
 ]);

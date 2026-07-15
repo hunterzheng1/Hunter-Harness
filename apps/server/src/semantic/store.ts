@@ -11,6 +11,11 @@ export interface SemanticStore {
   overview(projectId: string): Promise<SemanticOverview>;
   listByKinds(projectId: string, kinds: readonly SemanticDocumentKind[]): Promise<SemanticDocument[]>;
   listEdges(projectId: string): Promise<SemanticEdge[]>;
+  graph(projectId: string, focusDocumentId?: string): Promise<{
+    nodes: SemanticDocument[];
+    edges: SemanticEdge[];
+  }>;
+  deleteProject(projectId: string): Promise<void>;
   search(query: string, projectId?: string): Promise<SemanticDocument[]>;
   latestArtifactId(projectId: string): Promise<string | null>;
 }

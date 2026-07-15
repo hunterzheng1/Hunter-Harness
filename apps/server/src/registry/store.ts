@@ -1515,6 +1515,17 @@ export class RegistryStore {
       .map((artifact) => structuredClone(artifact));
   }
 
+  referencedBlobHashes(): Set<string> {
+    return new Set([
+      ...[...this.skills.values()].flatMap((state) => state.versions.flatMap((version) =>
+        version.artifacts.map((artifact) => artifact.content_sha256)
+      )),
+      ...[...this.workflowFamilies.values()].flatMap((state) => state.versions.flatMap((version) =>
+        version.artifacts.map((artifact) => artifact.content_sha256)
+      ))
+    ]);
+  }
+
   async releaseSkillToNpm(
     slug: string,
     config: NpmPublishConfig,

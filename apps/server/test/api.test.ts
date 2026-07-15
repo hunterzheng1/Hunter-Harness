@@ -334,6 +334,11 @@ describe("/api/v1 governed server", () => {
     expect(staleFinalize.statusCode).toBe(409);
     expect(staleFinalize.json()).toMatchObject({ error: { code: "STALE_PUSH" } });
 
+    const freshOperation = {
+      ...operations[0].operation,
+      operation: "modify" as const,
+      base_content_sha256: operations[0].operation.content_sha256
+    };
     const freshSession = await app.inject({
       method: "POST",
       url: `/api/v1/projects/${projectId}/proposal-sessions`,
@@ -344,14 +349,14 @@ describe("/api/v1 governed server", () => {
         client_id: "cli_test",
         base_project_version: latestVersion,
         base_manifest_hash: sha256Bytes(canonicalJson({})),
-        proposal_manifest: { files: [operations[0].operation] },
-        artifact_manifest: { schema_version: 1, files: [operations[0].operation] }
+        proposal_manifest: { files: [freshOperation] },
+        artifact_manifest: { schema_version: 1, files: [freshOperation] }
       }
     });
     expect(freshSession.statusCode).toBe(201);
     const freshFinalize = await finalizeSession(
       freshSession.json().session_id,
-      [operations[0].operation],
+      [freshOperation],
       artifactId
     );
     expect(freshFinalize.statusCode).toBe(201);

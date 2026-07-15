@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { KnowledgeIngestEntry } from "@hunter-harness/contracts";
 
 import { buildSemanticIndex } from "../src/semantic/indexer.js";
 import { SemanticMemoryStore } from "../src/semantic/memory-store.js";
@@ -302,5 +303,39 @@ describe("semantic indexer", () => {
     expect(await store.listByKinds("prj_a", ["agent_instruction"])).toHaveLength(2);
     expect(await store.latestArtifactId("prj_a")).toBe("art_2");
     expect(await store.search("agents", "prj_a")).toHaveLength(1);
+  });
+
+  it("connects knowledge lifecycle, conflicts, and shared source scope", async () => {
+    const fixture = JSON.parse(
+      await readFile(join(fixtureRoot, "knowledge-ingest-entry.json"), "utf8")
+    ) as KnowledgeIngestEntry;
+    const first = structuredClone(fixture);
+    first.id = "knowledge-old";
+    first.title = "Old decision";
+    first.scope.sourceFiles = ["packages/core/src/client.ts"];
+    first.lifecycle.supersedes = [];
+    first.lifecycle.conflictsWith = ["knowledge-new"];
+
+    const second = structuredClone(fixture);
+    second.id = "knowledge-new";
+    second.title = "New decision";
+    second.scope.sourceFiles = ["packages/core/src/client.ts"];
+    second.lifecycle.supersedes = ["knowledge-old"];
+    second.lifecycle.conflictsWith = ["knowledge-old"];
+
+    const build = buildSemanticIndex({
+      projectId: "prj_relations",
+      artifactId: "art_relations01",
+      files: {
+        ".harness/knowledge/entries/active/old.json": JSON.stringify(first),
+        ".harness/knowledge/entries/active/new.json": JSON.stringify(second)
+      }
+    });
+
+    expect(build.edges.map((edge) => edge.kind).sort()).toEqual([
+      "conflicts_with",
+      "shared_scope",
+      "supersedes"
+    ]);
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -193,8 +193,31 @@ describe("Web Console", () => {
 
     dashboard.unmount();
     render(<ProjectRegistry api={api()} />);
-    expect(await screen.findByText("pv_1")).toBeInTheDocument();
-    expect(screen.getByText("art_1")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Payments" })).toBeInTheDocument();
+    expect(screen.queryByText("art_1")).not.toBeInTheDocument();
+  });
+
+  it("loads projects without workflow N+1 calls and moves a project to the recycle bin", async () => {
+    const listProjects = vi.fn(async (state: "active" | "archived" = "active") => state === "active" ? projects : []);
+    const listWorkflowFamilies = vi.fn(async () => []);
+    const getProjectWorkflowBinding = vi.fn(async () => null);
+    const archiveProject = vi.fn(async () => ({
+      project_id: "prj_one",
+      display_name: "Payments",
+      lifecycle_state: "archived" as const,
+      archived_at: "2026-06-21T00:00:00Z",
+      purge_after: "2026-07-21T00:00:00Z",
+      purged_at: null
+    }));
+    render(<ProjectRegistry api={api({ listProjects, listWorkflowFamilies, getProjectWorkflowBinding, archiveProject })} />);
+
+    expect(await screen.findByRole("heading", { name: "Payments" })).toBeInTheDocument();
+    expect(listWorkflowFamilies).not.toHaveBeenCalled();
+    expect(getProjectWorkflowBinding).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "移到回收站" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(archiveProject).toHaveBeenCalledWith("prj_one"));
   });
 
   it("shows a redacted authentication failure without leaking server details", async () => {

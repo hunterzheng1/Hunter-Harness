@@ -7,6 +7,7 @@ import type {
   AuditEvent,
   IdempotencyRecord,
   ProjectRecord,
+  ProjectFileRecord,
   ProposalRecord,
   ProposalSessionRecord,
   ReviewRecord,
@@ -14,6 +15,7 @@ import type {
   TransactionRepository
 } from "./interfaces.js";
 import { ServerDomainError } from "./interfaces.js";
+import { applyProjectFileOperations } from "./project-files.js";
 
 function tokenHash(token: string): string {
   return sha256Bytes("hunter-harness-token\0" + token);
@@ -22,6 +24,7 @@ function tokenHash(token: string): string {
 export class MemoryRepository implements ServerRepository {
   private readonly tokens = new Map<string, Actor>();
   private readonly projects = new Map<string, ProjectRecord>();
+  private readonly projectFiles = new Map<string, Map<string, ProjectFileRecord>>();
   private readonly bindings = new Map<string, string>();
   private readonly sessions = new Map<string, ProposalSessionRecord>();
   private readonly proposals = new Map<string, ProposalRecord>();
@@ -102,27 +105,48 @@ export class MemoryRepository implements ServerRepository {
         );
       }
       this.bindings.set(bindingKey, requested.projectId);
-      return { project: requested, bindingStatus: "bound" };
+      return { project: this.requireProject(input.actorId, requested.projectId), bindingStatus: "bound" };
     }
 
     const projectId = "prj_" + String(++this.counters.project).padStart(8, "0");
+    const now = new Date().toISOString();
     const project: ProjectRecord = {
       projectId,
       ownerActorId: input.actorId,
       displayName: input.displayName,
       latestProjectVersion: null,
       latestArtifactId: null,
-      createdAt: new Date().toISOString()
+      lifecycleState: "active",
+      archivedAt: null,
+      purgeAfter: null,
+      purgedAt: null,
+      currentFilesVersion: null,
+      currentFileCount: 0,
+      updatedAt: now,
+      createdAt: now
     };
     this.projects.set(projectId, project);
     this.bindings.set(bindingKey, projectId);
     return { project, bindingStatus: "created" };
   }
 
-  private requireProject(actorId: string, projectId: string): ProjectRecord {
+  private requireOwnedProject(actorId: string, projectId: string): ProjectRecord {
     const project = this.projects.get(projectId);
     if (project === undefined || project.ownerActorId !== actorId) {
       throw new ServerDomainError(404, "PROJECT_NOT_FOUND", "project not found");
+    }
+    return project;
+  }
+
+  private requireProject(actorId: string, projectId: string): ProjectRecord {
+    const project = this.requireOwnedProject(actorId, projectId);
+    if (project.lifecycleState === "archived") {
+      throw new ServerDomainError(410, "PROJECT_ARCHIVED", "project is in the recycle bin", {
+        purge_after: project.purgeAfter
+      });
+    }
+    if (project.lifecycleState === "purged") {
+      throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
     }
     return project;
   }
@@ -135,6 +159,7 @@ export class MemoryRepository implements ServerRepository {
     actorId: string;
     limit: number;
     cursor: string | null;
+    state?: "active" | "archived";
   }): Promise<{ items: ProjectRecord[]; nextCursor: string | null }> {
     const offset = input.cursor === null
       ? 0
@@ -143,7 +168,8 @@ export class MemoryRepository implements ServerRepository {
       throw new ServerDomainError(400, "INVALID_CURSOR", "cursor is invalid");
     }
     const values = [...this.projects.values()]
-      .filter((project) => project.ownerActorId === input.actorId)
+      .filter((project) => project.ownerActorId === input.actorId &&
+        project.lifecycleState === (input.state ?? "active"))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt) ||
         right.projectId.localeCompare(left.projectId));
     const items = values.slice(offset, offset + input.limit);
@@ -154,6 +180,149 @@ export class MemoryRepository implements ServerRepository {
         ? Buffer.from(String(nextOffset)).toString("base64url")
         : null
     };
+  }
+
+  async archiveProject(actorId: string, projectId: string, archivedAt: string): Promise<ProjectRecord> {
+    const project = this.requireOwnedProject(actorId, projectId);
+    if (project.lifecycleState === "purged") {
+      throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+    }
+    if (project.lifecycleState === "active") {
+      project.lifecycleState = "archived";
+      project.archivedAt = archivedAt;
+      project.purgeAfter = new Date(Date.parse(archivedAt) + 30 * 24 * 60 * 60 * 1000).toISOString();
+      project.updatedAt = archivedAt;
+    }
+    return structuredClone(project);
+  }
+
+  async restoreProject(actorId: string, projectId: string): Promise<ProjectRecord> {
+    const project = this.requireOwnedProject(actorId, projectId);
+    if (project.lifecycleState === "purged") {
+      throw new ServerDomainError(410, "PROJECT_PURGED", "project data was permanently purged");
+    }
+    project.lifecycleState = "active";
+    project.archivedAt = null;
+    project.purgeAfter = null;
+    project.updatedAt = new Date().toISOString();
+    return structuredClone(project);
+  }
+
+  async purgeProject(actorId: string, projectId: string, purgedAt: string): Promise<ProjectRecord> {
+    const project = this.requireOwnedProject(actorId, projectId);
+    if (project.lifecycleState === "purged") return structuredClone(project);
+    if (project.lifecycleState !== "archived") {
+      throw new ServerDomainError(409, "PROJECT_NOT_ARCHIVED", "project must be archived before purge");
+    }
+    for (const [sessionId, session] of this.sessions) {
+      if (session.projectId === projectId) this.sessions.delete(sessionId);
+    }
+    for (const [proposalId, proposal] of this.proposals) {
+      if (proposal.projectId === projectId) this.proposals.delete(proposalId);
+    }
+    for (const [artifactId, artifact] of this.artifacts) {
+      if (artifact.projectId === projectId) this.artifacts.delete(artifactId);
+    }
+    for (const [bindingKey, boundProjectId] of this.bindings) {
+      if (boundProjectId === projectId) this.bindings.delete(bindingKey);
+    }
+    this.projectFiles.delete(projectId);
+    project.latestProjectVersion = null;
+    project.latestArtifactId = null;
+    project.lifecycleState = "purged";
+    project.purgedAt = purgedAt;
+    project.purgeAfter = null;
+    project.currentFilesVersion = null;
+    project.currentFileCount = 0;
+    project.updatedAt = purgedAt;
+    return structuredClone(project);
+  }
+
+  async purgeExpiredProjects(now: string): Promise<Array<{
+    project: ProjectRecord;
+    contentSha256: string[];
+  }>> {
+    const expired = [...this.projects.values()].filter((project) =>
+      project.lifecycleState === "archived" &&
+      project.purgeAfter !== null &&
+      Date.parse(project.purgeAfter) <= Date.parse(now)
+    ).sort((left, right) => (left.purgeAfter ?? "").localeCompare(right.purgeAfter ?? "") ||
+      left.projectId.localeCompare(right.projectId)).slice(0, 100);
+    const purged: Array<{ project: ProjectRecord; contentSha256: string[] }> = [];
+    for (const project of expired) {
+      const contentSha256 = await this.listProjectBlobHashes(project.ownerActorId, project.projectId);
+      purged.push({
+        project: await this.purgeProject(project.ownerActorId, project.projectId, now),
+        contentSha256
+      });
+    }
+    return purged;
+  }
+
+  async listProjectBlobHashes(actorId: string, projectId: string): Promise<string[]> {
+    this.requireOwnedProject(actorId, projectId);
+    return [...new Set([
+      ...[...this.artifacts.values()]
+        .filter((artifact) => artifact.projectId === projectId)
+        .flatMap((artifact) => artifact.manifest.files.flatMap((operation) =>
+          operation.operation === "delete" ? [] : [operation.content_sha256]
+        )),
+      ...[...this.sessions.values()]
+        .filter((session) => session.projectId === projectId)
+        .flatMap((session) => session.operations.flatMap((operation) =>
+          operation.operation === "delete" ? [] : [operation.content_sha256]
+        ))
+    ])];
+  }
+
+  async isBlobReferenced(contentSha256: string): Promise<boolean> {
+    return [...this.artifacts.values()].some((artifact) => artifact.manifest.files.some((operation) =>
+      operation.operation !== "delete" && operation.content_sha256 === contentSha256
+    )) || [...this.sessions.values()].some((session) => session.operations.some((operation) =>
+      operation.operation !== "delete" && operation.content_sha256 === contentSha256
+    ));
+  }
+
+  private ensureProjectFiles(project: ProjectRecord): ProjectFileRecord[] {
+    const cached = [...(this.projectFiles.get(project.projectId)?.values() ?? [])];
+    if (project.currentFilesVersion === project.latestProjectVersion) {
+      return cached.sort((left, right) => left.path.localeCompare(right.path));
+    }
+    let files: ProjectFileRecord[] = [];
+    const artifacts = [...this.artifacts.values()]
+      .filter((artifact) => artifact.projectId === project.projectId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) ||
+        left.artifactId.localeCompare(right.artifactId));
+    for (const artifact of artifacts) {
+      files = applyProjectFileOperations(
+        files,
+        artifact.manifest.files,
+        artifact.projectVersion,
+        artifact.createdAt,
+        false
+      ).map((file) => ({ ...file, projectId: project.projectId }));
+    }
+    this.projectFiles.set(project.projectId, new Map(files.map((file) => [file.path, file])));
+    project.currentFilesVersion = project.latestProjectVersion;
+    project.currentFileCount = files.length;
+    return files;
+  }
+
+  async listProjectFiles(actorId: string, projectId: string): Promise<ProjectFileRecord[]> {
+    const project = this.requireProject(actorId, projectId);
+    return structuredClone(this.ensureProjectFiles(project));
+  }
+
+  async getProjectFile(
+    actorId: string,
+    projectId: string,
+    path: string
+  ): Promise<ProjectFileRecord> {
+    const file = (await this.listProjectFiles(actorId, projectId)).find((item) => item.path === path);
+    if (file === undefined) {
+      throw new ServerDomainError(404, "PROJECT_FILE_NOT_FOUND", "project file not found", { path });
+    }
+    return file;
   }
 
   async createProposalSession(
@@ -213,6 +382,14 @@ export class MemoryRepository implements ServerRepository {
     proposal: ProposalRecord;
     review: ReviewRecord;
   }> {
+    const project = this.requireProject(session.actorId, session.projectId);
+    const currentFiles = this.ensureProjectFiles(project);
+    applyProjectFileOperations(
+      currentFiles,
+      session.operations,
+      "pv_preview",
+      new Date().toISOString()
+    );
     const proposal = await this.createProposalFromSession(session);
     const review = await this.reviewProposal({
       actorId: session.actorId,
@@ -222,6 +399,19 @@ export class MemoryRepository implements ServerRepository {
       targetScope: "auto-approved",
       splitGroups: []
     });
+    if (review.artifactId !== null) {
+      const artifact = await this.getArtifact(session.actorId, review.artifactId);
+      const nextFiles = applyProjectFileOperations(
+        currentFiles,
+        session.operations,
+        artifact.projectVersion,
+        artifact.createdAt
+      ).map((file) => ({ ...file, projectId: session.projectId }));
+      this.projectFiles.set(session.projectId, new Map(nextFiles.map((file) => [file.path, file])));
+      project.currentFilesVersion = artifact.projectVersion;
+      project.currentFileCount = nextFiles.length;
+      project.updatedAt = artifact.createdAt;
+    }
     return { proposal: this.requireProposal(session.actorId, proposal.proposalId), review };
   }
 

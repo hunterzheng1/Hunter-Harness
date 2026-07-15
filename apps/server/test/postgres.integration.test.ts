@@ -25,6 +25,7 @@ postgresDescribe("PostgreSQL repository integration", () => {
     );
     await pool.query(`
       TRUNCATE TABLE
+        semantic_edges, semantic_documents, project_files_current,
         registry_state, idempotency_records, audit_events, reviews, artifacts, proposal_items,
         proposals, proposal_sessions, project_bindings, projects, api_tokens, actors
       CASCADE
@@ -113,6 +114,40 @@ postgresDescribe("PostgreSQL repository integration", () => {
       response: { ok: true }
     });
   });
+
+  it("serializes restore against permanent purge and releases purged bindings", async () => {
+    const concurrent = await repository.resolveProject({
+      actorId: "actor_pg",
+      localProjectKey: uuidV7(),
+      displayName: "concurrent lifecycle",
+      requestedProjectId: null
+    });
+    await repository.archiveProject("actor_pg", concurrent.project.projectId, new Date().toISOString());
+    const outcomes = await Promise.allSettled([
+      repository.restoreProject("actor_pg", concurrent.project.projectId),
+      repository.purgeProject("actor_pg", concurrent.project.projectId, new Date().toISOString())
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+
+    const localProjectKey = uuidV7();
+    const original = await repository.resolveProject({
+      actorId: "actor_pg",
+      localProjectKey,
+      displayName: "binding replacement",
+      requestedProjectId: null
+    });
+    await repository.archiveProject("actor_pg", original.project.projectId, new Date().toISOString());
+    await repository.purgeProject("actor_pg", original.project.projectId, new Date().toISOString());
+    const replacement = await repository.resolveProject({
+      actorId: "actor_pg",
+      localProjectKey,
+      displayName: "binding replacement 2",
+      requestedProjectId: null
+    });
+    expect(replacement.project.projectId).not.toBe(original.project.projectId);
+  });
+
   it("persists the canonical registry snapshot across process instances", async () => {
     const persistence = new PostgresRegistryPersistence(pool);
     const snapshot = {
