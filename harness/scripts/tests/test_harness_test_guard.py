@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -63,6 +64,11 @@ class TestGuardTests(unittest.TestCase):
             errors="replace",
             check=True,
         )
+
+    def _index_path(self) -> Path:
+        value = self._git("rev-parse", "--git-path", "index").stdout.strip()
+        path = Path(value)
+        return path if path.is_absolute() else self.project / path
 
     def _record(self, *files: Path, reason: str = "tdd-created") -> dict:
         return guard.record(
@@ -122,6 +128,46 @@ class TestGuardTests(unittest.TestCase):
         manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
         self.assertEqual(len(manifest["files"]), 1)
 
+    def test_concurrent_record_keeps_every_entry(self) -> None:
+        files = [
+            self.project / "src" / "test" / "java" / f"Concurrent{i}Test.java"
+            for i in range(8)
+        ]
+        for path in files:
+            self._write(path)
+        with ThreadPoolExecutor(max_workers=len(files)) as executor:
+            results = list(executor.map(lambda path: self._record(path), files))
+        self.assertTrue(all(result["ok"] for result in results), results)
+        manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
+        self.assertEqual(len(manifest["files"]), len(files))
+
+    def test_record_rejects_tampered_existing_manifest(self) -> None:
+        first = self.project / "src" / "test" / "java" / "FirstTest.java"
+        second = self.project / "src" / "test" / "java" / "SecondTest.java"
+        self._write(first)
+        self._write(second)
+        self.assertTrue(self._record(first)["ok"])
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        manifest["schemaVersion"] = 99
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        result = self._record(second)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "MANIFEST_INVALID")
+
+    def test_record_rejects_evidence_symlink_outside_project(self) -> None:
+        evidence = self.change / "evidence"
+        try:
+            evidence.symlink_to(self.outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable: {exc}")
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file)
+        result = self._record(test_file)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "MANIFEST_PATH_OUTSIDE_PROJECT")
+        self.assertFalse((self.outside / "test-tracking.json").exists())
+
     def test_stage_blocks_hash_drift_without_staging_any_file(self) -> None:
         test_file = self.project / "src" / "test" / "java" / "AppTest.java"
         self._write(test_file, "before\n")
@@ -131,6 +177,22 @@ class TestGuardTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "HASH_DRIFT")
         self.assertEqual(self._git("diff", "--cached", "--name-only").stdout.strip(), "")
+
+    def test_stage_respects_existing_git_index_lock(self) -> None:
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file)
+        self.assertTrue(self._record(test_file)["ok"])
+        index_path = self._index_path()
+        before = index_path.read_bytes()
+        lock_path = index_path.with_name(index_path.name + ".lock")
+        lock_path.write_bytes(b"concurrent git operation")
+        try:
+            result = guard.stage(self.project, self.change)
+        finally:
+            lock_path.unlink(missing_ok=True)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "INDEX_LOCKED")
+        self.assertEqual(index_path.read_bytes(), before)
 
     def test_stage_force_adds_only_manifest_test_file(self) -> None:
         selected = self.project / "src" / "test" / "java" / "SelectedTest.java"
@@ -160,10 +222,7 @@ class TestGuardTests(unittest.TestCase):
         unrelated = self.project / "unrelated.txt"
         self._write(unrelated)
         self._git("add", "unrelated.txt")
-        index_path_text = self._git("rev-parse", "--git-path", "index").stdout.strip()
-        index_path = Path(index_path_text)
-        if not index_path.is_absolute():
-            index_path = self.project / index_path
+        index_path = self._index_path()
         before = index_path.read_bytes()
 
         test_file = self.project / "src" / "test" / "java" / "AppTest.java"

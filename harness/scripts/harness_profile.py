@@ -411,14 +411,18 @@ def detect(project: Path) -> dict[str, Any]:
         if node_cmds:
             profile["commands"] = node_cmds
         profile["testTracking"]["paths"] = [
-            "apps/*/test/**/*.ts",
-            "apps/*/test/**/*.tsx",
-            "packages/*/test/**/*.ts",
-            "packages/*/test/**/*.tsx",
-            "test/**/*.ts",
-            "test/**/*.tsx",
-            "tests/**/*.ts",
-            "tests/**/*.tsx",
+            pattern
+            for extension in ("js", "jsx", "ts", "tsx", "mjs", "cjs")
+            for pattern in (
+                f"apps/*/test/**/*.{extension}",
+                f"apps/*/tests/**/*.{extension}",
+                f"packages/*/test/**/*.{extension}",
+                f"packages/*/tests/**/*.{extension}",
+                f"test/**/*.{extension}",
+                f"tests/**/*.{extension}",
+                f"**/*.test.{extension}",
+                f"**/*.spec.{extension}",
+            )
         ]
 
     _merge_user_overrides(profile, existing)
@@ -743,7 +747,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "check":
         result = check(args.project)
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
-        return 0 if not result.get("stale") else 0  # stale still exits 0 (callers branch on JSON)
+        return 0 if result.get("ok") and not result.get("stale") else 1
     if args.command == "validate":
         profile = load_profile(args.project.resolve())
         if profile is None:

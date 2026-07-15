@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
+import io
 import json
 import shutil
 import sys
@@ -234,6 +236,20 @@ class CheckTests(unittest.TestCase):
         r = hp.check(self.tmp)
         self.assertTrue(r["stale"])
         self.assertEqual(r["status"], "stale")
+
+    def test_check_cli_exit_code_matches_readiness(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hp.main(["check", "--project", str(self.tmp), "--json"]), 1)
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hp.main(["check", "--project", str(self.tmp), "--json"]), 0)
+        _write(self.tmp / "pom.xml", "<project><changed/></project>\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hp.main(["check", "--project", str(self.tmp), "--json"]), 1)
+        _write(self.tmp / ".harness" / "config" / "build-profile.json", "{invalid")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hp.main(["check", "--project", str(self.tmp), "--json"]), 1)
 
 
 class ValidateContainmentTests(unittest.TestCase):
@@ -461,6 +477,12 @@ class NodeCommandsTests(unittest.TestCase):
             "test/**/*.tsx",
             "packages/*/test/**/*.ts",
             "apps/*/test/**/*.tsx",
+            "tests/**/*.js",
+            "test/**/*.jsx",
+            "test/**/*.mjs",
+            "test/**/*.cjs",
+            "**/*.test.js",
+            "**/*.spec.tsx",
         ):
             self.assertIn(pattern, tracking["paths"])
 
