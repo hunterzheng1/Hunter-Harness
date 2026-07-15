@@ -219,9 +219,9 @@ def _allowed_test_path(project: Path, rel: str) -> bool:
     if config is None:
         return _standard_test_path(rel)
     patterns, excluded_roots = config
-    rel_parts = tuple(rel.split("/"))
+    rel_parts = tuple(os.path.normcase(part) for part in rel.split("/"))
     for excluded in excluded_roots:
-        excluded_parts = tuple(excluded.split("/"))
+        excluded_parts = tuple(os.path.normcase(part) for part in excluded.split("/"))
         if rel_parts[: len(excluded_parts)] == excluded_parts:
             return False
     return any(_matches_pattern(rel, pattern) for pattern in patterns)

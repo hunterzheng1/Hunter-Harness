@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -201,6 +202,24 @@ class TestGuardTests(unittest.TestCase):
         result = self._record(excluded_test)
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "TEST_PATH_NOT_ALLOWED")
+
+    @unittest.skipUnless(os.name == "nt", "Windows path comparison regression")
+    def test_profile_excluded_root_rejects_case_variant_on_windows(self) -> None:
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps(
+                {
+                    "excludedRoots": ["node_modules"],
+                    "testTracking": {"paths": ["**/*.test.js"]},
+                }
+            ),
+        )
+        excluded_test = self.project / "NODE_MODULES" / "pkg" / "secret.test.js"
+        self._write(excluded_test)
+        result = self._record(excluded_test)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "TEST_PATH_NOT_ALLOWED")
+        self.assertFalse((self.change / "evidence" / "test-tracking.json").exists())
 
     def test_stage_blocks_hash_drift_without_staging_any_file(self) -> None:
         test_file = self.project / "src" / "test" / "java" / "AppTest.java"
