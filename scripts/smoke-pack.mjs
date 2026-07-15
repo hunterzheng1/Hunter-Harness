@@ -219,6 +219,13 @@ try {
   );
   if (skillArchive === undefined) throw new Error("npm pack did not create the Skill CLI archive");
   run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional", join(temporary, skillArchive)], { timeout: 180_000 });
+  const skillShim = join(
+    temporary,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "hunter-harness-skill.cmd" : "hunter-harness-skill"
+  );
+  await stat(skillShim);
   const skillBin = join(temporary, "node_modules", "@hunter-harness", "skill-cli", "dist", "bin.js");
   const skillHelp = run(process.execPath, [skillBin, "--help"], { cwd: temporary, capture: true });
   if (!skillHelp.includes("install") || !skillHelp.includes("upload") ||
