@@ -11,8 +11,11 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -56,15 +59,46 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _git(project: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _git(
+    project: Path,
+    *args: str,
+    index_file: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if index_file is not None:
+        env["GIT_INDEX_FILE"] = str(index_file)
     return subprocess.run(
-        ["git", "-c", "core.quotepath=false", "-C", str(project), *args],
+        [
+            "git",
+            "--literal-pathspecs",
+            "-c",
+            "core.quotepath=false",
+            "-C",
+            str(project),
+            *args,
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=30,
         check=False,
+        env=env,
+    )
+
+
+def _is_ignored(project: Path, rel: str) -> bool:
+    status = _git(
+        project,
+        "status",
+        "--ignored=matching",
+        "--untracked-files=all",
+        "--porcelain=v1",
+        "--",
+        rel,
+    )
+    return status.returncode == 0 and any(
+        line.startswith("!! ") for line in status.stdout.splitlines()
     )
 
 
@@ -121,13 +155,7 @@ def _standard_test_path(rel: str) -> bool:
         return True
     if any(parts[index:index + 2] == ["src", "test"] for index in range(len(parts) - 1)):
         return True
-    name = parts[-1]
-    stem_and_suffix = name.rsplit(".", 1)[0] if "." in name else name
-    return (
-        stem_and_suffix.endswith("Test")
-        or ".test." in name
-        or ".spec." in name
-    )
+    return False
 
 
 def _allowed_test_path(project: Path, rel: str) -> bool:
@@ -162,6 +190,8 @@ def record(
 ) -> dict[str, Any]:
     action = "record"
     project_root = Path(project).resolve()
+    if not files:
+        return _result(False, action, "EMPTY_FILES", [])
     if reason not in REASONS:
         return _result(False, action, "INVALID_REASON", [])
     change_root = _change_dir(project_root, change_dir)
@@ -190,7 +220,7 @@ def record(
                 existing_files[item["path"]] = item
 
     for path, rel in validated:
-        ignored = _git(project_root, "check-ignore", "-q", "--", rel).returncode == 0
+        ignored = _is_ignored(project_root, rel)
         tracked = _git(project_root, "ls-files", "--error-unmatch", "--", rel).returncode == 0
         existing_files[rel] = {
             "path": rel,
@@ -233,26 +263,88 @@ def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
 
     rels: list[str] = []
     for item in entries:
-        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+        if not isinstance(item, dict):
             return _result(False, action, "MANIFEST_INVALID", rels)
-        rel = item["path"]
+        rel_value = item.get("path")
+        sha_value = item.get("sha256")
+        reason_value = item.get("reason")
+        if (
+            not isinstance(rel_value, str)
+            or not rel_value
+            or not isinstance(sha_value, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", sha_value) is None
+            or reason_value not in REASONS
+            or type(item.get("ignored")) is not bool
+            or type(item.get("trackedBefore")) is not bool
+        ):
+            return _result(False, action, "MANIFEST_INVALID", rels)
+        rel = rel_value
         path, normalized, error = _validate_file(project_root, rel)
         if error or normalized != rel:
             return _result(False, action, error or "MANIFEST_INVALID", [rel])
         assert path is not None
-        if item.get("sha256") != _sha256(path):
+        if sha_value != _sha256(path):
             return _result(False, action, "HASH_DRIFT", [rel])
+        ignored_now = _is_ignored(project_root, rel)
+        tracked_now = _git(
+            project_root, "ls-files", "--error-unmatch", "--", rel
+        ).returncode == 0
+        if item["ignored"] != ignored_now or item["trackedBefore"] != tracked_now:
+            return _result(False, action, "MANIFEST_INVALID", [rel])
         rels.append(rel)
 
-    added = _git(project_root, "add", "-f", "--", *rels)
-    if added.returncode != 0:
-        return _result(False, action, "GIT_ADD_FAILED", rels, error=added.stderr.strip())
-    cached = _git(project_root, "diff", "--cached", "--name-only", "--", *rels)
-    cached_files = set(cached.stdout.splitlines()) if cached.returncode == 0 else set()
-    missing = [rel for rel in rels if rel not in cached_files]
-    if missing:
-        return _result(False, action, "CACHED_DIFF_MISSING", missing)
-    return _result(True, action, "STAGED", rels)
+    index_result = _git(project_root, "rev-parse", "--git-path", "index")
+    if index_result.returncode != 0 or not index_result.stdout.strip():
+        return _result(False, action, "GIT_INDEX_NOT_FOUND", rels)
+    index_path = Path(index_result.stdout.strip())
+    if not index_path.is_absolute():
+        index_path = (project_root / index_path).resolve()
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+
+    before_cached_result = _git(project_root, "diff", "--cached", "--name-only")
+    if before_cached_result.returncode != 0:
+        return _result(False, action, "CACHED_DIFF_FAILED", rels)
+    before_cached = set(before_cached_result.stdout.splitlines())
+
+    handle, temp_name = tempfile.mkstemp(
+        prefix=f".{index_path.name}.test-guard.", dir=index_path.parent
+    )
+    os.close(handle)
+    temp_index = Path(temp_name)
+    temp_index.unlink(missing_ok=True)
+    try:
+        if index_path.is_file():
+            shutil.copy2(index_path, temp_index)
+        added = _git(
+            project_root, "add", "-f", "--", *rels, index_file=temp_index
+        )
+        if added.returncode != 0:
+            return _result(
+                False, action, "GIT_ADD_FAILED", rels, error=added.stderr.strip()
+            )
+        cached = _git(
+            project_root,
+            "diff",
+            "--cached",
+            "--name-only",
+            index_file=temp_index,
+        )
+        if cached.returncode != 0:
+            return _result(False, action, "CACHED_DIFF_FAILED", rels)
+        after_cached = set(cached.stdout.splitlines())
+        missing = [rel for rel in rels if rel not in after_cached]
+        unexpected = sorted((after_cached - before_cached) - set(rels))
+        if missing or unexpected:
+            return _result(
+                False,
+                action,
+                "CACHED_DIFF_MISMATCH",
+                missing or unexpected,
+            )
+        os.replace(temp_index, index_path)
+        return _result(True, action, "STAGED", rels)
+    finally:
+        temp_index.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

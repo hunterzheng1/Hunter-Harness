@@ -100,6 +100,20 @@ class TestGuardTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "PATH_OUTSIDE_PROJECT")
 
+    def test_record_empty_files_does_not_write_manifest(self) -> None:
+        result = self._record()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "EMPTY_FILES")
+        self.assertFalse((self.change / "evidence" / "test-tracking.json").exists())
+
+    def test_fallback_rejects_test_named_production_file(self) -> None:
+        (self.project / ".harness" / "config" / "build-profile.json").unlink()
+        production = self.project / "src" / "main" / "java" / "AppTest.java"
+        self._write(production)
+        result = self._record(production)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "TEST_PATH_NOT_ALLOWED")
+
     def test_record_is_idempotent(self) -> None:
         test_file = self.project / "src" / "test" / "java" / "AppTest.java"
         self._write(test_file)
@@ -129,6 +143,46 @@ class TestGuardTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         cached = self._git("diff", "--cached", "--name-only").stdout.splitlines()
         self.assertEqual(cached, ["src/test/java/SelectedTest.java"])
+
+    def test_stage_treats_magic_filename_as_literal_pathspec(self) -> None:
+        selected = self.project / "src" / "test" / "java" / "Selected[Test].java"
+        glob_match = self.project / "src" / "test" / "java" / "SelectedT.java"
+        unrelated = self.project / "src" / "test" / "java" / "UnrelatedTest.java"
+        for path in (selected, glob_match, unrelated):
+            self._write(path)
+        self.assertTrue(self._record(selected)["ok"])
+        result = guard.stage(self.project, self.change)
+        self.assertTrue(result["ok"], result)
+        cached = self._git("diff", "--cached", "--name-only").stdout.splitlines()
+        self.assertEqual(cached, ["src/test/java/Selected[Test].java"])
+
+    def test_stage_rejects_malformed_manifest_without_changing_index(self) -> None:
+        unrelated = self.project / "unrelated.txt"
+        self._write(unrelated)
+        self._git("add", "unrelated.txt")
+        index_path_text = self._git("rev-parse", "--git-path", "index").stdout.strip()
+        index_path = Path(index_path_text)
+        if not index_path.is_absolute():
+            index_path = self.project / index_path
+        before = index_path.read_bytes()
+
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file)
+        self.assertTrue(self._record(test_file)["ok"])
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        manifest["files"][0]["reason"] = "not-allowed"
+        manifest["files"][0]["ignored"] = "yes"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = guard.stage(self.project, self.change)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "MANIFEST_INVALID")
+        self.assertEqual(index_path.read_bytes(), before)
+        self.assertEqual(
+            self._git("diff", "--cached", "--name-only").stdout.splitlines(),
+            ["unrelated.txt"],
+        )
 
 
 if __name__ == "__main__":
