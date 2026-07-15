@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.9] — hunter-harness / [0.2.4] — @hunter-harness/workflow-harness
+
+### Changed
+
+- `harness-plan` 先建立 change 事件流再查询知识，新增语义歧义优先、简单修复探索预算与精简产物规则，避免沿错误理解深挖和重复生成大段计划。
+- 知识查询收敛为单次 `query`，由命令内部执行一次 ensure-current；移除 plan 前的 `sync → sync --update → query` 重复编排。
+- 全部计划/执行规则统一为 `events.ndjson` 单一事实源，`execution-log.md` 仅在阶段边界渲染，避免手工日志在结束时被覆盖。
+
+### Fixed
+
+- 修复 plan 的 agent 预检命令缺少 `--skills-root` 导致首次必然失败并重试。
+- 修复设计审批阶段编号冲突及 approved 设计文档早于用户确认落盘的问题。
+- 修复 archive 调用者与 finalize 重复追加 `phase.start` / `phase.end`，可能产生重复阶段或原路径幽灵目录的问题。
+- 新增通用/Java Claude bundle 的 explorer/evaluator/reviewer 完整性回归检查，以及日志、知识查询、审批顺序和归档所有权契约测试。
+
 ## [0.2.5]
 
 ### Fixed

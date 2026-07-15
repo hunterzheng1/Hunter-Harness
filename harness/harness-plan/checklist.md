@@ -12,9 +12,22 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 **判定**：stdout 为空 → ✅ 继续；stdout 非空 → baseline 隔离 + `decision`（note 含变更文件列表）；Bash 被拒 → PowerShell 重试。
 
-## 阶段 2：Worktree 决策（并入设计审批包）
+## 阶段 0.5：事件初始化与知识查询
 
-> worktree 不再单独询问。阶段 5 **设计审批包** 一次 AskUserQuestion 含 worktree 选项（推荐值读 `harness.json` `defaultWorktree`）。确认后写入 `meta/worktree.json`。
+- [ ] 先确定 change-name，并立即用 `harness_events.py append` 追加 `phase.start`
+- [ ] 再执行一次 knowledge `query`；由 query 内部 ensure-current，不另跑前置 sync
+- [ ] 查询失败追加 `issue`，不得重跑“sync + query”循环或假装已读取历史
+
+## 阶段 2：歧义优先检查与复杂度分级
+
+- [ ] 否定、对比、动作对象、范围或保留/删除关系不存在未确认的多义解释
+- [ ] 若存在歧义，仅完成最小取证后一次一问，并给出推荐理解
+- [ ] 简单修复探索预算：最多 1 次合并 CodeGraph 查询 + 1 次定向补查、1 个澄清问题
+- [ ] 无关发现只记非阻断 `issue`，未扩展当前方案或问题列表
+
+## 设计审批包字段：Worktree
+
+> worktree 不再单独询问。阶段 4 **设计审批包** 一次 AskUserQuestion 含 worktree 选项（推荐值读 `harness.json` `defaultWorktree`）。确认后写入 `meta/worktree.json`。
 
 - [ ] 审批包确认后写入 worktree.json（`requested` true/false）
 - [ ] 阶段 8 检查 worktree.json 存在
@@ -26,7 +39,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 ```
 □ 是通过 Agent 工具委派 subagent 执行的（不是主会话直接调用 codegraph）
 □ subagent 返回了结构化设计概要（涉及模块、接口变更、关键决策）
-□ 委派前已运行 `harness_preflight.py check-agents --agent harness-explorer`
+□ 委派前已运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`
 □ `usable=false` 或未返回有效输出 → 主会话探索，**不 retry 委派**
 □ 主会话未被代码探索的中间结果污染
 □ 在执行日志中记录了 Agent 调用状态：
@@ -38,13 +51,13 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 ```
 
 > 如果 Agent 工具不可用，或子代理被委派但未返回有效输出（0 tool uses / 空返回 / 仅 "Done"），必须显式降级并记录：
-> - 在执行日志中写明降级原因：🟡 阶段3降级：Agent 不可用 / 子代理未返回有效输出，改为主会话只读探索
+> - 追加 `issue` 事件并在 note 写明降级原因：Agent 不可用 / 子代理未返回有效输出，改为主会话只读探索
 > - 主会话直接使用 codegraph MCP 工具（`mcp__codegraph__codegraph_explore`）和 Read 探索代码（只读，不执行写操作）
 > - 不得在主会话中执行任何写操作
 > - CodeGraph 如通过 MCP 调用，必须优先用 MCP 工具，不允许通过普通 Bash 调 codegraph 命令
 > - 禁止把子代理未经工具验证的文本结论当作"详尽报告"或代码证据采纳
 
-## 阶段 5：设计审批包 ⚠️ 强制阻断（一次 AskUserQuestion）
+## 阶段 4：设计审批包 ⚠️ 强制阻断（一次 AskUserQuestion）
 
 > 合并原「设计审核 + worktree + 场景表预览 + change-name」。推荐 worktree 读 `harness.json` `defaultWorktree`。
 
@@ -57,6 +70,8 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 5. 确认进入任务拆分
 
 确认后写入 `spec/<change>-design.md`（含 frontmatter）和 `meta/worktree.json`。
+
+- [ ] 确认事件早于 approved 设计文档；未获确认时不得先落盘 `status: approved`
 
 设计文档必须包含 frontmatter：
 ```yaml
@@ -155,11 +170,11 @@ source: harness-plan
 
 ```
 □ 已读取 protocols.md，并按 clarification-protocol / decision-grilling-protocol 执行
-□ 输入包含需求摘要 + 阶段0.5 context pack（如有）+ 阶段3代码探索结果 + 项目架构约束
-□ 已在 execution-log 中记录五类输出：风险识别 / 复用机会 / 替代方案 / 推荐方案 / 关键决策
+□ 输入包含需求摘要 + 阶段1 context pack（如有）+ 阶段3代码探索结果 + 项目架构约束
+□ 已用 decision / issue 事件 note 记录五类输出：风险识别 / 复用机会 / 替代方案 / 推荐方案 / 关键决策
 □ 已叠加项目架构约束（分层规范、数据模型、接口规范）
-□ 需求澄清结论已写入 .harness/changes/<change-name>/logs/execution-log.md，并在 events.ndjson 记录 decision
-□ 用户问题未超预算：普通需求 1-3 问，高风险需求 5-7 问；无必须裁决事项时 0 问
+□ 需求澄清结论已追加到 events.ndjson，阶段结束后执行日志由渲染器生成
+□ 用户问题未超预算：简单修复 0-1 问，普通需求 1-3 问，高风险需求 5-7 问；无必须裁决事项时 0 问
 □ 提问遵循"一次一问、等答再继续"；能由 context pack / 阶段3代码探索 / CodeGraph 自答的问题已自答，未打扰用户
 □ 每个需要用户决策的问题，AI 先给出了推荐答案、理由和取舍，用户仅确认或修正
 □ 高风险/业务语义决策（范围、权限、安全、支付、迁移、删除、API契约、用户可见行为）已显式等待用户确认
@@ -173,8 +188,8 @@ source: harness-plan
 
 ```
 □ 已读取 protocols.md，并按 implementation-planning-protocol 执行
-□ 输入为阶段5已审核设计文档
-□ 已生成基础任务列表，并在 execution-log 记录任务拆分摘要
+□ 输入为阶段4已审核设计文档
+□ 已生成基础任务列表，并用 artifact 事件 note 记录任务拆分摘要
 □ 已叠加项目层序依赖（数据/契约→业务层→接口层）
 □ 已生成 4 维度场景表（单元/接口/数据兼容/集成）
 □ 已确定变更名（kebab-case）
@@ -223,7 +238,7 @@ source: harness-plan
 
 - **产物路径唯一性**：`.harness/changes/<change-name>/` 是唯一真相源，plan 产物必须直接写入此目录
 - **原生规划协议**：阶段 4/6 使用 clarification、decision-grilling、implementation-planning 三段内置协议，不运行时依赖 Superpowers/grill-me/writing-plans
-- **阶段 2 是强制阻断检查点**——必须停下来问用户，收到回复后才能继续。不要跳过
+- **阶段 4 是强制阻断检查点**——展示设计审批包后必须停下来问用户，收到回复后才能写 approved 设计文档。不要跳过
 - 代码探索只读不写——这个阶段的目标是理解，不是修改
 - 场景表是后续所有步骤的真相源——宁可多花时间打磨，不要草草了事
 - 如果需求不明确，优先提问而不是猜测后继续设计
@@ -233,7 +248,7 @@ source: harness-plan
 ## 事件记录（前置规则）
 
 - [ ] 确定 change-name 后立即 append `phase.start` 事件；各阶段用 `harness_events.py append` 写入 `decision` / `issue` / `artifact`
-- [ ] 阶段 0 在 change-name 确定前可不写事件；阶段 1 确定 change-name 后必须开始记录
+- [ ] 阶段 0 在 change-name 确定前可不写事件；阶段 0.5 确定 change-name 后必须开始记录
 
 ## 需求范围缩减后的 change-name 检查 ⚠️
 

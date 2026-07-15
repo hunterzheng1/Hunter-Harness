@@ -10,11 +10,9 @@ description: harness-archive 的归档流程、manifest、summary-data、final-s
 - **Phase 1 确认归档对象**：Glob `.harness/changes/*/plans/*-plan.md`（排除 archive），展示概要；多变更让用户选择或终止。
 - **Phase 2 确认归档（强制阻断）**：AskUserQuestion 确认，拒绝即终止。
 - **Phase 3 执行归档**：
-  1. append `phase.start` 事件（`harness_events.py append`）。
-  2. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
-  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。
-  4. 模型补写 `meta/archive-meta.md` 的 `maintenanceNotes` / `knownRisks` / `manualActions`（脚本留空占位）。
-  5. append `phase.end` 事件。**finalize 报错或 validate 失败时不删除原 changes 目录**。
+  1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
+  2. 需要维护者结论时，在移动前补全 `meta/archive-meta.md` 的 `maintenanceNotes` / `knownRisks` / `manualActions`；finalize 后不再修改归档内容。
+  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。
 - **Phase 4 验证与提示**：见 `checklist.md` 归档后验证项。
 
 ## manifest 生成

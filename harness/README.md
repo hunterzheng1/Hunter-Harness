@@ -135,12 +135,12 @@
 
 ## 执行日志与结构化事件机制
 
-每个关联具体变更的 skill 都必须同时维护两类事实源：
+每个关联具体变更的 skill 只维护一个实时事实源：
 
-- `.harness/changes/<change-name>/logs/execution-log.md`：人类审计日志，保留上下文、降级原因、解释性文字。
-- `.harness/changes/<change-name>/events.ndjson`：程序化事件层，供 `harness_archive.py finalize` 生成 `summary-data.json`。
+- `.harness/changes/<change-name>/events.ndjson`：程序化事件层；人类可读上下文、降级原因和解释性文字写入事件 `note`。
+- `.harness/changes/<change-name>/logs/execution-log.md`：由 `harness_events.py` 在 `phase.end` 自动重建的人类审计投影，禁止 Write/Edit。
 
-`execution-log.md` 中记录开始和结束，格式统一：
+渲染后的 `execution-log.md` 阶段格式统一：
 
 ```markdown
 ### [<序号>] harness-<skill> — YYYY-MM-DD HH:MM
@@ -152,16 +152,17 @@
 - **摘要**: <一两句话描述主要产出或问题>
 ```
 
-- harness-plan 创建变更目录时初始化日志文件和 `events.ndjson`
-- 后续每个 skill 开始时追加开始条目和 `phase.start` 事件，结束时追加结束/耗时/结果和 `phase.end` 事件
-- **任何代码修改前必须先追加开始条目**（不得等执行完才补记录）
+- harness-plan 确定 change-name 后先追加 `phase.start`，脚本自动建立事件文件
+- 后续每个 skill 开始时追加 `phase.start` 事件，结束时追加包含耗时/结果的 `phase.end` 事件
+- **任何代码修改前必须先追加 `phase.start`**（不得等执行完才补记录）
 - **降级时必须记录明确原因**（如"Agent 不可用，降级为主会话只读探索"），不可仅写"完成"
-- **禁止末尾一次性补写**——每个阶段开始和结束都用 Edit 追加
+- **禁止末尾一次性补写**——各阶段实时 append 结构化事件，渲染日志不得直接编辑
 - **Bash 拒绝、PowerShell 重试、降级、跳过、用户确认都必须记录**
 - 日志状态统一使用 `✅OK / 🟡WARN(原因) / ❌FAIL(原因)`
 - harness-archive 归档时从日志汇总：时间线、总用时、Skill 调用统计
 - `harness_archive.py finalize/replay` 优先从 `events.ndjson` 汇总命令、验证、artifact、问题和决策；旧 archive 缺少 events 时才回放 execution-log/ledger/manifest
 - sync 默认不关联具体变更目录，仅在已有变更目录时追加日志和 events
+- archive 是例外：finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加阶段边界
 
 ## Skill 目录结构
 
@@ -259,10 +260,10 @@ harness-skills/
 | 阶段 | 强制检查 |
 |------|---------|
 | **plan 阶段 0** | 检查工作区是否有未提交业务代码变更，已有则询问用户处理方式（继续/暂存/回滚/取消），不得假装"编码前规划" |
-| **plan 阶段 3** | 委派前 `harness_preflight.py check-agents --agent harness-explorer`；`usable=false` 或无效返回 → 主会话只读探索，不 retry |
+| **plan 阶段 3** | 委派前 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`；`usable=false` 或无效返回 → 主会话只读探索，不 retry |
 | **plan 阶段 4/6** | 原生规划协议必须记录风险/复用/替代方案/推荐方案/关键决策，以及任务拆分摘要 |
 | **plan 阶段 5** | 设计文档自审结果必须展示给用户；测试场景表未覆盖维度必须标记为 ⚠️ 缺口，不得全部 ✅ |
-| **run 步骤 0** | 任何代码修改前必须先追加执行日志开始记录和 `events.ndjson` 的 `phase.start` |
+| **run 步骤 0** | 任何代码修改前必须先向 `events.ndjson` 追加 `phase.start`；执行日志由阶段结束事件自动渲染 |
 | **run 轻量验证** | `/harness-run` 默认只做开发反馈：TDD RED/GREEN + REFACTOR + 构建命令增量编译（Java 的 `mvn compile -pl <module>` 等）+ 关门检查 + 写 verification-ledger；除非改了公共模块/数据访问层/sql/权限认证/接口层/数据契约 或用户要求 full-run-validation 或不打算继续 `/harness-test`，否则不默认跑全量测试命令（Java 的 `mvn test` 等）。若跑了全量测试必须写入 ledger 供 test/submit 复用 |
 | **run TDD 降级** | 输出必须写"🟡 静态逻辑验证通过，未执行真实单元测试"，**禁止写"测试全部通过"**；降级标注写在执行日志和覆盖报告中，**不污染业务代码注释**；记录三项：降级原因、静态验证场景列表、待部署后验证场景列表 |
 | **test ledger 复用** | Phase 1 单元测试前先读 `verification-ledger.json`：若 run 阶段已对同一 diffHash/module/profile 跑过单元测试命令（Java 的 `mvn test` 等）且测试通过（Java 的 `Tests run: N, Failures: 0, Errors: 0` / 前端 N passing），可跳过重跑并标记"✅ 复用 harness-run 单元测试结果"；diffHash 不一致 / profile 不一致 / 命令范围更窄 / run 后有行为性修改则不得复用 |
@@ -276,7 +277,7 @@ harness-skills/
 | **submit 步骤 4** | 提交前必须展示四项：实际 staged 文件列表、diff stat、commit message、是否 push |
 | **submit push 前** | `git fetch` 后检查远程是否有新提交；有则**不得直接 pull 后 push**，必须 pull/rebase + 重新 compile/test |
 | **submit hash 记录** | pre-pull local hash + final pushed hash 双标注（主目录）；worktree 模式 submit 段只本地 commit，合并段产生 `mergeFinalHash`，archive 以 `mergeFinalHash` 为准（无则回退 final pushed hash） |
-| **archive 阶段 1** | 必须先 append `phase.start` 事件，**不得等归档完成后才补**；归档前确认：commit 已 push、hash 与 submit/merge 记录一致、test/review 报告状态 |
+| **archive 阶段 1** | 归档前确认 commit 已 push、hash 与 submit/merge 记录一致、test/review 报告状态；阶段边界由 finalize 单进程维护，调用者不额外 append |
 | **archive 文件移动** | 只用 PowerShell 或 Read+Write+验证，**禁止 Bash mv/cp/rm**；移动失败时不删除原目录 |
 | **archive final-summary.html** | 默认运行 `harness_archive.py finalize`：由 events/ledger/log/manifest 生成 `summary-data.json`，再由 `templates/render-summary.mjs` 渲染 `final-summary.html`，内嵌 validate。无测试或无 review 时必须在 JSON 中标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。必须真实展示状态演进（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
 

@@ -42,13 +42,7 @@ disallowed-tools:
 
 当用户提出新功能、改造、排查、设计方案、继续历史任务，且项目存在 `.harness/archive` 或 `.harness/knowledge` 时，AI 应主动运行本 skill，不需要等用户提醒。
 
-如果 `.harness/knowledge/index.json` 不存在或已过期，先运行：
-
-```powershell
-powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py' sync --project '<project-root>' --update"
-```
-
-然后再查询。
+不在 query 前单独执行 sync。`query` 命令内部执行一次 ensure-current：建立一次当前快照，索引新鲜时无操作，过期或缺失时只构建一次，然后在同一调用内完成查询。
 
 ## Commands
 
@@ -76,12 +70,10 @@ powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py
 ## Workflow
 
 1. 确认项目根目录。
-2. 运行 `sync --project <root>`。
-3. 如果 `upToDate=false`，运行 `sync --update`。
-4. 用用户原始需求作为 `--query` 查询。
-5. 如已知道相关文件，追加 `--file` 过滤。
-6. 读取 JSON 输出中的 `contextPack`。
-7. 在 `harness-plan`、设计、代码探索或实现前，把 context pack 当作必读输入。
+2. 用用户原始需求执行一次 `query`；query 命令内部执行一次 ensure-current。
+3. 如已知道相关文件，在同一次查询中追加 `--file` 过滤。
+4. 读取 JSON 输出中的 `contextPack`。
+5. 在 `harness-plan`、设计、代码探索或实现前，把 context pack 当作必读输入。
 
 ## Output Contract
 
@@ -113,6 +105,8 @@ powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py
 ## Forbidden Actions
 
 - rebuild_index_without_need
+- pre_sync_before_query
+- query_then_sync_then_query_again
 - treat_candidate_as_current_fact
 - treat_stale_as_current_fact
 - skip_context_pack_before_planning
@@ -138,7 +132,7 @@ powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py
 - `matchCount` 与按状态分组的命中数（active/candidate/stale/superseded/conflicted）。
 - `contextPack` 路径与 `latest.json` 指针。
 - 命中 stale/superseded/conflicted 时显式提示风险。
-- 下一步建议（context pack 已就绪 → 进入 `/harness-plan`；索引过期 → 先 `sync --update`）。
+- 下一步建议（context pack 已就绪 → 进入 `/harness-plan`；ensure-current 失败 → 报告具体 issue，不重复同步或查询）。
 
 ## 渐进披露
 

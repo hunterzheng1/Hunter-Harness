@@ -1,6 +1,6 @@
 ## 执行日志
 
-`events.ndjson` 为唯一事实源（schema_version 2，`note` 承载人类可读摘要）；`logs/execution-log.md` 由 `harness_events.py` 渲染，**禁止手工 Edit**。结构 → [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]]
+`events.ndjson` 为唯一事实源（schema_version 2，`note` 承载人类可读摘要）；`logs/execution-log.md` 由 `harness_events.py` 渲染，**禁止用 Write/Edit 直接维护**。直接修改的内容会在 `phase.end` 或 finalize 时被完整重建覆盖，属于数据丢失；需要保留的详情必须进入事件 `note`。结构 → [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]]
 
 ```powershell
 python <skills-root>/scripts/harness_events.py append --change-dir ".harness/changes/<change-name>" --phase <phase> --type phase.start --note "<触发指令>"

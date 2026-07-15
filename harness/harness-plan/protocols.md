@@ -12,7 +12,7 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 
 用于阶段 4，目标是把需求从“用户意图”收敛成可审核设计输入。
 
-必须输出以下五类结论，并写入 `logs/execution-log.md`，关键决策同步追加到 `events.ndjson`：
+必须输出以下五类结论。用 `harness_events.py append` 追加 `decision` / `issue` 事件，完整的人类可读结论放进事件 `note`；执行日志仅由事件渲染器派生：
 
 | 输出 | 要求 |
 |------|------|
@@ -24,11 +24,13 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 
 执行纪律：
 
-1. 先消费阶段 0.5 的 context pack、阶段 3 的代码探索结果和项目规则。
+1. 先消费阶段 1 的 context pack、阶段 3 的代码探索结果和项目规则。
 2. 能由代码、历史知识、配置、现有文档回答的问题，不问用户。
 3. 需要用户裁决时，交给 `decision-grilling-protocol`。
 4. 影响面检查必须覆盖用户未显式提到的参数、数据、接口、权限、兼容性、模块引用和测试影响。
 5. 低风险工程判断可由 AI 推荐并记录后继续；高风险或业务语义判断必须等待用户确认。
+6. **歧义优先检查**：否定、对比、动作对象、范围或保留/删除关系存在多种合理解释时，只做足以定位现状的最小取证，然后先给出推荐理解并确认；不得先沿某一种猜测深挖完整代码路径。
+7. 探索中发现的无关问题仅以非阻断 `issue` 记录，不加入当前决策树，不扩展设计范围。
 
 ## 协议二：decision-grilling-protocol
 
@@ -39,10 +41,13 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 | 场景 | 用户问题上限 |
 |------|:---:|
 | 信息充分、无必须裁决的问题 | 0 |
+| 简单修复 | 0-1 |
 | 普通需求 | 1-3 |
 | 高风险需求（auth、支付、数据迁移、并发、安全、不可逆删除、用户可见行为变化） | 5-7 |
 
 超过预算仍无法收敛时，不要继续追问；必须输出“未决决策清单”，标记阻塞项，并请用户裁决是否缩小范围或暂停。
+
+用户纠正了最初理解时，立即丢弃错误探索假设；简单修复最多再进行一次定向确认，不因旧探索结果追加连锁问题。
 
 ### 提问格式
 
@@ -89,6 +94,8 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 
 `implementation-detail.md` 必须存在，但不再强制写成 2-5 分钟粒度、逐行代码片段或逐 commit 指令。简单任务可以短，复杂任务必须细。
 
+简单修复的四份产物采用“单点事实、引用不复述”：设计写行为契约，plan 写任务与依赖，detail 写关键修改点与命令，scenarios 写可验证用例。不得复制同一段背景、风险或结论来增加篇幅。
+
 ### 计划质量门槛
 
 任务拆分必须满足：
@@ -121,4 +128,4 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 - implementation-planning-protocol：plan 简表、implementation-detail、test-scenarios 三件套一致，无占位符
 ```
 
-该自检写入 execution-log；关键结论写入 events.ndjson。
+该自检作为 `verification` 事件的 `note` 追加；关键结论分别追加 `decision` / `issue` 事件。渲染器在 `phase.end` 后生成执行日志。

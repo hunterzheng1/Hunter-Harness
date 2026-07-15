@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const resources = join(root, "packages", "workflow-data-harness", "harness");
 const packagedResources = join(root, "packages", "workflow-data-harness");
+const harnessSource = join(root, "harness");
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
 const PROFILES = ["general", "java"] as const;
 
@@ -32,6 +33,64 @@ async function filePaths(directory: string, base = directory): Promise<string[]>
 }
 
 describe("embedded Harness Bundles", () => {
+  it("keeps plan logging, ordering, and preflight contracts unambiguous", async () => {
+    const planSkill = await readFile(join(harnessSource, "harness-plan", "SKILL.md"), "utf8");
+    const planProtocols = await readFile(join(harnessSource, "harness-plan", "protocols.md"), "utf8");
+    const planChecklist = await readFile(join(harnessSource, "harness-plan", "checklist.md"), "utf8");
+    const planReference = await readFile(join(harnessSource, "harness-plan", "reference.md"), "utf8");
+    const runProtocols = await readFile(join(harnessSource, "harness-run", "protocols.md"), "utf8");
+
+    expect(planSkill).toContain("effort: medium");
+    expect(planSkill).toContain("先初始化 change-name + `phase.start`");
+    expect(planSkill).toContain("歧义优先检查");
+    expect(planSkill).toContain("简单修复探索预算");
+    expect(planSkill).toContain("check-agents --skills-root <skills-root> --agent harness-explorer --json");
+    expect(planSkill.indexOf("先初始化 change-name + `phase.start`")).toBeLessThan(
+      planSkill.indexOf("`harness-knowledge-query` 单次 query")
+    );
+
+    for (const text of [planProtocols, planChecklist, planReference, runProtocols]) {
+      expect(text).not.toMatch(/(?:写入|更新|创建)[^\n]{0,80}logs\/execution-log\.md/);
+      expect(text).not.toMatch(/logs\/execution-log\.md[^\n]{0,80}(?:写入|更新|创建)/);
+    }
+    expect(planReference).not.toContain("# 执行日志 — <change-name>");
+    expect(planChecklist).toContain("确认事件早于 approved 设计文档");
+    for (const text of [planChecklist, planReference]) {
+      expect(text).not.toMatch(/阶段 ?5[^\n]{0,30}设计(?:审批|文档)/);
+      expect(text).not.toMatch(/阶段 ?2[^\n]{0,30}Worktree 决策/);
+      expect(text).not.toContain("阶段5已审核设计文档");
+    }
+  });
+
+  it("documents knowledge query as one ensure-current invocation", async () => {
+    const querySkill = await readFile(
+      join(harnessSource, "harness-knowledge-query", "SKILL.md"), "utf8"
+    );
+    expect(querySkill).toContain("query 命令内部执行一次 ensure-current");
+    expect(querySkill).not.toContain("sync --project <root>");
+    expect(querySkill).not.toContain("sync --update");
+  });
+
+  it("keeps archive event ownership single-process", async () => {
+    const archiveSkill = await readFile(join(harnessSource, "harness-archive", "SKILL.md"), "utf8");
+    const archiveReference = await readFile(join(harnessSource, "harness-archive", "reference.md"), "utf8");
+    const archiveChecklist = await readFile(join(harnessSource, "harness-archive", "checklist.md"), "utf8");
+    const readme = await readFile(join(harnessSource, "README.md"), "utf8");
+
+    for (const text of [archiveSkill, archiveReference, archiveChecklist, readme]) {
+      expect(text).toContain("finalize 内部负责且仅负责一次 `phase.start` / `phase.end`");
+      expect(text).not.toMatch(/(?:模型|skill|阶段|后续).*append `phase\.end`/);
+      expect(text).not.toContain("每个阶段开始和结束都用 Edit 追加");
+    }
+  });
+
+  it.each(PROFILES)("ships every Claude planning agent in the %s bundle", async (profile) => {
+    const bundleRoot = join(resources, "bundles", profile, "claude-code", "agents");
+    for (const agent of ["harness-explorer.md", "harness-evaluator.md", "harness-reviewer.md"]) {
+      expect(await exists(join(bundleRoot, agent)), `${profile}/claude-code missing ${agent}`).toBe(true);
+    }
+  });
+
   it.each(PROFILES)("matches every %s agent manifest hash", async (profile) => {
     for (const agent of AGENTS) {
       const manifest = JSON.parse(await readFile(

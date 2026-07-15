@@ -6,7 +6,7 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 
 ## Worktree 决策文件模板
 
-阶段 2 必须生成 `.harness/changes/<change-name>/meta/worktree.json`。这是后续 `/harness-run` 是否创建/切换 worktree 的唯一机器可读依据。
+阶段 4 设计审批包确认后必须生成 `.harness/changes/<change-name>/meta/worktree.json`。这是后续 `/harness-run` 是否创建/切换 worktree 的唯一机器可读依据。
 
 ### 使用 Worktree
 
@@ -36,15 +36,9 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 }
 ```
 
-### execution-log 记录示例
+### 决策事件 note 示例
 
-```md
-## 阶段 2：Worktree 决策
-- 用户选择：使用 Worktree
-- 决策文件：.harness/changes/<change-name>/meta/worktree.json
-- requested=true, created=false
-- 创建责任：harness-run
-```
+`用户选择使用 Worktree；决策文件为 meta/worktree.json；requested=true, created=false；创建责任为 harness-run。`
 
 ## 参考 — 详细格式
 
@@ -99,11 +93,11 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 - 决策2: 说明
 ```
 
-## 阶段 5：生成设计文档 ⚠️ 用户审核
+## 阶段 4：设计审批与文档落盘 ⚠️ 用户审核
 
 基于代码探索和需求澄清的结果，撰写设计文档并展示给用户审核。
 
-> **本阶段是强制检查点。** 设计文档生成后必须展示给用户，收到确认后才能进入阶段 6（任务拆分）。设计文档确保方向正确后再细化任务——避免基于错误理解拆分出无效任务。
+> **本阶段是强制检查点。** 先展示设计审批包，收到确认并追加 decision 事件后，才能落盘 `status: approved` 的设计文档并进入阶段 6（任务拆分）。设计方向正确后再细化任务，避免基于错误理解拆分无效任务。
 
 **用户确认后必须立即写入** `.harness/changes/<change-name>/spec/<change-name>-design.md`。如果此文件不存在，harness-plan 不得进入阶段 6。
 
@@ -257,7 +251,7 @@ status: approved
 | INT-001 | 端到端 | ... | ... | N 步操作 | ... |
 ```
 
-## 产物保存规则（跨阶段：阶段1/5/6/8）
+## 产物保存规则（跨阶段：阶段0.5/4/6/8）
 
 1. **自动确定变更名**：基于需求描述自动生成变更名（kebab-case），无需用户确认
 
@@ -267,7 +261,7 @@ status: approved
    - 示例：`contribution-module`、`fix-duplicate-submit`
    - 变更名一旦确定即为最终值，后续所有 skill 自动引用
 
-   > **与 Worktree 的关系**：如果阶段 2 用户选择了 worktree，变更名在创建 worktree 时随分支名确定（worktree 名即变更名）。如果未使用 worktree，变更名在阶段 1 自动生成。
+   > **与 Worktree 的关系**：阶段 4 用户确认是否使用 worktree；变更名已在阶段 0.5 生成，后续 worktree 直接复用该名称。
 
 2. **创建产出目录**：用 Write 工具创建以下目录结构（Write 会自动创建中间目录）：
    ```
@@ -283,7 +277,7 @@ status: approved
    .harness/changes/<change-name>/backups/
    ```
 
-3. **保存设计文档**：将阶段 5 生成的设计文档保存到：
+3. **保存设计文档**：将阶段 4 已确认的设计文档保存到：
    - `.harness/changes/<change-name>/spec/<change-name>-design.md`
 
    设计文档 frontmatter 格式：
@@ -298,15 +292,7 @@ status: approved
 
    > 如果 frontmatter 缺失，后续 run/test/review/submit/archive 不得依赖模型猜测 change-name。
 
-4. **初始化执行日志和结构化事件**：创建 `.harness/changes/<change-name>/logs/execution-log.md` 与 `.harness/changes/<change-name>/events.ndjson`，写入变更开始记录和 `phase.start` 事件：
-
-   ```markdown
-   # 执行日志 — <change-name>
-
-   > 变更创建时间：YYYY-MM-DD HH:MM | 变更名：<change-name>
-
-   ---
-   ```
+4. **初始化结构化事件**：确定 change-name 后，立即运行 `harness_events.py append --type phase.start`。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
 5. **保存计划文件**：计划文件包含 YAML frontmatter（含 change-name），保存到：
    - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
