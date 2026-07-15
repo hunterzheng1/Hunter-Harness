@@ -52,7 +52,7 @@ disallowed-tools:
 0. 加载上下文（change-name、spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback）→ append `phase.start`
 0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
-2. 构建验证 + 写 ledger（diffHash 三部分合并，`reference.md` Step 2c）
+2. 构建验证 + 写 ledger（`harness_ledger.py diff-hash --change-dir` 纳入 ignored tests，`reference.md` Step 2c）
 3. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
 4. **关门检查**（10 项）+ 计划状态持久化
 
@@ -71,11 +71,23 @@ disallowed-tools:
 | **变更簇 TDD** | 一簇一次 RED/GREEN；低价值项豁免；新分支必须 RED |
 | **RED/GREEN** | RED 须有效；静态验证 ≠ 测试通过；greenfield 大重写豁免见 reference |
 | **Mapper/DB** | 纯 Mock 不得宣称 DB 验证通过；迁移脚本**永不自动执行** |
-| **探测/ledger** | 基础设施先探测；每次构建/测试写 ledger；三部分 diffHash |
+| **探测/ledger** | 基础设施先探测；每次构建/测试写 ledger；用 canonical `diff-hash --change-dir` |
 | **预存变更** | 保留 → baseline 隔离；存在则最终 ≥ 🟡WARN |
 | **关门/状态** | 10 项关门检查；持久化 run-task-status；P0 静态-only 不得建议 submit |
 | **Worktree** | `requested=true` 时代码只写 worktree |
 | **PowerShell** | 所有 git/构建经 `powershell.exe -NoProfile -Command` |
+
+### 陈旧测试安全修复与精确跟踪
+
+测试编译或 RED/GREEN 失败时，先区分当前实现缺陷、测试基础设施故障与陈旧测试。只有同时满足以下条件才允许自动修复陈旧测试：当前生产代码、已批准计划或可验证的历史变更能唯一确定新契约；修改范围仅限测试文件；修复后会立即重跑该测试及本变更目标测试。符合时以 `stale-test-repair` 记录：
+
+```text
+python <skills-root>/scripts/harness_test_guard.py record --project . --change-dir ".harness/changes/<change-name>" --files "<精确测试文件路径，逗号分隔>" --reason stale-test-repair --json
+```
+
+新建或正常更新测试分别使用 `tdd-created` / `test-updated`。若预期行为存在业务歧义，停止测试修复并记录 `BLOCKED_PREEXISTING`，不得猜测新断言。
+
+**禁止临时排除测试**：不得将测试改名为 `.bak`、移出测试目录、删除、添加 `@Disabled`/`@Ignore`、修改 Surefire/Gradle exclude 或跳过测试来制造绿色结果；也不得仅为满足陈旧测试而修改生产代码。`.gitignore` 中的测试只能通过 manifest 的精确路径闭环处理，禁止全局放宽 ignore。
 
 ## Output Format
 

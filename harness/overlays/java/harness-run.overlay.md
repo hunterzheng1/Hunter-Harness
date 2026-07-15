@@ -18,4 +18,6 @@
 | **低价值豁免** | ErrorCode 常量、VO/DTO 字段、注释、import 清理、格式化、SQL 脚本、配置模板、文档 — 不单独建测试类；禁止为单个错误码单独跑 Maven |
 | **Mapper / LambdaQueryWrapper / SQL** | 纯 Mock 返回值**不得**宣称 DB 验证通过 → 🟡 静态验证，交 harness-test 真实 DB |
 | **行为性新分支** | 正则/条件/分支逻辑变更新增分支须 RED→GREEN；不属于低价值豁免 |
-| **ledger** | compile 必写；执行了 test 写 unitTest，否则 `NOT_RUN_BY_RUN`；diffHash 三部分合并（见 reference） |
+| **ledger** | compile 必写；执行了 test 写 unitTest，否则 `NOT_RUN_BY_RUN`；diffHash 用 `harness_ledger.py diff-hash --change-dir`（见 reference） |
+| **陈旧 Java 测试** | `cannot find symbol`/mapper 方法改名/DTO 字段迁移只有在当前接口和批准计划唯一确定替代契约时才允许只改测试；修复后定向 `mvn test -Dtest=<class>`，再跑目标测试并记录 `stale-test-repair` |
+| **禁止规避** | 禁止把 `*Test.java` 改成 `.bak`、删除、`@Disabled`/`@Ignore`、Surefire exclude 或以 `-DskipTests` 充当 GREEN |

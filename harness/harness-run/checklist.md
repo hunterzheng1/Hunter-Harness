@@ -57,6 +57,9 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 探测 4：目标模块测试基础设施是否可用（按技术栈，如 Java 的 `mvn test-compile -pl <module> -o -q` 验证测试可编译，或测试枚举/秒级 smoke；**禁止完整模块测试**，spec §3.3）
 - [ ] 四项证据收集完毕 → 写结论：✅ 测试基础设施可用 / 🟡 测试基础设施部分可用 / ❌ 测试基础设施不可用
 - [ ] 如果 ❌ 不可用 → 记录 TDD 降级原因（必须引用具体证据，如"模块 X 无测试目录（如 Java 的 src/test/java）"）
+- [ ] 若探测失败来自具体陈旧测试，先执行「陈旧测试安全修复」判定：当前代码/批准计划/可验证历史唯一确定契约 + 仅改测试 + 立即重跑；满足才修复，否则记录 `BLOCKED_PREEXISTING`
+- [ ] 修复/新增/更新的精确测试路径已用 `harness_test_guard.py record` 记录为 `stale-test-repair` / `tdd-created` / `test-updated`
+- [ ] **禁止临时排除测试**：未使用 `.bak`/改名/移目录/删除/禁用注解/build exclude/skip-tests 绕过失败
 
 ## 步骤 0.2：预存变更检测与隔离
 
@@ -147,7 +150,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 判断是否需要全量测试：改了公共模块/数据访问层/数据库迁移/权限认证/接口层/数据契约，或用户要求 full-run-validation → 执行测试命令（按技术栈，如 Java 的 `mvn test -pl <module> -o`）；否则跳过全量测试
 - [ ] 构建失败 → 先分析错误类型（见 reference.md 构建失败策略表）
 - [ ] **写入 verification-ledger.json**：`compile` 项必写（status/command/scope/evidence/时间戳/durationMs）；若执行了测试命令则 `unitTest` 项必写（testsRun/failures/errors/skipped/evidence）；未执行时标记 `NOT_RUN_BY_RUN`
-- [ ] 顶层写入 `diffHash` / `currentHead` / `module` / `profile`；`diffHash` **必须用三部分合并命令**（inline 见 reference 步骤 2c，与 ledger-protocol 五一致），**禁止仅用 `git diff` 未提交**；`currentHead`=`git rev-parse HEAD`
+- [ ] 顶层写入 `diffHash` / `currentHead` / `module` / `profile`；`diffHash` 必须执行 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json`，纳入 test-tracking manifest 中的 ignored tests；`currentHead`=`git rev-parse HEAD`
 - [ ] test/submit/package 阶段如果 diffHash 一致，可复用 run 的 compile/unitTest 结果
 
 ## 步骤 3：场景覆盖检查
@@ -215,7 +218,8 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 生成变更摘要：`git diff --stat` + `git diff --stat --cached`
 - [ ] 构建 commit message：`wip(<scope>): <change-name> 编码完成 — N任务/M文件变更`
 - [ ] **⚠️ 强制阻断**：用 AskUserQuestion 展示变更列表 + commit message，等待用户确认
-- [ ] 用户确认 → 执行 `git add -A` + `git commit`（不用 --no-verify、--no-gpg-sign）
+- [ ] 用户确认 → 精确暂存业务文件；若存在 test-tracking manifest，先执行 `harness_test_guard.py stage --project . --change-dir ".harness/changes/<change-name>" --json`；禁止 `git add -A` 与目录级 force-add
+- [ ] `git diff --cached --name-only` 包含 manifest 的全部精确测试路径后再 `git commit`（不用 --no-verify、--no-gpg-sign）
 - [ ] 用户拒绝 → 记录 `❌用户拒绝`，继续后续流程
 - [ ] 记录 checkpoint commit hash 到执行日志
 
@@ -250,7 +254,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 包含 currentHead/baseCommit/diffHash/module/profile
 - [ ] 包含 validations.compile 与 validations.unitTest
 - [ ] 缺字段时标记 `ledgerReusable=false`，后续阶段不得复用
-- [ ] diffHash 必须用三部分合并命令（inline 见 reference 步骤 2c；commit 前 `baseCommit..HEAD` 部分为空也**必须保留**），`currentHead`=`git rev-parse HEAD`；禁止仅用 `git diff` 未提交——省略第一部分会导致 commit 后 diffHash 变化、run→test 复用链断裂
+- [ ] diffHash 必须由 `harness_ledger.py diff-hash --change-dir` 生成；manifest hash 漂移或路径越界时硬停止，禁止绕过后复用 ledger
 
 ## 新筛选参数非法值行为检查
 

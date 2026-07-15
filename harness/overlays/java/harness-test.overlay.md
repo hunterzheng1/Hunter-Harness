@@ -6,7 +6,9 @@
 - **编译门禁**：测试前按 `build-profile.json` 的 `commands.compile`（v2，profile key resolve）；输出须含 `BUILD SUCCESS` 或 exit 0 证据
 - **条件 install**：worktree 首建或上游模块变更时按 profile 执行 `commands.install`（非每次强制 `-am`）
 - **单元测试**：可复用 ledger unitTest 则跳过；否则 `commands.unitTest`（典型 `mvn test -pl <module>`）；执行模块全量 `commands.unitTestFull` 成功 → 记 `unitTestFull`（scope=module，供 submit 复用）
+- **陈旧测试安全修复**：测试编译明确命中已移除/改名 API 且当前代码与批准计划唯一确定新契约时，只修测试并定向重跑，记录 `stale-test-repair`；有歧义则 `BLOCKED_PREEXISTING`，禁止 `.bak`/删除/禁用/exclude
 - **服务启动**：`build-profile.json` 的 `serviceStartTemplate`（典型 `spring-boot:run` + profile）；**禁止 hardcode 端口/模块路径**
+- **Maven 生命周期去重**：单元测试已独立通过后，服务启动命令可配置 `-Dmaven.test.skip=true` 避免重复测试编译；它仅优化启动，不是测试通过证据
 - **服务指纹输入**（Task 3 §5.1）：`serviceStart.inputFiles` 必须列出 module 源 glob（如 `["<module>/pom.xml", "<module>/src/main/**/*.java", "<module>/src/main/resources/**"]`）；`harness_service.py ensure` 取 CLI `--files` ∪ `inputFiles` 计算 `moduleInputsHash`。**空输入被拒绝**，不得生成可复用空指纹。源码/command/profile/overlayPath 任一变化即 restart
 - **runtime overlay**：`-Dspring.config.additional-location=file:<ascii-abs-path>/application-harness-test.yml`；禁止默认 Edit tracked `application*.yml`
 - **known-good-test-profile**：profile 名、baseURL、healthUrl 写在 build-profile，非 skill 硬编码

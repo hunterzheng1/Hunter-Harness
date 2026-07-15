@@ -518,19 +518,13 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 - 顶层写入 `diffHash` / `currentHead` / `baseCommit` / `module` / `profile`
 - `baseCommit`：merge-base 或计划起点（worktree 分支从主分支分出点，由 harness-plan 写入、run 读取复用；缺失时用 `git merge-base HEAD <默认分支>` 兜底）
 - `currentHead`：`git rev-parse HEAD`（步骤 2c 在 Step 5 checkpoint commit 之前执行，此时 HEAD==baseCommit；commit 后 HEAD 前移到 checkpoint commit，由 ledger-protocol reuse 规则 #2「currentHead 可前移」容忍，**不需为它改时序**）
-- `diffHash`：**必须用 ledger-protocol「五、真实 diffHash」的 commit-invariant 三部分合并命令**（与 harness-test 重算命令逐字一致），**禁止仅用 `git diff`（未提交）**。命令如下（经 `Bash(powershell.exe:*)` 通道时外层用单引号防 `$base` 展开，见 ledger-protocol 五 L177）：
+- `diffHash`：必须由 ledger v2 的 commit-invariant 内容变更集算法生成，并通过 `--change-dir` 纳入 test-tracking manifest 中被 `.gitignore` 忽略的测试；禁止自行拼接 Git 输出或仅使用某一段 diff：
 
 ```powershell
-powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/changes/<change>/runtime/current-diff.patch'; & { git diff $base HEAD --binary; git diff --binary; git ls-files --others --exclude-standard | ForEach-Object { Get-Content -Raw -LiteralPath $_ } } | Out-File -Encoding utf8 $patch; (Get-FileHash $patch -Algorithm SHA256).Hash"
+python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json
 ```
 
-> ⚠️ **commit 前时序陷阱（真实教训）**：步骤 2c 在 Step 5 checkpoint commit **之前**执行，此时 `git diff $base HEAD` 部分为空（HEAD==baseCommit），只有"未提交 + 未跟踪"是全量。**即使第一部分为空也必须保留三部分合并**——commit 后第一部分被填充、未提交/未跟踪变空，两者内容相同 → diffHash 一致。若省略第一部分只用未提交 diff，commit 后未提交变空 → diffHash 变化 → run→test 复用链断裂（真实日志：run 产出非规范 `8a94c874` 即因此，test 重算 `b4c580fc` 不一致，被迫重跑全量单元测试 13.65s）
-
-> ⚠️ **禁止任何单部分简化（堵字面空子）**：上述教训只点了"仅用未提交 diff"。实际还有两种等价违规简化，均**禁止**：
-> - `git diff <base> HEAD --binary`（仅已提交部分）：commit 后工作树 clean 时结果偶然与三部分合并一致，但 commit 前算会漏未提交+未跟踪，且方法本身违反"三部分合并"要求。
-> - `node -e "...crypto.createHash('sha256')..."` 自算：绕过 PowerShell 三部分合并命令，且无法捕获未跟踪文件内容。
->
-> 无论 commit 前后、无论工作树是否 clean，**必须**用三部分合并命令。"commit 后 clean 致单部分偶然等价"不得作为省略三部分的依据——时序或工作树状态一旦变化即复现复用链断裂。
+> `content-changeset-2` 同时读取 tracked diff、标准 untracked 文件和 manifest 的精确测试路径。manifest 缺失时保持普通行为；manifest 存在但路径越界、内容 hash 漂移或结构非法时命令失败，ledger 不可复用。checkpoint commit 不改变各路径的工作树内容，因此提交前后 hash 保持一致。
 
 > 这样 harness-test 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
 

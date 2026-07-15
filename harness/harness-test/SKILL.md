@@ -106,11 +106,23 @@ disallowed-tools:
 
 ### 四、单元测试复用 + 写入 ledger
 
-Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.json`：run 的 unitTest 满足（diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 跑了全量测试）则复用，否则按 **profile key resolve** 执行测试命令（`python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTest|unitTestFull --json`，**不复制示例 `-pl` 命令**）。Phase 1/2 完成后必须写回 ledger：执行增量测试类 → 记 `unitTest`（scope=incremental）；执行 profile 模块全量命令 → 记 `unitTestFull`（scope=module，可供 submit 复用）；接口测试 → 记 `apiTest`。详见 `checklist.md`「单元测试复用」、`../protocols/ledger-protocol.md`。
+Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.json`，并用 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算真实指纹：run 的 unitTest 满足（diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 跑了全量测试）则复用，否则按 **profile key resolve** 执行测试命令（`python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTest|unitTestFull --json`，**不复制示例 `-pl` 命令**）。Phase 1/2 完成后必须写回 ledger：执行增量测试类 → 记 `unitTest`（scope=incremental）；执行 profile 模块全量命令 → 记 `unitTestFull`（scope=module，可供 submit 复用）；接口测试 → 记 `apiTest`。详见 `checklist.md`「单元测试复用」、`../protocols/ledger-protocol.md`。
 
 ### 五、命令与请求超时治理
 
 所有命令必须有「预期时长 + 超时上限」，超过预期必须输出一次状态行，**不得静默等待**。`durationMs > 10000` → 🟡 SLOW，`> 30000` → ❌ TIMEOUT_RISK。详见 `reference.md`「命令与请求超时治理」。
+
+### 五-A、陈旧测试安全修复
+
+若测试编译或执行明确指向已移除/改名 API 的陈旧测试，且当前生产代码、已批准计划或可验证历史能唯一确定新契约，可仅修改测试并立即重跑该测试与目标测试，然后记录：
+
+```text
+python <skills-root>/scripts/harness_test_guard.py record --project . --change-dir ".harness/changes/<change-name>" --files "<精确测试文件路径，逗号分隔>" --reason stale-test-repair --json
+```
+
+普通新增/更新测试使用 `tdd-created` / `test-updated`。存在业务歧义或修复会触及生产代码时，记录 `BLOCKED_PREEXISTING` 并停止复用该验证，不得猜测或绕过。
+
+**禁止临时排除测试**：禁止 `.bak`/改名、移出测试目录、删除、禁用注解、构建 exclude、`skipTests`/`maven.test.skip` 充当测试通过证据；服务启动可在单元测试已独立通过后使用 `-Dmaven.test.skip=true` 避免重复编译测试，但不得据此声明测试通过。所有本轮新增、更新或安全修复且被忽略的测试必须写入 test-tracking manifest；仅执行、未修改的只读 ignored test 不获得 force-track 授权。
 
 ### 六、服务启动 + 生命周期管理
 

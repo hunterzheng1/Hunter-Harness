@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -722,6 +725,176 @@ class DiffHashTests(unittest.TestCase):
             self.assertTrue(payload["diffHash"].startswith("sha256:"))
             self.assertIn("algorithmVersion", payload)
             self.assertGreater(payload["fileCount"], 0)
+
+    def _write_test_tracking(self, root: Path, change_dir: Path, rel: str) -> None:
+        target = root / rel
+        digest = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        manifest = {
+            "schemaVersion": 1,
+            "mode": "force-track-touched",
+            "projectRoot": str(root.resolve()),
+            "files": [
+                {
+                    "path": rel,
+                    "sha256": digest,
+                    "reason": "test-updated",
+                    "ignored": True,
+                    "trackedBefore": False,
+                }
+            ],
+        }
+        path = change_dir / "evidence" / "test-tracking.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_diff_hash_includes_ignored_test_from_tracking_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_dir = root / ".harness" / "changes" / "fix"
+            self._write_test_tracking(root, change_dir, rel)
+
+            without_manifest, _ = harness_ledger.compute_diff_hash(root, base=base)
+            with_manifest, meta = harness_ledger.compute_diff_hash(
+                root, base=base, change_dir=change_dir
+            )
+
+            self.assertNotEqual(without_manifest, with_manifest)
+            self.assertEqual(meta["trackedTestFileCount"], 1)
+
+    def test_diff_hash_rejects_tracking_manifest_hash_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_dir = root / ".harness" / "changes" / "fix"
+            self._write_test_tracking(root, change_dir, rel)
+            target.write_text("class ChangedAfterRecord {}\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "HASH_DRIFT"):
+                harness_ledger.compute_diff_hash(root, base=base, change_dir=change_dir)
+
+    def test_diff_hash_rejects_tracking_manifest_symlink_outside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside_tmp:
+            root = Path(tmp)
+            outside = Path(outside_tmp)
+            base = _init_repo(root, {"a.txt": "hi\n"})
+            change_dir = root / ".harness" / "changes" / "fix"
+            change_dir.mkdir(parents=True)
+            try:
+                os.symlink(outside, change_dir / "evidence", target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlink unavailable: {exc}")
+            (outside / "test-tracking.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "MANIFEST_OUTSIDE_CHANGE"):
+                harness_ledger.compute_diff_hash(root, base=base, change_dir=change_dir)
+
+    def test_diff_hash_rejects_tracking_manifest_symlink_to_another_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_b = root / ".harness" / "changes" / "b"
+            self._write_test_tracking(root, change_b, rel)
+            change_a = root / ".harness" / "changes" / "a"
+            change_a.mkdir(parents=True)
+            try:
+                os.symlink(change_b / "evidence", change_a / "evidence", target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlink unavailable: {exc}")
+
+            with self.assertRaisesRegex(ValueError, "MANIFEST_OUTSIDE_CHANGE"):
+                harness_ledger.compute_diff_hash(root, base=base, change_dir=change_a)
+
+    def test_diff_hash_rejects_test_content_change_after_manifest_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_dir = root / ".harness" / "changes" / "fix"
+            self._write_test_tracking(root, change_dir, rel)
+            original_read_bytes = Path.read_bytes
+            target_resolved = target.resolve()
+            target_reads = 0
+
+            def racing_read_bytes(path: Path) -> bytes:
+                nonlocal target_reads
+                content = original_read_bytes(path)
+                if path.resolve() == target_resolved and target_reads == 0:
+                    target_reads += 1
+                    target.write_text("class ChangedAfterValidation {}\n", encoding="utf-8")
+                return content
+
+            with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=racing_read_bytes):
+                with self.assertRaisesRegex(ValueError, "HASH_DRIFT"):
+                    harness_ledger.compute_diff_hash(root, base=base, change_dir=change_dir)
+
+    def test_diff_hash_manifest_is_commit_invariant_after_force_add(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_dir = root / ".harness" / "changes" / "fix"
+            self._write_test_tracking(root, change_dir, rel)
+
+            before, _ = harness_ledger.compute_diff_hash(
+                root, base=base, change_dir=change_dir
+            )
+            import subprocess
+
+            subprocess.run(["git", "add", "-f", "--", rel], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "track test"], cwd=root, check=True)
+            after, _ = harness_ledger.compute_diff_hash(
+                root, base=base, change_dir=change_dir
+            )
+            self.assertEqual(before, after)
+
+    def test_diff_hash_cli_accepts_change_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = _init_repo(root, {".gitignore": "src/test/\n", "a.txt": "hi\n"})
+            rel = "src/test/java/StaleTest.java"
+            target = root / rel
+            target.parent.mkdir(parents=True)
+            target.write_text("class StaleTest {}\n", encoding="utf-8")
+            change_dir = root / ".harness" / "changes" / "fix"
+            self._write_test_tracking(root, change_dir, rel)
+            from contextlib import redirect_stdout
+            from io import StringIO
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "diff-hash",
+                        "--repo",
+                        str(root),
+                        "--base",
+                        base,
+                        "--change-dir",
+                        str(change_dir),
+                    ]
+                )
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            self.assertEqual(json.loads(buf.getvalue())["trackedTestFileCount"], 1)
 
 
 class LedgerV2Tests(unittest.TestCase):

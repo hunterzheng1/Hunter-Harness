@@ -252,6 +252,10 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] 判断是否复用 run 的 unitTest：diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 实际跑了全量测试
 - [ ] 复用 → 跳过重跑，标记"✅ 复用 harness-run 单元测试结果"
 - [ ] 不复用 → 按 profile key resolve 重跑测试命令（`harness_profile.py resolve --key unitTest`，不复制示例 `-pl` 命令），结果写回 ledger 的 `unitTest` 项
+- [ ] 复用判断前以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算指纹；test-tracking manifest 无效或 hash 漂移即停止
+- [ ] 测试失败若明确为陈旧测试，仅在当前代码/批准计划/可验证历史唯一确定新契约且只改测试时自动修复；否则记录 `BLOCKED_PREEXISTING`
+- [ ] 自动修复后立即重跑该测试与目标测试，并以 `harness_test_guard.py record ... --reason stale-test-repair` 记录精确路径
+- [ ] **禁止临时排除测试**：未使用 `.bak`/改名/移目录/删除/禁用注解/build exclude/skip-tests 制造通过；服务启动的 `maven.test.skip` 不作为测试证据
 
 ### 批量执行器（强制单次 PowerShell + 执行器绝对路径执行）
 

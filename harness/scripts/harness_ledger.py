@@ -40,7 +40,9 @@ BROAD_SCOPES = frozenset({"module", "module-am", "full"})
 
 # --- Ledger v2 (cluster 2) ---
 LEDGER_VERSION = "harness-ledger-2"
-DIFF_HASH_VERSION = "content-changeset-1"
+DIFF_HASH_VERSION = "content-changeset-2"
+TEST_TRACKING_REL = Path("evidence") / "test-tracking.json"
+TEST_TRACKING_REASONS = frozenset({"tdd-created", "stale-test-repair", "test-updated"})
 # Coverage lattice: a recorded verification's coverage rank must meet the
 # verification's required rank. Prevents incremental evidence from satisfying
 # a module/full gate (UT-015 / API-005).
@@ -168,7 +170,88 @@ def _changed_paths(repo_root: Path, base: str | None) -> tuple[str, list[str]]:
     return base, sorted(paths)
 
 
-def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, dict[str, Any]]:
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _tracked_test_contents(
+    repo_root: Path,
+    change_dir: Path | str | None,
+) -> tuple[dict[str, bytes], str | None]:
+    """Load exact test paths recorded by harness_test_guard.
+
+    The ledger validates the same security-critical manifest fields again so a
+    hand-edited manifest cannot silently widen the fingerprint or reuse stale
+    evidence. Missing manifests remain backward-compatible and contribute no
+    additional paths.
+    """
+    if change_dir is None:
+        return {}, None
+    candidate = Path(change_dir)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    change_root = candidate.resolve()
+    if not _inside(change_root, repo_root):
+        raise ValueError("TEST_TRACKING_CHANGE_DIR_OUTSIDE_PROJECT")
+    manifest_path = (change_root / TEST_TRACKING_REL).resolve()
+    if not _inside(manifest_path, change_root):
+        raise ValueError("TEST_TRACKING_MANIFEST_OUTSIDE_CHANGE")
+    if not manifest_path.is_file():
+        return {}, None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"TEST_TRACKING_MANIFEST_INVALID: {exc}") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schemaVersion") != 1
+        or manifest.get("mode") != "force-track-touched"
+        or manifest.get("projectRoot") != str(repo_root)
+    ):
+        raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("TEST_TRACKING_MANIFEST_INVALID: EMPTY_FILES")
+
+    contents: dict[str, bytes] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+        rel = item.get("path")
+        expected_hash = item.get("sha256")
+        if (
+            not isinstance(rel, str)
+            or not rel
+            or not isinstance(expected_hash, str)
+            or item.get("reason") not in TEST_TRACKING_REASONS
+            or type(item.get("ignored")) is not bool
+            or type(item.get("trackedBefore")) is not bool
+        ):
+            raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+        raw_path = Path(rel)
+        resolved = (repo_root / raw_path).resolve()
+        if raw_path.is_absolute() or not _inside(resolved, repo_root):
+            raise ValueError(f"TEST_TRACKING_PATH_OUTSIDE_PROJECT: {rel}")
+        normalized = resolved.relative_to(repo_root).as_posix()
+        if normalized != rel or not resolved.is_file():
+            raise ValueError(f"TEST_TRACKING_FILE_INVALID: {rel}")
+        content = resolved.read_bytes()
+        actual_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+        if actual_hash != expected_hash:
+            raise ValueError(f"TEST_TRACKING_HASH_DRIFT: {rel}")
+        contents[rel] = content
+    return {rel: contents[rel] for rel in sorted(contents)}, str(manifest_path)
+
+
+def compute_diff_hash(
+    repo_root: Path,
+    base: str | None = None,
+    change_dir: Path | str | None = None,
+) -> tuple[str, dict[str, Any]]:
     """Byte-level, commit-invariant diff hash (cluster 2).
 
     Content-based change set: every file whose working-tree content differs
@@ -179,6 +262,8 @@ def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, di
     """
     repo_root = Path(repo_root).resolve()
     base, paths = _changed_paths(repo_root, base)
+    tracked_test_contents, manifest_path = _tracked_test_contents(repo_root, change_dir)
+    paths = sorted(set(paths).union(tracked_test_contents))
     digest = hashlib.sha256()
     digest.update(DIFF_HASH_VERSION.encode("utf-8"))
     digest.update(b"\x00")
@@ -187,7 +272,12 @@ def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, di
         digest.update(len(path_bytes).to_bytes(4, "big"))
         digest.update(path_bytes)
         abs_path = repo_root / rel
-        if abs_path.is_file():
+        if rel in tracked_test_contents:
+            content = tracked_test_contents[rel]
+            digest.update(b"\x01")
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        elif abs_path.is_file():
             content = abs_path.read_bytes()
             digest.update(b"\x01")
             digest.update(len(content).to_bytes(8, "big"))
@@ -196,6 +286,14 @@ def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, di
             # Deleted since base: record absence with no content.
             digest.update(b"\x00")
             digest.update((0).to_bytes(8, "big"))
+    for rel, verified_content in tracked_test_contents.items():
+        path = repo_root / rel
+        try:
+            current_content = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"TEST_TRACKING_HASH_DRIFT: {rel}") from exc
+        if current_content != verified_content:
+            raise ValueError(f"TEST_TRACKING_HASH_DRIFT: {rel}")
     try:
         head = _git_bytes(["rev-parse", "HEAD"], repo_root).decode("utf-8", "replace").strip()
     except RuntimeError:
@@ -205,6 +303,8 @@ def compute_diff_hash(repo_root: Path, base: str | None = None) -> tuple[str, di
         "fileCount": len(paths),
         "base": base,
         "head": head or None,
+        "trackedTestFileCount": len(tracked_test_contents),
+        "testTrackingManifest": manifest_path,
     }
     return f"sha256:{digest.hexdigest()}", meta
 
@@ -778,9 +878,10 @@ def cmd_diff_hash(args: argparse.Namespace) -> int:
     repo_raw = getattr(args, "repo", None)
     repo = Path(repo_raw).expanduser().resolve() if repo_raw else Path.cwd().resolve()
     base = getattr(args, "base", None)
+    change_dir = getattr(args, "change_dir", None)
     try:
-        diff_hash, meta = compute_diff_hash(repo, base=base)
-    except (OSError, RuntimeError) as exc:
+        diff_hash, meta = compute_diff_hash(repo, base=base, change_dir=change_dir)
+    except (OSError, RuntimeError, ValueError) as exc:
         return emit_error(str(exc), as_json=as_json)
     payload = {"ok": True, "action": "diff-hash", "diffHash": diff_hash}
     payload.update(meta)
@@ -922,6 +1023,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_diff.add_argument("--repo", default=None, help="repo root (default: cwd)")
     p_diff.add_argument("--base", default=None, help="base commit (default: root commit)")
+    p_diff.add_argument(
+        "--change-dir",
+        default=None,
+        help="change directory whose evidence/test-tracking.json contributes ignored tests",
+    )
     p_diff.set_defaults(func=cmd_diff_hash)
 
     return parser

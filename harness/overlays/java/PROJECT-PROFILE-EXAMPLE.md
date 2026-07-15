@@ -66,7 +66,7 @@
     "package": ["pom.xml", "udp-micros-runner/contribution-server/pom.xml", "udp-micros-runner/contribution-server/src/main/**", "udp-micros-runner/contribution-server/src/test/**"]
   },
   "serviceStart": {
-    "command": "mvn spring-boot:run -pl udp-micros-runner/contribution-server -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments=\"-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml\"",
+    "command": "mvn spring-boot:run -pl udp-micros-runner/contribution-server -Dmaven.test.skip=true -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments=\"-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml\"",
     "healthUrl": "http://127.0.0.1:9093/contribution/meta",
     "startTimeoutSec": 120,
     "inputFiles": ["udp-micros-runner/contribution-server/src/main/**", "udp-micros-runner/contribution-server/src/main/resources/application*.yml"],
@@ -74,8 +74,15 @@
     "profile": "local-dev",
     "overlayPath": ""
   },
+  "testTracking": {
+    "source": "user",
+    "mode": "force-track-touched",
+    "paths": ["udp-micros-runner/contribution-server/src/test/**"],
+    "staleTestPolicy": "safe-repair",
+    "forbidTemporaryExclusion": true
+  },
   "identifier": {
-    "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+    "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
     "maxLength": 64,
     "prefix": "JAVATEST_"
   },
@@ -94,6 +101,7 @@
 | `excludedRoots` | 排除策略（spec §3.1）：兄弟 worktree / target / node_modules 等不进 inputs |
 | `verificationInputs.unitTestFull` | submit 最终门禁 `can-reuse --profile-input unitTestFull` 据此展开文件集，禁止用仅含 staged 的 `--files` 冒充 |
 | `serviceStart` | 模板 serviceStart（command/healthUrl/inputFiles）；运行期由 `resolve_service_start` 注入 overlay/profile，不写回持久 profile |
+| `testTracking` | 只授权本轮实际新增/更新/安全修复的精确测试路径进入 manifest；不会全局取消 `.gitignore` |
 | `identifier` | 测试标识符约束（pattern/maxLength/prefix），Runner 生成前校验 |
 | `httpHeaders.tenant-id` | 多租户 header（项目自定义扩展字段） |
 | `knownGoodTestProfile` | 文档/报告引用，非 skill 硬编码 |

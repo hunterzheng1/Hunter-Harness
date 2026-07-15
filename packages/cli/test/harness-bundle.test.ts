@@ -33,6 +33,47 @@ async function filePaths(directory: string, base = directory): Promise<string[]>
 }
 
 describe("embedded Harness Bundles", () => {
+  it("keeps ignored-test repair and exact tracking contracts complete", async () => {
+    const runSkill = await readFile(join(harnessSource, "harness-run", "SKILL.md"), "utf8");
+    const testSkill = await readFile(join(harnessSource, "harness-test", "SKILL.md"), "utf8");
+    const submitSkill = await readFile(join(harnessSource, "harness-submit", "SKILL.md"), "utf8");
+    const ledgerProtocol = await readFile(
+      join(harnessSource, "protocols", "ledger-protocol.md"), "utf8"
+    );
+    const javaProfile = await readFile(
+      join(harnessSource, "overlays", "java", "PROJECT-PROFILE-EXAMPLE.md"), "utf8"
+    );
+
+    for (const text of [runSkill, testSkill]) {
+      expect(text).toContain("stale-test-repair");
+      expect(text).toContain("BLOCKED_PREEXISTING");
+      expect(text).toContain("harness_test_guard.py record");
+      expect(text).toContain("禁止临时排除测试");
+    }
+    expect(submitSkill).toContain("harness_test_guard.py stage");
+    expect(submitSkill).toContain("禁止全局 force-add");
+    expect(ledgerProtocol).toContain("diff-hash --repo <projectRoot> --base <baseCommit> --change-dir");
+    expect(ledgerProtocol).toContain("content-changeset-2");
+    expect(javaProfile).toContain('"testTracking"');
+    expect(await exists(join(harnessSource, "scripts", "harness_test_guard.py"))).toBe(true);
+  });
+
+  it.each(PROFILES)("ships test tracking guard and policies to every %s adapter", async (profile) => {
+    for (const agent of AGENTS) {
+      const bundleRoot = join(resources, "bundles", profile, agent);
+      expect(
+        await exists(join(bundleRoot, "scripts", "harness_test_guard.py")),
+        `${profile}/${agent} missing harness_test_guard.py`
+      ).toBe(true);
+      const runSkill = await readFile(join(bundleRoot, "harness-run", "SKILL.md"), "utf8");
+      const testSkill = await readFile(join(bundleRoot, "harness-test", "SKILL.md"), "utf8");
+      const submitSkill = await readFile(join(bundleRoot, "harness-submit", "SKILL.md"), "utf8");
+      expect(runSkill).toContain("stale-test-repair");
+      expect(testSkill).toContain("BLOCKED_PREEXISTING");
+      expect(submitSkill).toContain("harness_test_guard.py stage");
+    }
+  });
+
   it("keeps plan logging, ordering, and preflight contracts unambiguous", async () => {
     const planSkill = await readFile(join(harnessSource, "harness-plan", "SKILL.md"), "utf8");
     const planProtocols = await readFile(join(harnessSource, "harness-plan", "protocols.md"), "utf8");

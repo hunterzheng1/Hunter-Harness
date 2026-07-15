@@ -767,10 +767,10 @@ TEST_<change-name>_<timestamp>_<short-random>
 
 > diffHash 与 ledger 复用规则遵循 `../protocols/ledger-protocol.md`。
 
-后续复用 ledger 前必须生成真实 SHA-256 diffHash，且**必须 commit-invariant**（含 `git diff baseCommit..HEAD` 已提交部分）。否则 run 的 Step 5 checkpoint commit 后工作树干净、`git diff` 为空，harness-test 会误判"diffHash 变化"而重跑 run 已跑过的全量测试，复用链断裂。`<baseCommit>` 从 ledger 读取（plan 阶段写入），缺失时用 `git merge-base HEAD <默认分支>`：
+后续复用 ledger 前必须生成真实 SHA-256 diffHash，且必须同时覆盖 tracked/untracked 变化和 test-tracking manifest 中被忽略的测试。`<baseCommit>` 从 ledger 读取（plan 阶段写入），缺失时用 `git merge-base HEAD <默认分支>`：
 
 ```powershell
-powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/changes/<change>/runtime/current-diff.patch'; & { git diff $base HEAD --binary; git diff --binary; git ls-files --others --exclude-standard | ForEach-Object { Get-Content -Raw -LiteralPath $_ } } | Out-File -Encoding utf8 $patch; (Get-FileHash $patch -Algorithm SHA256).Hash"
+python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json
 ```
 
 写入 `.harness/changes/<change>/evidence/verification-ledger.json`：
@@ -778,11 +778,11 @@ powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/c
 ```json
 {
   "diffHash": "sha256:<real_hash>",
-  "diffPatchFile": ".harness/changes/<change>/runtime/current-diff.patch"
+  "algorithmVersion": "content-changeset-2"
 }
 ```
 
-禁止使用 `3files-84plus-5minus` 这类描述性 diffHash 作为复用依据。**禁止仅用 `git diff`（未提交）计算 diffHash**——commit 后工作树干净致指纹变空，断裂 run→test 复用链。**同样禁止** `git diff <base> HEAD` 已提交单部分或 `node -e` 自算 SHA-256——commit 后 clean 致单部分偶然等价不得作为依据，无论时序必须三部分合并。
+禁止使用描述性字符串、单段 `git diff` 或自写 hash 替代脚本。manifest 无效、路径越界或 hash 漂移时必须停止，不得删除 manifest 后继续复用旧 ledger。
 
 ## 执行日志记录
 

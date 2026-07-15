@@ -168,8 +168,6 @@ CONDITIONAL_OK
 
 ## 未提交测试证据
 
-如果 run/test 使用了被 `.gitignore` 忽略或未提交的测试文件作为验证证据，必须：
+run/test 本轮新增、更新或安全修复且被 `.gitignore` 忽略的测试，必须先由 `test-tracking.json` + `harness_test_guard.py stage` 精确提交；这类测试不得继续作为“未提交证据”收尾，也不得计入可复用 P0 验证后随 worktree 删除。
 
-1. 归档到 `backups/uncommitted-tests/`；
-2. 在 `summary-data.json.uncommittedTestEvidence[]` 中记录文件名、验证了什么、是否随 commit 提交；
-3. final-summary 明确展示（`uncommittedTestEvidence` 非空时渲染"🧪 未提交测试证据"卡片），避免维护者误以为仓库包含该回归测试；无此类证据时不渲染该卡。
+`uncommittedTestEvidence` 只兼容历史归档或明确只读的外部证据：归档到 `backups/uncommitted-tests/`，记录文件名、验证范围与未提交原因，并在 final-summary 展示风险。若它是本轮可修改的回归测试，则 archive 必须阻断并要求先走精确跟踪流程。
