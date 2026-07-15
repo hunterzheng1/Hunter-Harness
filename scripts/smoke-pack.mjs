@@ -197,7 +197,7 @@ try {
     assert((await readFile(join(project, "CLAUDE.md"), "utf8")).includes("# User Claude"),
       "unselected Claude instructions must remain present");
   } finally {
-    await rm(project, { recursive: true, force: true });
+    await rm(project, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 
   // Java 首次安装独立校验（harness-apidoc 存在）。
@@ -210,7 +210,7 @@ try {
     assert(await exists(join(javaProject, ".claude", "skills", "agents")) === false,
       "java install must not create .claude/skills/agents");
   } finally {
-    await rm(javaProject, { recursive: true, force: true });
+    await rm(javaProject, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 
   run(process.execPath, [npmCli, "pack", "-w", "packages/skill-cli", "--pack-destination", temporary]);

@@ -20,6 +20,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // 统一临时目录并在运行结束后整树清理，防止 hunter-* fixture 泄漏到系统 Temp
+    globalSetup: ["./tests/setup/global-temp.ts"],
     testTimeout: 30000,
     hookTimeout: 30000,
     // 四 Agent 初始化等 I/O 重测试在高并行下易互相拖垮超时（Windows pre-push 尤甚）
