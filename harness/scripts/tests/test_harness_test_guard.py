@@ -9,9 +9,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 MODULE_PATH = SCRIPTS_DIR / "harness_test_guard.py"
@@ -168,6 +171,37 @@ class TestGuardTests(unittest.TestCase):
         self.assertEqual(result["code"], "MANIFEST_PATH_OUTSIDE_PROJECT")
         self.assertFalse((self.outside / "test-tracking.json").exists())
 
+    def test_record_rejects_evidence_symlink_to_other_change(self) -> None:
+        other_evidence = self.project / ".harness" / "changes" / "other" / "evidence"
+        other_evidence.mkdir(parents=True)
+        evidence = self.change / "evidence"
+        try:
+            evidence.symlink_to(other_evidence, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable: {exc}")
+        test_file = self.project / "src" / "test" / "java" / "AppTest.java"
+        self._write(test_file)
+        result = self._record(test_file)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "MANIFEST_PATH_OUTSIDE_PROJECT")
+        self.assertFalse((other_evidence / "test-tracking.json").exists())
+
+    def test_profile_excluded_root_rejects_colocated_test_pattern(self) -> None:
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps(
+                {
+                    "excludedRoots": ["node_modules", ".git", ".harness", "build", "dist"],
+                    "testTracking": {"paths": ["**/*.test.js"]},
+                }
+            ),
+        )
+        excluded_test = self.project / "node_modules" / "pkg" / "escape.test.js"
+        self._write(excluded_test)
+        result = self._record(excluded_test)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "TEST_PATH_NOT_ALLOWED")
+
     def test_stage_blocks_hash_drift_without_staging_any_file(self) -> None:
         test_file = self.project / "src" / "test" / "java" / "AppTest.java"
         self._write(test_file, "before\n")
@@ -193,6 +227,41 @@ class TestGuardTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "INDEX_LOCKED")
         self.assertEqual(index_path.read_bytes(), before)
+
+    def test_stage_holds_manifest_lock_through_index_commit(self) -> None:
+        first = self.project / "src" / "test" / "java" / "FirstTest.java"
+        second = self.project / "src" / "test" / "java" / "SecondTest.java"
+        self._write(first)
+        self._write(second)
+        self.assertTrue(self._record(first)["ok"])
+
+        add_entered = threading.Event()
+        allow_add = threading.Event()
+        real_git = guard._git
+
+        def paused_git(project, *args, **kwargs):
+            if args and args[0] == "add" and kwargs.get("index_file") is not None:
+                add_entered.set()
+                self.assertTrue(allow_add.wait(timeout=5))
+            return real_git(project, *args, **kwargs)
+
+        with mock.patch.object(guard, "_git", side_effect=paused_git):
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                stage_future = executor.submit(guard.stage, self.project, self.change)
+                self.assertTrue(add_entered.wait(timeout=5))
+                record_future = executor.submit(self._record, second)
+                time.sleep(0.1)
+                self.assertFalse(record_future.done(), "record escaped the manifest lock")
+                allow_add.set()
+                stage_result = stage_future.result(timeout=5)
+                record_result = record_future.result(timeout=6)
+
+        self.assertTrue(stage_result["ok"], stage_result)
+        self.assertFalse(record_result["ok"], record_result)
+        manifest = json.loads(
+            (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+        )
+        self.assertEqual([item["path"] for item in manifest["files"]], ["src/test/java/FirstTest.java"])
 
     def test_stage_force_adds_only_manifest_test_file(self) -> None:
         selected = self.project / "src" / "test" / "java" / "SelectedTest.java"

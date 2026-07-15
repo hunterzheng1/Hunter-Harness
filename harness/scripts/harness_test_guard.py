@@ -148,25 +148,45 @@ def _change_dir(project: Path, change_dir: Path | str) -> Path | None:
 def _manifest_path(project: Path, change_root: Path) -> Path | None:
     evidence = change_root / MANIFEST_REL.parent
     manifest = change_root / MANIFEST_REL
-    for candidate in (change_root, evidence):
-        if not _inside(candidate.resolve(), project):
-            return None
+    expected_evidence = evidence.absolute()
+    resolved_evidence = evidence.resolve()
+    if (
+        not _inside(change_root.resolve(), project)
+        or not _inside(resolved_evidence, project)
+        or os.path.normcase(str(resolved_evidence))
+        != os.path.normcase(str(expected_evidence))
+    ):
+        return None
     return manifest
 
 
-def _profile_patterns(project: Path) -> list[str] | None:
+def _manifest_target_inside(project: Path, manifest: Path) -> bool:
+    resolved = manifest.resolve()
+    return _inside(resolved, project) and _inside(resolved, manifest.parent.absolute())
+
+
+def _profile_config(project: Path) -> tuple[list[str], list[str]] | None:
     profile_path = project / PROFILE_REL
     if not profile_path.is_file():
         return None
     try:
         profile = _read_json(profile_path)
     except (OSError, json.JSONDecodeError):
-        return []
+        return [], []
     tracking = profile.get("testTracking") if isinstance(profile, dict) else None
     paths = tracking.get("paths") if isinstance(tracking, dict) else None
     if not isinstance(paths, list):
-        return []
-    return [item.replace("\\", "/") for item in paths if isinstance(item, str) and item]
+        return [], []
+    excluded = profile.get("excludedRoots") if isinstance(profile, dict) else None
+    excluded_roots = (
+        [item.replace("\\", "/").strip("/") for item in excluded if isinstance(item, str) and item]
+        if isinstance(excluded, list)
+        else []
+    )
+    patterns = [
+        item.replace("\\", "/") for item in paths if isinstance(item, str) and item
+    ]
+    return patterns, excluded_roots
 
 
 def _matches_pattern(rel: str, pattern: str) -> bool:
@@ -195,9 +215,15 @@ def _standard_test_path(rel: str) -> bool:
 
 
 def _allowed_test_path(project: Path, rel: str) -> bool:
-    patterns = _profile_patterns(project)
-    if patterns is None:
+    config = _profile_config(project)
+    if config is None:
         return _standard_test_path(rel)
+    patterns, excluded_roots = config
+    rel_parts = tuple(rel.split("/"))
+    for excluded in excluded_roots:
+        excluded_parts = tuple(excluded.split("/"))
+        if rel_parts[: len(excluded_parts)] == excluded_parts:
+            return False
     return any(_matches_pattern(rel, pattern) for pattern in patterns)
 
 
@@ -305,7 +331,7 @@ def record(
     lock_path = manifest_path.with_name(manifest_path.name + ".lock")
     try:
         with _exclusive_lock(lock_path, wait_seconds=5.0):
-            if not _inside(manifest_path.resolve(), project_root):
+            if not _manifest_target_inside(project_root, manifest_path):
                 return _result(
                     False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", []
                 )
@@ -351,6 +377,73 @@ def record(
     return _result(True, action, "RECORDED", [rel for _, rel in validated], manifestPath=str(manifest_path))
 
 
+def _stage_locked(
+    project_root: Path, manifest_path: Path, index_path: Path
+) -> dict[str, Any]:
+    action = "stage"
+    if not _manifest_target_inside(project_root, manifest_path):
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+    try:
+        manifest = _read_json(manifest_path)
+    except FileNotFoundError:
+        return _result(False, action, "MANIFEST_MISSING", [])
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result(False, action, "MANIFEST_INVALID", [], error=str(exc))
+    error, entries = _validate_existing_manifest(
+        project_root, manifest, require_files=True
+    )
+    if error:
+        return _result(False, action, error, [])
+    rels = list(entries)
+
+    before_cached_result = _git(project_root, "diff", "--cached", "--name-only")
+    if before_cached_result.returncode != 0:
+        return _result(False, action, "CACHED_DIFF_FAILED", rels)
+    before_cached = set(before_cached_result.stdout.splitlines())
+
+    handle, temp_name = tempfile.mkstemp(
+        prefix=f".{index_path.name}.test-guard.", dir=index_path.parent
+    )
+    os.close(handle)
+    temp_index = Path(temp_name)
+    temp_index.unlink(missing_ok=True)
+    try:
+        if index_path.is_file():
+            shutil.copy2(index_path, temp_index)
+        added = _git(project_root, "add", "-f", "--", *rels, index_file=temp_index)
+        if added.returncode != 0:
+            return _result(
+                False,
+                action,
+                "GIT_ADD_FAILED",
+                rels,
+                error=added.stderr.strip(),
+            )
+        cached = _git(
+            project_root,
+            "diff",
+            "--cached",
+            "--name-only",
+            index_file=temp_index,
+        )
+        if cached.returncode != 0:
+            return _result(False, action, "CACHED_DIFF_FAILED", rels)
+        after_cached = set(cached.stdout.splitlines())
+        missing = [rel for rel in rels if rel not in after_cached]
+        unexpected = sorted((after_cached - before_cached) - set(rels))
+        if missing or unexpected:
+            return _result(
+                False,
+                action,
+                "CACHED_DIFF_MISMATCH",
+                missing or unexpected,
+            )
+        os.replace(temp_index, index_path)
+        return _result(True, action, "STAGED", rels)
+    finally:
+        temp_index.unlink(missing_ok=True)
+
+
 def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "stage"
     project_root = Path(project).resolve()
@@ -375,84 +468,9 @@ def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             manifest_lock = manifest_path.with_name(manifest_path.name + ".lock")
             try:
                 with _exclusive_lock(manifest_lock, wait_seconds=0.0):
-                    if not _inside(manifest_path.resolve(), project_root):
-                        return _result(
-                            False,
-                            action,
-                            "MANIFEST_PATH_OUTSIDE_PROJECT",
-                            [],
-                        )
-                    try:
-                        manifest = _read_json(manifest_path)
-                    except FileNotFoundError:
-                        return _result(False, action, "MANIFEST_MISSING", [])
-                    except (OSError, json.JSONDecodeError) as exc:
-                        return _result(
-                            False,
-                            action,
-                            "MANIFEST_INVALID",
-                            [],
-                            error=str(exc),
-                        )
-                    error, entries = _validate_existing_manifest(
-                        project_root, manifest, require_files=True
-                    )
+                    return _stage_locked(project_root, manifest_path, index_path)
             except LockUnavailable:
                 return _result(False, action, "MANIFEST_LOCKED", [])
-            if error:
-                return _result(False, action, error, [])
-            rels = list(entries)
-
-            before_cached_result = _git(
-                project_root, "diff", "--cached", "--name-only"
-            )
-            if before_cached_result.returncode != 0:
-                return _result(False, action, "CACHED_DIFF_FAILED", rels)
-            before_cached = set(before_cached_result.stdout.splitlines())
-
-            handle, temp_name = tempfile.mkstemp(
-                prefix=f".{index_path.name}.test-guard.", dir=index_path.parent
-            )
-            os.close(handle)
-            temp_index = Path(temp_name)
-            temp_index.unlink(missing_ok=True)
-            try:
-                if index_path.is_file():
-                    shutil.copy2(index_path, temp_index)
-                added = _git(
-                    project_root, "add", "-f", "--", *rels, index_file=temp_index
-                )
-                if added.returncode != 0:
-                    return _result(
-                        False,
-                        action,
-                        "GIT_ADD_FAILED",
-                        rels,
-                        error=added.stderr.strip(),
-                    )
-                cached = _git(
-                    project_root,
-                    "diff",
-                    "--cached",
-                    "--name-only",
-                    index_file=temp_index,
-                )
-                if cached.returncode != 0:
-                    return _result(False, action, "CACHED_DIFF_FAILED", rels)
-                after_cached = set(cached.stdout.splitlines())
-                missing = [rel for rel in rels if rel not in after_cached]
-                unexpected = sorted((after_cached - before_cached) - set(rels))
-                if missing or unexpected:
-                    return _result(
-                        False,
-                        action,
-                        "CACHED_DIFF_MISMATCH",
-                        missing or unexpected,
-                    )
-                os.replace(temp_index, index_path)
-                return _result(True, action, "STAGED", rels)
-            finally:
-                temp_index.unlink(missing_ok=True)
     except LockUnavailable:
         return _result(False, action, "INDEX_LOCKED", [])
 
