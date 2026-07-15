@@ -799,7 +799,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 
 ## 执行日志记录
 
-`/harness-run` 只向 `events.ndjson` 追加事件（schema_version 2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
+`/harness-run` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
 
 关键 `note` / `decision` 须覆盖：测试基础设施探测（CHECKING→结论）、预存变更、run-tdd-protocol RED 类型、变更簇 RED/GREEN、批量构建 exit code、关门检查 10 项、计划状态持久化路径。
 

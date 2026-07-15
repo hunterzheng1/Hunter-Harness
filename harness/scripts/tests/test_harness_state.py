@@ -149,6 +149,33 @@ class SnapshotCaptureTests(unittest.TestCase):
     def test_load_missing_snapshot_returns_none(self) -> None:
         self.assertIsNone(hst.load_snapshot(self.change))
 
+    def test_capture_current_state_reuses_unchanged_segments(self) -> None:
+        first, first_changed = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+        second, second_changed = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+        self.assertIn("profile", first_changed)
+        self.assertEqual(second_changed, [])
+        self.assertEqual(
+            first["segments"]["profile"]["capturedAt"],
+            second["segments"]["profile"]["capturedAt"],
+        )
+
+    def test_discovery_without_git_keeps_code_segment_empty(self) -> None:
+        segments = hst.discover_segment_files(
+            self.project, self.change, base="missing-base", head="HEAD"
+        )
+        self.assertIn(self._profile_file(), segments["profile"])
+        self.assertEqual(segments["code"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

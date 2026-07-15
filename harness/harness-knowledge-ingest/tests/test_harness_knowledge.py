@@ -1676,7 +1676,12 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             )
             conflict_a["lifecycle"]["conflictsWith"] = [conflict_b["id"]]
             conflict_b["lifecycle"]["conflictsWith"] = [conflict_a["id"]]
-            for entry in [candidate, conflict_a, conflict_b]:
+            deferred = self._minimal_entry(
+                "sample.judge.decision.defer0001",
+                title="defer candidate",
+                body="Review this candidate after related sources stabilize.",
+            )
+            for entry in [candidate, conflict_a, conflict_b, deferred]:
                 self._write_entry(knowledge, entry)
             module = self._import_harness_knowledge()
             module.refresh_outputs_from_entry_files(project, knowledge)
@@ -1716,6 +1721,12 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
                             "reason": "B 取代 A",
                         },
                         {"id": conflict_b["id"], "action": "keep-conflict", "reason": "保留观察"},
+                        {
+                            "id": deferred["id"],
+                            "action": "defer",
+                            "reason": "wait for source changes",
+                            "reviewAfter": "2099-01-01",
+                        },
                     ]
                 },
             )
@@ -1729,11 +1740,12 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             )
             self.assertEqual(applied.returncode, 0, applied.stderr)
             apply_payload = json.loads(applied.stdout)
-            self.assertEqual(apply_payload["applied"], 3)
+            self.assertEqual(apply_payload["applied"], 4)
+            self.assertTrue(Path(apply_payload["decisionsLedger"]).exists())
             judgement_path = Path(apply_payload["judgement"])
             self.assertTrue(judgement_path.exists())
             judgement = json.loads(judgement_path.read_text(encoding="utf-8"))
-            self.assertEqual(len(judgement["applied"]), 3)
+            self.assertEqual(len(judgement["applied"]), 4)
             self.assertEqual(judgement["applied"][0]["before"]["status"], "candidate")
 
             promoted = json.loads(
@@ -1745,6 +1757,31 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             )
             self.assertEqual(promoted["status"], "active")
 
+            rebuilt = self.run_cli("ingest", "--project", str(project))
+            self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+            kept_conflict = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (knowledge / "entries" / "conflicted").glob("*.json")
+                if json.loads(path.read_text(encoding="utf-8")).get("id") == conflict_b["id"]
+            ]
+            self.assertEqual(kept_conflict[0]["lifecycle"]["judgeAction"], "keep-conflict")
+            deferred_entries = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (knowledge / "entries" / "candidate").glob("*.json")
+                if json.loads(path.read_text(encoding="utf-8")).get("id") == deferred["id"]
+            ]
+            self.assertEqual(deferred_entries[0]["lifecycle"]["judgeAction"], "defer")
+            exported_again = self.run_cli(
+                "judge", "--project", str(project),
+                "--export", str(Path(tmp) / "judge-export-again.json"), "--json",
+            )
+            self.assertEqual(exported_again.returncode, 0, exported_again.stderr)
+            pending = json.loads(exported_again.stdout)
+            self.assertFalse(any(
+                item.get("id") == deferred["id"]
+                for item in pending["promoteCandidates"]
+            ))
+
             rolled = self.run_cli(
                 "rollback",
                 "--project",
@@ -1755,7 +1792,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             )
             self.assertEqual(rolled.returncode, 0, rolled.stderr)
             rollback_payload = json.loads(rolled.stdout)
-            self.assertEqual(rollback_payload["restored"], 3)
+            self.assertEqual(rollback_payload["restored"], 4)
             restored_candidate = json.loads(
                 next(
                     path
@@ -1903,6 +1940,17 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertFalse((outbox / "pending" / f"{archive_id}.json").exists())
             self.assertFalse((outbox / "running" / f"{archive_id}.json").exists())
             self.assertTrue(any((outbox / state / f"{archive_id}.json").exists() for state in ("completed", "pending-judge")))
+
+    def test_maintain_drain_processes_pending_items_in_one_call(self) -> None:
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            self._enqueue_pending(project, "2026-06-30-ai-check-job")
+            self._enqueue_pending(project, "2026-07-01-ai-check-job")
+            result = hk.drain_maintenance_outbox(project)
+            self.assertTrue(result["ok"], msg=result)
+            self.assertEqual(result["processed"], 2)
+            self.assertEqual(len(result["results"]), 2)
 
     def test_maintain_failure_moves_item_to_failed_and_can_retry(self) -> None:
         from unittest import mock

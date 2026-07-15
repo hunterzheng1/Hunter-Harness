@@ -131,6 +131,13 @@ function makeAdapter(spec: {
       return projectBundleFiles(bundle, spec.skillsRoot, spec.agentsRoot);
     },
     contextIndex(context) {
+      if (spec.name === "codebuddy") {
+        return {
+          instructions: spec.instructions,
+          skills_root: spec.skillsRoot,
+          rules: codebuddyRulePaths(context)
+        };
+      }
       const rules: string[] = [];
       if (spec.rulesRoot !== null && spec.ruleExt !== null) {
         rules.push(`${spec.rulesRoot}/harness-general${spec.ruleExt}`);
@@ -148,6 +155,9 @@ function makeAdapter(spec: {
       const boundaries = [spec.skillsRoot];
       if (spec.agentsRoot !== null) boundaries.push(spec.agentsRoot);
       if (spec.rulesRoot !== null) boundaries.push(spec.rulesRoot);
+      if (spec.name === "codebuddy") {
+        boundaries.push(".codebuddy/.rules", ".codebuddy/rules");
+      }
       const top = spec.skillsRoot.split("/")[0];
       if (top !== undefined) boundaries.push(top);
       return boundaries;
@@ -202,6 +212,20 @@ export function getAdapter(name: HarnessAgent): HarnessAgentAdapter {
   return ADAPTERS[name];
 }
 
+function codebuddyRulePaths(context: AdapterContext): string[] {
+  const names = context.profile === "java"
+    ? ["harness-general", "harness-profile-java"]
+    : ["harness-general"];
+  const paths: string[] = [];
+  if (context.codebuddySurface !== "cli") {
+    paths.push(...names.map((name) => `.codebuddy/.rules/${name}.mdc`));
+  }
+  if (context.codebuddySurface !== "ide") {
+    paths.push(...names.map((name) => `.codebuddy/rules/${name}.md`));
+  }
+  return paths.sort((left, right) => left.localeCompare(right));
+}
+
 export function getAdapters(names: readonly HarnessAgent[]): HarnessAgentAdapter[] {
   return HARNESS_AGENT_ORDER.filter((n) => names.includes(n)).map(getAdapter);
 }
@@ -237,6 +261,19 @@ export function managedTargetsFor(
         "rules/harness-profile-java.mdc",
         ".cursor/rules/harness-profile-java.mdc",
         CURSOR_JAVA_RULES_CONTENT
+      ));
+    }
+  } else if (adapter.name === "codebuddy") {
+    for (const targetPath of codebuddyRulePaths(context)) {
+      const isMdc = targetPath.endsWith(".mdc");
+      const isJava = targetPath.includes("harness-profile-java");
+      const content = isJava
+        ? (isMdc ? CURSOR_JAVA_RULES_CONTENT : HARNESS_JAVA_RULES_CONTENT)
+        : (isMdc ? CURSOR_GENERAL_RULES_CONTENT : HARNESS_GENERAL_RULES_CONTENT);
+      records.push(ruleTarget(
+        `rules/${isJava ? "harness-profile-java" : "harness-general"}${isMdc ? ".mdc" : ".md"}`,
+        targetPath,
+        content
       ));
     }
   }

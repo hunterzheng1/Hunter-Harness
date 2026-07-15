@@ -43,7 +43,7 @@ disallowed-tools:
 
 ## Subagent 委派
 
-- **阶段 3 探索**：先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`；可用则委派，否则主会话探索；无效返回不 retry
+- **阶段 3 探索**：先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`；可用则委派，否则主会话探索且不 retry。`reasonCode=CUSTOM_AGENTS_UNSUPPORTED` 表示当前工具本身没有自定义 agent 能力，是正常的 inline 路径，控制台不得显示“harness-explorer subagent 不可用”类告警。
 - **阶段 7.5**：仅 `--adversarial`；先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-evaluator --json`；可用才委派到 `reports/plan-review/`
 
 ## Workflow 概要

@@ -786,6 +786,6 @@ python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCo
 
 ## 执行日志记录
 
-`/harness-test` 只向 `events.ndjson` 追加事件（schema_version 2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。Phase 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue` / `artifact`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
+`/harness-test` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。Phase 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue` / `artifact`，人类可读摘要放 `note`。事件类型与脚本用法见 [[../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 SKILL.md `## 执行日志`。
 
 关键 `note` / 事件须覆盖：0.1 命令执行模式、fallback 执行器、serviceState、凭证策略、单元测试复用、批量执行器、verification-ledger 写入、关门检查、API 状态（不得把 PARTIAL 写成 NOT_RUN）。

@@ -22,6 +22,7 @@ import { serializeCliResult, type CliResult } from "../output/json.js";
 
 export interface RefreshCommandOptions {
   agents?: string;
+  codebuddySurface?: string;
   profile?: string;
   nonInteractive?: boolean;
   yes?: boolean;
@@ -70,8 +71,17 @@ function refreshAgents(config: ProjectConfig): ReturnType<typeof sortHarnessAgen
   return agents.length > 0 ? agents : ["claude-code"];
 }
 
-function codebuddySurface(config: ProjectConfig): "both" | "ide" | "cli" {
-  return config.adapter_options?.codebuddy?.surface ?? "both";
+function codebuddySurface(
+  config: ProjectConfig,
+  override?: string
+): "both" | "ide" | "cli" {
+  const value = override ?? config.adapter_options?.codebuddy?.surface ?? "both";
+  if (value === "both" || value === "ide" || value === "cli") return value;
+  throw new InitConfigurationError(
+    "codebuddy surface 必须为 both、ide 或 cli",
+    3,
+    "CODEBUDDY_SURFACE_INVALID"
+  );
 }
 
 function summarize(result: RefreshResult): CliResult {
@@ -166,7 +176,7 @@ export async function runRefresh(
         resourcesRoot: dependencies.resourcesRoot,
         ...(targetProfile === undefined ? {} : { profile: targetProfile }),
         agents: targetAgents,
-        codebuddySurface: codebuddySurface(detection.config),
+        codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface),
         dryRun: true,
         forceManaged: options.forceManaged === true
       });
@@ -207,7 +217,7 @@ export async function runRefresh(
       resourcesRoot: dependencies.resourcesRoot,
       ...(targetProfile === undefined ? {} : { profile: targetProfile }),
       agents: targetAgents,
-      codebuddySurface: codebuddySurface(detection.config),
+      codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface),
       dryRun,
       forceManaged: options.forceManaged === true
     });

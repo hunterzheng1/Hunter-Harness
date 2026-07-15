@@ -4,7 +4,7 @@ Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。项目
 
 ## 快速安装
 
-要求：Node.js 24 或更高版本。
+要求：Node.js 22.12 或更高版本（已验证 22.17；不再要求 Node 24）。
 
 ```powershell
 mkdir my-project
@@ -29,10 +29,12 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 |---|---|---|---|---|
 | 项目指令 | `AGENTS.md` + `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` + `CODEBUDDY.md` |
 | Skills | `.claude/skills/` | `.agents/skills/` | `.cursor/skills/` | `.codebuddy/skills/` |
-| 项目规则 | `.claude/rules/*.md` | `AGENTS.md` | `.cursor/rules/*.mdc` | `CODEBUDDY.md` |
+| 项目规则 | `.claude/rules/*.md` | `AGENTS.md` | `.cursor/rules/*.mdc` | `CODEBUDDY.md` + IDE `.codebuddy/.rules/*.mdc` + CLI `.codebuddy/rules/*.md` |
 | 自定义 Agent | `.claude/agents/` | 不生成 | 不生成 | `.codebuddy/agents/` |
 
 已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。
+
+选择 CodeBuddy 时，CLI 会询问是否把已有的自定义 `.claude/rules` 非破坏性复制到所选 CodeBuddy surface；目标已存在时保留目标，疑似包含 token、密码或私钥的规则不复制。项目已有 `.codegraph/` 且 `.mcp.json` 未配置 CodeGraph 时，也会询问是否合并项目级 MCP 配置。未选择 CodeBuddy 时，这两项都不读取、不修改。
 
 ## 项目级 CLI
 

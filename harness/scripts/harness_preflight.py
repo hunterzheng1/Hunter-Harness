@@ -313,7 +313,23 @@ def _parse_scalar(val: str) -> Any:
     return val
 
 
-def cmd_check_agents(skills_root: Path, agent: str) -> dict[str, Any]:
+def _resolve_agents_root(skills_root: Path, agents_root: Path | None) -> tuple[Path | None, str | None]:
+    """Resolve agent definitions without confusing a skills root with its sibling."""
+    if agents_root is not None:
+        return agents_root.resolve(), None
+    if skills_root.name == "skills" and skills_root.parent.name in (".claude", ".codebuddy"):
+        return (skills_root.parent / "agents").resolve(), None
+    if skills_root.name == "skills" and skills_root.parent.name in (".agents", ".cursor"):
+        return None, "CUSTOM_AGENTS_UNSUPPORTED"
+    return (skills_root / "agents").resolve(), None
+
+
+def cmd_check_agents(
+    skills_root: Path,
+    agent: str,
+    *,
+    agents_root: Path | None = None,
+) -> dict[str, Any]:
     skills_root = skills_root.resolve()
     agent_name = agent.strip()
     if not agent_name:
@@ -325,9 +341,23 @@ def cmd_check_agents(skills_root: Path, agent: str) -> dict[str, Any]:
             "reason": "agent name is empty",
         }
 
+    resolved_agents_root, capability_error = _resolve_agents_root(skills_root, agents_root)
+    if capability_error is not None:
+        return {
+            "ok": True,
+            "action": "check-agents",
+            "agent": agent_name,
+            "usable": False,
+            "definitionValid": False,
+            "runtimeSupported": False,
+            "reasonCode": capability_error,
+            "reason": "current adapter runtime does not support custom agent definitions; use main-session fallback",
+        }
+
+    assert resolved_agents_root is not None
     # Accept bare name or with .md
     filename = agent_name if agent_name.endswith(".md") else f"{agent_name}.md"
-    agent_path = skills_root / "agents" / filename
+    agent_path = resolved_agents_root / filename
 
     if not agent_path.is_file():
         return {
@@ -335,7 +365,11 @@ def cmd_check_agents(skills_root: Path, agent: str) -> dict[str, Any]:
             "action": "check-agents",
             "agent": agent_name,
             "path": str(agent_path),
+            "agentsRoot": str(resolved_agents_root),
             "usable": False,
+            "definitionValid": False,
+            "runtimeSupported": True,
+            "reasonCode": "AGENT_DEFINITION_NOT_FOUND",
             "reason": f"agent file not found: {agent_path}",
         }
 
@@ -390,7 +424,11 @@ def cmd_check_agents(skills_root: Path, agent: str) -> dict[str, Any]:
         "action": "check-agents",
         "agent": agent_name,
         "path": str(agent_path),
+        "agentsRoot": str(resolved_agents_root),
         "usable": True,
+        "definitionValid": True,
+        "runtimeSupported": True,
+        "reasonCode": "READY",
         "reason": "agent file exists; frontmatter parsed; tools declared",
         "name": name_field,
         "tools": tools,
@@ -431,6 +469,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_agents = sub.add_parser("check-agents", help="Validate agent definition usability")
     p_agents.add_argument("--skills-root", required=True, type=Path)
+    p_agents.add_argument("--agents-root", type=Path)
     p_agents.add_argument("--agent", required=True)
     p_agents.add_argument("--json", action="store_true")
 
@@ -459,7 +498,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return emit_json(result, ok=bool(result.get("ok", False)))
     if args.command == "check-agents":
-        result = cmd_check_agents(args.skills_root, args.agent)
+        result = cmd_check_agents(
+            args.skills_root,
+            args.agent,
+            agents_root=args.agents_root,
+        )
         return emit_json(result, ok=True)
 
     parser.error(f"unknown command: {args.command}")

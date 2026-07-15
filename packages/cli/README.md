@@ -21,8 +21,8 @@ npx hunter-harness update
 | Claude Code | `.claude/skills/` | `.claude/rules/*.md` | `.claude/agents/` |
 | Codex | `.agents/skills/` | `AGENTS.md` | 不生成 |
 | Cursor | `.cursor/skills/` | `.cursor/rules/*.mdc` | 不生成 |
-| CodeBuddy `both` | `.codebuddy/skills/` | `CODEBUDDY.md` | `.codebuddy/agents/` |
+| CodeBuddy `both` | `.codebuddy/skills/` | `CODEBUDDY.md` + `.codebuddy/.rules/*.mdc` + `.codebuddy/rules/*.md` | `.codebuddy/agents/` |
 
-需要 Node.js 24 或更高版本。token 只通过 `--token-env` 指定的环境变量读取，不要写入项目文件或命令参数。
+需要 Node.js 22.12 或更高版本。选择 CodeBuddy 时，可将已有 `.claude/rules` 非破坏性同步到 CodeBuddy，并在检测到 `.codegraph/` 时合并项目级 `.mcp.json`；疑似凭据内容会跳过。token 只通过 `--token-env` 指定的环境变量读取，不要写入项目文件或命令参数。
 
-本包当前为 `UNLICENSED`。参考迁移资产的上游 license、commit/tag 和允许再分发范围确认前，不得对外发布。
+本包使用 MIT License。

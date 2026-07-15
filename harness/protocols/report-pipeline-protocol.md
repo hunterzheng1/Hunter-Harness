@@ -43,11 +43,11 @@ python <skills-root>/scripts/harness_events.py append --change-dir ".harness/cha
 
 `append` 写入契约（Task 4 §6.1）：普通 append = 加锁 -> 追加一行 -> fsync -> 解锁，**不 load 历史、不渲染**（O(1)，跨进程锁 `events.ndjson.lock`，UUID 用完整 `uuid4().hex`）；仅 `--type phase.end` append 成功后渲染一次 `logs/execution-log.md`；显式 `harness_events.py render` 随时从完整 events 重建；`harness_archive.py finalize` 在 collect 前强制 render 一次。人类可读摘要（触发指令、降级原因、阶段结论）写入事件的 `note` 字段；阶段开始/结束、命令、验证、artifact、问题、决策各写对应 `type` 事件。旧 archive 缺少 events 可回放兼容；新变更不得以 execution-log 已存在为理由跳过 events。
 
-基础事件结构（schema_version 2）：
+基础事件结构（schema_version 3；兼容读取 v1/v2）：
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "id": "evt-...",
   "timestamp": "2026-07-02T00:00:00.000Z",
   "phase": "run",
@@ -55,6 +55,13 @@ python <skills-root>/scripts/harness_events.py append --change-dir ".harness/cha
   "command": "npm test",
   "exit_code": 0,
   "duration_ms": 42100,
+  "run_id": "run-...",
+  "attempt": 1,
+  "executor_tool": "codex",
+  "executor_agent": "main",
+  "executor_model": "gpt-5",
+  "handoff_from_tool": "claude-code",
+  "handoff_reason": "continue implementation",
   "note": "可选：触发指令、降级原因、阶段摘要"
 }
 ```
@@ -64,7 +71,7 @@ python <skills-root>/scripts/harness_events.py append --change-dir ".harness/cha
 | type | 必填/常用字段 | 用途 |
 |---|---|---|
 | `phase.start` | phase, timestamp | 阶段开始 |
-| `phase.end` | phase, timestamp | 阶段结束，计算耗时 |
+| `phase.end` | phase, timestamp, status | 阶段结束并记录 `OK/WARN/FAIL/BLOCKED`；计算当前 attempt 耗时 |
 | `command` | command, exit_code, duration_ms | 命令事实 |
 | `verification` | name, status, command | 验证事实 |
 | `artifact` | path, kind | 报告、包、manifest 等产物 |
@@ -79,7 +86,7 @@ summary-data 必须保留原 archive final report 维度，并增加事件层摘
 {
   "schemaVersion": "2.2",
   "reportPipeline": {
-    "schema_version": 2,
+    "schema_version": 1,
     "generated_at": "2026-07-02T00:00:00.000Z",
     "event_count": 0,
     "sources": ["events.ndjson", "evidence/verification-ledger.json"],

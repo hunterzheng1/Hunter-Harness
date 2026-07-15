@@ -378,6 +378,126 @@ class MoveFailureTests(unittest.TestCase):
         self.assertEqual(leftovers, [])
 
 
+class ArchiveFactDerivationTests(unittest.TestCase):
+    def test_business_goal_skips_frontmatter_and_generic_plan_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            _write(
+                change / "plans" / "demo-plan.md",
+                "---\nchange-name: demo\nstatus: approved\n---\n\n"
+                "# 任务计划 — demo\n\n> 变更范围：新增年度预算清算场景\n",
+            )
+            self.assertEqual(
+                ha._business_goal_from_sources(change, []),
+                "新增年度预算清算场景",
+            )
+
+    def test_final_commit_scope_keeps_all_task_commits_and_ignores_later_commits(self) -> None:
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
+            _write(project / "base.txt", "base\n")
+            subprocess.run(["git", "add", "base.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-m", "base"], cwd=project, check=True, capture_output=True)
+            base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+            _write(project / "feature.txt", "feature\n")
+            subprocess.run(["git", "add", "feature.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-m", "feature-1"], cwd=project, check=True, capture_output=True)
+            _write(project / "feature-2.txt", "feature 2\n")
+            subprocess.run(["git", "add", "feature-2.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-m", "feature-2"], cwd=project, check=True, capture_output=True)
+            feature = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+            _write(project / "unrelated.txt", "later\n")
+            subprocess.run(["git", "add", "unrelated.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-m", "later"], cwd=project, check=True, capture_output=True)
+
+            change = project / ".harness" / "changes" / "fact-demo"
+            _write(change / "plans" / "fact-demo-plan.md", "# Plan\n\ngoal: isolate the task commit\n")
+            _write_json(change / "evidence" / "verification-ledger.json", {
+                "baseCommit": base,
+                "finalCommit": feature,
+                "validations": {
+                    "unitTest": {"status": "OK", "testsRun": 27, "failures": 0, "errors": 0},
+                    "apiTest": {"status": "BLOCKED", "blocked": 1},
+                },
+            })
+            events = [
+                {"schema_version": 3, "id": "1", "timestamp": "2026-07-15T10:00:00+08:00",
+                 "phase": "test", "type": "phase.start", "attempt": 1, "executor_tool": "claude-code"},
+                {"schema_version": 3, "id": "2", "timestamp": "2026-07-15T10:01:00+08:00",
+                 "phase": "test", "type": "phase.end", "attempt": 1, "status": "BLOCKED"},
+                {"schema_version": 3, "id": "3", "timestamp": "2026-07-15T10:02:00+08:00",
+                 "phase": "submit", "type": "phase.start", "attempt": 1, "executor_tool": "codex",
+                 "handoff_from_tool": "claude-code"},
+                {"schema_version": 3, "id": "4", "timestamp": "2026-07-15T10:03:00+08:00",
+                 "phase": "submit", "type": "phase.end", "attempt": 1, "status": "OK"},
+            ]
+            _write(
+                change / "events.ndjson",
+                "".join(json.dumps(event) + "\n" for event in events),
+            )
+
+            summary = ha.collect_summary_data(change, write=False)
+            self.assertEqual(summary["finalCommit"], feature)
+            self.assertEqual(summary["businessGoal"], "isolate the task commit")
+            self.assertEqual(summary["diffStat"]["filesChanged"], 2)
+            self.assertEqual(
+                [item["path"] for item in summary["changedFiles"]],
+                ["feature-2.txt", "feature.txt"],
+            )
+            self.assertEqual(summary["verification"]["unitTests"]["run"], 27)
+            self.assertEqual(summary["stageStatus"]["test"], "BLOCKED")
+            self.assertEqual(summary["finalStatus"], "CONDITIONAL_OK")
+            self.assertEqual(summary["timeline"][1]["handoffFromTool"], "claude-code")
+
+    def test_node_report_is_compact_utf8_and_keeps_full_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / ".harness" / "changes" / "report-demo"
+            summary_path = change / "reports" / "final" / "summary-data.json"
+            full_hash = "9d05b19a90f1e3cd1e13057bc12f3fead2c00659"
+            _write_json(summary_path, {
+                "schemaVersion": "2.2",
+                "changeName": "report-demo",
+                "businessGoal": "验证跨工具执行报告",
+                "finalStatus": "CONDITIONAL_OK",
+                "finalCommit": full_hash,
+                "baseCommit": "a" * 40,
+                "finalCommitBranch": "origin/main",
+                "diffStat": {"filesChanged": 1, "insertions": 3, "deletions": 1, "range": "a..b"},
+                "stageStatus": {"plan": "OK", "test": "BLOCKED"},
+                "durations": {"totalLabel": "3 分钟", "totalMinutes": 3, "stages": []},
+                "verification": {
+                    "unitTests": {"status": "OK", "run": 2, "failures": 0, "errors": 0},
+                    "apiTests": {"status": "BLOCKED", "total": 1, "passed": 0, "blocked": 1},
+                    "dbCompatibility": "NOT_RUN",
+                },
+                "changedFiles": [{"path": "src/demo.ts", "insertions": 3, "deletions": 1}],
+                "knownRisks": [{"message": "API 环境未启动"}],
+                "manualActions": [{"action": "启动环境后补测"}],
+                "timeline": [{"phase": "run", "attempt": 1, "status": "OK", "executorTool": "codex"}],
+                "archiveManifest": {"checksumStatus": "OK", "totalArchiveFiles": 8},
+                "reportPipeline": {
+                    "sources": ["events.ndjson"],
+                    "commands": [{"phase": "test", "command": "npm test", "exit_code": 0}],
+                },
+            })
+            result = ha.render_final_summary(change, summary_path)
+            self.assertTrue(result["ok"], msg=result)
+            self.assertEqual(result["renderer"], "node", msg=result)
+            html = Path(result["out_path"]).read_text(encoding="utf-8")
+            self.assertIn("HARNESS EXECUTION REPORT", html)
+            self.assertIn("执行时间线与工具交接", html)
+            self.assertIn("<details>", html)
+            self.assertIn(full_hash[:10], html)
+            self.assertIn(full_hash, html)
+            self.assertIn("npm test", html)
+            self.assertNotIn("鍙", html)
+
+
 class ReplayOldArchiveTests(unittest.TestCase):
     def test_replay_fixture_golden_fields(self) -> None:
         if not FIXTURE_ARCHIVE.is_dir():

@@ -95,20 +95,37 @@ describe("agent adapters", () => {
     expect(text).toContain("alwaysApply: true");
   });
 
-  it("codebuddy both surface projects skills+agents and no rules files", () => {
+  it.each([
+    ["both", [
+      ".codebuddy/.rules/harness-general.mdc",
+      ".codebuddy/.rules/harness-profile-java.mdc",
+      ".codebuddy/rules/harness-general.md",
+      ".codebuddy/rules/harness-profile-java.md"
+    ]],
+    ["ide", [
+      ".codebuddy/.rules/harness-general.mdc",
+      ".codebuddy/.rules/harness-profile-java.mdc"
+    ]],
+    ["cli", [
+      ".codebuddy/rules/harness-general.md",
+      ".codebuddy/rules/harness-profile-java.md"
+    ]]
+  ] as const)("codebuddy %s surface emits the matching managed rules", (surface, rules) => {
     const adapter = getAdapter("codebuddy");
-    expect(adapter.rulesRoot).toBeNull();
     const bundle = syntheticBundle("codebuddy", [
       { path: "agents/demo.md", bytes: new TextEncoder().encode("a") },
       { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
     ]);
     const managed = managedTargetsFor(adapter, bundle, {
-      profile: "general", codebuddySurface: "both"
+      profile: "java", codebuddySurface: surface
     });
-    expect(managed.map((t) => t.target_path)).toEqual([
-      ".codebuddy/agents/demo.md",
-      ".codebuddy/skills/harness-demo/SKILL.md"
-    ]);
+    expect(managed.map((t) => t.target_path).filter((path) => path.includes("rules/")))
+      .toEqual(rules);
+    expect(managed.map((t) => t.target_path)).toEqual(expect.arrayContaining([
+      ".codebuddy/agents/demo.md", ".codebuddy/skills/harness-demo/SKILL.md"
+    ]));
+    expect(adapter.contextIndex({ profile: "java", codebuddySurface: surface }).rules)
+      .toEqual(rules);
   });
 
   it("pruneBoundaries stay inside own root", () => {

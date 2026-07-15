@@ -151,7 +151,8 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "agents", "harness-reviewer.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "settings.json"))).toBe(false);
-    expect(await exists(join(root, ".codebuddy", "rules"))).toBe(false);
+    expect(await exists(join(root, ".codebuddy", ".rules", "harness-general.mdc"))).toBe(true);
+    expect(await exists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
   });
 
   it("installs all four agents with shared AGENTS block, context v2, state v4", async () => {

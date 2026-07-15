@@ -57,7 +57,7 @@ disallowed-tools:
 <!-- @section-id review.delegate -->
 ### 2. 委派 harness-reviewer
 
-先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。`usable=false` → **直接主会话审查**，记 `decision` 事件，**不委派**。`usable=true` 时用 Agent spawn `harness-reviewer`（只读, 6 维度）。返回空 / 无报告正文 → **不 retry**，降级主会话审查。
+先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。`usable=false` → **直接主会话审查**，记 `decision` 事件，**不委派**。`reasonCode=CUSTOM_AGENTS_UNSUPPORTED` 是当前工具没有自定义 agent 能力的正常 inline 路径，不显示缺失告警。`usable=true` 时用 Agent spawn `harness-reviewer`（只读, 6 维度）。返回空 / 无报告正文 → **不 retry**，降级主会话审查。
 
 3. **持久化报告（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`。未 Write → 🟡WARN，不得宣称 review 完成。
 4. **生成修复反馈（原生协议）** — 若报告存在 RED/YELLOW 问题，执行 `protocols.md` 的 `review-fixback-protocol`，将问题转化为结构化 fixback 清单并落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`。若无 RED/YELLOW，记录 `review-fixback-protocol: skipped(no findings)`。不调用 Superpowers `receiving-code-review`，也不记录外部 skill 降级。

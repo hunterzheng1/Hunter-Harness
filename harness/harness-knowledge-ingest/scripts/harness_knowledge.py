@@ -776,13 +776,14 @@ def write_cached_archive_entries(
 
 def load_preserved_entries(knowledge: Path) -> list[dict[str, Any]]:
     active_entries = load_entries_from_dir(knowledge / "entries" / "active")
-    demoted_entries = [
+    manually_decided_entries = [
         entry
-        for status in ["candidate", "stale"]
+        for status in ["candidate", "stale", "superseded", "conflicted"]
         for entry in load_entries_from_dir(knowledge / "entries" / status)
         if entry.get("lifecycle", {}).get("demotedAt")
+        or entry.get("lifecycle", {}).get("judgeAction")
     ]
-    return active_entries + demoted_entries
+    return active_entries + manually_decided_entries
 
 
 def combine_generated_with_preserved(knowledge: Path, generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3367,7 +3368,7 @@ def render_entry_for_context(entry: dict[str, Any], include_stale: bool = False)
 NEAR_DUPLICATE_THRESHOLD = 0.88
 AUTO_SUPERSEDE_SIMILARITY = 0.75
 AUTO_SUPERSEDE_WEAK_SIMILARITY = 0.55
-JUDGE_ACTIONS = {"promote", "drop", "supersede", "keep-conflict"}
+JUDGE_ACTIONS = {"promote", "drop", "supersede", "keep-conflict", "defer"}
 ENTRY_STATUSES = {"candidate", "active", "stale", "superseded", "conflicted"}
 
 
@@ -3829,6 +3830,8 @@ def judge_export(project: Path) -> dict[str, Any]:
     for entry in entries:
         if entry.get("status") != "conflicted":
             continue
+        if entry.get("lifecycle", {}).get("judgeAction") in {"keep-conflict", "defer"}:
+            continue
         for other_id in entry.get("lifecycle", {}).get("conflictsWith") or []:
             pair = tuple(sorted([entry["id"], str(other_id)]))
             if pair in seen_pairs:
@@ -3878,6 +3881,10 @@ def judge_export(project: Path) -> dict[str, Any]:
     for entry in entries:
         if entry.get("status") != "candidate":
             continue
+        if entry.get("lifecycle", {}).get("judgeAction") == "defer":
+            review_after = str(entry.get("lifecycle", {}).get("reviewAfter") or "")
+            if not review_after or review_after > dt.date.today().isoformat():
+                continue
         promote_candidates.append(
             {
                 "kind": "promote-candidate",
@@ -3984,6 +3991,18 @@ def apply_judge_decision(
         relocate_entry_file(knowledge, entry, source_path)
         path_by_id[entry["id"]] = knowledge / "entries" / "conflicted" / entry_filename(entry)
         after_status = "conflicted"
+    elif action == "defer":
+        lifecycle = entry.setdefault("lifecycle", {})
+        lifecycle["judgeAction"] = action
+        lifecycle["judgeReason"] = reason
+        lifecycle["deferredAt"] = now_iso()
+        lifecycle["reviewAfter"] = decision.get("reviewAfter")
+        lifecycle["lastCheckedAt"] = now_iso()
+        relocate_entry_file(knowledge, entry, source_path)
+        path_by_id[entry["id"]] = (
+            knowledge / "entries" / str(entry.get("status") or "candidate") / entry_filename(entry)
+        )
+        after_status = str(entry.get("status") or "candidate")
     else:
         raise ValueError(f"unsupported judge action: {action}")
 
@@ -3995,6 +4014,35 @@ def apply_judge_decision(
         "after": {"status": after_status, "supersededBy": entry.get("lifecycle", {}).get("supersededBy")},
         "supersededBy": decision.get("supersededBy"),
     }
+
+
+def persist_judge_decisions(knowledge: Path, applied: list[dict[str, Any]]) -> Path:
+    """Keep one durable latest decision per entry independently of generated reports."""
+    path = knowledge / "judgements" / "decisions.json"
+    current: dict[str, Any] = {"schemaVersion": 1, "decisions": {}}
+    if path.exists():
+        try:
+            loaded = read_json(path)
+            if isinstance(loaded, dict) and isinstance(loaded.get("decisions"), dict):
+                current = loaded
+        except (OSError, json.JSONDecodeError):
+            pass
+    decisions = dict(current.get("decisions") or {})
+    for record in applied:
+        decisions[str(record["id"])] = {
+            "id": record["id"],
+            "action": record["action"],
+            "reason": record.get("reason") or "",
+            "supersededBy": record.get("supersededBy"),
+            "status": record.get("after", {}).get("status"),
+            "decidedAt": now_iso(),
+        }
+    write_json(path, {
+        "schemaVersion": 1,
+        "updatedAt": now_iso(),
+        "decisions": dict(sorted(decisions.items())),
+    })
+    return path
 
 
 def judge_apply(project: Path, decisions_path: Path, force: bool = False) -> dict[str, Any]:
@@ -4051,11 +4099,13 @@ def judge_apply(project: Path, decisions_path: Path, force: bool = False) -> dic
     }
     judgement_path = knowledge / "reports" / f"judgements-{timestamp()}.json"
     write_json(judgement_path, judgement)
+    decisions_ledger = persist_judge_decisions(knowledge, applied)
     index = refresh_outputs_from_entry_files(project, knowledge)
     return {
         "project": str(project),
         "generatedAt": judgement["generatedAt"],
         "judgement": str(judgement_path),
+        "decisionsLedger": str(decisions_ledger),
         "applied": len(applied),
         "errors": errors,
         "stats": index.get("stats", {}),
@@ -4262,6 +4312,26 @@ def maintain_knowledge(project: Path, archive_id: str) -> dict[str, Any]:
         }
 
 
+def drain_maintenance_outbox(project: Path, limit: int = 50) -> dict[str, Any]:
+    """Advance all retryable maintenance items in one bounded invocation."""
+    project = project.resolve()
+    root = _outbox_root(project)
+    all_archive_ids = sorted({
+        path.stem
+        for status in ("pending", "failed")
+        for path in (root / status).glob("*.json")
+    })
+    archive_ids = all_archive_ids[:max(0, limit)]
+    results = [maintain_knowledge(project, archive_id) for archive_id in archive_ids]
+    return {
+        "ok": all(result.get("ok") for result in results),
+        "project": str(project),
+        "processed": len(results),
+        "remaining": max(0, len(all_archive_ids) - len(results)),
+        "results": results,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build and query Harness knowledge indexes.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -4378,7 +4448,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Single-process maintenance: claim outbox, ingest+dedupe, supersede, reverify, judge-export",
     )
     maintain.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
-    maintain.add_argument("--archive-id", required=True, help="Archive id of the outbox item to maintain")
+    maintain_target = maintain.add_mutually_exclusive_group(required=True)
+    maintain_target.add_argument("--archive-id", help="Archive id of the outbox item to maintain")
+    maintain_target.add_argument("--drain", action="store_true", help="Process all pending/failed items once")
+    maintain.add_argument("--limit", type=int, default=50, help="Maximum items processed by --drain")
     maintain.add_argument("--json", action="store_true", help="Emit machine-readable JSON (default behavior)")
 
     args = parser.parse_args(argv)
@@ -4468,7 +4541,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "maintain":
-        result = maintain_knowledge(Path(args.project), args.archive_id)
+        result = (
+            drain_maintenance_outbox(Path(args.project), args.limit)
+            if args.drain
+            else maintain_knowledge(Path(args.project), args.archive_id)
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok") else 1
     return 2

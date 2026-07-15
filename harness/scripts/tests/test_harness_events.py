@@ -162,7 +162,7 @@ class HarnessEventsTest(unittest.TestCase):
             self.assertEqual(code, 0, msg=err)
             payload = json.loads(out)
             self.assertTrue(payload["ok"])
-            self.assertEqual(payload["event"]["schema_version"], 2)
+            self.assertEqual(payload["event"]["schema_version"], 3)
 
         self.assertTrue(events_file.exists())
         raw = events_file.read_bytes()
@@ -344,6 +344,49 @@ class HarnessEventsTest(unittest.TestCase):
         self.assertEqual(code_r, 0, msg=err_r)
         log_text = (self.change_dir / "logs" / "execution-log.md").read_text(encoding="utf-8")
         self.assertIn("验证中文路径与备注", log_text)
+
+    def test_schema3_provenance_and_repeated_phase_attempts(self) -> None:
+        seed = [
+            {"schema_version": 3, "id": "1", "timestamp": "2026-07-10T10:00:00+08:00",
+             "phase": "test", "type": "phase.start", "attempt": 1,
+             "executor_tool": "claude-code", "run_id": "run-a", "note": ""},
+            {"schema_version": 3, "id": "2", "timestamp": "2026-07-10T10:01:00+08:00",
+             "phase": "test", "type": "phase.end", "attempt": 1, "status": "fail", "note": ""},
+            {"schema_version": 3, "id": "3", "timestamp": "2026-07-10T10:02:00+08:00",
+             "phase": "test", "type": "phase.start", "attempt": 2,
+             "executor_tool": "codex", "handoff_from_tool": "claude-code", "note": ""},
+            {"schema_version": 3, "id": "4", "timestamp": "2026-07-10T10:05:00+08:00",
+             "phase": "test", "type": "phase.end", "attempt": 2, "status": "ok", "note": ""},
+        ]
+        events_file = self.change_dir / "events.ndjson"
+        events_file.write_text(
+            "".join(json.dumps(event) + "\n" for event in seed), encoding="utf-8"
+        )
+        summary = he.build_summary(self.change_dir, he.load_events(events_file))
+        phase = summary["phases"]["test"]
+        self.assertEqual(phase["duration_ms"], 240_000)
+        self.assertEqual(phase["status"], "ok")
+        self.assertEqual([attempt["attempt"] for attempt in phase["attempts"]], [1, 2])
+        self.assertEqual(phase["attempts"][1]["executor_tool"], "codex")
+        rendered = he.render_execution_log(he.load_events(events_file))
+        self.assertIn("test（尝试 1）", rendered)
+        self.assertIn("test（尝试 2）", rendered)
+        self.assertIn("claude-code → codex", rendered)
+
+    def test_append_accepts_cross_tool_provenance(self) -> None:
+        code, out, err = self._run([
+            "append", "--change-dir", str(self.change_dir), "--json",
+            "--phase", "run", "--type", "phase.start", "--attempt", "2",
+            "--run-id", "run-2", "--executor-tool", "codex",
+            "--executor-agent", "main", "--handoff-from-tool", "claude-code",
+            "--handoff-reason", "continue implementation",
+        ])
+        self.assertEqual(code, 0, msg=err)
+        event = json.loads(out)["event"]
+        self.assertEqual(event["schema_version"], 3)
+        self.assertEqual(event["attempt"], 2)
+        self.assertEqual(event["executor_tool"], "codex")
+        self.assertEqual(event["handoff_from_tool"], "claude-code")
 
     def test_atomic_append_helper_writes_after_temp_success(self) -> None:
         target = self.change_dir / "events.ndjson"

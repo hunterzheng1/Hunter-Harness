@@ -223,8 +223,8 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "basis": dict(basis),
         },
         "package": {
-            "command": "mvn -f pom.xml package '-Dmaven.test.skip=true'",
-            "argvTemplate": ["mvn", "-f", "pom.xml", "package", "-Dmaven.test.skip=true"],
+            "command": "mvn -f pom.xml clean package '-Dmaven.test.skip=true'",
+            "argvTemplate": ["mvn", "-f", "pom.xml", "clean", "package", "-Dmaven.test.skip=true"],
             "scope": "module",
             "inputs": _cmd_inputs(reactor_modules, pom=True, main=True, test=True),
             "coverage": "package",

@@ -39,7 +39,7 @@ disallowed-tools:
 | 2 | CodeGraph 索引是否需重建 |
 | 3 | `.harness/codebase/map/` 是否过期 → 报告建议 `/harness-codebase-map` |
 | 3.5 | `harness_knowledge.py sync`；可 `sync --update`；失败不得假装可用。**知识闭环主入口**是 `/harness-knowledge-ingest auto`（含 Agent judge），sync 不重复列人工知识待办 |
-| 3.6 | 扫描 `.harness/knowledge/maintenance-outbox/{pending,failed}`；对每项运行 `harness_knowledge.py maintain --project . --archive-id <id> --json`（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/completed_rules_pending_judge） |
+| 3.6 | 单次运行 `harness_knowledge.py maintain --project . --drain --json`，有界推进全部 `.harness/knowledge/maintenance-outbox/{pending,failed}`；不得为每个条目重复启动 Python/重建索引（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/pending-judge） |
 | 4 | CLAUDE.md 完整性/行数 → 超限 AskUserQuestion 瘦身 |
 | 5 | AGENTS.md 与 CLAUDE.md 一致 |
 | 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；可选 `harness_deploy.py diff` 检查已装 skill 是否过期 |

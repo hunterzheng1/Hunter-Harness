@@ -1,4 +1,5 @@
 import {
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -136,6 +137,33 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
   }, 90_000);
 
+  it("offers safe Claude rule sync and CodeGraph MCP when CodeBuddy is selected", async () => {
+    await mkdir(join(root, ".claude", "rules"), { recursive: true });
+    await mkdir(join(root, ".codegraph"), { recursive: true });
+    await writeFile(join(root, ".claude", "rules", "team.md"), "# Team rule\n");
+    const answers = ["1,4", "1", "", ""];
+    const questions: string[] = [];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+    expect(code).toBe(0);
+    expect(questions.some((question) => question.includes("Claude 自定义规则"))).toBe(true);
+    expect(questions.some((question) => question.includes("CodeGraph MCP"))).toBe(true);
+    expect(await readFile(join(root, ".codebuddy", ".rules", "team.mdc"), "utf8"))
+      .toContain("Team rule");
+    const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(mcp.mcpServers.codegraph).toBeDefined();
+  }, 90_000);
+
   it("non-interactive --agents all projects four agent roots", async () => {
     const code = await run([
       "--agents", "all", "--profile", "general", "--non-interactive", "--yes"
@@ -157,6 +185,8 @@ describe("hunter-harness initialization", () => {
     }
     expect(await pathExists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await pathExists(join(root, ".codebuddy", ".rules", "harness-general.mdc"))).toBe(true);
+    expect(await pathExists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
     expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
   }, 240_000);
 

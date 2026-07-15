@@ -92,4 +92,4 @@ powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-arch
 
 ## 执行日志记录
 
-归档只向 `events.ndjson` 追加事件（schema_version 2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染，禁止手工 Edit。事件类型与脚本用法见 SKILL.md `## 执行日志` 与 `../protocols/report-pipeline-protocol.md`。
+归档只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染，禁止手工 Edit。事件类型与脚本用法见 SKILL.md `## 执行日志` 与 `../protocols/report-pipeline-protocol.md`。

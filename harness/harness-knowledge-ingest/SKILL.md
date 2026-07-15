@@ -233,7 +233,7 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync 
 - 当前 `active` / `candidate` / `stale` 数量统计。
 - 产物路径（`index.json`、`index.sqlite`、`views/`、`reports/`）。
 - `lifecycle` 摘要：`validatorsApplied`、`candidateAutoPromoted`、`pendingAgentJudge` 等。
-- **已处理报告**（auto + judge 后）：promoted/dropped/superseded/kept/skipped 计数与 `reports/judge-decisions-*.json`、`judgements-*.json` 路径。
+- **已处理报告**（auto + judge 后）：promoted/dropped/superseded/kept/deferred/skipped 计数与 `reports/judge-decisions-*.json`、`judgements-*.json` 路径；人工判断还会追加到 `judgements/decisions.json`，后续 ingest 不得抹除。`defer` 必须带 `reviewAfter`，到期前不重复进入待判断清单。
 - 仅当 `upToDate=false` 时建议 `sync --update`；查询历史 → `/harness-knowledge-query`。**禁止**默认列出「请人工确认 N 条 candidate」待办。
 
 ## 渐进披露

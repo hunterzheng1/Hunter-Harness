@@ -2,7 +2,7 @@
 """Harness events.ndjson writer and execution-log renderer (D2).
 
 Subcommands:
-  append  — append one schema_version 2 event, then auto-render execution-log.md
+  append  — append one schema_version 3 event, then auto-render execution-log.md
   render  — full re-render of logs/execution-log.md from events.ndjson
   summary — phase durations, event counts, and issue list (JSON)
 
@@ -42,7 +42,7 @@ EVENT_TYPES = frozenset(
     }
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 HEADER_LINE = (
     "本文件由 harness_events.py 自动渲染，请勿手工编辑；事实源为 events.ndjson"
 )
@@ -62,6 +62,13 @@ OPTIONAL_FIELDS = (
     "message",
     "decision",
     "reason",
+    "run_id",
+    "attempt",
+    "executor_tool",
+    "executor_agent",
+    "executor_model",
+    "handoff_from_tool",
+    "handoff_reason",
 )
 
 
@@ -120,7 +127,7 @@ def duration_ms_between(start: Any, end: Any) -> int | None:
 
 
 def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize schema_version 1/2 events for rendering and summary."""
+    """Normalize schema_version 1/2/3 events for rendering and summary."""
     event = dict(raw)
     version = event.get("schema_version", 1)
     try:
@@ -273,6 +280,15 @@ def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dic
         if value is None:
             continue
         event[field] = value
+    environment_defaults = {
+        "run_id": "HUNTER_HARNESS_RUN_ID",
+        "executor_tool": "HUNTER_HARNESS_TOOL",
+        "executor_agent": "HUNTER_HARNESS_AGENT",
+        "executor_model": "HUNTER_HARNESS_MODEL",
+    }
+    for field, env_name in environment_defaults.items():
+        if field not in event and os.environ.get(env_name):
+            event[field] = os.environ[env_name]
     if "note" not in event:
         event["note"] = ""
     return event
@@ -333,6 +349,46 @@ def group_events_by_phase(events: list[dict[str, Any]]) -> list[tuple[str, list[
     return [(phase, buckets[phase]) for phase in order]
 
 
+def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Split repeated starts into attempts and flag legacy events written after end."""
+    attempts: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    next_attempt = 1
+    for event in phase_events:
+        if event.get("type") == "phase.start":
+            if current is not None:
+                current["warnings"].append("new phase.start before prior phase.end")
+                attempts.append(current)
+            raw_attempt = event.get("attempt")
+            attempt = raw_attempt if isinstance(raw_attempt, int) and raw_attempt > 0 else next_attempt
+            next_attempt = max(next_attempt, attempt + 1)
+            current = {"attempt": attempt, "events": [event], "warnings": []}
+            continue
+        if current is None:
+            if attempts:
+                prior_type = attempts[-1]["events"][-1].get("type")
+                attempts[-1]["events"].append(event)
+                if prior_type == "phase.end":
+                    attempts[-1]["warnings"].append("event recorded after phase.end")
+                continue
+            raw_attempt = event.get("attempt")
+            attempt = raw_attempt if isinstance(raw_attempt, int) and raw_attempt > 0 else next_attempt
+            next_attempt = max(next_attempt, attempt + 1)
+            current = {
+                "attempt": attempt,
+                "events": [event],
+                "warnings": ["missing phase.start"],
+            }
+        else:
+            current["events"].append(event)
+        if event.get("type") == "phase.end":
+            attempts.append(current)
+            current = None
+    if current is not None:
+        attempts.append(current)
+    return attempts
+
+
 def phase_start_time(phase_events: list[dict[str, Any]]) -> str:
     for event in phase_events:
         if event.get("type") == "phase.start":
@@ -352,7 +408,9 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
         elif etype == "phase.end":
             end_ts = event.get("timestamp")
     if start_ts and end_ts:
-        return duration_ms_between(start_ts, end_ts)
+        stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
+        effective_end = stamps[-1] if stamps else end_ts
+        return duration_ms_between(start_ts, effective_end)
     # Fallback: first to last timestamp in the phase bucket.
     stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
     if len(stamps) >= 2:
@@ -400,7 +458,15 @@ def render_event_line(event: dict[str, Any]) -> list[str]:
     if etype == "phase.start":
         note = str(event.get("note") or "").strip()
         suffix = f" — {note}" if note else ""
-        return [f"- phase.start @ {event.get('timestamp', '')}{suffix}"]
+        lines = [f"- phase.start @ {event.get('timestamp', '')}{suffix}"]
+        tool = str(event.get("executor_tool") or "").strip()
+        agent = str(event.get("executor_agent") or "").strip()
+        handoff = str(event.get("handoff_from_tool") or "").strip()
+        if handoff and tool:
+            lines.append(f"- 工具交接: {handoff} → {tool}")
+        elif tool:
+            lines.append(f"- 执行来源: {tool}" + (f" / {agent}" if agent else ""))
+        return lines
     if etype == "phase.end":
         note = str(event.get("note") or "").strip()
         suffix = f" — {note}" if note else ""
@@ -445,29 +511,34 @@ def render_execution_log(events: list[dict[str, Any]]) -> str:
         return "\n".join(lines)
 
     for phase, phase_events in group_events_by_phase(events):
-        start = phase_start_time(phase_events) or "—"
-        duration = phase_duration_ms(phase_events)
-        lines.append(f"## {phase} — {start}")
-        lines.append("")
-        if duration is not None:
-            lines.append(f"- 阶段耗时: {format_duration(duration)}")
-        # Collapse consecutive commands into one table.
-        buffer: list[dict[str, Any]] = []
+        attempts = split_phase_attempts(phase_events)
+        for attempt_record in attempts:
+            attempt_events = attempt_record["events"]
+            start = phase_start_time(attempt_events) or "—"
+            duration = phase_duration_ms(attempt_events)
+            label = f"{phase}（尝试 {attempt_record['attempt']}）" if len(attempts) > 1 else phase
+            lines.append(f"## {label} — {start}")
+            lines.append("")
+            if duration is not None:
+                lines.append(f"- 阶段耗时: {format_duration(duration)}")
+            for warning in attempt_record["warnings"]:
+                lines.append(f"- 生命周期警告: {warning}")
+            buffer: list[dict[str, Any]] = []
 
-        def flush_commands() -> None:
-            nonlocal buffer
-            if buffer:
-                lines.extend(render_command_block(buffer))
-                buffer = []
+            def flush_commands() -> None:
+                nonlocal buffer
+                if buffer:
+                    lines.extend(render_command_block(buffer))
+                    buffer = []
 
-        for event in phase_events:
-            if event.get("type") == "command":
-                buffer.append(event)
-                continue
+            for event in attempt_events:
+                if event.get("type") == "command":
+                    buffer.append(event)
+                    continue
+                flush_commands()
+                lines.extend(render_event_line(event))
             flush_commands()
-            lines.extend(render_event_line(event))
-        flush_commands()
-        lines.append("")
+            lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -485,21 +556,37 @@ def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, A
     issues: list[dict[str, Any]] = []
 
     for phase, phase_events in group_events_by_phase(events):
-        start_ts = None
-        end_ts = None
-        for event in phase_events:
-            if event.get("type") == "phase.start" and start_ts is None:
-                start_ts = event.get("timestamp")
-            elif event.get("type") == "phase.end":
-                end_ts = event.get("timestamp")
-        duration = None
-        if start_ts and end_ts:
-            duration = duration_ms_between(start_ts, end_ts)
+        attempt_records: list[dict[str, Any]] = []
+        for record in split_phase_attempts(phase_events):
+            attempt_events = record["events"]
+            starts = [e for e in attempt_events if e.get("type") == "phase.start"]
+            ends = [e for e in attempt_events if e.get("type") == "phase.end"]
+            start_ts = starts[0].get("timestamp") if starts else None
+            end_ts = ends[-1].get("timestamp") if ends else None
+            provenance = starts[0] if starts else (attempt_events[0] if attempt_events else {})
+            attempt_records.append({
+                "attempt": record["attempt"],
+                "event_count": len(attempt_events),
+                "started_at": start_ts,
+                "ended_at": end_ts,
+                "duration_ms": phase_duration_ms(attempt_events),
+                "status": ends[-1].get("status") if ends else None,
+                "run_id": provenance.get("run_id"),
+                "executor_tool": provenance.get("executor_tool"),
+                "executor_agent": provenance.get("executor_agent"),
+                "handoff_from_tool": provenance.get("handoff_from_tool"),
+                "warnings": record["warnings"],
+            })
+        durations = [a["duration_ms"] for a in attempt_records if a["duration_ms"] is not None]
+        first = attempt_records[0] if attempt_records else {}
+        last = attempt_records[-1] if attempt_records else {}
         phases[phase] = {
             "event_count": len(phase_events),
-            "started_at": start_ts,
-            "ended_at": end_ts,
-            "duration_ms": duration,
+            "started_at": first.get("started_at"),
+            "ended_at": last.get("ended_at"),
+            "duration_ms": sum(durations) if durations else None,
+            "status": last.get("status"),
+            "attempts": attempt_records,
         }
 
     for event in events:
@@ -649,6 +736,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_append.add_argument("--message", default=None)
     p_append.add_argument("--decision", default=None)
     p_append.add_argument("--reason", default=None)
+    p_append.add_argument("--run-id", default=None)
+    p_append.add_argument("--attempt", type=int, default=None)
+    p_append.add_argument("--executor-tool", default=None)
+    p_append.add_argument("--executor-agent", default=None)
+    p_append.add_argument("--executor-model", default=None)
+    p_append.add_argument("--handoff-from-tool", default=None)
+    p_append.add_argument("--handoff-reason", default=None)
     p_append.set_defaults(func=cmd_append)
 
     p_render = sub.add_parser(

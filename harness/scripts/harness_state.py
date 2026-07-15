@@ -12,9 +12,11 @@ Python 3.10+ stdlib only. UTF-8 without BOM. Windows path friendly.
 from __future__ import annotations
 
 import datetime as dt
+import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -177,3 +179,149 @@ def refresh_segments(
     refreshed["segments"] = refreshed_segments
     refreshed["generatedAt"] = now_iso()
     return refreshed
+
+
+def _git(project: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(project), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _existing_files(paths: list[Path]) -> list[str]:
+    return sorted({str(path.resolve()) for path in paths if path.is_file()})
+
+
+def discover_segment_files(
+    project: Path, change_dir: Path, *, base: str = "", head: str = "HEAD"
+) -> dict[str, list[str]]:
+    """Discover the compact inputs shared by plan/run/test/review/submit."""
+    project = project.resolve()
+    rules = [project / "AGENTS.md", project / "CLAUDE.md"]
+    for pattern in (
+        ".claude/rules/**/*",
+        ".cursor/rules/**/*",
+        ".codebuddy/rules/**/*",
+        ".codebuddy/.rules/**/*",
+    ):
+        rules.extend(project.glob(pattern))
+
+    profile = [
+        project / ".harness/config/build-profile.json",
+        project / ".harness/context-index.json",
+        project / "project.yaml",
+        project / "harness.json",
+    ]
+    codebase_map = list((project / ".harness/codebase/map").glob("**/*"))
+    knowledge = [
+        project / ".harness/knowledge/index.json",
+        project / ".harness/knowledge/status.json",
+        project / ".harness/knowledge/config.json",
+    ]
+    change_inputs: list[Path] = []
+    for folder in ("spec", "plans", "meta"):
+        change_inputs.extend((change_dir / folder).glob("**/*"))
+    change_inputs = [path for path in change_inputs if path != snapshot_path(change_dir)]
+
+    changed_names: list[str] = []
+    if base:
+        raw = _git(project, "diff", "--name-only", "--diff-filter=ACMRT", f"{base}..{head}")
+        changed_names = [line for line in raw.splitlines() if line.strip()]
+    code = [project / name for name in changed_names]
+    return {
+        "profile": _existing_files(profile),
+        "rules": _existing_files(rules),
+        "map": _existing_files(codebase_map),
+        "knowledge": _existing_files(knowledge),
+        "change": _existing_files(change_inputs),
+        "code": _existing_files(code),
+    }
+
+
+def capture_current_state(
+    *,
+    project: Path,
+    change_dir: Path,
+    change_name: str,
+    worktree_root: Path,
+    base: str = "",
+    head: str = "HEAD",
+) -> tuple[dict[str, Any], list[str]]:
+    resolved_head = _git(project, "rev-parse", head) or head
+    resolved_base = _git(project, "rev-parse", base) if base else ""
+    files = discover_segment_files(project, change_dir, base=resolved_base, head=resolved_head)
+    previous = load_snapshot(change_dir)
+    fresh = capture_snapshot(
+        change_dir,
+        change_name=change_name,
+        project=project,
+        worktree_root=worktree_root,
+        base=resolved_base,
+        head=resolved_head,
+        segment_files=files,
+    )
+    changed: list[str] = []
+    if previous:
+        old_segments = previous.get("segments") or {}
+        for name, segment in fresh["segments"].items():
+            old = old_segments.get(name)
+            if isinstance(old, dict) and old.get("fingerprint") == segment.get("fingerprint"):
+                segment["capturedAt"] = old.get("capturedAt", segment["capturedAt"])
+            else:
+                changed.append(name)
+    else:
+        changed = list(fresh["segments"])
+    write_snapshot(change_dir, fresh)
+    return fresh, changed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Capture reusable Harness state")
+    sub = parser.add_subparsers(dest="command", required=True)
+    capture = sub.add_parser("capture", help="capture or refresh changed segments")
+    capture.add_argument("--project", default=".")
+    capture.add_argument("--change-dir", required=True)
+    capture.add_argument("--change-name")
+    capture.add_argument("--worktree-root")
+    capture.add_argument("--base", default="")
+    capture.add_argument("--head", default="HEAD")
+    capture.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    project = Path(args.project).resolve()
+    change_dir = Path(args.change_dir).resolve()
+    name = args.change_name or change_dir.name
+    worktree = Path(args.worktree_root).resolve() if args.worktree_root else project
+    snapshot, changed = capture_current_state(
+        project=project,
+        change_dir=change_dir,
+        change_name=name,
+        worktree_root=worktree,
+        base=args.base,
+        head=args.head,
+    )
+    result = {
+        "ok": True,
+        "path": str(snapshot_path(change_dir)),
+        "changedSegments": changed,
+        "reusedSegments": sorted(set(snapshot["segments"]) - set(changed)),
+        "git": snapshot["git"],
+    }
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"state snapshot: {result['path']}")
+        print(f"changed: {', '.join(changed) if changed else 'none'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -19,6 +19,10 @@ import {
   type CliResult
 } from "../output/json.js";
 import {
+  applyCodeBuddySetup,
+  inspectCodeBuddySetup
+} from "../config/codebuddy-setup.js";
+import {
   detectProject,
   runRefresh,
   type RefreshCommandOptions
@@ -49,6 +53,54 @@ const AGENT_LABELS: Record<HarnessAgent, string> = {
   cursor: "Cursor",
   codebuddy: "CodeBuddy"
 };
+
+async function configureCodeBuddyExtras(
+  agents: readonly HarnessAgent[],
+  surface: "both" | "ide" | "cli",
+  options: ConfigureOptions,
+  dependencies: CommandDependencies
+): Promise<void> {
+  if (!agents.includes("codebuddy")) return;
+  const plan = await inspectCodeBuddySetup(dependencies.cwd);
+  let syncClaudeRules = false;
+  let configureCodeGraph = false;
+  if (plan.claudeRules.length > 0) {
+    syncClaudeRules = options.nonInteractive === true
+      ? options.yes === true
+      : /^(?:|y|yes)$/i.test((await dependencies.prompt(
+        `发现 ${plan.claudeRules.length} 个 Claude 自定义规则，是否复制到 CodeBuddy（保留源文件且不覆盖目标）？[Y/n]：`
+      )).trim());
+  }
+  if (plan.hasCodeGraphIndex && !plan.codeGraphConfigured) {
+    configureCodeGraph = options.nonInteractive === true
+      ? options.yes === true
+      : /^(?:|y|yes)$/i.test((await dependencies.prompt(
+        "检测到 .codegraph 索引，是否合并 CodeGraph MCP 到项目 .mcp.json？[Y/n]："
+      )).trim());
+  }
+  if (options.dryRun === true) {
+    if (syncClaudeRules || configureCodeGraph) {
+      dependencies.stdout("CodeBuddy 附加配置处于 dry-run，未写入规则或 .mcp.json。\n");
+    }
+    return;
+  }
+  const result = await applyCodeBuddySetup({
+    projectRoot: dependencies.cwd,
+    surface,
+    syncClaudeRules,
+    configureCodeGraph
+  });
+  if (result.copied.length > 0) {
+    dependencies.stdout(`已安全复制 ${result.copied.length} 个 CodeBuddy 规则文件。\n`);
+  }
+  if (result.skippedSensitive.length > 0) {
+    dependencies.stderr(
+      `检测到 ${result.skippedSensitive.length} 个疑似含凭据的 Claude 规则，已保留原处且未复制。\n`
+    );
+  }
+  if (result.mcpUpdated) dependencies.stdout("已合并 CodeGraph MCP 到 .mcp.json。\n");
+  for (const warning of result.warnings) dependencies.stderr(warning + "\n");
+}
 
 async function runFirstInstall(
   options: ConfigureOptions,
@@ -91,6 +143,12 @@ async function runFirstInstall(
       config,
       dryRun: options.dryRun === true
     });
+    await configureCodeBuddyExtras(
+      config.agents,
+      config.codebuddy_surface,
+      options,
+      dependencies
+    );
     const output: CliResult = {
       schema_version: 1,
       command: "configure",
@@ -138,24 +196,37 @@ async function runFirstInstall(
 async function runExistingProject(
   options: ConfigureOptions,
   dependencies: CommandDependencies,
-  currentProfile: "general" | "java"
+  currentProfile: "general" | "java",
+  currentSurface: "both" | "ide" | "cli"
 ): Promise<number> {
   // exactOptionalPropertyTypes: 可选属性不接受显式 undefined，按字段条件赋值。
   const refreshOptions: RefreshCommandOptions = {};
   if (options.agents !== undefined) refreshOptions.agents = options.agents;
+  if (options.codebuddySurface !== undefined) {
+    refreshOptions.codebuddySurface = options.codebuddySurface;
+  }
   if (options.profile !== undefined) refreshOptions.profile = options.profile;
   if (options.nonInteractive !== undefined) refreshOptions.nonInteractive = options.nonInteractive;
   if (options.yes !== undefined) refreshOptions.yes = options.yes;
   if (options.dryRun !== undefined) refreshOptions.dryRun = options.dryRun;
   if (options.json !== undefined) refreshOptions.json = options.json;
   if (options.forceManaged !== undefined) refreshOptions.forceManaged = options.forceManaged;
-  if (options.nonInteractive === true) {
-    return runRefresh(refreshOptions, dependencies);
-  }
   const installed = await readInstalledAgentConfiguration(dependencies.cwd);
   const currentAgents = installed.agents.length > 0
     ? installed.agents
     : ["claude-code" as const];
+  if (options.nonInteractive === true) {
+    const selectedAgents = options.agents === undefined
+      ? currentAgents
+      : parseAgentsInput(options.agents);
+    const code = await runRefresh(refreshOptions, dependencies);
+    if (code === 0) {
+      const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
+        options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
+      await configureCodeBuddyExtras(selectedAgents, surface, options, dependencies);
+    }
+    return code;
+  }
   const currentLines = currentAgents.map((agent) =>
     `- ${AGENT_LABELS[agent]}：${installed.profiles[agent] ?? currentProfile}`
   ).join("\n");
@@ -197,7 +268,14 @@ async function runExistingProject(
     refreshOptions.profile = answer.trim() === "" ? defaultProfile : answer.trim();
   }
   refreshOptions.confirmed = true;
-  return runRefresh(refreshOptions, dependencies);
+  const selectedAgents = parseAgentsInput(refreshOptions.agents);
+  const code = await runRefresh(refreshOptions, dependencies);
+  if (code === 0) {
+    const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
+      options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
+    await configureCodeBuddyExtras(selectedAgents, surface, options, dependencies);
+  }
+  return code;
 }
 
 export async function runConfigure(
@@ -226,7 +304,8 @@ export async function runConfigure(
   }
   if (detection.status === "valid") {
     const currentProfile = (detection.config.project.profiles[0] ?? "general") as "general" | "java";
-    return runExistingProject(options, dependencies, currentProfile);
+    const currentSurface = detection.config.adapter_options?.codebuddy?.surface ?? "both";
+    return runExistingProject(options, dependencies, currentProfile, currentSurface);
   }
   return runFirstInstall(options, dependencies);
 }

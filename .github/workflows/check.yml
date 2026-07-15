@@ -52,3 +52,39 @@ jobs:
 
       - name: Run packaged CLI smoke test
         run: npm run smoke:pack
+
+  node22-compat:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup build Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and pack public CLI
+        run: |
+          npm run build -w packages/cli
+          mkdir -p .compat
+          npm pack -w packages/cli --ignore-scripts --pack-destination .compat
+
+      - name: Setup consumer Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.17"
+
+      - name: Verify packaged CLI on Node.js 22.17
+        shell: bash
+        run: |
+          mkdir -p .compat/install
+          cd .compat/install
+          npm init -y >/dev/null
+          npm install ../hunter-harness-*.tgz --ignore-scripts
+          node node_modules/hunter-harness/dist/bin.js --help

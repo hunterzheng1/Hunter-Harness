@@ -622,13 +622,16 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     status = str(unit.get("status") or "").upper()
     evidence = unit.get("evidence") or {}
     if isinstance(evidence, dict):
-        run = evidence.get("run", unit.get("run", 0))
+        run = evidence.get(
+            "run",
+            evidence.get("testsRun", unit.get("run", unit.get("testsRun", 0))),
+        )
         failures = evidence.get("failures", unit.get("failures", 0))
         errors = evidence.get("errors", unit.get("errors", 0))
         skipped = evidence.get("skipped", unit.get("skipped", 0))
         pass_rate = evidence.get("passRate") or unit.get("passRate")
     else:
-        run = unit.get("run", 0)
+        run = unit.get("run", unit.get("testsRun", 0))
         failures = unit.get("failures", 0)
         errors = unit.get("errors", 0)
         skipped = unit.get("skipped", 0)
@@ -886,16 +889,21 @@ def _durations_from_event_phases(event_summary: dict[str, Any]) -> dict[str, Any
         minutes = round((dur or 0) / 60000, 2) if dur is not None else 0
         if dur:
             total_ms += int(dur)
-        stages.append(
-            {
-                "stage": str(name),
-                "skill": f"harness-{name}",
-                "startedAt": info.get("started_at") or NOT_AVAILABLE,
-                "endedAt": info.get("ended_at") or NOT_AVAILABLE,
-                "minutes": minutes,
-                "result": "OK",
-            }
-        )
+        attempts = info.get("attempts") if isinstance(info.get("attempts"), list) else []
+        result = str(info.get("status") or "UNKNOWN").upper()
+        if result in {"PASS", "PASSED", "SUCCESS"}:
+            result = "OK"
+        elif result in {"FAILED", "ERROR"}:
+            result = "FAIL"
+        stages.append({
+            "stage": str(name),
+            "skill": f"harness-{name}",
+            "startedAt": info.get("started_at") or NOT_AVAILABLE,
+            "endedAt": info.get("ended_at") or NOT_AVAILABLE,
+            "minutes": minutes,
+            "result": result,
+            "attempts": attempts,
+        })
     total_min = round(total_ms / 60000, 2)
     return {
         "totalLabel": f"约 {int(round(total_min))} 分",
@@ -917,11 +925,31 @@ def _stage_status_from_sources(
         "submit": "OK",
         "archive": "OK",
     }
+    for event in events:
+        if event.get("type") != "phase.end":
+            continue
+        phase = str(event.get("phase") or "").lower()
+        raw = str(event.get("status") or "").upper()
+        if phase not in status or not raw:
+            continue
+        if raw in {"PASS", "PASSED", "SUCCESS"}:
+            raw = "OK"
+        elif raw in {"FAILED", "ERROR"}:
+            raw = "FAIL"
+        elif raw in {"SKIP", "SKIPPED"}:
+            raw = "USER_SKIPPED"
+        status[phase] = raw
     # Issues in events can downgrade
     for e in events:
         if e.get("type") != "issue":
             continue
         sev = str(e.get("severity") or "").lower()
+        issue_text = " ".join(str(e.get(key) or "") for key in ("message", "note", "code")).lower()
+        if not sev:
+            if any(token in issue_text for token in ("fail", "error", "blocked", "失败", "阻塞")):
+                sev = "error"
+            elif any(token in issue_text for token in ("warn", "skip", "风险", "警告")):
+                sev = "warn"
         phase = str(e.get("phase") or "").lower()
         if phase in status and sev in {"error", "fail", "failed", "critical"}:
             status[phase] = "FAIL"
@@ -930,14 +958,19 @@ def _stage_status_from_sources(
 
     api = _ledger_api_tests(ledger)
     db = _ledger_db_compat(ledger)
-    if api.get("status") == "USER_SKIPPED":
+    api_status = str(api.get("status") or "").upper()
+    if api_status in {"FAIL", "FAILED", "ERROR"} or int(api.get("failed") or 0) > 0:
+        status["test"] = "FAIL"
+    elif api_status in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA"}:
+        status["test"] = api_status
+    elif api_status == "USER_SKIPPED":
         status["test"] = "USER_SKIPPED"
     elif db == "BLOCKED_BY_DBA":
         status["test"] = "BLOCKED_BY_DBA"
     elif api.get("status") == "NOT_RUN" and not find_test_reports(change_dir):
         unit = _ledger_unit_tests(ledger)
         if unit.get("source") == "not-run" and unit.get("run", 0) == 0:
-            status["test"] = "USER_SKIPPED"
+            status["test"] = "NOT_RUN"
 
     if not find_review_reports(change_dir):
         log_text = load_execution_log(change_dir)
@@ -954,8 +987,6 @@ def _compute_final_status(
     api = verification.get("apiTests") or {}
     db = str(verification.get("dbCompatibility") or "")
     api_status = str(api.get("status") or "")
-    if api_status == "USER_SKIPPED" or db == "BLOCKED_BY_DBA":
-        return "CONDITIONAL_OK"
     for v in stage_status.values():
         if v == "FAIL":
             return "FAIL"
@@ -964,8 +995,14 @@ def _compute_final_status(
         return "FAIL"
     if int(api.get("failed") or 0) > 0:
         return "FAIL"
+    conditional = {
+        "USER_SKIPPED", "BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA",
+        "NOT_RUN", "PARTIAL",
+    }
+    if api_status in conditional or db in conditional:
+        return "CONDITIONAL_OK"
     for v in stage_status.values():
-        if v in {"WARN", "PARTIAL", "USER_SKIPPED", "BLOCKED_BY_DBA"}:
+        if v in {"WARN", *conditional}:
             return "WARN" if v == "WARN" else "CONDITIONAL_OK"
     return "OK"
 
@@ -984,6 +1021,8 @@ def _changed_files_from_git(
     changed: list[dict[str, Any]] = []
     if not base or not head:
         return diff_stat, changed
+    # The ledger bounds the complete task.  Using only ``head^..head`` would
+    # silently omit earlier checkpoint commits from the same change.
     rng = f"{base}..{head}"
     code, out, _ = git_run(project, "diff", "--numstat", rng)
     if code != 0 or not out:
@@ -1038,6 +1077,97 @@ def _review_summary(change_dir: Path, existing: dict[str, Any] | None) -> dict[s
         if not re.search(r"harness-review|##\s*review", log_text, re.IGNORECASE):
             base["status"] = "ADVISORY_NOT_RUN"
     return base
+
+
+def _final_commit_from_sources(
+    ledger: dict[str, Any] | None,
+    events: list[dict[str, Any]],
+    existing: dict[str, Any] | None,
+    project: Path,
+) -> str:
+    if ledger:
+        for key in (
+            "mergeFinalHash", "finalCommit", "finalHash", "changeCommit", "headCommit",
+        ):
+            value = str(ledger.get(key) or "").strip()
+            if value:
+                return value
+    commit_pattern = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+    for event in reversed(events):
+        if str(event.get("phase") or "").lower() not in {"submit", "merge", "archive"}:
+            continue
+        text = " ".join(str(event.get(key) or "") for key in ("note", "message", "command"))
+        match = commit_pattern.search(text)
+        if match:
+            return match.group(0)
+    if existing and existing.get("finalCommit"):
+        return str(existing["finalCommit"])
+    code, head, _ = git_run(project, "rev-parse", "HEAD")
+    return head if code == 0 and head else ""
+
+
+def _business_goal_from_sources(change_dir: Path, events: list[dict[str, Any]]) -> str:
+    plans_root = change_dir / "plans"
+    primary = sorted(plans_root.glob("*-plan.md"))
+    secondary = [
+        path for path in sorted(plans_root.glob("*.md"))
+        if path not in primary
+        and "implementation-detail" not in path.name
+        and "test-scenarios" not in path.name
+    ]
+    for plan in [*primary, *secondary]:
+        try:
+            text = plan.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        body = re.sub(r"\A---\s*\n.*?\n---\s*\n", "", text, count=1, flags=re.DOTALL)
+        goal = re.search(r"(?im)^\s*(?:goal|目标|业务目标|需求)\s*[:：]\s*(.+)$", body)
+        if goal:
+            return goal.group(1).strip()
+        scope = re.search(r"(?im)^\s*>?\s*(?:变更范围|目标)\s*[:：]\s*(.+)$", body)
+        if scope:
+            return scope.group(1).strip()
+        first_task = re.search(r"(?m)^\s*\|\s*1\s*\|\s*([^|]+?)\s*\|", body)
+        if first_task:
+            return first_task.group(1).strip()
+        for line in body.splitlines():
+            clean = line.strip().lstrip("#").strip()
+            if clean and not clean.startswith(("---", ">", "|")) and len(clean) > 8:
+                return clean
+    for event in events:
+        if event.get("type") == "decision":
+            value = str(event.get("decision") or event.get("note") or "").strip()
+            if value:
+                return re.sub(r"^(?:需求收敛|目标)\s*[:：]\s*", "", value)
+    return ""
+
+
+def _timeline_from_events(event_summary: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for phase, info in (event_summary.get("phases") or {}).items():
+        attempts = info.get("attempts") if isinstance(info.get("attempts"), list) else []
+        for attempt in attempts:
+            timeline.append({
+                "phase": phase,
+                "attempt": attempt.get("attempt"),
+                "startedAt": attempt.get("started_at"),
+                "endedAt": attempt.get("ended_at"),
+                "durationMs": attempt.get("duration_ms"),
+                "status": attempt.get("status") or "UNKNOWN",
+                "executorTool": attempt.get("executor_tool"),
+                "executorAgent": attempt.get("executor_agent"),
+                "handoffFromTool": attempt.get("handoff_from_tool"),
+            })
+    for event in events:
+        if event.get("type") not in {"decision", "issue"}:
+            continue
+        timeline.append({
+            "phase": event.get("phase"),
+            "timestamp": event.get("timestamp"),
+            "type": event.get("type"),
+            "summary": event.get("decision") or event.get("message") or event.get("note") or "",
+        })
+    return timeline
 
 
 def collect_summary_data(
@@ -1118,18 +1248,14 @@ def collect_summary_data(
         if existing and existing.get("businessGoal"):
             data["businessGoal"] = existing["businessGoal"]
         else:
-            data["businessGoal"] = NOT_AVAILABLE if for_replay else ""
+            inferred_goal = _business_goal_from_sources(change_dir, events)
+            data["businessGoal"] = inferred_goal or (NOT_AVAILABLE if for_replay else "")
 
     # commits
     project = find_project_root(change_dir)
     if not data.get("finalCommit") or str(data.get("finalCommit")).startswith("<"):
-        code, head, _ = git_run(project, "rev-parse", "HEAD")
-        if code == 0 and head:
-            data["finalCommit"] = head
-        elif existing and existing.get("finalCommit"):
-            data["finalCommit"] = existing["finalCommit"]
-        else:
-            data["finalCommit"] = NOT_AVAILABLE if for_replay else ""
+        final_commit = _final_commit_from_sources(ledger, events, existing, project)
+        data["finalCommit"] = final_commit or (NOT_AVAILABLE if for_replay else "")
 
     if not data.get("baseCommit") or str(data.get("baseCommit")).startswith("<"):
         if ledger and ledger.get("baseCommit"):
@@ -1235,18 +1361,43 @@ def collect_summary_data(
     if not isinstance(data.get("artifacts"), list):
         data["artifacts"] = []
     if not for_replay:
-        # Keep empty placeholder for build artifacts; event artifacts go to reportPipeline
-        pass
+        data["artifacts"] = _artifacts_from_events(events)
 
     data["reviewSummary"] = _review_summary(change_dir, existing if for_replay else None)
-    data.setdefault("timeline", [])
+    if not for_replay:
+        data["timeline"] = _timeline_from_events(event_summary, events)
+    else:
+        data.setdefault("timeline", [])
     data.setdefault("uncommittedTestEvidence", [])
 
-    # Model-owned fields: leave empty placeholders on finalize; preserve on replay
+    # Derive risks/actions from evidence. These fields are facts, not model prose.
     if not for_replay:
-        data["maintenanceNotes"] = []
-        data["knownRisks"] = []
+        data["maintenanceNotes"] = [
+            str(event.get("note") or event.get("message") or "")
+            for event in events
+            if event.get("type") == "decision" and (event.get("note") or event.get("message"))
+        ]
+        data["knownRisks"] = [
+            {
+                "phase": event.get("phase"),
+                "severity": event.get("severity") or "unknown",
+                "message": event.get("message") or event.get("note") or event.get("code") or "",
+            }
+            for event in events
+            if event.get("type") == "issue"
+            and not (
+                event.get("phase") == "archive"
+                and event.get("code") == "missing-command"
+            )
+        ]
         data["manualActions"] = []
+        for name, value in (data.get("stageStatus") or {}).items():
+            if value in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA", "NOT_RUN", "USER_SKIPPED"}:
+                data["manualActions"].append({
+                    "stage": name,
+                    "status": value,
+                    "action": "补充或确认该阶段的真实验证证据",
+                })
     else:
         data.setdefault("maintenanceNotes", [])
         data.setdefault("knownRisks", [])
@@ -1978,6 +2129,7 @@ def cmd_finalize(
                 _restore_target,
                 phase="archive",
                 type_="phase.end",
+                status="FAIL",
                 note="finalize aborted; render failed; original preserved",
             )
         except OSError:
@@ -2117,6 +2269,7 @@ def cmd_finalize(
                     _safe_append_restored,
                     phase="archive",
                     type_="phase.end",
+                    status="FAIL",
                     note="finalize aborted; original preserved",
                 )
             except OSError:
@@ -2168,7 +2321,12 @@ def cmd_finalize(
     if service_result.get("warning"):
         warnings.append(str(service_result["warning"]))
 
-    _safe_append(phase="archive", type_="phase.end", note="finalize complete")
+    _safe_append(
+        phase="archive",
+        type_="phase.end",
+        status="WARN" if warnings else "OK",
+        note="finalize complete",
+    )
 
     payload["ok"] = True
     payload["warnings"] = warnings

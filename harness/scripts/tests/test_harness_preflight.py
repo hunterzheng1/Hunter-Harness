@@ -370,6 +370,35 @@ class CheckAgentsTests(unittest.TestCase):
         self.assertTrue(result["usable"], msg=result.get("reason"))
         self.assertEqual(result["name"], "harness-reviewer")
 
+    def test_infers_sibling_agents_root_from_installed_claude_skills(self) -> None:
+        skills = self.tmp / ".claude" / "skills"
+        agent = self.tmp / ".claude" / "agents" / "harness-explorer.md"
+        _write(
+            agent,
+            "---\nname: harness-explorer\ntools: [Read, Glob, Grep]\n---\n# body\n",
+        )
+        result = hp.cmd_check_agents(skills, "harness-explorer")
+        self.assertTrue(result["usable"], msg=result.get("reason"))
+        self.assertEqual(Path(result["agentsRoot"]), agent.parent.resolve())
+
+    def test_agents_root_can_be_supplied_explicitly(self) -> None:
+        skills = self.tmp / "custom" / "skills"
+        agents = self.tmp / "definitions"
+        _write(
+            agents / "harness-reviewer.md",
+            "---\nname: harness-reviewer\ntools: [Read, Grep]\n---\n# body\n",
+        )
+        result = hp.cmd_check_agents(skills, "harness-reviewer", agents_root=agents)
+        self.assertTrue(result["usable"], msg=result.get("reason"))
+        self.assertEqual(Path(result["agentsRoot"]), agents.resolve())
+
+    def test_non_agent_runtime_reports_capability_not_missing_file(self) -> None:
+        skills = self.tmp / ".agents" / "skills"
+        result = hp.cmd_check_agents(skills, "harness-explorer")
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["reasonCode"], "CUSTOM_AGENTS_UNSUPPORTED")
+        self.assertIn("runtime", result["reason"])
+
 
 class CliSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -383,6 +412,19 @@ class CliSmokeTests(unittest.TestCase):
         code = hp.main(["detect", "--project", str(self.tmp), "--json"])
         self.assertEqual(code, 0)
         code = hp.main(["check", "--project", str(self.tmp), "--json"])
+        self.assertEqual(code, 0)
+
+    def test_main_check_agents_accepts_explicit_agents_root(self) -> None:
+        skills = self.tmp / ".claude" / "skills"
+        agents = self.tmp / ".claude" / "agents"
+        _write(
+            agents / "harness-reviewer.md",
+            "---\nname: harness-reviewer\ntools: [Read, Grep]\n---\n# body\n",
+        )
+        code = hp.main([
+            "check-agents", "--skills-root", str(skills),
+            "--agents-root", str(agents), "--agent", "harness-reviewer", "--json",
+        ])
         self.assertEqual(code, 0)
 
 

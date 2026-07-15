@@ -80,6 +80,8 @@ class DetectTests(unittest.TestCase):
             self.assertIn("coverage", cmds[key])
             self.assertIn("basis", cmds[key])
             self.assertIsInstance(cmds[key]["argvTemplate"], list)
+        self.assertIn("clean package", cmds["package"]["command"])
+        self.assertEqual(cmds["package"]["argvTemplate"][3:5], ["clean", "package"])
 
     def test_detect_multi_module_reactor_inputs_cover_all_modules(self) -> None:
         # UT-002：多模块 reactor detect → inputs 覆盖真实 reactor，排序去重

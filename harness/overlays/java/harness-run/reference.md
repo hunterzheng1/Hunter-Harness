@@ -792,7 +792,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 
 ## 执行日志记录
 
-`/harness-run` 只向 `events.ndjson` 追加事件（schema_version 2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。详见 [[../../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 core `harness-run/SKILL.md`。
+`/harness-run` 只向 `events.ndjson` 追加事件（schema_version 3，兼容读取 v1/v2）；`logs/execution-log.md` 由 `harness_events.py append` 自动渲染。步骤 0 之前 append `phase.start`；各阶段写入 `command` / `verification` / `decision` / `issue`，人类可读摘要放 `note`。详见 [[../../protocols/report-pipeline-protocol.md|report-pipeline-protocol]] 与 core `harness-run/SKILL.md`。
 
 ## verification-ledger 可复用判定
 
