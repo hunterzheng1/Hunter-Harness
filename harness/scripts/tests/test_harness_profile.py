@@ -174,6 +174,37 @@ class DetectTests(unittest.TestCase):
         for k in ("schemaVersion", "projectType", "excludedRoots", "commands", "identifier"):
             self.assertEqual(d1[k], d2[k], msg=f"field {k} drifted across detect")
 
+    def test_detect_java_generates_test_tracking(self) -> None:
+        _make_java_project(self.tmp, modules=["module-a", "module-b"])
+        profile = hp.detect(self.tmp)["profile"]
+        tracking = profile["testTracking"]
+        self.assertEqual(tracking["mode"], "force-track-touched")
+        self.assertEqual(
+            tracking["paths"],
+            ["module-a/src/test/**", "module-b/src/test/**", "src/test/**"],
+        )
+        self.assertEqual(tracking["staleTestPolicy"], "safe-repair")
+        self.assertTrue(tracking["forbidTemporaryExclusion"])
+
+    def test_detect_preserves_user_test_tracking_override(self) -> None:
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
+        profile["testTracking"] = {
+            "source": "user",
+            "mode": "force-track-touched",
+            "paths": ["custom-tests/**"],
+            "staleTestPolicy": "safe-repair",
+            "forbidTemporaryExclusion": True,
+        }
+        _write(
+            self.tmp / ".harness" / "config" / "build-profile.json",
+            json.dumps(profile, ensure_ascii=False, indent=2) + "\n",
+        )
+        tracking = hp.detect(self.tmp)["profile"]["testTracking"]
+        self.assertEqual(tracking["source"], "user")
+        self.assertEqual(tracking["paths"], ["custom-tests/**"])
+
 
 class CheckTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -421,6 +452,17 @@ class NodeCommandsTests(unittest.TestCase):
         profile = hp.detect(self.tmp)["profile"]
         self.assertEqual(profile["commands"]["unitTestFull"]["command"], "npm run lint")
         self.assertEqual(profile["commands"]["unitTestFull"]["basis"]["packageScript"], "check")
+
+    def test_detect_node_generates_test_tracking_paths(self) -> None:
+        _make_node_project(self.tmp)
+        tracking = hp.detect(self.tmp)["profile"]["testTracking"]
+        for pattern in (
+            "test/**/*.ts",
+            "test/**/*.tsx",
+            "packages/*/test/**/*.ts",
+            "apps/*/test/**/*.tsx",
+        ):
+            self.assertIn(pattern, tracking["paths"])
 
 
 if __name__ == "__main__":

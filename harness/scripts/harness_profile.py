@@ -324,6 +324,13 @@ def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, A
         "knownPreexistingErrors": [],
         "shellQuirks": [],
         "fingerprint": {"mvnVersion": "", "nodeVersion": "", "pomHash": ""},
+        "testTracking": {
+            "source": "detected",
+            "mode": "force-track-touched",
+            "paths": [],
+            "staleTestPolicy": "safe-repair",
+            "forbidTemporaryExclusion": True,
+        },
     }
 
 
@@ -357,6 +364,9 @@ def _merge_user_overrides(
         profile["knownPreexistingErrors"] = list(existing["knownPreexistingErrors"])
     if isinstance(existing.get("shellQuirks"), list):
         profile["shellQuirks"] = list(existing["shellQuirks"])
+    test_tracking = existing.get("testTracking")
+    if isinstance(test_tracking, dict) and test_tracking.get("source") == "user":
+        profile["testTracking"] = dict(test_tracking)
     # 兼容字段：用户在 v1 配置的 verificationInputs 不保留（无 provenance），
     # 由 commands 重新派生。knownPreexistingErrors/shellQuirks 是人工标注，保留。
 
@@ -392,10 +402,24 @@ def detect(project: Path) -> dict[str, Any]:
         reactor_modules = find_reactor_modules(project, excluded)
         if reactor_modules:
             profile["commands"] = _java_commands(reactor_modules, pom_hash)
+            profile["testTracking"]["paths"] = sorted(
+                "src/test/**" if module == "." else f"{module}/src/test/**"
+                for module in reactor_modules
+            )
     elif project_type == "node":
         node_cmds = _node_commands(project)
         if node_cmds:
             profile["commands"] = node_cmds
+        profile["testTracking"]["paths"] = [
+            "apps/*/test/**/*.ts",
+            "apps/*/test/**/*.tsx",
+            "packages/*/test/**/*.ts",
+            "packages/*/test/**/*.tsx",
+            "test/**/*.ts",
+            "test/**/*.tsx",
+            "tests/**/*.ts",
+            "tests/**/*.tsx",
+        ]
 
     _merge_user_overrides(profile, existing)
     _derive_verification_inputs(profile)
