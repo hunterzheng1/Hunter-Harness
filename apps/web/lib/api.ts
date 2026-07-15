@@ -350,12 +350,14 @@ export class HttpHunterApi implements HunterApi {
     }
     const headers = new Headers({
       Accept: "application/json",
-      Authorization: "Bearer " + token
+      Authorization: "Bearer " + token,
+      "X-Request-Id": uuid()
     });
-    if (body !== undefined) {
-      headers.set("X-Request-Id", uuid());
-      headers.set("Content-Type", "application/json");
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) {
       headers.set("Idempotency-Key", uuid());
+    }
+    if (body !== undefined) {
+      headers.set("Content-Type", "application/json");
     }
     let response: Response;
     try {

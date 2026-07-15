@@ -9,8 +9,58 @@ import { classifyManagedFile } from "../lib/file-policy";
 import { reconstructWorkspace } from "../lib/workspace";
 
 const sha = (character: string) => "sha256:" + character.repeat(64);
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 describe("Web governance API", () => {
+  it("adds request and idempotency UUIDs to bodyless mutations", async () => {
+    const calls: Array<RequestInit | undefined> = [];
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push(init);
+      return Response.json({
+        project_id: "prj_one",
+        display_name: "Project One",
+        lifecycle_state: "archived",
+        archived_at: "2026-07-15T00:00:00.000Z",
+        purge_after: "2026-08-14T00:00:00.000Z",
+        purged_at: null
+      });
+    });
+    const api = new HttpHunterApi({
+      baseUrl: "https://console.test",
+      tokenProvider: () => "session-token",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+
+    await api.archiveProject("prj_one");
+
+    const headers = new Headers(calls[0]?.headers);
+    expect(calls[0]?.method).toBe("DELETE");
+    expect(calls[0]?.body).toBeUndefined();
+    expect(headers.get("X-Request-Id")).toMatch(uuid);
+    expect(headers.get("Idempotency-Key")).toMatch(uuid);
+    expect(headers.has("Content-Type")).toBe(false);
+  });
+
+  it("adds a request UUID but no idempotency key to reads", async () => {
+    const calls: Array<RequestInit | undefined> = [];
+    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push(init);
+      return Response.json({ items: [], page: { next_cursor: null } });
+    });
+    const api = new HttpHunterApi({
+      baseUrl: "https://console.test",
+      tokenProvider: () => "session-token",
+      fetch: fetch as unknown as typeof globalThis.fetch
+    });
+
+    await api.listProjects();
+
+    const headers = new Headers(calls[0]?.headers);
+    expect(headers.get("X-Request-Id")).toMatch(uuid);
+    expect(headers.has("Idempotency-Key")).toBe(false);
+    expect(headers.has("Content-Type")).toBe(false);
+  });
+
   it("projects server file safety into deterministic Web policies", () => {
     expect(classifyManagedFile("CLAUDE.md")).toMatchObject({
       file_kind: "user_editable",
