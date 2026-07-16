@@ -179,3 +179,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".harness/changes/<chang
 ```
 
 原因：Claude Code 的 Bash 工具外壳会先处理双引号内容，`$log`、`$_` 这类变量可能被外层 shell 吃掉，导致命令变形。简单命令可以 inline；复杂命令必须 `-File`。
+
+
+## 12. PowerShell 5.1 兼容清单
+
+Windows 默认常为 Windows PowerShell **5.1**。下列特性在 5.1 不可用，禁止写进可复制命令模板：
+
+| 特性 | 最低版本 | PowerShell 5.1 替代 |
+|------|---------|--------------------|
+| `Invoke-WebRequest -SkipHttpErrorCheck` | 7.0 | `try/catch` 包裹或 `$ErrorActionPreference` 处理非 2xx |
+| `Join-String` | 6.2 | `-join` 运算符 |
+| `ForEach-Object -Parallel` | 7.0 | 顺序执行 |
+
+### 非 ASCII 路径与 Bash 拒绝后的切换
+
+- 非 ASCII 路径（含中文）仓库：git/构建/文件操作一律 PowerShell；Bash 被 hook 拒绝（如 `Denied: non-ASCII path`）后**立即**改用 PowerShell 重发等价命令，禁止原样重试 Bash。
+- Maven `-D` 参数在 PowerShell 中加引号：`"-Dmaven.test.skip=true"`。

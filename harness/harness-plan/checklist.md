@@ -57,6 +57,12 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 > - CodeGraph 如通过 MCP 调用，必须优先用 MCP 工具，不允许通过普通 Bash 调 codegraph 命令
 > - 禁止把子代理未经工具验证的文本结论当作"详尽报告"或代码证据采纳
 
+## 影响面检查（远程客户端路径）
+
+变更涉及 HTTP/RPC 客户端时，在设计/任务拆分前完成路径静态比对：
+
+- [ ] 变更涉及 HTTP/RPC 客户端（Feign/RestTemplate/SDK 封装）时：取客户端注解路径（类级 + 方法级拼接），与服务提供方 controller 的 `@RequestMapping` + 方法级注解**完整拼接路径**逐一比对，在计划/执行记录中列出比对结果。只看方法级注解不算完成。
+
 ## 阶段 4：设计审批包 ⚠️ 强制阻断（一次 AskUserQuestion）
 
 > 合并原「设计审核 + worktree + 场景表预览 + change-name」。推荐 worktree 读 `harness.json` `defaultWorktree`。
