@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.15] — hunter-harness / [0.2.9] — @hunter-harness/workflow-harness
+
+### Changed
+
+- 归档报告管线：修复 summary-data 测试计数失真、archive 阶段 0 秒、`archive-meta` 漂移；补充 ledger `--metrics-json`、knownRisks 过滤与 finalize 敏感文件清理。
+- 事件渲染：`harness_events.py` 改善 issue/verification/command 空字段降级；`report-pipeline-protocol` 补充事件语义表。
+- 门禁政策：`foundation-gate` 缺失不阻断；`classify` 结果持久化到 `meta/gate-policy.json`；ledger 支持 DEGRADED 通道。
+- Skills 文档：强化 Feign 路径核对、测试覆盖诚实标注、CLI 快速参考与 PowerShell 5.1 兼容指引；新增 `harness-test/pitfalls-java.md`。
+
+### Fixed
+
+- 归档 finalize 在 `phase.end` 前写入 artifact/decision，避免报告阶段统计被截断。
+- 事件流中无 severity 的 issue 不再渲染为 `None`/`issue` 字面量。
+- gate `classify_risk` 去重逻辑与 workflow-policy DEGRADED 语义说明。
+
 ## [0.2.12] — hunter-harness
 
 ### Added
