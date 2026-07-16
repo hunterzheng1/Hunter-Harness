@@ -7,6 +7,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { promptStaleConflictStrategy } from "../src/commands/push.js";
 import { canonicalJson } from "@hunter-harness/contracts";
 import { sha256Bytes } from "@hunter-harness/core";
 
@@ -51,6 +52,59 @@ describe("hunter-harness push", () => {
       return false;
     }
   }
+
+  it("offers an in-command conflict choice and defaults to keeping local", async () => {
+    const prompts: string[] = [];
+    const strategy = await promptStaleConflictStrategy(
+      Array.from({ length: 12 }, (_, index) => ({
+        path: `.harness/knowledge/entries/active/item-${index}.json`,
+        operation: "modify" as const,
+        reason: "local-dirty" as const
+      })),
+      {
+        cwd: root,
+        resourcesRoot,
+        fetch: vi.fn(),
+        env: {},
+        stdout: () => undefined,
+        stderr: (value) => stderr.push(value),
+        prompt: async (question) => {
+          prompts.push(question);
+          return "\n";
+        }
+      }
+    );
+
+    expect(strategy).toBe("keep-local");
+    expect(prompts.join("\n")).toContain("保留本地");
+    expect(stderr.join("\n")).toContain("12");
+    expect(stderr.join("\n")).toContain("另 4 个");
+  });
+
+  it("can accept the server version or stop for manual resolution", async () => {
+    const conflicts = [{
+      path: ".harness/context-index.json",
+      operation: "modify" as const,
+      reason: "local-dirty" as const
+    }];
+    const baseDependencies = {
+      cwd: root,
+      resourcesRoot,
+      fetch: vi.fn(),
+      env: {},
+      stdout: () => undefined,
+      stderr: () => undefined
+    };
+
+    await expect(promptStaleConflictStrategy(conflicts, {
+      ...baseDependencies,
+      prompt: async () => "2\n"
+    })).resolves.toBe("accept-remote");
+    await expect(promptStaleConflictStrategy(conflicts, {
+      ...baseDependencies,
+      prompt: async () => "3\n"
+    })).resolves.toBe(false);
+  });
 
   it("previews without network or writes in dry-run mode", async () => {
     const fetch = vi.fn();

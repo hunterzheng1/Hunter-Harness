@@ -6,15 +6,35 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProjectConfig } from "@hunter-harness/contracts";
+import { canonicalJson, type ProjectConfig } from "@hunter-harness/contracts";
 
 import { initializeProject } from "../src/project/initialize.js";
-import { pushProject, PushWorkflowError } from "../src/push/push.js";
+import {
+  formatStaleBaselineMessage,
+  pushProject,
+  PushWorkflowError
+} from "../src/push/push.js";
 import { readBaseline, writeBaseline } from "../src/state/baseline.js";
+import { sha256Bytes } from "../src/fs/hash.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("pushProject stale baseline UX", () => {
+  it("summarizes large conflict sets and gives whole-set recovery commands", () => {
+    const conflicts = Array.from({ length: 20 }, (_, index) => ({
+      path: `.harness/knowledge/entries/stale/item-${index}.json`,
+      operation: "modify" as const,
+      reason: "local-dirty" as const
+    }));
+
+    const message = formatStaleBaselineMessage(conflicts);
+
+    expect(message).toMatch(/20/);
+    expect(message).toContain("--conflict-strategy keep-local --yes");
+    expect(message).toContain("--conflict-strategy accept-remote --yes");
+    expect(message).toContain("另 12 个");
+    expect(message).not.toContain("item-19.json");
+  });
   async function initRoot(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), "hh-push-stale-"));
     await initializeProject({
@@ -102,6 +122,98 @@ describe("pushProject stale baseline UX", () => {
       headers: { "content-type": "application/json" }
     });
   }
+
+  it("resolves a stale conflict in the same push before proposal confirmation", async () => {
+    const root = await initRoot();
+    const projectId = "prj_interactive_rebase";
+    const path = ".harness/knowledge/interactive-rebase.md";
+    const base = "base\n";
+    const local = "local wins\n";
+    const remote = "remote version\n";
+    await bindProject(root, projectId, "pv_00000000");
+    await writeFile(join(root, path), local);
+    const baseline = await readBaseline(root);
+    baseline.files[path] = {
+      baseline_hash: sha256Bytes(base),
+      local_hash_at_apply: sha256Bytes(base),
+      file_kind: "user_editable",
+      last_applied_version: "pv_00000000",
+      deleted: false
+    };
+    await writeBaseline(root, baseline);
+    const manifestPayload = {
+      schema_version: 1 as const,
+      project_id: projectId,
+      project_version: "pv_00000001",
+      artifact_id: "art_interactive_rebase",
+      files: [{
+        operation: "modify" as const,
+        path,
+        file_kind: "user_editable" as const,
+        base_content_sha256: sha256Bytes(base),
+        content_sha256: sha256Bytes(remote),
+        size_bytes: Buffer.byteLength(remote)
+      }]
+    };
+    const manifest = {
+      ...manifestPayload,
+      manifest_sha256: sha256Bytes(canonicalJson(manifestPayload))
+    };
+    const confirmConflictStrategy = vi.fn(async () => "keep-local" as const);
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      if (url.pathname.endsWith("/update-manifest")) {
+        const baseVersion = url.searchParams.get("base_project_version");
+        if (baseVersion === "pv_00000001") {
+          return noDeltaUpdateManifest(projectId, "pv_00000001");
+        }
+        return new Response(JSON.stringify({
+          schema_version: 1,
+          project_id: projectId,
+          observed_project_version: "pv_00000001",
+          artifact_id: manifest.artifact_id,
+          artifact_manifest_url: "/api/v1/artifacts/" + manifest.artifact_id + "/manifest",
+          delta_available: true,
+          request_id: "req_update"
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/manifest")) {
+        return new Response(JSON.stringify(manifest), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.pathname.includes("/blobs/")) {
+        return new Response(remote, {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "X-Content-SHA256": sha256Bytes(remote),
+            "X-Request-Id": "req_blob"
+          }
+        });
+      }
+      throw new Error("unexpected path: " + url.pathname);
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmConflictStrategy,
+      confirmProposal: async () => false
+    });
+
+    expect(result).toMatchObject({ cancelled: true });
+    expect(confirmConflictStrategy).toHaveBeenCalledTimes(1);
+    expect(await readFile(join(root, path), "utf8")).toBe(local);
+    expect((await readBaseline(root)).complete_project_version).toBe("pv_00000001");
+  });
 
   it("API-006 stale guidance must not mention unconditional git pull", async () => {
     const root = await initRoot();

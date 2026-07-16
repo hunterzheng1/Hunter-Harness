@@ -388,6 +388,23 @@ class HarnessEventsTest(unittest.TestCase):
         self.assertEqual(event["executor_tool"], "codex")
         self.assertEqual(event["handoff_from_tool"], "claude-code")
 
+    def test_append_refuses_to_recreate_an_archived_change(self) -> None:
+        project = Path(self._tmpdir.name) / "project"
+        change_dir = project / ".harness" / "changes" / "finished-change"
+        archive_dir = project / ".harness" / "archive" / "2026-07-16-finished-change"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "archive-manifest.json").write_text("{}\n", encoding="utf-8")
+
+        code, out, err = self._run([
+            "append", "--change-dir", str(change_dir), "--json",
+            "--phase", "sync", "--type", "phase.start",
+        ])
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("ARCHIVED_CHANGE_IMMUTABLE", err)
+        self.assertFalse(change_dir.exists())
+
     def test_atomic_append_helper_writes_after_temp_success(self) -> None:
         target = self.change_dir / "events.ndjson"
         line = json.dumps({"hello": "世界"}, ensure_ascii=False)

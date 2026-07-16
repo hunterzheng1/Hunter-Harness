@@ -172,12 +172,30 @@ def list_active_changes(project_root: Path) -> list[dict[str, Any]]:
                 archived = {}
             if isinstance(archived, dict) and archived.get("status") == "archived":
                 continue
+        has_plan = any((entry / "plans").glob("*-plan.md"))
+        has_context = (entry / CHANGE_CONTEXT_REL).is_file()
+        has_checkpoints = (entry / CHECKPOINTS_REL).is_file()
+        worktree_path = entry / WORKTREE_META_REL
+        has_active_worktree = False
+        if worktree_path.is_file():
+            try:
+                worktree = _read_json(worktree_path)
+                has_active_worktree = isinstance(worktree, dict) and (
+                    worktree.get("created") is True or
+                    worktree.get("requested") is True
+                )
+            except (OSError, json.JSONDecodeError):
+                has_active_worktree = False
+        # Runtime notes, event logs and requested=false worktree metadata can
+        # survive archive/submit cleanup. They are residues, not active changes.
+        if not (has_plan or has_context or has_checkpoints or has_active_worktree):
+            continue
         active.append(
             {
                 "changeId": entry.name,
                 "path": str(entry.resolve()),
-                "hasPlan": (entry / "plans").is_dir(),
-                "hasWorktreeMeta": (entry / WORKTREE_META_REL).is_file(),
+                "hasPlan": has_plan,
+                "hasWorktreeMeta": worktree_path.is_file(),
             }
         )
     return active

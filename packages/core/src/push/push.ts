@@ -39,7 +39,10 @@ import {
   advanceBaselineFromArtifact,
   synchronizeArtifacts
 } from "../sync/synchronize.js";
-import type { RebaseConflict } from "../sync/artifact-rebase.js";
+import type {
+  ConflictStrategy,
+  RebaseConflict
+} from "../sync/artifact-rebase.js";
 
 export interface SensitiveFindingSummary {
   path: string;
@@ -56,6 +59,9 @@ export interface PushWorkflowErrorDetails {
   finding_count?: number;
   scanner_version?: string;
   missing_credentials?: Array<"url" | "token">;
+  conflicts?: RebaseConflict[];
+  conflict_count?: number;
+  conflict_groups?: Record<string, number>;
 }
 
 export class PushWorkflowError extends Error {
@@ -95,6 +101,9 @@ export interface PushProjectOptions {
   confirmSensitiveScanSkip?: (
     preview: ReturnType<typeof generateProposalPreview>
   ) => Promise<{ skip: boolean; reason?: string } | "cancelled">;
+  confirmConflictStrategy?: (
+    conflicts: readonly RebaseConflict[]
+  ) => Promise<ConflictStrategy | false>;
 }
 
 interface PushWorkflowState {
@@ -375,24 +384,75 @@ function assertPreviewAllowed(
 const CREDENTIALS_HINT =
   "可在交互模式下录入，或写入 .harness/credentials.local.yaml（勿提交 git）";
 
-const STALE_BASELINE_MESSAGE =
-  "服务端 artifact 已更新，请先执行 npx hunter-harness update（冲突可用 update --resolve <path>=keep-local|accept-remote）再推";
+const CONFLICT_PREVIEW_LIMIT = 8;
+
+function conflictGroup(path: string): string {
+  const knowledgeMatch = path.match(
+    /^\.harness\/knowledge\/entries\/([^/]+)\//
+  );
+  if (knowledgeMatch?.[1] !== undefined) {
+    return `knowledge/${knowledgeMatch[1]}`;
+  }
+  if (path.startsWith(".harness/knowledge/")) return "knowledge/other";
+  if (path === ".harness/context-index.json") return "context-index";
+  return path.split("/", 1)[0] ?? "other";
+}
+
+function conflictGroups(conflicts: readonly RebaseConflict[]): Record<string, number> {
+  const groups: Record<string, number> = {};
+  for (const conflict of conflicts) {
+    const group = conflictGroup(conflict.path);
+    groups[group] = (groups[group] ?? 0) + 1;
+  }
+  return groups;
+}
+
+export function formatStaleBaselineMessage(
+  conflicts: readonly RebaseConflict[] = []
+): string {
+  const lines = [
+    "服务端存在本地尚未确认的更新，push 已暂停以避免覆盖并行修改。"
+  ];
+  if (conflicts.length > 0) {
+    lines.push(`检测到 ${conflicts.length} 个冲突（仅展示前 ${CONFLICT_PREVIEW_LIMIT} 个）：`);
+    for (const conflict of conflicts.slice(0, CONFLICT_PREVIEW_LIMIT)) {
+      lines.push(`  - ${conflict.path}`);
+    }
+    if (conflicts.length > CONFLICT_PREVIEW_LIMIT) {
+      lines.push(`  - …另 ${conflicts.length - CONFLICT_PREVIEW_LIMIT} 个`);
+    }
+  }
+  lines.push(
+    "保留本地并继续：npx hunter-harness update --conflict-strategy keep-local --yes",
+    "接受服务端版本：npx hunter-harness update --conflict-strategy accept-remote --yes",
+    "逐项处理：npx hunter-harness update --resolve <path>=keep-local|accept-remote"
+  );
+  return lines.join("\n");
+}
 
 function staleBaselineError(
   code: "STALE_PUSH" | "PROJECT_VERSION_CONFLICT",
   conflicts?: readonly RebaseConflict[]
 ): PushWorkflowError {
-  const conflictHint = conflicts !== undefined && conflicts.length > 0
-    ? " 冲突文件：" + conflicts.map((item) => item.path).join(", ")
-    : "";
-  return new PushWorkflowError(STALE_BASELINE_MESSAGE + conflictHint, 5, code);
+  const conflictList = [...(conflicts ?? [])];
+  return new PushWorkflowError(
+    formatStaleBaselineMessage(conflictList),
+    5,
+    code,
+    conflictList.length === 0 ? undefined : {
+      conflicts: conflictList,
+      conflict_count: conflictList.length,
+      conflict_groups: conflictGroups(conflictList)
+    }
+  );
 }
 
 async function syncToLatest(
   root: string,
   project: ProjectConfig,
   baseline: BaselineManifest,
-  client: HunterHarnessApiClient
+  client: HunterHarnessApiClient,
+  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"]
 ): Promise<BaselineManifest> {
   const syncResult = await synchronizeArtifacts({
     projectRoot: root,
@@ -400,7 +460,10 @@ async function syncToLatest(
     client,
     requestId: uuidV7(),
     dryRun: false,
-    conflictStrategy: "manual"
+    conflictStrategy: "manual",
+    ...(confirmConflictStrategy === undefined
+      ? {}
+      : { confirmConflictStrategy })
   }, baseline);
   if (syncResult.conflicts.length > 0) {
     throw staleBaselineError("PROJECT_VERSION_CONFLICT", syncResult.conflicts);
@@ -413,12 +476,15 @@ async function autoRebaseIfServerAdvanced(
   project: ProjectConfig,
   baseline: BaselineManifest,
   client: HunterHarnessApiClient,
-  remoteVersion: string | null
+  remoteVersion: string | null,
+  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"]
 ): Promise<BaselineManifest> {
   if (remoteVersion === baseline.complete_project_version) {
     return baseline;
   }
-  const updated = await syncToLatest(root, project, baseline, client);
+  const updated = await syncToLatest(
+    root, project, baseline, client, confirmConflictStrategy
+  );
   if (remoteVersion !== null &&
       updated.complete_project_version !== remoteVersion) {
     throw staleBaselineError("PROJECT_VERSION_CONFLICT");
@@ -560,7 +626,8 @@ export async function pushProject(options: PushProjectOptions) {
       project,
       baseline,
       client,
-      remote.latest_project_version
+      remote.latest_project_version,
+      options.confirmConflictStrategy
     );
     preview = makePreview(
       baseline,
@@ -736,7 +803,9 @@ export async function pushProject(options: PushProjectOptions) {
           (error.code === "STALE_PUSH" || error.code === "PROJECT_VERSION_CONFLICT") &&
           !finalizeRetried) {
         finalizeRetried = true;
-        baseline = await syncToLatest(root, project, baseline, client);
+        baseline = await syncToLatest(
+          root, project, baseline, client, options.confirmConflictStrategy
+        );
         workflow = resetSession(workflow, proposalManifestHash);
         await atomicWriteJson(workflowPath, workflow);
         session = await client.createProposalSession(projectId, {

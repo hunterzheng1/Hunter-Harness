@@ -6,6 +6,8 @@ import {
   pushProject,
   PushWorkflowError,
   type PushWorkflowErrorDetails,
+  type ConflictStrategy,
+  type RebaseConflict,
   readLocalCredentials,
   uuidV7,
   writeLocalCredentials
@@ -22,6 +24,33 @@ export interface PushOptions {
   dryRun?: boolean;
   json?: boolean;
   skipSensitiveScan?: boolean;
+}
+
+const CONFLICT_PREVIEW_LIMIT = 8;
+
+export async function promptStaleConflictStrategy(
+  conflicts: readonly RebaseConflict[],
+  dependencies: CommandDependencies
+): Promise<ConflictStrategy | false> {
+  const lines = [`检测到 ${conflicts.length} 个服务端并发冲突：`];
+  for (const conflict of conflicts.slice(0, CONFLICT_PREVIEW_LIMIT)) {
+    lines.push(`  - ${conflict.path}`);
+  }
+  if (conflicts.length > CONFLICT_PREVIEW_LIMIT) {
+    lines.push(`  - …另 ${conflicts.length - CONFLICT_PREVIEW_LIMIT} 个`);
+  }
+  dependencies.stderr(lines.join("\n") + "\n");
+  const answer = await dependencies.prompt(
+    "请选择处理方式：\n" +
+    "  1. 保留本地内容并继续推送（推荐）\n" +
+    "  2. 接受服务端内容并继续推送\n" +
+    "  3. 退出，稍后逐项处理\n" +
+    "请选择 [1]："
+  );
+  const selected = answer.trim();
+  if (selected === "" || selected === "1") return "keep-local";
+  if (selected === "2") return "accept-remote";
+  return false;
 }
 
 function formatFindings(details: PushWorkflowErrorDetails | undefined): string {
@@ -155,7 +184,11 @@ export async function runPush(
             const reasonAnswer = await dependencies.prompt("跳过原因（可选，回车跳过）: ");
             const reason = reasonAnswer.trim();
             return reason === "" ? { skip: true } : { skip: true, reason };
-          } })
+          } }),
+        ...(options.nonInteractive === true
+          ? {}
+          : { confirmConflictStrategy: async (conflicts) =>
+            promptStaleConflictStrategy(conflicts, dependencies) })
       });
       if ("cancelled" in result && result.cancelled === true) {
         return 2;

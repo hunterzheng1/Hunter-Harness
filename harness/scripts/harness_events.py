@@ -106,6 +106,25 @@ def execution_log_path(change_dir: Path) -> Path:
     return change_dir / "logs" / "execution-log.md"
 
 
+def archived_change_dir(change_dir: Path) -> Path | None:
+    """Return the matching archive when change_dir follows the project layout."""
+    changes_root = change_dir.parent
+    harness_root = changes_root.parent
+    if changes_root.name != "changes" or harness_root.name != ".harness":
+        return None
+    archive_root = harness_root / "archive"
+    if not archive_root.is_dir():
+        return None
+    suffix = "-" + change_dir.name
+    matches = sorted(
+        candidate for candidate in archive_root.iterdir()
+        if candidate.is_dir() and (
+            candidate.name == change_dir.name or candidate.name.endswith(suffix)
+        )
+    )
+    return matches[-1] if matches else None
+
+
 def parse_timestamp(value: Any) -> dt.datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -620,6 +639,13 @@ def cmd_append(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
     change_dir = resolve_change_dir(args.change_dir)
+    archived = archived_change_dir(change_dir)
+    if archived is not None:
+        return emit_error(
+            "ARCHIVED_CHANGE_IMMUTABLE: refusing to append to archived change "
+            f"{change_dir.name} ({archived})",
+            as_json=as_json,
+        )
     path = events_path(change_dir)
     lock_path = change_dir / "events.ndjson.lock"
 

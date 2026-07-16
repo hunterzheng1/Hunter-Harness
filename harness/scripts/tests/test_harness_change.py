@@ -33,8 +33,13 @@ class HarnessChangeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.project = Path(tempfile.mkdtemp(prefix="harness-change-project-"))
         self.changes = self.project / ".harness" / "changes"
-        (self.changes / "alpha").mkdir(parents=True)
-        (self.changes / "beta").mkdir(parents=True)
+        for change_id in ("alpha", "beta"):
+            meta = self.changes / change_id / "meta"
+            meta.mkdir(parents=True)
+            (meta / "change-context.json").write_text(
+                json.dumps({"schemaVersion": 1, "changeId": change_id}),
+                encoding="utf-8",
+            )
         self._git_init()
 
     def tearDown(self) -> None:
@@ -84,6 +89,39 @@ class HarnessChangeTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["code"], "CHANGE_NOT_FOUND")
         self.assertFalse((self.changes / missing).exists())
+
+    def test_runtime_only_and_closed_worktree_residues_are_not_active(self) -> None:
+        runtime_only = self.changes / "runtime-only"
+        (runtime_only / "runtime").mkdir(parents=True)
+        (runtime_only / "runtime" / "commit-message.txt").write_text(
+            "chore: residue\n", encoding="utf-8"
+        )
+        events_only = self.changes / "events-only"
+        events_only.mkdir(parents=True)
+        (events_only / "events.ndjson").write_text("{}\n", encoding="utf-8")
+        closed_worktree = self.changes / "closed-worktree" / "meta"
+        closed_worktree.mkdir(parents=True)
+        (closed_worktree / "worktree.json").write_text(
+            json.dumps({"requested": False, "created": False}), encoding="utf-8"
+        )
+
+        ids = {item["changeId"] for item in change.list_active_changes(self.project)}
+
+        self.assertEqual(ids, {"alpha", "beta"})
+
+    def test_plan_or_created_worktree_is_active_without_change_context(self) -> None:
+        plan_dir = self.changes / "plan-only" / "plans"
+        plan_dir.mkdir(parents=True)
+        (plan_dir / "plan-only-plan.md").write_text("# Plan\n", encoding="utf-8")
+        worktree_meta = self.changes / "worktree-active" / "meta"
+        worktree_meta.mkdir(parents=True)
+        (worktree_meta / "worktree.json").write_text(
+            json.dumps({"requested": True, "created": True}), encoding="utf-8"
+        )
+
+        ids = {item["changeId"] for item in change.list_active_changes(self.project)}
+
+        self.assertTrue({"plan-only", "worktree-active"}.issubset(ids))
 
     def test_claim_conflict_same_change_ut019(self) -> None:
         first = change.claim_lease(
