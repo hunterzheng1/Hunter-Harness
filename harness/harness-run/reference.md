@@ -522,7 +522,7 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 
 ```powershell
 python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json
-python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/changes/<change-name>" --verification compile --status PASS --command "<cmd>" --exit-code 0 --json
+python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/changes/<change-name>" --verification compile --status ok --command "<cmd>" --exit-code 0 --json
 ```
 
 > `content-changeset-2` 同时读取 tracked diff、标准 untracked 文件和 manifest 的精确测试路径。manifest 缺失时保持普通行为；manifest 存在但路径越界、内容 hash 漂移或结构非法时命令失败，ledger 不可复用。checkpoint commit 不改变各路径的工作树内容，因此提交前后 hash 保持一致。
@@ -788,6 +788,36 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 运行 `/harness-test` 验证剩余 P0 场景。
 在 harness-test 通过前，不建议也不应进入 `/harness-submit`。
 ```
+
+## CLI 速查（gate / ledger）
+
+> 可直接复制；替换 `<skills-root>` / `<cn>` / `<dir>` / `<project>`。`--task` **仅在该 change 启用 checkpoint 时必需**（checkpoints 文件缺失或不含 pending foundation-gate 时不要传）。
+> `ledger record` 必需：`--duration-ms`、`--evidence`，以及 `--files`（逗号分隔源文件）或 `--profile-input <verificationKey> --project <project>`（从 build-profile 展开）。`status` 枚举: `ok|fail|not_run`（没有 PASS）。
+> `--skills-root` 仅用于 `begin`（及 `lint-skills`）：必须是 adapter 根（如 `.cursor/skills`），不是 `scripts/` 子目录。**`close` 不需要 `--skills-root`**（该子命令不接受此参数）。
+
+```powershell
+# gate begin/close（--task 仅在该 change 启用 checkpoint 时必需；close 不需要 --skills-root）
+python <skills-root>/scripts/harness_gate.py begin --change <cn> --phase run --skills-root <skills-root> [--task N]
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK [--task N]
+
+# ledger 记录（status: ok|fail|not_run —— 没有 PASS）
+python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: 155, Failures: 0, Errors: 0, Skipped: 0" --coverage full --files "packages/core/src/index.ts"
+
+# 复用检查（--profile-input 取 verification key，不是文件路径；配合 --project）
+python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
+```
+
+### 常见报错对照
+
+| 报错 | 原因 | 处理 |
+|------|------|------|
+| `unsupported status: PASS` | ledger status 无 PASS | 改用 `ok` / `fail` / `not_run` |
+| `TASK_NUMBER_REQUIRED` | 该 change 启用了 checkpoint（如 foundation-gate pending） | 补 `--task N` |
+| skills-root / BUNDLE_IDENTITY_* | `begin` 未传或传了 `.../scripts` 子目录（`close` 不接受该参数） | 仅对 `begin` 显式传 adapter 根：`.cursor/skills` / `.claude/skills`（含 `.harness-build.json`） |
+| `--profile-input` 指向文件路径 | 参数语义是 verification key | 传 `compile` / `unitTestFull` 等 key，不是 JSON 路径 |
+| `record requires --files or a non-empty --profile-input file set` | 缺少输入文件集 | 补 `--files` 或 `--profile-input <key> --project <project>` |
+| `--profile-input requires --project` | can-reuse/record 展开 profile 需要项目根 | 补 `--project <project>` |
+| `record` 缺 `--duration-ms` / `--evidence` | 参数为必填 | 按模板补齐 |
 
 ## 关键原则
 

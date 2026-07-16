@@ -293,6 +293,15 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] durationMs > 10000 → 🟡SLOW，说明原因
 - [ ] durationMs > 30000 → ❌TIMEOUT_RISK，说明原因
 
+### 覆盖标注诚实性（✅ 实测 vs 🟡 推断）
+
+场景状态标注规则：
+
+- [ ] ✅ 仅当断言实际执行**且**场景声明的前置条件/数据真实构造
+- [ ] 🟡（推断）：未构造场景条件、以相邻场景或同接口行为推断时使用，必须注明推断依据
+- [ ] 用同一请求重复调用来"覆盖"不同异常场景 → 一律 🟡
+- [ ] 报告汇总行的通过数只统计 ✅（不含 🟡 推断）
+
 ## 关门检查（⚠️ 结束前强制执行）
 
 - [ ] `powershell.exe -NoProfile -Command "git status --porcelain"`

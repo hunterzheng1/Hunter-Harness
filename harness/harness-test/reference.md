@@ -582,6 +582,15 @@ TEST_<change-name>_<timestamp>_<short-random>
 
 如果场景表有「数据兼容场景」：查询已有数据，验证新字段返回 null 或默认值，不报错。
 
+## 覆盖标注诚实性规则
+
+场景状态标注规则：
+
+- ✅ 仅当断言实际执行**且**场景声明的前置条件/数据真实构造。
+- 🟡（推断）：未构造场景条件、以相邻场景或同接口行为推断时使用，必须注明推断依据。
+- 用同一请求重复调用来"覆盖"不同异常场景 → 一律 🟡。
+- 报告汇总行的通过数只统计 ✅。
+
 ## 输出格式（测试报告模板）
 
 测试完成后，将报告保存到 `.harness/changes/<change-name>/reports/test/test-report-YYYYMMDD-HHmm.md`（时间戳格式：日期+时分），同时在控制台输出摘要。
@@ -683,6 +692,33 @@ TEST_<change-name>_<timestamp>_<short-random>
 - 如果 🟡WARN：根据 WARN 原因决定是否补充测试或进入 review
 - 如果 ❌FAIL：修复失败项后重新运行 /harness-test
 ```
+
+## CLI 速查（gate / ledger）
+
+> test 阶段常用子集。`--task` **仅在该 change 启用 checkpoint 时必需**。ledger status 枚举: ok|fail|not_run（没有 PASS）。`record` 还需 `--duration-ms`、`--evidence`，以及 `--files` 或 `--profile-input`+`--project`。
+> `--skills-root` 仅用于 `begin`（及 `lint-skills`）：必须是 adapter 根（如 `.cursor/skills`），不是 `scripts/` 子目录。**`close` 不需要 `--skills-root`**（该子命令不接受此参数）。
+
+```powershell
+# gate begin/close（phase=test；--task 仅 checkpoint 启用时必需；close 不需要 --skills-root）
+python <skills-root>/scripts/harness_gate.py begin --change <cn> --phase test --skills-root <skills-root> [--task N]
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase test --status OK [--task N]
+
+# ledger 记录 / 复用（--profile-input = verification key，不是文件路径）
+python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: N, Failures: 0" --coverage full --files "packages/core/src/index.ts"
+python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
+```
+
+### 常见报错对照
+
+| 报错 | 原因 | 处理 |
+|------|------|------|
+| `unsupported status: PASS` | ledger status 无 PASS | 改用 `ok` / `fail` / `not_run` |
+| `TASK_NUMBER_REQUIRED` | 该 change 启用了 checkpoint（如 foundation-gate pending） | 补 `--task N` |
+| skills-root / BUNDLE_IDENTITY_* | `begin` 未传或传了 `.../scripts` 子目录（`close` 不接受该参数） | 仅对 `begin` 显式传 adapter 根：`.cursor/skills` / `.claude/skills`（含 `.harness-build.json`） |
+| `--profile-input` 指向文件路径 | 参数语义是 verification key | 传 `compile` / `unitTestFull` 等 key，不是 JSON 路径 |
+| `record requires --files or a non-empty --profile-input file set` | 缺少输入文件集 | 补 `--files` 或 `--profile-input <key> --project <project>` |
+| `--profile-input requires --project` | can-reuse/record 展开 profile 需要项目根 | 补 `--project <project>` |
+| `record` 缺 `--duration-ms` / `--evidence` | 参数为必填 | 按模板补齐 |
 
 ## 结果分级规则
 
