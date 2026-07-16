@@ -37,6 +37,8 @@ export * from "./skill/fixer.js";
 export * from "./skill/agents.js";
 export * from "./skill-ir/diff.js";
 export * from "./skill-ir/semver.js";
+export * from "./sync/artifact-rebase.js";
+export * from "./sync/synchronize.js";
 export * from "./transaction/journal.js";
 export * from "./transaction/recovery.js";
 export * from "./transaction/transaction.js";

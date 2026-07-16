@@ -160,6 +160,16 @@ export async function runCli(
     });
   addCommonOptions(program.command("update"))
     .description("应用已批准的服务端产物")
+    .option(
+      "--conflict-strategy <strategy>",
+      "manual | keep-local | accept-remote（默认 manual；rename 冲突始终 manual）"
+    )
+    .option(
+      "--resolve <path=strategy>",
+      "单路径覆盖 keep-local|accept-remote（可重复）",
+      (value: string, previous: string[]) => [...previous, value],
+      [] as string[]
+    )
     .action(async (options: UpdateOptions) => {
       exitCode = await runUpdate(
         { ...program.opts<UpdateOptions>(), ...options },

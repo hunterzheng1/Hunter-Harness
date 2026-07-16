@@ -331,6 +331,53 @@ class TestGuardTests(unittest.TestCase):
             ["unrelated.txt"],
         )
 
+    def test_begin_close_auto_tracks_new_ignored_test_ut027(self) -> None:
+        preexisting = self.project / "src" / "test" / "java" / "ExistingTest.java"
+        self._write(preexisting, "class Existing {}\n")
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+        created = self.project / "src" / "test" / "java" / "NewTest.java"
+        self._write(created, "class New {}\n")
+        close = guard.close(self.project, self.change)
+        self.assertTrue(close["ok"], close)
+        self.assertIn("src/test/java/NewTest.java", close["files"])
+        manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
+        paths = {item["path"]: item["reason"] for item in manifest["files"]}
+        self.assertEqual(paths["src/test/java/NewTest.java"], "tdd-created")
+        self.assertNotIn("src/test/java/ExistingTest.java", paths)
+
+    def test_begin_close_auto_tracks_modified_ignored_test_ut028(self) -> None:
+        target = self.project / "src" / "test" / "java" / "MutableTest.java"
+        self._write(target, "before\n")
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+        self._write(target, "after\n")
+        close = guard.close(self.project, self.change)
+        self.assertTrue(close["ok"], close)
+        manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
+        self.assertEqual(len(manifest["files"]), 1)
+        self.assertEqual(manifest["files"][0]["reason"], "test-updated")
+
+    def test_preexisting_unchanged_ignored_test_not_tracked_ut030(self) -> None:
+        preexisting = self.project / "src" / "test" / "java" / "StableTest.java"
+        self._write(preexisting, "stable\n")
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+        close = guard.close(self.project, self.change)
+        self.assertTrue(close["ok"], close)
+        self.assertEqual(close["recordedCount"], 0)
+        self.assertFalse((self.change / "evidence" / "test-tracking.json").exists())
+
+    def test_close_rejects_snapshot_project_mismatch(self) -> None:
+        target = self.project / "src" / "test" / "java" / "StableTest.java"
+        self._write(target, "stable\n")
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+        snapshot_path = self.change / "evidence" / "test-guard-snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text("utf-8"))
+        snapshot["projectRoot"] = str(self.outside)
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+        result = guard.close(self.project, self.change)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "SNAPSHOT_INVALID")
+
 
 if __name__ == "__main__":
     unittest.main()

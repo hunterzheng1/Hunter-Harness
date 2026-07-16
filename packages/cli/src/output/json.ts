@@ -1,7 +1,7 @@
 import type { CliExitCode } from "@hunter-harness/contracts";
 
 export interface CliResult {
-  schema_version: 1;
+  schema_version: 1 | 2;
   command: "configure" | "update" | "push" | "refresh" | "cleanup";
   request_id: string;
   dry_run: boolean;

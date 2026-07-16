@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,18 @@ describe("hunter-harness update", () => {
     return vi.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === "string" ? input : input.toString());
       if (url.pathname.endsWith("/update-manifest")) {
+        const baseVersion = url.searchParams.get("base_project_version");
+        if (baseVersion === manifest.project_version) {
+          return json({
+            schema_version: 1,
+            project_id: "prj_update",
+            observed_project_version: manifest.project_version,
+            artifact_id: null,
+            artifact_manifest_url: null,
+            delta_available: false,
+            request_id: "req"
+          });
+        }
         return json({
           schema_version: 1,
           project_id: "prj_update",
@@ -546,5 +558,64 @@ describe("hunter-harness update", () => {
     expect(result).toContain("skill B body");
     expect(result).toContain("# Project agents");
     expect(result.match(/hunter-harness:start id=harness-skill/g)).toHaveLength(2);
+  });
+
+  it("API-001 advances baseline when applied plus policy-never acknowledged (exit 0)", async () => {
+    const applyPath = ".harness/knowledge/applied.md";
+    const applyOld = "apply-old\n";
+    const applyNew = "apply-new\n";
+    await seedBaseline({ [applyPath]: applyOld });
+    const policyFiles = Array.from({ length: 5 }, (_, index) => ({
+      path: `.harness/knowledge/project-local/ignored-${index}.md`,
+      local: `local-${index}\n`,
+      remote: `remote-${index}\n`
+    }));
+    for (const file of policyFiles) {
+      const dir = join(root, ".harness", "knowledge", "project-local");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, `ignored-${policyFiles.indexOf(file)}.md`), file.local);
+    }
+    const manifest = artifact([
+      {
+        operation: "modify",
+        path: applyPath,
+        file_kind: "user_editable",
+        base_content_sha256: sha256Bytes(applyOld),
+        content_sha256: sha256Bytes(applyNew),
+        size_bytes: Buffer.byteLength(applyNew)
+      },
+      ...policyFiles.map((file, index) => ({
+        operation: "modify" as const,
+        path: `.harness/knowledge/project-local/ignored-${index}.md`,
+        file_kind: "user_editable" as const,
+        base_content_sha256: sha256Bytes(file.local),
+        content_sha256: sha256Bytes(file.remote),
+        size_bytes: Buffer.byteLength(file.remote)
+      }))
+    ]);
+    const blobs: Record<string, string> = {
+      [sha256Bytes(applyNew)]: applyNew
+    };
+    for (const file of policyFiles) {
+      blobs[sha256Bytes(file.remote)] = file.remote;
+    }
+    const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest, blobs),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+    expect(code).toBe(0);
+    expect(await readFile(join(root, applyPath), "utf8")).toBe(applyNew);
+    for (const file of policyFiles) {
+      expect(await readFile(join(root, file.path), "utf8")).toBe(file.local);
+    }
+    const baseline = await readBaseline(root);
+    expect(baseline.complete_project_version).toBe("pv_1");
+    expect(baseline.files[policyFiles[0]?.path ?? ""]?.baseline_hash).toBe(
+      sha256Bytes(policyFiles[0]?.remote ?? "")
+    );
   });
 });

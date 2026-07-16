@@ -1,40 +1,24 @@
-import { lstat, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
-  artifactManifestSchema,
-  baselineManifestSchema,
-  canonicalJson,
   projectConfigSchema,
-  type ArtifactManifest,
   type FileOperation
 } from "@hunter-harness/contracts";
 import { parse as parseYaml } from "yaml";
 
 import { ApiError, HunterHarnessApiClient } from "../api/client.js";
 import { readLocalCredentials } from "../push/credentials.js";
-import { sha256Bytes, sha256File } from "../fs/hash.js";
-import {
-  extractManagedBlock,
-  extractSingleManagedBlockById,
-  removeManagedBlock,
-  upsertManagedBlock,
-  upsertManagedBlockById
-} from "../managed/managed-block.js";
-import { classifyFile, decideUpdate } from "../policy/file-policy.js";
-import { uuidV7 } from "../project/uuid-v7.js";
-import { atomicWriteFile, atomicWriteJson } from "../state/atomic.js";
 import { readBaseline } from "../state/baseline.js";
-import { acquireProtocolLock } from "../state/locks.js";
-import type { TransactionOperation } from "../transaction/journal.js";
-import { runTransaction, type TransactionOptions } from "../transaction/transaction.js";
+import type { TransactionOptions } from "../transaction/transaction.js";
+import type { UpdateConflict } from "./conflicts.js";
+import type { RebaseConflict } from "../sync/artifact-rebase.js";
 import {
-  managedBlockDirty,
-  operationAlreadyApplied,
-  operationSourcePath,
-  operationTargetPath,
-  type UpdateConflict
-} from "./conflicts.js";
+  synchronizeArtifacts,
+  type ConflictStrategy,
+  type PerPathResolveStrategy
+} from "../sync/synchronize.js";
+import { uuidV7 } from "../project/uuid-v7.js";
 
 export class UpdateWorkflowError extends Error {
   readonly exitCode: 3 | 4 | 5 | 7 | 8;
@@ -56,122 +40,34 @@ export interface UpdateProjectOptions {
   dryRun: boolean;
   fetch?: typeof globalThis.fetch;
   transactionOptions?: Omit<TransactionOptions, "id">;
+  conflictStrategy?: ConflictStrategy;
+  resolveOverrides?: ReadonlyMap<string, PerPathResolveStrategy>;
+  confirmConflictStrategy?: (
+    conflicts: readonly RebaseConflict[]
+  ) => Promise<ConflictStrategy | false>;
 }
 
-interface PreparedItem {
-  operation: FileOperation;
-  content: string | null;
-  finalContent: string | null;
-  equivalent: boolean;
+export interface UpdateProjectResult {
+  requestId: string;
+  projectId: string;
+  artifactId: string | null;
+  observedProjectVersion: string | null;
+  operations: readonly FileOperation[];
+  applied: string[];
+  acknowledged: UpdateConflict[];
+  resolvedKeepLocal: string[];
+  resolvedAcceptRemote: string[];
+  alreadyApplied: string[];
+  conflicts: RebaseConflict[];
+  skipped: UpdateConflict[];
+  transactionId: string | null;
+  dryRun: boolean;
+  baselineAdvanced: boolean;
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await lstat(path);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function optionalContent(path: string): Promise<string | null> {
-  return await pathExists(path) ? readFile(path, "utf8") : null;
-}
-
-function manifestPayloadHash(manifest: ArtifactManifest): string {
-  const payload: Partial<ArtifactManifest> = { ...manifest };
-  delete payload.manifest_sha256;
-  return sha256Bytes(canonicalJson(payload));
-}
-
-function expectedBase(operation: FileOperation): string | null {
-  return operation.operation === "add" ? null : operation.base_content_sha256;
-}
-
-function contentHash(operation: FileOperation): string | null {
-  return operation.operation === "delete" ? null : operation.content_sha256;
-}
-
-async function loadBlob(
-  root: string,
-  client: HunterHarnessApiClient,
-  artifactId: string,
-  operation: FileOperation,
-  requestId: string,
-  dryRun: boolean
-): Promise<string | null> {
-  if (operation.operation === "delete") {
-    return null;
-  }
-  const hash = operation.content_sha256;
-  const cacheRoot = join(root, ".harness", "cache", "server-artifacts", artifactId);
-  const cachePath = join(cacheRoot, "blobs", hash.replace(":", "_"));
-  if (await pathExists(cachePath) && await sha256File(cachePath) === hash) {
-    return readFile(cachePath, "utf8");
-  }
-  const bytes = await client.downloadArtifactBlob(artifactId, hash, requestId);
-  if (bytes.byteLength !== operation.size_bytes || sha256Bytes(bytes) !== hash) {
-    await rm(cachePath, { force: true });
-    throw new UpdateWorkflowError(
-      "artifact blob size or hash mismatch",
-      4,
-      "ARTIFACT_HASH_MISMATCH"
-    );
-  }
-  if (!dryRun) {
-    await atomicWriteFile(cachePath, bytes);
-  }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-}
-
-function nextBaselineEntry(
-  operation: FileOperation,
-  finalContent: string | null,
-  projectVersion: string | null
-) {
-  const block = finalContent === null ? null : extractManagedBlock(finalContent);
-  return {
-    baseline_hash: contentHash(operation),
-    local_hash_at_apply: finalContent === null ? null : sha256Bytes(finalContent),
-    file_kind: operation.file_kind,
-    last_applied_version: projectVersion,
-    deleted: operation.operation === "delete",
-    ...(block === null ? {} : { managed_block_hash: sha256Bytes(block) })
-  };
-}
-
-function transactionOperation(
-  item: PreparedItem
-): TransactionOperation | null {
-  if (item.equivalent) {
-    return null;
-  }
-  const operation = item.operation;
-  const target = operationTargetPath(operation);
-  if (operation.operation === "delete") {
-    return item.finalContent === null
-      ? { operation: "delete", path: target }
-      : { operation: "modify", path: target, content: item.finalContent };
-  }
-  if (operation.operation === "rename") {
-    return {
-      operation: "rename",
-      from_path: operation.from_path,
-      to_path: operation.to_path,
-      content: item.finalContent ?? item.content ?? ""
-    };
-  }
-  return {
-    operation: "modify",
-    path: target,
-    content: item.finalContent ?? item.content ?? ""
-  };
-}
-
-export async function updateProject(options: UpdateProjectOptions) {
+export async function updateProject(
+  options: UpdateProjectOptions
+): Promise<UpdateProjectResult> {
   const root = resolve(options.projectRoot);
   let project;
   try {
@@ -224,227 +120,26 @@ export async function updateProject(options: UpdateProjectOptions) {
     ...(options.fetch === undefined ? {} : { fetch: options.fetch })
   });
   try {
-    const discovery = await client.getUpdateManifest(
-      project.project.project_id,
-      {
-        base_project_version: baseline.complete_project_version,
-        base_manifest_hash: sha256Bytes(canonicalJson(baseline)),
-        adapter: project.adapters.enabled[0] ?? "claude-code",
-        profile: project.project.profiles[0] ?? "general"
-      },
-      requestId
-    );
-    if (!discovery.delta_available || discovery.artifact_id === null) {
-      return {
-        requestId,
-        projectId: project.project.project_id,
-        artifactId: null,
-        observedProjectVersion: discovery.observed_project_version,
-        operations: [],
-        applied: [],
-        skipped: [],
-        transactionId: null,
-        dryRun: options.dryRun
-      };
-    }
-    const manifest = artifactManifestSchema.parse(
-      await client.getArtifactManifest(discovery.artifact_id, requestId)
-    );
-    if (manifest.artifact_id !== discovery.artifact_id ||
-        manifest.project_id !== project.project.project_id ||
-        manifest.project_version === null ||
-        manifestPayloadHash(manifest) !== manifest.manifest_sha256) {
-      throw new UpdateWorkflowError("artifact manifest integrity check failed", 4, "ARTIFACT_HASH_MISMATCH");
-    }
-    const blobs = new Map<FileOperation, string | null>();
-    for (const operation of manifest.files) {
-      const policy = classifyFile(operationTargetPath(operation));
-      if (decideUpdate(policy, false).apply) {
-        blobs.set(operation, await loadBlob(
-          root, client, manifest.artifact_id, operation, requestId, options.dryRun
-        ));
-      }
-    }
-
-    const prepared: PreparedItem[] = [];
-    const skipped: UpdateConflict[] = [];
-    for (const operation of manifest.files) {
-      if (operationAlreadyApplied(operation, baseline, manifest.project_version)) {
-        continue;
-      }
-      const source = operationSourcePath(operation);
-      const target = operationTargetPath(operation);
-      const policy = classifyFile(target);
-      const staticDecision = decideUpdate(policy, false);
-      if (!staticDecision.apply) {
-        skipped.push({ path: target, operation: operation.operation, reason: staticDecision.reason });
-        continue;
-      }
-      const previous = baseline.files[source];
-      if (expectedBase(operation) !== (previous?.baseline_hash ?? null)) {
-        skipped.push({ path: target, operation: operation.operation, reason: "baseline-diverged" });
-        continue;
-      }
-      const sourceContent = await optionalContent(join(root, source));
-      const targetContent = target === source
-        ? sourceContent
-        : await optionalContent(join(root, target));
-      const incoming = blobs.get(operation) ?? null;
-      const incomingHash = contentHash(operation);
-      let equivalent = incomingHash !== null && targetContent !== null &&
-        sha256Bytes(targetContent) === incomingHash;
-      let dirty = false;
-      if (operation.operation === "add") {
-        if (targetContent !== null && !equivalent) {
-          if (policy.update_policy === "managed-block-only" && incoming !== null) {
-            const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
-            equivalent = extractManagedBlock(targetContent) === incomingBlock;
-            dirty = !equivalent;
-          } else {
-            dirty = true;
-          }
-        }
-      } else if (sourceContent === null) {
-        dirty = operation.operation !== "delete";
-      } else if (policy.update_policy === "managed-block-only") {
-        dirty = previous?.managed_block_hash === undefined
-          ? (previous?.local_hash_at_apply ?? previous?.baseline_hash) !==
-            sha256Bytes(sourceContent)
-          : managedBlockDirty(sourceContent, previous.managed_block_hash);
-      } else {
-        dirty = (previous?.local_hash_at_apply ?? previous?.baseline_hash) !==
-          sha256Bytes(sourceContent);
-      }
-      if (operation.operation === "rename" && targetContent !== null && !equivalent) {
-        dirty = true;
-      }
-      if (dirty) {
-        skipped.push({ path: target, operation: operation.operation, reason: "local-dirty" });
-        continue;
-      }
-
-      let finalContent = incoming;
-      if (policy.update_policy === "managed-block-only") {
-        if (operation.operation === "delete") {
-          finalContent = sourceContent === null ? null : removeManagedBlock(sourceContent);
-          equivalent = finalContent === sourceContent;
-        } else if (incoming !== null) {
-          const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
-          const incomingId = extractSingleManagedBlockById(incoming)?.id;
-          const blockId = operation.operation === "add" || operation.operation === "modify"
-            ? operation.block_id ?? incomingId
-            : undefined;
-          finalContent = blockId !== undefined
-            ? upsertManagedBlockById(targetContent ?? "", blockId, incomingBlock)
-            : upsertManagedBlock(targetContent ?? "", incomingBlock);
-          equivalent = finalContent === targetContent;
-        }
-      } else if (operation.operation === "delete" && sourceContent === null) {
-        equivalent = true;
-      }
-      prepared.push({ operation, content: incoming, finalContent, equivalent });
-    }
-
-    const applied = prepared.map((item) => operationTargetPath(item.operation));
-    if (options.dryRun) {
-      return {
-        requestId,
-        projectId: project.project.project_id,
-        artifactId: manifest.artifact_id,
-        observedProjectVersion: manifest.project_version,
-        operations: manifest.files,
-        applied,
-        skipped,
-        transactionId: null,
-        dryRun: true
-      };
-    }
-
-    await atomicWriteJson(join(
-      root,
-      ".harness",
-      "cache",
-      "server-artifacts",
-      manifest.artifact_id,
-      "manifest.json"
-    ), manifest);
-
-    const lock = await acquireProtocolLock(root, "update", { requestId });
-    try {
-      const nextBaseline = baselineManifestSchema.parse(structuredClone(baseline));
-      for (const item of prepared) {
-        const target = operationTargetPath(item.operation);
-        nextBaseline.files[target] = nextBaselineEntry(
-          item.operation,
-          item.finalContent,
-          manifest.project_version
-        );
-        if (item.operation.operation === "rename") {
-          nextBaseline.files[item.operation.from_path] = {
-            baseline_hash: null,
-            local_hash_at_apply: null,
-            file_kind: item.operation.file_kind,
-            last_applied_version: manifest.project_version,
-            deleted: true
-          };
-        }
-      }
-      if (skipped.length === 0) {
-        nextBaseline.complete_project_version = manifest.project_version;
-        nextBaseline.artifact_manifest_hash = manifest.manifest_sha256;
-        nextBaseline.latest_artifact_id = manifest.artifact_id;
-      }
-      const transactionId = "tx_update_" + Date.now() + "_" + uuidV7();
-      const reportPath = ".harness/reports/update-" + requestId + ".json";
-      const report = {
-        schema_version: 1,
-        request_id: requestId,
-        artifact_id: manifest.artifact_id,
-        observed_project_version: manifest.project_version,
-        status: skipped.length === 0 ? "applied" : "partial_due_to_dirty",
-        applied,
-        skipped,
-        transaction_id: transactionId
-      };
-      const operations = prepared
-        .map((item) => transactionOperation(item))
-        .filter((item): item is TransactionOperation => item !== null);
-      operations.push(
-        {
-          operation: "modify",
-          path: ".harness/state/baseline/manifest.json",
-          content: JSON.stringify(nextBaseline, null, 2) + "\n"
-        },
-        {
-          operation: "add",
-          path: reportPath,
-          content: JSON.stringify(report, null, 2) + "\n"
-        },
-        {
-          operation: "modify",
-          path: ".harness/state/local/last-update.json",
-          content: JSON.stringify(report, null, 2) + "\n"
-        }
-      );
-      await runTransaction(root, operations, {
-        id: transactionId,
-        kind: "update",
-        ...(options.transactionOptions ?? {})
-      });
-      return {
-        requestId,
-        projectId: project.project.project_id,
-        artifactId: manifest.artifact_id,
-        observedProjectVersion: manifest.project_version,
-        operations: manifest.files,
-        applied,
-        skipped,
-        transactionId,
-        dryRun: false
-      };
-    } finally {
-      await lock.release();
-    }
+    const result = await synchronizeArtifacts({
+      projectRoot: root,
+      project,
+      client,
+      requestId,
+      dryRun: options.dryRun,
+      ...(options.conflictStrategy === undefined
+        ? {}
+        : { conflictStrategy: options.conflictStrategy }),
+      ...(options.resolveOverrides === undefined
+        ? {}
+        : { resolveOverrides: options.resolveOverrides }),
+      ...(options.confirmConflictStrategy === undefined
+        ? {}
+        : { confirmConflictStrategy: options.confirmConflictStrategy }),
+      ...(options.transactionOptions === undefined
+        ? {}
+        : { transactionOptions: options.transactionOptions })
+    }, baseline);
+    return result;
   } catch (error) {
     if (error instanceof UpdateWorkflowError) {
       throw error;
@@ -456,8 +151,17 @@ export async function updateProject(options: UpdateProjectOptions) {
         error.code
       );
     }
+    if (error instanceof Error && error.message === "ARTIFACT_HASH_MISMATCH") {
+      throw new UpdateWorkflowError("artifact blob size or hash mismatch", 4, "ARTIFACT_HASH_MISMATCH");
+    }
     if (error instanceof Error && error.name === "ZodError") {
       throw new UpdateWorkflowError("artifact schema validation failed", 7, "SCHEMA_VALIDATION_FAILED");
+    }
+    if (error instanceof Error && error.message.startsWith("DUPLICATE_ARTIFACT_ID")) {
+      throw new UpdateWorkflowError(error.message, 4, "DUPLICATE_ARTIFACT_ID");
+    }
+    if (error instanceof Error && error.message === "MAX_SYNC_ARTIFACT_ITERATIONS_EXCEEDED") {
+      throw new UpdateWorkflowError(error.message, 4, "SYNC_ITERATION_LIMIT");
     }
     throw new UpdateWorkflowError(
       error instanceof Error ? error.message : "update failed",

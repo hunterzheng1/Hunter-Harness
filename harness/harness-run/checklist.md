@@ -149,7 +149,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 最终构建只执行一次，如果前面已有构建成功证据，可复用 verification-ledger
 - [ ] 判断是否需要全量测试：改了公共模块/数据访问层/数据库迁移/权限认证/接口层/数据契约，或用户要求 full-run-validation → 执行测试命令（按技术栈，如 Java 的 `mvn test -pl <module> -o`）；否则跳过全量测试
 - [ ] 构建失败 → 先分析错误类型（见 reference.md 构建失败策略表）
-- [ ] **写入 verification-ledger.json**：`compile` 项必写（status/command/scope/evidence/时间戳/durationMs）；若执行了测试命令则 `unitTest` 项必写（testsRun/failures/errors/skipped/evidence）；未执行时标记 `NOT_RUN_BY_RUN`
+- [ ] **经 `harness_ledger.py record` 写入 ledger**（禁止 Write/Edit `verification-ledger.json`）：`compile` 项必写；若执行了测试则 `unitTest` 项必写；未执行时标记 `NOT_RUN_BY_RUN`
 - [ ] 顶层写入 `diffHash` / `currentHead` / `module` / `profile`；`diffHash` 必须执行 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json`，纳入 test-tracking manifest 中的 ignored tests；`currentHead`=`git rev-parse HEAD`
 - [ ] test/submit/package 阶段如果 diffHash 一致，可复用 run 的 compile/unitTest 结果
 
@@ -231,7 +231,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 ## 事件收尾记录
 
-- [ ] append `phase.end` 事件（`note` 含结束时间、耗时、结果、摘要、checkpoint commit 状态）
+- [ ] append `phase.end` **仅**通过 `harness_gate.py close`（禁止手工 Edit `events.ndjson` / 直接 append phase.end 绕过 close 校验）
 - [ ] 如果存在 🟡静态验证 P0 场景 → 下一步必须写 `必须先运行 /harness-test`，不得并列"提交代码"
 - [ ] 如果存在数据库迁移/DB 验证未完成 → 最终不得输出纯 ✅OK
 

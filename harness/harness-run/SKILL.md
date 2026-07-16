@@ -49,14 +49,16 @@ disallowed-tools:
 
 ## Workflow 概要
 
-0. 加载上下文（change-name、spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback）→ append `phase.start`
-0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5
+0. 加载上下文：先 `harness_change.py resolve [--change] --json`（多 active 缺参 → `CHANGE_SELECTION_REQUIRED`，禁止按 mtime 猜测）；读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（内部 claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）
+0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5；进入 TDD 前执行 `harness_test_guard.py begin --project . --change-dir ".harness/changes/<cn>" --json`
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
-2. 构建验证 + 写 ledger（`harness_ledger.py diff-hash --change-dir` 纳入 ignored tests，`reference.md` Step 2c）
+2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c
 3. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
-4. **关门检查**（10 项）+ 计划状态持久化
+4. **关门检查**（10 项）→ `harness_test_guard.py close` → **`harness_gate.py close --phase run --change <id> --status <OK|WARN|FAIL>`**（内部 phase.end + 释放租约；close 失败不得用自然语言宣称成功）
 
 **Fixback**：`--fixback` 或用户要求时读 `reports/review/fixback-*.md`；RED 优先；未选用则记 `fixback: advisory-not-applied`。
+
+**Foundation Gate**：若 `meta/implementation-checkpoints.json` 中 `foundation-gate` 为 pending，不得开始 plan 中任务 6+；由 `harness_gate.py` 硬阻断。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]
@@ -71,7 +73,8 @@ disallowed-tools:
 | **变更簇 TDD** | 一簇一次 RED/GREEN；低价值项豁免；新分支必须 RED |
 | **RED/GREEN** | RED 须有效；静态验证 ≠ 测试通过；greenfield 大重写豁免见 reference |
 | **Mapper/DB** | 纯 Mock 不得宣称 DB 验证通过；迁移脚本**永不自动执行** |
-| **探测/ledger** | 基础设施先探测；每次构建/测试写 ledger；用 canonical `diff-hash --change-dir` |
+| **探测/ledger** | 基础设施先探测；每次构建/测试经 `harness_ledger.py record`；禁止手写 ledger JSON；用 canonical `diff-hash --change-dir` |
+| **Gate/Guard** | 阶段边界只用 `harness_gate.py begin/close`；测试跟踪用 `harness_test_guard.py begin/close/record/stage` |
 | **预存变更** | 保留 → baseline 隔离；存在则最终 ≥ 🟡WARN |
 | **关门/状态** | 10 项关门检查；持久化 run-task-status；P0 静态-only 不得建议 submit |
 | **Worktree** | `requested=true` 时代码只写 worktree |

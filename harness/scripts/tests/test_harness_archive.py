@@ -848,5 +848,37 @@ class ReplayLegacyWithoutEventsTests(unittest.TestCase):
         self.assertEqual(before, after, "replay must not mutate archive contents")
 
 
+class ReviewDetectionTests(unittest.TestCase):
+    """UT-042: execution-log mention of harness-review must not imply review ran."""
+
+    def setUp(self) -> None:
+        self.change_dir = Path(tempfile.mkdtemp(prefix="archive-review-"))
+        self.addCleanup(lambda: shutil.rmtree(self.change_dir, ignore_errors=True))
+
+    def test_log_mention_without_events_is_not_review_ran(self) -> None:
+        _write(
+            self.change_dir / "logs" / "execution-log.md",
+            "# log\n\nNext step: run harness-review after tests.\n",
+        )
+        events: list[dict] = []
+        self.assertFalse(ha.review_evidence_present(self.change_dir, events))
+        summary = ha._review_summary(self.change_dir, None, events)
+        self.assertEqual(summary["status"], "ADVISORY_NOT_RUN")
+
+    def test_review_phase_end_event_counts_as_review_ran(self) -> None:
+        events = [
+            {
+                "schema_version": 3,
+                "id": "evt-1",
+                "timestamp": "2026-07-16T12:00:00+08:00",
+                "phase": "review",
+                "type": "phase.end",
+                "status": "OK",
+            }
+        ]
+        self.assertTrue(ha.review_phase_completed(events))
+        self.assertTrue(ha.review_evidence_present(self.change_dir, events))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 MODE = "force-track-touched"
 MANIFEST_REL = Path("evidence") / "test-tracking.json"
+SNAPSHOT_REL = Path("evidence") / "test-guard-snapshot.json"
 PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
 REASONS = ("tdd-created", "stale-test-repair", "test-updated")
 
@@ -444,6 +445,157 @@ def _stage_locked(
         temp_index.unlink(missing_ok=True)
 
 
+def _glob_files_for_pattern(base: Path, pattern: str) -> list[Path]:
+    normalized = pattern.replace("\\", "/")
+    if normalized.endswith("/**"):
+        prefix = normalized[:-3].rstrip("/")
+        root = base / prefix
+        if not root.is_dir():
+            return []
+        return [path for path in root.rglob("*") if path.is_file()]
+    return [path for path in base.glob(normalized) if path.is_file()]
+
+
+def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
+    """Map repo-relative test path -> sha256 for all allowed existing files."""
+    found: dict[str, str] = {}
+    config = _profile_config(project_root)
+    if config is None:
+        patterns = ["test/**", "tests/**", "src/test/**"]
+    else:
+        patterns, _excluded = config
+    base = project_root.resolve()
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in _glob_files_for_pattern(base, pattern):
+            resolved = match.resolve()
+            if not _inside(resolved, base):
+                continue
+            rel = resolved.relative_to(base).as_posix()
+            if rel in seen or not _allowed_test_path(project_root, rel):
+                continue
+            seen.add(rel)
+            found[rel] = _sha256(resolved)
+    return found
+
+
+def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
+    action = "begin"
+    project_root = Path(project).resolve()
+    change_root = _change_dir(project_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    manifest_path = _manifest_path(project_root, change_root)
+    if manifest_path is None:
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+    snapshot_path = change_root / SNAPSHOT_REL
+    if not _manifest_target_inside(project_root, snapshot_path):
+        return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
+
+    files = _enumerate_allowed_test_files(project_root)
+    snapshot = {
+        "schemaVersion": SCHEMA_VERSION,
+        "mode": MODE,
+        "projectRoot": str(project_root),
+        "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "files": [
+            {"path": rel, "sha256": digest, "ignored": _is_ignored(project_root, rel)}
+            for rel, digest in sorted(files.items())
+        ],
+    }
+    _write_json(snapshot_path, snapshot)
+    return _result(
+        True,
+        action,
+        "SNAPSHOT_CAPTURED",
+        list(files),
+        snapshotPath=str(snapshot_path),
+        fileCount=len(files),
+    )
+
+
+def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
+    action = "close"
+    project_root = Path(project).resolve()
+    change_root = _change_dir(project_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    snapshot_path = change_root / SNAPSHOT_REL
+    if not snapshot_path.is_file():
+        return _result(False, action, "SNAPSHOT_MISSING", [])
+    try:
+        snapshot = _read_json(snapshot_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result(False, action, "SNAPSHOT_INVALID", [], error=str(exc))
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schemaVersion") != SCHEMA_VERSION
+        or snapshot.get("projectRoot") != str(project_root)
+    ):
+        return _result(False, action, "SNAPSHOT_INVALID", [])
+
+    before_entries = snapshot.get("files")
+    if not isinstance(before_entries, list):
+        return _result(False, action, "SNAPSHOT_INVALID", [])
+    before: dict[str, dict[str, Any]] = {}
+    for item in before_entries:
+        if not isinstance(item, dict):
+            return _result(False, action, "SNAPSHOT_INVALID", [])
+        rel = item.get("path")
+        digest = item.get("sha256")
+        if not isinstance(rel, str) or not rel or not isinstance(digest, str):
+            return _result(False, action, "SNAPSHOT_INVALID", [])
+        path, normalized, error = _validate_file(project_root, rel)
+        if error:
+            return _result(False, action, error, [rel])
+        if normalized != rel or path is None:
+            return _result(False, action, "PATH_ESCAPE", [rel])
+        before[rel] = item
+
+    current = _enumerate_allowed_test_files(project_root)
+    for rel in current:
+        path, normalized, error = _validate_file(project_root, rel)
+        if error:
+            return _result(False, action, error, [rel])
+        if normalized != rel or path is None:
+            return _result(False, action, "PATH_ESCAPE", [rel])
+
+    touched: list[tuple[str, str]] = []
+    for rel, digest in current.items():
+        if rel not in before:
+            touched.append((rel, "tdd-created"))
+            continue
+        if before[rel]["sha256"] != digest:
+            touched.append((rel, "test-updated"))
+
+    recorded: list[str] = []
+    for rel, reason in touched:
+        result = record(project_root, change_root, [str(project_root / rel)], reason)
+        if not result.get("ok"):
+            code = result.get("code", "RECORD_FAILED")
+            if code == "TEST_PATH_NOT_ALLOWED":
+                return _result(False, action, "UNCLASSIFIABLE_TEST", [rel])
+            return result
+        recorded.append(rel)
+
+    return _result(
+        True,
+        action,
+        "CLOSED",
+        recorded,
+        recordedCount=len(recorded),
+        unchangedPreexisting=len(before) - sum(1 for rel, _ in touched if rel in before),
+    )
+
+
+def mark(
+    project: Path | str,
+    change_dir: Path | str,
+    files: list[str],
+) -> dict[str, Any]:
+    return record(project, change_dir, files, "stale-test-repair")
+
+
 def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "stage"
     project_root = Path(project).resolve()
@@ -488,10 +640,30 @@ def main(argv: list[str] | None = None) -> int:
     stage_parser.add_argument("--project", required=True)
     stage_parser.add_argument("--change-dir", required=True)
     stage_parser.add_argument("--json", action="store_true")
+    begin_parser = sub.add_parser("begin")
+    begin_parser.add_argument("--project", required=True)
+    begin_parser.add_argument("--change-dir", required=True)
+    begin_parser.add_argument("--json", action="store_true")
+    close_parser = sub.add_parser("close")
+    close_parser.add_argument("--project", required=True)
+    close_parser.add_argument("--change-dir", required=True)
+    close_parser.add_argument("--json", action="store_true")
+    mark_parser = sub.add_parser("mark")
+    mark_parser.add_argument("--project", required=True)
+    mark_parser.add_argument("--change-dir", required=True)
+    mark_parser.add_argument("--files", required=True)
+    mark_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.action == "record":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
         result = record(args.project, args.change_dir, files, args.reason)
+    elif args.action == "begin":
+        result = begin(args.project, args.change_dir)
+    elif args.action == "close":
+        result = close(args.project, args.change_dir)
+    elif args.action == "mark":
+        files = [item.strip() for item in args.files.split(",") if item.strip()]
+        result = mark(args.project, args.change_dir, files)
     else:
         result = stage(args.project, args.change_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2 if args.json else None))
