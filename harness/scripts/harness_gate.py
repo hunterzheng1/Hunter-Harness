@@ -15,10 +15,12 @@ Python 3.10+, stdlib only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -117,11 +119,19 @@ def checkpoint_status(checkpoints: dict[str, Any] | None, checkpoint_id: str) ->
 
 
 def foundation_gate_blocks(task_number: int | None, change_dir: Path) -> dict[str, Any] | None:
-    if task_number is None or task_number < 6:
-        return None
     checkpoints = load_checkpoints(change_dir)
     status = checkpoint_status(checkpoints, "foundation-gate")
     if status == "approved":
+        return None
+    if task_number is None:
+        return {
+            "ok": False,
+            "code": "TASK_NUMBER_REQUIRED",
+            "message": "--task is required while foundation-gate is pending",
+            "checkpointId": "foundation-gate",
+            "checkpointStatus": status,
+        }
+    if task_number < 6:
         return None
     return {
         "ok": False,
@@ -240,7 +250,87 @@ def validate_ledger_for_phase_close(
     }
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_identity(
+    project: Path,
+    skills_root: Path,
+    executor_tool: str | None,
+) -> dict[str, Any]:
+    skills_root = skills_root.resolve()
+    build_path = skills_root / ".harness-build.json"
+    if not build_path.is_file():
+        raise ValueError("BUNDLE_IDENTITY_MISSING: refresh the selected Harness adapter")
+    build = _read_json(build_path)
+    if not isinstance(build, dict) or build.get("schemaVersion") != 1:
+        raise ValueError("BUNDLE_IDENTITY_INVALID: .harness-build.json schema")
+    agent = str(build.get("agent") or "").strip()
+    core_hash = str(build.get("coreHash") or "").strip()
+    if not agent or not core_hash:
+        raise ValueError("BUNDLE_IDENTITY_INVALID: agent/coreHash is required")
+    if executor_tool and executor_tool != agent:
+        raise ValueError(f"BUNDLE_IDENTITY_MISMATCH: executor {executor_tool} uses {agent} bundle")
+
+    context = _read_json(project / ".harness" / "context-index.json")
+    installed = _read_json(
+        project / ".harness" / "state" / "local" / "installed-harness-bundle.json"
+    )
+    if not isinstance(context, dict) or not isinstance(installed, dict):
+        raise ValueError("BUNDLE_IDENTITY_INVALID: context or installed state")
+    adapters = context.get("project", {}).get("adapters", {})
+    adapter = adapters.get(agent) if isinstance(adapters, dict) else None
+    if not isinstance(adapter, dict):
+        raise ValueError(f"BUNDLE_IDENTITY_MISMATCH: adapter {agent} is not configured")
+    configured_root = (project / str(adapter.get("skills_root") or "")).resolve()
+    if configured_root != skills_root:
+        raise ValueError("BUNDLE_IDENTITY_MISMATCH: skills root differs from context-index")
+    bundle = context.get("skill_bundles", {}).get(agent)
+    if not isinstance(bundle, dict):
+        raise ValueError("BUNDLE_IDENTITY_INVALID: context bundle metadata missing")
+    registry_version = str(bundle.get("registry_version") or "")
+    bundle_hash = str(bundle.get("bundle_hash") or "")
+    profile = str((installed.get("profiles") or {}).get(agent) or "")
+    manifests = installed.get("manifests")
+    manifest = next((item for item in manifests if isinstance(item, dict)
+                     and item.get("adapter") == agent and item.get("profile") == profile), None) \
+        if isinstance(manifests, list) else None
+    if not isinstance(manifest, dict) or \
+            str(manifest.get("bundle_version") or "") != registry_version or \
+            str(manifest.get("bundle_manifest_hash") or "") != bundle_hash:
+        raise ValueError("BUNDLE_IDENTITY_MISMATCH: installed manifest differs from context-index")
+    try:
+        marker_target = build_path.relative_to(project).as_posix()
+    except ValueError as exc:
+        raise ValueError("BUNDLE_IDENTITY_MISMATCH: skills root is outside project") from exc
+    files = installed.get("files")
+    marker = next((item for item in files if isinstance(item, dict)
+                   and item.get("owner") == agent
+                   and str(item.get("target_path") or "").replace("\\", "/") == marker_target), None) \
+        if isinstance(files, list) else None
+    actual_hash = _sha256_file(build_path)
+    if not isinstance(marker, dict) or str(marker.get("sha256") or "") != actual_hash:
+        raise ValueError("BUNDLE_IDENTITY_MISMATCH: installed build marker hash drifted; refresh required")
+    return {
+        "skillsRoot": str(skills_root),
+        "registryVersion": registry_version,
+        "bundleHash": bundle_hash,
+        "coreHash": core_hash,
+        "overlay": str(build.get("overlay") or "none"),
+        "profile": profile,
+        "adapter": agent,
+        "buildMarkerHash": actual_hash,
+        "contextIndexPresent": True,
+    }
+
+
 def read_identity(skills_root: Path) -> dict[str, Any]:
+    """Backward-compatible marker reader used by callers that only need display data."""
     identity: dict[str, Any] = {"skillsRoot": str(skills_root.resolve())}
     build_path = skills_root / ".harness-build.json"
     if build_path.is_file():
@@ -344,6 +434,9 @@ def append_phase_event(
     note: str = "",
     identity: dict[str, Any] | None = None,
     run_id: str | None = None,
+    executor_tool: str | None = None,
+    executor_agent: str | None = None,
+    executor_model: str | None = None,
 ) -> dict[str, Any]:
     events_file = he.events_path(change_dir)
     existing = he.load_events(events_file)
@@ -365,9 +458,9 @@ def append_phase_event(
         reason=None,
         run_id=run_id,
         attempt=None,
-        executor_tool=None,
-        executor_agent=None,
-        executor_model=None,
+        executor_tool=executor_tool,
+        executor_agent=executor_agent,
+        executor_model=executor_model,
         handoff_from_tool=None,
         handoff_reason=None,
     )
@@ -396,6 +489,15 @@ def append_phase_event(
     }
 
 
+def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -> bool:
+    return any(
+        event.get("phase") == phase
+        and event.get("type") == type_
+        and event.get("run_id") == run_id
+        for event in he.load_events(he.events_path(change_dir))
+    )
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     project = hc.resolve_main_project_root()
@@ -422,7 +524,27 @@ def cmd_begin(args: argparse.Namespace) -> int:
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
 
-    run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID", f"run-{os.getpid()}")
+    executor_tool = args.executor_tool or os.environ.get("HUNTER_HARNESS_TOOL")
+    if not args.skills_root:
+        return emit_error(
+            "BUNDLE_IDENTITY_REQUIRED",
+            "--skills-root is required; refresh the selected Harness adapter if identity is missing",
+            as_json=as_json,
+        )
+    try:
+        identity = validate_identity(
+            project, Path(args.skills_root).expanduser().resolve(), executor_tool
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return emit_error("BUNDLE_IDENTITY_INVALID", str(exc), as_json=as_json)
+    executor_tool = executor_tool or str(identity.get("adapter") or "") or None
+    explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
+    current_lease = hc.inspect_lease(project, resolved["changeId"])
+    run_id = explicit_run_id or (
+        str(current_lease.get("runId"))
+        if isinstance(current_lease, dict) and current_lease.get("phase") == args.phase
+        else "run-" + uuid.uuid4().hex
+    )
     claim = hc.claim_lease(
         project,
         change_id=resolved["changeId"],
@@ -438,18 +560,25 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in claim.items() if k not in {"ok", "message", "code"}},
         )
 
-    identity = None
-    if args.skills_root:
-        identity = read_identity(Path(args.skills_root).expanduser().resolve())
-
-    event_result = append_phase_event(
-        change_dir,
-        phase=args.phase,
-        type_="phase.start",
-        note=args.note or "",
-        identity=identity,
-        run_id=run_id,
-    )
+    try:
+        event_result = {"ok": True, "skipped": True, "reason": "already-recorded"} \
+            if _phase_event_exists(change_dir, args.phase, "phase.start", run_id) \
+            else append_phase_event(
+                change_dir,
+                phase=args.phase,
+                type_="phase.start",
+                note=args.note or "",
+                identity=identity,
+                run_id=run_id,
+                executor_tool=executor_tool,
+                executor_agent=args.executor_agent or os.environ.get("HUNTER_HARNESS_AGENT"),
+                executor_model=args.executor_model or os.environ.get("HUNTER_HARNESS_MODEL"),
+            )
+    except BaseException:
+        hc.release_lease(
+            project, change_id=resolved["changeId"], phase=args.phase, run_id=run_id
+        )
+        raise
 
     payload = {
         "ok": True,
@@ -514,7 +643,18 @@ def cmd_close(args: argparse.Namespace) -> int:
                 extra=guard_result,
             )
 
-    run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID", f"run-{os.getpid()}")
+    explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
+    current_lease = hc.inspect_lease(project, resolved["changeId"])
+    if current_lease is None:
+        return emit_error("LEASE_ABSENT", "no active lease for phase close", as_json=as_json)
+    run_id = explicit_run_id or str(current_lease.get("runId") or "")
+    if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
+        return emit_error(
+            "LEASE_OWNER_MISMATCH",
+            "active lease does not match close phase/run-id",
+            as_json=as_json,
+            extra={"holder": current_lease},
+        )
     event_result = append_phase_event(
         change_dir,
         phase=args.phase,
@@ -522,7 +662,9 @@ def cmd_close(args: argparse.Namespace) -> int:
         status=args.status,
         note=args.note or "",
         run_id=run_id,
-    )
+    ) if not _phase_event_exists(change_dir, args.phase, "phase.end", run_id) else {
+        "ok": True, "skipped": True, "reason": "already-recorded"
+    }
 
     release = hc.release_lease(
         project,
@@ -599,35 +741,36 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
         return emit_error("INVALID_CHECKPOINT_ACTION", args.checkpoint_action, as_json=as_json)
 
     checkpoints = load_checkpoints(change_dir)
-    if checkpoints is None:
-        checkpoints = {
-            "schemaVersion": 1,
-            "changeName": resolved["changeId"],
-            "checkpoints": [],
-        }
-    items = checkpoints.setdefault("checkpoints", [])
-    if not isinstance(items, list):
-        items = []
-        checkpoints["checkpoints"] = items
-    found = False
-    for item in items:
-        if isinstance(item, dict) and item.get("id") == args.id:
-            item["status"] = "approved"
-            item["approvedAt"] = hc.now_iso()
-            if args.reviewer:
-                item["approvedBy"] = args.reviewer
-            found = True
-            break
-    if not found:
-        items.append(
-            {
-                "id": args.id,
-                "status": "approved",
-                "approvedAt": hc.now_iso(),
-                "approvedBy": args.reviewer or "manual",
-                "blocking": True,
-            }
+    items = checkpoints.get("checkpoints") if isinstance(checkpoints, dict) else None
+    item = next((candidate for candidate in items if isinstance(candidate, dict)
+                 and candidate.get("id") == args.id), None) if isinstance(items, list) else None
+    if item is None:
+        return emit_error("CHECKPOINT_NOT_FOUND", f"checkpoint not found: {args.id}", as_json=as_json)
+    expected_reviewer = str(item.get("reviewerTool") or "")
+    if not args.reviewer or (expected_reviewer and args.reviewer != expected_reviewer):
+        return emit_error(
+            "CHECKPOINT_REVIEWER_MISMATCH",
+            f"checkpoint requires reviewer {expected_reviewer or 'explicit reviewer'}",
+            as_json=as_json,
         )
+    required_report = str(item.get("requiredReport") or "")
+    report_path = change_dir / required_report
+    if not required_report or not report_path.is_file() or report_path.stat().st_size == 0:
+        return emit_error(
+            "CHECKPOINT_REPORT_MISSING",
+            f"required report is missing: {required_report or '<unset>'}",
+            as_json=as_json,
+        )
+    report_text = report_path.read_text(encoding="utf-8", errors="replace")
+    if not re.search(r"(?im)^foundation-gate:\s*approved\s*$", report_text):
+        return emit_error(
+            "CHECKPOINT_REPORT_NOT_APPROVED",
+            "required report does not contain 'foundation-gate: approved'",
+            as_json=as_json,
+        )
+    item["status"] = "approved"
+    item["approvedAt"] = hc.now_iso()
+    item["approvedBy"] = args.reviewer
     _write_json(path, checkpoints)
     payload = {
         "ok": True,

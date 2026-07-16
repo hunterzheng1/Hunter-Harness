@@ -298,6 +298,20 @@ def _lease_expired(lease: dict[str, Any]) -> bool:
     return dt.datetime.now().astimezone() >= exp_dt
 
 
+def inspect_lease(project_root: Path, change_id: str) -> dict[str, Any] | None:
+    """Return the current non-expired lease without mutating it."""
+    path = _lease_path(project_root, change_id)
+    if not path.is_file():
+        return None
+    try:
+        lease = _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(lease, dict) or _lease_expired(lease):
+        return None
+    return lease
+
+
 def claim_lease(
     project_root: Path,
     *,
@@ -326,14 +340,12 @@ def claim_lease(
         except (OSError, json.JSONDecodeError):
             existing = None
         if isinstance(existing, dict) and not _lease_expired(existing):
-            same_owner = (
-                str(existing.get("runId")) == run_id
-                and int(existing.get("pid", -1)) == os.getpid()
-            )
+            same_owner = str(existing.get("runId")) == run_id
             if same_owner:
                 existing.update(
                     {
                         "phase": phase,
+                        "pid": os.getpid(),
                         "expiresAt": expires.isoformat(timespec="milliseconds"),
                         "refreshedAt": now.isoformat(timespec="milliseconds"),
                     }

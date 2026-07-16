@@ -145,6 +145,23 @@ class TestGuardTests(unittest.TestCase):
         manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
         self.assertEqual(len(manifest["files"]), len(files))
 
+    def test_exclusive_lock_retries_transient_windows_permission_error(self) -> None:
+        lock_path = self.change / "evidence" / "transient.lock"
+        real_open = guard.os.open
+        attempts = 0
+
+        def flaky_open(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise PermissionError("Windows delete-pending lock file")
+            return real_open(*args, **kwargs)
+
+        with mock.patch.object(guard.os, "open", side_effect=flaky_open):
+            with guard._exclusive_lock(lock_path, wait_seconds=0.2):
+                self.assertTrue(lock_path.exists())
+        self.assertEqual(attempts, 2)
+
     def test_record_rejects_tampered_existing_manifest(self) -> None:
         first = self.project / "src" / "test" / "java" / "FirstTest.java"
         second = self.project / "src" / "test" / "java" / "SecondTest.java"

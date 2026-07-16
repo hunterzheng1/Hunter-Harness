@@ -7,6 +7,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { canonicalJson } from "@hunter-harness/contracts";
+import { sha256Bytes } from "@hunter-harness/core";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -145,9 +147,11 @@ describe("hunter-harness push", () => {
     expect(code).toBe(8);
   });
 
-  it("resolves first project, uploads blobs, finalizes, and does not advance files", async () => {
+  it("API-007 advances baseline after Direct Publish and allows an immediate second push", async () => {
     const requests: string[] = [];
     let requestedHash = "";
+    let proposalFiles: Array<Record<string, unknown>> = [];
+    let finalizeCount = 0;
     const fetch = vi.fn(async (
       input: string | URL | Request,
       init?: RequestInit
@@ -170,23 +174,51 @@ describe("hunter-harness push", () => {
           request_id: "req"
         });
       }
+      if (url.endsWith("/api/v1/projects/prj_demo")) {
+        return json({
+          schema_version: 1,
+          project_id: "prj_demo",
+          display_name: "demo",
+          role: "owner",
+          latest_project_version: "pv_demo_1",
+          latest_artifact_id: "art_demo",
+          lifecycle_state: "active",
+          current_files_version: "pv_demo_1",
+          current_file_count: proposalFiles.length,
+          updated_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+          request_id: "req_get"
+        });
+      }
+      if (url.includes("/update-manifest")) {
+        return json({
+          schema_version: 1,
+          project_id: "prj_demo",
+          observed_project_version: "pv_demo_1",
+          artifact_id: null,
+          artifact_manifest_url: null,
+          delta_available: false,
+          request_id: "req_update"
+        });
+      }
       if (url.endsWith("/proposal-sessions")) {
         const body = JSON.parse(String(init?.body)) as {
-          proposal_manifest: { files: Array<{ content_sha256?: string }> };
+          proposal_manifest: { files: Array<Record<string, unknown> & { content_sha256?: string }> };
         };
+        proposalFiles = body.proposal_manifest.files;
         requestedHash = body.proposal_manifest.files.find(
           (item) => item.content_sha256 !== undefined
         )?.content_sha256 ?? "";
         return json({
           session_id: "ups_demo",
           expires_at: "2026-06-21T00:00:00Z",
-          missing_blobs: [requestedHash],
+          missing_blobs: requestedHash ? [requestedHash] : [],
           max_chunk_bytes: 1024 * 1024,
           request_id: "req"
         }, 201);
       }
       if (url.endsWith("/blobs:query")) {
-        return json({ present: [], missing: [requestedHash], request_id: "req" });
+        return json({ present: [], missing: requestedHash ? [requestedHash] : [], request_id: "req" });
       }
       if (init?.method === "PUT" && url.includes("/blobs/")) {
         expect(new Headers(init.headers).get("Content-Range")).toMatch(
@@ -196,7 +228,8 @@ describe("hunter-harness push", () => {
       }
       if (url.endsWith("ups_demo:finalize")) {
         const body = JSON.parse(String(init?.body)) as { base_artifact_id: string | null };
-        expect(body.base_artifact_id).toBeNull();
+        expect(body.base_artifact_id).toBe(finalizeCount === 0 ? null : "art_demo");
+        finalizeCount += 1;
         return json({
           proposal_id: "prp_demo",
           status: "approved",
@@ -204,6 +237,16 @@ describe("hunter-harness push", () => {
           received_files: 1,
           request_id: "req"
         }, 201);
+      }
+      if (url.endsWith("/api/v1/artifacts/art_demo/manifest")) {
+        const payload = {
+          schema_version: 1,
+          project_id: "prj_demo",
+          project_version: "pv_demo_1",
+          artifact_id: "art_demo",
+          files: proposalFiles
+        };
+        return json({ ...payload, manifest_sha256: sha256Bytes(canonicalJson(payload)) });
       }
       throw new Error("unexpected request " + url);
     });
@@ -223,18 +266,43 @@ describe("hunter-harness push", () => {
       "/api/v1/proposal-sessions/ups_demo/blobs:query"
     ]);
     expect(requests.some((path) => path.includes("/blobs/sha256%3A"))).toBe(true);
-    expect(requests.at(-1)).toBe("/api/v1/proposal-sessions/ups_demo:finalize");
+    expect(requests).toContain("/api/v1/proposal-sessions/ups_demo:finalize");
+    expect(requests.at(-1)).toBe("/api/v1/artifacts/art_demo/manifest");
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { project: { project_id: string } };
     expect(project.project.project_id).toBe("prj_demo");
-    const baseline = JSON.parse(await readFile(
+    let baseline = JSON.parse(await readFile(
       join(root, ".harness", "state", "baseline", "manifest.json"), "utf8"
-    )) as { project_id: string; files: Record<string, unknown> };
-    expect(baseline).toMatchObject({ project_id: "prj_demo", files: {} });
+    )) as { project_id: string; complete_project_version: string | null; files: Record<string, unknown> };
+    const firstPushResult = JSON.parse(await readFile(join(
+      root, ".harness", "state", "local", "push-results", "prp_demo.json"
+    ), "utf8")) as { warning: string | null };
+    expect(firstPushResult.warning).toBeNull();
+    expect(baseline.project_id).toBe("prj_demo");
+    expect(baseline.complete_project_version).toBe("pv_demo_1");
+    expect(Object.keys(baseline.files).length).toBeGreaterThan(0);
     expect(await exists(join(
       root, ".harness", "state", "local", "push-results", "prp_demo.json"
     ))).toBe(true);
+
+    stdout = [];
+    stderr = [];
+    const secondCode = await runCli(["push", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+    expect(stderr.join("")).toBe("");
+    expect(secondCode).toBe(0);
+    expect(stderr.join("")).not.toMatch(/stale|update/i);
+    baseline = JSON.parse(await readFile(
+      join(root, ".harness", "state", "baseline", "manifest.json"), "utf8"
+    ));
+    expect(baseline.complete_project_version).toBe("pv_demo_1");
   });
 
   it("returns sensitive-blocked without contacting the server", async () => {

@@ -126,7 +126,7 @@ def _exclusive_lock(path: Path, *, wait_seconds: float) -> Any:
     while descriptor is None:
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError as exc:
+        except (FileExistsError, PermissionError) as exc:
             if time.monotonic() >= deadline:
                 raise LockUnavailable(str(path)) from exc
             time.sleep(0.01)

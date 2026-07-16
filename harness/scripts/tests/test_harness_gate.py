@@ -38,6 +38,9 @@ class HarnessGateTests(unittest.TestCase):
         self.change_dir = self.project / ".harness" / "changes" / "demo"
         self.change_dir.mkdir(parents=True)
         self._write_checkpoints("pending")
+        policy_target = self.project / "harness" / "contracts" / "workflow-policy.json"
+        policy_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / "harness" / "contracts" / "workflow-policy.json", policy_target)
         subprocess.run(["git", "init"], cwd=self.project, check=True, capture_output=True)
         subprocess.run(
             ["git", "config", "user.email", "test@example.com"],
@@ -74,6 +77,8 @@ class HarnessGateTests(unittest.TestCase):
                     "beforeTasks": [6, 7, 8, 9, 10],
                     "status": status,
                     "blocking": True,
+                    "reviewerTool": "codex",
+                    "requiredReport": "reports/review/foundation-gate-review.md",
                 }
             ],
         }
@@ -150,6 +155,114 @@ class HarnessGateTests(unittest.TestCase):
                 )
                 code = gate.cmd_begin(args)
         self.assertEqual(code, 1)
+
+    def test_begin_requires_task_number_while_foundation_is_pending(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
+            args = gate.build_parser().parse_args(
+                ["begin", "--phase", "run", "--change", "demo", "--json"]
+            )
+            self.assertEqual(gate.cmd_begin(args), 1)
+
+    def test_checkpoint_approve_requires_existing_report_and_expected_reviewer(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
+            missing = gate.build_parser().parse_args([
+                "checkpoint", "approve", "--id", "foundation-gate",
+                "--change", "demo", "--reviewer", "codex", "--json",
+            ])
+            self.assertEqual(gate.cmd_checkpoint(missing), 1)
+
+            report = self.change_dir / "reports" / "review" / "foundation-gate-review.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("# reviewed\n\nfoundation-gate: approved\n", encoding="utf-8")
+            wrong = gate.build_parser().parse_args([
+                "checkpoint", "approve", "--id", "foundation-gate",
+                "--change", "demo", "--reviewer", "claude-code", "--json",
+            ])
+            self.assertEqual(gate.cmd_checkpoint(wrong), 1)
+            self.assertEqual(gate.checkpoint_status(gate.load_checkpoints(self.change_dir), "foundation-gate"), "pending")
+
+            approved = gate.build_parser().parse_args([
+                "checkpoint", "approve", "--id", "foundation-gate",
+                "--change", "demo", "--reviewer", "codex", "--json",
+            ])
+            self.assertEqual(gate.cmd_checkpoint(approved), 0)
+            self.assertEqual(gate.checkpoint_status(gate.load_checkpoints(self.change_dir), "foundation-gate"), "approved")
+
+    def test_checkpoint_approve_rejects_unknown_id(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
+            args = gate.build_parser().parse_args([
+                "checkpoint", "approve", "--id", "invented-gate",
+                "--change", "demo", "--reviewer", "codex", "--json",
+            ])
+            self.assertEqual(gate.cmd_checkpoint(args), 1)
+
+    def test_begin_close_across_processes_reuses_run_id_and_writes_one_lifecycle(self) -> None:
+        self._write_checkpoints("approved")
+        skills_root = self.project / ".agents" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / ".harness-build.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "agent": "codex",
+                "overlay": "none",
+                "coreHash": "a" * 16,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        context = {
+            "schema_version": 2,
+            "project": {"adapters": {"codex": {"skills_root": ".agents/skills"}}},
+            "skill_bundles": {
+                "codex": {"registry_version": "0.2.6", "bundle_hash": "sha256:" + "b" * 64}
+            },
+        }
+        (self.project / ".harness" / "context-index.json").write_text(
+            json.dumps(context) + "\n", encoding="utf-8"
+        )
+        build_hash = gate._sha256_file(skills_root / ".harness-build.json")
+        installed = {
+            "schema_version": 4,
+            "profiles": {"codex": "general"},
+            "manifests": [{
+                "adapter": "codex", "profile": "general", "bundle_version": "0.2.6",
+                "bundle_manifest_hash": "sha256:" + "b" * 64,
+            }],
+            "files": [{
+                "owner": "codex", "target_path": ".agents/skills/.harness-build.json",
+                "sha256": build_hash,
+            }],
+        }
+        state = self.project / ".harness" / "state" / "local" / "installed-harness-bundle.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(installed) + "\n", encoding="utf-8")
+
+        common = [sys.executable, str(SCRIPTS_DIR / "harness_gate.py")]
+        begin = subprocess.run(
+            common + ["begin", "--phase", "review", "--change", "demo", "--task", "5",
+                      "--skills-root", str(skills_root), "--executor-tool", "codex", "--json"],
+            cwd=self.project, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(begin.returncode, 0, begin.stderr)
+        close = subprocess.run(
+            common + ["close", "--phase", "review", "--change", "demo", "--task", "5",
+                      "--status", "OK", "--json"],
+            cwd=self.project, capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+        self.assertEqual(close.returncode, 0, close.stderr)
+        events = [json.loads(line) for line in (self.change_dir / "events.ndjson").read_text("utf-8").splitlines()]
+        starts = [item for item in events if item["type"] == "phase.start"]
+        ends = [item for item in events if item["type"] == "phase.end"]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(len(ends), 1)
+        self.assertEqual(starts[0]["run_id"], ends[0]["run_id"])
+        self.assertEqual(starts[0]["executor_tool"], "codex")
+        self.assertFalse((self.project / ".harness" / "runtime" / "leases" / "demo.json").exists())
+        (skills_root / ".harness-build.json").write_text(
+            json.dumps({"schemaVersion": 1, "agent": "codex", "coreHash": "drifted"}) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(ValueError, "refresh required"):
+            gate.validate_identity(self.project, skills_root, "codex")
 
     def test_policy_loader_rejects_unknown_fields(self) -> None:
         raw = json.loads((REPO_ROOT / "harness" / "contracts" / "workflow-policy.json").read_text("utf-8"))

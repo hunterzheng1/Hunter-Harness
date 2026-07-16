@@ -771,18 +771,24 @@ export async function pushProject(options: PushProjectOptions) {
     }
     let pushWarning: string | undefined;
     if (finalized.artifact_id !== null) {
-      const publishedManifest = artifactManifestSchema.parse(
-        await client.getArtifactManifest(finalized.artifact_id, requestId)
-      );
-      const advanced = await advanceBaselineFromArtifact({
-        projectRoot: root,
-        manifest: publishedManifest,
-        requestId
-      }, baseline);
-      if (advanced.localChanged) {
-        pushWarning = "LOCAL_CHANGED_DURING_PUSH";
-      } else {
-        baseline = advanced.baseline;
+      try {
+        const publishedManifest = artifactManifestSchema.parse(
+          await client.getArtifactManifest(finalized.artifact_id, requestId)
+        );
+        const advanced = await advanceBaselineFromArtifact({
+          projectRoot: root,
+          manifest: publishedManifest,
+          requestId
+        }, baseline);
+        if (advanced.localChanged) {
+          pushWarning = "LOCAL_CHANGED_DURING_PUSH";
+        } else {
+          baseline = advanced.baseline;
+        }
+      } catch {
+        // Finalize is already committed server-side. A follow-up manifest read
+        // must never turn a successful publish into an apparent failed push.
+        pushWarning = "BASELINE_ADVANCE_DEFERRED";
       }
     }
     await atomicWriteJson(join(
@@ -800,6 +806,7 @@ export async function pushProject(options: PushProjectOptions) {
       status: finalized.status,
       artifact_id: finalized.artifact_id,
       operation_count: preview.operations.length,
+      warning: pushWarning ?? null,
       recorded_at: new Date().toISOString()
     });
     await rm(workflowPath, { force: true });
