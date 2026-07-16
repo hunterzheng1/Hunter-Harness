@@ -149,7 +149,8 @@ def checkpoint_status(checkpoints: dict[str, Any] | None, checkpoint_id: str) ->
 def foundation_gate_blocks(task_number: int | None, change_dir: Path) -> dict[str, Any] | None:
     checkpoints = load_checkpoints(change_dir)
     status = checkpoint_status(checkpoints, "foundation-gate")
-    if status == "approved":
+    # missing = checkpoint not enabled for this change (no file / no entry).
+    if status in {"approved", "missing"}:
         return None
     if task_number is None:
         return {
@@ -174,8 +175,25 @@ def foundation_gate_blocks(task_number: int | None, change_dir: Path) -> dict[st
     }
 
 
-def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> list[str]:
+def is_degraded_ledger_entry(entry: dict[str, Any]) -> bool:
+    """NOT_RUN + evidence starting with 'DEGRADED: <non-empty reason>'."""
+    if entry.get("status") != "NOT_RUN":
+        return False
+    evidence = str(entry.get("evidence") or "").strip()
+    if not evidence.startswith("DEGRADED:"):
+        return False
+    reason = evidence.split(":", 1)[1].strip()
+    return bool(reason)
+
+
+def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[list[str], bool]:
+    """Internal helper for ledger close validation (not a public API).
+
+    Returns ``(missing_fields, degraded_ok)`` where ``degraded_ok`` is True only when
+    the entry is a valid DEGRADED NOT_RUN record with no other missing fields.
+    """
     missing: list[str] = []
+    degraded = is_degraded_ledger_entry(entry)
     for field in LEDGER_V2_REQUIRED_ENTRY_FIELDS:
         value = entry.get(field)
         if field == "inputsFiles":
@@ -184,7 +202,7 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> list[s
             elif verification == "unitTestFull" and not value:
                 missing.append("inputsFiles(non-empty)")
         elif field == "status":
-            if value != "OK":
+            if value != "OK" and not degraded:
                 missing.append("status=OK")
         elif not (isinstance(value, str) and value.strip()):
             missing.append(field)
@@ -192,7 +210,7 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> list[s
             missing.append("coverage(valid)")
         elif field == "algorithmVersion" and str(value).strip() != hl.LEDGER_VERSION:
             missing.append("algorithmVersion(harness-ledger-2)")
-    return missing
+    return missing, degraded and not missing
 
 
 def validate_ledger_for_phase_close(
@@ -225,6 +243,7 @@ def validate_ledger_for_phase_close(
         }
 
     problems: list[dict[str, Any]] = []
+    degraded: list[str] = []
     for verification in required:
         entry = validations.get(verification)
         if not isinstance(entry, dict):
@@ -236,7 +255,7 @@ def validate_ledger_for_phase_close(
                 }
             )
             continue
-        missing = validate_ledger_entry_v2(entry, verification)
+        missing, is_degraded = validate_ledger_entry_v2(entry, verification)
         if missing:
             code = (
                 "MISSING_V2_FIELDS"
@@ -258,6 +277,8 @@ def validate_ledger_for_phase_close(
                     "code": code,
                 }
             )
+        elif is_degraded:
+            degraded.append(verification)
 
     if problems:
         return {
@@ -268,6 +289,15 @@ def validate_ledger_for_phase_close(
             "problems": problems,
             "ledgerPath": str(ledger_path) if ledger_path else None,
             "detail": "natural-language override is not permitted",
+        }
+    if degraded:
+        return {
+            "ok": True,
+            "code": "LEDGER_OK_DEGRADED",
+            "phase": phase,
+            "validated": required,
+            "degraded": degraded,
+            "ledgerPath": str(ledger_path) if ledger_path else None,
         }
     return {
         "ok": True,
@@ -417,7 +447,11 @@ def change_code_root(change_dir: Path) -> Path:
     return project
 
 
-def classify_risk(change_dir: Path, stage: str) -> dict[str, Any]:
+def classify_risk(
+    change_dir: Path,
+    stage: str,
+    workflow: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     tier = "full"
     source = "default-full"
     plan_path = change_dir / "plans"
@@ -484,7 +518,31 @@ def classify_risk(change_dir: Path, stage: str) -> dict[str, Any]:
             tier = observed
         source = f"{source}+post-run"
     main_project = change_dir.parents[2]
-    workflow = _load_workflow_policy(project=main_project)
+    if workflow is None:
+        workflow = _load_workflow_policy(project=main_project)
+    tier_policy = workflow["riskTiers"][tier]
+    unique_signals = sorted(set(signals))
+    payload = {
+        "ok": True,
+        "code": "CLASSIFIED",
+        "stage": stage,
+        "tier": tier,
+        "source": source,
+        "changeId": change_dir.name,
+        "signals": unique_signals,
+        "defaultPhases": list(tier_policy["defaultPhases"]),
+        "requiredValidations": list(tier_policy["requiredValidations"]),
+        "conditionalStages": list(tier_policy["conditionalStages"]),
+        "stageDecisions": _stage_decisions_for_tier(workflow, tier, unique_signals),
+    }
+    if stage == "post-run":
+        _write_json(change_dir / "meta" / "risk-classification.json", payload)
+    return payload
+
+
+def _stage_decisions_for_tier(
+    workflow: dict[str, Any], tier: str, signals: list[str]
+) -> dict[str, dict[str, Any]]:
     tier_policy = workflow["riskTiers"][tier]
     unique_signals = sorted(set(signals))
     stage_decisions: dict[str, dict[str, Any]] = {}
@@ -501,22 +559,66 @@ def classify_risk(change_dir: Path, stage: str) -> dict[str, Any]:
             ),
             "matchedSignals": matched,
         }
-    payload = {
+    return stage_decisions
+
+
+def apply_tier_override(
+    payload: dict[str, Any],
+    workflow: dict[str, Any],
+    *,
+    tier: str,
+    override_by: str,
+) -> dict[str, Any]:
+    """Rebind payload to an explicit tier override (source=override)."""
+    tier_policy = workflow["riskTiers"][tier]
+    now = hc.now_iso()
+    signals = list(payload.get("signals") or [])
+    payload = dict(payload)
+    payload["tier"] = tier
+    payload["source"] = "override"
+    payload["defaultPhases"] = list(tier_policy["defaultPhases"])
+    payload["requiredValidations"] = list(tier_policy["requiredValidations"])
+    payload["conditionalStages"] = list(tier_policy["conditionalStages"])
+    payload["stageDecisions"] = _stage_decisions_for_tier(workflow, tier, signals)
+    payload["tierOverride"] = {"tier": tier, "by": override_by, "at": now}
+    return payload
+
+
+def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
+    """Cross-change contract: meta/gate-policy.json (schemaVersion=1)."""
+    return {
+        "schemaVersion": 1,
+        "tier": payload["tier"],
+        "source": payload["source"],
+        "defaultPhases": list(payload.get("defaultPhases") or []),
+        "requiredValidations": list(payload.get("requiredValidations") or []),
+        "classifiedAt": payload.get("classifiedAt") or hc.now_iso(),
+        "tierOverride": payload.get("tierOverride"),
+    }
+
+
+def classify_defaults(
+    workflow: dict[str, Any],
+    *,
+    change_id: str,
+    stage: str,
+) -> dict[str, Any]:
+    tier = "full"
+    source = "default-full"
+    tier_policy = workflow["riskTiers"][tier]
+    return {
         "ok": True,
         "code": "CLASSIFIED",
         "stage": stage,
         "tier": tier,
         "source": source,
-        "changeId": change_dir.name,
-        "signals": unique_signals,
+        "changeId": change_id,
+        "signals": [],
         "defaultPhases": list(tier_policy["defaultPhases"]),
         "requiredValidations": list(tier_policy["requiredValidations"]),
         "conditionalStages": list(tier_policy["conditionalStages"]),
-        "stageDecisions": stage_decisions,
+        "stageDecisions": _stage_decisions_for_tier(workflow, tier, []),
     }
-    if stage == "post-run":
-        _write_json(change_dir / "meta" / "risk-classification.json", payload)
-    return payload
 
 
 def lint_skill_tree(skills_root: Path) -> dict[str, Any]:
@@ -823,6 +925,14 @@ def cmd_close(args: argparse.Namespace) -> int:
             extra={k: v for k, v in ledger_result.items() if k not in {"ok", "message", "code"}},
         )
 
+    close_status = args.status
+    close_code = "PHASE_CLOSED"
+    if ledger_result.get("code") == "LEDGER_OK_DEGRADED":
+        close_code = "CLOSED_DEGRADED"
+        # Degraded close: phase.end status must not exceed WARN (OK → WARN).
+        if close_status == "OK":
+            close_status = "WARN"
+
     guard_result = None
     if args.phase in {"run", "test"}:
         project_root = args.project or str(project)
@@ -839,7 +949,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         change_dir,
         phase=args.phase,
         type_="phase.end",
-        status=args.status,
+        status=close_status,
         note=args.note or "",
         run_id=run_id,
     ) if not _phase_event_exists(change_dir, args.phase, "phase.end", run_id) else {
@@ -862,9 +972,9 @@ def cmd_close(args: argparse.Namespace) -> int:
 
     payload = {
         "ok": True,
-        "code": "PHASE_CLOSED",
+        "code": close_code,
         "phase": args.phase,
-        "status": args.status,
+        "status": close_status,
         "changeId": resolved["changeId"],
         "ledger": ledger_result,
         "testGuard": guard_result,
@@ -878,18 +988,55 @@ def cmd_close(args: argparse.Namespace) -> int:
 def cmd_classify(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     project = hc.resolve_main_project_root()
+    try:
+        workflow = _load_workflow_policy(project=project)
+    except (OSError, ValueError, hwp.PolicyValidationError) as exc:
+        return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
+
     resolved = hc.resolve_change(project, args.change)
-    if not resolved.get("ok"):
-        return emit_error(
-            str(resolved.get("code", "RESOLVE_FAILED")),
-            str(resolved.get("message", "change resolve failed")),
-            as_json=as_json,
-            extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
+    change_dir: Path | None = None
+    change_id = str(args.change or "")
+    if resolved.get("ok"):
+        change_dir = Path(resolved["changeDir"])
+        change_id = str(resolved.get("changeId") or change_dir.name)
+        if not change_dir.is_dir():
+            change_dir = None
+
+    if change_dir is not None:
+        payload = classify_risk(change_dir, args.stage, workflow=workflow)
+    else:
+        payload = classify_defaults(workflow, change_id=change_id or "unknown", stage=args.stage)
+        if not resolved.get("ok"):
+            payload["resolveCode"] = resolved.get("code")
+
+    tier_override = getattr(args, "tier_override", None)
+    if tier_override:
+        payload = apply_tier_override(
+            payload,
+            workflow,
+            tier=str(tier_override),
+            override_by=str(getattr(args, "override_by", None) or "user"),
         )
-    payload = classify_risk(Path(resolved["changeDir"]), args.stage)
+    else:
+        payload.setdefault("tierOverride", None)
+
+    classified_at = hc.now_iso()
+    payload["classifiedAt"] = classified_at
+
+    if change_dir is not None and change_dir.is_dir():
+        policy_doc = gate_policy_document(payload)
+        policy_path = change_dir / "meta" / "gate-policy.json"
+        _write_json(policy_path, policy_doc)
+        payload["policyPersisted"] = True
+        payload["policyPath"] = str(policy_path)
+    else:
+        payload["policyPersisted"] = False
+        payload["warning"] = (
+            "change directory does not exist; gate-policy.json not written"
+        )
+
     emit(payload, as_json=as_json)
     return 0
-
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
@@ -1012,6 +1159,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_classify = sub.add_parser("classify", parents=[shared])
     p_classify.add_argument("--change", default=None)
     p_classify.add_argument("--stage", required=True, choices=["plan", "post-run"])
+    p_classify.add_argument(
+        "--tier-override",
+        default=None,
+        choices=["fast", "standard", "full"],
+    )
+    p_classify.add_argument("--override-by", default="user")
     p_classify.set_defaults(func=cmd_classify)
 
     p_checkpoint = sub.add_parser("checkpoint", parents=[shared])

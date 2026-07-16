@@ -365,6 +365,267 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("checkpoint", proc.stdout)
 
+    def _v2_entry(
+        self,
+        *,
+        status: str = "OK",
+        evidence: str = "evidence/unit.log",
+        coverage: str = "module",
+        command: str = "python -m unittest",
+    ) -> dict:
+        return {
+            "algorithmVersion": "harness-ledger-2",
+            "coverage": coverage,
+            "inputsHash": "sha256:" + "c" * 64,
+            "inputsFiles": ["harness/scripts/harness_gate.py"],
+            "status": status,
+            "command": command,
+            "evidence": evidence,
+        }
+
+    def _write_v2_ledger(self, *, unit_status: str = "OK", unit_evidence: str = "evidence/unit.log") -> None:
+        ledger = {
+            "changeName": "demo",
+            "validations": {
+                "compile": self._v2_entry(
+                    status="OK",
+                    evidence="evidence/compile.log",
+                    command="python -m compileall",
+                ),
+                "unitTest": self._v2_entry(status=unit_status, evidence=unit_evidence),
+            },
+        }
+        path = self.change_dir / "evidence" / "verification-ledger.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
+
+    # --- UT-301..305 foundation-gate missing scope ---
+
+    def test_foundation_gate_missing_file_does_not_block_ut301(self) -> None:
+        checkpoints = self.change_dir / "meta" / "implementation-checkpoints.json"
+        checkpoints.unlink(missing_ok=True)
+        self.assertIsNone(gate.foundation_gate_blocks(None, self.change_dir))
+        self.assertIsNone(gate.foundation_gate_blocks(8, self.change_dir))
+
+    def test_foundation_gate_missing_entry_does_not_block_ut302(self) -> None:
+        path = self.change_dir / "meta" / "implementation-checkpoints.json"
+        path.write_text(
+            json.dumps({"schemaVersion": 1, "checkpoints": [{"id": "other", "status": "pending"}]}, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertIsNone(gate.foundation_gate_blocks(None, self.change_dir))
+
+    def test_foundation_gate_pending_still_requires_task_ut303(self) -> None:
+        blocked = gate.foundation_gate_blocks(None, self.change_dir)
+        self.assertIsNotNone(blocked)
+        assert blocked is not None
+        self.assertEqual(blocked["code"], "TASK_NUMBER_REQUIRED")
+
+    def test_begin_without_task_succeeds_when_checkpoints_missing_ut301(self) -> None:
+        (self.change_dir / "meta" / "implementation-checkpoints.json").unlink(missing_ok=True)
+        skills_root = self.project / ".agents" / "skills"
+        skills_root.mkdir(parents=True)
+        (skills_root / ".harness-build.json").write_text(
+            json.dumps({"schemaVersion": 1, "agent": "codex", "overlay": "none", "coreHash": "a" * 16}) + "\n",
+            encoding="utf-8",
+        )
+        context = {
+            "schema_version": 2,
+            "project": {"adapters": {"codex": {"skills_root": ".agents/skills"}}},
+            "skill_bundles": {
+                "codex": {"registry_version": "0.2.6", "bundle_hash": "sha256:" + "b" * 64}
+            },
+        }
+        (self.project / ".harness" / "context-index.json").write_text(json.dumps(context) + "\n", encoding="utf-8")
+        build_hash = gate._sha256_file(skills_root / ".harness-build.json")
+        installed = {
+            "schema_version": 4,
+            "profiles": {"codex": "general"},
+            "manifests": [{
+                "adapter": "codex", "profile": "general", "bundle_version": "0.2.6",
+                "bundle_manifest_hash": "sha256:" + "b" * 64,
+            }],
+            "files": [{
+                "owner": "codex", "target_path": ".agents/skills/.harness-build.json",
+                "sha256": build_hash,
+            }],
+        }
+        state = self.project / ".harness" / "state" / "local" / "installed-harness-bundle.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(installed) + "\n", encoding="utf-8")
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }):
+            args = gate.build_parser().parse_args([
+                "begin", "--phase", "run", "--change", "demo",
+                "--skills-root", str(skills_root), "--executor-tool", "codex", "--json",
+            ])
+            self.assertEqual(gate.cmd_begin(args), 0)
+
+    # --- UT-306..309 classify persistence / override ---
+
+    def test_classify_persists_gate_policy_ut306(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }):
+            args = gate.build_parser().parse_args(
+                ["classify", "--change", "demo", "--stage", "plan", "--json"]
+            )
+            self.assertEqual(gate.cmd_classify(args), 0)
+        policy_path = self.change_dir / "meta" / "gate-policy.json"
+        self.assertTrue(policy_path.is_file())
+        data = json.loads(policy_path.read_text(encoding="utf-8"))
+        self.assertEqual(data["schemaVersion"], 1)
+        self.assertIn(data["tier"], {"fast", "standard", "full"})
+        self.assertIn("defaultPhases", data)
+        self.assertIn("requiredValidations", data)
+        self.assertIn("classifiedAt", data)
+        self.assertIn("tierOverride", data)
+
+    def test_classify_missing_change_dir_ut307(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": False, "code": "CHANGE_NOT_FOUND", "message": "change not found: no-such"
+             }), \
+             mock.patch("sys.stdout") as stdout:
+            args = gate.build_parser().parse_args(
+                ["classify", "--change", "no-such", "--stage", "plan", "--json"]
+            )
+            code = gate.cmd_classify(args)
+        self.assertEqual(code, 0)
+        written = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(written)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload.get("policyPersisted", True))
+        self.assertIn("warning", payload)
+
+    def test_classify_tier_override_ut308(self) -> None:
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch("sys.stdout") as stdout:
+            args = gate.build_parser().parse_args([
+                "classify", "--change", "demo", "--stage", "plan",
+                "--tier-override", "standard", "--override-by", "user", "--json",
+            ])
+            self.assertEqual(gate.cmd_classify(args), 0)
+        written = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(written)
+        self.assertEqual(payload["tier"], "standard")
+        self.assertEqual(payload["source"], "override")
+        self.assertEqual(payload["tierOverride"]["tier"], "standard")
+        self.assertEqual(payload["tierOverride"]["by"], "user")
+        self.assertIn("at", payload["tierOverride"])
+        workflow = policy.load_policy(REPO_ROOT)
+        self.assertEqual(
+            payload["requiredValidations"],
+            workflow["riskTiers"]["standard"]["requiredValidations"],
+        )
+        persisted = json.loads((self.change_dir / "meta" / "gate-policy.json").read_text("utf-8"))
+        self.assertEqual(persisted["tier"], "standard")
+        self.assertEqual(persisted["source"], "override")
+        self.assertEqual(persisted["tierOverride"]["tier"], "standard")
+
+    def test_classify_invalid_tier_override_ut309(self) -> None:
+        with self.assertRaises(SystemExit) as ctx:
+            gate.build_parser().parse_args([
+                "classify", "--change", "demo", "--stage", "plan",
+                "--tier-override", "extreme",
+            ])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    # --- UT-310..314 DEGRADED ledger close ---
+
+    def test_degraded_ledger_close_ut310(self) -> None:
+        # setUp leaves foundation-gate pending; --task 1 is allowed without approve.
+        self._write_v2_ledger(
+            unit_status="NOT_RUN",
+            unit_evidence="DEGRADED: sdk 无测试基础设施，已静态验证",
+        )
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "LEDGER_OK_DEGRADED")
+        self.assertIn("unitTest", result["degraded"])
+
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--status", "OK", "--run-id", "run-deg", "--task", "1", "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-deg", "phase": "run"}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch("sys.stdout") as stdout:
+            self.assertEqual(gate.cmd_close(args), 0)
+        written = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(written)
+        self.assertEqual(payload["code"], "CLOSED_DEGRADED")
+        self.assertEqual(payload["status"], "WARN")
+        self.assertIn("unitTest", payload["ledger"]["degraded"])
+        events = [
+            json.loads(line)
+            for line in (self.change_dir / "events.ndjson").read_text("utf-8").splitlines()
+            if line.strip()
+        ]
+        ends = [item for item in events if item.get("type") == "phase.end"]
+        self.assertEqual(ends[-1]["status"], "WARN")
+
+    def test_degraded_prefix_without_reason_ut311(self) -> None:
+        self._write_v2_ledger(unit_status="NOT_RUN", unit_evidence="DEGRADED:")
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        self.assertFalse(result["ok"], result)
+        self.assertIn(result["code"], {"MISSING_FIELDS", "MISSING_V2_FIELDS"})
+
+    def test_plain_not_run_rejected_ut312(self) -> None:
+        self._write_v2_ledger(unit_status="NOT_RUN", unit_evidence="skipped for now")
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        self.assertFalse(result["ok"], result)
+        problems = result.get("problems") or []
+        unit = next(p for p in problems if p["verification"] == "unitTest")
+        self.assertIn("status=OK", unit["missing"])
+
+    def test_all_ok_ledger_close_unchanged_ut313(self) -> None:
+        self._write_v2_ledger(unit_status="OK", unit_evidence="evidence/unit.log")
+        workflow = policy.load_policy(REPO_ROOT)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "LEDGER_OK")
+        self.assertEqual(result.get("degraded", []), [])
+
+    def test_degraded_clamps_ok_to_warn_ut314(self) -> None:
+        self._write_checkpoints("approved")
+        self._write_v2_ledger(
+            unit_status="NOT_RUN",
+            unit_evidence="DEGRADED: env unavailable",
+        )
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--status", "OK", "--run-id", "run-warn", "--task", "1", "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-warn", "phase": "run"}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch("sys.stdout") as stdout:
+            self.assertEqual(gate.cmd_close(args), 0)
+        written = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(written)
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(payload["code"], "CLOSED_DEGRADED")
+
 
 if __name__ == "__main__":
     unittest.main()
