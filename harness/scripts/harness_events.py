@@ -43,6 +43,7 @@ EVENT_TYPES = frozenset(
 )
 
 SCHEMA_VERSION = 3
+_NOTE_FALLBACK_MAXLEN = 60
 HEADER_LINE = (
     "本文件由 harness_events.py 自动渲染，请勿手工编辑；事实源为 events.ndjson"
 )
@@ -316,6 +317,8 @@ def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dic
 def status_symbol(status: Any, reason: Any = None) -> str:
     text = str(status or "").strip().lower()
     reason_text = str(reason or "").strip()
+    if not text:
+        return "—"
     ok_set = {"ok", "passed", "pass", "success", "green", "✅", "✅ok"}
     warn_set = {"warn", "warning", "yellow", "skipped", "skip", "🟡", "🟡warn"}
     fail_set = {"fail", "failed", "error", "red", "blocked", "❌", "❌fail"}
@@ -327,7 +330,7 @@ def status_symbol(status: Any, reason: Any = None) -> str:
         return f"❌FAIL({reason_text})" if reason_text else "❌FAIL"
     if reason_text:
         return f"{status}({reason_text})"
-    return str(status or "unknown")
+    return str(status)
 
 
 def severity_symbol(severity: Any, message: Any = None) -> str:
@@ -339,7 +342,10 @@ def severity_symbol(severity: Any, message: Any = None) -> str:
         return f"🟡WARN({msg})" if msg else "🟡WARN"
     if text in {"info", "ok", "note"}:
         return f"✅OK({msg})" if msg else "✅OK"
-    return f"{severity}: {msg}" if msg else str(severity or "issue")
+    # Empty/unknown severity: never emit literal "issue"/"None".
+    if not text:
+        return ""
+    return f"{severity}: {msg}" if msg else str(severity)
 
 
 def format_duration(ms: int | None) -> str:
@@ -440,35 +446,54 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
 def render_command_block(commands: list[dict[str, Any]]) -> list[str]:
     if not commands:
         return []
+
+    def command_display(event: dict[str, Any]) -> str:
+        cmd = str(event.get("command") or "").strip()
+        if cmd:
+            return cmd
+        return str(event.get("note") or "").strip()
+
     if len(commands) == 1:
         event = commands[0]
-        cmd = event.get("command") or ""
+        display = command_display(event)
+        if not display:
+            return []
         exit_code = event.get("exit_code")
         exit_text = "?" if exit_code is None else str(exit_code)
         duration = format_duration(
             int(event["duration_ms"]) if isinstance(event.get("duration_ms"), int) else None
         )
         note = str(event.get("note") or "").strip()
-        parts = [f"- command: `{cmd}`", f"exit={exit_text}", f"duration={duration}"]
-        if note:
+        parts = [f"- command: `{display}`", f"exit={exit_text}", f"duration={duration}"]
+        # Avoid duplicating note when it was already used as the display text.
+        if note and note != display:
             parts.append(f"note={note}")
         return [" · ".join(parts)]
 
-    lines = [
-        "",
-        "| 命令 | exit | duration | note |",
-        "| --- | ---: | ---: | --- |",
-    ]
+    rows: list[str] = []
     for event in commands:
-        cmd = str(event.get("command") or "").replace("|", "\\|")
+        display = command_display(event)
+        if not display:
+            continue
+        cmd = display.replace("|", "\\|")
         exit_code = event.get("exit_code")
         exit_text = "?" if exit_code is None else str(exit_code)
         duration = format_duration(
             int(event["duration_ms"]) if isinstance(event.get("duration_ms"), int) else None
         )
         note = str(event.get("note") or "").replace("|", "\\|")
-        lines.append(f"| `{cmd}` | {exit_text} | {duration} | {note} |")
-    lines.append("")
+        # If note was promoted to the command cell, leave the note column empty.
+        note_cell = "" if note == display else note
+        rows.append(f"| `{cmd}` | {exit_text} | {duration} | {note_cell} |")
+    if not rows:
+        return []
+    lines = [
+        "",
+        "| 命令 | exit | duration | note |",
+        "| --- | ---: | ---: | --- |",
+        *rows,
+        "",
+    ]
     return lines
 
 
@@ -491,23 +516,37 @@ def render_event_line(event: dict[str, Any]) -> list[str]:
         suffix = f" — {note}" if note else ""
         return [f"- phase.end @ {event.get('timestamp', '')}{suffix}"]
     if etype == "verification":
-        name = event.get("name") or "(unnamed)"
-        symbol = status_symbol(event.get("status"), event.get("reason") or event.get("note"))
+        note = str(event.get("note") or "").strip()
+        name = str(event.get("name") or "").strip() or (
+            note[:_NOTE_FALLBACK_MAXLEN] if note else ""
+        )
+        if not name:
+            return []
+        symbol = status_symbol(event.get("status"), event.get("reason"))
         return [f"- verification: {name} → {symbol}"]
     if etype == "decision":
-        decision = event.get("decision") or ""
-        reason = event.get("reason") or event.get("note") or ""
+        decision = str(event.get("decision") or "").strip()
+        reason = str(event.get("reason") or event.get("note") or "").strip()
+        if not decision:
+            return [f"- decision: {reason}"] if reason else []
         if reason:
             return [f"- decision: {decision} — {reason}"]
         return [f"- decision: {decision}"]
     if etype == "issue":
-        symbol = severity_symbol(event.get("severity"), event.get("message"))
+        note = str(event.get("note") or "").strip()
+        message = str(event.get("message") or "").strip() or note
+        symbol = severity_symbol(event.get("severity"), message)
+        if not symbol:
+            return [f"- issue: {note}"] if note else []
         code = event.get("code")
         prefix = f"[{code}] " if code else ""
         return [f"- issue: {prefix}{symbol}"]
     if etype == "artifact":
-        path = event.get("path") or ""
+        path = str(event.get("path") or "").strip()
+        note = str(event.get("note") or "").strip()
         kind = event.get("kind")
+        if not path:
+            return [f"- artifact: {note}"] if note else []
         if kind:
             return [f"- artifact: `{path}` ({kind})"]
         return [f"- artifact: `{path}`"]
@@ -653,6 +692,18 @@ def cmd_append(args: argparse.Namespace) -> int:
     # new_event_id 用完整 uuid，无需扫描去重。锁覆盖 atomic_append_line 的
     # open/write/flush/fsync 全过程。
     event = build_event(args, [])
+    # Semantic hints (non-fatal): guide agents toward required fields.
+    if args.type == "issue" and not args.severity:
+        event["severity"] = "info"
+        print(
+            "warning: issue without --severity, defaulted to info",
+            file=sys.stderr,
+        )
+    if args.type == "verification" and (not args.name or not args.status):
+        print(
+            "warning: verification missing --name or --status",
+            file=sys.stderr,
+        )
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     try:
         with event_file_lock(lock_path):

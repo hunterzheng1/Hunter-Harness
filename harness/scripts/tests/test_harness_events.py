@@ -416,6 +416,273 @@ class HarnessEventsTest(unittest.TestCase):
         self.assertEqual(list(self.change_dir.glob(".events.ndjson.*.tmp")), [])
 
 
+class RenderQualityTests(unittest.TestCase):
+    """UT-201..UT-213: render note fallback + append semantic hints."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.change_dir = Path(self._tmpdir.name) / "change-rq"
+        self.change_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def _run(self, argv: list[str]) -> tuple[int, str, str]:
+        from io import StringIO
+        from contextlib import redirect_stdout, redirect_stderr
+
+        out = StringIO()
+        err = StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = he.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_ut201_issue_note_only(self) -> None:
+        lines = he.render_event_line(
+            {"type": "issue", "note": "知识查询命中3条", "phase": "run"}
+        )
+        self.assertEqual(lines, ["- issue: 知识查询命中3条"])
+        self.assertNotIn("issue: issue", "\n".join(lines))
+
+    def test_ut202_issue_severity_note_as_message(self) -> None:
+        lines = he.render_event_line(
+            {
+                "type": "issue",
+                "severity": "warning",
+                "note": "偶发超时",
+                "phase": "run",
+            }
+        )
+        self.assertEqual(lines, ["- issue: 🟡WARN(偶发超时)"])
+
+    def test_ut203_issue_all_empty_skipped(self) -> None:
+        lines = he.render_event_line(
+            {"type": "issue", "phase": "run", "timestamp": "2026-07-16T00:00:00+08:00"}
+        )
+        self.assertEqual(lines, [])
+
+    def test_ut204_verification_name_from_note(self) -> None:
+        lines = he.render_event_line(
+            {
+                "type": "verification",
+                "note": "回归 155 tests passed successfully",
+                "status": "ok",
+                "phase": "run",
+            }
+        )
+        joined = "\n".join(lines)
+        self.assertTrue(joined.startswith("- verification: 回归 155 tests"))
+        self.assertNotIn("(unnamed)", joined)
+
+    def test_ut205_verification_missing_status_emdash(self) -> None:
+        lines = he.render_event_line(
+            {"type": "verification", "name": "unitTest", "phase": "run"}
+        )
+        joined = "\n".join(lines)
+        self.assertIn("—", joined)
+        self.assertNotIn("None", joined)
+
+    def test_ut206_artifact_note_fallback(self) -> None:
+        lines = he.render_event_line(
+            {"type": "artifact", "note": "测试报告已写入", "phase": "run"}
+        )
+        self.assertEqual(lines, ["- artifact: 测试报告已写入"])
+
+    def test_ut207_artifact_all_empty_skipped(self) -> None:
+        lines = he.render_event_line({"type": "artifact", "phase": "run"})
+        self.assertEqual(lines, [])
+
+    def test_ut208_command_empty_note_fallback_and_skip(self) -> None:
+        with_note = he.render_command_block(
+            [{"type": "command", "note": "已执行探测", "exit_code": 0, "duration_ms": 1}]
+        )
+        joined = "\n".join(with_note)
+        self.assertIn("已执行探测", joined)
+        self.assertNotIn("``", joined)
+        self.assertNotIn("` `", joined)
+
+        empty = he.render_command_block([{"type": "command", "exit_code": 0}])
+        self.assertEqual(empty, [])
+
+        table = he.render_command_block(
+            [
+                {"command": "echo a", "exit_code": 0, "duration_ms": 1, "note": ""},
+                {"command": "", "exit_code": 0, "duration_ms": 1, "note": "fallback-row"},
+                {"command": "", "exit_code": 0, "duration_ms": 1, "note": ""},
+            ]
+        )
+        table_text = "\n".join(table)
+        self.assertIn("fallback-row", table_text)
+        self.assertIn("`echo a`", table_text)
+        self.assertNotIn("| `` |", table_text)
+
+    def test_ut209_decision_empty_uses_note(self) -> None:
+        lines = he.render_event_line(
+            {"type": "decision", "note": "选择方案B", "phase": "run"}
+        )
+        self.assertEqual(lines, ["- decision: 选择方案B"])
+        self.assertNotIn("—", "\n".join(lines))
+
+    def test_ut210_normal_events_regression(self) -> None:
+        issue = he.render_event_line(
+            {
+                "type": "issue",
+                "code": "flake",
+                "severity": "warn",
+                "message": "偶发超时已重试成功",
+            }
+        )
+        self.assertEqual(issue, ["- issue: [flake] 🟡WARN(偶发超时已重试成功)"])
+
+        verification = he.render_event_line(
+            {"type": "verification", "name": "unitTest", "status": "ok"}
+        )
+        self.assertEqual(verification, ["- verification: unitTest → ✅OK"])
+
+        artifact = he.render_event_line(
+            {
+                "type": "artifact",
+                "path": "evidence/verification-ledger.json",
+                "kind": "ledger",
+            }
+        )
+        self.assertEqual(
+            artifact, ["- artifact: `evidence/verification-ledger.json` (ledger)"]
+        )
+
+        command = he.render_command_block(
+            [{"command": "echo hi", "exit_code": 0, "duration_ms": 10, "note": "ok"}]
+        )
+        self.assertEqual(
+            command, ["- command: `echo hi` · exit=0 · duration=10ms · note=ok"]
+        )
+
+        decision = he.render_event_line(
+            {"type": "decision", "decision": "采用方案A", "reason": "风险更低"}
+        )
+        self.assertEqual(decision, ["- decision: 采用方案A — 风险更低"])
+
+    def test_ut211_append_issue_defaults_severity_info(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "run",
+                "--type",
+                "issue",
+                "--note",
+                "知识结论",
+            ]
+        )
+        self.assertEqual(code, 0, msg=err)
+        event = json.loads(out)["event"]
+        self.assertEqual(event["severity"], "info")
+        self.assertIn("issue without --severity", err)
+
+    def test_ut212_append_verification_missing_name_warns(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "run",
+                "--type",
+                "verification",
+                "--status",
+                "ok",
+                "--note",
+                "回归完成",
+            ]
+        )
+        self.assertEqual(code, 0, msg=err)
+        self.assertTrue(json.loads(out)["ok"])
+        self.assertIn("verification missing --name or --status", err)
+
+    def test_ut213_legacy_mixed_events_rerender_clean(self) -> None:
+        seed = [
+            {
+                "schema_version": 3,
+                "id": "1",
+                "timestamp": "2026-07-16T10:00:00+08:00",
+                "phase": "run",
+                "type": "phase.start",
+                "note": "",
+            },
+            {
+                "schema_version": 3,
+                "id": "2",
+                "timestamp": "2026-07-16T10:00:01+08:00",
+                "phase": "run",
+                "type": "issue",
+                "note": "知识查询命中3条",
+            },
+            {
+                "schema_version": 3,
+                "id": "3",
+                "timestamp": "2026-07-16T10:00:02+08:00",
+                "phase": "run",
+                "type": "verification",
+                "note": "回归 155 tests",
+            },
+            {
+                "schema_version": 3,
+                "id": "4",
+                "timestamp": "2026-07-16T10:00:03+08:00",
+                "phase": "run",
+                "type": "artifact",
+                "note": "报告已写",
+            },
+            {
+                "schema_version": 3,
+                "id": "5",
+                "timestamp": "2026-07-16T10:00:04+08:00",
+                "phase": "run",
+                "type": "command",
+                "note": "探测完成",
+                "exit_code": 0,
+            },
+            {
+                "schema_version": 3,
+                "id": "6",
+                "timestamp": "2026-07-16T10:00:05+08:00",
+                "phase": "run",
+                "type": "decision",
+                "note": "选择方案B",
+            },
+            {
+                "schema_version": 3,
+                "id": "7",
+                "timestamp": "2026-07-16T10:00:06+08:00",
+                "phase": "run",
+                "type": "phase.end",
+                "note": "",
+            },
+        ]
+        events_file = self.change_dir / "events.ndjson"
+        events_file.write_text(
+            "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in seed),
+            encoding="utf-8",
+        )
+        rendered = he.render_execution_log(he.load_events(events_file))
+        self.assertNotIn("issue: issue", rendered)
+        self.assertNotIn("(unnamed)", rendered)
+        self.assertNotIn("None", rendered)
+        self.assertNotIn("``", rendered)
+        self.assertNotIn("` `", rendered)
+
+    def test_symbol_helpers_empty_inputs(self) -> None:
+        self.assertEqual(he.severity_symbol(None, None), "")
+        self.assertEqual(he.severity_symbol("", ""), "")
+        self.assertEqual(he.status_symbol(None), "—")
+        self.assertEqual(he.status_symbol(""), "—")
+        self.assertNotIn("None", he.status_symbol(None, "reason-text"))
+
+
 def _mp_append_worker(change_dir: str, worker_id: int, per: int) -> None:
     """Module-level worker for multiprocess append (Windows spawn safe)."""
     for i in range(per):
