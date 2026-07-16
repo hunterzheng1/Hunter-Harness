@@ -591,6 +591,16 @@ describe("hunter-harness push", () => {
     ) => {
       const url = typeof input === "string" ? input : input.toString();
       secondPaths.push(new URL(url).pathname);
+      if (url.endsWith("/api/v1/projects/prj_resume") && (init?.method === undefined ||
+          init.method.toUpperCase() === "GET")) {
+        return json({
+          schema_version: 1,
+          project_id: "prj_resume",
+          latest_project_version: null,
+          latest_artifact_id: null,
+          request_id: "req"
+        });
+      }
       if (url.endsWith("/blobs:query")) {
         return json({ present: [], missing: [requestedHash], request_id: "req" });
       }
@@ -619,7 +629,8 @@ describe("hunter-harness push", () => {
     expect(secondPaths).not.toContain(
       "/api/v1/projects/prj_resume/proposal-sessions"
     );
-    expect(secondPaths[0]).toBe(
+    expect(secondPaths[0]).toBe("/api/v1/projects/prj_resume");
+    expect(secondPaths).toContain(
       "/api/v1/proposal-sessions/ups_resume/blobs:query"
     );
     // 全量并行负载下该用例会被拖过 5s 默认超时（单独跑 684ms 通过），给 30s 余量防 flaky
