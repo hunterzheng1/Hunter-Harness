@@ -369,6 +369,15 @@ function assertPreviewAllowed(
 const CREDENTIALS_HINT =
   "可在交互模式下录入，或写入 .harness/credentials.local.yaml（勿提交 git）";
 
+const STALE_BASELINE_MESSAGE =
+  "服务端已有更新的推送，请先 git pull 后执行 npx hunter-harness update 再推";
+
+function staleBaselineError(
+  code: "STALE_PUSH" | "PROJECT_VERSION_CONFLICT"
+): PushWorkflowError {
+  return new PushWorkflowError(STALE_BASELINE_MESSAGE, 5, code);
+}
+
 function makePreview(
   baseline: BaselineManifest,
   files: Record<string, string>,
@@ -439,14 +448,12 @@ export async function pushProject(options: PushProjectOptions) {
     options.confirmedProjectLocal ?? [],
     installedPaths
   );
-  const initialSkip = await resolveSensitiveScanSkip(preview, options);
-  if (initialSkip.cancelled === true) {
-    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
-  }
-  let sensitiveScanSkip = initialSkip.skip;
-  let sensitiveScanSkipReason = initialSkip.reason;
-  assertPreviewAllowed(preview, sensitiveScanSkip);
   if (options.dryRun) {
+    const drySkip = await resolveSensitiveScanSkip(preview, options);
+    if (drySkip.cancelled === true) {
+      return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
+    }
+    assertPreviewAllowed(preview, drySkip.skip);
     return { preview, proposalId: null, projectId: project.project.project_id };
   }
   const localCredentials = await readLocalCredentials(root);
@@ -491,6 +498,26 @@ export async function pushProject(options: PushProjectOptions) {
   if (parsedServerUrl.protocol !== "https:") {
     throw new PushWorkflowError("server_url must use HTTPS", 3, "SERVER_URL_INVALID");
   }
+  const client = new HunterHarnessApiClient({
+    serverUrl: parsedServerUrl.toString(),
+    token,
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch })
+  });
+  // 仅对开始时已绑定的项目做预检；本轮 resolve 首次绑定不预检。
+  const boundAtStart = project.project.project_id;
+  if (boundAtStart !== null) {
+    const remote = await client.getProject(boundAtStart, uuidV7());
+    if (remote.latest_project_version !== baseline.complete_project_version) {
+      throw staleBaselineError("PROJECT_VERSION_CONFLICT");
+    }
+  }
+  const initialSkip = await resolveSensitiveScanSkip(preview, options);
+  if (initialSkip.cancelled === true) {
+    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
+  }
+  let sensitiveScanSkip = initialSkip.skip;
+  let sensitiveScanSkipReason = initialSkip.reason;
+  assertPreviewAllowed(preview, sensitiveScanSkip);
   if (options.confirmProposal !== undefined && !await options.confirmProposal(preview)) {
     return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
   }
@@ -518,11 +545,6 @@ export async function pushProject(options: PushProjectOptions) {
       workflow.created_at
     );
     const requestId = workflow.request_id;
-    const client = new HunterHarnessApiClient({
-      serverUrl: parsedServerUrl.toString(),
-      token,
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch })
-    });
     if (project.project.project_id === null) {
       const resolved = await client.resolveProject({
         schema_version: 1,
@@ -667,12 +689,8 @@ export async function pushProject(options: PushProjectOptions) {
       throw error;
     }
     if (error instanceof ApiError) {
-      if (error.code === "STALE_PUSH") {
-        throw new PushWorkflowError(
-          "服务端已有更新的推送，请先 git pull 后执行 npx hunter-harness update 再推",
-          5,
-          "STALE_PUSH"
-        );
+      if (error.code === "STALE_PUSH" || error.code === "PROJECT_VERSION_CONFLICT") {
+        throw staleBaselineError(error.code);
       }
       if (error.code === "SENSITIVE_CONTENT_BLOCKED") {
         const details = error.details as Record<string, unknown> | null;

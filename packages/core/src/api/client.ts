@@ -148,6 +148,23 @@ export class HunterHarnessApiClient {
     });
   }
 
+  async getProject(
+    projectId: string,
+    requestId: string
+  ): Promise<{
+    schema_version: 1;
+    project_id: string;
+    latest_project_version: string | null;
+    latest_artifact_id: string | null;
+    request_id: string;
+  }> {
+    return this.request(
+      "GET",
+      "/api/v1/projects/" + encodeURIComponent(projectId),
+      { requestId }
+    );
+  }
+
   async createProposalSession(
     projectId: string,
     body: object,
