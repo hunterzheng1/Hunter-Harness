@@ -193,7 +193,9 @@ export async function runPush(
         ? serializeCliResult(output)
         : options.dryRun === true
           ? "Push preview contains " + items.length + " operations.\n"
-          : "Pushed artifact " + result.artifactId + " (proposal " + result.proposalId + ").\n");
+          : "Pushed artifact " +
+            ("artifactId" in result ? String(result.artifactId) : "unknown") +
+            " (proposal " + result.proposalId + ").\n");
       return 0;
     } catch (error) {
       if (attempt === 0 &&

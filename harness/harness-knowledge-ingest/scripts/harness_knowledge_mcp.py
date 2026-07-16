@@ -219,6 +219,7 @@ def create_server() -> Any:
         files: list[str] | None = None,
         statuses: list[str] | None = None,
         types: list[str] | None = None,
+        change_id: str | None = None,
     ) -> dict[str, Any]:
         return hk.query_index(
             Path(project),
@@ -227,6 +228,7 @@ def create_server() -> Any:
             file_filters=files or [],
             statuses=statuses or [],
             types=types or [],
+            change_id=change_id,
         )
 
     @server.tool(description=TOOL_DESCRIPTIONS[7]["description"])

@@ -2982,6 +2982,7 @@ def query_index(
     file_filters: list[str] | None = None,
     statuses: list[str] | None = None,
     types: list[str] | None = None,
+    change_id: str | None = None,
 ) -> dict[str, Any]:
     project = project.resolve()
     knowledge = project / ".harness" / "knowledge"
@@ -2994,6 +2995,26 @@ def query_index(
     build_index(project, snapshot=snapshot)
     entries = search_entries(sqlite_path, query, limit, file_filters, statuses, types)
     context_path = write_context_pack(project, knowledge, query, entries)
+    if change_id:
+        changes_root = (project / ".harness" / "changes").resolve()
+        change_dir = (changes_root / change_id).resolve()
+        try:
+            change_dir.relative_to(changes_root)
+        except ValueError as exc:
+            raise ValueError("change id escapes .harness/changes") from exc
+        if not change_dir.is_dir():
+            raise ValueError(f"change does not exist: {change_id}")
+        write_json(
+            change_dir / "meta" / "knowledge-context.json",
+            {
+                "schemaVersion": 1,
+                "changeId": change_id,
+                "generatedAt": now_iso(),
+                "query": query,
+                "contextPack": str(context_path),
+                "matchIds": [entry["id"] for entry in entries],
+            },
+        )
     filters = {
         "files": file_filters or [],
         "statuses": statuses or [],
@@ -4391,6 +4412,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--file", action="append", dest="files", default=[], help="Only return entries linked to this source file")
     query.add_argument("--status", action="append", dest="statuses", default=[], help="Only return entries with this lifecycle status")
     query.add_argument("--type", action="append", dest="types", default=[], help="Only return entries of this knowledge type")
+    query.add_argument("--change", default=None, help="Write a change-scoped knowledge-context pointer")
 
     promote = sub.add_parser("promote", help="Promote a candidate knowledge entry to active")
     promote.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
@@ -4487,7 +4509,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "query":
-        result = query_index(Path(args.project), args.query, args.limit, args.files, args.statuses, args.types)
+        result = query_index(
+            Path(args.project), args.query, args.limit, args.files, args.statuses,
+            args.types, args.change,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "promote":

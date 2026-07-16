@@ -498,10 +498,15 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
     def test_query_generates_context_pack_with_relevant_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self.make_project(Path(tmp))
+            change_meta = project / ".harness" / "changes" / "demo-change" / "meta"
+            change_meta.mkdir(parents=True)
             ingest = self.run_cli("ingest", "--project", str(project))
             self.assertEqual(ingest.returncode, 0, ingest.stderr)
 
-            result = self.run_cli("query", "--project", str(project), "--query", "异步 AI 检查 job")
+            result = self.run_cli(
+                "query", "--project", str(project), "--query", "异步 AI 检查 job",
+                "--change", "demo-change",
+            )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads(result.stdout)
@@ -520,6 +525,11 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             latest_payload = json.loads(latest.read_text(encoding="utf-8"))
             self.assertEqual(latest_payload["contextPack"], str(context_pack))
             self.assertGreaterEqual(len(latest_payload["matchIds"]), 1)
+            change_pointer = json.loads(
+                (change_meta / "knowledge-context.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(change_pointer["changeId"], "demo-change")
+            self.assertEqual(change_pointer["contextPack"], str(context_pack))
 
     def test_query_can_filter_by_source_file_and_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

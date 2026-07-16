@@ -88,6 +88,50 @@ describe("pushProject stale baseline UX", () => {
     });
   }
 
+  function noDeltaUpdateManifest(projectId: string, observed: string | null): Response {
+    return new Response(JSON.stringify({
+      schema_version: 1,
+      project_id: projectId,
+      observed_project_version: observed,
+      artifact_id: null,
+      artifact_manifest_url: null,
+      delta_available: false,
+      request_id: "req_update"
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  }
+
+  it("API-006 stale guidance must not mention unconditional git pull", async () => {
+    const root = await initRoot();
+    const projectId = "prj_no_git_pull";
+    await bindProject(root, projectId, "pv_00000001");
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000002");
+      }
+      if (url.pathname.endsWith("/update-manifest")) {
+        return noDeltaUpdateManifest(projectId, "pv_00000002");
+      }
+      throw new Error("unexpected path: " + url.pathname);
+    });
+    const error = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch
+    }).then(
+      () => null,
+      (value: unknown) => value
+    );
+    expect(error).toBeInstanceOf(PushWorkflowError);
+    expect(String((error as PushWorkflowError).message)).not.toMatch(/git pull/i);
+    expect(String((error as PushWorkflowError).message)).toMatch(/update/i);
+  });
+
   it("UT-001 passes precheck when local and server versions match", async () => {
     const root = await initRoot();
     const projectId = "prj_stale_match";
@@ -126,6 +170,9 @@ describe("pushProject stale baseline UX", () => {
       if (url.pathname === "/api/v1/projects/" + projectId) {
         return projectGetResponse(projectId, "pv_00000001");
       }
+      if (url.pathname.endsWith("/update-manifest")) {
+        return noDeltaUpdateManifest(projectId, "pv_00000001");
+      }
       throw new Error("unexpected path after stale precheck: " + url.pathname);
     });
     await expect(pushProject({
@@ -146,7 +193,7 @@ describe("pushProject stale baseline UX", () => {
       exitCode: 5,
       message: expect.stringMatching(/update/i)
     });
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("UT-003 fails when local pv lags a newer server pv", async () => {
@@ -157,6 +204,9 @@ describe("pushProject stale baseline UX", () => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       if (url.pathname === "/api/v1/projects/" + projectId) {
         return projectGetResponse(projectId, "pv_00000002");
+      }
+      if (url.pathname.endsWith("/update-manifest")) {
+        return noDeltaUpdateManifest(projectId, "pv_00000002");
       }
       throw new Error("unexpected path: " + url.pathname);
     });
@@ -240,6 +290,9 @@ describe("pushProject stale baseline UX", () => {
           status: 200,
           headers: { "content-type": "application/json" }
         });
+      }
+      if (method === "GET" && url.pathname.endsWith("/update-manifest")) {
+        return noDeltaUpdateManifest(projectId, "pv_00000001");
       }
       if (method === "POST" && url.pathname.endsWith(":finalize")) {
         return apiErrorResponse(409, "STALE_PUSH", "base artifact is stale");

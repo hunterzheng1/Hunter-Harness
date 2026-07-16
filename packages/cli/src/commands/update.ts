@@ -10,6 +10,37 @@ export interface UpdateOptions {
   yes?: boolean;
   dryRun?: boolean;
   json?: boolean;
+  conflictStrategy?: "manual" | "keep-local" | "accept-remote";
+  /** Repeatable `--resolve path=keep-local|accept-remote` */
+  resolve?: string[];
+}
+
+function parseResolveOverrides(
+  entries: readonly string[] | undefined
+): Map<string, "keep-local" | "accept-remote"> {
+  const map = new Map<string, "keep-local" | "accept-remote">();
+  for (const entry of entries ?? []) {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) {
+      throw new UpdateWorkflowError(
+        "invalid --resolve value; expected path=keep-local|accept-remote",
+        3,
+        "RESOLVE_OPTION_INVALID"
+      );
+    }
+    const path = entry.slice(0, eq).trim();
+    const strategy = entry.slice(eq + 1).trim();
+    if (path.length === 0 ||
+        (strategy !== "keep-local" && strategy !== "accept-remote")) {
+      throw new UpdateWorkflowError(
+        "invalid --resolve value; expected path=keep-local|accept-remote",
+        3,
+        "RESOLVE_OPTION_INVALID"
+      );
+    }
+    map.set(path, strategy);
+  }
+  return map;
 }
 
 export async function runUpdate(
@@ -22,13 +53,18 @@ export async function runUpdate(
     dependencies.stderr("非交互模式更新需要 --yes\n");
     return 2;
   }
+  const resolveOverrides = parseResolveOverrides(options.resolve);
   const execute = async (dryRun: boolean) => updateProject({
     projectRoot: dependencies.cwd,
     ...(options.serverUrl === undefined ? {} : { serverUrl: options.serverUrl }),
     ...(options.tokenEnv === undefined ? {} : { tokenEnv: options.tokenEnv }),
     env: dependencies.env,
     dryRun,
-    fetch: dependencies.fetch
+    fetch: dependencies.fetch,
+    ...(options.conflictStrategy === undefined
+      ? {}
+      : { conflictStrategy: options.conflictStrategy }),
+    ...(resolveOverrides.size === 0 ? {} : { resolveOverrides })
   });
   try {
     let result;
@@ -47,9 +83,11 @@ export async function runUpdate(
     }
     const applied = new Set(result.applied);
     const skippedByPath = new Map(result.skipped.map((item) => [item.path, item]));
+    const acknowledgedByPath = new Map(result.acknowledged.map((item) => [item.path, item]));
     const items = result.operations.map((operation) => {
       const path = operation.operation === "rename" ? operation.to_path : operation.path;
       const skipped = skippedByPath.get(path);
+      const acknowledged = acknowledgedByPath.get(path);
       return {
         path,
         operation: operation.operation,
@@ -57,16 +95,18 @@ export async function runUpdate(
         policy: "update",
         status: skipped !== undefined
           ? "skipped"
-          : applied.has(path)
-            ? options.dryRun === true ? "planned" : "applied"
-            : "already-applied",
-        reason: skipped?.reason ?? null,
+          : acknowledged !== undefined
+            ? "acknowledged"
+            : applied.has(path)
+              ? options.dryRun === true ? "planned" : "applied"
+              : "already-applied",
+        reason: skipped?.reason ?? acknowledged?.reason ?? null,
         size_bytes: "size_bytes" in operation ? operation.size_bytes : 0
       };
     });
-    const exitCode = result.skipped.length > 0 ? 5 : 0;
+    const exitCode = result.conflicts.length > 0 ? 5 : 0;
     const output: CliResult = {
-      schema_version: 1,
+      schema_version: 2,
       command: "update",
       request_id: requestId,
       dry_run: options.dryRun === true,
@@ -77,18 +117,20 @@ export async function runUpdate(
         discovered: result.operations.length,
         applied: options.dryRun === true ? 0 : result.applied.length,
         planned: options.dryRun === true ? result.applied.length : 0,
+        acknowledged: result.acknowledged.length,
+        resolved: result.resolvedKeepLocal.length + result.resolvedAcceptRemote.length,
         skipped: result.skipped.length
       },
       items,
-      warnings: result.skipped,
+      warnings: [...result.acknowledged, ...result.skipped],
       errors: []
     };
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
       : result.artifactId === null
         ? "没有可应用的已批准更新。\n"
-        : "更新完成：已应用 " + result.applied.length + " 个条目，跳过 " +
-          result.skipped.length + " 个。\n");
+        : "更新完成：已应用 " + result.applied.length + " 个条目，已确认 " +
+          result.acknowledged.length + " 个，冲突 " + result.conflicts.length + " 个。\n");
     return exitCode;
   } catch (error) {
     const exitCode = error instanceof UpdateWorkflowError ? error.exitCode : 1;

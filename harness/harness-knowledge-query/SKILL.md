@@ -23,6 +23,8 @@ disallowed-tools:
 
 # harness-knowledge-query
 
+并行 change 中查询必须传 `--change <change-id>`；成功后以该 change 的 `meta/knowledge-context.json` 为稳定指针。全局 `context-packs/latest.json` 仅向后兼容，不得用于判断多个 active change 的上下文归属。
+
 根据用户的新需求或排查问题，从项目本地 `.harness/knowledge` 中检索历史需求、决策、实现、风险和测试证据，并生成 AI 可读的 context pack。
 
 此 skill 只负责查询和使用知识。整理、同步和 promote 条目由 `harness-knowledge-ingest` 负责。

@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, rm } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import {
+  artifactManifestSchema,
   baselineManifestSchema,
   canonicalJson,
   harnessAgentSchema,
@@ -34,6 +35,11 @@ import { atomicWriteJson } from "../state/atomic.js";
 import { readBaseline } from "../state/baseline.js";
 import { acquireProtocolLock } from "../state/locks.js";
 import { runTransaction } from "../transaction/transaction.js";
+import {
+  advanceBaselineFromArtifact,
+  synchronizeArtifacts
+} from "../sync/synchronize.js";
+import type { RebaseConflict } from "../sync/artifact-rebase.js";
 
 export interface SensitiveFindingSummary {
   path: string;
@@ -370,12 +376,54 @@ const CREDENTIALS_HINT =
   "可在交互模式下录入，或写入 .harness/credentials.local.yaml（勿提交 git）";
 
 const STALE_BASELINE_MESSAGE =
-  "服务端已有更新的推送，请先 git pull 后执行 npx hunter-harness update 再推";
+  "服务端 artifact 已更新，请先执行 npx hunter-harness update（冲突可用 update --resolve <path>=keep-local|accept-remote）再推";
 
 function staleBaselineError(
-  code: "STALE_PUSH" | "PROJECT_VERSION_CONFLICT"
+  code: "STALE_PUSH" | "PROJECT_VERSION_CONFLICT",
+  conflicts?: readonly RebaseConflict[]
 ): PushWorkflowError {
-  return new PushWorkflowError(STALE_BASELINE_MESSAGE, 5, code);
+  const conflictHint = conflicts !== undefined && conflicts.length > 0
+    ? " 冲突文件：" + conflicts.map((item) => item.path).join(", ")
+    : "";
+  return new PushWorkflowError(STALE_BASELINE_MESSAGE + conflictHint, 5, code);
+}
+
+async function syncToLatest(
+  root: string,
+  project: ProjectConfig,
+  baseline: BaselineManifest,
+  client: HunterHarnessApiClient
+): Promise<BaselineManifest> {
+  const syncResult = await synchronizeArtifacts({
+    projectRoot: root,
+    project,
+    client,
+    requestId: uuidV7(),
+    dryRun: false,
+    conflictStrategy: "manual"
+  }, baseline);
+  if (syncResult.conflicts.length > 0) {
+    throw staleBaselineError("PROJECT_VERSION_CONFLICT", syncResult.conflicts);
+  }
+  return await readBaseline(root);
+}
+
+async function autoRebaseIfServerAdvanced(
+  root: string,
+  project: ProjectConfig,
+  baseline: BaselineManifest,
+  client: HunterHarnessApiClient,
+  remoteVersion: string | null
+): Promise<BaselineManifest> {
+  if (remoteVersion === baseline.complete_project_version) {
+    return baseline;
+  }
+  const updated = await syncToLatest(root, project, baseline, client);
+  if (remoteVersion !== null &&
+      updated.complete_project_version !== remoteVersion) {
+    throw staleBaselineError("PROJECT_VERSION_CONFLICT");
+  }
+  return updated;
 }
 
 function makePreview(
@@ -507,9 +555,19 @@ export async function pushProject(options: PushProjectOptions) {
   const boundAtStart = project.project.project_id;
   if (boundAtStart !== null) {
     const remote = await client.getProject(boundAtStart, uuidV7());
-    if (remote.latest_project_version !== baseline.complete_project_version) {
-      throw staleBaselineError("PROJECT_VERSION_CONFLICT");
-    }
+    baseline = await autoRebaseIfServerAdvanced(
+      root,
+      project,
+      baseline,
+      client,
+      remote.latest_project_version
+    );
+    preview = makePreview(
+      baseline,
+      await managedFiles(root, project),
+      options.confirmedProjectLocal ?? [],
+      installedPaths
+    );
   }
   const initialSkip = await resolveSensitiveScanSkip(preview, options);
   if (initialSkip.cancelled === true) {
@@ -647,7 +705,13 @@ export async function pushProject(options: PushProjectOptions) {
         });
       }
     }
-    const finalized = await client.finalizeProposal(
+    let finalizeRetried = false;
+    let finalized: {
+      proposal_id: string;
+      status: string;
+      artifact_id: string | null;
+    };
+    const finalizeOnce = async () => client.finalizeProposal(
       session.session_id,
       {
         schema_version: 1,
@@ -665,6 +729,68 @@ export async function pushProject(options: PushProjectOptions) {
       requestId,
       workflow.finalize_idempotency_key
     );
+    try {
+      finalized = await finalizeOnce();
+    } catch (error) {
+      if (error instanceof ApiError &&
+          (error.code === "STALE_PUSH" || error.code === "PROJECT_VERSION_CONFLICT") &&
+          !finalizeRetried) {
+        finalizeRetried = true;
+        baseline = await syncToLatest(root, project, baseline, client);
+        workflow = resetSession(workflow, proposalManifestHash);
+        await atomicWriteJson(workflowPath, workflow);
+        session = await client.createProposalSession(projectId, {
+          schema_version: 1,
+          request_id: requestId,
+          client_id: clientId,
+          base_project_version: baseline.complete_project_version,
+          base_manifest_hash: sha256Bytes(canonicalJson(baseline)),
+          proposal_manifest: { files: preview.operations },
+          artifact_manifest: { schema_version: 1, files: preview.operations }
+        }, requestId, workflow.session_idempotency_key);
+        workflow.session_id = session.session_id;
+        workflow.session_expires_at = session.expires_at;
+        workflow.max_chunk_bytes = session.max_chunk_bytes;
+        await atomicWriteJson(workflowPath, workflow);
+        try {
+          finalized = await finalizeOnce();
+        } catch (retryError) {
+          if (retryError instanceof ApiError &&
+              (retryError.code === "STALE_PUSH" ||
+                retryError.code === "PROJECT_VERSION_CONFLICT")) {
+            throw staleBaselineError(retryError.code);
+          }
+          throw retryError;
+        }
+      } else if (error instanceof ApiError &&
+          (error.code === "STALE_PUSH" || error.code === "PROJECT_VERSION_CONFLICT")) {
+        throw staleBaselineError(error.code);
+      } else {
+        throw error;
+      }
+    }
+    let pushWarning: string | undefined;
+    if (finalized.artifact_id !== null) {
+      try {
+        const publishedManifest = artifactManifestSchema.parse(
+          await client.getArtifactManifest(finalized.artifact_id, requestId)
+        );
+        const advanced = await advanceBaselineFromArtifact({
+          projectRoot: root,
+          manifest: publishedManifest,
+          requestId
+        }, baseline);
+        if (advanced.localChanged) {
+          pushWarning = "LOCAL_CHANGED_DURING_PUSH";
+        } else {
+          baseline = advanced.baseline;
+        }
+      } catch {
+        // Finalize is already committed server-side. A follow-up manifest read
+        // must never turn a successful publish into an apparent failed push.
+        pushWarning = "BASELINE_ADVANCE_DEFERRED";
+      }
+    }
     await atomicWriteJson(join(
       root,
       ".harness",
@@ -680,10 +806,17 @@ export async function pushProject(options: PushProjectOptions) {
       status: finalized.status,
       artifact_id: finalized.artifact_id,
       operation_count: preview.operations.length,
+      warning: pushWarning ?? null,
       recorded_at: new Date().toISOString()
     });
     await rm(workflowPath, { force: true });
-    return { preview, proposalId: finalized.proposal_id, projectId, artifactId: finalized.artifact_id };
+    return {
+      preview,
+      proposalId: finalized.proposal_id,
+      projectId,
+      artifactId: finalized.artifact_id,
+      ...(pushWarning === undefined ? {} : { warning: pushWarning })
+    };
   } catch (error) {
     if (error instanceof PushWorkflowError) {
       throw error;

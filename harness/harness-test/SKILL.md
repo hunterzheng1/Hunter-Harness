@@ -51,9 +51,15 @@ disallowed-tools:
 
 ## Workflow
 
+测试跟踪的确定性边界为 `harness_test_guard.py begin` 和 `harness_test_guard.py close`；任一失败都必须传递给 `harness_gate.py close`，不得以自然语言覆盖失败状态。
+
+并行服务测试先运行 `harness_change.py lease-port --change <id> --run-id <run-id> --range <start-end> --json`，再把返回端口传给 `harness_service.py ensure --leased-port <port> --lease-owner <run-id>`。`serviceStart` 的 command/health/overlay 可用 `{leasedPort}` 占位符；用户自启进程仍只进入 Service Gate，禁止 kill。测试清理的 `finally` 中运行 `harness_change.py release-port --change <id> --run-id <run-id> --json`，避免租约池耗尽。
+
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
-执行 各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
+先 `harness_change.py resolve [--change] --json` 解析 change-id；再 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
+
+验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：`harness_test_guard.py begin` → 执行 → `close`（可选 `mark` stale-test-repair）。阶段结束必须 `harness_gate.py close --phase test --status ...`。
 
 - **Read `checklist.md`** — 各项检查详情 + 0.1 preflight + Playwright 探测 + 避坑规则指引
 - **失败处理**：任一项检查失败 → 终止流程并报告原因，用户确认修复后才能继续

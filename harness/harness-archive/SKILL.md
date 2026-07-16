@@ -61,6 +61,8 @@ disallowed-tools:
 
 ## Workflow
 
+先用 `harness_change.py resolve [--change] --json` 解析 change；多个 active change 未显式选择时返回 `CHANGE_SELECTION_REQUIRED`，禁止按 Glob/mtime 自动选择。`harness_archive.py finalize` 内部负责且仅负责一次 `harness_gate.py begin` 与 `harness_gate.py close`。调用者禁止重复调用阶段门禁，避免重复事件和幽灵 change 目录。
+
 ### Phase 0：读取规则和上下文
 
 1. 读取本文件。

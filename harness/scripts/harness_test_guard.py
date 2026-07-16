@@ -24,6 +24,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 MODE = "force-track-touched"
 MANIFEST_REL = Path("evidence") / "test-tracking.json"
+SNAPSHOT_REL = Path("evidence") / "test-guard-snapshot.json"
 PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
 REASONS = ("tdd-created", "stale-test-repair", "test-updated")
 
@@ -125,7 +126,7 @@ def _exclusive_lock(path: Path, *, wait_seconds: float) -> Any:
     while descriptor is None:
         try:
             descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except FileExistsError as exc:
+        except (FileExistsError, PermissionError) as exc:
             if time.monotonic() >= deadline:
                 raise LockUnavailable(str(path)) from exc
             time.sleep(0.01)
@@ -137,22 +138,41 @@ def _exclusive_lock(path: Path, *, wait_seconds: float) -> Any:
         path.unlink(missing_ok=True)
 
 
+def _state_project_root(project: Path) -> Path:
+    result = _git(project, "rev-parse", "--git-common-dir")
+    if result.returncode != 0 or not result.stdout.strip():
+        return project
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = project / common
+    resolved = common.resolve()
+    return resolved.parent if resolved.name == ".git" else project
+
+
 def _change_dir(project: Path, change_dir: Path | str) -> Path | None:
+    state_project = _state_project_root(project)
     candidate = Path(change_dir)
     if not candidate.is_absolute():
-        candidate = project / candidate
+        candidate = (
+            state_project / candidate
+            if candidate.parts[:2] == (".harness", "changes")
+            else project / candidate
+        )
     resolved = candidate.resolve()
-    return resolved if _inside(resolved, project) else None
+    allowed_roots = {
+        (project / ".harness" / "changes").resolve(),
+        (state_project / ".harness" / "changes").resolve(),
+    }
+    return resolved if any(_inside(resolved, root) for root in allowed_roots) else None
 
 
-def _manifest_path(project: Path, change_root: Path) -> Path | None:
+def _manifest_path(change_root: Path) -> Path | None:
     evidence = change_root / MANIFEST_REL.parent
     manifest = change_root / MANIFEST_REL
     expected_evidence = evidence.absolute()
     resolved_evidence = evidence.resolve()
     if (
-        not _inside(change_root.resolve(), project)
-        or not _inside(resolved_evidence, project)
+        not _inside(resolved_evidence, change_root.resolve())
         or os.path.normcase(str(resolved_evidence))
         != os.path.normcase(str(expected_evidence))
     ):
@@ -160,9 +180,12 @@ def _manifest_path(project: Path, change_root: Path) -> Path | None:
     return manifest
 
 
-def _manifest_target_inside(project: Path, manifest: Path) -> bool:
+def _manifest_target_inside(change_root: Path, manifest: Path) -> bool:
     resolved = manifest.resolve()
-    return _inside(resolved, project) and _inside(resolved, manifest.parent.absolute())
+    return (
+        _inside(resolved, change_root.resolve())
+        and _inside(resolved, manifest.parent.absolute())
+    )
 
 
 def _profile_config(project: Path) -> tuple[list[str], list[str]] | None:
@@ -325,13 +348,13 @@ def record(
         assert path is not None and rel is not None
         validated.append((path, rel))
 
-    manifest_path = _manifest_path(project_root, change_root)
+    manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
     lock_path = manifest_path.with_name(manifest_path.name + ".lock")
     try:
         with _exclusive_lock(lock_path, wait_seconds=5.0):
-            if not _manifest_target_inside(project_root, manifest_path):
+            if not _manifest_target_inside(change_root, manifest_path):
                 return _result(
                     False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", []
                 )
@@ -378,10 +401,10 @@ def record(
 
 
 def _stage_locked(
-    project_root: Path, manifest_path: Path, index_path: Path
+    project_root: Path, change_root: Path, manifest_path: Path, index_path: Path
 ) -> dict[str, Any]:
     action = "stage"
-    if not _manifest_target_inside(project_root, manifest_path):
+    if not _manifest_target_inside(change_root, manifest_path):
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
     try:
         manifest = _read_json(manifest_path)
@@ -444,13 +467,164 @@ def _stage_locked(
         temp_index.unlink(missing_ok=True)
 
 
+def _glob_files_for_pattern(base: Path, pattern: str) -> list[Path]:
+    normalized = pattern.replace("\\", "/")
+    if normalized.endswith("/**"):
+        prefix = normalized[:-3].rstrip("/")
+        root = base / prefix
+        if not root.is_dir():
+            return []
+        return [path for path in root.rglob("*") if path.is_file()]
+    return [path for path in base.glob(normalized) if path.is_file()]
+
+
+def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
+    """Map repo-relative test path -> sha256 for all allowed existing files."""
+    found: dict[str, str] = {}
+    config = _profile_config(project_root)
+    if config is None:
+        patterns = ["test/**", "tests/**", "src/test/**"]
+    else:
+        patterns, _excluded = config
+    base = project_root.resolve()
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in _glob_files_for_pattern(base, pattern):
+            resolved = match.resolve()
+            if not _inside(resolved, base):
+                continue
+            rel = resolved.relative_to(base).as_posix()
+            if rel in seen or not _allowed_test_path(project_root, rel):
+                continue
+            seen.add(rel)
+            found[rel] = _sha256(resolved)
+    return found
+
+
+def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
+    action = "begin"
+    project_root = Path(project).resolve()
+    change_root = _change_dir(project_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is None:
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+    snapshot_path = change_root / SNAPSHOT_REL
+    if not _manifest_target_inside(change_root, snapshot_path):
+        return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
+
+    files = _enumerate_allowed_test_files(project_root)
+    snapshot = {
+        "schemaVersion": SCHEMA_VERSION,
+        "mode": MODE,
+        "projectRoot": str(project_root),
+        "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "files": [
+            {"path": rel, "sha256": digest, "ignored": _is_ignored(project_root, rel)}
+            for rel, digest in sorted(files.items())
+        ],
+    }
+    _write_json(snapshot_path, snapshot)
+    return _result(
+        True,
+        action,
+        "SNAPSHOT_CAPTURED",
+        list(files),
+        snapshotPath=str(snapshot_path),
+        fileCount=len(files),
+    )
+
+
+def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
+    action = "close"
+    project_root = Path(project).resolve()
+    change_root = _change_dir(project_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    snapshot_path = change_root / SNAPSHOT_REL
+    if not snapshot_path.is_file():
+        return _result(False, action, "SNAPSHOT_MISSING", [])
+    try:
+        snapshot = _read_json(snapshot_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result(False, action, "SNAPSHOT_INVALID", [], error=str(exc))
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schemaVersion") != SCHEMA_VERSION
+        or snapshot.get("projectRoot") != str(project_root)
+    ):
+        return _result(False, action, "SNAPSHOT_INVALID", [])
+
+    before_entries = snapshot.get("files")
+    if not isinstance(before_entries, list):
+        return _result(False, action, "SNAPSHOT_INVALID", [])
+    before: dict[str, dict[str, Any]] = {}
+    for item in before_entries:
+        if not isinstance(item, dict):
+            return _result(False, action, "SNAPSHOT_INVALID", [])
+        rel = item.get("path")
+        digest = item.get("sha256")
+        if not isinstance(rel, str) or not rel or not isinstance(digest, str):
+            return _result(False, action, "SNAPSHOT_INVALID", [])
+        path, normalized, error = _validate_file(project_root, rel)
+        if error:
+            return _result(False, action, error, [rel])
+        if normalized != rel or path is None:
+            return _result(False, action, "PATH_ESCAPE", [rel])
+        before[rel] = item
+
+    current = _enumerate_allowed_test_files(project_root)
+    for rel in current:
+        path, normalized, error = _validate_file(project_root, rel)
+        if error:
+            return _result(False, action, error, [rel])
+        if normalized != rel or path is None:
+            return _result(False, action, "PATH_ESCAPE", [rel])
+
+    touched: list[tuple[str, str]] = []
+    for rel, digest in current.items():
+        if rel not in before:
+            touched.append((rel, "tdd-created"))
+            continue
+        if before[rel]["sha256"] != digest:
+            touched.append((rel, "test-updated"))
+
+    recorded: list[str] = []
+    for rel, reason in touched:
+        result = record(project_root, change_root, [str(project_root / rel)], reason)
+        if not result.get("ok"):
+            code = result.get("code", "RECORD_FAILED")
+            if code == "TEST_PATH_NOT_ALLOWED":
+                return _result(False, action, "UNCLASSIFIABLE_TEST", [rel])
+            return result
+        recorded.append(rel)
+
+    return _result(
+        True,
+        action,
+        "CLOSED",
+        recorded,
+        recordedCount=len(recorded),
+        unchangedPreexisting=len(before) - sum(1 for rel, _ in touched if rel in before),
+    )
+
+
+def mark(
+    project: Path | str,
+    change_dir: Path | str,
+    files: list[str],
+) -> dict[str, Any]:
+    return record(project, change_dir, files, "stale-test-repair")
+
+
 def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "stage"
     project_root = Path(project).resolve()
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
-    manifest_path = _manifest_path(project_root, change_root)
+    manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
 
@@ -468,7 +642,9 @@ def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             manifest_lock = manifest_path.with_name(manifest_path.name + ".lock")
             try:
                 with _exclusive_lock(manifest_lock, wait_seconds=0.0):
-                    return _stage_locked(project_root, manifest_path, index_path)
+                    return _stage_locked(
+                        project_root, change_root, manifest_path, index_path
+                    )
             except LockUnavailable:
                 return _result(False, action, "MANIFEST_LOCKED", [])
     except LockUnavailable:
@@ -488,10 +664,30 @@ def main(argv: list[str] | None = None) -> int:
     stage_parser.add_argument("--project", required=True)
     stage_parser.add_argument("--change-dir", required=True)
     stage_parser.add_argument("--json", action="store_true")
+    begin_parser = sub.add_parser("begin")
+    begin_parser.add_argument("--project", required=True)
+    begin_parser.add_argument("--change-dir", required=True)
+    begin_parser.add_argument("--json", action="store_true")
+    close_parser = sub.add_parser("close")
+    close_parser.add_argument("--project", required=True)
+    close_parser.add_argument("--change-dir", required=True)
+    close_parser.add_argument("--json", action="store_true")
+    mark_parser = sub.add_parser("mark")
+    mark_parser.add_argument("--project", required=True)
+    mark_parser.add_argument("--change-dir", required=True)
+    mark_parser.add_argument("--files", required=True)
+    mark_parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.action == "record":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
         result = record(args.project, args.change_dir, files, args.reason)
+    elif args.action == "begin":
+        result = begin(args.project, args.change_dir)
+    elif args.action == "close":
+        result = close(args.project, args.change_dir)
+    elif args.action == "mark":
+        files = [item.strip() for item in args.files.split(",") if item.strip()]
+        result = mark(args.project, args.change_dir, files)
     else:
         result = stage(args.project, args.change_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2 if args.json else None))

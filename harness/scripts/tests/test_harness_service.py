@@ -12,7 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
@@ -40,9 +40,10 @@ def _write_json(path: Path, data: object) -> None:
 
 def _run_json(argv: list[str]) -> tuple[int, dict]:
     buf = StringIO()
-    with redirect_stdout(buf):
+    err = StringIO()
+    with redirect_stdout(buf), redirect_stderr(err):
         code = hs.main(["--json", *argv])
-    text = buf.getvalue().strip()
+    text = (buf.getvalue() or err.getvalue()).strip()
     payload = json.loads(text) if text else {}
     return code, payload
 
@@ -167,6 +168,49 @@ class EnsureReuseRestartTests(unittest.TestCase):
         self.assertEqual(code2, 0, msg=p2)
         self.assertEqual(p2["action"], "reused", msg=p2)
         self.assertEqual(p2["pid"], pid)
+
+    def test_ensure_persists_explicit_port_lease_identity(self) -> None:
+        code, payload = _run_json(
+            [
+                "ensure",
+                "--change-dir",
+                str(self.change),
+                "--project",
+                str(self.project),
+                "--files",
+                str(self.mod),
+                "--leased-port",
+                "43127",
+                "--lease-owner",
+                "run-test-port-owner",
+            ]
+        )
+        self.assertEqual(code, 0, msg=payload)
+        self._pids.append(payload["pid"])
+        session = json.loads(
+            (self.change / "runtime" / "service-session.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(session["leasedPort"], 43127)
+        self.assertEqual(session["leaseOwner"], "run-test-port-owner")
+
+    def test_leased_port_requires_owner(self) -> None:
+        code, payload = _run_json(
+            [
+                "ensure",
+                "--change-dir",
+                str(self.change),
+                "--project",
+                str(self.project),
+                "--files",
+                str(self.mod),
+                "--leased-port",
+                "43128",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("lease owner", payload["error"].lower())
 
     def test_ensure_restarted_when_fingerprint_changes(self) -> None:
         code1, p1 = _run_json(

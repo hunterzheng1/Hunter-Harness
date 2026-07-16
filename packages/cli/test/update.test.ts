@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +81,18 @@ describe("hunter-harness update", () => {
     return vi.fn(async (input: string | URL | Request) => {
       const url = new URL(typeof input === "string" ? input : input.toString());
       if (url.pathname.endsWith("/update-manifest")) {
+        const baseVersion = url.searchParams.get("base_project_version");
+        if (baseVersion === manifest.project_version) {
+          return json({
+            schema_version: 1,
+            project_id: "prj_update",
+            observed_project_version: manifest.project_version,
+            artifact_id: null,
+            artifact_manifest_url: null,
+            delta_available: false,
+            request_id: "req"
+          });
+        }
         return json({
           schema_version: 1,
           project_id: "prj_update",
@@ -327,7 +339,7 @@ describe("hunter-harness update", () => {
     expect(await pathExists(join(root, path))).toBe(false);
   });
 
-  it("recovers byte-for-byte when interrupted after baseline write", async () => {
+  it("UT-015 recovers files and baseline byte-for-byte after transaction interruption", async () => {
     const content = "interrupted artifact\n";
     const path = ".harness/knowledge/interrupted.md";
     const manifest = artifact([{
@@ -547,4 +559,124 @@ describe("hunter-harness update", () => {
     expect(result).toContain("# Project agents");
     expect(result.match(/hunter-harness:start id=harness-skill/g)).toHaveLength(2);
   });
+
+  it("API-001 handles 146 applied plus 433 policy-never entries and advances baseline", async () => {
+    const applyFiles = Array.from({ length: 146 }, (_, index) => ({
+      path: `.harness/knowledge/applied-${index}.md`,
+      local: `apply-old-${index}\n`,
+      remote: `apply-new-${index}\n`
+    }));
+    const policyFiles = Array.from({ length: 433 }, (_, index) => ({
+      path: `.harness/knowledge/project-local/ignored-${index}.md`,
+      local: `local-${index}\n`,
+      remote: `remote-${index}\n`
+    }));
+    await mkdir(join(root, ".harness", "knowledge", "project-local"), { recursive: true });
+    await seedBaseline(Object.fromEntries([
+      ...applyFiles.map((file) => [file.path, file.local]),
+      ...policyFiles.map((file) => [file.path, file.local])
+    ]));
+    for (const file of policyFiles) {
+      const dir = join(root, ".harness", "knowledge", "project-local");
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(root, file.path), file.local);
+    }
+    const manifest = artifact([
+      ...applyFiles.map((file) => ({
+        operation: "modify",
+        path: file.path,
+        file_kind: "user_editable",
+        base_content_sha256: sha256Bytes(file.local),
+        content_sha256: sha256Bytes(file.remote),
+        size_bytes: Buffer.byteLength(file.remote)
+      } as const)),
+      ...policyFiles.map((file, index) => ({
+        operation: "modify" as const,
+        path: `.harness/knowledge/project-local/ignored-${index}.md`,
+        file_kind: "user_editable" as const,
+        base_content_sha256: sha256Bytes(file.local),
+        content_sha256: sha256Bytes(file.remote),
+        size_bytes: Buffer.byteLength(file.remote)
+      }))
+    ]);
+    const blobs: Record<string, string> = {};
+    for (const file of [...applyFiles, ...policyFiles]) {
+      blobs[sha256Bytes(file.remote)] = file.remote;
+    }
+    const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest, blobs),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+    expect(code).toBe(0);
+    const output = JSON.parse(stdout.join("")) as {
+      summary: { applied: number; acknowledged: number; skipped: number };
+    };
+    expect(output.summary).toMatchObject({ applied: 146, acknowledged: 433, skipped: 0 });
+    for (const file of applyFiles) {
+      expect(await readFile(join(root, file.path), "utf8")).toBe(file.remote);
+    }
+    for (const file of policyFiles) {
+      expect(await readFile(join(root, file.path), "utf8")).toBe(file.local);
+    }
+    const baseline = await readBaseline(root);
+    expect(baseline.complete_project_version).toBe("pv_1");
+    expect(baseline.files[policyFiles[0]?.path ?? ""]?.baseline_hash).toBe(
+      sha256Bytes(policyFiles[0]?.remote ?? "")
+    );
+  }, 120000);
+
+  it("API-002 applies 146, acknowledges 400, and reports only 33 real conflicts", async () => {
+    const applyFiles = Array.from({ length: 146 }, (_, index) => ({
+      path: `.harness/knowledge/mixed-applied-${index}.md`,
+      local: `old-${index}\n`, remote: `new-${index}\n`
+    }));
+    const ignored = Array.from({ length: 400 }, (_, index) => ({
+      path: `.harness/knowledge/project-local/mixed-ignored-${index}.md`,
+      local: `local-${index}\n`, remote: `server-${index}\n`
+    }));
+    const conflicts = Array.from({ length: 33 }, (_, index) => ({
+      path: `.harness/knowledge/conflict-${index}.md`,
+      local: `base-${index}\n`, dirty: `dirty-${index}\n`, remote: `remote-${index}\n`
+    }));
+    await mkdir(join(root, ".harness", "knowledge", "project-local"), { recursive: true });
+    await seedBaseline(Object.fromEntries([
+      ...applyFiles.map((file) => [file.path, file.local]),
+      ...ignored.map((file) => [file.path, file.local]),
+      ...conflicts.map((file) => [file.path, file.local])
+    ]));
+    for (const file of conflicts) await writeFile(join(root, file.path), file.dirty);
+    const all = [...applyFiles, ...ignored, ...conflicts];
+    const manifest = artifact(all.map((file) => ({
+      operation: "modify" as const,
+      path: file.path,
+      file_kind: "user_editable" as const,
+      base_content_sha256: sha256Bytes(file.local),
+      content_sha256: sha256Bytes(file.remote),
+      size_bytes: Buffer.byteLength(file.remote)
+    })), "pv_mixed", "art_mixed");
+    const blobs = Object.fromEntries(all.map((file) => [sha256Bytes(file.remote), file.remote]));
+    const run = async () => {
+      stdout = [];
+      stderr = [];
+      const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
+        cwd: root, resourcesRoot, fetch: fetchFor(manifest, blobs),
+        env: { TEST_HUNTER_TOKEN: "api-token" },
+        stdout: (value) => stdout.push(value), stderr: (value) => stderr.push(value)
+      });
+      return { code, output: JSON.parse(stdout.join("")) as {
+        summary: { applied: number; acknowledged: number; skipped: number };
+      } };
+    };
+    const first = await run();
+    expect(first.code).toBe(5);
+    expect(first.output.summary).toMatchObject({ applied: 146, acknowledged: 400, skipped: 33 });
+    expect((await readBaseline(root)).complete_project_version).toBe("pv_0");
+    const second = await run();
+    expect(second.code).toBe(5);
+    expect(second.output.summary).toMatchObject({ applied: 0, acknowledged: 0, skipped: 33 });
+  }, 120000);
 });

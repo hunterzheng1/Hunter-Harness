@@ -194,6 +194,8 @@ def resolve_service_start(
     change_name: str | None = None,
     worktree_root: Path | None = None,
     overlay_path: str | None = None,
+    leased_port: int | None = None,
+    lease_owner: str | None = None,
 ) -> dict[str, Any]:
     """从模板 serviceStart + runtime context 生成 resolved serviceStart。
 
@@ -220,6 +222,16 @@ def resolve_service_start(
     # runtime profile 注入：持久 profile 留空时用 change_name；非空则保留
     if not str(resolved.get("profile") or "").strip():
         resolved["profile"] = change_name or "local-dev"
+    if leased_port is not None:
+        if not lease_owner:
+            raise ValueError("lease owner is required when leased port is provided")
+        resolved["leasedPort"] = leased_port
+        resolved["leaseOwner"] = lease_owner
+        resolved["port"] = leased_port
+        for field in ("command", "healthUrl", "healthFile", "overlayPath"):
+            value = resolved.get(field)
+            if isinstance(value, str):
+                resolved[field] = value.replace("{leasedPort}", str(leased_port))
     # worktree_root 预留给未来相对 overlay 路径解析（spec §3.6 state snapshot）；
     # 不写入返回值，避免污染 session。
     _ = worktree_root
@@ -914,7 +926,7 @@ def build_session(
 ) -> dict[str, Any]:
     profile_name = service_start.get("profile") or "local-dev"
     overlay = service_start.get("overlayPath") or ""
-    return {
+    session = {
         "pid": pid,
         "startedBy": "AI",
         "moduleInputsHash": module_inputs_hash,
@@ -925,6 +937,10 @@ def build_session(
         "startedAt": started_at or now_iso(),
         "command": command,
     }
+    if isinstance(service_start.get("leasedPort"), int):
+        session["leasedPort"] = service_start["leasedPort"]
+        session["leaseOwner"] = service_start.get("leaseOwner")
+    return session
 
 
 def compute_module_hash(
@@ -1015,12 +1031,16 @@ def cmd_ensure(args: argparse.Namespace) -> int:
     # 含 worktree/change 陈旧持久值时拒绝（修复输入端陈旧 profile）。
     change_name = getattr(args, "change_name", None) or change_dir.name
     overlay = getattr(args, "overlay", None)
+    leased_port = getattr(args, "leased_port", None)
+    lease_owner = str(getattr(args, "lease_owner", None) or "").strip() or None
     try:
         service_start = resolve_service_start(
             profile,
             change_name=change_name,
             worktree_root=project,
             overlay_path=overlay,
+            leased_port=leased_port,
+            lease_owner=lease_owner,
         )
     except ValueError as exc:
         return emit_error(str(exc), as_json=as_json)
@@ -1084,6 +1104,8 @@ def cmd_ensure(args: argparse.Namespace) -> int:
                 and session.get("startCommandHash") == current_cmd_hash
                 and session.get("profile") == current_profile
                 and session.get("overlayPath") == current_overlay
+                and session.get("leasedPort") == service_start.get("leasedPort")
+                and session.get("leaseOwner") == service_start.get("leaseOwner")
             )
             if fingerprint_match:
                 payload = {
@@ -1388,6 +1410,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--overlay",
         default=None,
         help="runtime overlay path injected into resolved serviceStart",
+    )
+    p_ensure.add_argument(
+        "--leased-port",
+        type=int,
+        default=None,
+        help="port allocated by harness_change.py lease-port",
+    )
+    p_ensure.add_argument(
+        "--lease-owner",
+        default=None,
+        help="run id that owns --leased-port",
     )
     p_ensure.add_argument("--json", action="store_true")
     p_ensure.set_defaults(func=cmd_ensure)

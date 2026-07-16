@@ -359,6 +359,28 @@ def find_review_reports(change_dir: Path) -> list[Path]:
     return found
 
 
+def review_phase_completed(events: list[dict[str, Any]]) -> bool:
+    """True only when structured events record a review phase.end (UT-042)."""
+    for event in events:
+        if event.get("type") != "phase.end":
+            continue
+        if str(event.get("phase") or "").lower() == "review":
+            return True
+    return False
+
+
+def review_evidence_present(
+    change_dir: Path,
+    events: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Review ran only when report files or review phase.end events exist."""
+    if find_review_reports(change_dir):
+        return True
+    if events is None:
+        events = he.load_events(change_dir / "events.ndjson")
+    return review_phase_completed(events)
+
+
 def git_run(project: Path, *args: str) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
@@ -531,10 +553,9 @@ def check_status(change_dir: Path) -> dict[str, Any]:
     # --- test / review reports ---
     test_reports = find_test_reports(change_dir)
     review_reports = find_review_reports(change_dir)
-    log_text = load_execution_log(change_dir)
-    has_review_section = bool(
-        re.search(r"harness-review|##\s*review", log_text, re.IGNORECASE)
-    )
+    events_path = change_dir / "events.ndjson"
+    events = he.load_events(events_path) if events_path.is_file() else []
+    review_ran = review_evidence_present(change_dir, events)
 
     checks["test_reports"] = [str(p.relative_to(change_dir)) for p in test_reports]
     checks["review_reports"] = [str(p.relative_to(change_dir)) for p in review_reports]
@@ -555,13 +576,13 @@ def check_status(change_dir: Path) -> dict[str, Any]:
 
     if review_reports:
         checks["review_report_status"] = "present"
-    elif has_review_section:
+    elif review_phase_completed(events):
         checks["review_report_status"] = "ran-but-not-persisted"
         warnings.append(
             {
                 "code": "review-not-persisted",
                 "message": (
-                    "execution-log has review section but no review-report file; "
+                    "review phase.end recorded but no review-report file; "
                     "prefer persisting report before archive"
                 ),
             }
@@ -972,10 +993,8 @@ def _stage_status_from_sources(
         if unit.get("source") == "not-run" and unit.get("run", 0) == 0:
             status["test"] = "NOT_RUN"
 
-    if not find_review_reports(change_dir):
-        log_text = load_execution_log(change_dir)
-        if not re.search(r"harness-review|##\s*review", log_text, re.IGNORECASE):
-            status["review"] = "ADVISORY"
+    if not review_evidence_present(change_dir, events):
+        status["review"] = "ADVISORY"
 
     return status
 
@@ -1057,7 +1076,11 @@ def _changed_files_from_git(
     return diff_stat, changed
 
 
-def _review_summary(change_dir: Path, existing: dict[str, Any] | None) -> dict[str, Any]:
+def _review_summary(
+    change_dir: Path,
+    existing: dict[str, Any] | None,
+    events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     base = {
         "status": "ADVISORY",
         "red": 0,
@@ -1072,10 +1095,8 @@ def _review_summary(change_dir: Path, existing: dict[str, Any] | None) -> dict[s
         merged = dict(base)
         merged.update(existing["reviewSummary"])
         return merged
-    if not find_review_reports(change_dir):
-        log_text = load_execution_log(change_dir)
-        if not re.search(r"harness-review|##\s*review", log_text, re.IGNORECASE):
-            base["status"] = "ADVISORY_NOT_RUN"
+    if not review_evidence_present(change_dir, events):
+        base["status"] = "ADVISORY_NOT_RUN"
     return base
 
 
@@ -1363,7 +1384,11 @@ def collect_summary_data(
     if not for_replay:
         data["artifacts"] = _artifacts_from_events(events)
 
-    data["reviewSummary"] = _review_summary(change_dir, existing if for_replay else None)
+    data["reviewSummary"] = _review_summary(
+        change_dir,
+        existing if for_replay else None,
+        events,
+    )
     if not for_replay:
         data["timeline"] = _timeline_from_events(event_summary, events)
     else:

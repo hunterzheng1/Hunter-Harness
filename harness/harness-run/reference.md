@@ -509,9 +509,9 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 - 如果 exit code 非 0 或无有效 stdout，标记为 ❌ 构建失败 / 状态未知
 - 如果是 TDD 降级（无测试基础设施），测试命令步骤跳过，标记 🟡 静态验证
 
-### 2c. 写入 verification-ledger
+### 2c. 写入 verification-ledger（仅经 `harness_ledger.py record`）
 
-步骤 2 完成后**必须**写入/更新 `.harness/changes/<change-name>/evidence/verification-ledger.json`：
+步骤 2 完成后**必须**通过 `harness_ledger.py record` 写入/更新 ledger（**禁止** Write/Edit `verification-ledger.json`）：
 
 - `compile` 项：始终写入（status / command / scope / evidence / 时间戳 / durationMs）
 - `unitTest` 项：仅当 2b 执行了全量测试命令时写入（testsRun / failures / errors / skipped / evidence）；未执行时标记 `{"status": "NOT_RUN_BY_RUN", "note": "轻量验证，全量单元测试由 harness-test 执行"}`
@@ -522,11 +522,14 @@ powershell.exe -Command "<测试命令> <模块定位参数>"
 
 ```powershell
 python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json
+python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/changes/<change-name>" --verification compile --status PASS --command "<cmd>" --exit-code 0 --json
 ```
 
 > `content-changeset-2` 同时读取 tracked diff、标准 untracked 文件和 manifest 的精确测试路径。manifest 缺失时保持普通行为；manifest 存在但路径越界、内容 hash 漂移或结构非法时命令失败，ledger 不可复用。checkpoint commit 不改变各路径的工作树内容，因此提交前后 hash 保持一致。
 
 > 这样 harness-test 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
+
+阶段边界：`harness_gate.py begin/close`；测试跟踪：`harness_test_guard.py begin/close`。close 失败不得用自然语言覆盖。
 
 ## 步骤 3：场景覆盖检查
 
