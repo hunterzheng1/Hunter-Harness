@@ -1308,5 +1308,95 @@ class LedgerV2Tests(unittest.TestCase):
             self.assertEqual(r2["reason"], "reuse")
 
 
+class MetricsJsonRecordTests(unittest.TestCase):
+    """UT-101..103: optional --metrics-json on record."""
+
+    def _record(self, change: Path, src: Path, extra: list[str]) -> tuple[int, dict]:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        out = StringIO()
+        err = StringIO()
+        argv = [
+            "--json",
+            "record",
+            "--change-dir",
+            str(change),
+            "--verification",
+            "unitTest",
+            "--status",
+            "ok",
+            "--command",
+            "python -m unittest",
+            "--exit-code",
+            "0",
+            "--duration-ms",
+            "100",
+            "--files",
+            str(src),
+            "--evidence",
+            "Tests run: 1, Failures: 0, Errors: 0, Skipped: 0",
+            *extra,
+        ]
+        with redirect_stdout(out), redirect_stderr(err):
+            code = harness_ledger.main(argv)
+        text = out.getvalue().strip() or err.getvalue().strip()
+        payload = json.loads(text) if text else {}
+        return code, payload
+
+    def test_ut101_record_with_valid_metrics_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "m-ok"
+            change.mkdir()
+            src = change / "A.java"
+            src.write_text("class A {}", encoding="utf-8")
+            metrics = '{"run":155,"failures":0,"errors":0,"skipped":0}'
+            code, payload = self._record(change, src, ["--metrics-json", metrics])
+            self.assertEqual(code, 0, msg=payload)
+            self.assertTrue(payload.get("ok"))
+            data = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            entry = data["validations"]["unitTest"]
+            self.assertEqual(
+                entry["metrics"],
+                {"run": 155, "failures": 0, "errors": 0, "skipped": 0},
+            )
+
+    def test_ut102_record_rejects_invalid_metrics_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "m-bad"
+            change.mkdir()
+            src = change / "A.java"
+            src.write_text("class A {}", encoding="utf-8")
+            for bad in ("not-json", "[1]"):
+                code, payload = self._record(change, src, ["--metrics-json", bad])
+                self.assertEqual(code, 1, msg=f"bad={bad} payload={payload}")
+                self.assertFalse(payload.get("ok", True))
+                err = str(payload.get("error") or "")
+                self.assertIn("metrics-json", err.lower())
+                self.assertFalse(
+                    (change / "evidence" / "verification-ledger.json").exists(),
+                    f"ledger must not be written for invalid metrics ({bad})",
+                )
+
+    def test_ut103_record_without_metrics_json_omits_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "m-none"
+            change.mkdir()
+            src = change / "A.java"
+            src.write_text("class A {}", encoding="utf-8")
+            code, payload = self._record(change, src, [])
+            self.assertEqual(code, 0, msg=payload)
+            data = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertNotIn("metrics", data["validations"]["unitTest"])
+
+
 if __name__ == "__main__":
     unittest.main()

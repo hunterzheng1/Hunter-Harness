@@ -11,7 +11,7 @@ description: harness-archive 的归档流程、manifest、summary-data、final-s
 - **Phase 2 确认归档（强制阻断）**：AskUserQuestion 确认，拒绝即终止。
 - **Phase 3 执行归档**：
   1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
-  2. 需要维护者结论时，在移动前补全 `meta/archive-meta.md` 的 `maintenanceNotes` / `knownRisks` / `manualActions`；finalize 后不再修改归档内容。
+  2. `meta/archive-meta.md` 由 finalize 生成（与 summary `finalStatus` 同源）；禁止手写。维护者结论写入 events 即可。finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。
   3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。
 - **Phase 4 验证与提示**：见 `checklist.md` 归档后验证项。
 
@@ -70,17 +70,25 @@ powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-arch
 
 ## archive-meta.md 模板
 
-```markdown
-# Archive Meta — <change-name>
+由 `harness_archive.py finalize` 生成（手写视为数据丢失）。frontmatter 与 summary-data 同源：
 
-- archivedAt: YYYY-MM-DD HH:mm
-- finalCommit: <hash>
-- sourceDir: .harness/changes/<change-name>
-- archiveDir: .harness/archive/YYYY-MM-DD-<change-name>
-- movedFiles: <from manifest>
-- generatedFiles: archive-meta.md, summary-data.json, final-summary.html, manifests
-- totalArchiveFiles: <from after manifest>
+```markdown
+---
+archive-id: YYYY-MM-DD-<change-name>
+change-name: <change-name>
+archived-at: YYYY-MM-DD HH:mm
+final-commit: <hash>
+base-commit: <hash>
+final-status: <OK|WARN|CONDITIONAL_OK|FAIL>   # 与 summary-data.finalStatus 同源
+source: harness-archive
+---
+# 归档元数据 — <change-name>
+## 阶段状态
+## 变更文件
+## 已知风险
 ```
+
+cleanup 步骤（before-manifest 前）：删除 `events.ndjson.lock`、`runtime/*.pid`、launcher、credential/token/secret 文件名；截断 `logs/**/*.log` 超过 64KB 的尾部保留。
 
 ## 目录结构与最终状态规则
 
