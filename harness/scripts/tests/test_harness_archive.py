@@ -695,7 +695,9 @@ class ConditionalOkTests(unittest.TestCase):
             "apiTests": {"status": "USER_SKIPPED", "failed": 0},
             "dbCompatibility": "NOT_RUN",
         }
-        self.assertEqual(ha._compute_final_status(stage, verification), "CONDITIONAL_OK")
+        status, reasons = ha._compute_final_status(stage, verification)
+        self.assertEqual(status, "CONDITIONAL_OK")
+        self.assertTrue(reasons)
 
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
@@ -878,6 +880,754 @@ class ReviewDetectionTests(unittest.TestCase):
         ]
         self.assertTrue(ha.review_phase_completed(events))
         self.assertTrue(ha.review_evidence_present(self.change_dir, events))
+
+
+class LedgerCountFallbackTests(unittest.TestCase):
+    """UT-104..109: metrics → evidence dict → text regex → api-test-results."""
+
+    def test_ut104_metrics_preferred_over_text_evidence(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTest": {
+                    "status": "OK",
+                    "metrics": {"run": 155, "failures": 0, "errors": 0, "skipped": 0},
+                    "evidence": "Tests run: 1, Failures: 1, Errors: 0, Skipped: 0",
+                }
+            }
+        }
+        result = ha._ledger_unit_tests(ledger)
+        self.assertEqual(result["run"], 155)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["source"], "committed")
+        self.assertEqual(result["passRate"], "100%")
+
+    def test_ut105_unit_text_regex_fallback(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTest": {
+                    "status": "OK",
+                    "evidence": "Tests run: 155, Failures: 0, Errors: 0, Skipped: 0",
+                }
+            }
+        }
+        result = ha._ledger_unit_tests(ledger)
+        self.assertEqual(result["run"], 155)
+        self.assertEqual(result["passRate"], "100%")
+        self.assertEqual(result["source"], "evidence-text")
+
+    def test_ut106_multi_segment_takes_last_match(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTest": {
+                    "status": "OK",
+                    "evidence": (
+                        "module A: Tests run: 10, Failures: 1, Errors: 0, Skipped: 0\n"
+                        "aggregate: Tests run: 155, Failures: 0, Errors: 0, Skipped: 0"
+                    ),
+                }
+            }
+        }
+        result = ha._ledger_unit_tests(ledger)
+        self.assertEqual(result["run"], 155)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["source"], "evidence-text")
+
+    def test_ut107_api_text_passed_fallback(self) -> None:
+        ledger = {
+            "validations": {
+                "apiTest": {
+                    "status": "OK",
+                    "evidence": "API 3/3 passed",
+                }
+            }
+        }
+        result = ha._ledger_api_tests(ledger)
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["passed"], 3)
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["source"], "evidence-text")
+
+    def test_ut108_api_test_results_json_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            runtime = change / "runtime"
+            runtime.mkdir()
+            _write_json(
+                runtime / "api-test-results.json",
+                {"total": 3, "passed": 3, "failed": 0, "blocked": 0},
+            )
+            ledger = {
+                "validations": {
+                    "apiTest": {
+                        "status": "OK",
+                        "evidence": "api done",
+                    }
+                }
+            }
+            result = ha._ledger_api_tests(ledger, change_dir=change)
+            self.assertEqual(result["total"], 3)
+            self.assertEqual(result["passed"], 3)
+            self.assertEqual(result["source"], "api-test-results")
+
+    def test_ut109_all_fallbacks_fail_returns_empty(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTest": {"status": "OK", "evidence": "no counts here"},
+                "apiTest": {"status": "OK", "evidence": "no counts"},
+            }
+        }
+        unit = ha._ledger_unit_tests(ledger)
+        api = ha._ledger_api_tests(ledger)
+        self.assertEqual(unit["run"], 0)
+        self.assertEqual(unit["passRate"], ha.NOT_AVAILABLE)
+        self.assertEqual(api["total"], 0)
+        self.assertEqual(api["passRate"], ha.NOT_AVAILABLE)
+
+
+class FinalStatusReasonsTests(unittest.TestCase):
+    """UT-110..111: finalStatusReasons."""
+
+    def test_ut110_db_not_run_reasons(self) -> None:
+        status, reasons = ha._compute_final_status(
+            {"plan": "OK", "run": "OK", "test": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
+            {
+                "unitTests": {"run": 10, "failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0},
+                "dbCompatibility": "NOT_RUN",
+            },
+        )
+        self.assertEqual(status, "CONDITIONAL_OK")
+        self.assertIn("dbCompatibility=NOT_RUN", reasons)
+
+    def test_ut111_all_green_empty_reasons(self) -> None:
+        status, reasons = ha._compute_final_status(
+            {"plan": "OK", "run": "OK", "test": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
+            {
+                "unitTests": {"run": 10, "failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0, "total": 1, "passed": 1},
+                "dbCompatibility": "OK",
+            },
+        )
+        self.assertEqual(status, "OK")
+        self.assertEqual(reasons, [])
+
+
+class KnownRisksFilterTests(unittest.TestCase):
+    """UT-112..113: knownRisks severity filter + missing-risk."""
+
+    def test_ut112_severity_filter_to_known_risks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "risk-filter"
+            change.mkdir()
+            _seed_change_dir(change)
+            he.main(
+                [
+                    "--json",
+                    "append",
+                    "--change-dir",
+                    str(change),
+                    "--phase",
+                    "run",
+                    "--type",
+                    "issue",
+                    "--code",
+                    "warn-x",
+                    "--severity",
+                    "warning",
+                    "--message",
+                    "real warning risk",
+                ]
+            )
+            he.main(
+                [
+                    "--json",
+                    "append",
+                    "--change-dir",
+                    str(change),
+                    "--phase",
+                    "run",
+                    "--type",
+                    "issue",
+                    "--code",
+                    "info-note",
+                    "--message",
+                    "knowledge query result not a risk",
+                ]
+            )
+            summary = ha.collect_summary_data(change, write=False)
+            risk_msgs = [r.get("message") for r in summary.get("knownRisks") or []]
+            self.assertIn("real warning risk", risk_msgs)
+            self.assertNotIn("knowledge query result not a risk", risk_msgs)
+            notes = " ".join(summary.get("maintenanceNotes") or [])
+            self.assertIn("knowledge query result not a risk", notes)
+
+    def test_ut113_missing_risk_ignores_no_severity_issue(self) -> None:
+        summary = {
+            "changeName": "x",
+            "finalStatus": "OK",
+            "verification": {"unitTests": {}, "apiTests": {}},
+            "knownRisks": [],
+            "archiveManifest": {"totalArchiveFiles": 1},
+            "reportPipeline": {"commands": []},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "final-summary.html"
+            html.write_text(
+                "<html>x OK 1</html>",
+                encoding="utf-8",
+            )
+            result = ha.validate_summary(summary, html)
+            codes = {i.get("code") for i in result.get("issues") or []}
+            self.assertNotIn("missing-risk", codes)
+
+
+class CleanupTransientTests(unittest.TestCase):
+    """UT-114..116: pre-manifest cleanup."""
+
+    def test_ut114_cleanup_deletes_transients(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "events.ndjson.lock").write_text("lock", encoding="utf-8")
+            runtime = root / "runtime"
+            runtime.mkdir()
+            (runtime / "svc.pid").write_text("1", encoding="utf-8")
+            (runtime / "_harness_service_launcher.py").write_text("x", encoding="utf-8")
+            (runtime / "credential-cache.json").write_text("{}", encoding="utf-8")
+            keep = root / "plans" / "p.md"
+            keep.parent.mkdir()
+            keep.write_text("keep", encoding="utf-8")
+            result = ha._cleanup_transients(root)
+            deleted = set(result.get("deleted") or [])
+            self.assertTrue(any("events.ndjson.lock" in d for d in deleted))
+            self.assertTrue(any(d.endswith(".pid") or "svc.pid" in d for d in deleted))
+            self.assertTrue(any("launcher" in d for d in deleted))
+            self.assertTrue(any("credential-cache" in d for d in deleted))
+            self.assertFalse((root / "events.ndjson.lock").exists())
+            self.assertFalse((runtime / "credential-cache.json").exists())
+            self.assertTrue(keep.is_file())
+
+    def test_ut115_cleanup_truncates_large_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            big = log_dir / "service-start.log"
+            big.write_bytes(b"x" * 100_000)
+            result = ha._cleanup_transients(root)
+            truncated = result.get("truncated") or []
+            self.assertTrue(truncated)
+            text = big.read_text(encoding="utf-8", errors="replace")
+            self.assertTrue(text.startswith("# [truncated by harness-archive finalize:"))
+            self.assertLessEqual(big.stat().st_size, 65536 + 200)
+
+    def test_ut116_cleanup_noop_on_clean_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "plans").mkdir()
+            result = ha._cleanup_transients(root)
+            self.assertEqual(result.get("deleted") or [], [])
+            self.assertEqual(result.get("truncated") or [], [])
+
+
+class GatePolicyConsumeTests(unittest.TestCase):
+    """UT-117..119: meta/gate-policy.json consumption."""
+
+    def test_ut117_full_tier_missing_review_is_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "gp-full"
+            change.mkdir()
+            _seed_change_dir(change)
+            # remove review report so review evidence is absent
+            for p in (change / "reports" / "review").glob("*.md"):
+                p.unlink()
+            _write_json(
+                change / "meta" / "gate-policy.json",
+                {
+                    "schemaVersion": 1,
+                    "tier": "full",
+                    "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
+                    "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"],
+                    "classifiedAt": "2026-07-16T00:00:00+08:00",
+                    "source": "default-full",
+                    "tierOverride": None,
+                },
+            )
+            result = ha.check_status(change)
+            codes = {b.get("code") for b in result.get("blockers") or []}
+            self.assertIn("review-required-on-full-tier", codes)
+            self.assertFalse(result.get("archivable"))
+
+    def test_ut118_allow_missing_review_downgrades(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "gp-allow"
+            change.mkdir()
+            _seed_change_dir(change)
+            for p in (change / "reports" / "review").glob("*.md"):
+                p.unlink()
+            _write_json(
+                change / "meta" / "gate-policy.json",
+                {
+                    "schemaVersion": 1,
+                    "tier": "full",
+                    "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
+                    "requiredValidations": ["compile"],
+                    "classifiedAt": "2026-07-16T00:00:00+08:00",
+                    "source": "default-full",
+                    "tierOverride": None,
+                },
+            )
+            result = ha.check_status(change, allow_missing_review=True)
+            codes = {b.get("code") for b in result.get("blockers") or []}
+            self.assertNotIn("review-required-on-full-tier", codes)
+            warn_codes = {w.get("code") for w in result.get("warnings") or []}
+            self.assertIn("review-required-on-full-tier", warn_codes)
+
+    def test_ut119_missing_gate_policy_keeps_legacy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "gp-none"
+            change.mkdir()
+            _seed_change_dir(change)
+            for p in (change / "reports" / "review").glob("*.md"):
+                p.unlink()
+            result = ha.check_status(change)
+            codes = {b.get("code") for b in result.get("blockers") or []}
+            self.assertNotIn("review-required-on-full-tier", codes)
+            summary = ha.collect_summary_data(change, write=False)
+            self.assertEqual(summary.get("riskTier"), "unknown")
+
+
+class ArchiveMetaAndPipelineTests(unittest.TestCase):
+    """UT-120 + INT-101..103 style finalize assertions."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-pipe-"))
+        self.project = self.tmp / "proj"
+        self.change = self.project / ".harness" / "changes" / "pipe-change"
+        self.archive_root = self.project / ".harness" / "archive"
+        self.change.mkdir(parents=True)
+        self.archive_root.mkdir(parents=True)
+        _seed_change_dir(self.change)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_ut120_archive_meta_matches_final_status(self) -> None:
+        code, payload = _run(
+            [
+                "finalize",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        archive_dir = Path(payload["archive_dir"])
+        meta = archive_dir / "meta" / "archive-meta.md"
+        self.assertTrue(meta.is_file())
+        text = meta.read_text(encoding="utf-8")
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(f"final-status: {summary['finalStatus']}", text)
+        after = json.loads(
+            (archive_dir / "evidence" / "archive-manifest-after.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        paths = {f["path"] for f in after.get("files") or []}
+        self.assertIn("meta/archive-meta.md", paths)
+
+    def test_int101_finalize_counts_cleanup_archive_duration(self) -> None:
+        # text-only unit counts + api-test-results + junk files
+        _write_json(
+            self.change / "evidence" / "verification-ledger.json",
+            {
+                "changeName": self.change.name,
+                "baseCommit": "aaaaaaaa",
+                "finalCommit": "bbbbbbbb",
+                "validations": {
+                    "unitTest": {
+                        "status": "OK",
+                        "command": "python -m unittest",
+                        "evidence": "Tests run: 155, Failures: 0, Errors: 0, Skipped: 0",
+                    },
+                    "apiTest": {
+                        "status": "OK",
+                        "evidence": "api finished",
+                    },
+                    "dbCompatibility": {"status": "OK"},
+                },
+            },
+        )
+        runtime = self.change / "runtime"
+        runtime.mkdir(exist_ok=True)
+        _write_json(
+            runtime / "api-test-results.json",
+            {"total": 3, "passed": 3, "failed": 0, "blocked": 0},
+        )
+        (runtime / "credential-cache.json").write_text('{"token":"x"}', encoding="utf-8")
+        (self.change / "events.ndjson.lock").write_text("l", encoding="utf-8")
+        logs = self.change / "logs"
+        logs.mkdir(exist_ok=True)
+        (logs / "service-start.log").write_bytes(b"y" * 100_000)
+
+        import time
+
+        time.sleep(0.05)
+        code, payload = _run(
+            [
+                "finalize",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        archive_dir = Path(payload["archive_dir"])
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(summary["verification"]["unitTests"]["run"], 155)
+        self.assertEqual(summary["verification"]["apiTests"]["total"], 3)
+        self.assertEqual(summary["verification"]["apiTests"]["passed"], 3)
+        archive_status = (summary.get("stageStatus") or {}).get("archive")
+        self.assertNotEqual(archive_status, "UNKNOWN")
+        stages = (summary.get("durations") or {}).get("stages") or []
+        archive_stage = next((s for s in stages if s.get("stage") == "archive"), None)
+        self.assertIsNotNone(archive_stage)
+        # duration may be 0 minutes if very fast; durationMs via timeline preferred
+        timeline = summary.get("timeline") or []
+        archive_tl = [
+            t
+            for t in timeline
+            if t.get("phase") == "archive" and t.get("durationMs") is not None
+        ]
+        if archive_tl:
+            self.assertGreater(archive_tl[-1]["durationMs"], 0)
+        self.assertTrue((archive_dir / "meta" / "archive-meta.md").is_file())
+        self.assertFalse((archive_dir / "runtime" / "credential-cache.json").exists())
+        self.assertFalse((archive_dir / "events.ndjson.lock").exists())
+        cleanup = (payload.get("steps") or {}).get("cleanup") or {}
+        self.assertTrue(cleanup.get("deleted"))
+        html = (archive_dir / "reports" / "final" / "final-summary.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("155", html)
+        self.assertTrue("3/3" in html or "3" in html)
+
+    def test_int102_python_fallback_includes_reasons(self) -> None:
+        with mock.patch.object(ha, "resolve_node_path", return_value=None):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+        self.assertEqual(code, 0, msg=payload)
+        archive_dir = Path(payload["archive_dir"])
+        html = (archive_dir / "reports" / "final" / "final-summary.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("finalStatusReasons", html)
+        self.assertTrue(archive_dir.is_dir())
+
+    def test_int103_patch_failure_keeps_archive(self) -> None:
+        with mock.patch.object(
+            ha, "_patch_archive_stage", side_effect=OSError("simulated patch fail")
+        ):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+        self.assertEqual(code, 0, msg=payload)
+        self.assertTrue(payload.get("ok"))
+        warnings = payload.get("warnings") or []
+        self.assertTrue(any("patch" in str(w).lower() for w in warnings))
+        self.assertTrue(Path(payload["archive_dir"]).is_dir())
+
+
+class ComEvidenceDictRegressionTests(unittest.TestCase):
+    """COM-101: evidence dict counts still work."""
+
+    def test_com101_evidence_dict_counts(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTest": {
+                    "status": "OK",
+                    "evidence": {
+                        "run": 42,
+                        "failures": 0,
+                        "errors": 0,
+                        "skipped": 1,
+                        "passRate": "41/42",
+                    },
+                }
+            }
+        }
+        result = ha._ledger_unit_tests(ledger)
+        self.assertEqual(result["run"], 42)
+        self.assertEqual(result["skipped"], 1)
+
+
+class ComArchiveMetaReplayReadonlyTests(unittest.TestCase):
+    """COM-102: replay must not write or overwrite meta/archive-meta.md."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-com102-"))
+        self.archive = self.tmp / ".harness" / "archive" / "2026-01-01-com102"
+        self.archive.mkdir(parents=True)
+        _write_json(
+            self.archive / "evidence" / "verification-ledger.json",
+            {
+                "changeName": "com102",
+                "baseCommit": "aaaaaaa",
+                "finalCommit": "bbbbbbb",
+                "validations": {
+                    "unitTest": {
+                        "status": "OK",
+                        "evidence": {
+                            "run": 2,
+                            "failures": 0,
+                            "errors": 0,
+                            "skipped": 0,
+                            "passRate": "2/2",
+                        },
+                    },
+                },
+            },
+        )
+        _write_json(
+            self.archive / "reports" / "final" / "summary-data.json",
+            {
+                "schemaVersion": "2.2",
+                "changeName": "com102",
+                "finalStatus": "OK",
+                "baseCommit": "aaaaaaa",
+                "finalCommit": "bbbbbbb",
+                "stageStatus": {"run": "OK", "archive": "OK"},
+                "verification": {
+                    "unitTests": {
+                        "run": 2,
+                        "failures": 0,
+                        "errors": 0,
+                        "skipped": 0,
+                        "passRate": "2/2",
+                    },
+                    "apiTests": {
+                        "status": "NOT_RUN",
+                        "total": 0,
+                        "passed": 0,
+                        "failed": 0,
+                        "blocked": 0,
+                    },
+                    "dbCompatibility": "NOT_RUN",
+                    "coverageDisplay": "not_available",
+                },
+            },
+        )
+        self.meta = self.archive / "meta" / "archive-meta.md"
+        self.meta_marker = (
+            "---\narchive-id: COM102-MARKER\nfinal-status: OK\n"
+            "source: pre-existing\n---\n# COM-102 fixture meta\n"
+        )
+        _write(self.meta, self.meta_marker)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_com102_replay_does_not_overwrite_archive_meta(self) -> None:
+        out_file = self.tmp / "out" / "replay-out.json"
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        before_bytes = self.meta.read_bytes()
+        before_mtime = self.meta.stat().st_mtime_ns
+
+        _run(
+            [
+                "replay",
+                "--archive-dir",
+                str(self.archive),
+                "--out",
+                str(out_file),
+                "--json",
+            ]
+        )
+
+        self.assertTrue(self.meta.is_file(), "replay must not delete archive-meta.md")
+        self.assertEqual(
+            self.meta.read_bytes(),
+            before_bytes,
+            "replay must not overwrite existing meta/archive-meta.md",
+        )
+        self.assertEqual(self.meta.read_text(encoding="utf-8"), self.meta_marker)
+        self.assertEqual(
+            self.meta.stat().st_mtime_ns,
+            before_mtime,
+            "replay must not touch archive-meta.md mtime",
+        )
+        # Also: no new archive-meta if we had deleted it — recreate without meta
+        self.meta.unlink()
+        self.assertFalse(self.meta.exists())
+        _run(
+            [
+                "replay",
+                "--archive-dir",
+                str(self.archive),
+                "--out",
+                str(out_file),
+                "--json",
+            ]
+        )
+        self.assertFalse(
+            self.meta.exists(),
+            "replay must not create meta/archive-meta.md when absent",
+        )
+
+
+class PatchArchiveStageUnitTests(unittest.TestCase):
+    """Direct unit coverage for _patch_archive_stage replace vs append."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-patch-stage-"))
+        self.work = self.tmp / "change"
+        self.work.mkdir()
+        (self.work / "reports" / "final").mkdir(parents=True)
+        (self.work / "meta").mkdir(parents=True)
+        # phase.start → phase.end so build_summary yields archive duration/status
+        ha.append_event(
+            self.work,
+            phase="archive",
+            type_="phase.start",
+            note="patch unit start",
+        )
+        import time
+
+        time.sleep(0.02)
+        ha.append_event(
+            self.work,
+            phase="archive",
+            type_="phase.end",
+            status="OK",
+            note="patch unit end",
+        )
+        self.summary_path = self.work / "reports" / "final" / "summary-data.json"
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _base_summary(self, *, stages: list[dict]) -> dict:
+        return {
+            "schemaVersion": "2.2",
+            "changeName": "patch-stage",
+            "finalStatus": "OK",
+            "stageStatus": {"run": "OK"},
+            "durations": {"stages": stages, "totalMinutes": 0, "totalLabel": "约 0 分"},
+            "timeline": [],
+            "skillCalls": [],
+            "verification": {
+                "unitTests": {
+                    "run": 0,
+                    "failures": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                    "passRate": "not_available",
+                },
+                "apiTests": {
+                    "status": "NOT_RUN",
+                    "total": 0,
+                    "passed": 0,
+                    "failed": 0,
+                    "blocked": 0,
+                },
+                "dbCompatibility": "NOT_RUN",
+                "coverageDisplay": "not_available",
+            },
+        }
+
+    def test_patch_replaces_existing_archive_stage(self) -> None:
+        _write_json(
+            self.summary_path,
+            self._base_summary(
+                stages=[
+                    {
+                        "stage": "archive",
+                        "skill": "harness-archive",
+                        "startedAt": "old",
+                        "endedAt": "old",
+                        "minutes": 99,
+                        "result": "UNKNOWN",
+                        "attempts": [],
+                    },
+                    {
+                        "stage": "run",
+                        "skill": "harness-run",
+                        "minutes": 1,
+                        "result": "OK",
+                    },
+                ]
+            ),
+        )
+        with mock.patch.object(ha, "render_final_summary") as render_mock:
+            ha._patch_archive_stage(self.summary_path, self.work, render=False)
+            render_mock.assert_not_called()
+
+        summary = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        stages = (summary.get("durations") or {}).get("stages") or []
+        archive_stages = [s for s in stages if s.get("stage") == "archive"]
+        self.assertEqual(len(archive_stages), 1, "must replace, not duplicate")
+        self.assertNotEqual(archive_stages[0].get("startedAt"), "old")
+        self.assertEqual(archive_stages[0].get("result"), "OK")
+        self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
+        # non-archive stage preserved
+        self.assertTrue(any(s.get("stage") == "run" for s in stages))
+
+    def test_patch_appends_archive_stage_when_missing(self) -> None:
+        _write_json(
+            self.summary_path,
+            self._base_summary(
+                stages=[
+                    {
+                        "stage": "run",
+                        "skill": "harness-run",
+                        "minutes": 1,
+                        "result": "OK",
+                    }
+                ]
+            ),
+        )
+        with mock.patch.object(ha, "render_final_summary") as render_mock:
+            ha._patch_archive_stage(self.summary_path, self.work, render=True)
+            render_mock.assert_called_once_with(self.work, self.summary_path)
+
+        summary = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        stages = (summary.get("durations") or {}).get("stages") or []
+        archive_stages = [s for s in stages if s.get("stage") == "archive"]
+        self.assertEqual(len(archive_stages), 1)
+        self.assertEqual(archive_stages[0].get("skill"), "harness-archive")
+        self.assertEqual(archive_stages[0].get("result"), "OK")
+        self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
+        self.assertEqual(len(stages), 2)
 
 
 if __name__ == "__main__":

@@ -816,6 +816,18 @@ def cmd_record(args: argparse.Namespace) -> int:
                 "finishedAt": now_iso(),
             }
         )
+        metrics_raw = getattr(args, "metrics_json", None)
+        if metrics_raw is not None and str(metrics_raw).strip() != "":
+            try:
+                metrics_obj = json.loads(str(metrics_raw))
+            except json.JSONDecodeError:
+                return emit_error("invalid --metrics-json", as_json=as_json)
+            if not isinstance(metrics_obj, dict):
+                return emit_error("invalid --metrics-json", as_json=as_json)
+            entry["metrics"] = metrics_obj
+        elif "metrics" in entry:
+            # Fresh record without metrics must not keep stale metrics from prev.
+            entry.pop("metrics", None)
         if args.scope is not None and str(args.scope).strip():
             entry["scope"] = str(args.scope).strip()
         # No default scope: recording an incremental run as broad "module" scope
@@ -1013,6 +1025,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--tests-reused-from",
         default=None,
         help="package: prior verifications reused when testsExecuted=false",
+    )
+    p_record.add_argument(
+        "--metrics-json",
+        default=None,
+        help='structured counts, e.g. \'{"run":155,"failures":0}\' or \'{"total":3,"passed":3}\'',
     )
     p_record.set_defaults(func=cmd_record)
 

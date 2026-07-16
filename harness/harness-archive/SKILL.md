@@ -92,8 +92,8 @@ AskUserQuestion 让用户确认归档操作。**用户拒绝 → 终止流程，
 ### Phase 3：执行归档
 
 1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ".harness/changes/<change-name>" --json` 前置检查。
-2. 如需维护者结论，在移动前补全 `meta/archive-meta.md`；不得在 finalize 后修改已校验的归档文件。
-3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --json`；读 JSON（事件、移动、collect、render、validate、manifest 比对）。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 不再同步执行知识维护**（§8.2）：它写一个 `pending` maintenance-outbox 项即返回，`knowledgeMaintenance=QUEUED`；写 outbox 失败时 `NOT_QUEUED`（warning，不回滚 archive，总状态 CONDITIONAL）。后续由 `harness-sync` / `harness_knowledge.py maintain` 异步推进 outbox。**finalize 失败或 validate 报错时不删除原目录**。
+2. `meta/archive-meta.md` **由 `harness_archive.py finalize` 自动生成**（与 summary-data `finalStatus` 同源）；**禁止 agent 手写**该文件，手写视为数据丢失。维护者结论写入 events（decision/issue）即可，finalize 会汇总到 summary / archive-meta。
+3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest 比对、archive-meta）。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 不再同步执行知识维护**（§8.2）：它写一个 `pending` maintenance-outbox 项即返回，`knowledgeMaintenance=QUEUED`；写 outbox 失败时 `NOT_QUEUED`（warning，不回滚 archive，总状态 CONDITIONAL）。后续由 `harness-sync` / `harness_knowledge.py maintain` 异步推进 outbox。**finalize 失败或 validate 报错时不删除原目录**。
 
 - **Read `reference.md`** — finalize 输出字段、archive-meta 格式、CONDITIONAL_OK 规则
 - **Read `templates/summary-data-template.json`** — summary-data 数据结构

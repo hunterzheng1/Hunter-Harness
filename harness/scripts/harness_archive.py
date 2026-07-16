@@ -57,6 +57,12 @@ MANIFEST_COMPARE_EXCLUDE = frozenset(
 SCHEMA_VERSION = "2.2"
 NOT_AVAILABLE = "not_available"
 
+# Compiled once for evidence-text count fallbacks in _ledger_unit_tests / _ledger_api_tests.
+_RE_UNIT_COUNTS = re.compile(
+    r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
+)
+_RE_API_PASSED = re.compile(r"(\d+)/(\d+)\s*passed", re.I)
+
 # Ensure sibling harness_events is importable.
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
@@ -429,7 +435,11 @@ def worktree_requested(change_dir: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def check_status(change_dir: Path) -> dict[str, Any]:
+def check_status(
+    change_dir: Path,
+    *,
+    allow_missing_review: bool = False,
+) -> dict[str, Any]:
     """Read-only archive preconditions. Never mutates."""
     blockers: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -574,6 +584,10 @@ def check_status(change_dir: Path) -> dict[str, Any]:
             }
         )
 
+    gate_policy = load_gate_policy(change_dir)
+    risk_tier = str((gate_policy or {}).get("tier") or "unknown")
+    checks["riskTier"] = risk_tier
+
     if review_reports:
         checks["review_report_status"] = "present"
     elif review_phase_completed(events):
@@ -589,12 +603,23 @@ def check_status(change_dir: Path) -> dict[str, Any]:
         )
     else:
         checks["review_report_status"] = "not-run"
-        warnings.append(
-            {
-                "code": "review-not-run",
-                "message": "no review report; mark reviewSummary as ADVISORY_NOT_RUN",
+        review_msg = {
+            "code": "review-not-run",
+            "message": "no review report; mark reviewSummary as ADVISORY_NOT_RUN",
+        }
+        warnings.append(review_msg)
+        if risk_tier == "full" and not review_ran:
+            tier_issue = {
+                "code": "review-required-on-full-tier",
+                "message": (
+                    "gate-policy tier=full requires review evidence; "
+                    "pass --allow-missing-review to override"
+                ),
             }
-        )
+            if allow_missing_review:
+                warnings.append(tier_issue)
+            else:
+                blockers.append(tier_issue)
 
     archivable = len(blockers) == 0
     return {
@@ -637,32 +662,79 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     if not ledger:
         return empty
     validations = ledger.get("validations") or ledger.get("verification") or {}
-    unit = validations.get("unitTest") or validations.get("unitTests") or {}
+    unit = (
+        validations.get("unitTestFull")
+        or validations.get("unitTest")
+        or validations.get("unitTests")
+        or {}
+    )
     if not isinstance(unit, dict):
         return empty
     status = str(unit.get("status") or "").upper()
-    evidence = unit.get("evidence") or {}
-    if isinstance(evidence, dict):
-        run = evidence.get(
-            "run",
-            evidence.get("testsRun", unit.get("run", unit.get("testsRun", 0))),
-        )
-        failures = evidence.get("failures", unit.get("failures", 0))
-        errors = evidence.get("errors", unit.get("errors", 0))
-        skipped = evidence.get("skipped", unit.get("skipped", 0))
-        pass_rate = evidence.get("passRate") or unit.get("passRate")
-    else:
-        run = unit.get("run", unit.get("testsRun", 0))
-        failures = unit.get("failures", 0)
-        errors = unit.get("errors", 0)
-        skipped = unit.get("skipped", 0)
-        pass_rate = unit.get("passRate")
 
+    run = failures = errors = skipped = 0
+    pass_rate: Any = None
     source = "committed"
+    counted = False
+
+    metrics = unit.get("metrics")
+    if isinstance(metrics, dict) and any(
+        k in metrics for k in ("run", "testsRun", "failures", "errors", "skipped")
+    ):
+        run = int(metrics.get("run", metrics.get("testsRun", 0)) or 0)
+        failures = int(metrics.get("failures", 0) or 0)
+        errors = int(metrics.get("errors", 0) or 0)
+        skipped = int(metrics.get("skipped", 0) or 0)
+        pass_rate = metrics.get("passRate")
+        source = "committed"
+        counted = run > 0 or failures > 0 or errors > 0 or skipped > 0
+
+    evidence = unit.get("evidence")
+    if not counted and isinstance(evidence, dict):
+        run = int(
+            evidence.get(
+                "run",
+                evidence.get("testsRun", unit.get("run", unit.get("testsRun", 0))),
+            )
+            or 0
+        )
+        failures = int(evidence.get("failures", unit.get("failures", 0)) or 0)
+        errors = int(evidence.get("errors", unit.get("errors", 0)) or 0)
+        skipped = int(evidence.get("skipped", unit.get("skipped", 0)) or 0)
+        pass_rate = evidence.get("passRate") or unit.get("passRate")
+        source = "committed"
+        counted = run > 0 or failures > 0 or errors > 0 or skipped > 0
+
+    evidence_text = evidence if isinstance(evidence, str) else ""
+    if not counted and evidence_text:
+        matches = list(_RE_UNIT_COUNTS.finditer(evidence_text))
+        if matches:
+            m = matches[-1]
+            run = int(m.group(1))
+            failures = int(m.group(2))
+            errors = int(m.group(3))
+            skipped = int(m.group(4))
+            source = "evidence-text"
+            counted = True
+
+    if not counted:
+        run = int(unit.get("run", unit.get("testsRun", 0)) or 0)
+        failures = int(unit.get("failures", 0) or 0)
+        errors = int(unit.get("errors", 0) or 0)
+        skipped = int(unit.get("skipped", 0) or 0)
+        pass_rate = unit.get("passRate")
+        source = "committed"
+
     if status in {"NOT_RUN", "SKIPPED", "USER_SKIPPED"}:
         source = "not-run"
     elif str(unit.get("reused") or "").lower() in {"true", "1"} or "REUSED" in status:
         source = "committed"
+
+    if pass_rate is None and run > 0:
+        passed = max(run - failures - errors, 0)
+        pass_rate = f"{passed / run:.0%}"
+    elif pass_rate is None:
+        pass_rate = NOT_AVAILABLE
 
     result = {
         "run": int(run or 0),
@@ -677,7 +749,11 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     return result
 
 
-def _ledger_api_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
+def _ledger_api_tests(
+    ledger: dict[str, Any] | None,
+    *,
+    change_dir: Path | None = None,
+) -> dict[str, Any]:
     empty = {
         "status": "NOT_RUN",
         "total": 0,
@@ -685,6 +761,7 @@ def _ledger_api_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         "failed": 0,
         "blocked": 0,
         "passRate": NOT_AVAILABLE,
+        "source": "not-run",
     }
     if not ledger:
         return empty
@@ -697,12 +774,76 @@ def _ledger_api_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         status = "OK"
     elif status in {"SKIP", "SKIPPED"}:
         status = "USER_SKIPPED"
-    evidence = api.get("evidence") if isinstance(api.get("evidence"), dict) else {}
-    total = evidence.get("total", api.get("total", 0))
-    passed = evidence.get("passed", api.get("passed", 0))
-    failed = evidence.get("failed", api.get("failed", 0))
-    blocked = evidence.get("blocked", api.get("blocked", 0))
-    pass_rate = evidence.get("passRate") or api.get("passRate")
+
+    total = passed = failed = blocked = 0
+    pass_rate: Any = None
+    source = "committed"
+    counted = False
+
+    metrics = api.get("metrics")
+    if isinstance(metrics, dict) and any(
+        k in metrics for k in ("total", "passed", "failed", "blocked")
+    ):
+        total = int(metrics.get("total", 0) or 0)
+        passed = int(metrics.get("passed", 0) or 0)
+        failed = int(metrics.get("failed", 0) or 0)
+        blocked = int(metrics.get("blocked", 0) or 0)
+        pass_rate = metrics.get("passRate")
+        source = "committed"
+        counted = total > 0 or passed > 0 or failed > 0 or blocked > 0
+
+    evidence_raw = api.get("evidence")
+    if not counted and isinstance(evidence_raw, dict):
+        total = int(evidence_raw.get("total", api.get("total", 0)) or 0)
+        passed = int(evidence_raw.get("passed", api.get("passed", 0)) or 0)
+        failed = int(evidence_raw.get("failed", api.get("failed", 0)) or 0)
+        blocked = int(evidence_raw.get("blocked", api.get("blocked", 0)) or 0)
+        pass_rate = evidence_raw.get("passRate") or api.get("passRate")
+        source = "committed"
+        counted = total > 0 or passed > 0 or failed > 0 or blocked > 0
+
+    evidence_text = evidence_raw if isinstance(evidence_raw, str) else ""
+    if not counted and evidence_text:
+        matches = list(_RE_API_PASSED.finditer(evidence_text))
+        if matches:
+            m = matches[-1]
+            passed = int(m.group(1))
+            total = int(m.group(2))
+            failed = max(total - passed, 0)
+            blocked = 0
+            source = "evidence-text"
+            counted = True
+
+    if not counted and change_dir is not None:
+        results_path = change_dir / "runtime" / "api-test-results.json"
+        if results_path.is_file():
+            try:
+                raw = read_json(results_path)
+            except (OSError, json.JSONDecodeError):
+                raw = None
+            if isinstance(raw, dict) and all(
+                isinstance(raw.get(k), int) for k in ("total", "passed", "failed", "blocked")
+            ):
+                total = int(raw["total"])
+                passed = int(raw["passed"])
+                failed = int(raw["failed"])
+                blocked = int(raw["blocked"])
+                source = "api-test-results"
+                counted = True
+
+    if not counted:
+        total = int(api.get("total", 0) or 0)
+        passed = int(api.get("passed", 0) or 0)
+        failed = int(api.get("failed", 0) or 0)
+        blocked = int(api.get("blocked", 0) or 0)
+        pass_rate = api.get("passRate")
+        source = "committed"
+
+    if pass_rate is None and total > 0:
+        pass_rate = f"{passed / total:.0%}"
+    elif pass_rate is None:
+        pass_rate = NOT_AVAILABLE
+
     return {
         "status": status,
         "total": int(total or 0),
@@ -710,6 +851,7 @@ def _ledger_api_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         "failed": int(failed or 0),
         "blocked": int(blocked or 0),
         "passRate": pass_rate if pass_rate is not None else NOT_AVAILABLE,
+        "source": source,
     }
 
 
@@ -977,7 +1119,7 @@ def _stage_status_from_sources(
         elif phase in status and sev in {"warn", "warning"} and status[phase] == "OK":
             status[phase] = "WARN"
 
-    api = _ledger_api_tests(ledger)
+    api = _ledger_api_tests(ledger, change_dir=change_dir)
     db = _ledger_db_compat(ledger)
     api_status = str(api.get("status") or "").upper()
     if api_status in {"FAIL", "FAILED", "ERROR"} or int(api.get("failed") or 0) > 0:
@@ -1002,28 +1144,266 @@ def _stage_status_from_sources(
 def _compute_final_status(
     stage_status: dict[str, str],
     verification: dict[str, Any],
-) -> str:
+) -> tuple[str, list[str]]:
     api = verification.get("apiTests") or {}
     db = str(verification.get("dbCompatibility") or "")
     api_status = str(api.get("status") or "")
-    for v in stage_status.values():
+    reasons: list[str] = []
+    for phase, v in stage_status.items():
         if v == "FAIL":
-            return "FAIL"
+            return "FAIL", [f"stage {phase}=FAIL"]
     unit = verification.get("unitTests") or {}
-    if int(unit.get("failures") or 0) > 0 or int(unit.get("errors") or 0) > 0:
-        return "FAIL"
+    if int(unit.get("failures") or 0) > 0:
+        return "FAIL", [f"unitTests.failures={unit.get('failures')}"]
+    if int(unit.get("errors") or 0) > 0:
+        return "FAIL", [f"unitTests.errors={unit.get('errors')}"]
     if int(api.get("failed") or 0) > 0:
-        return "FAIL"
+        return "FAIL", [f"apiTests.failed={api.get('failed')}"]
     conditional = {
         "USER_SKIPPED", "BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA",
         "NOT_RUN", "PARTIAL",
     }
-    if api_status in conditional or db in conditional:
-        return "CONDITIONAL_OK"
-    for v in stage_status.values():
-        if v in {"WARN", *conditional}:
-            return "WARN" if v == "WARN" else "CONDITIONAL_OK"
-    return "OK"
+    if api_status in conditional:
+        reasons.append(f"apiTests.status={api_status}")
+    if db in conditional:
+        reasons.append(f"dbCompatibility={db}")
+    if reasons:
+        return "CONDITIONAL_OK", reasons
+    for phase, v in stage_status.items():
+        if v == "WARN":
+            return "WARN", [f"stage {phase}=WARN"]
+        if v in conditional:
+            return "CONDITIONAL_OK", [f"stage {phase}={v}"]
+    return "OK", []
+
+
+def load_gate_policy(change_dir: Path) -> dict[str, Any] | None:
+    path = change_dir / "meta" / "gate-policy.json"
+    if not path.is_file():
+        return None
+    try:
+        data = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+        return None
+    return data
+
+
+_RISK_SEVERITIES = frozenset({"warning", "error", "critical"})
+
+
+def _cleanup_transients(work_dir: Path) -> dict[str, Any]:
+    """Delete lock/pid/launcher/credential files; truncate oversized logs."""
+    deleted: list[str] = []
+    truncated: list[dict[str, Any]] = []
+
+    def _rel(path: Path) -> str:
+        try:
+            return path.relative_to(work_dir).as_posix()
+        except ValueError:
+            return str(path)
+
+    lock = work_dir / "events.ndjson.lock"
+    if lock.is_file():
+        try:
+            lock.unlink()
+            deleted.append(_rel(lock))
+        except OSError:
+            pass
+
+    runtime = work_dir / "runtime"
+    if runtime.is_dir():
+        for path in sorted(runtime.iterdir()):
+            if not path.is_file():
+                continue
+            name = path.name
+            drop = False
+            if name.endswith(".pid"):
+                drop = True
+            elif name in {
+                "_harness_service_launcher.py",
+                "_harness_service.command.txt",
+            }:
+                drop = True
+            elif re.search(r"credential|token|secret", name, re.I):
+                drop = True
+            if drop:
+                try:
+                    path.unlink()
+                    deleted.append(_rel(path))
+                except OSError:
+                    pass
+
+    logs_root = work_dir / "logs"
+    if logs_root.is_dir():
+        for path in sorted(logs_root.rglob("*.log")):
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
+            if size <= 65536:
+                continue
+            try:
+                with path.open("rb") as handle:
+                    handle.seek(-65536, 2)
+                    tail = handle.read()
+                header = (
+                    f"# [truncated by harness-archive finalize: original {size} bytes]\n"
+                ).encode("utf-8")
+                path.write_bytes(header + tail)
+                truncated.append({"path": _rel(path), "originalBytes": size})
+            except OSError:
+                pass
+
+    return {"deleted": deleted, "truncated": truncated}
+
+
+def write_archive_meta(work_dir: Path, summary: dict[str, Any]) -> Path:
+    """Generate meta/archive-meta.md from summary-data (single ownership)."""
+    archive_id = work_dir.name
+    change_name = str(summary.get("changeName") or work_dir.name)
+    archived_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    final_status = str(summary.get("finalStatus") or "UNKNOWN")
+    lines = [
+        "---",
+        f"archive-id: {archive_id}",
+        f"change-name: {change_name}",
+        f"archived-at: {archived_at}",
+        f"final-commit: {summary.get('finalCommit') or ''}",
+        f"base-commit: {summary.get('baseCommit') or ''}",
+        f"final-status: {final_status}",
+        "source: harness-archive",
+        "---",
+        f"# 归档元数据 — {change_name}",
+        "",
+        "## 阶段状态",
+        "",
+        "| 阶段 | 状态 |",
+        "|---|---|",
+    ]
+    for stage, status in (summary.get("stageStatus") or {}).items():
+        lines.append(f"| {stage} | {status} |")
+    lines.extend(["", "## 变更文件", "", "| 路径 | + | - |", "|---|---|---|"])
+    changed = summary.get("changedFiles") or []
+    if changed:
+        for item in changed:
+            lines.append(
+                f"| {item.get('path') or ''} | "
+                f"{item.get('insertions', 0)} | {item.get('deletions', 0)} |"
+            )
+    else:
+        lines.append("| （无） |  |  |")
+    lines.extend(["", "## 已知风险", ""])
+    risks = summary.get("knownRisks") or []
+    if risks:
+        for risk in risks:
+            if isinstance(risk, dict):
+                lines.append(
+                    f"- [{risk.get('severity') or 'unknown'}] "
+                    f"{risk.get('message') or risk}"
+                )
+            else:
+                lines.append(f"- {risk}")
+    else:
+        lines.append("无")
+    lines.append("")
+    out = work_dir / "meta" / "archive-meta.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    return out
+
+
+def _patch_archive_stage(
+    summary_path: Path,
+    work_dir: Path,
+    *,
+    render: bool = True,
+) -> None:
+    """Backfill archive stage duration/status from events (optionally re-render).
+
+    When called from finalize step 9, pass ``render=False`` so the caller can
+    write archive-meta + remanifest and invoke ``render_final_summary`` once.
+    """
+    events_file = he.events_path(work_dir)
+    events = he.load_events(events_file) if events_file.is_file() else []
+    event_summary = he.build_summary(work_dir, events)
+    archive_info = (event_summary.get("phases") or {}).get("archive") or {}
+    duration_ms = archive_info.get("duration_ms")
+    status = str(archive_info.get("status") or "OK").upper()
+    if status in {"PASS", "PASSED", "SUCCESS"}:
+        status = "OK"
+    elif status in {"FAILED", "ERROR"}:
+        status = "FAIL"
+
+    summary = read_json(summary_path)
+    stage_status = summary.setdefault("stageStatus", {})
+    if isinstance(stage_status, dict):
+        stage_status["archive"] = status
+
+    durations = summary.setdefault("durations", {})
+    stages = list(durations.get("stages") or [])
+    minutes = round((duration_ms or 0) / 60000, 2) if duration_ms is not None else 0
+    archive_stage = {
+        "stage": "archive",
+        "skill": "harness-archive",
+        "startedAt": archive_info.get("started_at") or NOT_AVAILABLE,
+        "endedAt": archive_info.get("ended_at") or NOT_AVAILABLE,
+        "minutes": minutes,
+        "result": status,
+        "attempts": archive_info.get("attempts") if isinstance(archive_info.get("attempts"), list) else [],
+    }
+    replaced = False
+    for idx, stage in enumerate(stages):
+        if str(stage.get("stage") or "").lower() == "archive":
+            stages[idx] = archive_stage
+            replaced = True
+            break
+    if not replaced:
+        stages.append(archive_stage)
+    durations["stages"] = stages
+    total_min = round(sum(float(s.get("minutes") or 0) for s in stages), 2)
+    durations["totalMinutes"] = total_min
+    durations["totalLabel"] = f"约 {int(round(total_min))} 分"
+
+    timeline = list(summary.get("timeline") or [])
+    for item in timeline:
+        if item.get("phase") == "archive" and item.get("type") not in {"decision", "issue"}:
+            item["durationMs"] = duration_ms
+            item["status"] = status
+            item["endedAt"] = archive_info.get("ended_at")
+            item["startedAt"] = archive_info.get("started_at")
+    # Ensure at least one archive timeline entry with duration
+    if duration_ms is not None and not any(
+        t.get("phase") == "archive" and t.get("durationMs") is not None for t in timeline
+    ):
+        timeline.append(
+            {
+                "phase": "archive",
+                "attempt": 1,
+                "startedAt": archive_info.get("started_at"),
+                "endedAt": archive_info.get("ended_at"),
+                "durationMs": duration_ms,
+                "status": status,
+            }
+        )
+    summary["timeline"] = timeline
+
+    skill_calls = list(summary.get("skillCalls") or [])
+    found_skill = False
+    for call in skill_calls:
+        if str(call.get("skill") or "") in {"harness-archive", "archive"}:
+            call["result"] = status
+            found_skill = True
+    if not found_skill:
+        skill_calls.append({"skill": "harness-archive", "count": 1, "result": status})
+    summary["skillCalls"] = skill_calls
+
+    write_json(summary_path, summary)
+    if render:
+        render_final_summary(work_dir, summary_path)
 
 
 def _changed_files_from_git(
@@ -1298,7 +1678,7 @@ def collect_summary_data(
     # verification
     if not for_replay or not isinstance(data.get("verification"), dict):
         unit = _ledger_unit_tests(ledger)
-        api = _ledger_api_tests(ledger)
+        api = _ledger_api_tests(ledger, change_dir=change_dir)
         db = _ledger_db_compat(ledger)
         if not find_test_reports(change_dir) and unit.get("run", 0) == 0:
             if "status" not in unit:
@@ -1326,10 +1706,17 @@ def collect_summary_data(
     if not for_replay or not isinstance(data.get("stageStatus"), dict):
         data["stageStatus"] = _stage_status_from_sources(events, ledger, change_dir)
     if not for_replay or not data.get("finalStatus") or str(data.get("finalStatus")).startswith("OK |"):
-        data["finalStatus"] = _compute_final_status(
+        final_status, final_reasons = _compute_final_status(
             data.get("stageStatus") or {},
             data.get("verification") or {},
         )
+        data["finalStatus"] = final_status
+        data["finalStatusReasons"] = list(final_reasons)
+    else:
+        data.setdefault("finalStatusReasons", [])
+
+    gate_policy = load_gate_policy(change_dir)
+    data["riskTier"] = str((gate_policy or {}).get("tier") or "unknown")
 
     # durations / skillCalls
     if events:
@@ -1397,24 +1784,33 @@ def collect_summary_data(
 
     # Derive risks/actions from evidence. These fields are facts, not model prose.
     if not for_replay:
-        data["maintenanceNotes"] = [
+        maintenance_notes: list[str] = [
             str(event.get("note") or event.get("message") or "")
             for event in events
             if event.get("type") == "decision" and (event.get("note") or event.get("message"))
         ]
-        data["knownRisks"] = [
-            {
-                "phase": event.get("phase"),
-                "severity": event.get("severity") or "unknown",
-                "message": event.get("message") or event.get("note") or event.get("code") or "",
-            }
-            for event in events
-            if event.get("type") == "issue"
-            and not (
-                event.get("phase") == "archive"
-                and event.get("code") == "missing-command"
-            )
-        ]
+        known_risks: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("type") != "issue":
+                continue
+            if event.get("phase") == "archive" and event.get("code") == "missing-command":
+                continue
+            sev = str(event.get("severity") or "").strip().lower()
+            message = event.get("message") or event.get("note") or event.get("code") or ""
+            if sev in _RISK_SEVERITIES:
+                known_risks.append(
+                    {
+                        "phase": event.get("phase"),
+                        "severity": sev,
+                        "message": message,
+                    }
+                )
+            else:
+                note = str(message).strip()
+                if note:
+                    maintenance_notes.append(note)
+        data["maintenanceNotes"] = maintenance_notes
+        data["knownRisks"] = known_risks
         data["manualActions"] = []
         for name, value in (data.get("stageStatus") or {}).items():
             if value in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA", "NOT_RUN", "USER_SKIPPED"}:
@@ -1427,6 +1823,8 @@ def collect_summary_data(
         data.setdefault("maintenanceNotes", [])
         data.setdefault("knownRisks", [])
         data.setdefault("manualActions", [])
+        data.setdefault("finalStatusReasons", [])
+        data.setdefault("riskTier", "unknown")
 
     # archiveManifest
     am = {
@@ -1521,7 +1919,13 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
         f'<h2 id="changeName">{esc(summary.get("changeName"))}</h2>',
         f'<p><strong>finalStatus</strong>: '
         f'<span id="finalStatus">{esc(summary.get("finalStatus"))}</span></p>',
+        f'<div id="finalStatusReasons"><strong>finalStatusReasons</strong><ul>',
     ]
+    for reason in summary.get("finalStatusReasons") or []:
+        parts.append(f"<li>{esc(reason)}</li>")
+    parts.append("</ul></div>")
+    if summary.get("riskTier"):
+        parts.append(f"<p><strong>riskTier</strong>: {esc(summary.get('riskTier'))}</p>")
 
     pipeline = summary.get("reportPipeline") or {}
     cmds = pipeline.get("commands") or []
@@ -2006,6 +2410,7 @@ def cmd_finalize(
     archive_root: Path,
     *,
     skip_ingest: bool = False,
+    allow_missing_review: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """Execute the 9-step finalize pipeline. Returns (exit_code, payload)."""
     warnings: list[str] = []
@@ -2035,6 +2440,7 @@ def cmd_finalize(
         return 1, payload
 
     work_dir = original_change_dir
+    before_manifest: dict[str, Any] | None = None
 
     def _safe_append(**kwargs: Any) -> None:
         nonlocal work_dir
@@ -2045,6 +2451,23 @@ def cmd_finalize(
 
     # Step 9 starts here: phase.start
     _safe_append(phase="archive", type_="phase.start", note="finalize start")
+
+    # --- 0. cleanup transients (before before-manifest) ---
+    try:
+        cleanup_result = _cleanup_transients(work_dir)
+        payload["steps"]["cleanup"] = cleanup_result
+        deleted_n = len(cleanup_result.get("deleted") or [])
+        trunc_n = len(cleanup_result.get("truncated") or [])
+        _safe_append(
+            phase="archive",
+            type_="command",
+            command="cleanup-transients",
+            exit_code=0,
+            note=f"deleted={deleted_n} truncated={trunc_n}",
+        )
+    except OSError as exc:
+        warnings.append(f"cleanup failed: {exc}")
+        payload["steps"]["cleanup"] = {"ok": False, "error": str(exc)}
 
     # --- 1. before-manifest ---
     before_path = work_dir / "evidence" / "archive-manifest-before.json"
@@ -2119,6 +2542,18 @@ def cmd_finalize(
             for_replay=False,
         )
         summary_path = work_dir / "reports" / "final" / "summary-data.json"
+        if allow_missing_review:
+            reasons = list(summary.get("finalStatusReasons") or [])
+            reason = "review missing on full tier (allowed by user)"
+            if reason not in reasons:
+                reasons.append(reason)
+            summary["finalStatusReasons"] = reasons
+            write_json(summary_path, summary)
+            _safe_append(
+                phase="archive",
+                type_="decision",
+                note=reason,
+            )
         payload["steps"]["collect"] = {"ok": True, "path": str(summary_path)}
         _safe_append(
             phase="archive",
@@ -2346,12 +2781,73 @@ def cmd_finalize(
     if service_result.get("warning"):
         warnings.append(str(service_result["warning"]))
 
+    # --- 9a. archive-meta + artifact event BEFORE phase.end ---
+    # phase.end must remain the last archive event; patch (9b) still runs after
+    # phase.end so it can read duration/status from events.
+    try:
+        summary = read_json(summary_path)
+        meta_path = write_archive_meta(work_dir, summary)
+        payload["steps"]["archive_meta"] = {"ok": True, "path": str(meta_path)}
+        _safe_append(
+            phase="archive",
+            type_="artifact",
+            path="meta/archive-meta.md",
+            kind="archive-meta",
+        )
+    except Exception as exc:  # noqa: BLE001 — meta soft-fail
+        warnings.append(f"archive-meta write failed: {exc}")
+        payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
+
     _safe_append(
         phase="archive",
         type_="phase.end",
         status="WARN" if warnings else "OK",
         note="finalize complete",
     )
+
+    # --- 9b. patch archive stage + remanifest + single render (no more events) ---
+    try:
+        _patch_archive_stage(summary_path, work_dir, render=False)
+        payload["steps"]["patch_archive"] = {"ok": True}
+    except Exception as exc:  # noqa: BLE001 — patch must not roll back archive
+        warnings.append(f"archive stage patch failed: {exc}")
+        payload["steps"]["patch_archive"] = {"ok": False, "error": str(exc)}
+
+    try:
+        summary = read_json(summary_path)
+        # Refresh archive-meta with patched stageStatus/durations (no new event).
+        meta_path = write_archive_meta(work_dir, summary)
+        payload["steps"]["archive_meta"] = {"ok": True, "path": str(meta_path)}
+        after_manifest = generate_manifest(work_dir, after_path)
+        before_in_archive = work_dir / "evidence" / "archive-manifest-before.json"
+        if before_in_archive.is_file():
+            before_manifest = read_json(before_in_archive)
+        if before_manifest is None:
+            raise ValueError(
+                "before-manifest unavailable for remanifest compare "
+                f"(missing {before_in_archive.as_posix()})"
+            )
+        compare_result = compare_manifests(before_manifest, after_manifest)
+        summary["archiveManifest"] = {
+            "movedFiles": compare_result.get("movedFiles", 0),
+            "generatedFiles": compare_result.get("generatedFiles", 0),
+            "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
+            "checksumStatus": compare_result.get("checksumStatus", "FAIL"),
+        }
+        write_json(summary_path, summary)
+        render_final_summary(work_dir, summary_path)
+        payload["steps"]["after_manifest"] = {
+            "ok": True,
+            "path": str(after_path),
+            "compare": compare_result,
+            "includesArchiveMeta": True,
+        }
+    except Exception as exc:  # noqa: BLE001 — meta/remanifest soft-fail
+        warnings.append(f"archive-meta/remanifest failed: {exc}")
+        payload["steps"]["archive_meta"] = {
+            "ok": False,
+            "error": str(exc),
+        }
 
     payload["ok"] = True
     payload["warnings"] = warnings
@@ -2455,7 +2951,10 @@ def cmd_replay(
 
 def cmd_status_cli(args: argparse.Namespace) -> int:
     change_dir = resolve_path(args.change_dir)
-    result = check_status(change_dir)
+    result = check_status(
+        change_dir,
+        allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
+    )
     emit_json(result)
     # Checks completed → exit 0; archivable flag conveys the gate result.
     return 0 if result.get("ok") else 1
@@ -2468,6 +2967,7 @@ def cmd_finalize_cli(args: argparse.Namespace) -> int:
         change_dir,
         archive_root,
         skip_ingest=bool(args.skip_ingest),
+        allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
     )
     emit_json(payload)
     return code
@@ -2491,12 +2991,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="pre-archive gate checks (read-only)")
     p_status.add_argument("--change-dir", required=True)
     p_status.add_argument("--json", action="store_true", default=True)
+    p_status.add_argument(
+        "--allow-missing-review",
+        action="store_true",
+        help="downgrade full-tier missing review from blocker to warning",
+    )
     p_status.set_defaults(func=cmd_status_cli)
 
     p_fin = sub.add_parser("finalize", help="single-process archive finalize")
     p_fin.add_argument("--change-dir", required=True)
     p_fin.add_argument("--archive-root", required=True)
     p_fin.add_argument("--skip-ingest", action="store_true")
+    p_fin.add_argument(
+        "--allow-missing-review",
+        action="store_true",
+        help="record override when full-tier review evidence is missing",
+    )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)
 

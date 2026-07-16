@@ -6,7 +6,9 @@ description: harness-archive 的数据化归档和 final-summary 渲染协议。
 
 ## 原则
 
-archive 不应让模型临场生成 500+ 行 HTML。事实收集与校验由 `harness_archive.py finalize` 单命令完成（collect → render → validate 内嵌）；模型仅补写 `maintenanceNotes` / `knownRisks` / `manualActions`。历史 archive 回放用 `harness_archive.py replay`。
+archive 不应让模型临场生成 500+ 行 HTML。事实收集与校验由 `harness_archive.py finalize` 单命令完成（cleanup → collect → render → validate → archive-meta 内嵌）；模型仅通过 events 写入维护结论。`meta/archive-meta.md` 由 finalize 生成，禁止手写。历史 archive 回放用 `harness_archive.py replay`（只读，不写 archive-meta / 不跑 cleanup）。
+
+`knownRisks` 仅收录 severity∈{warning,error,critical} 的 issue 事件；无 severity 的 issue 进入 `maintenanceNotes`。`finalStatusReasons` 解释 CONDITIONAL_OK/WARN/FAIL 原因。finalize 在 before-manifest 前 cleanup：删除 lock/pid/launcher/credential，截断超大日志。
 
 详见 `report-pipeline-protocol.md`。本协议保留 archive final report 的维度要求，report pipeline 负责把这些维度程序化生成和校验。
 
