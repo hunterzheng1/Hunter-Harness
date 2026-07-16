@@ -128,6 +128,7 @@ describe("hunter-harness initialization", () => {
     });
     expect(code).toBe(0);
     expect(questions[0]).toContain("请选择目标 Agent");
+    expect(questions[0]).toContain("5. 全部");
     expect(questions[1]).toContain("请选择 Harness 类型");
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
@@ -136,6 +137,49 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
   }, 90_000);
+
+  it("interactive first install with all agents option selects four adapters", async () => {
+    const answers = ["5", ""];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => question.includes("Agent") ? (answers.shift() ?? "") : ""
+    });
+    expect(code).toBe(0);
+    const project = parseYaml(
+      await readFile(join(root, ".harness", "project.yaml"), "utf8")
+    ) as { adapters: { enabled: string[] } };
+    expect(project.adapters.enabled).toEqual([
+      "claude-code", "codex", "cursor", "codebuddy"
+    ]);
+  }, 240_000);
+
+  it("existing project refresh menu shows installed labels and all option", async () => {
+    expect(await run([
+      "--agents", "1,2", "--profile", "general", "--non-interactive", "--yes"
+    ])).toBe(0);
+    const answers = ["1", "0"];
+    const questions: string[] = [];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+    expect(code).toBe(2);
+    const agentPrompt = questions.find((q) => q.includes("请选择本次要新增或刷新的工具"));
+    expect(agentPrompt).toBeDefined();
+    expect(agentPrompt).toContain("Hunter Harness 当前配置");
+    expect(agentPrompt).toContain("Claude Code（已安装：general）");
+    expect(agentPrompt).toContain("Codex（已安装：general）");
+    expect(agentPrompt).toContain("5. 全部");
+  }, 120_000);
 
   it("offers safe Claude rule sync and CodeGraph MCP when CodeBuddy is selected", async () => {
     await mkdir(join(root, ".claude", "rules"), { recursive: true });

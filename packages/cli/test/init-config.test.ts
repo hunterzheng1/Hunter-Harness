@@ -17,14 +17,16 @@ describe("parseAgentsInput", () => {
     ["1,2,4", ["claude-code", "codex", "codebuddy"]],
     ["claude-code,codex,codebuddy", ["claude-code", "codex", "codebuddy"]],
     ["all", ["claude-code", "codex", "cursor", "codebuddy"]],
+    ["5", ["claude-code", "codex", "cursor", "codebuddy"]],
+    ["1,5", ["claude-code", "codex", "cursor", "codebuddy"]],
     ["4,1,4", ["claude-code", "codebuddy"]],
     [" 2 , 3 ", ["codex", "cursor"]]
   ])("parses %j", (input, expected) => {
     expect(parseAgentsInput(input)).toEqual(expected);
   });
 
-  it("rejects any unknown token entirely", () => {
-    expect(() => parseAgentsInput("codex,5")).toThrow(InitConfigurationError);
+  it("rejects unknown agent tokens", () => {
+    expect(() => parseAgentsInput("codex,6")).toThrow(InitConfigurationError);
     expect(() => parseAgentsInput("gpt")).toThrow(InitConfigurationError);
     try {
       parseAgentsInput("gpt");

@@ -76,13 +76,16 @@ function normalizeProfile(value: unknown): "general" | "java" | undefined {
   throw new InitConfigurationError("配置类型必须为 general 或 java");
 }
 
+const ALL_AGENT_TOKENS = new Set(["all", "5"]);
+
 export function parseAgentsInput(raw: string): HarnessAgent[] {
   const trimmed = raw.trim();
   if (trimmed === "") return ["claude-code"];
-  if (trimmed === "all") return [...HARNESS_AGENT_ORDER];
+  if (ALL_AGENT_TOKENS.has(trimmed)) return [...HARNESS_AGENT_ORDER];
   const agents: HarnessAgent[] = [];
   for (const token of trimmed.split(",")) {
     const value = token.trim();
+    if (ALL_AGENT_TOKENS.has(value)) return [...HARNESS_AGENT_ORDER];
     const byIndex = AGENT_BY_INDEX[value];
     if (byIndex !== undefined) {
       agents.push(byIndex);

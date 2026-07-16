@@ -54,6 +54,17 @@ const AGENT_LABELS: Record<HarnessAgent, string> = {
   codebuddy: "CodeBuddy"
 };
 
+function agentMenuLines(
+  installedProfiles?: Partial<Record<HarnessAgent, string>>
+): string {
+  const lines = HARNESS_AGENT_ORDER.map((agent, index) => {
+    const profile = installedProfiles?.[agent];
+    const suffix = profile === undefined ? "" : `（已安装：${profile}）`;
+    return `  ${index + 1}. ${AGENT_LABELS[agent]}${suffix}`;
+  }).join("\n");
+  return lines + "\n  5. 全部";
+}
+
 async function configureCodeBuddyExtras(
   agents: readonly HarnessAgent[],
   surface: "both" | "ide" | "cli",
@@ -117,11 +128,8 @@ async function runFirstInstall(
         : {
           agents: () => dependencies.prompt(
             "请选择目标 Agent（可多选，使用逗号分隔）\n" +
-            "  1. Claude Code\n" +
-            "  2. Codex\n" +
-            "  3. Cursor\n" +
-            "  4. CodeBuddy\n" +
-            "请输入编号 [1]: "
+            agentMenuLines() +
+            "\n请输入编号 [1]: "
           ).then((answer) => answer.trim()),
           profile: () => dependencies.prompt(
             "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
@@ -238,11 +246,8 @@ async function runExistingProject(
     const answer = await dependencies.prompt(
       `Hunter Harness 当前配置：\n${currentLines}\n` +
       "请选择本次要新增或刷新的工具（可多选，逗号分隔；未选择的工具保持不变）：\n" +
-      "  1. Claude Code\n" +
-      "  2. Codex\n" +
-      "  3. Cursor\n" +
-      "  4. CodeBuddy\n" +
-      `请输入编号 [${defaultSelection}]，或输入 0 取消：`
+      agentMenuLines(installed.profiles) +
+      `\n请输入编号 [${defaultSelection}]，或输入 0 取消：`
     );
     if (answer.trim() === "0" || /^c/i.test(answer.trim())) return 2;
     refreshOptions.agents = answer.trim() === ""

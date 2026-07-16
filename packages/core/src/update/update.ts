@@ -12,6 +12,7 @@ import {
 import { parse as parseYaml } from "yaml";
 
 import { ApiError, HunterHarnessApiClient } from "../api/client.js";
+import { readLocalCredentials } from "../push/credentials.js";
 import { sha256Bytes, sha256File } from "../fs/hash.js";
 import {
   extractManagedBlock,
@@ -183,17 +184,28 @@ export async function updateProject(options: UpdateProjectOptions) {
   if (project.project.project_id === null) {
     throw new UpdateWorkflowError("project is not bound to a server", 3, "PROJECT_NOT_BOUND");
   }
-  const serverUrl = options.serverUrl ?? project.server.url;
   const tokenEnv = options.tokenEnv ?? project.server.token_env;
-  if (serverUrl === null || serverUrl === undefined) {
-    throw new UpdateWorkflowError("server_url is required", 3, "SERVER_URL_REQUIRED");
-  }
   if (!/^[A-Z_][A-Z0-9_]*$/.test(tokenEnv)) {
     throw new UpdateWorkflowError("token_env is invalid", 3, "TOKEN_ENV_INVALID");
   }
-  const token = options.env[tokenEnv];
-  if (token === undefined || token.trim() === "") {
-    throw new UpdateWorkflowError("API token environment variable is unset", 8, "TOKEN_INVALID");
+  const local = await readLocalCredentials(root);
+  const serverUrl = options.serverUrl ?? local?.server_url ?? project.server.url;
+  if (serverUrl === null || serverUrl === undefined) {
+    throw new UpdateWorkflowError("server_url is required", 3, "SERVER_URL_REQUIRED");
+  }
+  const envToken = options.env[tokenEnv]?.trim();
+  const localToken = local?.token?.trim();
+  const token = envToken !== undefined && envToken !== ""
+    ? envToken
+    : localToken !== undefined && localToken !== ""
+      ? localToken
+      : undefined;
+  if (token === undefined) {
+    throw new UpdateWorkflowError(
+      `API token 未配置：请设置环境变量 ${tokenEnv}，或在 .harness/credentials.local.yaml 配置 token（可通过 npx hunter-harness push 引导写入）`,
+      8,
+      "TOKEN_INVALID"
+    );
   }
   const requestId = uuidV7();
   const baseline = await readBaseline(root);
