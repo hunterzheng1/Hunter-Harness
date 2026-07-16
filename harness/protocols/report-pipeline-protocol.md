@@ -78,6 +78,23 @@ python <skills-root>/scripts/harness_events.py append --change-dir ".harness/cha
 | `issue` | code, severity, message | 问题和校验发现 |
 | `decision` | decision, reason | 人工确认、跳过、复用等决策 |
 
+## 事件语义与必填字段
+
+写入 `events.ndjson` 时按用途选 type；渲染侧会对缺失字段做 note 兜底，但写入侧仍应填齐语义字段。
+
+| type | 用途 | 必填 | 常见误用 |
+|------|------|------|----------|
+| `issue` | 需要跟进/影响结论的异常 | severity, message | 把信息性结论记成 issue（应使用 decision） |
+| `decision` | 决策/结论/知识引用 | note 或 decision+reason | - |
+| `verification` | 验证执行结果 | name, status | 漏 name 导致 "(unnamed)" |
+| `artifact` | 产物落盘 | path | 只传 note |
+| `command` | 命令执行 | command, exit_code | - |
+
+兼容提示（不失败、exit 0）：
+
+- `--type issue` 未传 `--severity` → 默认 `info` 并在 stderr 提示
+- `--type verification` 未传 `--name` 或 `--status` → stderr 提示，照常写入
+
 ## summary-data.json
 
 summary-data 必须保留原 archive final report 维度，并增加事件层摘要：
