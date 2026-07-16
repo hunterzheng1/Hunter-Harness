@@ -56,6 +56,8 @@ disallowed-tools:
 
 ## Workflow
 
+worktree 合并前必须运行 `harness_change.py integration-lock acquire --run-id <run-id> --json`；获取失败即停止。无论成功、冲突或异常，都在 `finally` 运行 `harness_change.py integration-lock release --run-id <run-id> --json`。持有 integration lock 后不得反向申请 change lease。
+
 **模式判定**：读 `meta/worktree.json`。`requested=false` → 步骤 0–7（主目录）；`requested=true` → 步骤 0–6 在 worktree 执行，成功后**不结束**，接续「worktree 合并流程」。用户仅调用 `/harness-merge` 且 worktree 已有本地 commit 时，从合并流程步骤 M0 重入。
 
 ### 提交流程（步骤 0–7）

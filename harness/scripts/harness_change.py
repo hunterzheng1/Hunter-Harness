@@ -16,12 +16,14 @@ project root (.harness/changes lives there). Python 3.10+, stdlib only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import json
 import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -125,13 +127,33 @@ def _read_json(path: Path) -> Any:
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+@contextlib.contextmanager
+def _exclusive_file_lock(path: Path, wait_seconds: float = 5.0):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + wait_seconds
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except (FileExistsError, PermissionError):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"lock unavailable: {path}")
+            time.sleep(0.01)
+    try:
+        os.write(descriptor, f"{os.getpid()}\n".encode("ascii"))
+        yield
+    finally:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
 
 
 def list_active_changes(project_root: Path) -> list[dict[str, Any]]:
@@ -312,7 +334,7 @@ def inspect_lease(project_root: Path, change_id: str) -> dict[str, Any] | None:
     return lease
 
 
-def claim_lease(
+def _claim_lease_locked(
     project_root: Path,
     *,
     change_id: str,
@@ -363,7 +385,28 @@ def claim_lease(
     return {"ok": True, "code": "LEASE_CLAIMED", "lease": new_lease}
 
 
-def release_lease(
+def claim_lease(
+    project_root: Path,
+    *,
+    change_id: str,
+    phase: str,
+    run_id: str,
+    ttl_seconds: int,
+    steal: bool = False,
+) -> dict[str, Any]:
+    path = _lease_path(project_root, change_id)
+    with _exclusive_file_lock(path.with_suffix(".lock")):
+        return _claim_lease_locked(
+            project_root,
+            change_id=change_id,
+            phase=phase,
+            run_id=run_id,
+            ttl_seconds=ttl_seconds,
+            steal=steal,
+        )
+
+
+def _release_lease_locked(
     project_root: Path,
     *,
     change_id: str,
@@ -405,6 +448,20 @@ def release_lease(
     return {"ok": True, "code": "LEASE_RELEASED", "changeId": change_id, "phase": phase}
 
 
+def release_lease(
+    project_root: Path,
+    *,
+    change_id: str,
+    phase: str,
+    run_id: str,
+) -> dict[str, Any]:
+    path = _lease_path(project_root, change_id)
+    with _exclusive_file_lock(path.with_suffix(".lock")):
+        return _release_lease_locked(
+            project_root, change_id=change_id, phase=phase, run_id=run_id
+        )
+
+
 def lease_port(
     project_root: Path,
     *,
@@ -422,38 +479,41 @@ def lease_port(
     ports_root = project_root / PORTS_REL
     ports_root.mkdir(parents=True, exist_ok=True)
     registry_path = ports_root / "registry.json"
-    registry: dict[str, Any] = {"leases": []}
-    if registry_path.is_file():
-        try:
-            loaded = _read_json(registry_path)
-            if isinstance(loaded, dict) and isinstance(loaded.get("leases"), list):
-                registry = loaded
-        except (OSError, json.JSONDecodeError):
-            registry = {"leases": []}
+    with _exclusive_file_lock(registry_path.with_suffix(".lock")):
+        registry: dict[str, Any] = {"leases": []}
+        if registry_path.is_file():
+            try:
+                loaded = _read_json(registry_path)
+                if isinstance(loaded, dict) and isinstance(loaded.get("leases"), list):
+                    registry = loaded
+            except (OSError, json.JSONDecodeError):
+                registry = {"leases": []}
 
-    leases = [item for item in registry["leases"] if isinstance(item, dict)]
-    used = {
-        int(item["port"])
-        for item in leases
-        if isinstance(item.get("port"), int)
-        and not _lease_expired(item)
-    }
-    for port in range(start, end + 1):
-        if port not in used:
-            entry = {
-                "changeId": change_id,
-                "runId": run_id,
-                "pid": os.getpid(),
-                "port": port,
-                "acquiredAt": now_iso(),
-                "expiresAt": (
-                    dt.datetime.now().astimezone() + dt.timedelta(hours=4)
-                ).isoformat(timespec="milliseconds"),
-            }
-            leases.append(entry)
-            registry["leases"] = leases
-            _write_json(registry_path, registry)
-            return {"ok": True, "code": "PORT_LEASED", "port": port, "lease": entry}
+        leases = [
+            item for item in registry["leases"]
+            if isinstance(item, dict) and not _lease_expired(item)
+        ]
+        used = {
+            int(item["port"])
+            for item in leases
+            if isinstance(item.get("port"), int)
+        }
+        for port in range(start, end + 1):
+            if port not in used:
+                entry = {
+                    "changeId": change_id,
+                    "runId": run_id,
+                    "pid": os.getpid(),
+                    "port": port,
+                    "acquiredAt": now_iso(),
+                    "expiresAt": (
+                        dt.datetime.now().astimezone() + dt.timedelta(hours=4)
+                    ).isoformat(timespec="milliseconds"),
+                }
+                leases.append(entry)
+                registry["leases"] = leases
+                _write_json(registry_path, registry)
+                return {"ok": True, "code": "PORT_LEASED", "port": port, "lease": entry}
     return {
         "ok": False,
         "code": "PORT_RANGE_EXHAUSTED",
@@ -461,7 +521,48 @@ def lease_port(
     }
 
 
-def integration_lock_acquire(
+def release_port(
+    project_root: Path,
+    *,
+    change_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    registry_path = project_root / PORTS_REL / "registry.json"
+    if not registry_path.is_file():
+        return {"ok": True, "code": "PORT_LEASE_ABSENT", "changeId": change_id}
+    with _exclusive_file_lock(registry_path.with_suffix(".lock")):
+        try:
+            registry = _read_json(registry_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"ok": False, "code": "PORT_REGISTRY_INVALID", "message": str(exc)}
+        leases = registry.get("leases") if isinstance(registry, dict) else None
+        if not isinstance(leases, list):
+            return {"ok": False, "code": "PORT_REGISTRY_INVALID", "message": "leases is not a list"}
+        owned = [
+            item for item in leases
+            if isinstance(item, dict) and str(item.get("changeId")) == change_id
+        ]
+        if not owned:
+            return {"ok": True, "code": "PORT_LEASE_ABSENT", "changeId": change_id}
+        if any(str(item.get("runId")) != run_id for item in owned):
+            return {
+                "ok": False,
+                "code": "PORT_LEASE_OWNER_MISMATCH",
+                "message": "run id does not match port lease owner",
+                "holder": owned[0],
+            }
+        released_ports = [item.get("port") for item in owned]
+        registry["leases"] = [item for item in leases if item not in owned]
+        _write_json(registry_path, registry)
+        return {
+            "ok": True,
+            "code": "PORT_LEASE_RELEASED",
+            "changeId": change_id,
+            "ports": released_ports,
+        }
+
+
+def _integration_lock_acquire_locked(
     project_root: Path,
     *,
     run_id: str,
@@ -497,7 +598,20 @@ def integration_lock_acquire(
     return {"ok": True, "code": "INTEGRATION_LOCK_ACQUIRED", "lock": payload}
 
 
-def integration_lock_release(project_root: Path, *, run_id: str) -> dict[str, Any]:
+def integration_lock_acquire(
+    project_root: Path,
+    *,
+    run_id: str,
+    ttl_seconds: int = 3600,
+) -> dict[str, Any]:
+    path = project_root / INTEGRATION_LOCK_REL
+    with _exclusive_file_lock(path.with_suffix(".lock")):
+        return _integration_lock_acquire_locked(
+            project_root, run_id=run_id, ttl_seconds=ttl_seconds
+        )
+
+
+def _integration_lock_release_locked(project_root: Path, *, run_id: str) -> dict[str, Any]:
     path = project_root / INTEGRATION_LOCK_REL
     if not path.is_file():
         return {"ok": True, "code": "INTEGRATION_LOCK_ABSENT"}
@@ -516,6 +630,12 @@ def integration_lock_release(project_root: Path, *, run_id: str) -> dict[str, An
         }
     path.unlink(missing_ok=True)
     return {"ok": True, "code": "INTEGRATION_LOCK_RELEASED"}
+
+
+def integration_lock_release(project_root: Path, *, run_id: str) -> dict[str, Any]:
+    path = project_root / INTEGRATION_LOCK_REL
+    with _exclusive_file_lock(path.with_suffix(".lock")):
+        return _integration_lock_release_locked(project_root, run_id=run_id)
 
 
 def parse_port_range(raw: str) -> tuple[int, int] | None:
@@ -636,6 +756,20 @@ def cmd_lease_port(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_release_port(args: argparse.Namespace) -> int:
+    project = resolve_main_project_root()
+    payload = release_port(project, change_id=args.change, run_id=args.run_id)
+    if payload.get("ok"):
+        emit(payload, as_json=bool(args.json))
+        return 0
+    return emit_error(
+        str(payload.get("code", "PORT_RELEASE_FAILED")),
+        str(payload.get("message", "port release failed")),
+        as_json=bool(args.json),
+        extra={k: v for k, v in payload.items() if k not in {"ok", "message"}},
+    )
+
+
 def cmd_integration_lock(args: argparse.Namespace) -> int:
     project = resolve_main_project_root()
     if args.integration_action == "acquire":
@@ -695,6 +829,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_port.add_argument("--run-id", required=True)
     p_port.add_argument("--range", required=True)
     p_port.set_defaults(func=cmd_lease_port)
+
+    p_port_release = sub.add_parser("release-port", parents=[shared])
+    p_port_release.add_argument("--change", required=True)
+    p_port_release.add_argument("--run-id", required=True)
+    p_port_release.set_defaults(func=cmd_release_port)
 
     p_lock = sub.add_parser("integration-lock", parents=[shared])
     p_lock.add_argument("integration_action", choices=["acquire", "release"])

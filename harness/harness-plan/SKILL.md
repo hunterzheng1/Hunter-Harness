@@ -25,6 +25,8 @@ disallowed-tools:
 
 ## Purpose
 
+确定 change 后必须运行 `python <skills-root>/scripts/harness_gate.py classify --change <id> --stage plan --json`，并把脚本返回的 risk tier、默认阶段、条件阶段和必需验证写入计划；不得凭模型印象另建风险分级。
+
 需求 → 设计文档 → 任务拆分 → 测试场景表（编码/测试唯一真相源）。存在 `.harness/archive/` 或 `.harness/knowledge/` 时须先 `harness-knowledge-query`。
 
 ## When to Use

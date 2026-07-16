@@ -138,22 +138,41 @@ def _exclusive_lock(path: Path, *, wait_seconds: float) -> Any:
         path.unlink(missing_ok=True)
 
 
+def _state_project_root(project: Path) -> Path:
+    result = _git(project, "rev-parse", "--git-common-dir")
+    if result.returncode != 0 or not result.stdout.strip():
+        return project
+    common = Path(result.stdout.strip())
+    if not common.is_absolute():
+        common = project / common
+    resolved = common.resolve()
+    return resolved.parent if resolved.name == ".git" else project
+
+
 def _change_dir(project: Path, change_dir: Path | str) -> Path | None:
+    state_project = _state_project_root(project)
     candidate = Path(change_dir)
     if not candidate.is_absolute():
-        candidate = project / candidate
+        candidate = (
+            state_project / candidate
+            if candidate.parts[:2] == (".harness", "changes")
+            else project / candidate
+        )
     resolved = candidate.resolve()
-    return resolved if _inside(resolved, project) else None
+    allowed_roots = {
+        (project / ".harness" / "changes").resolve(),
+        (state_project / ".harness" / "changes").resolve(),
+    }
+    return resolved if any(_inside(resolved, root) for root in allowed_roots) else None
 
 
-def _manifest_path(project: Path, change_root: Path) -> Path | None:
+def _manifest_path(change_root: Path) -> Path | None:
     evidence = change_root / MANIFEST_REL.parent
     manifest = change_root / MANIFEST_REL
     expected_evidence = evidence.absolute()
     resolved_evidence = evidence.resolve()
     if (
-        not _inside(change_root.resolve(), project)
-        or not _inside(resolved_evidence, project)
+        not _inside(resolved_evidence, change_root.resolve())
         or os.path.normcase(str(resolved_evidence))
         != os.path.normcase(str(expected_evidence))
     ):
@@ -161,9 +180,12 @@ def _manifest_path(project: Path, change_root: Path) -> Path | None:
     return manifest
 
 
-def _manifest_target_inside(project: Path, manifest: Path) -> bool:
+def _manifest_target_inside(change_root: Path, manifest: Path) -> bool:
     resolved = manifest.resolve()
-    return _inside(resolved, project) and _inside(resolved, manifest.parent.absolute())
+    return (
+        _inside(resolved, change_root.resolve())
+        and _inside(resolved, manifest.parent.absolute())
+    )
 
 
 def _profile_config(project: Path) -> tuple[list[str], list[str]] | None:
@@ -326,13 +348,13 @@ def record(
         assert path is not None and rel is not None
         validated.append((path, rel))
 
-    manifest_path = _manifest_path(project_root, change_root)
+    manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
     lock_path = manifest_path.with_name(manifest_path.name + ".lock")
     try:
         with _exclusive_lock(lock_path, wait_seconds=5.0):
-            if not _manifest_target_inside(project_root, manifest_path):
+            if not _manifest_target_inside(change_root, manifest_path):
                 return _result(
                     False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", []
                 )
@@ -379,10 +401,10 @@ def record(
 
 
 def _stage_locked(
-    project_root: Path, manifest_path: Path, index_path: Path
+    project_root: Path, change_root: Path, manifest_path: Path, index_path: Path
 ) -> dict[str, Any]:
     action = "stage"
-    if not _manifest_target_inside(project_root, manifest_path):
+    if not _manifest_target_inside(change_root, manifest_path):
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
     try:
         manifest = _read_json(manifest_path)
@@ -485,11 +507,11 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
-    manifest_path = _manifest_path(project_root, change_root)
+    manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
     snapshot_path = change_root / SNAPSHOT_REL
-    if not _manifest_target_inside(project_root, snapshot_path):
+    if not _manifest_target_inside(change_root, snapshot_path):
         return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
 
     files = _enumerate_allowed_test_files(project_root)
@@ -602,7 +624,7 @@ def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
-    manifest_path = _manifest_path(project_root, change_root)
+    manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
 
@@ -620,7 +642,9 @@ def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             manifest_lock = manifest_path.with_name(manifest_path.name + ".lock")
             try:
                 with _exclusive_lock(manifest_lock, wait_seconds=0.0):
-                    return _stage_locked(project_root, manifest_path, index_path)
+                    return _stage_locked(
+                        project_root, change_root, manifest_path, index_path
+                    )
             except LockUnavailable:
                 return _result(False, action, "MANIFEST_LOCKED", [])
     except LockUnavailable:

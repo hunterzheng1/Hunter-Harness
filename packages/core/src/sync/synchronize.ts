@@ -11,7 +11,7 @@ import {
   type ProjectConfig
 } from "@hunter-harness/contracts";
 
-import { HunterHarnessApiClient } from "../api/client.js";
+import type { HunterHarnessApiClient } from "../api/client.js";
 import { sha256Bytes, sha256File } from "../fs/hash.js";
 import { extractManagedBlock } from "../managed/managed-block.js";
 import { atomicWriteFile, atomicWriteJson } from "../state/atomic.js";
@@ -425,7 +425,7 @@ export async function synchronizeArtifacts(
 
     const lock = await acquireProtocolLock(root, "update", { requestId: options.requestId });
     try {
-      let nextBaseline = applyBaselineUpdates(baseline, plan);
+      const nextBaseline = applyBaselineUpdates(baseline, plan);
       if (plan.baselineAdvanced && plan.conflicts.length === 0) {
         nextBaseline.complete_project_version = manifest.project_version;
         nextBaseline.artifact_manifest_hash = manifest.manifest_sha256;

@@ -65,6 +65,7 @@
       "capabilities": ["gate-begin", "gate-close", "integration-lock", "test-guard-stage"]
     },
     "harness-package": {
+      "profiles": ["java"],
       "phase": "package",
       "inputs": ["verification-ledger", "final-commit"],
       "artifacts": ["deploy-artifact"],
@@ -113,6 +114,7 @@
       "capabilities": []
     },
     "harness-apidoc": {
+      "profiles": ["java"],
       "phase": "apidoc",
       "inputs": ["api-diff"],
       "artifacts": ["api-contract-summary"],

@@ -110,6 +110,16 @@ class TestGuardTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "PATH_OUTSIDE_PROJECT")
 
+    def test_begin_allows_main_state_dir_from_linked_worktree(self) -> None:
+        worktree = self.outside / "feature-worktree"
+        self._git("worktree", "add", "-b", "feature-test-guard", str(worktree))
+        try:
+            result = guard.begin(worktree, self.change)
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "SNAPSHOT_CAPTURED")
+        finally:
+            self._git("worktree", "remove", "--force", str(worktree))
+
     def test_record_empty_files_does_not_write_manifest(self) -> None:
         result = self._record()
         self.assertFalse(result["ok"])

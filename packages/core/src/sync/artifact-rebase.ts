@@ -81,8 +81,7 @@ function contentHash(operation: FileOperation): string | null {
 function baselineEntryFor(
   operation: FileOperation,
   finalContent: string | null,
-  projectVersion: string,
-  keepLocal = false
+  projectVersion: string
 ): BaselineManifest["files"][string] {
   const block = finalContent === null ? null : extractManagedBlock(finalContent);
   const remoteHash = contentHash(operation);
@@ -351,8 +350,7 @@ export function planArtifactRebase(input: PlanArtifactRebaseInput): ArtifactReba
         const entry = baselineEntryFor(
           operation,
           localContent,
-          input.projectVersion,
-          true
+          input.projectVersion
         );
         recordWrite(
           plan,
@@ -439,8 +437,7 @@ export function planArtifactRebase(input: PlanArtifactRebaseInput): ArtifactReba
         const entry = baselineEntryFor(
           operation,
           localContent,
-          input.projectVersion,
-          true
+          input.projectVersion
         );
         recordWrite(
           plan,

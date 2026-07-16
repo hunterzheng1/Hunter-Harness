@@ -154,7 +154,27 @@ class HarnessGateTests(unittest.TestCase):
                     ]
                 )
                 code = gate.cmd_begin(args)
-        self.assertEqual(code, 1)
+                self.assertEqual(code, 1)
+
+    def test_close_rejects_wrong_owner_before_mutating_test_guard(self) -> None:
+        self._write_checkpoints("approved")
+        args = gate.build_parser().parse_args(
+            [
+                "close", "--phase", "test", "--change", "demo",
+                "--status", "OK", "--run-id", "wrong-owner", "--task", "10",
+                "--json",
+            ]
+        )
+        holder = {"runId": "real-owner", "phase": "test"}
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=holder), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}) as close_guard:
+            self.assertEqual(gate.cmd_close(args), 1)
+        close_guard.assert_not_called()
 
     def test_begin_requires_task_number_while_foundation_is_pending(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
@@ -270,6 +290,54 @@ class HarnessGateTests(unittest.TestCase):
         with self.assertRaises(policy.PolicyValidationError):
             policy.validate_policy(raw)
 
+    def test_post_run_risk_classification_only_upgrades(self) -> None:
+        plans = self.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / "demo-plan.md").write_text("risk: fast\n", encoding="utf-8")
+        initial = gate.classify_risk(self.change_dir, "plan")
+        self.assertEqual(initial["tier"], "fast")
+
+        source = self.project / "src" / "auth" / "token-service.ts"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("export const token = 'redacted';\n", encoding="utf-8")
+        upgraded = gate.classify_risk(self.change_dir, "post-run")
+        self.assertEqual(upgraded["tier"], "full")
+        self.assertIn("auth", upgraded["signals"])
+        persisted = json.loads(
+            (self.change_dir / "meta" / "risk-classification.json").read_text("utf-8")
+        )
+        self.assertEqual(persisted["tier"], "full")
+        self.assertIn("review", persisted["defaultPhases"])
+        self.assertIn("apiTest", persisted["requiredValidations"])
+        self.assertEqual(persisted["conditionalStages"], ["package", "apidoc"])
+        self.assertTrue(persisted["stageDecisions"]["review"]["required"])
+        self.assertFalse(persisted["stageDecisions"]["package"]["required"])
+        self.assertFalse(persisted["stageDecisions"]["apidoc"]["required"])
+
+    def test_post_run_docs_only_change_remains_fast(self) -> None:
+        plans = self.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / "demo-plan.md").write_text("risk: fast\n", encoding="utf-8")
+        (self.project / "notes.md").write_text("docs only\n", encoding="utf-8")
+        result = gate.classify_risk(self.change_dir, "post-run")
+        self.assertEqual(result["tier"], "fast")
+        self.assertEqual(result["signals"], ["docs-only"])
+
+    def test_risk_classification_uses_change_worktree_root(self) -> None:
+        worktree = self.project / "feature-worktree"
+        worktree.mkdir()
+        meta = self.change_dir / "meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "change-context.json").write_text(
+            json.dumps({"worktreeRoot": str(worktree)}) + "\n", encoding="utf-8"
+        )
+        self.assertEqual(gate.change_code_root(self.change_dir), worktree.resolve())
+        (meta / "change-context.json").write_text("{}\n", encoding="utf-8")
+        (meta / "worktree.json").write_text(
+            json.dumps({"worktreePath": str(worktree)}) + "\n", encoding="utf-8"
+        )
+        self.assertEqual(gate.change_code_root(self.change_dir), worktree.resolve())
+
     def test_lint_skills_flags_handwritten_ledger_pattern(self) -> None:
         skills_root = Path(tempfile.mkdtemp(prefix="skills-root-"))
         try:
@@ -281,6 +349,10 @@ class HarnessGateTests(unittest.TestCase):
             self.assertEqual(payload["code"], "SKILL_CONTRACT_VIOLATION")
         finally:
             shutil.rmtree(skills_root, ignore_errors=True)
+
+    def test_canonical_skills_implement_policy_capabilities(self) -> None:
+        payload = gate.lint_skill_tree(REPO_ROOT / "harness")
+        self.assertTrue(payload["ok"], msg=json.dumps(payload, ensure_ascii=False, indent=2))
 
     def test_cli_help(self) -> None:
         proc = subprocess.run(

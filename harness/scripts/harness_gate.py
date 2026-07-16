@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -56,6 +57,33 @@ LEDGER_V2_REQUIRED_ENTRY_FIELDS = (
     "command",
     "evidence",
 )
+
+CAPABILITY_MARKERS: dict[str, tuple[str, ...]] = {
+    "risk-classify-plan": ("harness_gate.py classify",),
+    "gate-begin": ("harness_gate.py begin",),
+    "gate-close": ("harness_gate.py close",),
+    "ledger-record": ("harness_ledger.py record",),
+    "ledger-can-reuse": ("harness_ledger.py can-reuse",),
+    "test-guard": ("harness_test_guard.py begin", "harness_test_guard.py close"),
+    "test-guard-stage": ("harness_test_guard.py stage",),
+    "integration-lock": ("harness_change.py integration-lock",),
+}
+
+
+def _load_workflow_policy(
+    *, project: Path | None = None, skills_root: Path | None = None
+) -> dict[str, Any]:
+    candidates = []
+    if project is not None:
+        candidates.append(project / "harness" / "contracts" / "workflow-policy.json")
+    if skills_root is not None:
+        candidates.append(skills_root / "contracts" / "workflow-policy.json")
+    candidates.append(SCRIPTS_DIR.parent / "contracts" / "workflow-policy.json")
+    for path in candidates:
+        if path.is_file():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return hwp.validate_policy(raw)
+    raise FileNotFoundError("workflow-policy.json not found beside project or skills")
 
 
 def emit(payload: dict[str, Any], *, as_json: bool) -> None:
@@ -364,6 +392,31 @@ def read_identity(skills_root: Path) -> dict[str, Any]:
     return identity
 
 
+def change_code_root(change_dir: Path) -> Path:
+    project = change_dir.parents[2]
+    metadata = (
+        (change_dir / "meta" / "change-context.json", ("worktreeRoot",)),
+        (change_dir / "meta" / "worktree.json", ("worktreePath", "path")),
+    )
+    for context_path, fields in metadata:
+        if not context_path.is_file():
+            continue
+        try:
+            context = json.loads(context_path.read_text(encoding="utf-8"))
+            raw_root = next(
+                (str(context.get(field) or "").strip() for field in fields if context.get(field)),
+                "",
+            )
+            if raw_root:
+                raw_path = Path(raw_root).expanduser()
+                candidate = (raw_path if raw_path.is_absolute() else project / raw_path).resolve()
+                if candidate.is_dir():
+                    return candidate
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return project
+
+
 def classify_risk(change_dir: Path, stage: str) -> dict[str, Any]:
     tier = "full"
     source = "default-full"
@@ -380,17 +433,90 @@ def classify_risk(change_dir: Path, stage: str) -> dict[str, Any]:
             tier = match.group(1).lower()
             source = f"plan:{candidate.name}"
             break
+    signals: list[str] = []
     if stage == "post-run":
-        # Stub: post-run reclassification upgrades only; keep plan tier for now.
-        source = f"{source}+post-run-stub"
-    return {
+        project = change_code_root(change_dir)
+        proc = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        changed: list[str] = []
+        for line in proc.stdout.splitlines():
+            raw = line[3:].strip().strip('"').replace("\\", "/")
+            if not raw or raw.startswith(".harness/"):
+                continue
+            changed.append(raw)
+        lowered = "\n".join(changed).lower()
+        full_markers = {
+            "auth": ("auth", "token", "credential", "permission"),
+            "security": ("security", "secret", "crypto"),
+            "migration": ("migration", "migrate", "/sql/", ".sql"),
+            "concurrency": ("concurr", "lock", "lease", "transaction"),
+            "artifact-protocol": ("artifact", "protocol", "manifest", "baseline"),
+            "shared-state": ("shared", "state/", "workflow-policy"),
+            "delete": ("delete", "purge", "archive"),
+        }
+        for signal, markers in full_markers.items():
+            if any(marker in lowered for marker in markers):
+                signals.append(signal)
+        if signals:
+            observed = "full"
+        elif changed and all(
+            path.lower().endswith((".md", ".txt", ".rst"))
+            or path.lower().startswith("docs/")
+            for path in changed
+        ):
+            observed = "fast"
+            signals.append("docs-only")
+        elif changed:
+            observed = "standard"
+            signals.append("production-code")
+        else:
+            observed = tier
+            signals.append("no-code-diff")
+        rank = {"fast": 0, "standard": 1, "full": 2}
+        if rank[observed] > rank[tier]:
+            tier = observed
+        source = f"{source}+post-run"
+    main_project = change_dir.parents[2]
+    workflow = _load_workflow_policy(project=main_project)
+    tier_policy = workflow["riskTiers"][tier]
+    unique_signals = sorted(set(signals))
+    stage_decisions: dict[str, dict[str, Any]] = {}
+    for stage_name, stage_policy in workflow["conditionalStages"].items():
+        default_required = stage_name in tier_policy["defaultPhases"]
+        matched = sorted(set(unique_signals) & set(stage_policy["signals"]))
+        signal_required = tier in stage_policy["tiers"] and bool(matched)
+        stage_decisions[stage_name] = {
+            "required": default_required or signal_required,
+            "reason": (
+                "tier-default" if default_required
+                else "signal:" + ",".join(matched) if signal_required
+                else "not-triggered"
+            ),
+            "matchedSignals": matched,
+        }
+    payload = {
         "ok": True,
         "code": "CLASSIFIED",
         "stage": stage,
         "tier": tier,
         "source": source,
         "changeId": change_dir.name,
+        "signals": unique_signals,
+        "defaultPhases": list(tier_policy["defaultPhases"]),
+        "requiredValidations": list(tier_policy["requiredValidations"]),
+        "conditionalStages": list(tier_policy["conditionalStages"]),
+        "stageDecisions": stage_decisions,
     }
+    if stage == "post-run":
+        _write_json(change_dir / "meta" / "risk-classification.json", payload)
+    return payload
 
 
 def lint_skill_tree(skills_root: Path) -> dict[str, Any]:
@@ -415,6 +541,59 @@ def lint_skill_tree(skills_root: Path) -> dict[str, Any]:
                             "line": line_no,
                             "pattern": pattern.pattern,
                             "text": line.strip(),
+                        }
+                    )
+    try:
+        workflow = _load_workflow_policy(skills_root=skills_root)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        violations.append(
+            {
+                "file": "contracts/workflow-policy.json",
+                "line": 0,
+                "pattern": "valid workflow policy",
+                "text": str(exc),
+            }
+        )
+        workflow = {"skills": {}}
+    active_profile: str | None = None
+    build_marker = skills_root / ".harness-build.json"
+    if build_marker.is_file():
+        try:
+            marker = json.loads(build_marker.read_text(encoding="utf-8"))
+            active_profile = "java" if marker.get("overlay") == "java" else "general"
+        except (OSError, json.JSONDecodeError):
+            active_profile = None
+    for skill_name, contract in sorted(workflow["skills"].items()):
+        if active_profile is not None and active_profile not in contract.get(
+            "profiles", ["general", "java"]
+        ):
+            continue
+        skill_files = sorted(skills_root.rglob(f"{skill_name}/SKILL.md"))
+        if not skill_files:
+            violations.append(
+                {
+                    "file": skill_name,
+                    "line": 0,
+                    "pattern": "policy skill exists",
+                    "text": f"missing {skill_name}/SKILL.md",
+                }
+            )
+            continue
+        required = tuple(
+            marker
+            for capability in contract.get("capabilities", [])
+            for marker in CAPABILITY_MARKERS.get(capability, ())
+        )
+        for skill_file in skill_files:
+            text = skill_file.read_text(encoding="utf-8", errors="replace")
+            for marker in required:
+                if marker not in text:
+                    violations.append(
+                        {
+                            "file": str(skill_file.relative_to(skills_root)),
+                            "line": 0,
+                            "pattern": marker,
+                            "text": f"missing capability command: {marker}",
                         }
                     )
     return {
@@ -520,7 +699,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
         )
 
     try:
-        policy = hwp.load_policy(project)
+        policy = _load_workflow_policy(project=project)
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
 
@@ -618,9 +797,22 @@ def cmd_close(args: argparse.Namespace) -> int:
         )
 
     try:
-        policy = hwp.load_policy(project)
+        policy = _load_workflow_policy(project=project)
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
+
+    explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
+    current_lease = hc.inspect_lease(project, resolved["changeId"])
+    if current_lease is None:
+        return emit_error("LEASE_ABSENT", "no active lease for phase close", as_json=as_json)
+    run_id = explicit_run_id or str(current_lease.get("runId") or "")
+    if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
+        return emit_error(
+            "LEASE_OWNER_MISMATCH",
+            "active lease does not match close phase/run-id",
+            as_json=as_json,
+            extra={"holder": current_lease},
+        )
 
     ledger_result = validate_ledger_for_phase_close(change_dir, args.phase, policy)
     if not ledger_result.get("ok") and args.phase in {"run", "test", "package"}:
@@ -643,18 +835,6 @@ def cmd_close(args: argparse.Namespace) -> int:
                 extra=guard_result,
             )
 
-    explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
-    current_lease = hc.inspect_lease(project, resolved["changeId"])
-    if current_lease is None:
-        return emit_error("LEASE_ABSENT", "no active lease for phase close", as_json=as_json)
-    run_id = explicit_run_id or str(current_lease.get("runId") or "")
-    if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
-        return emit_error(
-            "LEASE_OWNER_MISMATCH",
-            "active lease does not match close phase/run-id",
-            as_json=as_json,
-            extra={"holder": current_lease},
-        )
     event_result = append_phase_event(
         change_dir,
         phase=args.phase,

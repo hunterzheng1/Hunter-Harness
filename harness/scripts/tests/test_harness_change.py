@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -103,6 +104,22 @@ class HarnessChangeTests(unittest.TestCase):
         self.assertFalse(second["ok"], second)
         self.assertEqual(second["code"], "LEASE_CONFLICT")
 
+    def test_parallel_claim_same_change_has_one_winner(self) -> None:
+        def acquire(index: int):
+            return change.claim_lease(
+                self.project,
+                change_id="alpha",
+                phase="run",
+                run_id=f"parallel-{index}",
+                ttl_seconds=3600,
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(acquire, range(8)))
+        winners = [item for item in results if item["ok"]]
+        self.assertEqual(len(winners), 1, results)
+        self.assertTrue(all(item.get("code") == "LEASE_CONFLICT" for item in results if not item["ok"]))
+
     def test_parallel_claim_different_changes(self) -> None:
         first = change.claim_lease(
             self.project,
@@ -120,6 +137,60 @@ class HarnessChangeTests(unittest.TestCase):
         )
         self.assertTrue(first["ok"], first)
         self.assertTrue(second["ok"], second)
+
+    def test_parallel_port_leases_are_unique(self) -> None:
+        def allocate(index: int):
+            return change.lease_port(
+                self.project,
+                change_id="alpha" if index % 2 == 0 else "beta",
+                run_id=f"run-{index}",
+                port_range=(43100, 43107),
+            )
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(allocate, range(8)))
+        self.assertTrue(all(item["ok"] for item in results), results)
+        ports = [item["port"] for item in results]
+        self.assertEqual(len(set(ports)), 8, results)
+
+    def test_port_release_requires_owner_and_returns_port_to_pool(self) -> None:
+        first = change.lease_port(
+            self.project, change_id="demo", run_id="owner-a", port_range=(43200, 43200)
+        )
+        denied = change.release_port(
+            self.project, change_id="demo", run_id="owner-b"
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["code"], "PORT_LEASE_OWNER_MISMATCH")
+        released = change.release_port(
+            self.project, change_id="demo", run_id="owner-a"
+        )
+        self.assertTrue(released["ok"])
+        second = change.lease_port(
+            self.project, change_id="other", run_id="owner-c", port_range=(43200, 43200)
+        )
+        self.assertEqual(second["port"], first["port"])
+
+    def test_integration_lock_serializes_submit(self) -> None:
+        first = change.integration_lock_acquire(self.project, run_id="submit-a")
+        second = change.integration_lock_acquire(self.project, run_id="submit-b")
+        self.assertTrue(first["ok"])
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["code"], "INTEGRATION_LOCK_HELD")
+        self.assertFalse(change.integration_lock_release(self.project, run_id="submit-b")["ok"])
+        self.assertTrue(change.integration_lock_release(self.project, run_id="submit-a")["ok"])
+
+    def test_parallel_integration_lock_has_one_winner(self) -> None:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(
+                lambda index: change.integration_lock_acquire(
+                    self.project, run_id=f"submit-{index}"
+                ),
+                range(8),
+            ))
+        winners = [item for item in results if item["ok"]]
+        self.assertEqual(len(winners), 1, results)
+        self.assertTrue(all(item.get("code") == "INTEGRATION_LOCK_HELD" for item in results if not item["ok"]))
 
     def test_migrate_writes_checkpoints_without_touching_business_files(self) -> None:
         plan = self.changes / "alpha" / "plans" / "demo.md"
