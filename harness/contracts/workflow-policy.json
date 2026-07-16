@@ -2,21 +2,21 @@
   "schemaVersion": 1,
   "riskTiers": {
     "fast": {
-      "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency.",
+      "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency. Policy notes: checkpointRules apply only when meta/implementation-checkpoints.json defines the entry for this change; missing file/entry = disabled (gate must not require --task).",
       "defaultPhases": ["plan", "run", "submit", "archive"],
       "requiredValidations": ["unitTest"],
       "conditionalStages": ["review", "package", "apidoc"],
       "upgradeTriggers": ["api-change", "security", "migration", "concurrency", "breaking-contract"]
     },
     "standard": {
-      "description": "Ordinary production code and non-breaking API/features.",
+      "description": "Ordinary production code and non-breaking API/features. Policy notes: requiredValidations may close DEGRADED when ledger status=NOT_RUN and evidence starts with 'DEGRADED: <reason>' (close code CLOSED_DEGRADED, phase status <= WARN); do not fake OK with unrelated tests.",
       "defaultPhases": ["plan", "run", "test", "submit", "archive"],
       "requiredValidations": ["compile", "unitTest", "unitTestFull"],
       "conditionalStages": ["review", "package", "apidoc"],
       "upgradeTriggers": ["auth", "security", "delete", "migration", "concurrency", "artifact-protocol", "shared-state", "breaking-api"]
     },
     "full": {
-      "description": "Auth/security/delete/migration/concurrency/service protocol/shared state/breaking contracts.",
+      "description": "Auth/security/delete/migration/concurrency/service protocol/shared state/breaking contracts. Policy notes: (1) DEGRADED close — ledger status=NOT_RUN and evidence 'DEGRADED: <reason>' → CLOSED_DEGRADED with phase <= WARN; never fake OK with unrelated tests. (2) checkpointRules — only when plan created meta/implementation-checkpoints.json entry; missing file/entry = not enabled, gate must not require --task.",
       "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
       "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"],
       "conditionalStages": ["package", "apidoc"],
