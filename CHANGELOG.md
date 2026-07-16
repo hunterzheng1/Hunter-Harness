@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.12] — hunter-harness
+
+### Added
+
+- 交互式 Agent 选择菜单增加 `5. 全部` 选项；既有项目菜单行标注 `（已安装：<profile>）`。
+
+### Fixed
+
+- `update` 命令鉴权与 `push` 对齐：环境变量优先，`.harness/credentials.local.yaml` 回退；缺 token 时给出中文配置指引。
+- `push` 在已绑定项目上于敏感扫描/提案确认前做版本预检；`PROJECT_VERSION_CONFLICT` 映射为与 `STALE_PUSH` 一致的友好 `update` 指引。
+- 仓库 vitest 全局临时目录隔离与清理，避免 Windows 上 `hunter-*` fixture 泄漏占满系统 Temp（仅影响本仓库开发/CI，不进 CLI bundle）。
+
 ## [0.2.10] — hunter-harness / [0.2.5] — @hunter-harness/workflow-harness
 
 ### Changed
