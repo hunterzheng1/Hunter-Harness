@@ -113,6 +113,11 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/knowledge/")) {
     return USER_DIFF;
   }
+  if (/^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u.test(path)) {
+    // Machine-generated archive evidence for server semantic "变更总结";
+    // other files under .harness/archive/ remain external_unmanaged.
+    return GENERATED_REVIEWABLE;
+  }
   if (
     under(path, ".harness/codebase/map/") ||
     path === ".harness/codebase/map-summary.md" ||

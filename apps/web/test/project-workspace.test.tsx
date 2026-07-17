@@ -148,10 +148,80 @@ describe("ProjectWorkspace", () => {
     expect(screen.getByRole("button", { name: "重命名" })).toBeEnabled();
   });
 
-  it("shows version records without exposing raw ids in the main row", async () => {
+  it("keeps directories collapsed by default until expanded", async () => {
     render(<ProjectWorkspace api={api()} projectId="prj_one" />);
+    fireEvent.click(await screen.findByRole("tab", { name: "文件" }));
+
+    const harness = await screen.findByText(".harness");
+    const details = harness.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText("2 项")).toBeInTheDocument();
+
+    fireEvent.click(harness);
+    await waitFor(() => expect(details).toHaveAttribute("open"));
+    expect(screen.getByText("knowledge")).toBeInTheDocument();
+  });
+
+  it("shows human version bases and paginates dense change sets", async () => {
+    const manyFiles = Array.from({ length: 45 }, (_, index) => ({
+      operation: (index % 2 === 0 ? "add" : "modify") as "add" | "modify",
+      path: `.harness/knowledge/entries/active/item-${String(index).padStart(2, "0")}.json`,
+      file_kind: "user_editable" as const,
+      ...(index % 2 === 0
+        ? { content_sha256: sha("d"), size_bytes: 40 }
+        : {
+          base_content_sha256: sha("b"),
+          content_sha256: sha("c"),
+          size_bytes: 12
+        })
+    }));
+    const getArtifactManifest = vi.fn(async () => ({
+      schema_version: 1 as const,
+      project_id: "prj_one",
+      project_version: "pv_two",
+      artifact_id: "art_two",
+      manifest_sha256: sha("a"),
+      files: manyFiles
+    }));
+    render(<ProjectWorkspace api={api({
+      listProjectArtifacts: vi.fn(async () => [
+        {
+          artifact_id: "art_two",
+          project_id: "prj_one",
+          project_version: "pv_two",
+          base_project_version: "pv_one",
+          proposal_id: "prp_two",
+          changed_item_count: 45,
+          manifest_sha256: sha("a"),
+          created_at: "2026-06-21T00:00:00Z"
+        },
+        {
+          artifact_id: "art_one",
+          project_id: "prj_one",
+          project_version: "pv_one",
+          base_project_version: null,
+          proposal_id: "prp_one",
+          changed_item_count: 2,
+          manifest_sha256: sha("a"),
+          created_at: "2026-06-20T00:00:00Z"
+        }
+      ]),
+      getArtifactManifest
+    })} projectId="prj_one" />);
+
     fireEvent.click(await screen.findByRole("tab", { name: "版本记录" }));
-    expect(await screen.findByText(/2 个文件变更/)).toBeInTheDocument();
-    expect(screen.getByText("art_one").closest("details")).not.toHaveAttribute("open");
+    expect(await screen.findByText(/基于版本 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/pv_/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "查看变更" })[0]!);
+    expect(await screen.findByText("第 1/3 页 · 45 条")).toBeInTheDocument();
+    expect(screen.getByText(".harness/knowledge/entries/active/item-00.json")).toBeInTheDocument();
+    expect(screen.queryByText(".harness/knowledge/entries/active/item-20.json")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2/3 页 · 45 条")).toBeInTheDocument();
+    expect(screen.getByText(".harness/knowledge/entries/active/item-20.json")).toBeInTheDocument();
+    expect(getArtifactManifest).toHaveBeenCalledWith("art_two");
   });
 });

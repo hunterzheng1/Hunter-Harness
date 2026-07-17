@@ -134,6 +134,10 @@ const SHARED_MANAGED_FILES = [
   ".harness/context-index.json"
 ];
 
+/** Only final archive summaries are pushable — never the whole archive tree. */
+const ARCHIVE_SUMMARY_PATH =
+  /^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u;
+
 // init 写入的已安装 Harness Bundle 清单：记录 Bundle 安装的受管文件路径。
 // push 对这些文件豁免敏感扫描（Harness 自有文件含教学示例，非用户引入的 secret），
 // 但仍照常 propose（diff-proposal 不变）。
@@ -162,6 +166,34 @@ async function walkFiles(root: string, current: string, output: string[]): Promi
       await walkFiles(root, path, output);
     } else if (item.isFile()) {
       output.push(normalizeManagedPath(relative(root, path).replaceAll("\\", "/")));
+    }
+  }
+}
+
+async function walkArchiveSummaries(root: string, output: string[]): Promise<void> {
+  const archiveRoot = join(root, ".harness", "archive");
+  if (!await exists(archiveRoot)) return;
+  for (const item of await readdir(archiveRoot, { withFileTypes: true })) {
+    if (item.isSymbolicLink()) {
+      throw new PushWorkflowError("symlink is not pushable", 6, "UNSAFE_SYMLINK");
+    }
+    if (!item.isDirectory()) continue;
+    const summaryPath = join(archiveRoot, item.name, "reports", "final", "summary-data.json");
+    try {
+      const stats = await lstat(summaryPath);
+      if (stats.isSymbolicLink()) {
+        throw new PushWorkflowError("symlink is not pushable", 6, "UNSAFE_SYMLINK");
+      }
+      if (!stats.isFile()) continue;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+      throw error;
+    }
+    const relativePath = normalizeManagedPath(
+      relative(root, summaryPath).replaceAll("\\", "/")
+    );
+    if (ARCHIVE_SUMMARY_PATH.test(relativePath)) {
+      output.push(relativePath);
     }
   }
 }
@@ -211,6 +243,7 @@ async function managedFiles(
   for (const path of SHARED_MANAGED_ROOTS) {
     await walkFiles(root, join(root, path), paths);
   }
+  await walkArchiveSummaries(root, paths);
   for (const adapter of adapters) {
     if (adapter.rulesRoot !== null) {
       await walkFiles(root, join(root, adapter.rulesRoot), paths);

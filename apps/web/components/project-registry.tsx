@@ -34,7 +34,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     archive: "移到回收站", restore: "恢复", purge: "永久删除", emptyTrash: "清空回收站",
     noProjects: "还没有项目。运行 npx hunter-harness 完成首次同步后会显示在这里。", noTrash: "回收站是空的。",
     noMatch: "没有符合搜索条件的项目。", trashHint: "项目会在回收站保留 30 天，到期后自动清理。",
-    purgeAt: "自动清理", technical: "技术详情", confirmArchive: "将此项目移到回收站？30 天内可以恢复。",
+    purgeAt: "自动清理", confirmArchive: "将此项目移到回收站？30 天内可以恢复。",
     confirmRestore: "恢复此项目？", confirmPurge: "永久删除后无法恢复，是否继续？",
     confirmEmpty: "永久删除回收站中的所有项目？此操作无法撤销。", confirm: "确认", cancel: "取消"
   } : {
@@ -45,7 +45,7 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
     archive: "Move to recycle bin", restore: "Restore", purge: "Delete permanently", emptyTrash: "Empty recycle bin",
     noProjects: "No projects yet. Run npx hunter-harness to complete the first sync.", noTrash: "The recycle bin is empty.",
     noMatch: "No projects match your search.", trashHint: "Projects remain in the recycle bin for 30 days, then are removed automatically.",
-    purgeAt: "Auto removal", technical: "Technical details", confirmArchive: "Move this project to the recycle bin? You can restore it for 30 days.",
+    purgeAt: "Auto removal", confirmArchive: "Move this project to the recycle bin? You can restore it for 30 days.",
     confirmRestore: "Restore this project?", confirmPurge: "Permanent deletion cannot be undone. Continue?",
     confirmEmpty: "Permanently delete every project in the recycle bin? This cannot be undone.", confirm: "Confirm", cancel: "Cancel"
   };
@@ -136,7 +136,6 @@ export function ProjectRegistry({ api: propApi }: { api?: HunterApi }) {
         <div className="project-list-main">
           <div><h2>{project.display_name}</h2><span className={project.latest_project_version === null ? "waiting" : "synced"}>{project.latest_project_version === null ? copy.firstSync : copy.synced}</span></div>
           <p>{project.current_file_count ?? 0} {copy.fileUnit} · {copy.updated} {new Date(project.updated_at ?? project.created_at).toLocaleDateString(lang === "zh" ? "zh-CN" : "en-US")}</p>
-          <details><summary>{copy.technical}</summary><code>{project.project_id}</code></details>
         </div>
         <div className="project-list-actions">
           {view === "active" ? <button type="button" className="secondary danger" onClick={() => setPendingAction({ kind: "archive", project })}>{copy.archive}</button> : <><button type="button" onClick={() => setPendingAction({ kind: "restore", project })}>{copy.restore}</button><button type="button" className="secondary danger" onClick={() => setPendingAction({ kind: "purge", project })}>{copy.purge}</button></>}

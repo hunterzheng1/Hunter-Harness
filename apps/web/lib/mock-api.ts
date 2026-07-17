@@ -22,6 +22,7 @@ import type {
   PublishSkillRequest,
   NpmReleaseResponse,
   SemanticDocument,
+  SemanticEdge,
   SemanticOverview
 } from "@hunter-harness/contracts";
 
@@ -102,6 +103,56 @@ const MOCK_PROJECTS: ProjectSummary[] = [
   },
 ];
 
+const MOCK_PROJECT_FILE_PATHS = [
+  ".claude/rules/harness-general.md",
+  ".claude/skills/harness-plan/SKILL.md",
+  ".claude/skills/harness-run/SKILL.md",
+  ".claude/skills/harness-test/SKILL.md",
+  ".claude/skills/harness-archive/SKILL.md",
+  ".cursor/rules/harness-general.mdc",
+  ".cursor/skills/harness-sync/SKILL.md",
+  ".harness/knowledge/architecture.md",
+  ".harness/knowledge/index.json",
+  ".harness/knowledge/entries/active/decision-one.json",
+  ".harness/knowledge/entries/candidate/note-two.json",
+  ".harness/state/local/status.json",
+  ".harness/state/baseline/manifest.json",
+  ".harness/codebase/map/STACK.md",
+  ".harness/codebase/map/STRUCTURE.md",
+  ".harness/codebase/map/TESTING.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "packages/cli/src/commands/push.ts",
+  "packages/cli/src/commands/update.ts",
+  "packages/core/src/push/push.ts",
+  "packages/core/src/sync/synchronize.ts",
+  "packages/contracts/src/index.ts",
+  "apps/web/app/projects/page.tsx",
+  "apps/web/components/project-workspace.tsx",
+  "apps/web/components/project-registry.tsx",
+  "apps/server/src/app.ts",
+  "apps/server/src/registry/store.ts",
+  "harness/scripts/harness_archive.py",
+  "harness/scripts/harness_events.py",
+  "harness/scripts/harness_gate.py",
+  "harness/harness-plan/SKILL.md",
+  "harness/harness-run/SKILL.md",
+  "harness/protocols/powershell-protocol.md",
+  "resources/harness/migrations/README.md",
+  ...Array.from({ length: 24 }, (_, index) =>
+    `.harness/knowledge/entries/stale/legacy-${String(index + 1).padStart(2, "0")}.json`
+  )
+] as const;
+
+const MOCK_PROJECT_FILES: ProjectFileMetadata[] = MOCK_PROJECT_FILE_PATHS.map((path, index) => ({
+  path,
+  file_kind: path.includes("/state/") || path.endsWith("index.json") ? "internal_state" : "user_editable",
+  content_sha256: "sha256:" + String(index + 1).padStart(64, "0"),
+  size_bytes: 40 + index * 17,
+  project_version: "v2.4.1",
+  updated_at: "2026-07-14T08:30:00Z"
+}));
+
 const MOCK_PROPOSALS: ProposalSummary[] = [
   {
     proposal_id: "prop_a1b2c3",
@@ -169,19 +220,34 @@ const MOCK_ARTIFACTS: ArtifactSummary[] = [
   {
     artifact_id: "art_a7f3c91b",
     project_id: "agent-harness",
-    project_version: "v2.4.1",
-    base_project_version: "v2.3.1",
+    project_version: "pv_20260615_a",
+    base_project_version: "pv_20260610_b",
     proposal_id: "prop_j0k1l2",
-    changed_item_count: 5,
-    manifest_sha256: "sha256:a1b2c3d4e5f60001",
-    created_at: "2026-06-15T08:05:00Z",
+    changed_item_count: 47,
+    project_id: "agent-harness",
+    project_version: "pv_20260610_b",
+    base_project_version: "pv_20260601_c",
+    proposal_id: "prop_m3n4o5",
+    changed_item_count: 3,
+    manifest_sha256: "sha256:a1b2c3d4e5f60011",
+    created_at: "2026-06-10T14:20:00Z",
+  },
+  {
+    artifact_id: "art_c9f5e13d",
+    project_id: "agent-harness",
+    project_version: "pv_20260601_c",
+    base_project_version: null,
+    proposal_id: "prop_p6q7r8",
+    changed_item_count: 8,
+    manifest_sha256: "sha256:a1b2c3d4e5f60021",
+    created_at: "2026-06-01T09:00:00Z",
   },
   {
     artifact_id: "art_2e6d401f",
     project_id: "skill-registry",
-    project_version: "v1.8.0",
-    base_project_version: "v1.7.0",
-    proposal_id: "prop_p6q7r8",
+    project_version: "pv_20260612_a",
+    base_project_version: "pv_20260605_b",
+    proposal_id: "prop_s1t2u3",
     changed_item_count: 4,
     manifest_sha256: "sha256:b2c3d4e5f60002",
     created_at: "2026-06-12T11:30:00Z",
@@ -189,14 +255,86 @@ const MOCK_ARTIFACTS: ArtifactSummary[] = [
   {
     artifact_id: "art_9b4c7e12",
     project_id: "governance-api",
-    project_version: "v3.0.2",
-    base_project_version: "v3.0.0",
+    project_version: "pv_20260608_a",
+    base_project_version: "pv_20260601_b",
     proposal_id: "prop_x9y0z1",
     changed_item_count: 8,
     manifest_sha256: "sha256:c3d4e5f60003",
     created_at: "2026-06-08T17:00:00Z",
   },
 ];
+
+const MOCK_MANIFEST_FILES: Record<string, ArtifactManifestModel["files"]> = {
+  art_a7f3c91b: [
+    { operation: "add", path: ".harness/knowledge/entries/active/reuse-llm.json", file_kind: "user_editable", content_sha256: "sha256:" + "a".repeat(64), size_bytes: 1200 },
+    { operation: "modify", path: ".claude/rules/harness-general.md", file_kind: "user_editable", base_content_sha256: "sha256:" + "b".repeat(64), content_sha256: "sha256:" + "c".repeat(64), size_bytes: 840 },
+    { operation: "modify", path: "AGENTS.md", file_kind: "user_editable", base_content_sha256: "sha256:" + "d".repeat(64), content_sha256: "sha256:" + "e".repeat(64), size_bytes: 2100 },
+    { operation: "add", path: ".harness/archive/2026-06-15-sample/reports/final/summary-data.json", file_kind: "generated_reviewable", content_sha256: "sha256:" + "f".repeat(64), size_bytes: 4096 },
+    {
+      operation: "delete",
+      path: ".harness/knowledge/entries/candidate/old-note.json",
+      file_kind: "user_editable",
+      base_content_sha256: "sha256:" + "1".repeat(64),
+      tombstone: {
+        deleted_at: "2026-06-15T08:00:00.000Z",
+        reason: "superseded",
+        previous_sha256: "sha256:" + "1".repeat(64)
+      }
+    },
+    ...Array.from({ length: 42 }, (_, index) => {
+      const n = String(index + 1).padStart(2, "0");
+      const op = (["add", "modify", "delete"] as const)[index % 3] ?? "add";
+      if (op === "add") {
+        return {
+          operation: "add" as const,
+          path: `.harness/knowledge/entries/active/bulk-${n}.json`,
+          file_kind: "user_editable" as const,
+          content_sha256: "sha256:" + String(index % 10).repeat(64),
+          size_bytes: 200 + index
+        };
+      }
+      if (op === "modify") {
+        return {
+          operation: "modify" as const,
+          path: `.claude/rules/bulk-${n}.md`,
+          file_kind: "user_editable" as const,
+          base_content_sha256: "sha256:" + String((index + 1) % 10).repeat(64),
+          content_sha256: "sha256:" + String((index + 2) % 10).repeat(64),
+          size_bytes: 300 + index
+        };
+      }
+      return {
+        operation: "delete" as const,
+        path: `.harness/knowledge/entries/candidate/bulk-${n}.json`,
+        file_kind: "user_editable" as const,
+        base_content_sha256: "sha256:" + String((index + 3) % 10).repeat(64),
+        tombstone: {
+          deleted_at: "2026-06-15T08:00:00.000Z",
+          reason: "cleanup",
+          previous_sha256: "sha256:" + String((index + 3) % 10).repeat(64)
+        }
+      };
+    })
+  ],
+  art_b8e4d02c: [
+    { operation: "modify", path: ".harness/knowledge/index.json", file_kind: "user_editable", base_content_sha256: "sha256:" + "2".repeat(64), content_sha256: "sha256:" + "3".repeat(64), size_bytes: 900 },
+    { operation: "add", path: ".harness/codebase/map/ARCHITECTURE.md", file_kind: "generated_reviewable", content_sha256: "sha256:" + "4".repeat(64), size_bytes: 3200 },
+    {
+      operation: "rename",
+      from_path: ".harness/knowledge/notes/old.md",
+      to_path: ".harness/knowledge/notes/reuse.md",
+      file_kind: "user_editable",
+      base_content_sha256: "sha256:" + "5".repeat(64),
+      content_sha256: "sha256:" + "6".repeat(64),
+      size_bytes: 500
+    }
+  ],
+  art_c9f5e13d: [
+    { operation: "add", path: "AGENTS.md", file_kind: "user_editable", content_sha256: "sha256:" + "7".repeat(64), size_bytes: 1800 },
+    { operation: "add", path: ".harness/project.yaml", file_kind: "user_editable", content_sha256: "sha256:" + "8".repeat(64), size_bytes: 420 },
+    { operation: "add", path: ".claude/rules/harness-general.md", file_kind: "user_editable", content_sha256: "sha256:" + "9".repeat(64), size_bytes: 700 }
+  ]
+};
 
 // ── MockApiClient — returns mock data without any network call ──
 
@@ -329,7 +467,8 @@ function mockSemanticDoc(
   kind: SemanticDocument["kind"],
   title: string,
   body: string,
-  path: string
+  path: string,
+  metadata: Record<string, unknown> = {}
 ): SemanticDocument {
   return {
     document_id: `sem_${kind}_${title.replaceAll(/\W+/g, "_").toLowerCase()}`,
@@ -339,9 +478,35 @@ function mockSemanticDoc(
     source_path: path,
     title,
     body,
-    metadata: {},
+    metadata,
     content_sha256: "sha256:" + "a".repeat(64)
   };
+}
+
+const MOCK_KNOWLEDGE_STATUSES = ["active", "candidate", "superseded", "archived"] as const;
+const MOCK_KNOWLEDGE_TOPICS = [
+  "Reuse LlmClient", "Gate policy calibration", "Ledger status vocabulary", "PowerShell path protocol",
+  "Bundle hash stability", "Worktree npm isolation", "Semantic index rebuild", "Archive report pipeline",
+  "Context pack export", "Skill deploy adapters", "Codegraph explore first", "Evidence honesty rules",
+  "Windows shell hooks", "Cursor skill sync", "Knowledge promote judge", "Change folder layout",
+  "Profile exclusion", "Smoke pack checks", "Vitest worker limits", "Fastify inject tests"
+] as const;
+
+function mockProjectKnowledge(projectId: string): SemanticDocument[] {
+  return Array.from({ length: 86 }, (_, index) => {
+    const status = MOCK_KNOWLEDGE_STATUSES[index % MOCK_KNOWLEDGE_STATUSES.length] ?? "active";
+    const topic = MOCK_KNOWLEDGE_TOPICS[index % MOCK_KNOWLEDGE_TOPICS.length] ?? "Knowledge entry";
+    const title = index === 0 ? topic : `${topic} #${String(index).padStart(2, "0")}`;
+    const folder = status === "active" || status === "candidate" ? status : "archived";
+    return mockSemanticDoc(
+      projectId,
+      index % 7 === 0 ? "knowledge_markdown" : "knowledge_entry",
+      title,
+      `## ${title}\n\nDemo knowledge body for local UI review.\n\n- Status: ${status}\n- Topic cluster: ${topic}\n`,
+      `.harness/knowledge/entries/${folder}/${title.replaceAll(/\W+/g, "-").toLowerCase()}.json`,
+      { status, tags: [topic.split(" ")[0]?.toLowerCase() ?? "knowledge", status] }
+    );
+  });
 }
 
 const MOCK_AI_PROVIDERS: AiProviderConfig[] = [
@@ -589,23 +754,19 @@ export class MockApiClient implements HunterApi {
     return delay({
       project_id: projectId,
       project_version: "v2.4.1",
-      total: 1,
-      items: [{
-        path: ".claude/rules/harness-general.md",
-        file_kind: "user_editable",
-        content_sha256: "sha256:" + "a".repeat(64),
-        size_bytes: 42,
-        project_version: "v2.4.1",
-        updated_at: "2026-06-20T10:00:00Z"
-      }]
+      total: MOCK_PROJECT_FILES.length,
+      items: clone(MOCK_PROJECT_FILES)
     });
   }
 
   async getProjectFileContent(projectId: string, path: string): Promise<ProjectFileContent> {
-    const snapshot = await this.listProjectFiles(projectId);
-    const file = snapshot.items.find((item) => item.path === path);
+    const file = MOCK_PROJECT_FILES.find((item) => item.path === path);
     if (file === undefined) throw new ApiClientError(404, "PROJECT_FILE_NOT_FOUND", "Demo file not found.");
-    return delay({ ...file, project_id: projectId, content: "# Harness general\n" });
+    return delay({
+      ...file,
+      project_id: projectId,
+      content: `# ${path}\n\nDemo content for local UI review.\n`
+    });
   }
 
   async archiveProject(projectId: string): Promise<ProjectLifecycleResult> {
@@ -627,48 +788,94 @@ export class MockApiClient implements HunterApi {
   }
 
   async getProjectSemanticOverview(projectId: string): Promise<SemanticOverview> {
+    const knowledge = mockProjectKnowledge(projectId).length;
     return delay({
       project_id: projectId,
       artifact_id: "art_demo",
-      counts: { documents: 4, knowledge: 1, rules: 1, changes: 1, agent_instructions: 1, edges: 1 }
+      counts: { documents: knowledge + 4, knowledge, rules: 2, changes: 3, agent_instructions: 1, edges: 9 }
     });
   }
 
   async listProjectSemanticKnowledge(projectId: string): Promise<SemanticDocument[]> {
-    return delay([mockSemanticDoc(projectId, "knowledge_entry", "Reuse LlmClient", "Reuse LlmClient for AI jobs.", ".harness/knowledge/entries/active/decision.json")]);
+    return delay(mockProjectKnowledge(projectId));
   }
 
   async listProjectSemanticRules(projectId: string): Promise<SemanticDocument[]> {
-    return delay([mockSemanticDoc(projectId, "rule", "harness-general.md", "general rule body", ".claude/rules/harness-general.md")]);
+    return delay([
+      mockSemanticDoc(projectId, "rule", "harness-general.md", "general rule body", ".claude/rules/harness-general.md", { status: "active" }),
+      mockSemanticDoc(projectId, "rule", "windows-shell.md", "Prefer PowerShell for Chinese paths.", ".claude/rules/windows-shell.md", { status: "active" })
+    ]);
   }
 
   async listProjectSemanticChanges(projectId: string): Promise<SemanticDocument[]> {
-    return delay([mockSemanticDoc(projectId, "archive_record", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json")]);
+    return delay([
+      mockSemanticDoc(projectId, "archive_record", "sample archive", '{"finalStatus":"OK"}', ".harness/archive/2026-06-30-sample/reports/final/summary-data.json", { status: "archived" }),
+      mockSemanticDoc(projectId, "archive_record", "gate policy archive", '{"finalStatus":"OK"}', ".harness/archive/2026-07-16-fix-gate-policy/reports/final/summary-data.json", { status: "archived" }),
+      mockSemanticDoc(projectId, "archive_record", "knowledge closeout", '{"finalStatus":"CONDITIONAL_OK"}', ".harness/archive/2026-07-17-knowledge-closeout/reports/final/summary-data.json", { status: "archived" })
+    ]);
   }
 
   async getProjectSemanticGraph(projectId: string, focusDocumentId?: string): Promise<ProjectSemanticGraph> {
-    const knowledge = await this.listProjectSemanticKnowledge(projectId);
+    const knowledge = (await this.listProjectSemanticKnowledge(projectId)).slice(0, 12);
     const rules = await this.listProjectSemanticRules(projectId);
-    const nodes = [...knowledge, ...rules];
-    const from = nodes[0];
-    const to = nodes[1];
-    const focusedNodes = focusDocumentId === undefined
-      ? nodes
-      : nodes.filter((node) => node.document_id === focusDocumentId || node.document_id === from?.document_id || node.document_id === to?.document_id);
-    return delay({
-      nodes: focusedNodes,
-      edges: from === undefined || to === undefined ? [] : [{
-        edge_id: "sed_demo",
+    const changes = (await this.listProjectSemanticChanges(projectId)).slice(0, 2);
+    const nodes = [...knowledge, ...rules, ...changes];
+    const indexed = mockProjectKnowledge(projectId).length + 2 + 3;
+    const edge = (
+      edgeId: string,
+      fromIndex: number,
+      toIndex: number,
+      kind: SemanticEdge["kind"]
+    ): SemanticEdge | null => {
+      const from = nodes[fromIndex];
+      const to = nodes[toIndex];
+      if (from === undefined || to === undefined) return null;
+      return {
+        edge_id: edgeId,
         project_id: projectId,
         artifact_id: "art_demo",
         from_document_id: from.document_id,
         to_document_id: to.document_id,
-        kind: "references_path" as const,
+        kind,
         metadata: {}
-      }],
-      focus_document_id: focusDocumentId ?? null,
-      relation_status: "ready" as const,
-      indexed_documents: nodes.length
+      };
+    };
+    const allEdges = [
+      edge("sed_supersedes_1", 1, 0, "supersedes"),
+      edge("sed_conflicts_1", 2, 3, "conflicts_with"),
+      edge("sed_shared_1", 4, 5, "shared_scope"),
+      edge("sed_shared_2", 0, 4, "shared_scope"),
+      edge("sed_tags_1", 2, 6, "tag_cooccurrence"),
+      edge("sed_ref_rule_1", 0, knowledge.length, "references_path"),
+      edge("sed_ref_rule_2", 3, knowledge.length + 1, "references_path"),
+      edge("sed_archive_1", 0, knowledge.length + rules.length, "related_archive"),
+      edge("sed_supersedes_2", 7, 1, "supersedes")
+    ].filter((item): item is SemanticEdge => item !== null);
+
+    const focusId = focusDocumentId
+      ?? nodes[0]?.document_id
+      ?? null;
+    const neighbourhood = focusId === null
+      ? allEdges
+      : allEdges.filter((item) =>
+        item.from_document_id === focusId || item.to_document_id === focusId
+      );
+    const keepIds = new Set<string>();
+    if (focusId !== null) keepIds.add(focusId);
+    for (const item of neighbourhood) {
+      keepIds.add(item.from_document_id);
+      keepIds.add(item.to_document_id);
+    }
+    const focusedNodes = keepIds.size === 0
+      ? nodes
+      : nodes.filter((node) => keepIds.has(node.document_id));
+
+    return delay({
+      nodes: focusedNodes,
+      edges: neighbourhood,
+      focus_document_id: focusId,
+      relation_status: neighbourhood.length === 0 ? "no_relations" as const : "ready" as const,
+      indexed_documents: indexed
     });
   }
 
@@ -698,7 +905,9 @@ export class MockApiClient implements HunterApi {
 
   async listProjectArtifacts(projectId: string): Promise<ArtifactSummary[]> {
     return delay(
-      MOCK_ARTIFACTS.filter((a) => a.project_id === projectId)
+      MOCK_ARTIFACTS
+        .filter((a) => a.project_id === projectId)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))
     );
   }
 
@@ -711,30 +920,15 @@ export class MockApiClient implements HunterApi {
   }
 
   async getArtifactManifest(artifactId: string): Promise<ArtifactManifestModel> {
-    void artifactId;
+    const artifact = MOCK_ARTIFACTS.find((item) => item.artifact_id === artifactId);
+    const files = MOCK_MANIFEST_FILES[artifactId] ?? MOCK_MANIFEST_FILES.art_a7f3c91b ?? [];
     return delay({
       schema_version: 1,
-      project_id: "agent-harness",
-      project_version: "v2.4.1",
-      artifact_id: "art_a7f3c91b",
-      manifest_sha256: "sha256:a1b2c3d4e5f60001",
-      files: [
-        {
-          operation: "add",
-          path: "src/index.ts",
-          file_kind: "user_editable",
-          content_sha256: "sha256:abc123",
-          size_bytes: 2048,
-        },
-        {
-          operation: "modify",
-          path: "package.json",
-          file_kind: "user_editable",
-          base_content_sha256: "sha256:old456",
-          content_sha256: "sha256:new789",
-          size_bytes: 1024,
-        },
-      ],
+      project_id: artifact?.project_id ?? "agent-harness",
+      project_version: artifact?.project_version ?? null,
+      artifact_id: artifactId,
+      manifest_sha256: artifact?.manifest_sha256 ?? "sha256:" + "0".repeat(64),
+      files
     });
   }
 

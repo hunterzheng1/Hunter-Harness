@@ -11,9 +11,10 @@ import {
   type ProjectDetailModel,
   type ProjectFileMetadata
 } from "../lib/api";
-import { classifyManagedFile, isProposalEditable, type WebFilePolicy } from "../lib/file-policy";
+import { classifyManagedFile, isProposalEditable } from "../lib/file-policy";
 import { useI18n } from "../lib/i18n";
 import { ProjectSemanticPanels } from "./project-semantic-panels";
+import { ProjectVersionsPanel } from "./project-versions-panel";
 
 interface WorkspaceData {
   project: ProjectDetailModel;
@@ -64,6 +65,9 @@ const COPY = {
     fileTitle: "项目文件",
     newFile: "新建文件",
     searchFiles: "搜索文件或目录",
+    collapseAll: "全部折叠",
+    expandToSelected: "展开到选中",
+    folderCount: (count: number) => `${count} 项`,
     allFiles: "全部文件",
     editableFiles: "可编辑",
     systemFiles: "系统只读",
@@ -85,15 +89,6 @@ const COPY = {
     saveFailed: "保存失败，请刷新后重试。",
     authFailed: "需要有效的 API 令牌才能访问此项目。",
     loadFailed: "项目数据加载失败。",
-    technical: "技术详情",
-    projectId: "项目 ID",
-    versionId: "版本 ID",
-    artifactId: "版本记录 ID",
-    proposalId: "变更记录 ID",
-    policy: "文件规则",
-    pathRule: "路径类型",
-    updateRule: "更新方式",
-    conflictRule: "冲突处理",
     versionNumber: (index: number) => `版本 ${index}`,
     current: "当前",
     bytes: "字节"
@@ -119,6 +114,9 @@ const COPY = {
     fileTitle: "Project files",
     newFile: "New file",
     searchFiles: "Search files or folders",
+    collapseAll: "Collapse all",
+    expandToSelected: "Expand to selected",
+    folderCount: (count: number) => `${count} items`,
     allFiles: "All files",
     editableFiles: "Editable",
     systemFiles: "System read-only",
@@ -140,15 +138,6 @@ const COPY = {
     saveFailed: "Save failed. Refresh and try again.",
     authFailed: "A valid API token is required to access this project.",
     loadFailed: "Project data could not be loaded.",
-    technical: "Technical details",
-    projectId: "Project ID",
-    versionId: "Version ID",
-    artifactId: "Version record ID",
-    proposalId: "Change record ID",
-    policy: "File rules",
-    pathRule: "Path type",
-    updateRule: "Update behavior",
-    conflictRule: "Conflict behavior",
     versionNumber: (index: number) => `Version ${index}`,
     current: "Current",
     bytes: "bytes"
@@ -183,28 +172,79 @@ function buildTree(files: ProjectFileMetadata[]): TreeNode {
   return root;
 }
 
+function ancestorDirectoryPaths(filePath: string): string[] {
+  const segments = filePath.split("/");
+  const paths: string[] = [];
+  for (let index = 0; index < segments.length - 1; index += 1) {
+    paths.push(segments.slice(0, index + 1).join("/"));
+  }
+  return paths;
+}
+
+function collectDirectoryPaths(node: TreeNode): string[] {
+  const paths: string[] = [];
+  for (const directory of node.directories.values()) {
+    paths.push(directory.path, ...collectDirectoryPaths(directory));
+  }
+  return paths;
+}
+
+function countNodeFiles(node: TreeNode): number {
+  let total = node.files.length;
+  for (const directory of node.directories.values()) {
+    total += countNodeFiles(directory);
+  }
+  return total;
+}
+
 function DirectoryTree({
   node,
   selectedPath,
+  openPaths,
+  onOpenChange,
   onSelect,
+  folderCountLabel,
   depth = 0
 }: {
   node: TreeNode;
   selectedPath: string | null;
+  openPaths: ReadonlySet<string>;
+  onOpenChange: (path: string, open: boolean) => void;
   onSelect: (file: ProjectFileMetadata) => void;
+  folderCountLabel: (count: number) => string;
   depth?: number;
 }) {
   const directories = [...node.directories.values()].sort((left, right) => left.name.localeCompare(right.name));
   const files = [...node.files].sort((left, right) => left.path.localeCompare(right.path));
   const content = <ul className="project-tree-list">
-    {directories.map((directory) => (
-      <li key={directory.path}>
-        <details open>
-          <summary><span className="project-tree-folder" aria-hidden="true" />{directory.name}</summary>
-          <DirectoryTree node={directory} selectedPath={selectedPath} onSelect={onSelect} depth={depth + 1} />
+    {directories.map((directory) => {
+      const count = countNodeFiles(directory);
+      const isOpen = openPaths.has(directory.path);
+      return <li key={directory.path}>
+        <details
+          open={isOpen}
+          onToggle={(event) => {
+            const nextOpen = (event.currentTarget as HTMLDetailsElement).open;
+            if (nextOpen !== isOpen) onOpenChange(directory.path, nextOpen);
+          }}
+        >
+          <summary>
+            <span className="project-tree-folder" aria-hidden="true" />
+            <span className="project-tree-name">{directory.name}</span>
+            <span className="project-tree-count">{folderCountLabel(count)}</span>
+          </summary>
+          <DirectoryTree
+            node={directory}
+            selectedPath={selectedPath}
+            openPaths={openPaths}
+            onOpenChange={onOpenChange}
+            onSelect={onSelect}
+            folderCountLabel={folderCountLabel}
+            depth={depth + 1}
+          />
         </details>
-      </li>
-    ))}
+      </li>;
+    })}
     {files.map((file) => (
       <li key={file.path}>
         <button
@@ -220,23 +260,6 @@ function DirectoryTree({
     ))}
   </ul>;
   return depth === 0 ? <nav className="project-tree" aria-label="Project files">{content}</nav> : content;
-}
-
-function TechnicalDetails({
-  policy,
-  copy
-}: {
-  policy: WebFilePolicy;
-  copy: typeof COPY.zh | typeof COPY.en;
-}) {
-  return <details className="project-tech-details">
-    <summary>{copy.technical}</summary>
-    <dl>
-      <dt>{copy.pathRule}</dt><dd><code>{policy.file_kind}</code></dd>
-      <dt>{copy.updateRule}</dt><dd><code>{policy.update_policy}</code></dd>
-      <dt>{copy.conflictRule}</dt><dd><code>{policy.conflict_policy}</code></dd>
-    </dl>
-  </details>;
 }
 
 async function loadWorkspace(api: HunterApi, projectId: string): Promise<WorkspaceData> {
@@ -261,6 +284,7 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
   const [draft, setDraft] = useState<Draft | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "editable" | "system">("all");
+  const [openPaths, setOpenPaths] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -270,6 +294,11 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
     let active = true;
     setData(null);
     setError(null);
+    setSelectedPath(null);
+    setOpenPaths(new Set());
+    setContentByPath(new Map());
+    setQuery("");
+    setFilter("all");
     void loadWorkspace(api, projectId).then((next) => {
       if (active) setData(next);
     }).catch((reason: unknown) => {
@@ -298,6 +327,31 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
   const latestArtifact = data?.artifacts.find((artifact) => artifact.artifact_id === data.project.latest_artifact_id)
     ?? data?.artifacts[0]
     ?? null;
+
+  useEffect(() => {
+    if (query.trim() !== "") {
+      setOpenPaths(new Set(collectDirectoryPaths(tree)));
+      return;
+    }
+  }, [query, tree]);
+
+  useEffect(() => {
+    if (query.trim() !== "" || selectedPath === null) return;
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      for (const path of ancestorDirectoryPaths(selectedPath)) next.add(path);
+      return next;
+    });
+  }, [selectedPath, query]);
+
+  function setDirectoryOpen(path: string, open: boolean): void {
+    setOpenPaths((current) => {
+      const next = new Set(current);
+      if (open) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }
 
   async function choose(file: ProjectFileMetadata): Promise<void> {
     setSelectedPath(file.path);
@@ -405,13 +459,6 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
           <p className="project-health-line"><span />{data.project.latest_project_version === null ? copy.noVersion : copy.healthy}</p>
         </div>
       </div>
-      <details className="project-identity-details">
-        <summary>{copy.technical}</summary>
-        <dl>
-          <dt>{copy.projectId}</dt><dd><code>{data.project.project_id}</code></dd>
-          <dt>{copy.versionId}</dt><dd><code>{data.project.latest_project_version ?? "—"}</code></dd>
-        </dl>
-      </details>
     </header>
 
     <div className="project-tabs" role="tablist" aria-label={copy.eyebrow}>
@@ -462,7 +509,23 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
         <div className="project-file-filters">
           {(["all", "editable", "system"] as const).map((value) => <button key={value} type="button" className={filter === value ? "selected" : ""} onClick={() => setFilter(value)}>{value === "all" ? copy.allFiles : value === "editable" ? copy.editableFiles : copy.systemFiles}</button>)}
         </div>
-        {visibleFiles.length === 0 ? <p className="project-empty-copy">{copy.noFiles}</p> : <DirectoryTree node={tree} selectedPath={selectedPath} onSelect={(file) => void choose(file)} />}
+        <div className="project-tree-toolbar">
+          <button type="button" className="text-button" onClick={() => setOpenPaths(new Set())}>{copy.collapseAll}</button>
+          <button
+            type="button"
+            className="text-button"
+            disabled={selectedPath === null}
+            onClick={() => setOpenPaths(new Set(selectedPath === null ? [] : ancestorDirectoryPaths(selectedPath)))}
+          >{copy.expandToSelected}</button>
+        </div>
+        {visibleFiles.length === 0 ? <p className="project-empty-copy">{copy.noFiles}</p> : <DirectoryTree
+          node={tree}
+          selectedPath={selectedPath}
+          openPaths={openPaths}
+          onOpenChange={setDirectoryOpen}
+          onSelect={(file) => void choose(file)}
+          folderCountLabel={copy.folderCount}
+        />}
       </aside>
       <main className="project-file-detail-v2">
         {selected === null && draft === null ? <div className="project-file-placeholder"><span>⌘</span><h2>{copy.chooseFile}</h2></div> : null}
@@ -471,7 +534,6 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
             <div><p className="project-file-path">{selected.path}</p><div className="project-file-badges"><span className={selectedPolicy !== null && isProposalEditable(selectedPolicy) ? "editable" : "readonly"}>{selectedPolicy !== null && isProposalEditable(selectedPolicy) ? copy.editable : copy.readOnly}</span><span>{selected.size_bytes} {copy.bytes}</span></div></div>
             {selectedPolicy !== null && isProposalEditable(selectedPolicy) ? <div className="project-file-actions"><button type="button" disabled={selectedContent === undefined} onClick={() => beginEdit("modify")}>{copy.edit}</button><button type="button" disabled={selectedContent === undefined} onClick={() => beginEdit("rename")}>{copy.rename}</button><button type="button" className="danger" onClick={() => beginEdit("delete")}>{copy.delete}</button></div> : null}
           </header>
-          {selectedPolicy === null ? null : <TechnicalDetails policy={selectedPolicy} copy={copy} />}
           <pre className="project-file-content">{loadingContent && selectedContent === undefined ? copy.loadingContent : selectedContent ?? ""}</pre>
         </> : null}
         {draft !== null ? <section className="project-file-editor">
@@ -486,16 +548,7 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
 
     {activeTab === "knowledge" ? <ProjectSemanticPanels api={api} projectId={projectId} /> : null}
 
-    {activeTab === "versions" ? <section className="project-versions-card">
-      <header><div><p className="eyebrow">{copy.tabs.versions}</p><h2>{data.artifacts.length}</h2></div></header>
-      {data.artifacts.length === 0 ? <p className="project-empty-copy">{copy.noVersions}</p> : <div className="project-version-list">
-        {data.artifacts.map((artifact, index) => <article key={artifact.artifact_id}>
-          <div className="project-version-index">{data.artifacts.length - index}</div>
-          <div className="project-version-main"><div><strong>{copy.versionNumber(data.artifacts.length - index)}</strong>{index === 0 ? <span>{copy.current}</span> : null}</div><p>{copy.changedFiles(artifact.changed_item_count)} · {new Date(artifact.created_at).toLocaleString(lang === "zh" ? "zh-CN" : "en-US")}</p></div>
-          <details><summary>{copy.technical}</summary><dl><dt>{copy.versionId}</dt><dd><code>{artifact.project_version}</code></dd><dt>{copy.artifactId}</dt><dd><code>{artifact.artifact_id}</code></dd><dt>{copy.proposalId}</dt><dd><code>{artifact.proposal_id}</code></dd></dl></details>
-        </article>)}
-      </div>}
-    </section> : null}
+    {activeTab === "versions" ? <ProjectVersionsPanel api={api} artifacts={data.artifacts} lang={lang} /> : null}
 
     {message === null ? null : <div className="project-toast success">✓ {message}</div>}
     {error === null || data === null ? null : <div className="project-toast danger">{error}</div>}

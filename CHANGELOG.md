@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.16] — hunter-harness
+
+### Added
+
+- `push` 纳入 `.harness/archive/*/reports/final/summary-data.json`（仅 summary，非整棵 archive 树），file-policy 标为 `generated_reviewable` / `full-diff-proposal`，使控制台「变更总结」可从真实归档同步。
+- 项目控制台：知识库状态筛选分页；版本记录展开变更集（相对上一版本）；关系探索改为「当前中心」一跳邻域工作台（列表为主、示意 ego 图为辅）。
+
+### Changed
+
+- 去掉仅展示内部 ID 的「技术详情」块；知识预览改为「来源 · path」。
+
 ## [0.2.15] — hunter-harness / [0.2.9] — @hunter-harness/workflow-harness
 
 ### Changed
