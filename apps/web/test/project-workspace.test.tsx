@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectWorkspace } from "../components/project-workspace";
-import type { HunterApi, ProjectFileContent, ProjectFileMetadata } from "../lib/api";
+import type { ArtifactManifestModel, HunterApi, ProjectFileContent, ProjectFileMetadata } from "../lib/api";
 
 const sha = (character: string) => "sha256:" + character.repeat(64);
 const files: ProjectFileMetadata[] = [
