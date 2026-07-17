@@ -164,7 +164,7 @@ describe("ProjectWorkspace", () => {
   });
 
   it("shows human version bases and paginates dense change sets", async () => {
-    const manyFiles: import("../lib/api").ArtifactManifestModel["files"] = Array.from({ length: 45 }, (_, index) => {
+    const manyFiles: ArtifactManifestModel["files"] = Array.from({ length: 45 }, (_, index) => {
       const path = `.harness/knowledge/entries/active/item-${String(index).padStart(2, "0")}.json`;
       if (index % 2 === 0) {
         return {
