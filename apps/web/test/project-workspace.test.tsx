@@ -164,18 +164,26 @@ describe("ProjectWorkspace", () => {
   });
 
   it("shows human version bases and paginates dense change sets", async () => {
-    const manyFiles = Array.from({ length: 45 }, (_, index) => ({
-      operation: (index % 2 === 0 ? "add" : "modify") as "add" | "modify",
-      path: `.harness/knowledge/entries/active/item-${String(index).padStart(2, "0")}.json`,
-      file_kind: "user_editable" as const,
-      ...(index % 2 === 0
-        ? { content_sha256: sha("d"), size_bytes: 40 }
-        : {
-          base_content_sha256: sha("b"),
-          content_sha256: sha("c"),
-          size_bytes: 12
-        })
-    }));
+    const manyFiles: import("../lib/api").ArtifactManifestModel["files"] = Array.from({ length: 45 }, (_, index) => {
+      const path = `.harness/knowledge/entries/active/item-${String(index).padStart(2, "0")}.json`;
+      if (index % 2 === 0) {
+        return {
+          operation: "add" as const,
+          path,
+          file_kind: "user_editable" as const,
+          content_sha256: sha("d"),
+          size_bytes: 40
+        };
+      }
+      return {
+        operation: "modify" as const,
+        path,
+        file_kind: "user_editable" as const,
+        base_content_sha256: sha("b"),
+        content_sha256: sha("c"),
+        size_bytes: 12
+      };
+    });
     const getArtifactManifest = vi.fn(async () => ({
       schema_version: 1 as const,
       project_id: "prj_one",
