@@ -20,6 +20,10 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // 避免本机/会话里残留的 DEMO=true 让 web 组件走 mockApi，掩盖对 browserApi 的断言
+    env: {
+      NEXT_PUBLIC_HUNTER_HARNESS_DEMO: ""
+    },
     // 统一临时目录并在运行结束后整树清理，防止 hunter-* fixture 泄漏到系统 Temp
     globalSetup: ["./tests/setup/global-temp.ts"],
     testTimeout: 30000,

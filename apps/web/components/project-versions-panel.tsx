@@ -4,6 +4,7 @@ import type { FileOperation } from "@hunter-harness/contracts";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ArtifactSummary, HunterApi } from "../lib/api";
+import { runPreservingWindowScroll, suppressMouseFocusScroll } from "../lib/preserve-scroll";
 
 type Lang = "zh" | "en";
 type OpFilter = "all" | FileOperation["operation"];
@@ -114,8 +115,8 @@ function VersionChangeSet({
     </div>
     <div className="project-version-changeset-tools">
       {presentOps.length > 1 ? <div className="project-version-op-filters" role="toolbar" aria-label={lang === "zh" ? "按变更类型筛选" : "Filter by change type"}>
-        <button type="button" className={opFilter === "all" ? "selected" : ""} onClick={() => setOpFilter("all")}>{copy.all}</button>
-        {presentOps.map((op) => <button key={op} type="button" className={opFilter === op ? "selected" : ""} onClick={() => setOpFilter(op)}>{opLabel(op, lang)} · {counts[op]}</button>)}
+        <button type="button" className={opFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setOpFilter("all")}>{copy.all}</button>
+        {presentOps.map((op) => <button key={op} type="button" className={opFilter === op ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setOpFilter(op)}>{opLabel(op, lang)} · {counts[op]}</button>)}
       </div> : null}
       {files.length > PAGE_SIZE || query !== "" ? <label className="project-version-file-search">
         <span>⌕</span>
@@ -132,8 +133,8 @@ function VersionChangeSet({
     {filtered.length > PAGE_SIZE ? <div className="project-version-pager">
       <span>{copy.page(safePage + 1, pageCount, filtered.length)}</span>
       <div>
-        <button type="button" className="text-button" disabled={safePage <= 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>{copy.prev}</button>
-        <button type="button" className="text-button" disabled={safePage >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}>{copy.next}</button>
+        <button type="button" className="text-button" disabled={safePage <= 0} onMouseDown={suppressMouseFocusScroll} onClick={() => setPage((current) => Math.max(0, current - 1))}>{copy.prev}</button>
+        <button type="button" className="text-button" disabled={safePage >= pageCount - 1} onMouseDown={suppressMouseFocusScroll} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}>{copy.next}</button>
       </div>
     </div> : null}
   </div>;
@@ -220,11 +221,14 @@ export function ProjectVersionsPanel({
   }, [artifacts]);
 
   async function toggle(artifactId: string): Promise<void> {
-    if (expandedId === artifactId) {
-      setExpandedId(null);
-      return;
-    }
-    setExpandedId(artifactId);
+    runPreservingWindowScroll(() => {
+      if (expandedId === artifactId) {
+        setExpandedId(null);
+        return;
+      }
+      setExpandedId(artifactId);
+    });
+    if (expandedId === artifactId) return;
     if (manifestById.has(artifactId) || errorById.has(artifactId)) return;
     setLoadingId(artifactId);
     try {
@@ -286,6 +290,7 @@ export function ProjectVersionsPanel({
             type="button"
             className="secondary project-version-toggle"
             aria-expanded={expanded}
+            onMouseDown={suppressMouseFocusScroll}
             onClick={() => void toggle(artifact.artifact_id)}
           >{expanded ? copy.collapse : copy.expand}</button>
           {expanded ? <>

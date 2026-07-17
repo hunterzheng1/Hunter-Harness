@@ -247,12 +247,12 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
 
   if (error !== null && skills === null) return <Empty>{error}</Empty>;
   return (
-    <section className="stack governance-page">
-      <header className="page-heading command-hero">
+    <section className="stack governance-page page-module-v2">
+      <header className="project-registry-hero">
          <div>
            <p className="eyebrow">{t.skills.eyebrow}</p>
            <h1>{t.skills.title}</h1>
-           <p className="lede">{t.skills.description}</p>
+           <p>{t.skills.description}</p>
         </div>
          <div className="hero-actions"><Status value="governed" /><span>{(skills?.length ?? 0) + externalSkills.length} {t.skills.publishedCount}</span></div>
       </header>

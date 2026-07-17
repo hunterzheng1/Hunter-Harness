@@ -410,12 +410,12 @@ export function AiConfigPanel() {
   const usageProvider = providers.find((p) => p.provider_id === usageProviderId) ?? null;
 
   return (
-    <section className="stack governance-page">
-      <header className="page-heading command-hero">
+    <section className="stack governance-page page-module-v2">
+      <header className="project-registry-hero">
         <div>
           <p className="eyebrow">{t.aiConfig.eyebrow}</p>
           <h1>{t.aiConfig.title}</h1>
-          <p className="lede">{t.aiConfig.description}</p>
+          <p>{t.aiConfig.description}</p>
         </div>
         <div className="hero-actions">
           <span className="status status-clear">{enabledCount} {t.aiConfig.enabled}</span>

@@ -51,7 +51,7 @@ import type {
 
 // ── Rich mock data for local dev / demo ─────────────────────
 
-const MOCK_PROJECTS: ProjectSummary[] = [
+const MOCK_PROJECT_SEED: ProjectSummary[] = [
   {
     project_id: "agent-harness",
     display_name: "Agent Harness",
@@ -59,8 +59,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v2.4.1",
     latest_artifact_id: "art_a7f3c91b",
     created_at: "2025-11-15T08:30:00Z",
-    current_file_count: 1,
-    updated_at: "2026-07-14T08:30:00Z",
+    current_file_count: 128,
+    updated_at: "2026-07-17T06:42:18Z",
   },
   {
     project_id: "skill-registry",
@@ -69,8 +69,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v1.8.0",
     latest_artifact_id: "art_2e6d401f",
     created_at: "2025-12-01T14:00:00Z",
-    current_file_count: 1,
-    updated_at: "2026-07-13T14:00:00Z",
+    current_file_count: 64,
+    updated_at: "2026-07-16T22:11:05Z",
   },
   {
     project_id: "governance-api",
@@ -79,8 +79,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v3.0.2",
     latest_artifact_id: "art_9b4c7e12",
     created_at: "2026-01-10T09:15:00Z",
-    current_file_count: 1,
-    updated_at: "2026-07-09T09:15:00Z",
+    current_file_count: 41,
+    updated_at: "2026-07-15T14:03:47Z",
   },
   {
     project_id: "review-dashboard",
@@ -89,8 +89,8 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v0.9.3",
     latest_artifact_id: "art_d51e8a06",
     created_at: "2026-03-22T16:45:00Z",
-    current_file_count: 1,
-    updated_at: "2026-07-01T16:45:00Z",
+    current_file_count: 33,
+    updated_at: "2026-07-14T09:28:12Z",
   },
   {
     project_id: "hunter-cli",
@@ -99,9 +99,36 @@ const MOCK_PROJECTS: ProjectSummary[] = [
     latest_project_version: "v1.2.0",
     latest_artifact_id: null,
     created_at: "2026-05-05T11:00:00Z",
-    current_file_count: 1,
-    updated_at: "2026-06-20T11:00:00Z",
+    current_file_count: 19,
+    updated_at: "2026-07-10T11:00:33Z",
   },
+];
+
+const MOCK_PROJECT_EXTRAS: Array<{ id: string; name: string; role: ProjectSummary["role"]; updated_at: string; files: number; version: string | null }> = [
+  { id: "knowledge-vault", name: "Knowledge Vault", role: "owner", updated_at: "2026-07-13T18:44:09Z", files: 52, version: "v1.1.0" },
+  { id: "workflow-studio", name: "Workflow Studio", role: "contributor", updated_at: "2026-07-12T07:21:55Z", files: 27, version: "v0.6.4" },
+  { id: "artifact-mirror", name: "Artifact Mirror", role: "admin", updated_at: "2026-07-11T16:02:41Z", files: 88, version: "v2.0.1" },
+  { id: "policy-engine", name: "Policy Engine", role: "reviewer", updated_at: "2026-07-09T03:15:28Z", files: 15, version: "v1.4.2" },
+  { id: "sync-gateway", name: "Sync Gateway", role: "owner", updated_at: "2026-07-08T21:59:01Z", files: 36, version: "v0.3.8" },
+  { id: "prompt-lab", name: "Prompt Lab", role: "contributor", updated_at: "2026-07-07T12:36:19Z", files: 22, version: null },
+  { id: "eval-bench", name: "Eval Bench", role: "admin", updated_at: "2026-07-06T08:08:08Z", files: 47, version: "v1.0.0" },
+  { id: "memory-bridge", name: "Memory Bridge", role: "owner", updated_at: "2026-07-05T19:47:33Z", files: 11, version: "v0.2.5" },
+  { id: "release-train", name: "Release Train", role: "reviewer", updated_at: "2026-07-03T10:10:10Z", files: 29, version: "v3.1.0" },
+  { id: "ops-console", name: "Ops Console", role: "admin", updated_at: "2026-06-28T05:30:44Z", files: 73, version: "v1.7.9" },
+];
+
+const MOCK_PROJECTS: ProjectSummary[] = [
+  ...MOCK_PROJECT_SEED,
+  ...MOCK_PROJECT_EXTRAS.map((item) => ({
+    project_id: item.id,
+    display_name: item.name,
+    role: item.role,
+    latest_project_version: item.version,
+    latest_artifact_id: item.version === null ? null : `art_${item.id.slice(0, 8)}`,
+    created_at: "2026-01-01T00:00:00Z",
+    current_file_count: item.files,
+    updated_at: item.updated_at,
+  })),
 ];
 
 const MOCK_PROJECT_FILE_PATHS = [

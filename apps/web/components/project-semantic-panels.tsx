@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { HunterApi, ProjectSemanticGraph } from "../lib/api";
 import { useI18n } from "../lib/i18n";
+import { runPreservingWindowScroll, suppressMouseFocusScroll } from "../lib/preserve-scroll";
 import { MarkdownDocument } from "./skill-shared";
 
 type SemanticTab = "library" | "rules" | "changes" | "relations";
@@ -123,11 +124,11 @@ function DocumentBrowser({
   return <div className="knowledge-browser">
     <div className="knowledge-list-pane">
       {showStatusFilters ? <div className="knowledge-status-filters" role="toolbar" aria-label={lang === "zh" ? "按状态筛选" : "Filter by status"}>
-        <button type="button" className={statusFilter === "all" ? "selected" : ""} onClick={() => setStatusFilter("all")}>{copy.all}</button>
-        {statuses.map((status) => <button key={status} type="button" className={statusFilter === status ? "selected" : ""} onClick={() => setStatusFilter(status)}>{status}</button>)}
-      </div> : null}
+          <button type="button" className={statusFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setStatusFilter("all")}>{copy.all}</button>
+          {statuses.map((status) => <button key={status} type="button" className={statusFilter === status ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setStatusFilter(status)}>{status}</button>)}
+        </div> : null}
       <div className="knowledge-list">
-        {pageItems.length === 0 ? <div className="knowledge-empty compact"><p>{copy.emptyFilter}</p></div> : pageItems.map((item) => <button key={item.document_id} type="button" className={item.document_id === selected?.document_id ? "selected" : ""} onClick={() => onSelect(item.document_id)}>
+        {pageItems.length === 0 ? <div className="knowledge-empty compact"><p>{copy.emptyFilter}</p></div> : pageItems.map((item) => <button key={item.document_id} type="button" className={item.document_id === selected?.document_id ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => onSelect(item.document_id)}>
           <span className="knowledge-kind-icon">{item.kind === "rule" ? "R" : item.kind === "archive_record" ? "V" : "K"}</span>
           <span><strong>{item.title}</strong><small>{humanKind(item, lang)} · {documentStatus(item, lang)}</small></span>
           <i>›</i>
@@ -136,8 +137,8 @@ function DocumentBrowser({
       <div className="knowledge-pager">
         <span>{copy.page(safePage + 1, pageCount, filtered.length)}</span>
         <div>
-          <button type="button" className="text-button" disabled={safePage <= 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>{copy.prev}</button>
-          <button type="button" className="text-button" disabled={safePage >= pageCount - 1} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}>{copy.next}</button>
+          <button type="button" className="text-button" disabled={safePage <= 0} onMouseDown={suppressMouseFocusScroll} onClick={() => setPage((current) => Math.max(0, current - 1))}>{copy.prev}</button>
+          <button type="button" className="text-button" disabled={safePage >= pageCount - 1} onMouseDown={suppressMouseFocusScroll} onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}>{copy.next}</button>
         </div>
       </div>
     </div>
@@ -367,7 +368,8 @@ function RelationWorkbench({
           role="option"
           aria-selected={item.document_id === focus?.document_id}
           className={item.document_id === focus?.document_id ? "selected" : ""}
-          onClick={() => onSelect(item.document_id)}
+          onMouseDown={suppressMouseFocusScroll}
+          onClick={() => runPreservingWindowScroll(() => onSelect(item.document_id))}
         >
           <strong>{item.title}</strong>
           <small>{item.source_path}</small>
@@ -389,7 +391,8 @@ function RelationWorkbench({
         role="option"
         aria-selected={item.document_id === focus.document_id}
         className={item.document_id === focus.document_id ? "selected" : ""}
-        onClick={() => onSelect(item.document_id)}
+        onMouseDown={suppressMouseFocusScroll}
+        onClick={() => runPreservingWindowScroll(() => onSelect(item.document_id))}
       >
         <strong>{item.title}</strong>
         <small>{item.source_path}</small>
@@ -400,11 +403,12 @@ function RelationWorkbench({
         <header>
           <h3>{copy.neighbourhood}</h3>
           {presentKinds.length > 1 ? <div className="relation-kind-filters" role="toolbar" aria-label={lang === "zh" ? "按关系类型筛选" : "Filter by relation kind"}>
-            <button type="button" className={kindFilter === "all" ? "selected" : ""} onClick={() => setKindFilter("all")}>{copy.allKinds}</button>
+            <button type="button" className={kindFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setKindFilter("all")}>{copy.allKinds}</button>
             {presentKinds.map((kind) => <button
               key={kind}
               type="button"
               className={kindFilter === kind ? "selected" : ""}
+              onMouseDown={suppressMouseFocusScroll}
               onClick={() => setKindFilter(kind)}
             >{edgeKindLabel(kind, lang)}</button>)}
           </div> : null}
@@ -419,15 +423,15 @@ function RelationWorkbench({
                   <strong>{other?.title ?? "—"}</strong>
                   <small>{other?.source_path ?? edge.edge_id}</small>
                 </div>
-                {other === null ? null : <button type="button" className="text-button" onClick={() => onSelect(other.document_id)}>{copy.setFocus}</button>}
+                {other === null ? null : <button type="button" className="text-button" onMouseDown={suppressMouseFocusScroll} onClick={() => runPreservingWindowScroll(() => onSelect(other.document_id))}>{copy.setFocus}</button>}
               </li>)}
             </ul>
           </div>)}
           {neighbourPages > 1 ? <div className="relation-pager">
             <span>{copy.page(neighbourPage, neighbourPages, neighbourhood.length)}</span>
             <div>
-              <button type="button" className="text-button" disabled={neighbourPage <= 1} onClick={() => setNeighbourPage((page) => page - 1)}>{lang === "zh" ? "上一页" : "Prev"}</button>
-              <button type="button" className="text-button" disabled={neighbourPage >= neighbourPages} onClick={() => setNeighbourPage((page) => page + 1)}>{lang === "zh" ? "下一页" : "Next"}</button>
+              <button type="button" className="text-button" disabled={neighbourPage <= 1} onMouseDown={suppressMouseFocusScroll} onClick={() => setNeighbourPage((page) => page - 1)}>{lang === "zh" ? "上一页" : "Prev"}</button>
+              <button type="button" className="text-button" disabled={neighbourPage >= neighbourPages} onMouseDown={suppressMouseFocusScroll} onClick={() => setNeighbourPage((page) => page + 1)}>{lang === "zh" ? "下一页" : "Next"}</button>
             </div>
           </div> : null}
         </>}
@@ -459,8 +463,8 @@ function RelationWorkbench({
               key={id}
               className={isFocus ? "focus" : ""}
               transform={`translate(${point.x}, ${point.y})`}
-              onClick={() => onSelect(id)}
-              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect(id); }}
+              onClick={() => runPreservingWindowScroll(() => onSelect(id))}
+              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") runPreservingWindowScroll(() => onSelect(id)); }}
               role="button"
               tabIndex={0}
             >
@@ -482,6 +486,7 @@ export function ProjectSemanticPanels({ api, projectId }: { api: HunterApi; proj
   const [tab, setTab] = useState<SemanticTab>("library");
   const [data, setData] = useState<SemanticData | null>(null);
   const [graph, setGraph] = useState<ProjectSemanticGraph | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -491,11 +496,11 @@ export function ProjectSemanticPanels({ api, projectId }: { api: HunterApi; proj
   const copy = lang === "zh" ? {
     title: "项目知识", subtitle: "从项目文件自动建立的可检索知识与关系。", library: "知识库", rules: "项目规则", changes: "变更总结", relations: "关系探索",
     search: "搜索标题、正文或路径", export: "导出上下文", noKnowledge: "暂无项目知识。", noRules: "暂无项目规则。", noChanges: "暂无变更总结。",
-    loading: "正在加载项目知识…", failed: "项目知识暂不可用。", documents: "索引文档", knowledge: "知识", edges: "关系"
+    loading: "正在加载项目知识…", loadingGraph: "正在更新关系…", failed: "项目知识暂不可用。", documents: "索引文档", knowledge: "知识", edges: "关系"
   } : {
     title: "Project knowledge", subtitle: "Searchable knowledge and relationships derived from project files.", library: "Knowledge library", rules: "Project rules", changes: "Change summaries", relations: "Relationship explorer",
     search: "Search titles, content, or paths", export: "Export context", noKnowledge: "No project knowledge yet.", noRules: "No project rules yet.", noChanges: "No change summaries yet.",
-    loading: "Loading project knowledge…", failed: "Project knowledge is unavailable.", documents: "Indexed documents", knowledge: "Knowledge", edges: "Relationships"
+    loading: "Loading project knowledge…", loadingGraph: "Updating relations…", failed: "Project knowledge is unavailable.", documents: "Indexed documents", knowledge: "Knowledge", edges: "Relationships"
   };
 
   useEffect(() => {
@@ -504,6 +509,7 @@ export function ProjectSemanticPanels({ api, projectId }: { api: HunterApi; proj
     setHits(null);
     setQuery("");
     setSelectedId(null);
+    setGraph(null);
     void (async () => {
       if (api.getProjectSemanticOverview === undefined || api.listProjectSemanticKnowledge === undefined || api.listProjectSemanticRules === undefined || api.listProjectSemanticChanges === undefined) throw new Error("semantic API unavailable");
       const [overview, knowledge, rules, changes] = await Promise.all([
@@ -520,12 +526,24 @@ export function ProjectSemanticPanels({ api, projectId }: { api: HunterApi; proj
   useEffect(() => {
     if (tab !== "relations" || api.getProjectSemanticGraph === undefined) return;
     let active = true;
-    setGraph(null);
+    setGraphLoading(true);
     void api.getProjectSemanticGraph(projectId, selectedId ?? undefined)
       .then((result) => { if (active) setGraph(result); })
-      .catch(() => { if (active) setError(copy.failed); });
+      .catch(() => { if (active) setError(copy.failed); })
+      .finally(() => { if (active) setGraphLoading(false); });
     return () => { active = false; };
   }, [api, projectId, selectedId, tab, copy.failed]);
+
+  function switchTab(id: SemanticTab): void {
+    runPreservingWindowScroll(() => {
+      setTab(id);
+      setHits(null);
+    });
+  }
+
+  function selectDocument(id: string): void {
+    runPreservingWindowScroll(() => setSelectedId(id));
+  }
 
   async function search(): Promise<void> {
     if (query.trim() === "") { setHits(null); return; }
@@ -547,16 +565,19 @@ export function ProjectSemanticPanels({ api, projectId }: { api: HunterApi; proj
     <header className="knowledge-header"><div><p className="eyebrow">{copy.title}</p><h2>{copy.subtitle}</h2></div><button type="button" className="secondary" onClick={() => exportContextPack(projectId, data)}>⇩ {copy.export}</button></header>
     <div className="knowledge-metrics"><span><strong>{data.overview.counts.documents}</strong>{copy.documents}</span><span><strong>{data.overview.counts.knowledge}</strong>{copy.knowledge}</span><span><strong>{data.overview.counts.edges}</strong>{copy.edges}</span></div>
     <div className="knowledge-controls">
-      <div className="knowledge-tabs" role="tablist" aria-label={copy.title}>{(["library", "rules", "changes", "relations"] as const).map((id) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "selected" : ""} onClick={() => { setTab(id); setHits(null); }}>{copy[id]}</button>)}</div>
+      <div className="knowledge-tabs" role="tablist" aria-label={copy.title}>{(["library", "rules", "changes", "relations"] as const).map((id) => <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => switchTab(id)}>{copy[id]}</button>)}</div>
       {tab === "library" ? <div className="knowledge-search"><span>⌕</span><input aria-label={copy.search} placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void search(); }} /><button type="button" disabled={searching} onClick={() => void search()}>{lang === "zh" ? "搜索" : "Search"}</button></div> : null}
     </div>
-    {tab === "relations" ? graph === null ? <div className="empty-state">{copy.loading}</div> : <RelationWorkbench
-      graph={graph}
-      candidates={[...data.knowledge, ...data.rules, ...data.changes]}
-      selectedId={selectedId}
-      onSelect={setSelectedId}
-      lang={lang}
-    /> : <DocumentBrowser items={items} selectedId={selectedId} onSelect={setSelectedId} empty={tab === "rules" ? copy.noRules : tab === "changes" ? copy.noChanges : copy.noKnowledge} lang={lang} enableStatusFilter={tab === "library"} />}
+    {tab === "relations" ? graph === null ? <div className="empty-state">{copy.loading}</div> : <div className={graphLoading ? "relation-panel refreshing" : "relation-panel"}>
+      {graphLoading ? <p className="relation-refresh-hint" aria-live="polite">{copy.loadingGraph}</p> : null}
+      <RelationWorkbench
+        graph={graph}
+        candidates={[...data.knowledge, ...data.rules, ...data.changes]}
+        selectedId={selectedId}
+        onSelect={selectDocument}
+        lang={lang}
+      />
+    </div> : <DocumentBrowser items={items} selectedId={selectedId} onSelect={selectDocument} empty={tab === "rules" ? copy.noRules : tab === "changes" ? copy.noChanges : copy.noKnowledge} lang={lang} enableStatusFilter={tab === "library"} />}
     {error === null || data === null ? null : <div className="notice danger">{error}</div>}
   </section>;
 }

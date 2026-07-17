@@ -46,12 +46,6 @@ function Sidebar() {
         <Link href="/ai-config" className={isActive("/ai-config") ? "active" : ""}>
           {t.nav.aiConfig}
         </Link>
-        <Link href="/proposals" className={isActive("/proposals") ? "active" : ""}>
-          {t.nav.reviewQueue}
-        </Link>
-        <Link href="/artifacts" className={isActive("/artifacts") ? "active" : ""}>
-          {t.nav.artifacts}
-        </Link>
       </nav>
 
       <SettingsPanel theme={theme} setTheme={setTheme} />

@@ -186,12 +186,12 @@ export function WorkflowCenter({ api: apiValue }: { api?: HunterApi }) {
   );
 
   return (
-    <section className="stack governance-page">
-      <header className="page-heading command-hero">
+    <section className="stack governance-page page-module-v2">
+      <header className="project-registry-hero">
         <div>
           <p className="eyebrow">{t.workflows.eyebrow}</p>
           <h1>{t.workflows.familyTitle}</h1>
-          <p className="lede">{t.workflows.familyDescription}</p>
+          <p>{t.workflows.familyDescription}</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setShowCreate((value) => !value)}>
           + {t.workflows.newFamily}

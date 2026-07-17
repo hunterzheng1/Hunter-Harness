@@ -13,6 +13,7 @@ import {
 } from "../lib/api";
 import { classifyManagedFile, isProposalEditable } from "../lib/file-policy";
 import { useI18n } from "../lib/i18n";
+import { runPreservingWindowScroll, suppressMouseFocusScroll } from "../lib/preserve-scroll";
 import { ProjectSemanticPanels } from "./project-semantic-panels";
 import { ProjectVersionsPanel } from "./project-versions-panel";
 
@@ -468,7 +469,8 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
         role="tab"
         aria-selected={activeTab === id}
         className={activeTab === id ? "selected" : ""}
-        onClick={() => setActiveTab(id)}
+        onMouseDown={suppressMouseFocusScroll}
+        onClick={() => runPreservingWindowScroll(() => setActiveTab(id))}
       >{label}</button>)}
     </div>
 
@@ -486,12 +488,12 @@ export function ProjectWorkspace({ api, projectId }: { api: HunterApi; projectId
       <section className="project-quick-card">
         <div className="panel-title"><h2>{copy.quickActions}</h2></div>
         <div className="project-quick-actions">
-          <button type="button" onClick={() => setActiveTab("files")}><span>↗</span>{copy.manageFiles}</button>
-          <button type="button" onClick={() => setActiveTab("knowledge")}><span>⌕</span>{copy.browseKnowledge}</button>
+          <button type="button" onMouseDown={suppressMouseFocusScroll} onClick={() => runPreservingWindowScroll(() => setActiveTab("files"))}><span>↗</span>{copy.manageFiles}</button>
+          <button type="button" onMouseDown={suppressMouseFocusScroll} onClick={() => runPreservingWindowScroll(() => setActiveTab("knowledge"))}><span>⌕</span>{copy.browseKnowledge}</button>
         </div>
       </section>
       <section className="project-recent-card">
-        <div className="panel-title"><h2>{copy.recentVersions}</h2><button type="button" className="text-button" onClick={() => setActiveTab("versions")}>{copy.tabs.versions} →</button></div>
+        <div className="panel-title"><h2>{copy.recentVersions}</h2><button type="button" className="text-button" onMouseDown={suppressMouseFocusScroll} onClick={() => runPreservingWindowScroll(() => setActiveTab("versions"))}>{copy.tabs.versions} →</button></div>
         {data.artifacts.length === 0 ? <p className="project-empty-copy">{copy.noVersions}</p> : <div className="project-version-mini-list">
           {data.artifacts.slice(0, 4).map((artifact, index) => <article key={artifact.artifact_id}>
             <span className="project-version-dot" />

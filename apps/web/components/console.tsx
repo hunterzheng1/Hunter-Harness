@@ -4,52 +4,34 @@ import Link from "next/link";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   DashboardOverview,
-  RegistrySkillDetail,
-  RegistryArtifact,
+  RegistrySkillDetail
 } from "@hunter-harness/contracts";
 
 import {
   browserApi,
   type HunterApi,
-  type ArtifactSummary,
-  type ProjectSummary,
-  type ProposalDetailModel,
+  type ProjectSummary
 } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
-import { apiError } from "./skill-shared";
+import { apiError, Status } from "./skill-shared";
 
 export { ProjectRegistry } from "./project-registry";
-
-// ── Resolve API: real (with token) or mock (offline demo) ──
 
 function resolveApi(): HunterApi {
   return process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" ? mockApi : browserApi();
 }
 
-// ── Shared helpers ────────────────────────────────────────
-
 function Empty({ children }: { children: React.ReactNode }) {
   return <div className="empty-state">{children}</div>;
 }
 
-function Status({ value }: { value: string }) {
-  return (
-    <span className={`status status-${value.replaceAll("_", "-")}`}>
-      {value.replaceAll("_", " ")}
-    </span>
-  );
-}
-
-// ── Dashboard ─────────────────────────────────────────────
-
 export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
   const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [skills, setSkills] = useState<RegistrySkillDetail[]>([]);
-  const [artifacts, setArtifacts] = useState<ArtifactSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,15 +40,13 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
     void Promise.all([
       api.getDashboardOverview(7),
       api.listProjects(),
-      api.listSkills?.() ?? Promise.resolve([]),
-      api.listAllArtifacts()
+      api.listSkills?.() ?? Promise.resolve([])
     ])
-      .then(([nextOverview, nextProjects, nextSkills, nextArtifacts]) => {
+      .then(([nextOverview, nextProjects, nextSkills]) => {
         if (!active) return;
         setOverview(nextOverview);
         setProjects(nextProjects);
         setSkills(nextSkills);
-        setArtifacts(nextArtifacts);
       })
       .catch((reason: unknown) => {
         if (active) setError(apiError(reason, t));
@@ -82,29 +62,27 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
   }
 
   const attention = overview.health.some((item) => item.status === "attention");
+  const locale = lang === "zh" ? "zh-CN" : "en-US";
   const metricCards = [
     { label: t.dashboard.registeredProjects, value: overview.metrics.projects, href: "/projects", icon: "projects" as const },
-     { label: t.dashboard.workflows, value: overview.metrics.workflows, href: "/workflows", icon: "workflow" as const },
-     { label: t.dashboard.publishedSkills, value: overview.metrics.published_skills, href: "/skills", icon: "skill" as const },
-    { label: t.dashboard.pendingReviews, value: overview.metrics.pending_reviews, href: "/proposals", icon: "review" as const, attention: overview.metrics.pending_reviews > 0 },
-     { label: t.dashboard.artifacts, value: overview.metrics.artifacts, href: "/artifacts", icon: "artifact" as const },
-     { label: t.dashboard.approvedProposals, value: overview.metrics.approved_proposals, href: "/proposals", icon: "approval" as const }
+    { label: t.dashboard.workflows, value: overview.metrics.workflows, href: "/workflows", icon: "workflow" as const },
+    { label: t.dashboard.publishedSkills, value: overview.metrics.published_skills, href: "/skills", icon: "skill" as const }
   ];
 
   return (
-    <section className="stack dashboard-stack">
-      <div className="page-heading dashboard-heading">
+    <section className="stack governance-page page-module-v2 dashboard-stack">
+      <header className="project-registry-hero">
         <div>
           <p className="eyebrow">{t.dashboard.eyebrow}</p>
           <h1>{t.dashboard.title}</h1>
-          <p className="dashboard-subtitle">{t.dashboard.subtitle.replace("{days}", String(overview.window.days)).replace("{time}", new Date(overview.generated_at).toLocaleString())}</p>
+          <p>{t.dashboard.subtitle.replace("{days}", String(overview.window.days)).replace("{time}", new Date(overview.generated_at).toLocaleString(locale))}</p>
         </div>
         <Status value={attention ? "attention" : "clear"} />
-      </div>
+      </header>
 
       <div className="dashboard-metric-grid">
         {metricCards.map((metric) => (
-          <Link className={`dashboard-metric ${metric.attention ? "metric-attention" : ""}`} href={metric.href} key={metric.label}>
+          <Link className="dashboard-metric" href={metric.href} key={metric.label}>
             <DashboardIcon name={metric.icon} />
             <strong>{metric.value}</strong>
             <span>{metric.label}</span>
@@ -131,8 +109,8 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
       <div className="dashboard-work-grid">
         <section className="panel dashboard-work-panel dashboard-project-panel">
           <div className="panel-title dashboard-panel-title">
-            <div><p className="eyebrow">Project registry</p><h2>Recent projects</h2></div>
-            <Link href="/projects">View all</Link>
+            <div><p className="eyebrow">{t.dashboard.projectsPanelEyebrow}</p><h2>{t.dashboard.recentProjects}</h2></div>
+            <Link href="/projects">{t.dashboard.viewAll}</Link>
           </div>
           <div className="dashboard-project-list">
             {projects.length === 0 ? <Empty>{t.dashboard.noProjects}</Empty> : projects.slice(0, 4).map((project) => (
@@ -147,28 +125,16 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
 
         <section className="panel dashboard-work-panel">
           <div className="panel-title dashboard-panel-title">
-            <div><p className="eyebrow">Registry posture</p><h2>Skill usage</h2></div>
-            <Link href="/skills">Open skills</Link>
+            <div><p className="eyebrow">{t.dashboard.skillsPanelEyebrow}</p><h2>{t.dashboard.skillUsage}</h2></div>
+            <Link href="/skills">{t.dashboard.openSkills}</Link>
           </div>
           <div className="skill-usage-summary">
-            <div><span>Published coverage</span><strong>{overview.metrics.published_skills}/{overview.metrics.skills}</strong><i><b style={{ width: `${overview.metrics.skills === 0 ? 0 : (overview.metrics.published_skills / overview.metrics.skills) * 100}%` }} /></i></div>
-            <div><span>Workflow bindings</span><strong>{overview.metrics.workflows}</strong><small>active governed paths</small></div>
+            <div><span>{t.dashboard.publishedCoverage}</span><strong>{overview.metrics.published_skills}/{overview.metrics.skills}</strong><i><b style={{ width: `${overview.metrics.skills === 0 ? 0 : (overview.metrics.published_skills / overview.metrics.skills) * 100}%` }} /></i></div>
+            <div><span>{t.dashboard.workflowBindings}</span><strong>{overview.metrics.workflows}</strong><small>{t.dashboard.activeWorkflows}</small></div>
           </div>
           <div className="dashboard-skill-list">
-            {skills.slice(0, 3).map((skill) => <Link href={`/skills/${skill.slug}`} key={skill.skill_id}><span>{skill.kind ?? "unknown"}</span><strong>{skill.name}</strong><code>{skill.latest_version ?? "unversioned"}</code></Link>)}
-            {skills.length === 0 ? <Empty>No published Skills are available.</Empty> : null}
-          </div>
-        </section>
-
-        <section className="panel dashboard-work-panel">
-          <div className="panel-title dashboard-panel-title">
-            <div><p className="eyebrow">Immutable release log</p><h2>Artifact changes</h2></div>
-            <Link href="/artifacts">Open history</Link>
-          </div>
-          <div className="artifact-change-total"><strong>{overview.metrics.project_artifacts}</strong><span>project artifacts</span><small>{overview.metrics.skill_artifacts} Skill bundles</small></div>
-          <div className="dashboard-artifact-list">
-            {artifacts.slice(0, 3).map((artifact) => <Link href={`/artifacts/${artifact.artifact_id}`} key={artifact.artifact_id}><div><strong>{artifact.artifact_id}</strong><code>{artifact.project_id} / {artifact.project_version}</code></div><span><b>+{artifact.changed_item_count}</b> changes</span></Link>)}
-            {artifacts.length === 0 ? <Empty>No artifacts have been published.</Empty> : null}
+            {skills.slice(0, 3).map((skill) => <Link href={`/skills/${skill.slug}`} key={skill.skill_id}><span>{skill.kind ?? t.dashboard.unknownKind}</span><strong>{skill.name}</strong><code>{skill.latest_version ?? t.dashboard.unversioned}</code></Link>)}
+            {skills.length === 0 ? <Empty>{t.dashboard.noSkills}</Empty> : null}
           </div>
         </section>
       </div>
@@ -177,41 +143,85 @@ export function DashboardConsole({ api: propApi }: { api?: HunterApi }) {
         <section className="panel dashboard-list-panel">
           <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.controlChecks}</p><h2>{t.dashboard.governanceHealth}</h2></div><Status value={attention ? "attention" : "clear"} /></div>
           <div className="signal-list">
-            {overview.health.map((item) => <article className="health-row" key={item.key}><Status value={item.status} /><div><strong>{item.label}</strong><p>{item.detail}</p></div><b>{item.value}</b></article>)}
+            {overview.health.map((item) => <article className="health-row" key={item.key}><Status value={item.status} /><div><strong>{localizeDashboardLabel(item.label, lang)}</strong><p>{localizeDashboardDetail(item.detail, lang)}</p></div><b>{localizeDashboardValue(item.value, lang)}</b></article>)}
           </div>
         </section>
 
         <section className="panel dashboard-list-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.liveReads}</p><h2>{t.dashboard.systemSignals}</h2></div><span>{new Date(overview.generated_at).toLocaleTimeString()}</span></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.liveReads}</p><h2>{t.dashboard.systemSignals}</h2></div><span>{new Date(overview.generated_at).toLocaleTimeString(locale)}</span></div>
           <div className="signal-list">
-            {overview.services.map((service) => <article className="service-row" key={service.key}><span className={`service-dot ${service.status}`} aria-hidden="true" /><div><strong>{service.label}</strong><p>{service.detail}</p></div><Status value={service.status} /></article>)}
+            {overview.services.map((service) => <article className="service-row" key={service.key}><span className={`service-dot ${service.status}`} aria-hidden="true" /><div><strong>{localizeDashboardLabel(service.label, lang)}</strong><p>{localizeDashboardDetail(service.detail, lang)}</p></div><Status value={service.status} /></article>)}
           </div>
         </section>
 
         <section className="panel dashboard-list-panel">
-          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.immutableEvidence}</p><h2>{t.dashboard.recentActivity}</h2></div><Link href="/proposals">{t.dashboard.goReviewQueue}</Link></div>
+          <div className="panel-title dashboard-panel-title"><div><p className="eyebrow">{t.dashboard.immutableEvidence}</p><h2>{t.dashboard.recentActivity}</h2></div><Link href="/projects">{t.dashboard.openRegistry}</Link></div>
           <div className="activity-list">
-            {overview.activity.length === 0 ? <Empty>{t.dashboard.noActivity}</Empty> : overview.activity.map((event) => <article key={event.event_id}><DashboardIcon name="activity" /><div><strong>{event.action}</strong><p>{event.target_id} · {event.project_id ?? "registry"}</p></div><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time></article>)}
+            {overview.activity.length === 0 ? <Empty>{t.dashboard.noActivity}</Empty> : overview.activity.map((event) => <article key={event.event_id}><DashboardIcon name="activity" /><div><strong>{event.action}</strong><p>{event.target_id} · {event.project_id ?? t.dashboard.registryScope}</p></div><time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString(locale)}</time></article>)}
           </div>
         </section>
       </div>
 
       <section className="dashboard-actions">
-        <div><p className="eyebrow">{t.dashboard.nextAction}</p><strong>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClear : `${overview.metrics.pending_reviews} ${t.dashboard.needReview}`}</strong><span>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClearHint : t.dashboard.needReviewHint}</span></div>
-        <div className="dashboard-action-links"><Link href="/proposals">{t.dashboard.openReviewQueue}</Link><Link href="/workflows">{t.dashboard.maintainWorkflows}</Link><Link href="/skills">{t.dashboard.browseSkills}</Link></div>
+        <div>
+          <p className="eyebrow">{t.dashboard.nextAction}</p>
+          <strong>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClear : `${overview.metrics.pending_reviews} ${t.dashboard.needReview}`}</strong>
+          <span>{overview.metrics.pending_reviews === 0 ? t.dashboard.queueClearHint : t.dashboard.needReviewHint}</span>
+        </div>
+        <div className="dashboard-action-links">
+          <Link href="/projects">{t.dashboard.openRegistry}</Link>
+          <Link href="/workflows">{t.dashboard.maintainWorkflows}</Link>
+          <Link href="/skills">{t.dashboard.browseSkills}</Link>
+        </div>
       </section>
     </section>
   );
 }
 
-function DashboardIcon({ name }: { name: "projects" | "workflow" | "skill" | "review" | "artifact" | "approval" | "activity" }) {
+function localizeDashboardLabel(label: string, lang: "zh" | "en"): string {
+  if (lang !== "zh") return label;
+  const map: Record<string, string> = {
+    "Review backlog": "待处理审核",
+    "Review outcome": "审核结果",
+    "Artifact traceability": "版本可追溯",
+    "Audit evidence": "操作记录",
+    "Governance API": "治理接口",
+    "Project repository": "项目数据",
+    "Skill registry": "技能库",
+    "Audit log": "操作日志"
+  };
+  return map[label] ?? label;
+}
+
+function localizeDashboardDetail(detail: string, lang: "zh" | "en"): string {
+  if (lang !== "zh") return detail;
+  const map: Record<string, string> = {
+    "Human review is required before pending proposals can publish.": "还有变更等待人工确认后才能发布。",
+    "Calculated from recorded review decisions.": "根据已记录的审核结果统计。",
+    "Every demo artifact has a governed source.": "每个版本都有对应来源记录。",
+    "Recent immutable audit entries are available.": "近期操作记录可查。",
+    "Authenticated overview request completed.": "总览接口访问正常。",
+    "Projects, proposals, and artifacts were read successfully.": "项目与版本数据读取正常。",
+    "Skill and Workflow metadata were read successfully.": "技能与工作流数据读取正常。",
+    "Recent audit events were read without exposing details.": "操作日志读取正常，未暴露敏感细节。"
+  };
+  return map[detail] ?? detail;
+}
+
+function localizeDashboardValue(value: string, lang: "zh" | "en"): string {
+  if (lang !== "zh") return value;
+  return value
+    .replace(/\bpending\b/gi, "待处理")
+    .replace(/\bapproved\b/gi, "已通过")
+    .replace(/\blinked\b/gi, "已关联")
+    .replace(/\brecent events\b/gi, "条近期记录");
+}
+
+function DashboardIcon({ name }: { name: "projects" | "workflow" | "skill" | "activity" }) {
   const paths: Record<typeof name, React.ReactNode> = {
     projects: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 8h10M7 12h6M7 16h4" /></>,
     workflow: <><circle cx="6" cy="6" r="2" /><circle cx="18" cy="12" r="2" /><circle cx="6" cy="18" r="2" /><path d="M8 7.5 16 11M8 16.5 16 13" /></>,
     skill: <><path d="m12 3 2.4 5.1L20 9l-4 4.1.9 5.9-4.9-2.7L7.1 19l.9-5.9L4 9l5.6-.9L12 3Z" /></>,
-    review: <><path d="M5 4h14v16H5zM8 9h8M8 13h5" /><path d="m15 16 1.5 1.5L20 14" /></>,
-    artifact: <><path d="M5 4h14v16H5zM8 4v5h8V4M8 15h8" /></>,
-    approval: <><circle cx="12" cy="12" r="8" /><path d="m8.5 12 2.3 2.3 4.7-5" /></>,
     activity: <><path d="M4 12h3l2-6 4 12 2-6h5" /></>
   };
   return <svg className="dashboard-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
@@ -223,7 +233,13 @@ function TrendChart({ trend }: { trend: DashboardOverview["trend"] }) {
   const points = (key: "submitted" | "approved" | "rejected") => trend.map((point, index) => `${(index / Math.max(1, trend.length - 1)) * 100},${88 - (point[key] / maximum) * 72}`).join(" ");
   const submittedPoints = points("submitted");
   const submittedArea = `0,100 ${submittedPoints} 100,100`;
-  return <div className="trend-chart" role="img" aria-label="Proposal activity line chart"><div className="trend-chart-meta"><span>Review throughput</span><strong>{trend.reduce((sum, point) => sum + point.approved, 0)} <small>approved</small></strong></div><svg viewBox="0 0 100 100" preserveAspectRatio="none"><defs><linearGradient id="submitted-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--accent)" stopOpacity=".26" /><stop offset="100%" stopColor="var(--accent)" stopOpacity="0" /></linearGradient></defs><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polygon className="submitted-area" points={submittedArea} /><polyline className="chart-line submitted-line" points={submittedPoints} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg><div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div><div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} {t.dashboard.submitted}</span><span>{trend.reduce((sum, point) => sum + point.approved, 0)} {t.dashboard.approved}</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} {t.dashboard.rejected}</span></div></div>;
+  const approvedTotal = trend.reduce((sum, point) => sum + point.approved, 0);
+  return <div className="trend-chart" role="img" aria-label={t.dashboard.chartAria}>
+    <div className="trend-chart-meta"><span>{t.dashboard.chartMeta}</span><strong>{approvedTotal} <small>{t.dashboard.approved}</small></strong></div>
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none"><defs><linearGradient id="submitted-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--accent)" stopOpacity=".26" /><stop offset="100%" stopColor="var(--accent)" stopOpacity="0" /></linearGradient></defs><path className="chart-grid-line" d="M0 16H100M0 52H100M0 88H100" /><polygon className="submitted-area" points={submittedArea} /><polyline className="chart-line submitted-line" points={submittedPoints} /><polyline className="chart-line approved-line" points={points("approved")} /><polyline className="chart-line rejected-line" points={points("rejected")} /></svg>
+    <div className="chart-axis">{trend.map((point) => <span key={point.date}>{point.date.slice(5)}</span>)}</div>
+    <div className="chart-summary"><span>{trend.reduce((sum, point) => sum + point.submitted, 0)} {t.dashboard.submitted}</span><span>{approvedTotal} {t.dashboard.approved}</span><span>{trend.reduce((sum, point) => sum + point.rejected, 0)} {t.dashboard.rejected}</span></div>
+  </div>;
 }
 
 function DistributionChart({ items }: { items: DashboardOverview["distributions"]["skill_categories"] }) {
@@ -235,470 +251,6 @@ function DistributionChart({ items }: { items: DashboardOverview["distributions"
   const style = { background: total === 0 ? "conic-gradient(var(--line) 0 100%)" : `conic-gradient(${segments.map((segment) => `${segment.color} ${segment.offset * 100}% ${(segment.offset + segment.share) * 100}%`).join(", ")})` };
   return <div className="distribution-chart"><div className="distribution-donut" style={style}><span>{total}</span><small>{t.dashboard.publishedSkills}</small></div><div className="distribution-list">{segments.map((item) => <div key={item.key}><i style={{ background: item.color }} /><span>{item.key}</span><b>{item.count}</b><small>{total === 0 ? 0 : Math.round(item.share * 100)}%</small></div>)}</div></div>;
 }
-
-// ── Project Registry ──────────────────────────────────────
-
-export function LegacyProjectRegistry({ api: propApi }: { api?: HunterApi }) {
-  const { t } = useI18n();
-  const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
-  const [workflowInfo, setWorkflowInfo] = useState<Record<string, { name: string; skillCount: number }>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [role, setRole] = useState("all");
-  const [page, setPage] = useState(1);
-
-  useEffect(() => {
-    let active = true;
-    setError(null);
-    void api.listProjects().then(async (items) => {
-      const families = await (api.listWorkflowFamilies?.() ?? Promise.resolve([]));
-      const bindings = api.getProjectWorkflowBinding === undefined
-        ? items.map(() => null)
-        : await Promise.all(items.map((project) => api.getProjectWorkflowBinding?.(project.project_id) ?? Promise.resolve(null)));
-      const nextInfo: Record<string, { name: string; skillCount: number }> = {};
-      items.forEach((project, index) => {
-        const binding = bindings[index];
-        const family = families.find((item) => item.slug === binding?.family_slug);
-        if (family !== undefined && binding !== null && binding !== undefined) {
-          nextInfo[project.project_id] = { name: `${family.displayName} · ${binding.profile}`, skillCount: family.required_profiles.length };
-        }
-      });
-      if (active) { setProjects(items); setWorkflowInfo(nextInfo); }
-    }).catch((reason: unknown) => {
-      if (active) setError(apiError(reason, t));
-    });
-    return () => {
-      active = false;
-    };
-  }, [api, t]);
-
-  useEffect(() => { setPage(1); }, [query, role]);
-
-  if (error !== null) return <Empty>{error}</Empty>;
-  if (projects === null) return <Empty>{t.projects.loading}</Empty>;
-
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredProjects = projects.filter((project) =>
-    (normalizedQuery === "" || project.display_name.toLowerCase().includes(normalizedQuery) || project.project_id.toLowerCase().includes(normalizedQuery)) &&
-    (role === "all" || project.role === role)
-  );
-  const roles = [...new Set(projects.map((project) => project.role))].sort();
-  const pageSize = 8;
-  const totalPages = Math.max(1, Math.ceil(filteredProjects.length / pageSize));
-  const currentPage = Math.min(page, totalPages);
-  const pageItems = filteredProjects.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-  const withVersion = projects.filter((p) => p.latest_project_version !== null).length;
-  const withArtifact = projects.filter((p) => p.latest_artifact_id !== null).length;
-  const boundWorkflow = Object.keys(workflowInfo).length;
-
-  return (
-    <section className="stack governance-page">
-      <header className="page-heading command-hero">
-        <div>
-          <p className="eyebrow">{t.projects.eyebrow}</p>
-          <h1>{t.projects.title}</h1>
-          <p className="lede">{t.projects.description}</p>
-        </div>
-        <div className="hero-actions">
-          <Status value="governed" />
-          <span>{projects.length} {t.projects.publishedCount}</span>
-        </div>
-      </header>
-
-      <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
-        <label className="search-wide">{t.projects.searchProjects}
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.projects.searchPlaceholder} />
-        </label>
-        <label>{t.projects.role}
-          <select value={role} onChange={(event) => setRole(event.target.value)}>
-            <option value="all">{t.common.all}</option>
-            {roles.map((item) => <option value={item} key={item}>{item}</option>)}
-          </select>
-        </label>
-      </div>
-
-      <div className="hub-grid">
-        <div className="panel panel-themed panel-list registry-list">
-          <div className="panel-title"><h2>{t.projects.projectList}</h2><span>{filteredProjects.length}</span></div>
-          <div className="registry-list-body">
-            {filteredProjects.length === 0 ? <Empty>{t.projects.noMatch}</Empty> : pageItems.map((project) => (
-              <div className="skill-row-with-actions" key={project.project_id}>
-                <Link className="skill-row" href={`/projects/${project.project_id}`}>
-                  <div className="skill-row-main">
-                    <strong className="skill-row-name">{project.display_name}</strong>
-                    <code>{project.project_id}</code>
-                    <div className="tag-row">
-                      <span className="tag">{project.role}</span>
-                      <span className="tag">{workflowInfo[project.project_id]?.name ?? t.common.notBound}</span>
-                    </div>
-                  </div>
-                  <div className="skill-meta">
-                    <span className="meta-pill meta-pill-version">{project.latest_project_version ?? t.projects.table.none}</span>
-                    <span className="skill-meta-cell" title={project.latest_artifact_id ?? ""}>{project.latest_artifact_id ?? t.projects.table.none}</span>
-                    <span className="skill-meta-cell">{project.created_at.slice(0, 10)}</span>
-                    <span className="status status-clear">{workflowInfo[project.project_id]?.skillCount ?? 0} {t.common.skills}</span>
-                  </div>
-                </Link>
-              </div>
-            ))}
-          </div>
-          <div className="pagination-bar">
-            <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage(1)}>{t.projects.firstPage}</button>
-            <button type="button" className="secondary" disabled={currentPage <= 1} onClick={() => setPage((v) => Math.max(1, v - 1))}>{t.projects.prevPage}</button>
-            <span>{t.projects.pageInfo.replace("{page}", String(currentPage)).replace("{total}", String(totalPages))}</span>
-            <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage((v) => Math.min(totalPages, v + 1))}>{t.projects.nextPage}</button>
-            <button type="button" className="secondary" disabled={currentPage >= totalPages} onClick={() => setPage(totalPages)}>{t.projects.lastPage}</button>
-          </div>
-        </div>
-
-        <aside className="hub-rail">
-          <div className="panel panel-themed panel-stats skill-stats-panel">
-            <div className="panel-title"><h2>{t.projects.stats.title}</h2><span>{t.projects.stats.liveLocal}</span></div>
-            <div className="skill-stat-grid">
-              <article><strong>{projects.length}</strong><span>{t.projects.stats.totalProjects}</span></article>
-              <article><strong>{withVersion}</strong><span>{t.projects.stats.withVersion}</span></article>
-              <article><strong>{withArtifact}</strong><span>{t.projects.stats.withArtifact}</span></article>
-              <article><strong>{boundWorkflow}</strong><span>{t.projects.stats.boundWorkflow}</span></article>
-            </div>
-          </div>
-        </aside>
-      </div>
-    </section>
-  );
-}
-
-// ── Review Queue ──────────────────────────────────────────
-
-export function ReviewQueue({ api: propApi }: { api?: HunterApi }) {
-  const { t } = useI18n();
-  const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  type HistoryItem = {
-    id: string;
-    kind: "project_push" | "skill_npm" | "workflow_npm";
-    title: string;
-    subtitle: string;
-    createdAt: string;
-    href: string;
-  };
-  const [items, setItems] = useState<HistoryItem[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    setError(null);
-    void Promise.all([
-      api.listAllProposals(),
-      api.listSkills?.() ?? Promise.resolve([]),
-      api.listWorkflowFamilies?.() ?? Promise.resolve([])
-    ])
-      .then(([proposals, skills, families]) => {
-        if (!active) return;
-        const next: HistoryItem[] = [];
-        for (const proposal of proposals.filter((item) => item.status === "approved")) {
-          next.push({
-            id: proposal.proposal_id,
-            kind: "project_push",
-            title: proposal.proposal_id,
-            subtitle: `${proposal.project_id} · ${proposal.changed_item_count} ${t.reviewQueue.changes}`,
-            createdAt: proposal.created_at,
-            href: `/proposals/${proposal.proposal_id}`
-          });
-        }
-        for (const skill of skills) {
-          for (const release of skill.npmReleases ?? []) {
-            next.push({
-              id: `skill-npm-${skill.slug}-${release.version}-${release.publishedAt}`,
-              kind: "skill_npm",
-              title: `${skill.slug}@${release.version}`,
-              subtitle: `${release.packageName} · ${release.status}`,
-              createdAt: release.publishedAt,
-              href: `/skills/${encodeURIComponent(skill.slug)}`
-            });
-          }
-        }
-        for (const family of families) {
-          for (const release of family.npmReleases ?? []) {
-            next.push({
-              id: `wf-npm-${family.slug}-${release.version}-${release.publishedAt}`,
-              kind: "workflow_npm",
-              title: `${family.slug}@${release.version}`,
-              subtitle: `${release.packageName} · ${release.status}`,
-              createdAt: release.publishedAt,
-              href: `/workflows`
-            });
-          }
-        }
-        next.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
-        setItems(next);
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(apiError(reason, t));
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, t]);
-
-  if (error !== null) return <Empty>{error}</Empty>;
-  if (items === null) return <Empty>{t.reviewQueue.loading}</Empty>;
-
-  const kindLabel = (kind: HistoryItem["kind"]): string => {
-    if (kind === "skill_npm") return t.reviewQueue.kindSkillNpm;
-    if (kind === "workflow_npm") return t.reviewQueue.kindWorkflowNpm;
-    return t.reviewQueue.kindPush;
-  };
-
-  return (
-    <section className="stack">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">{t.reviewQueue.eyebrow}</p>
-          <h1>{t.reviewQueue.title}</h1>
-        </div>
-        <span>
-          {items.length} {t.reviewQueue.waiting}
-        </span>
-      </div>
-      {items.length === 0 ? (
-        <Empty>{t.reviewQueue.clear}</Empty>
-      ) : (
-        <>{items.map((item) => (
-          <Link
-            className="proposal-card"
-            href={item.href}
-            key={item.id}
-          >
-            <div>
-              <strong>{item.title}</strong>
-              <code>{item.subtitle}</code>
-            </div>
-            <div>
-              <span>{kindLabel(item.kind)}</span>
-              <Status value={item.kind === "project_push" ? "approved" : "published"} />
-            </div>
-          </Link>
-        ))}</>
-      )}
-    </section>
-  );
-}
-
-// ── Artifact History ──────────────────────────────────────
-
-export function ArtifactHistory({ api: propApi }: { api?: HunterApi }) {
-  const { t } = useI18n();
-  const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [artifacts, setArtifacts] = useState<ArtifactSummary[] | null>(null);
-  const [skillArtifacts, setSkillArtifacts] = useState<RegistryArtifact[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    setError(null);
-    void Promise.all([
-      api.listAllArtifacts(),
-      api.listSkillArtifacts?.() ?? Promise.resolve([])
-    ])
-      .then(([items, nextSkillArtifacts]) => {
-        if (active) {
-          setArtifacts(items);
-          setSkillArtifacts(nextSkillArtifacts);
-        }
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(apiError(reason, t));
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, t]);
-
-  if (error !== null) return <Empty>{error}</Empty>;
-  if (artifacts === null) return <Empty>{t.artifacts.loading}</Empty>;
-
-  return (
-    <section className="stack">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">{t.artifacts.eyebrow}</p>
-          <h1>{t.artifacts.title}</h1>
-        </div>
-        <span>
-          {artifacts.length + skillArtifacts.length} {t.artifacts.published}
-        </span>
-      </div>
-      {artifacts.length === 0 && skillArtifacts.length === 0 ? (
-        <Empty>{t.artifacts.noArtifacts}</Empty>
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t.artifacts.table.artifact}</th>
-                <th>{t.artifacts.table.project}</th>
-                <th>{t.artifacts.table.version}</th>
-                <th>{t.artifacts.table.changes}</th>
-                <th>{t.artifacts.table.proposal}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skillArtifacts.map((artifact) => (
-                <tr key={artifact.artifact_id}>
-                  <td><Link href={`/skills/${artifact.skill_slug}`}><strong>{artifact.artifact_id}</strong><code>{artifact.content_sha256.slice(0, 20)}…</code></Link></td>
-                  <td>{artifact.skill_slug}</td>
-                  <td>{artifact.version} · {artifact.agent}</td>
-                  <td>{artifact.size_bytes} B</td>
-                  <td>{artifact.source_proposal_id}</td>
-                </tr>
-              ))}
-              {artifacts.map((artifact) => (
-                <tr key={artifact.artifact_id}>
-                  <td>
-                    <Link href={`/artifacts/${artifact.artifact_id}`}>
-                      <strong>{artifact.artifact_id}</strong>
-                      <code>
-                        {artifact.manifest_sha256.slice(0, 20)}…
-                      </code>
-                    </Link>
-                  </td>
-                  <td>{artifact.project_id}</td>
-                  <td>{artifact.project_version}</td>
-                  <td>{artifact.changed_item_count}</td>
-                  <td>
-                    <Link href={`/proposals/${artifact.proposal_id}`}>
-                      {artifact.proposal_id}
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
-  );
-}
-
-// ── Proposal Detail ───────────────────────────────────────
-
-function operationPath(
-  operation: ProposalDetailModel["items"][number]["operation"]
-): string {
-  return operation.operation === "rename"
-    ? operation.to_path
-    : operation.path;
-}
-
-export function ProposalDetail({
-  api: propApi,
-  proposalId,
-}: {
-  api?: HunterApi;
-  proposalId: string;
-}) {
-  const { t } = useI18n();
-  const api = useMemo(() => propApi ?? resolveApi(), [propApi]);
-  const [proposal, setProposal] = useState<ProposalDetailModel | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    setError(null);
-    void api
-      .getProposal(proposalId)
-      .then((value) => {
-        if (active) setProposal(value);
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(apiError(reason, t));
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, proposalId, t]);
-
-  const totalBytes = useMemo(
-    () =>
-      proposal?.items.reduce(
-        (total, item) =>
-          total +
-          ("size_bytes" in item.operation ? item.operation.size_bytes : 0),
-        0
-      ) ?? 0,
-    [proposal]
-  );
-
-  if (error !== null) return <Empty>{error}</Empty>;
-  if (proposal === null) return <Empty>{t.proposal.loading}</Empty>;
-
-  return (
-    <section className="stack">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">{t.proposal.eyebrow}</p>
-          <h1>{proposal.proposal_id}</h1>
-          <code>{proposal.project_id}</code>
-        </div>
-        <Status value={proposal.status} />
-      </div>
-      <div className="metric-grid compact">
-        <article className="metric">
-          <strong>{proposal.items.length}</strong>
-          <span>{t.proposal.changedItems}</span>
-        </article>
-        <article className="metric">
-          <strong>{totalBytes}</strong>
-          <span>{t.proposal.bytes}</span>
-        </article>
-        <article className="metric">
-          <strong>{proposal.review_history.length}</strong>
-          <span>{t.proposal.reviewEvents}</span>
-        </article>
-      </div>
-      <div className="notice">{t.proposal.redactedNotice}</div>
-      <div className="panel">
-        <div className="panel-title">
-          <h2>{t.proposal.changes}</h2>
-        </div>
-        {proposal.items.map((item) => (
-          <div className="change" key={item.item_id}>
-            <div>
-              <Status value={item.operation.operation} />
-              <strong>{operationPath(item.operation)}</strong>
-            </div>
-            <div>
-              <span>{item.operation.file_kind}</span>
-              <code>
-                {"content_sha256" in item.operation
-                  ? item.operation.content_sha256.slice(0, 20) + "…"
-                  : "tombstone"}
-              </code>
-            </div>
-          </div>
-        ))}
-      </div>
-      {proposal.review_history.length === 0 ? null : (
-        <div className="panel">
-          <div className="panel-title">
-            <h2>{t.proposal.reviewEvents}</h2>
-          </div>
-          {proposal.review_history.map((review) => (
-            <div className="change" key={review.review_id}>
-              <div>
-                <Status value={review.decision} />
-                <strong>{review.review_id}</strong>
-              </div>
-              <span>{review.created_at}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-// ── Auth Token Form ───────────────────────────────────────
 
 export function AuthTokenForm() {
   const { t } = useI18n();
@@ -723,8 +275,8 @@ export function AuthTokenForm() {
         headers: {
           Accept: "application/json",
           Authorization: "Bearer " + nextToken,
-          "X-Request-Id": globalThis.crypto.randomUUID(),
-        },
+          "X-Request-Id": globalThis.crypto.randomUUID()
+        }
       });
       if (!response.ok) {
         setMessage(
@@ -737,9 +289,7 @@ export function AuthTokenForm() {
       window.sessionStorage.setItem("hunter-harness-token", nextToken);
       setToken("");
       setSaved(true);
-      window.location.assign(
-        window.location.pathname + window.location.search
-      );
+      window.location.assign(window.location.pathname + window.location.search);
     } catch {
       setMessage(t.token.networkPolicy);
     } finally {
@@ -748,12 +298,7 @@ export function AuthTokenForm() {
   }
 
   return (
-    <form
-      className="token-form"
-      onSubmit={(event) => {
-        void submitToken(event);
-      }}
-    >
+    <form className="token-form" onSubmit={(event) => { void submitToken(event); }}>
       <label htmlFor="api-token">{t.token.label}</label>
       <input
         id="api-token"
@@ -767,9 +312,7 @@ export function AuthTokenForm() {
         }}
         placeholder={t.token.placeholder}
       />
-      <button type="submit" disabled={busy}>
-        {busy ? t.token.checking : t.token.setButton}
-      </button>
+      <button type="submit" disabled={busy}>{busy ? t.token.checking : t.token.setButton}</button>
       {saved ? <span>{t.token.saved}</span> : null}
       {message === null ? null : <span>{message}</span>}
     </form>

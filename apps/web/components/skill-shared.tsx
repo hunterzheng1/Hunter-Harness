@@ -7,7 +7,7 @@ import { useState } from "react";
 
 import { ApiClientError, type HunterApi } from "../lib/api";
 import type { DemoAgent, DemoUsageExample } from "../lib/demo-skills/types";
-import type { useI18n } from "../lib/i18n";
+import { useI18n } from "../lib/i18n";
 
 export function apiError(error: unknown, t: ReturnType<typeof useI18n>["t"]): string {
   if (process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true" && error instanceof Error) {
@@ -31,7 +31,11 @@ function required<K extends keyof HunterApi>(api: HunterApi, key: K): NonNullabl
 }
 
 function Status({ value }: { value: string }) {
-  return <span className={`status status-${value.replaceAll("_", "-")}`}>{value.replaceAll("_", " ")}</span>;
+  const { t } = useI18n();
+  const key = value.replaceAll("_", "-");
+  const labels = t.status as Record<string, string>;
+  const label = labels[value] ?? labels[key] ?? value.replaceAll("_", " ");
+  return <span className={`status status-${key}`}>{label}</span>;
 }
 
 function Empty({ children }: { children: React.ReactNode }) {

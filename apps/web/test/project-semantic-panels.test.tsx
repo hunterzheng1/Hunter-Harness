@@ -190,4 +190,64 @@ describe("ProjectSemanticPanels", () => {
     fireEvent.click(within(neighbourhood).getByRole("button", { name: "设为中心" }));
     await waitFor(() => expect(getProjectSemanticGraph).toHaveBeenCalledWith("prj_one", conflict.document_id));
   });
+
+  it("keeps the previous relation workbench visible while refetching a new center", async () => {
+    const knowledge = makeKnowledge(3);
+    const focus = knowledge[0];
+    const other = knowledge[1];
+    if (focus === undefined || other === undefined) throw new Error("expected knowledge fixtures");
+    focus.title = "Center A";
+    other.title = "Center B";
+
+    let release!: (value: unknown) => void;
+    const gate = new Promise((resolve) => { release = resolve; });
+    let calls = 0;
+    const getProjectSemanticGraph = vi.fn(async (_projectId: string, focusDocumentId?: string) => {
+      calls += 1;
+      const focusId = focusDocumentId ?? focus.document_id;
+      if (calls > 1) await gate;
+      return {
+        nodes: knowledge.filter((item) => item.document_id === focusId || item.document_id === other.document_id),
+        edges: [{
+          edge_id: "e1",
+          project_id: "prj_one",
+          artifact_id: "art_one",
+          from_document_id: focus.document_id,
+          to_document_id: other.document_id,
+          kind: "shared_scope" as const,
+          metadata: {}
+        }],
+        focus_document_id: focusId,
+        relation_status: "ready" as const,
+        indexed_documents: knowledge.length
+      };
+    });
+
+    const api = {
+      getProjectSemanticOverview: vi.fn(async () => ({
+        project_id: "prj_one",
+        artifact_id: "art_one",
+        counts: { documents: 3, knowledge: 3, rules: 0, changes: 0, agent_instructions: 0, edges: 1 }
+      })),
+      listProjectSemanticKnowledge: vi.fn(async () => knowledge),
+      listProjectSemanticRules: vi.fn(async () => []),
+      listProjectSemanticChanges: vi.fn(async () => []),
+      getProjectSemanticGraph,
+      searchSemanticDocuments: vi.fn(async () => [])
+    } as unknown as HunterApi;
+
+    render(<ProjectSemanticPanels api={api} projectId="prj_one" />);
+    await screen.findByRole("heading", { name: "Center A" });
+    fireEvent.click(screen.getByRole("tab", { name: "关系探索" }));
+    expect(await screen.findByRole("heading", { name: "直接关系" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "设为中心" }));
+    expect(await screen.findByText("正在更新关系…")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "直接关系" })).toBeInTheDocument();
+    expect(screen.queryByText("正在加载项目知识…")).not.toBeInTheDocument();
+
+    release(undefined);
+    await waitFor(() => expect(getProjectSemanticGraph).toHaveBeenCalledWith("prj_one", other.document_id));
+    await waitFor(() => expect(screen.queryByText("正在更新关系…")).not.toBeInTheDocument());
+  });
 });
