@@ -214,7 +214,9 @@ describe("ProjectWorkspace", () => {
     expect(await screen.findByText(/基于版本 1/)).toBeInTheDocument();
     expect(screen.queryByText(/pv_/)).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "查看变更" })[0]!);
+    const viewButton = screen.getAllByRole("button", { name: "查看变更" })[0];
+    if (viewButton === undefined) throw new Error("expected view-changes button");
+    fireEvent.click(viewButton);
     expect(await screen.findByText("第 1/3 页 · 45 条")).toBeInTheDocument();
     expect(screen.getByText(".harness/knowledge/entries/active/item-00.json")).toBeInTheDocument();
     expect(screen.queryByText(".harness/knowledge/entries/active/item-20.json")).not.toBeInTheDocument();

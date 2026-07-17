@@ -29,7 +29,9 @@ function makeKnowledge(count: number): SemanticDocument[] {
 
 describe("ProjectSemanticPanels", () => {
   it("opens on the searchable knowledge library and loads only a focused graph on demand", async () => {
-    const knowledge = makeKnowledge(1)[0]!;
+    const knowledgeList = makeKnowledge(1);
+    const knowledge = knowledgeList[0];
+    if (knowledge === undefined) throw new Error("expected knowledge fixture");
     knowledge.document_id = "sem_one";
     knowledge.title = "Architecture boundary";
     knowledge.body = "Keep the boundary explicit.";
@@ -100,10 +102,13 @@ describe("ProjectSemanticPanels", () => {
 
   it("shows a focus neighbourhood workbench with kind filters", async () => {
     const knowledge = makeKnowledge(4);
-    const focus = knowledge[0]!;
-    const superseded = knowledge[1]!;
-    const conflict = knowledge[2]!;
-    const shared = knowledge[3]!;
+    const focus = knowledge[0];
+    const superseded = knowledge[1];
+    const conflict = knowledge[2];
+    const shared = knowledge[3];
+    if (focus === undefined || superseded === undefined || conflict === undefined || shared === undefined) {
+      throw new Error("expected knowledge fixtures");
+    }
     focus.title = "Reuse LlmClient";
     superseded.title = "Old client guidance";
     conflict.title = "Conflicting shell rule";

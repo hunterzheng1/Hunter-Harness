@@ -304,11 +304,14 @@ function RelationWorkbench({
 
   const width = 520;
   const height = 360;
-  const egoOthers = useMemo(() => [...new Map(
-    neighbourhood
-      .filter((item) => item.other !== null)
-      .map((item) => [item.other!.document_id, item] as const)
-  ).values()], [neighbourhood]);
+  const egoOthers = useMemo(() => {
+    const byId = new Map<string, (typeof neighbourhood)[number]>();
+    for (const item of neighbourhood) {
+      if (item.other === null) continue;
+      byId.set(item.other.document_id, item);
+    }
+    return [...byId.values()];
+  }, [neighbourhood]);
   const egoVisible = egoOthers.slice(0, 12);
   const egoHidden = Math.max(0, egoOthers.length - egoVisible.length);
 
@@ -317,11 +320,12 @@ function RelationWorkbench({
     if (focus === null) return result;
     result.set(focus.document_id, { x: width / 2, y: height / 2, label: focus.title });
     egoVisible.forEach((item, index) => {
+      if (item.other === null) return;
       const angle = (Math.PI * 2 * index) / Math.max(1, egoVisible.length) - Math.PI / 2;
-      result.set(item.other!.document_id, {
+      result.set(item.other.document_id, {
         x: width / 2 + Math.cos(angle) * 140,
         y: height / 2 + Math.sin(angle) * 120,
-        label: item.other!.title
+        label: item.other.title
       });
     });
     return result;
