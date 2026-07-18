@@ -132,6 +132,76 @@ class FreezeFirstTests(_FinalizeFixture):
             (archive_dir / "reports" / "final" / "final-summary.html").is_file()
         )
 
+    def test_split_v1_runtime_state_is_merged_into_archive(self) -> None:
+        (self.change / "meta").mkdir(exist_ok=True)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeId": "demo-change",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo-change",
+                    "runtimeRoot": ".harness/state/changes/demo-change",
+                },
+            },
+        )
+        state = self.project / ".harness" / "state" / "changes" / "demo-change"
+        state.mkdir(parents=True)
+        for name in ("events.ndjson", "logs", "evidence", "reports"):
+            source = self.change / name
+            if source.exists():
+                shutil.move(str(source), str(state / name))
+        marker = state / "evidence" / "runtime-marker.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('{"runtime":true}\n', encoding="utf-8")
+
+        code, payload, archive_dir = self._finalize()
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        self.assertTrue((archive_dir / "evidence" / "runtime-marker.json").is_file())
+        after = json.loads(
+            (archive_dir / "evidence" / "archive-manifest-after.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        paths = {item["path"] for item in after["files"]}
+        self.assertIn("evidence/runtime-marker.json", paths)
+        self.assertFalse(state.exists(), "split runtime state must be consumed on success")
+
+    def test_split_v1_failure_restores_separate_contract_and_runtime(self) -> None:
+        (self.change / "meta").mkdir(exist_ok=True)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeId": "demo-change",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo-change",
+                    "runtimeRoot": ".harness/state/changes/demo-change",
+                },
+            },
+        )
+        state = self.project / ".harness" / "state" / "changes" / "demo-change"
+        state.mkdir(parents=True)
+        for name in ("events.ndjson", "logs", "evidence", "reports"):
+            source = self.change / name
+            if source.exists():
+                shutil.move(str(source), str(state / name))
+        marker = state / "evidence" / "runtime-marker.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text('{"runtime":true}\n', encoding="utf-8")
+        forced = {
+            "ok": False,
+            "issues": [{"code": "forced", "severity": "error", "message": "x"}],
+            "error_count": 1,
+            "warning_count": 0,
+        }
+        with mock.patch.object(ha, "validate_source_consistency", return_value=forced):
+            code, _payload, _archive_dir = self._finalize()
+        self.assertNotEqual(code, 0)
+        self.assertTrue(marker.is_file())
+        self.assertFalse((self.change / "evidence").exists())
+
 
 class SourceConsistencyTests(_FinalizeFixture):
     """UT-014 / RET-26: source consistency validator."""
@@ -169,6 +239,104 @@ class SourceConsistencyTests(_FinalizeFixture):
         codes = {i.get("code") for i in result.get("issues") or []}
         self.assertIn("verification-mismatch", codes)
 
+    def test_validator_checks_typed_metrics_without_artifacts(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        ledger_path = archive_dir / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"]["apiContract"] = {
+            "status": "OK",
+            "metrics": {"scenariosTotal": 4, "passed": 4, "failed": 0},
+        }
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        summary["artifacts"] = []
+        summary["verification"]["apiContract"] = {"total": 0, "passed": 0}
+        result = ha.validate_source_consistency(archive_dir, summary)
+        self.assertFalse(result.get("ok"), result)
+        self.assertIn(
+            "verification-mismatch",
+            {item.get("code") for item in result.get("issues") or []},
+        )
+
+    def test_validator_flags_review_sidecar_mismatch(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        review_dir = archive_dir / "reports" / "review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(
+            review_dir / "review-findings.json",
+            {
+                "schemaVersion": 1,
+                "runId": "review-1",
+                "findings": [
+                    {
+                        "id": "f-red",
+                        "dimension": "architecture",
+                        "severity": "RED",
+                        "path": "src/app.py",
+                        "line": 1,
+                        "title": "broken",
+                    }
+                ],
+            },
+        )
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        summary["reviewSummary"]["red"] = 0
+        result = ha.validate_source_consistency(archive_dir, summary)
+        self.assertFalse(result["ok"], result)
+        self.assertIn("review-mismatch", {i["code"] for i in result["issues"]})
+
+    def test_validator_flags_cutoff_hash_manifest_and_artifact_mismatch(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        cutoff_path = archive_dir / "evidence" / "evidence-cutoff.json"
+        cutoff = json.loads(cutoff_path.read_text(encoding="utf-8"))
+        cutoff["sha256"] = "sha256:" + "0" * 64
+        cutoff_path.write_text(json.dumps(cutoff), encoding="utf-8")
+        manifest_path = archive_dir / "evidence" / "archive-manifest-before.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["fileCount"] = int(manifest["fileCount"]) + 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        summary["artifacts"] = [
+            {"path": "evidence/does-not-exist.json", "kind": "probe", "phase": "test"}
+        ]
+        result = ha.validate_source_consistency(archive_dir, summary)
+        codes = {i["code"] for i in result["issues"]}
+        self.assertFalse(result["ok"], result)
+        self.assertIn("cutoff-hash-mismatch", codes)
+        self.assertIn("manifest-invalid", codes)
+        self.assertIn("artifact-missing", codes)
+
+    def test_validator_flags_risk_and_phase_timing_mismatch(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        summary["knownRisks"] = [{"severity": "error", "message": "invented"}]
+        summary["durations"]["stages"][0]["activeExecutionMs"] = 999999999
+        result = ha.validate_source_consistency(archive_dir, summary)
+        codes = {i["code"] for i in result["issues"]}
+        self.assertFalse(result["ok"], result)
+        self.assertIn("risk-mismatch", codes)
+        self.assertIn("phase-timing-mismatch", codes)
+
     def test_finalize_aborts_on_source_consistency_error(self) -> None:
         forced = {
             "ok": False,
@@ -200,6 +368,61 @@ class SourceConsistencyTests(_FinalizeFixture):
         self.assertTrue(
             self.change.is_dir(), "original change dir must be restored on failure"
         )
+
+
+class OwnershipProjectionTests(unittest.TestCase):
+    def test_summary_changed_files_uses_declared_product_scope(self) -> None:
+        tmp = Path(tempfile.mkdtemp(prefix="harness-archiveC-ownership-"))
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        project = tmp / "project"
+        project.mkdir()
+        import subprocess
+
+        def git(*args: str) -> str:
+            proc = subprocess.run(
+                ["git", *args], cwd=project, capture_output=True, text=True,
+                encoding="utf-8", check=True
+            )
+            return proc.stdout.strip()
+
+        git("init")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        (project / "README.md").write_text("base\n", encoding="utf-8")
+        git("add", "README.md")
+        git("commit", "-m", "base")
+        base = git("rev-parse", "HEAD")
+        change = project / ".harness" / "changes" / "demo"
+        (change / "meta").mkdir(parents=True)
+        _write_json(
+            change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeId": "demo",
+                "ownership": {
+                    "productPaths": ["src/"],
+                    "staticEvidencePaths": [".harness/changes/demo/"],
+                },
+            },
+        )
+        (project / "src").mkdir()
+        (project / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+        (project / "docs").mkdir()
+        (project / "docs" / "unrelated.md").write_text("foreign\n", encoding="utf-8")
+        git("add", "src/app.py", "docs/unrelated.md")
+        git("commit", "-m", "mixed")
+        head = git("rev-parse", "HEAD")
+        _write_json(
+            change / "evidence" / "verification-ledger.json",
+            {"baseCommit": base, "finalCommit": head, "validations": {}},
+        )
+
+        summary = ha.collect_summary_data(change, write=False)
+
+        self.assertEqual(
+            [item["path"] for item in summary["changedFiles"]], ["src/app.py"]
+        )
+        self.assertIn("docs/unrelated.md", summary["ownershipDiff"]["foreignPaths"])
 
 
 class TypedMetricsProjectionTests(unittest.TestCase):
@@ -595,8 +818,13 @@ class KnowledgeGateTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _write_summary(self, consistency: dict | None) -> Path:
-        summary = {"changeName": "demo", "schemaVersion": "2.3", "reportPipeline": {}}
+    def _write_summary(self, consistency: dict | None, final_status: str = "OK") -> Path:
+        summary = {
+            "changeName": "demo",
+            "schemaVersion": "2.3",
+            "finalStatus": final_status,
+            "reportPipeline": {},
+        }
         if consistency is not None:
             summary["reportPipeline"]["sourceConsistency"] = consistency
         path = self.archive_dir / "reports" / "final" / "summary-data.json"
@@ -626,6 +854,56 @@ class KnowledgeGateTests(unittest.TestCase):
         )
         self.assertTrue(status.get("allowed"))
         self.assertEqual(status.get("status"), "ok")
+
+    def test_gate_blocks_degraded_even_when_consistent(self) -> None:
+        self._write_summary({"ok": True, "issues": []}, final_status="DEGRADED")
+        status = hk.archive_publication_status(
+            self.project, ".harness/archive/2026-07-18-demo"
+        )
+        self.assertFalse(status.get("allowed"), status)
+        self.assertEqual(status.get("status"), "degraded")
+
+    def test_gate_uses_hash_valid_authoritative_repair(self) -> None:
+        self._write_summary({"ok": False, "issues": [{"code": "old"}]}, final_status="DEGRADED")
+        version_dir = self.archive_dir / "derived" / "v1"
+        version_dir.mkdir(parents=True)
+        repaired = {
+            "changeName": "demo",
+            "schemaVersion": "2.3",
+            "finalStatus": "OK",
+            "reportPipeline": {"sourceConsistency": {"ok": True, "issues": []}},
+        }
+        summary_path = version_dir / "summary-data.json"
+        summary_path.write_text(json.dumps(repaired), encoding="utf-8")
+        digest = "sha256:" + hashlib.sha256(summary_path.read_bytes()).hexdigest()
+        _write_json(version_dir / "repair-record.json", {"summarySha256": digest})
+        _write_json(
+            self.archive_dir / "derived" / "authoritative.json",
+            {"version": "v1", "summarySha256": digest},
+        )
+        status = hk.archive_publication_status(
+            self.project, ".harness/archive/2026-07-18-demo"
+        )
+        self.assertTrue(status.get("allowed"), status)
+        self.assertEqual(status.get("authoritativeVersion"), "v1")
+
+    def test_gate_rejects_hash_valid_non_object_authoritative_summary(self) -> None:
+        self._write_summary("DEGRADED")
+        version_dir = self.archive_dir / "derived" / "v1"
+        version_dir.mkdir(parents=True)
+        summary_bytes = b"[]"
+        digest = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
+        (version_dir / "summary-data.json").write_bytes(summary_bytes)
+        _write_json(version_dir / "repair-record.json", {"summarySha256": digest})
+        _write_json(
+            self.archive_dir / "derived" / "authoritative.json",
+            {"version": "v1", "summarySha256": digest},
+        )
+        status = hk.archive_publication_status(
+            self.project, self.archive_dir.relative_to(self.project).as_posix()
+        )
+        self.assertFalse(status["allowed"])
+        self.assertEqual(status["status"], "degraded")
 
     def test_should_auto_promote_honors_publication_block(self) -> None:
         policy = {

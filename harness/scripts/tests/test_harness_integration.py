@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 
@@ -110,6 +111,10 @@ class TransactionFixture(unittest.TestCase):
                         "contractRoot": ".harness/changes/demo",
                         "runtimeRoot": ".harness/state/changes/demo",
                     },
+                    "ownership": {
+                        "productPaths": ["src/"],
+                        "staticEvidencePaths": [".harness/changes/demo/"],
+                    },
                     "integration": {"targetBranch": "main"},
                 }
             ),
@@ -154,6 +159,67 @@ class JournalLifecycleTests(TransactionFixture):
         self.assertEqual(on_disk["changeName"], "demo")
         self.assertEqual(on_disk["schemaVersion"], 1)
         self.assertTrue(str(on_disk["repositoryId"]).startswith("sha256:"))
+        self.assertIn("eventHighWater", on_disk["evidenceIdentity"])
+        self.assertIn("artifactManifestHash", on_disk["evidenceIdentity"])
+        self.assertIn("ledgerIdentity", on_disk["evidenceIdentity"])
+        self.assertGreaterEqual(on_disk["revision"], 1)
+
+    def test_stale_journal_revision_is_rejected(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        first = integration.load_journal(self.primary, txn.transaction_id)
+        stale = json.loads(json.dumps(first))
+        first["probe"] = "winner"
+        txn._save(first)
+        stale["probe"] = "loser"
+        with self.assertRaises(integration.JournalConflictError):
+            txn._save(stale)
+
+    def test_stale_dead_owner_journal_lock_is_reclaimed(self) -> None:
+        txn = self.make_txn()
+        journal = txn._new_journal("base", "feature")
+        path = integration.journal_path(self.primary, txn.transaction_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = path.with_name(path.name + ".lock")
+        lock.write_text(
+            json.dumps({"pid": 99999999, "createdAtEpoch": 1}) + "\n",
+            encoding="utf-8",
+        )
+        integration._write_journal(self.primary, journal)
+        self.assertFalse(lock.exists())
+        self.assertEqual(
+            integration.load_journal(self.primary, txn.transaction_id)["revision"], 1
+        )
+
+    def test_old_lock_with_live_owner_is_not_reclaimed(self) -> None:
+        path = self.primary / ".harness" / "state" / "integration" / "txn" / "journal.json"
+        path.parent.mkdir(parents=True)
+        lock = path.with_name(path.name + ".lock")
+        lock.write_text(
+            json.dumps({"pid": os.getpid(), "createdAtEpoch": 1}) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(integration.JournalConflictError):
+            integration._acquire_journal_lock(lock, path)
+
+        self.assertTrue(lock.exists())
+
+    def test_failed_lock_metadata_write_releases_descriptor_and_lock(self) -> None:
+        path = self.primary / ".harness" / "state" / "integration" / "txn" / "journal.json"
+        path.parent.mkdir(parents=True)
+        lock = path.with_name(path.name + ".lock")
+
+        with mock.patch.object(
+            integration.os, "write", side_effect=OSError("disk full")
+        ), mock.patch.object(
+            integration.os, "close", wraps=integration.os.close
+        ) as close:
+            with self.assertRaisesRegex(OSError, "disk full"):
+                integration._acquire_journal_lock(lock, path)
+
+        close.assert_called_once()
+        self.assertFalse(lock.exists())
 
     def test_full_happy_path_step_order_ret11(self) -> None:
         txn = self.make_txn()
@@ -318,8 +384,32 @@ class ForeignChangeIsolationTests(TransactionFixture):
             txn.merge()
         self.assertIn("other-change", str(ctx.exception))
 
+    def test_merge_refuses_path_outside_declared_product_scope(self) -> None:
+        git(self.primary, "checkout", "feature/demo")
+        (self.primary / "docs").mkdir()
+        (self.primary / "docs" / "unrelated.md").write_text("foreign\n", encoding="utf-8")
+        git(self.primary, "add", "docs/unrelated.md")
+        git(self.primary, "commit", "-m", "out of scope")
+        git(self.primary, "checkout", "main")
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        with self.assertRaises(integration.ForeignChangePathsError):
+            txn.merge()
+
 
 class FailureRecoveryTests(TransactionFixture):
+    def test_merge_detects_target_moved_after_prepare(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        git(self.primary, "checkout", "main")
+        (self.primary / "moved.txt").write_text("moved\n", encoding="utf-8")
+        git(self.primary, "add", "moved.txt")
+        git(self.primary, "commit", "-m", "target moved")
+        with self.assertRaises(integration.TargetMovedError):
+            txn.merge()
+
     def test_merge_conflict_marks_failed_and_recover_resumes_ret04(self) -> None:
         # Move target branch so merge conflicts.
         git(self.primary, "checkout", "main")

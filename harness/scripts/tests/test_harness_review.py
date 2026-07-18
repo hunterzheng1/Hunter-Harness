@@ -269,5 +269,15 @@ class StatusReconcileTests(ReviewFixture):
         self.assertEqual(status["dispositions"]["UNKNOWN"], 2)
 
 
+class ReviewSkillWiringTests(unittest.TestCase):
+    def test_canonical_skill_writes_structured_sidecars(self) -> None:
+        text = (SCRIPTS_DIR.parent / "harness-review" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("harness_review.py write-findings", text)
+        self.assertIn("harness_review.py write-dispositions", text)
+        self.assertIn("review-findings.json", text)
+
+
 if __name__ == "__main__":
     unittest.main()

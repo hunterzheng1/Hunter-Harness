@@ -302,6 +302,9 @@ class OwnershipDiffTests(LedgerV3Fixture):
         (self.change_dir / "spec" / "demo-design.md").write_text(
             "# Design\n", encoding="utf-8"
         )
+        unrelated = self.project / "docs" / "unrelated.md"
+        unrelated.parent.mkdir(parents=True)
+        unrelated.write_text("not part of demo\n", encoding="utf-8")
         self._commit_all("mixed changes")
 
         result = ledger.compute_ownership_diff(
@@ -309,9 +312,14 @@ class OwnershipDiffTests(LedgerV3Fixture):
         )
         owned = set(result["files"])
         self.assertIn("src/app.py", owned)
-        self.assertIn(".harness/changes/demo/spec/demo-design.md", owned)
+        self.assertNotIn(".harness/changes/demo/spec/demo-design.md", owned)
+        self.assertIn(
+            ".harness/changes/demo/spec/demo-design.md",
+            result["staticEvidenceFiles"],
+        )
         self.assertNotIn(".harness/state/changes/demo/events.ndjson", owned)
         self.assertIn(".harness/changes/other/meta/change-context.json", result["foreignPaths"])
+        self.assertIn("docs/unrelated.md", result["foreignPaths"])
         self.assertGreaterEqual(result["excludedRuntimeCount"], 1)
         self.assertEqual(result["ownedFileCount"], len(result["files"]))
         self.assertTrue(str(result["diffHash"]).startswith("sha256:"))

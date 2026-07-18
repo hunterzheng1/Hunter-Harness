@@ -643,10 +643,18 @@ def applicability_counts_as_failure(entry: dict[str, Any]) -> bool:
 _DYNAMIC_OWN_DIRS = ("events.ndjson", "logs", "evidence", "reports", "runtime", "backups")
 
 
+def _matches_ownership_path(rel: str, declared: Any) -> bool:
+    scope = str(declared).replace("\\", "/").strip("/")
+    if not scope:
+        return False
+    normalized = rel.replace("\\", "/").strip("/")
+    return normalized == scope or normalized.startswith(scope + "/")
+
+
 def _classify_ownership_path(
     rel: str, change_name: str, ownership: dict[str, Any]
 ) -> str:
-    """owned | excludedRuntime | foreign for a repo-relative path."""
+    """owned | staticEvidence | excludedRuntime | foreign."""
     normalized = rel.replace("\\", "/")
     if normalized.startswith(".harness/state/changes/"):
         owner = normalized.split("/")[3] if len(normalized.split("/")) > 3 else ""
@@ -663,13 +671,19 @@ def _classify_ownership_path(
         if remainder in _DYNAMIC_OWN_DIRS or head in _DYNAMIC_OWN_DIRS:
             return "excludedRuntime"
     for excluded in ownership.get("excludedPaths") or []:
-        if normalized.startswith(str(excluded).rstrip("/") + "/") or normalized == str(excluded).rstrip("/"):
+        if _matches_ownership_path(normalized, excluded):
             return "excludedRuntime"
-    return "owned"
+    for static_path in ownership.get("staticEvidencePaths") or []:
+        if _matches_ownership_path(normalized, static_path):
+            return "staticEvidence"
+    for product_path in ownership.get("productPaths") or []:
+        if _matches_ownership_path(normalized, product_path):
+            return "owned"
+    return "foreign"
 
 
 def compute_ownership_diff(
-    repo_root: Path, *, base: str, change_dir: Path
+    repo_root: Path, *, base: str, change_dir: Path, head: str | None = None
 ) -> dict[str, Any]:
     """diffHash over the change's ownership scope only (RET-18).
 
@@ -683,8 +697,12 @@ def compute_ownership_diff(
     except (OSError, ValueError):
         contract = {}
     ownership = contract.get("ownership") or {}
-    raw = _git_text(repo_root, "diff", "--name-only", base) or ""
+    diff_args = ["diff", "--name-only", base]
+    if head:
+        diff_args.append(head)
+    raw = _git_text(repo_root, *diff_args) or ""
     owned: list[str] = []
+    static_evidence: list[str] = []
     foreign: list[str] = []
     excluded_runtime = 0
     for line in raw.splitlines():
@@ -694,26 +712,41 @@ def compute_ownership_diff(
         verdict = _classify_ownership_path(rel, change_dir.name, ownership)
         if verdict == "foreign":
             foreign.append(rel)
+        elif verdict == "staticEvidence":
+            static_evidence.append(rel)
         elif verdict == "excludedRuntime":
             excluded_runtime += 1
         else:
             owned.append(rel)
     owned.sort()
+    static_evidence.sort()
     foreign.sort()
 
     hasher = hashlib.sha256()
     for rel in owned:
         hasher.update(rel.encode("utf-8"))
         hasher.update(b"\x00")
-        content_path = (repo_root / rel).resolve()
-        if content_path.is_file() and _inside(content_path, repo_root):
-            hasher.update(hashlib.sha256(content_path.read_bytes()).hexdigest().encode("ascii"))
+        if head:
+            try:
+                content = _git_bytes(["show", f"{head}:{rel}"], repo_root)
+            except RuntimeError:
+                content = None
+            hasher.update(
+                hashlib.sha256(content).hexdigest().encode("ascii")
+                if content is not None
+                else b"<deleted>"
+            )
         else:
-            hasher.update(b"<deleted>")
+            content_path = (repo_root / rel).resolve()
+            if content_path.is_file() and _inside(content_path, repo_root):
+                hasher.update(hashlib.sha256(content_path.read_bytes()).hexdigest().encode("ascii"))
+            else:
+                hasher.update(b"<deleted>")
         hasher.update(b"\x00")
     return {
         "diffHash": "sha256:" + hasher.hexdigest(),
         "files": owned,
+        "staticEvidenceFiles": static_evidence,
         "foreignPaths": foreign,
         "excludedRuntimeCount": excluded_runtime,
         "ownedFileCount": len(owned),

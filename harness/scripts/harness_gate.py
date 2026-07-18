@@ -32,6 +32,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import harness_change as hc  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_ledger as hl  # noqa: E402
+import harness_paths as hp  # noqa: E402
 import harness_workflow_policy as hwp  # noqa: E402
 import harness_test_guard as htg  # noqa: E402
 
@@ -1081,11 +1082,31 @@ def cmd_checkpoint(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
     required_report = str(item.get("requiredReport") or "")
-    report_path = change_dir / required_report
-    if not required_report or not report_path.is_file() or report_path.stat().st_size == 0:
+    report_rel = Path(required_report)
+    if (
+        not required_report
+        or report_rel.is_absolute()
+        or ".." in report_rel.parts
+    ):
+        return emit_error(
+            "CHECKPOINT_REPORT_PATH_INVALID",
+            f"required report path is invalid: {required_report or '<unset>'}",
+            as_json=as_json,
+        )
+    state_dir = hp.resolve_state_dir_for_contract(change_dir, project)
+    report_candidates = [state_dir / report_rel]
+    if state_dir != change_dir:
+        # Compatibility fallback for split-v1 changes created before dynamic
+        # reports were routed to the state root.
+        report_candidates.append(change_dir / report_rel)
+    report_path = next(
+        (candidate for candidate in report_candidates if candidate.is_file()),
+        report_candidates[0],
+    )
+    if not report_path.is_file() or report_path.stat().st_size == 0:
         return emit_error(
             "CHECKPOINT_REPORT_MISSING",
-            f"required report is missing: {required_report or '<unset>'}",
+            f"required report is missing: {required_report}",
             as_json=as_json,
         )
     report_text = report_path.read_text(encoding="utf-8", errors="replace")

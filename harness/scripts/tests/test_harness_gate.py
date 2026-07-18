@@ -216,6 +216,45 @@ class HarnessGateTests(unittest.TestCase):
             ])
             self.assertEqual(gate.cmd_checkpoint(args), 1)
 
+    def test_checkpoint_approve_reads_split_state_report(self) -> None:
+        context_path = self.change_dir / "meta" / "change-context.json"
+        context_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "stateOwnership": {
+                        "contractRoot": ".harness/changes/demo",
+                        "runtimeRoot": ".harness/state/changes/demo",
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report = (
+            self.project
+            / ".harness"
+            / "state"
+            / "changes"
+            / "demo"
+            / "reports"
+            / "review"
+            / "foundation-gate-review.md"
+        )
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("foundation-gate: approved\n", encoding="utf-8")
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
+            args = gate.build_parser().parse_args([
+                "checkpoint", "approve", "--id", "foundation-gate",
+                "--change", "demo", "--reviewer", "codex", "--json",
+            ])
+            self.assertEqual(gate.cmd_checkpoint(args), 0)
+        self.assertEqual(
+            gate.checkpoint_status(gate.load_checkpoints(self.change_dir), "foundation-gate"),
+            "approved",
+        )
+
     def test_begin_close_across_processes_reuses_run_id_and_writes_one_lifecycle(self) -> None:
         self._write_checkpoints("approved")
         skills_root = self.project / ".agents" / "skills"

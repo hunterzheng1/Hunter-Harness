@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -23,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -32,6 +34,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_change  # noqa: E402
+import harness_ledger as hl  # noqa: E402
 import harness_paths  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -76,6 +79,13 @@ class TargetMovedError(IntegrationError):
 
 class CleanupRefusedError(IntegrationError):
     code = "CLEANUP_REFUSED"
+
+
+class JournalConflictError(IntegrationError):
+    code = "JOURNAL_CONFLICT"
+
+
+JOURNAL_LOCK_STALE_SECONDS = 300
 
 
 class GitRunner:
@@ -133,17 +143,99 @@ def load_journal(project_root: Path, transaction_id: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_journal_lock(lock_path: Path, journal_path: Path) -> int:
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(
+                str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+            )
+            payload = json.dumps(
+                {"pid": os.getpid(), "createdAtEpoch": time.time()},
+                separators=(",", ":"),
+            ).encode("utf-8")
+            try:
+                os.write(descriptor, payload)
+                os.fsync(descriptor)
+            except BaseException:
+                os.close(descriptor)
+                lock_path.unlink(missing_ok=True)
+                raise
+            return descriptor
+        except FileExistsError as exc:
+            stale = False
+            try:
+                owner = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+                owner_pid = int(owner.get("pid") or 0)
+                created = float(owner.get("createdAtEpoch") or 0)
+                stale = not _pid_alive(owner_pid) and (
+                    created <= 0
+                    or time.time() - created > JOURNAL_LOCK_STALE_SECONDS
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                try:
+                    stale = (
+                        time.time() - lock_path.stat().st_mtime
+                        > JOURNAL_LOCK_STALE_SECONDS
+                    )
+                except OSError:
+                    stale = True
+            if stale:
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            raise JournalConflictError(
+                f"journal writer already active: {journal_path}"
+            ) from exc
+    raise JournalConflictError(f"could not reclaim stale journal lock: {journal_path}")
+
+
 def _write_journal(project_root: Path, journal: dict[str, Any]) -> None:
     path = journal_path(project_root, journal["transactionId"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(journal, ensure_ascii=False, indent=2) + "\n"
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    lock_path = path.with_name(path.name + ".lock")
+    lock_fd = _acquire_journal_lock(lock_path, path)
+    os.close(lock_fd)
+    expected_revision = int(journal.get("revision") or 0)
     try:
-        tmp.write_text(text, encoding="utf-8", newline="\n")
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+        if path.is_file():
+            current = json.loads(path.read_text(encoding="utf-8-sig"))
+            current_revision = int(current.get("revision") or 0)
+            if current_revision != expected_revision:
+                raise JournalConflictError(
+                    f"stale journal revision: expected {expected_revision}, "
+                    f"current {current_revision}"
+                )
+        elif expected_revision != 0:
+            raise JournalConflictError(
+                f"journal disappeared at revision {expected_revision}: {path}"
+            )
+        journal["revision"] = expected_revision + 1
+        text = json.dumps(journal, ensure_ascii=False, indent=2) + "\n"
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            tmp.write_text(text, encoding="utf-8", newline="\n")
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 class IntegrationTransaction:
@@ -182,6 +274,7 @@ class IntegrationTransaction:
             "featureBranch": self.feature_branch,
             "base": base,
             "featureHead": feature_head,
+            "evidenceIdentity": self._evidence_identity(),
             "mergeCommit": None,
             "pushedHead": None,
             "integrationRoot": str(self.temp_root / self.transaction_id),
@@ -195,6 +288,77 @@ class IntegrationTransaction:
                 for name in STEP_ORDER
             ],
             "createdAt": now_iso(),
+        }
+
+    def _evidence_identity(self) -> dict[str, Any]:
+        change_dir = (
+            self.project_root / ".harness" / "changes" / self.change_id
+        ).resolve()
+        state_candidates = [
+            self.project_root / ".harness" / "state" / "changes" / self.change_id,
+            change_dir,
+        ]
+        events_file = next(
+            (root / "events.ndjson" for root in state_candidates if (root / "events.ndjson").is_file()),
+            None,
+        )
+        event_count = 0
+        last_event_id = None
+        event_hash = None
+        if events_file is not None:
+            raw = events_file.read_bytes()
+            event_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
+            for line in raw.decode("utf-8", "replace").splitlines():
+                if not line.strip():
+                    continue
+                event_count += 1
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                last_event_id = item.get("id") or item.get("eventId") or last_event_id
+
+        artifact_hash = None
+        ledger_identity: dict[str, Any] = {}
+        for root in state_candidates:
+            for rel in (
+                Path("evidence/artifact-manifest.json"),
+                Path("evidence/archive-manifest-before.json"),
+                Path("evidence/test-tracking.json"),
+            ):
+                candidate = root / rel
+                if candidate.is_file():
+                    artifact_hash = "sha256:" + hashlib.sha256(candidate.read_bytes()).hexdigest()
+                    break
+            if artifact_hash:
+                break
+        for root in state_candidates:
+            ledger_path = root / "evidence" / "verification-ledger.json"
+            if not ledger_path.is_file():
+                continue
+            try:
+                ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                break
+            for key in (
+                "schemaVersion",
+                "repositoryId",
+                "changeName",
+                "baseCommit",
+                "currentHead",
+                "diffHash",
+                "ownershipHash",
+            ):
+                ledger_identity[key] = ledger.get(key)
+            break
+        return {
+            "eventHighWater": {
+                "count": event_count,
+                "lastEventId": last_event_id,
+                "sha256": event_hash,
+            },
+            "artifactManifestHash": artifact_hash,
+            "ledgerIdentity": ledger_identity,
         }
 
     def _load(self) -> dict[str, Any]:
@@ -259,6 +423,7 @@ class IntegrationTransaction:
             if not base or not feature_head:
                 raise IntegrationError("target or feature branch not found")
             fresh = self._new_journal(base, feature_head)
+            fresh["revision"] = int(journal.get("revision") or 0)
             journal.clear()
             journal.update(fresh)
             # Re-mark preflight RUNNING on the fresh journal.
@@ -342,10 +507,44 @@ class IntegrationTransaction:
             journal["base"],
             journal["featureHead"],
         )
+        contract: dict[str, Any] = {}
+        contract_path = (
+            self.project_root
+            / ".harness"
+            / "changes"
+            / self.change_id
+            / "meta"
+            / "change-context.json"
+        )
+        if contract_path.is_file():
+            try:
+                contract = json.loads(contract_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                contract = {}
+        if not contract:
+            shown = self.runner.text(
+                self.project_root,
+                "show",
+                f"{journal['featureHead']}:.harness/changes/{self.change_id}/meta/change-context.json",
+            )
+            if shown:
+                try:
+                    contract = json.loads(shown)
+                except json.JSONDecodeError:
+                    contract = {}
+        ownership = contract.get("ownership") or {}
+        scoped = bool(
+            ownership.get("productPaths") or ownership.get("staticEvidencePaths")
+        )
         foreign: list[str] = []
         for line in (diff or "").splitlines():
             line = line.strip()
             if not line:
+                continue
+            if scoped:
+                verdict = hl._classify_ownership_path(line, self.change_id, ownership)
+                if verdict == "foreign":
+                    foreign.append(line)
                 continue
             for pattern in _FOREIGN_PATTERNS:
                 match = pattern.match(line)
@@ -356,6 +555,14 @@ class IntegrationTransaction:
 
     def merge(self) -> dict[str, Any]:
         def action(journal: dict[str, Any]) -> None:
+            current_target = self.runner.text(
+                self.project_root, "rev-parse", self.target_branch
+            )
+            if current_target != journal["base"]:
+                raise TargetMovedError(
+                    f"local {self.target_branch} moved: expected "
+                    f"{journal['base']}, found {current_target}"
+                )
             foreign = self._foreign_paths(journal)
             if foreign:
                 raise ForeignChangePathsError(
@@ -415,6 +622,19 @@ class IntegrationTransaction:
                     )
             journal["verifyResults"] = results
             journal["verifyCwd"] = str(intg_root)
+            basis = json.dumps(
+                {
+                    "mergeCommit": journal.get("mergeCommit"),
+                    "results": results,
+                    "evidenceIdentity": journal.get("evidenceIdentity"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            journal["verificationIdentity"] = {
+                "sha256": "sha256:" + hashlib.sha256(basis.encode("utf-8")).hexdigest(),
+                "ledgerIdentity": (journal.get("evidenceIdentity") or {}).get("ledgerIdentity") or {},
+            }
             self._save(journal)
 
         return self._run_step("verify", action)
