@@ -54,7 +54,7 @@ describe("hunter-harness refresh CLI freshness JSON (变更簇 D / task 12)", ()
     expect(output.command).toBe("refresh");
     expect(output.summary).toBeDefined();
     expect(Array.isArray(output.items)).toBe(true);
-    // 新增 per-agent freshness + identity
+    // per-agent freshness + identity（refresh JSON 合同）
     expect(Array.isArray(output.freshness)).toBe(true);
     const entry = output.freshness.find((item) => item.agent === "claude-code");
     expect(entry, "freshness entry for claude-code").toBeDefined();
