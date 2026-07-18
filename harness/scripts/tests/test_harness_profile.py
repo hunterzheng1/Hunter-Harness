@@ -376,6 +376,47 @@ class ResolveCommandTests(unittest.TestCase):
         self.assertIsInstance(resolved.get("argv"), list)
         self.assertTrue(any("AppTest" in str(t) for t in resolved["argv"]))
 
+    def test_resolve_cli_subcommand(self) -> None:
+        """API-004/RET-14：文档（submit/test SKILL+checklist、java overlay）承诺
+        `harness_profile.py resolve --project . --key <k> --json`，CLI 必须真实暴露
+        该子命令并复用 resolve_command 语义。"""
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hp.main([
+                "resolve", "--project", str(self.tmp), "--key", "unitTest",
+                "--test-classes", "AppTest,OtherTest", "--json",
+            ])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertIn("AppTest", payload["command"])
+        self.assertIn("OtherTest", payload["command"])
+        self.assertNotIn("{testClasses}", payload["command"])
+        self.assertIsInstance(payload.get("argv"), list)
+
+    def test_resolve_cli_without_placeholders(self) -> None:
+        """文档主路径：`resolve --project . --key unitTestFull --json` 无占位参数。"""
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hp.main([
+                "resolve", "--project", str(self.tmp), "--key", "unitTestFull", "--json",
+            ])
+        self.assertEqual(rc, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertIn("command", payload)
+        self.assertIn("scope", payload)
+
+    def test_resolve_cli_unknown_key_nonzero(self) -> None:
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = hp.main(["resolve", "--project", str(self.tmp), "--key", "nope", "--json"])
+        self.assertNotEqual(rc, 0)
+
     def test_persistent_profile_has_no_concrete_worktree(self) -> None:
         # spec §3.1：持久 profile 只保存模板，不含具体 change-name/worktree 路径。
         # excludedRoots 含 ".claude/worktrees" 是排除规则模式（模板），不是具体路径。

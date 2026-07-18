@@ -376,29 +376,6 @@ class AgentAdapterBuildTests(unittest.TestCase):
         self.assertIn("codebuddy override", body)
 
 
-class DiffExtraStaleTests(unittest.TestCase):
-    """UT-031: cmd_diff stale must include extra files (design §3.8 要点3)."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-diff-extra-"))
-        self.root = _fixture_root(self.tmp)
-        self.out = self.tmp / "build-out"
-        hd.cmd_build(self.root, self.out, None)
-        self.project = self.tmp / "project"
-        self.project.mkdir()
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_diff_extra_file_marks_stale(self) -> None:
-        target = self.project / ".claude" / "skills"
-        hd.cmd_install(self.out, self.project, target)
-        _write(target / "stray-extra.md", "stray\n")
-        diff = hd.cmd_diff(self.out, self.project, target)
-        self.assertTrue(diff["stale"], "extra file must mark diff stale")
-        self.assertIn("stray-extra.md", diff["extra"])
-
-
 class InstallConservativeTests(unittest.TestCase):
     """UT-032 + COM-005: conservative install removes removed managed files
     but preserves user-owned files (design §3.8 要点4)."""

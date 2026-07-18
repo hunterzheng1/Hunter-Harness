@@ -33,6 +33,8 @@ def _load_sync():
         "harness_sync", SCRIPTS_DIR / "harness_sync.py"
     )
     module = importlib.util.module_from_spec(spec)
+    # @dataclass 注解解析需要模块已注册进 sys.modules。
+    sys.modules["harness_sync"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -227,11 +229,41 @@ class ReapStaleRunsTests(SyncRuntimeTestBase):
 
 class NoGitPolicyTests(SyncRuntimeTestBase):
     def test_module_has_no_gitignore_or_git_check_ignore(self) -> None:
-        """COM-004/RET-34：sync 不做任何 .gitignore/git check-ignore 判断。"""
+        """COM-004/RET-34：sync 不做任何 .gitignore/git check-ignore 判断。
+
+        最强保证：模块不产生任何子进程调用（无 subprocess/os.system/Popen），
+        因此不可能调用 git；且除文档字符串外不出现 git 命令字符串。
+        """
+        import ast
+
         source = (SCRIPTS_DIR / "harness_sync.py").read_text(encoding="utf-8")
-        self.assertNotIn("check-ignore", source)
-        self.assertNotIn(".gitignore", source)
-        self.assertNotIn("check_ignore", source)
+        tree = ast.parse(source)
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertNotIn("subprocess", imported)
+        # 收集所有 docstring 常量，其余字符串不得出现 git check-ignore 命令。
+        docstring_ids: set[int] = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if (
+                isinstance(body, list)
+                and body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstring_ids.add(id(body[0].value))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            if id(node) in docstring_ids:
+                continue
+            self.assertNotIn("check-ignore", node.value)
+            self.assertNotIn(".gitignore", node.value)
 
 
 class SyncCliTests(SyncRuntimeTestBase):

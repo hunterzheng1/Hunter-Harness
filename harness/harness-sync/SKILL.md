@@ -42,7 +42,7 @@ disallowed-tools:
 | 3.6 | 单次运行 `harness_knowledge.py maintain --project . --drain --json`，有界推进全部 `.harness/knowledge/maintenance-outbox/{pending,failed}`；不得为每个条目重复启动 Python/重建索引（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/pending-judge） |
 | 4 | CLAUDE.md 完整性/行数 → 超限 AskUserQuestion 瘦身 |
 | 5 | AGENTS.md 与 CLAUDE.md 一致 |
-| 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；可选 `harness_deploy.py diff` 检查已装 skill 是否过期 |
+| 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；已装 skill 新鲜度只经 `hunter-harness refresh --dry-run --json` 的 post-adaptation freshness 判断，禁止 raw build 字节比较 |
 | 7–9 | `项目规则（见 .harness/context-index.json）/`、构建配置、测试目录 — **只提示不自动修复** |
 
 状态判断表格、修复动作、输出示例 → `reference.md`

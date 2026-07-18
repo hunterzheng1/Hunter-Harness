@@ -19,15 +19,6 @@ const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json
 const REVIEWER_TARGET = ".claude/agents/harness-reviewer.md";
 const REVIEW_SKILL_TARGET = ".claude/skills/harness-review/SKILL.md";
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function install(
   root: string,
   agents: HarnessAgent[],

@@ -719,40 +719,6 @@ def cmd_install(build_out: Path, project: Path, target: Path | None) -> dict[str
     }
 
 
-def cmd_diff(build_out: Path, project: Path, target: Path | None) -> dict[str, Any]:
-    build_out = build_out.resolve()
-    project = project.resolve()
-    installed = (target or project / ".claude" / "skills").resolve()
-    if not installed.is_dir():
-        return {
-            "ok": True,
-            "action": "diff",
-            "stale": True,
-            "missingInstall": True,
-            "outdated": [],
-            "missing": [],
-            "extra": [],
-        }
-
-    built = collect_files(build_out)
-    current = collect_files(installed)
-    outdated = [p for p, h in built.items() if p in current and current[p] != h]
-    missing = [p for p in built if p not in current]
-    # extra includes install-side managed manifests only as metadata, so they
-    # are excluded from the extra set; every other untracked file is a real
-    # extra and must mark the install stale (design §3.8 要点3).
-    extra = [p for p in current if p not in built and p not in INSTALL_METADATA]
-    return {
-        "ok": True,
-        "action": "diff",
-        "stale": bool(outdated or missing or extra),
-        "outdated": sorted(outdated),
-        "missing": sorted(missing),
-        "extra": sorted(extra),
-        "comparedAt": now_iso(),
-    }
-
-
 def cmd_validate_manifest(
     bundle_dir: Path, manifest_entries: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -783,7 +749,7 @@ def cmd_validate_manifest(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Harness skills deploy (build/install/diff)")
+    p = argparse.ArgumentParser(description="Harness skills deploy (build/install)")
     sub = p.add_subparsers(dest="command", required=True)
 
     b = sub.add_parser("build", help="Synthesize core + overlay into output dir")
@@ -798,12 +764,6 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--project", type=Path, required=True)
     i.add_argument("--target", type=Path)
     i.add_argument("--json", action="store_true")
-
-    d = sub.add_parser("diff", help="Compare installed skills vs build output")
-    d.add_argument("--from", dest="from_dir", type=Path, required=True)
-    d.add_argument("--project", type=Path, required=True)
-    d.add_argument("--target", type=Path)
-    d.add_argument("--json", action="store_true")
 
     v = sub.add_parser(
         "validate-manifest", help="Validate bundle dir vs manifest (missing/extra/hash)"
@@ -822,9 +782,6 @@ def main(argv: list[str] | None = None) -> int:
             return emit_json(result) if args.json else 0
         if args.command == "install":
             result = cmd_install(args.from_dir, args.project, args.target)
-            return emit_json(result) if args.json else 0
-        if args.command == "diff":
-            result = cmd_diff(args.from_dir, args.project, args.target)
             return emit_json(result) if args.json else 0
         if args.command == "validate-manifest":
             manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))

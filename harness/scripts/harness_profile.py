@@ -727,6 +727,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument("--project", required=True, type=Path)
     p_validate.add_argument("--json", action="store_true")
 
+    p_resolve = sub.add_parser(
+        "resolve", help="resolve command template by key (runtime placeholder substitution)"
+    )
+    p_resolve.add_argument("--project", required=True, type=Path)
+    p_resolve.add_argument("--key", required=True, help="command key in profile.commands")
+    p_resolve.add_argument(
+        "--test-classes",
+        default=None,
+        help="comma-separated test classes substituting {testClasses}",
+    )
+    p_resolve.add_argument(
+        "--modules",
+        default=None,
+        help="comma-separated modules substituting {modules}",
+    )
+    p_resolve.add_argument("--json", action="store_true")
+
     p_migrate = sub.add_parser("migrate", help="migrate v1 → v2")
     p_migrate.add_argument("--project", required=True, type=Path)
     p_migrate.add_argument("--apply", action="store_true", help="apply (default: dry-run)")
@@ -757,6 +774,34 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"ok": not issues, "issues": issues}
         sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         return 0 if payload["ok"] else 1
+    if args.command == "resolve":
+        project = args.project.resolve()
+        profile = load_profile(project)
+        if profile is None:
+            sys.stdout.write(
+                json.dumps({"ok": False, "error": "profile missing"}, ensure_ascii=False) + "\n"
+            )
+            return 1
+        test_classes = (
+            [item for item in args.test_classes.split(",") if item]
+            if args.test_classes
+            else None
+        )
+        modules = (
+            [item for item in args.modules.split(",") if item] if args.modules else None
+        )
+        try:
+            resolved = resolve_command(
+                profile, args.key, test_classes=test_classes, modules=modules
+            )
+        except KeyError as exc:
+            sys.stdout.write(
+                json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False) + "\n"
+            )
+            return 1
+        payload = {"ok": True, "key": args.key, **resolved}
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        return 0
     if args.command == "migrate":
         result = migrate(args.project, dry_run=not args.apply)
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
