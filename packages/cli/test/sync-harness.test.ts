@@ -30,6 +30,31 @@ async function leftoverSwapBackups(parent: string): Promise<string[]> {
 }
 
 describe("sync-harness atomicSwapDir — INT-005", () => {
+  it("keeps workflow-family and generated bundle versions aligned", async () => {
+    const family = JSON.parse(
+      await readFile(
+        join(process.cwd(), "packages", "workflow-data-harness", "hunter-workflow-family.json"),
+        "utf8"
+      )
+    ) as { bundle_version: string };
+    const bundle = JSON.parse(
+      await readFile(
+        join(
+          process.cwd(),
+          "packages",
+          "workflow-data-harness",
+          "harness",
+          "manifests",
+          "general",
+          "codex.json"
+        ),
+        "utf8"
+      )
+    ) as { bundle_version: string };
+
+    expect(family.bundle_version).toBe(bundle.bundle_version);
+  });
+
   it("swaps validated staging into the release target on success", async () => {
     const root = await mkdtemp(join(tmpdir(), "sync-atomic-"));
     try {

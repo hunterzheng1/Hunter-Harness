@@ -260,6 +260,7 @@ async function writeWorkflowFamilyManifest() {
     const full = join(dataPackageRoot, file.path.slice("harness/".length));
     withContent.push({ path: file.path, content: await readFile(full, "utf8") });
   }
+  manifest.bundle_version = BUNDLE_VERSION;
   manifest.content_sha256 = sha256Bytes(canonicalJson(withContent));
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
 }
