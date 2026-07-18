@@ -145,14 +145,17 @@ class InstallDiffTests(unittest.TestCase):
         self.assertTrue(Path(result["backup"]).is_dir())
         self.assertTrue((target / "harness-demo" / "SKILL.md").is_file())
 
-    def test_diff_detects_outdated_file(self) -> None:
-        target = self.project / ".claude" / "skills"
-        hd.cmd_install(self.out, self.project, target)
-        skill = target / "harness-demo" / "SKILL.md"
-        skill.write_text(skill.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
-        diff = hd.cmd_diff(self.out, self.project, target)
-        self.assertTrue(diff["stale"])
-        self.assertIn("harness-demo/SKILL.md", diff["outdated"])
+    def test_diff_subcommand_removed(self) -> None:
+        """RET-35/task 13：raw build vs installed 字节比较已删除——post-adaptation
+        projection 才是正式比较入口；deploy CLI 不得再暴露 diff。"""
+        parser = hd.build_parser()
+        group = getattr(parser, "_subparsers", None)
+        actions = getattr(group, "_group_actions", []) if group is not None else []
+        sub_action = actions[0] if actions else None
+        self.assertIsNotNone(sub_action)
+        choices = set(getattr(sub_action, "choices", {}).keys())
+        self.assertNotIn("diff", choices, "diff subcommand must be removed")
+        self.assertFalse(hasattr(hd, "cmd_diff"), "cmd_diff must be removed")
 
     def test_core_hash_covers_runtime_reference_files(self) -> None:
         _write(self.root / "harness-demo" / "reference.md", "first\n")
