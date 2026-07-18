@@ -649,14 +649,21 @@ class IntegrationTransaction:
                 raise IntegrationError(
                     f"remote branch not found: origin/{self.target_branch}"
                 )
+            merge_commit = journal.get("mergeCommit")
+            if not merge_commit:
+                raise IntegrationError("merge step not completed")
+            if remote_head == merge_commit:
+                # The previous push may have reached the remote before the local
+                # process could persist pushedHead/step=DONE. Reconcile that
+                # successful outcome instead of misclassifying it as drift.
+                journal["pushedHead"] = merge_commit
+                self._save(journal)
+                return
             if remote_head != journal["base"]:
                 raise TargetMovedError(
                     f"remote {self.target_branch} moved: expected "
                     f"{journal['base']}, found {remote_head}"
                 )
-            merge_commit = journal.get("mergeCommit")
-            if not merge_commit:
-                raise IntegrationError("merge step not completed")
             self.runner.run(
                 self.project_root,
                 "push",

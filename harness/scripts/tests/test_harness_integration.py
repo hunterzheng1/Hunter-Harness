@@ -462,6 +462,32 @@ class FailureRecoveryTests(TransactionFixture):
             txn.push()
         self.assertEqual(getattr(ctx.exception, "code", "TARGET_MOVED"), "TARGET_MOVED")
 
+    def test_push_recovers_when_remote_already_equals_merge_commit(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[])
+        merge_commit = journal["mergeCommit"]
+
+        # Simulate a push that succeeded remotely while the local process failed
+        # before it could mark the journal step DONE.
+        git(
+            self.primary,
+            "push",
+            "origin",
+            f"{merge_commit}:refs/heads/main",
+        )
+
+        recovered = txn.push()
+
+        push_step = next(s for s in recovered["steps"] if s["name"] == "push")
+        self.assertEqual(push_step["status"], "DONE")
+        self.assertEqual(recovered["pushedHead"], merge_commit)
+        self.assertFalse(
+            any(args and args[0] == "push" for _cwd, args in self.runner.history)
+        )
+
     def test_recover_after_failed_verify_does_not_remerge(self) -> None:
         txn = self.make_txn()
         txn.preflight()
