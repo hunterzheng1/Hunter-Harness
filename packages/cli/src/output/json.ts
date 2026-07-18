@@ -12,6 +12,8 @@ export interface CliResult {
   items: unknown[];
   warnings: unknown[];
   errors: unknown[];
+  /** refresh 专用：per-agent identity + freshness 六态（task 12/RET-29..33）。 */
+  freshness?: unknown[];
 }
 
 export function serializeCliResult(result: CliResult): string {

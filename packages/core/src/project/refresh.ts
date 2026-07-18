@@ -31,6 +31,7 @@ import {
   loadAgentBundle,
   parseHarnessProfile,
   type HarnessProfile,
+  type LoadedAgentBundle,
   type ProjectedBundleFile
 } from "./profile-bundle.js";
 import { getAdapter, getAdapters, managedTargetsFor } from "./agent-adapters.js";
@@ -668,5 +669,214 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     preserved: sortByTarget(preserved),
     unchanged: sortByTarget(unchanged),
     conflicts: sortByTarget(conflicts)
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Post-adaptation freshness projection（变更簇 D / task 12，RET-29..33）。
+//
+// 只读：复用 loadAgentBundle + managedTargetsFor 的 post-adaptation projection，
+// 绝不调用 raw build 产物做字节比较。六态判定顺序（implementation-detail §5.1）：
+//   1. identity/schema 不足 → UNVERIFIABLE
+//   2. agent/profile 不匹配 → PROFILE_MISMATCH
+//   3. 正式发布身份落后 → VERSION_BEHIND
+//   4. managed target 缺失 → MISSING
+//   5. installed 文件相对正式 manifest 漂移 → LOCALLY_MODIFIED
+//   6. 全部一致 → CURRENT
+// ---------------------------------------------------------------------------
+
+export type FreshnessStatus =
+  | "CURRENT"
+  | "LOCALLY_MODIFIED"
+  | "MISSING"
+  | "VERSION_BEHIND"
+  | "PROFILE_MISMATCH"
+  | "UNVERIFIABLE";
+
+export interface FreshnessIdentity {
+  adapter: HarnessAgent;
+  bundleVersion: string | null;
+  installedBundleVersion: string | null;
+  manifestHash: string | null;
+  installedManifestHash: string | null;
+  /** 正式 bundle 构建 marker（.harness-build.json）的 coreHash；marker 缺失/无效为 null。 */
+  coreHash: string | null;
+  /** 安装侧 .harness-build.json marker 的 coreHash；不可读/无效为 null。 */
+  installedCoreHash: string | null;
+  /**
+   * reserved：构建管线不产出独立 adapter 哈希——overlay 内容已折叠进 coreHash
+   * （见 harness_deploy.py core_content_hash）。保留以对齐设计契约，当前恒为 null。
+   */
+  adapterHash: string | null;
+}
+
+export interface AgentFreshness {
+  agent: HarnessAgent;
+  profile: HarnessProfile | null;
+  status: FreshnessStatus;
+  identity: FreshnessIdentity;
+  driftedFiles: string[];
+  missingFiles: string[];
+}
+
+export interface FreshnessReport {
+  schema_version: 1;
+  generated_at: string;
+  agents: AgentFreshness[];
+}
+
+export interface FreshnessOptions {
+  projectRoot: string;
+  resourcesRoot: string;
+  profile?: HarnessProfile;
+  agents: HarnessAgent[];
+  codebuddySurface?: CodeBuddySurface;
+}
+
+function freshnessEntry(
+  agent: HarnessAgent,
+  profile: HarnessProfile | null,
+  status: FreshnessStatus,
+  identity: FreshnessIdentity
+): AgentFreshness {
+  return { agent, profile, status, identity, driftedFiles: [], missingFiles: [] };
+}
+
+const BUILD_MARKER_BUNDLE_PATH = ".harness-build.json";
+
+/** Extract `coreHash` from a `.harness-build.json` marker text; null when invalid. */
+function buildMarkerCoreHash(text: string | null): string | null {
+  if (text === null || text === "") return null;
+  try {
+    const parsed = JSON.parse(text) as { coreHash?: unknown };
+    return typeof parsed.coreHash === "string" && parsed.coreHash.length > 0
+      ? parsed.coreHash
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read-only freshness collector: classifies each agent into the six states. */
+export async function collectFreshness(
+  options: FreshnessOptions
+): Promise<FreshnessReport> {
+  const root = resolve(options.projectRoot);
+  const installed = await readInstalledState(root);
+  const codebuddySurface = options.codebuddySurface ?? "both";
+  const agents: AgentFreshness[] = [];
+
+  for (const agent of sortHarnessAgents(options.agents)) {
+    const installedProfile = installed.profiles.get(agent) ?? installed.profile;
+    const requestedProfile = options.profile ?? installedProfile ?? "general";
+    const installedManifest = installed.manifests.find(
+      (entry) => entry.adapter === agent
+    );
+    const identity: FreshnessIdentity = {
+      adapter: agent,
+      bundleVersion: null,
+      installedBundleVersion: installedManifest?.bundle_version ?? null,
+      manifestHash: null,
+      installedManifestHash: installedManifest?.bundle_manifest_hash ?? null,
+      coreHash: null,
+      installedCoreHash: null,
+      adapterHash: null
+    };
+
+    // Official bundle identity is loaded for every state we can verify.
+    let officialHash: string | null = null;
+    let officialVersion: string | null = null;
+    let bundle: LoadedAgentBundle | null;
+    try {
+      bundle = await loadAgentBundle(options.resourcesRoot, requestedProfile, agent);
+      officialHash = sha256Bytes(canonicalJson(bundle.manifest.files));
+      officialVersion = bundle.manifest.bundle_version;
+      identity.bundleVersion = officialVersion;
+      identity.manifestHash = officialHash;
+      const markerBytes = bundle.files.get(BUILD_MARKER_BUNDLE_PATH);
+      identity.coreHash = markerBytes === undefined
+        ? null
+        : buildMarkerCoreHash(new TextDecoder().decode(markerBytes));
+    } catch {
+      bundle = null;
+    }
+
+    // 1. identity/schema 不足 → UNVERIFIABLE
+    if (
+      installed.schemaVersion === null ||
+      !installed.adapters.includes(agent) ||
+      installedProfile === null ||
+      installedProfile === undefined ||
+      installedManifest === undefined ||
+      bundle === null
+    ) {
+      agents.push(freshnessEntry(agent, installedProfile ?? null, "UNVERIFIABLE", identity));
+      continue;
+    }
+
+    // Post-adaptation projection（read-only）：为所有后续状态提供 installed marker
+    // 身份与 drift/missing 比对；分类顺序仍按 §5.1 判定，不受影响。
+    const targets = managedTargetsFor(getAdapter(agent), bundle, {
+      profile: installedProfile,
+      codebuddySurface
+    });
+    const markerTarget = targets.find((target) =>
+      target.target_path.replace(/\\/g, "/").endsWith(`/${BUILD_MARKER_BUNDLE_PATH}`) ||
+      target.target_path === BUILD_MARKER_BUNDLE_PATH
+    );
+    if (markerTarget !== undefined) {
+      identity.installedCoreHash = buildMarkerCoreHash(
+        await readOptionalText(join(root, markerTarget.target_path))
+      );
+    }
+
+    // 2. agent/profile 不匹配 → PROFILE_MISMATCH
+    if (requestedProfile !== installedProfile) {
+      agents.push(freshnessEntry(agent, installedProfile, "PROFILE_MISMATCH", identity));
+      continue;
+    }
+
+    // 3. 正式发布身份落后 → VERSION_BEHIND
+    if (
+      installedManifest.bundle_manifest_hash !== officialHash ||
+      installedManifest.bundle_version !== officialVersion
+    ) {
+      agents.push(freshnessEntry(agent, installedProfile, "VERSION_BEHIND", identity));
+      continue;
+    }
+
+    // 4/5. post-adaptation projection vs installed files
+    const drifted: string[] = [];
+    const missing: string[] = [];
+    for (const target of targets) {
+      const current = await fileHex(join(root, target.target_path));
+      if (current === null) {
+        missing.push(target.target_path);
+      } else if (current !== target.sha256) {
+        drifted.push(target.target_path);
+      }
+    }
+    if (missing.length > 0) {
+      const entry = freshnessEntry(agent, installedProfile, "MISSING", identity);
+      entry.missingFiles = missing.sort();
+      entry.driftedFiles = drifted.sort();
+      agents.push(entry);
+      continue;
+    }
+    if (drifted.length > 0) {
+      const entry = freshnessEntry(agent, installedProfile, "LOCALLY_MODIFIED", identity);
+      entry.driftedFiles = drifted.sort();
+      agents.push(entry);
+      continue;
+    }
+
+    // 6. 全部一致 → CURRENT
+    agents.push(freshnessEntry(agent, installedProfile, "CURRENT", identity));
+  }
+
+  return {
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    agents
   };
 }

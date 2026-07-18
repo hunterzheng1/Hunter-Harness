@@ -189,7 +189,7 @@ class FinalizeSuccessTests(unittest.TestCase):
         summary_path = archive_dir / "reports" / "final" / "summary-data.json"
         self.assertTrue(summary_path.is_file())
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        self.assertEqual(summary["schemaVersion"], "2.2")
+        self.assertEqual(summary["schemaVersion"], "2.3")
         self.assertEqual(summary["changeName"], "demo-change")
         self.assertEqual(summary["maintenanceNotes"], [])
         self.assertEqual(summary["knownRisks"], [])
@@ -702,9 +702,9 @@ class ConditionalOkTests(unittest.TestCase):
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
     """API-013: archive finalize 是唯一归档路径。harness_archive.py CLI 只暴露
-    status/finalize/replay；不存在 collect/validate 子命令（已废弃的旧编排路径，
+    status/finalize/replay/repair；不存在 collect/validate 子命令（已废弃的旧编排路径，
     report-pipeline-protocol §标准命令 仅保留 finalize/replay，模型不得手写等价
-    summary-data.json）。"""
+    summary-data.json）。repair 为 RET-40 新增显式修复子命令（不改写原归档）。"""
 
     def test_cli_exposes_only_status_finalize_replay(self) -> None:
         parser = ha.build_parser()
@@ -715,8 +715,8 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
         choices = set(getattr(sub_action, "choices", {}).keys())
         self.assertEqual(
             choices,
-            {"status", "finalize", "replay"},
-            f"archive CLI must expose only status/finalize/replay, got {choices}",
+            {"status", "finalize", "replay", "repair"},
+            f"archive CLI must expose only status/finalize/replay/repair, got {choices}",
         )
         # 废弃的 collect/validate 不得作为子命令存在（旧编排路径已删）
         self.assertNotIn("collect", choices, "collect subcommand must not exist")
@@ -1346,26 +1346,42 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
         self.assertIn("finalStatusReasons", html)
         self.assertTrue(archive_dir.is_dir())
 
-    def test_int103_patch_failure_keeps_archive(self) -> None:
-        with mock.patch.object(
-            ha, "_patch_archive_stage", side_effect=OSError("simulated patch fail")
-        ):
-            code, payload = _run(
-                [
-                    "finalize",
-                    "--change-dir",
-                    str(self.change),
-                    "--archive-root",
-                    str(self.archive_root),
-                    "--skip-ingest",
-                    "--json",
-                ]
-            )
+    def test_int103_no_patch_still_consistent(self) -> None:
+        """freeze-first: 无 _patch_archive_stage，archive 阶段事实仍完整一致。"""
+        code, payload = _run(
+            [
+                "finalize",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
         self.assertEqual(code, 0, msg=payload)
         self.assertTrue(payload.get("ok"))
-        warnings = payload.get("warnings") or []
-        self.assertTrue(any("patch" in str(w).lower() for w in warnings))
-        self.assertTrue(Path(payload["archive_dir"]).is_dir())
+        self.assertNotIn("patch_archive", payload.get("steps") or {})
+        archive_dir = Path(payload["archive_dir"])
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
+        stages = (summary.get("durations") or {}).get("stages") or []
+        archive_stage = next((s for s in stages if s.get("stage") == "archive"), None)
+        self.assertIsNotNone(archive_stage, "archive stage must come from frozen events")
+        self.assertIn(archive_stage.get("result"), {"OK", "WARN"})
+        timeline = summary.get("timeline") or []
+        archive_tl = [t for t in timeline if t.get("phase") == "archive"]
+        self.assertTrue(archive_tl, "archive timeline must come from frozen events")
+        events = (archive_dir / "events.ndjson").read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(
+            summary["reportPipeline"]["event_count"],
+            len([l for l in events if l.strip()]),
+            "event_count must equal the frozen cutoff total without any patch",
+        )
 
 
 class ComEvidenceDictRegressionTests(unittest.TestCase):
@@ -1505,129 +1521,49 @@ class ComArchiveMetaReplayReadonlyTests(unittest.TestCase):
         )
 
 
-class PatchArchiveStageUnitTests(unittest.TestCase):
-    """Direct unit coverage for _patch_archive_stage replace vs append."""
+class NoPatchConsistencyTests(unittest.TestCase):
+    """freeze-first: archive stage facts derive from frozen events alone
+    (replaces the deleted _patch_archive_stage unit tests, RET-19)."""
 
     def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="harness-patch-stage-"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-nopatch-"))
         self.work = self.tmp / "change"
         self.work.mkdir()
-        (self.work / "reports" / "final").mkdir(parents=True)
-        (self.work / "meta").mkdir(parents=True)
-        # phase.start → phase.end so build_summary yields archive duration/status
-        ha.append_event(
-            self.work,
-            phase="archive",
-            type_="phase.start",
-            note="patch unit start",
-        )
+        ha.append_event(self.work, phase="run", type_="phase.start", note="run start")
+        ha.append_event(self.work, phase="run", type_="phase.end", status="OK")
         import time
 
         time.sleep(0.02)
-        ha.append_event(
-            self.work,
-            phase="archive",
-            type_="phase.end",
-            status="OK",
-            note="patch unit end",
-        )
-        self.summary_path = self.work / "reports" / "final" / "summary-data.json"
+        ha.append_event(self.work, phase="archive", type_="phase.start", note="a")
+        time.sleep(0.02)
+        ha.append_event(self.work, phase="archive", type_="phase.end", status="OK")
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def _base_summary(self, *, stages: list[dict]) -> dict:
-        return {
-            "schemaVersion": "2.2",
-            "changeName": "patch-stage",
-            "finalStatus": "OK",
-            "stageStatus": {"run": "OK"},
-            "durations": {"stages": stages, "totalMinutes": 0, "totalLabel": "约 0 分"},
-            "timeline": [],
-            "skillCalls": [],
-            "verification": {
-                "unitTests": {
-                    "run": 0,
-                    "failures": 0,
-                    "errors": 0,
-                    "skipped": 0,
-                    "passRate": "not_available",
-                },
-                "apiTests": {
-                    "status": "NOT_RUN",
-                    "total": 0,
-                    "passed": 0,
-                    "failed": 0,
-                    "blocked": 0,
-                },
-                "dbCompatibility": "NOT_RUN",
-                "coverageDisplay": "not_available",
-            },
-        }
-
-    def test_patch_replaces_existing_archive_stage(self) -> None:
-        _write_json(
-            self.summary_path,
-            self._base_summary(
-                stages=[
-                    {
-                        "stage": "archive",
-                        "skill": "harness-archive",
-                        "startedAt": "old",
-                        "endedAt": "old",
-                        "minutes": 99,
-                        "result": "UNKNOWN",
-                        "attempts": [],
-                    },
-                    {
-                        "stage": "run",
-                        "skill": "harness-run",
-                        "minutes": 1,
-                        "result": "OK",
-                    },
-                ]
-            ),
-        )
-        with mock.patch.object(ha, "render_final_summary") as render_mock:
-            ha._patch_archive_stage(self.summary_path, self.work, render=False)
-            render_mock.assert_not_called()
-
-        summary = json.loads(self.summary_path.read_text(encoding="utf-8"))
+    def test_collect_derives_archive_stage_without_patch(self) -> None:
+        summary = ha.collect_summary_data(self.work, write=False)
         stages = (summary.get("durations") or {}).get("stages") or []
         archive_stages = [s for s in stages if s.get("stage") == "archive"]
-        self.assertEqual(len(archive_stages), 1, "must replace, not duplicate")
-        self.assertNotEqual(archive_stages[0].get("startedAt"), "old")
+        self.assertEqual(len(archive_stages), 1, "exactly one archive stage")
+        self.assertEqual(archive_stages[0].get("skill"), "harness-archive")
         self.assertEqual(archive_stages[0].get("result"), "OK")
         self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
         # non-archive stage preserved
         self.assertTrue(any(s.get("stage") == "run" for s in stages))
+        # canonical timing fields present (UT-008)
+        self.assertIn("activeExecutionMs", archive_stages[0])
+        self.assertIn("wallClockSpanMs", archive_stages[0])
 
-    def test_patch_appends_archive_stage_when_missing(self) -> None:
-        _write_json(
-            self.summary_path,
-            self._base_summary(
-                stages=[
-                    {
-                        "stage": "run",
-                        "skill": "harness-run",
-                        "minutes": 1,
-                        "result": "OK",
-                    }
-                ]
-            ),
-        )
-        with mock.patch.object(ha, "render_final_summary") as render_mock:
-            ha._patch_archive_stage(self.summary_path, self.work, render=True)
-            render_mock.assert_called_once_with(self.work, self.summary_path)
-
-        summary = json.loads(self.summary_path.read_text(encoding="utf-8"))
-        stages = (summary.get("durations") or {}).get("stages") or []
-        archive_stages = [s for s in stages if s.get("stage") == "archive"]
-        self.assertEqual(len(archive_stages), 1)
-        self.assertEqual(archive_stages[0].get("skill"), "harness-archive")
-        self.assertEqual(archive_stages[0].get("result"), "OK")
-        self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
-        self.assertEqual(len(stages), 2)
+    def test_collect_archive_timeline_has_duration_without_patch(self) -> None:
+        summary = ha.collect_summary_data(self.work, write=False)
+        timeline = [
+            t
+            for t in (summary.get("timeline") or [])
+            if t.get("phase") == "archive" and t.get("durationMs") is not None
+        ]
+        self.assertTrue(timeline, "archive timeline duration must come from events")
+        self.assertGreaterEqual(timeline[-1]["durationMs"], 0)
 
 
 if __name__ == "__main__":

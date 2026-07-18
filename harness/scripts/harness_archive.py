@@ -54,7 +54,7 @@ MANIFEST_COMPARE_EXCLUDE = frozenset(
     }
 )
 
-SCHEMA_VERSION = "2.2"
+SCHEMA_VERSION = "2.3"
 NOT_AVAILABLE = "not_available"
 
 # Compiled once for evidence-text count fallbacks in _ledger_unit_tests / _ledger_api_tests.
@@ -679,12 +679,19 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
 
     metrics = unit.get("metrics")
     if isinstance(metrics, dict) and any(
-        k in metrics for k in ("run", "testsRun", "failures", "errors", "skipped")
+        k in metrics for k in ("run", "testsRun", "total", "failures", "errors", "skipped")
     ):
-        run = int(metrics.get("run", metrics.get("testsRun", 0)) or 0)
-        failures = int(metrics.get("failures", 0) or 0)
-        errors = int(metrics.get("errors", 0) or 0)
-        skipped = int(metrics.get("skipped", 0) or 0)
+        if "total" in metrics:
+            # ledger v3 typed metrics (UT-005/RET-15): total/passed/failed.
+            run = int(metrics.get("total", 0) or 0)
+            failures = int(metrics.get("failed", 0) or 0)
+            errors = int(metrics.get("errors", 0) or 0)
+            skipped = int(metrics.get("skipped", 0) or 0)
+        else:
+            run = int(metrics.get("run", metrics.get("testsRun", 0)) or 0)
+            failures = int(metrics.get("failures", 0) or 0)
+            errors = int(metrics.get("errors", 0) or 0)
+            skipped = int(metrics.get("skipped", 0) or 0)
         pass_rate = metrics.get("passRate")
         source = "committed"
         counted = run > 0 or failures > 0 or errors > 0 or skipped > 0
@@ -855,6 +862,53 @@ def _ledger_api_tests(
     }
 
 
+def _risks_from_test_results(change_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """PARTIAL/OPEN/UNKNOWN/DEFERRED scenarios -> (knownRisks, manualActions).
+
+    Scenario IDs are preserved so risks stay traceable to the test report
+    (UT-013/RET-25); PARTIAL is a fact, not a pass.
+    """
+    risk_statuses = {"PARTIAL", "OPEN", "UNKNOWN", "DEFERRED", "BLOCKED"}
+    results_path = change_dir / "runtime" / "api-test-results.json"
+    if not results_path.is_file():
+        return [], []
+    try:
+        raw = read_json(results_path)
+    except (OSError, json.JSONDecodeError):
+        return [], []
+    scenarios = raw.get("scenarios") if isinstance(raw, dict) else None
+    if not isinstance(scenarios, list):
+        return [], []
+    risks: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+    for item in scenarios:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").upper()
+        if status not in risk_statuses:
+            continue
+        scenario_id = str(item.get("id") or item.get("scenario") or "").strip()
+        note = str(item.get("note") or item.get("message") or "").strip()
+        risks.append(
+            {
+                "phase": "test",
+                "severity": "medium",
+                "scenarioId": scenario_id,
+                "status": status,
+                "message": f"{scenario_id}: {status}" + (f" — {note}" if note else ""),
+            }
+        )
+        actions.append(
+            {
+                "stage": "test",
+                "status": status,
+                "scenarioId": scenario_id,
+                "action": "补齐该场景的完整验证或显式接受风险",
+            }
+        )
+    return risks, actions
+
+
 def _ledger_db_compat(ledger: dict[str, Any] | None) -> str:
     if not ledger:
         return "NOT_RUN"
@@ -868,6 +922,58 @@ def _ledger_db_compat(ledger: dict[str, Any] | None) -> str:
     if isinstance(top, str) and top.strip():
         return top.strip().upper()
     return "NOT_RUN"
+
+
+def _typed_test_metrics(entry: dict[str, Any], *, total_key: str) -> dict[str, Any]:
+    """Project a ledger v3 typed metrics entry to the canonical view."""
+    metrics = entry.get("metrics") if isinstance(entry.get("metrics"), dict) else {}
+    total = int(metrics.get(total_key, 0) or 0)
+    passed = int(metrics.get("passed", 0) or 0)
+    failed = int(metrics.get("failed", 0) or 0)
+    status = str(entry.get("status") or "").upper() or "NOT_RUN"
+    out: dict[str, Any] = {
+        "status": status,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "passRate": f"{passed / total:.0%}" if total > 0 else NOT_AVAILABLE,
+        "source": "committed" if total > 0 else "not-run",
+    }
+    if "blocked" in metrics:
+        out["blocked"] = int(metrics.get("blocked", 0) or 0)
+    if "skipped" in metrics:
+        out["skipped"] = int(metrics.get("skipped", 0) or 0)
+    applicability = entry.get("applicability")
+    if isinstance(applicability, dict):
+        out["applicability"] = applicability
+    return out
+
+
+def build_verification_projection(
+    ledger: dict[str, Any] | None,
+    *,
+    change_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Canonical verification view shared by collector and validators (RET-16).
+
+    apiContract and browserE2E are distinct typed projections; the legacy
+    apiTests mapping is retained for schema compatibility.
+    """
+    validations = (ledger or {}).get("validations") or {}
+    projection: dict[str, Any] = {
+        "unitTests": _ledger_unit_tests(ledger),
+        "apiTests": _ledger_api_tests(ledger, change_dir=change_dir),
+        "dbCompatibility": _ledger_db_compat(ledger),
+    }
+    api_contract = validations.get("apiContract")
+    if isinstance(api_contract, dict):
+        projection["apiContract"] = _typed_test_metrics(
+            api_contract, total_key="scenariosTotal"
+        )
+    browser_e2e = validations.get("browserE2E")
+    if isinstance(browser_e2e, dict):
+        projection["browserE2E"] = _typed_test_metrics(browser_e2e, total_key="total")
+    return projection
 
 
 def _parse_durations_from_log(log_text: str) -> dict[str, Any]:
@@ -1044,7 +1150,15 @@ def _artifacts_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
-def _durations_from_event_phases(event_summary: dict[str, Any]) -> dict[str, Any]:
+def _durations_from_event_phases(
+    event_summary: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    # Canonical per-phase timing (UT-008/RET-20): one reducer feeds every view.
+    canonical: dict[str, dict[str, Any]] = {}
+    if events:
+        for phase_name, phase_events in he.group_events_by_phase(events):
+            canonical[phase_name] = he.canonical_phase_timing(phase_events)
     stages: list[dict[str, Any]] = []
     total_ms = 0
     for name, info in (event_summary.get("phases") or {}).items():
@@ -1058,7 +1172,7 @@ def _durations_from_event_phases(event_summary: dict[str, Any]) -> dict[str, Any
             result = "OK"
         elif result in {"FAILED", "ERROR"}:
             result = "FAIL"
-        stages.append({
+        stage: dict[str, Any] = {
             "stage": str(name),
             "skill": f"harness-{name}",
             "startedAt": info.get("started_at") or NOT_AVAILABLE,
@@ -1066,7 +1180,13 @@ def _durations_from_event_phases(event_summary: dict[str, Any]) -> dict[str, Any
             "minutes": minutes,
             "result": result,
             "attempts": attempts,
-        })
+        }
+        timing = canonical.get(name)
+        if timing:
+            stage["activeExecutionMs"] = timing.get("activeExecutionMs")
+            stage["wallClockSpanMs"] = timing.get("wallClockSpanMs")
+            stage["lateEventCount"] = timing.get("lateEventCount")
+        stages.append(stage)
     total_min = round(total_ms / 60000, 2)
     return {
         "totalLabel": f"约 {int(round(total_min))} 分",
@@ -1316,94 +1436,6 @@ def write_archive_meta(work_dir: Path, summary: dict[str, Any]) -> Path:
     return out
 
 
-def _patch_archive_stage(
-    summary_path: Path,
-    work_dir: Path,
-    *,
-    render: bool = True,
-) -> None:
-    """Backfill archive stage duration/status from events (optionally re-render).
-
-    When called from finalize step 9, pass ``render=False`` so the caller can
-    write archive-meta + remanifest and invoke ``render_final_summary`` once.
-    """
-    events_file = he.events_path(work_dir)
-    events = he.load_events(events_file) if events_file.is_file() else []
-    event_summary = he.build_summary(work_dir, events)
-    archive_info = (event_summary.get("phases") or {}).get("archive") or {}
-    duration_ms = archive_info.get("duration_ms")
-    status = str(archive_info.get("status") or "OK").upper()
-    if status in {"PASS", "PASSED", "SUCCESS"}:
-        status = "OK"
-    elif status in {"FAILED", "ERROR"}:
-        status = "FAIL"
-
-    summary = read_json(summary_path)
-    stage_status = summary.setdefault("stageStatus", {})
-    if isinstance(stage_status, dict):
-        stage_status["archive"] = status
-
-    durations = summary.setdefault("durations", {})
-    stages = list(durations.get("stages") or [])
-    minutes = round((duration_ms or 0) / 60000, 2) if duration_ms is not None else 0
-    archive_stage = {
-        "stage": "archive",
-        "skill": "harness-archive",
-        "startedAt": archive_info.get("started_at") or NOT_AVAILABLE,
-        "endedAt": archive_info.get("ended_at") or NOT_AVAILABLE,
-        "minutes": minutes,
-        "result": status,
-        "attempts": archive_info.get("attempts") if isinstance(archive_info.get("attempts"), list) else [],
-    }
-    replaced = False
-    for idx, stage in enumerate(stages):
-        if str(stage.get("stage") or "").lower() == "archive":
-            stages[idx] = archive_stage
-            replaced = True
-            break
-    if not replaced:
-        stages.append(archive_stage)
-    durations["stages"] = stages
-    total_min = round(sum(float(s.get("minutes") or 0) for s in stages), 2)
-    durations["totalMinutes"] = total_min
-    durations["totalLabel"] = f"约 {int(round(total_min))} 分"
-
-    timeline = list(summary.get("timeline") or [])
-    for item in timeline:
-        if item.get("phase") == "archive" and item.get("type") not in {"decision", "issue"}:
-            item["durationMs"] = duration_ms
-            item["status"] = status
-            item["endedAt"] = archive_info.get("ended_at")
-            item["startedAt"] = archive_info.get("started_at")
-    # Ensure at least one archive timeline entry with duration
-    if duration_ms is not None and not any(
-        t.get("phase") == "archive" and t.get("durationMs") is not None for t in timeline
-    ):
-        timeline.append(
-            {
-                "phase": "archive",
-                "attempt": 1,
-                "startedAt": archive_info.get("started_at"),
-                "endedAt": archive_info.get("ended_at"),
-                "durationMs": duration_ms,
-                "status": status,
-            }
-        )
-    summary["timeline"] = timeline
-
-    skill_calls = list(summary.get("skillCalls") or [])
-    found_skill = False
-    for call in skill_calls:
-        if str(call.get("skill") or "") in {"harness-archive", "archive"}:
-            call["result"] = status
-            found_skill = True
-    if not found_skill:
-        skill_calls.append({"skill": "harness-archive", "count": 1, "result": status})
-    summary["skillCalls"] = skill_calls
-
-    write_json(summary_path, summary)
-    if render:
-        render_final_summary(work_dir, summary_path)
 
 
 def _changed_files_from_git(
@@ -1528,6 +1560,24 @@ def _business_goal_from_sources(change_dir: Path, events: list[dict[str, Any]]) 
         scope = re.search(r"(?im)^\s*>?\s*(?:变更范围|目标)\s*[:：]\s*(.+)$", body)
         if scope:
             return scope.group(1).strip()
+        # UT-015/RET-27: structured "## 目标" section body wins over the first
+        # task-table row — the task row is an activity, not the objective.
+        section = re.search(
+            r"(?im)^#{1,4}\s*(?:\d+[\.、]\s*)?(?:目标|业务目标|需求背景)\s*$",
+            body,
+        )
+        if section:
+            lines: list[str] = []
+            for line in body[section.end():].splitlines():
+                if re.match(r"^\s*#{1,4}\s", line):
+                    break
+                clean = line.strip()
+                if clean and not clean.startswith(("|", ">", "---")):
+                    lines.append(clean)
+                if lines:
+                    break
+            if lines:
+                return lines[0]
         first_task = re.search(r"(?m)^\s*\|\s*1\s*\|\s*([^|]+?)\s*\|", body)
         if first_task:
             return first_task.group(1).strip()
@@ -1677,9 +1727,10 @@ def collect_summary_data(
 
     # verification
     if not for_replay or not isinstance(data.get("verification"), dict):
-        unit = _ledger_unit_tests(ledger)
-        api = _ledger_api_tests(ledger, change_dir=change_dir)
-        db = _ledger_db_compat(ledger)
+        projection = build_verification_projection(ledger, change_dir=change_dir)
+        unit = projection["unitTests"]
+        api = projection["apiTests"]
+        db = projection["dbCompatibility"]
         if not find_test_reports(change_dir) and unit.get("run", 0) == 0:
             if "status" not in unit:
                 unit["status"] = "NOT_RUN"
@@ -1694,6 +1745,9 @@ def collect_summary_data(
             "dbCompatibility": db,
             "coverageDisplay": coverage,
         }
+        for typed_key in ("apiContract", "browserE2E"):
+            if typed_key in projection:
+                data["verification"][typed_key] = projection[typed_key]
     else:
         # Ensure nested keys exist for old schema 2.1
         ver = data.setdefault("verification", {})
@@ -1720,7 +1774,7 @@ def collect_summary_data(
 
     # durations / skillCalls
     if events:
-        data["durations"] = _durations_from_event_phases(event_summary)
+        data["durations"] = _durations_from_event_phases(event_summary, events)
         data["skillCalls"] = _skill_calls_from_stages(data["durations"].get("stages") or [])
     elif log_text and (not for_replay or not data.get("durations")):
         data["durations"] = _parse_durations_from_log(log_text)
@@ -1810,8 +1864,9 @@ def collect_summary_data(
                 if note:
                     maintenance_notes.append(note)
         data["maintenanceNotes"] = maintenance_notes
-        data["knownRisks"] = known_risks
-        data["manualActions"] = []
+        scenario_risks, scenario_actions = _risks_from_test_results(change_dir)
+        data["knownRisks"] = known_risks + scenario_risks
+        data["manualActions"] = scenario_actions
         for name, value in (data.get("stageStatus") or {}).items():
             if value in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA", "NOT_RUN", "USER_SKIPPED"}:
                 data["manualActions"].append({
@@ -2085,6 +2140,196 @@ def render_final_summary(
 # ---------------------------------------------------------------------------
 
 
+def _manifest_self_stats(
+    work_dir: Path,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+) -> dict[str, Any]:
+    """UT-011/RET-23: physical files vs manifest entries (self-exclusion)."""
+    physical = sum(1 for path in work_dir.rglob("*") if path.is_file())
+    entries = int(manifest.get("fileCount") or len(manifest.get("files") or []))
+    rel_manifest = manifest_path.resolve().relative_to(work_dir.resolve()).as_posix()
+    in_entries = any(
+        str(item.get("path") or "").replace("\\", "/") == rel_manifest
+        for item in manifest.get("files") or []
+        if isinstance(item, dict)
+    )
+    coverage = round(entries / physical * 100, 2) if physical else 100.0
+    return {
+        "physicalFileCount": physical,
+        "entryCount": entries,
+        "selfExcluded": not in_entries,
+        "coveragePercent": coverage,
+    }
+
+
+def _append_finalize_failure_issue(
+    original_change_dir: Path,
+    code: str,
+    message: str,
+) -> None:
+    """Record a finalize failure on the restored original as an issue event.
+
+    Never a second phase.end: the frozen cutoff already closed the archive
+    phase exactly once (RET-19/RET-21).
+    """
+    if not original_change_dir.is_dir():
+        return
+    try:
+        append_event(
+            original_change_dir,
+            phase="archive",
+            type_="issue",
+            code=code,
+            severity="error",
+            message=message,
+        )
+    except OSError:
+        pass
+
+
+def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
+    """Freeze the events cutoff: fsync events, write evidence-cutoff.json.
+
+    After this point no event may be appended to the archived events file;
+    the cutoff hash lets any later reader prove that (INT-006/RET-19).
+    """
+    events_file = he.events_path(work_dir)
+    events = he.load_events(events_file) if events_file.is_file() else []
+    if events_file.is_file():
+        # Windows fsync requires a writable handle; O_RDONLY raises EBADF.
+        fd = os.open(str(events_file), os.O_RDWR | os.O_BINARY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        raw = events_file.read_bytes()
+    else:
+        raw = b""
+    cutoff = {
+        "eventCount": len(events),
+        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "frozenAt": now_iso(),
+        "path": "events.ndjson",
+    }
+    write_json(work_dir / "evidence" / "evidence-cutoff.json", cutoff)
+    return cutoff
+
+
+def validate_artifact_immutability(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Same artifact path with two different hashes -> conflict (UT-003/RET-07)."""
+    issues: list[dict[str, str]] = []
+    seen: dict[str, str] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("path") or "").strip()
+        digest = str(item.get("sha256") or "").strip()
+        if not rel or not digest:
+            continue
+        prior = seen.get(rel)
+        if prior is not None and prior != digest:
+            issues.append(
+                {
+                    "code": "artifact-hash-conflict",
+                    "severity": "error",
+                    "message": f"immutable artifact conflict at {rel}: {prior[:12]}… != {digest[:12]}…",
+                }
+            )
+        else:
+            seen[rel] = digest
+    errors = [i for i in issues if i.get("severity") == "error"]
+    return {
+        "ok": len(errors) == 0,
+        "issues": issues,
+        "error_count": len(errors),
+        "warning_count": len(issues) - len(errors),
+    }
+
+
+def validate_source_consistency(
+    change_dir: Path,
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Layer 1: summary facts must equal the frozen sources (UT-014/RET-26).
+
+    Checks event count against the cutoff file, verification counts against
+    ledger typed metrics, and review counts against sidecars when present.
+    """
+    issues: list[dict[str, str]] = []
+
+    # 1. event count vs frozen cutoff (fallback: live events file).
+    events_file = he.events_path(change_dir)
+    actual_count = None
+    cutoff_path = change_dir / "evidence" / "evidence-cutoff.json"
+    if cutoff_path.is_file():
+        try:
+            cutoff = read_json(cutoff_path)
+            actual_count = cutoff.get("eventCount")
+        except (OSError, json.JSONDecodeError):
+            actual_count = None
+    if actual_count is None and events_file.is_file():
+        actual_count = len(he.load_events(events_file))
+    summary_count = (summary.get("reportPipeline") or {}).get("event_count")
+    if actual_count is not None and summary_count is not None:
+        if int(summary_count) != int(actual_count):
+            issues.append(
+                {
+                    "code": "event-count-mismatch",
+                    "severity": "error",
+                    "message": (
+                        f"summary event_count={summary_count} but cutoff has "
+                        f"{actual_count} events"
+                    ),
+                }
+            )
+
+    # 2. verification vs ledger typed metrics.
+    ledger = load_ledger(change_dir)
+    if ledger:
+        projection = build_verification_projection(ledger, change_dir=change_dir)
+        ver = summary.get("verification") or {}
+        unit_src = projection.get("unitTests") or {}
+        unit_sum = ver.get("unitTests") or {}
+        if unit_src.get("run"):
+            if int(unit_sum.get("run") or 0) != int(unit_src["run"]):
+                issues.append(
+                    {
+                        "code": "verification-mismatch",
+                        "severity": "error",
+                        "message": (
+                            f"unitTests: summary run={unit_sum.get('run')} but "
+                            f"ledger projection run={unit_src['run']}"
+                        ),
+                    }
+                )
+        for typed_key in ("apiContract", "browserE2E"):
+            src = projection.get(typed_key)
+            if not isinstance(src, dict) or not src.get("total"):
+                continue
+            rendered = ver.get(typed_key) or {}
+            if int(rendered.get("total") or 0) != int(src["total"]):
+                issues.append(
+                    {
+                        "code": "verification-mismatch",
+                        "severity": "error",
+                        "message": (
+                            f"{typed_key}: summary total={rendered.get('total')} "
+                            f"but ledger projection total={src['total']}"
+                        ),
+                    }
+                )
+
+    errors = [i for i in issues if i.get("severity") == "error"]
+    warnings = [i for i in issues if i.get("severity") != "error"]
+    return {
+        "ok": len(errors) == 0,
+        "issues": issues,
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+    }
+
+
 def validate_summary(
     summary: dict[str, Any],
     html_path: Path | None,
@@ -2199,7 +2444,12 @@ def validate_summary(
 
         # risks / manual actions — empty arrays are OK (placeholder)
         for risk in summary.get("knownRisks") or []:
-            text = str(risk)
+            # UT-016/RET-28: canonical projection — structured risk objects
+            # project to their message; str(dict) never matches rendered HTML.
+            if isinstance(risk, dict):
+                text = str(risk.get("message") or risk.get("summary") or "").strip()
+            else:
+                text = str(risk)
             if text and text not in html and _html_escape(text) not in html:
                 issues.append(
                     {
@@ -2533,7 +2783,33 @@ def cmd_finalize(
             pass
         return 1, payload
 
-    # --- 3. collect ---
+    # --- 2b. user-flag decision (archive fact, must precede the cutoff) ---
+    if allow_missing_review:
+        _safe_append(
+            phase="archive",
+            type_="decision",
+            note="review missing on full tier (allowed by user)",
+        )
+
+    # --- 3. unique phase.end + freeze cutoff (RET-19 freeze-first) ---
+    # From here on, NO event may be appended to the archived events file;
+    # report generation runs as pure functions over the frozen sources.
+    _safe_append(
+        phase="archive",
+        type_="phase.end",
+        status="WARN" if warnings else "OK",
+        note="finalize facts complete",
+    )
+    try:
+        cutoff = _freeze_evidence_cutoff(work_dir)
+        payload["steps"]["freeze"] = {"ok": True, "eventCount": cutoff["eventCount"]}
+    except OSError as exc:
+        payload["error"] = f"freeze failed: {exc}"
+        payload["steps"]["freeze"] = {"ok": False, "error": str(exc)}
+        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        return 1, payload
+
+    # --- 4. collect (pure function of frozen sources) ---
     try:
         summary = collect_summary_data(
             work_dir,
@@ -2549,51 +2825,42 @@ def cmd_finalize(
                 reasons.append(reason)
             summary["finalStatusReasons"] = reasons
             write_json(summary_path, summary)
-            _safe_append(
-                phase="archive",
-                type_="decision",
-                note=reason,
-            )
         payload["steps"]["collect"] = {"ok": True, "path": str(summary_path)}
-        _safe_append(
-            phase="archive",
-            type_="artifact",
-            path="reports/final/summary-data.json",
-            kind="summary-data",
-        )
     except Exception as exc:  # noqa: BLE001 — surface collect failures
         payload["error"] = f"collect failed: {exc}"
         payload["steps"]["collect"] = {"ok": False, "error": str(exc)}
         _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
         return 1, payload
 
-    # --- 4. render (Node, else Python fallback) ---
+    # --- 5. source consistency (layer 1; UT-014) ---
+    source_result = validate_source_consistency(work_dir, summary)
+    payload["steps"]["source_consistency"] = source_result
+    summary.setdefault("reportPipeline", {})["sourceConsistency"] = {
+        "ok": bool(source_result.get("ok")),
+        "issues": source_result.get("issues") or [],
+    }
+    try:
+        write_json(summary_path, summary)
+    except OSError as exc:
+        warnings.append(f"could not write sourceConsistency: {exc}")
+    if not source_result.get("ok"):
+        payload["issues"] = source_result.get("issues") or []
+        payload["error"] = "source consistency failed; original change dir restored"
+        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _append_finalize_failure_issue(original_change_dir, "source-consistency-failed", payload["error"])
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        return 1, payload
+
+    # --- 6. render (Node, else Python fallback) ---
     render_result = render_final_summary(work_dir, summary_path)
     payload["steps"]["render"] = render_result
     if not render_result.get("ok"):
-        # Node + fallback both failed: restore + exit non-0 (§4.1 rule 4)。
         # 永不关闭一个没有 final-summary 的归档。
         msg = str(render_result.get("fallbackReason") or "render failed")
         payload["error"] = f"final-summary render failed: {msg}"
-        _safe_append(
-            phase="archive",
-            type_="issue",
-            code="render-failed",
-            severity="error",
-            message=msg,
-        )
         _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
-        _restore_target = original_change_dir if original_change_dir.is_dir() else work_dir
-        try:
-            append_event(
-                _restore_target,
-                phase="archive",
-                type_="phase.end",
-                status="FAIL",
-                note="finalize aborted; render failed; original preserved",
-            )
-        except OSError:
-            pass
+        _append_finalize_failure_issue(original_change_dir, "render-failed", msg)
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
@@ -2603,24 +2870,10 @@ def cmd_finalize(
             f"node render unavailable; used python-fallback: "
             f"{render_result.get('fallbackReason')}"
         )
-    _safe_append(
-        phase="archive",
-        type_="artifact",
-        path="reports/final/final-summary.html",
-        kind="final-report",
-    )
-    _safe_append(
-        phase="archive",
-        type_="command",
-        command=f"render-final-summary ({renderer})",
-        exit_code=0,
-        note=f"final-summary rendered by {renderer}",
-    )
 
     html_path = work_dir / "reports" / "final" / "final-summary.html"
 
-    # --- 5. validate (same process, no re-collect) ---
-    # Refresh summary from disk (collect already wrote it); do not re-collect.
+    # --- 7. renderer consistency (layer 2) ---
     try:
         summary = read_json(summary_path)
     except (OSError, json.JSONDecodeError):
@@ -2638,20 +2891,19 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"could not write validationIssues: {exc}")
 
-    for issue in validate_result.get("issues") or []:
-        _safe_append(
-            phase="archive",
-            type_="issue",
-            code=str(issue.get("code") or "validate"),
-            severity=str(issue.get("severity") or "warning"),
-            message=str(issue.get("message") or ""),
-        )
+    # --- 8. archive-meta (before after-manifest so the manifest covers it) ---
+    try:
+        summary = read_json(summary_path)
+        meta_path = write_archive_meta(work_dir, summary)
+        payload["steps"]["archive_meta"] = {"ok": True, "path": str(meta_path)}
+    except Exception as exc:  # noqa: BLE001 — meta soft-fail
+        warnings.append(f"archive-meta write failed: {exc}")
+        payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
 
-    # --- 6. after-manifest + compare ---
+    # --- 9. after-manifest + compare ---
     after_path = work_dir / "evidence" / "archive-manifest-after.json"
     try:
         after_manifest = generate_manifest(work_dir, after_path)
-        # Re-read before from archive (moved with the tree)
         before_in_archive = work_dir / "evidence" / "archive-manifest-before.json"
         if before_in_archive.is_file():
             before_manifest = read_json(before_in_archive)
@@ -2661,46 +2913,34 @@ def cmd_finalize(
             "path": str(after_path),
             "compare": compare_result,
         }
-        _safe_append(
-            phase="archive",
-            type_="artifact",
-            path="evidence/archive-manifest-after.json",
-            kind="manifest-after",
-        )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         payload["error"] = f"after-manifest failed: {exc}"
         payload["steps"]["after_manifest"] = {"ok": False, "error": str(exc)}
         _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
         return 1, payload
 
-    # Update archiveManifest in summary-data with compare stats
+    # --- 10. final summary update + final render/validate (no more events) ---
+    summary = read_json(summary_path)
     summary["archiveManifest"] = {
         "movedFiles": compare_result.get("movedFiles", 0),
         "generatedFiles": compare_result.get("generatedFiles", 0),
         "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
         "checksumStatus": compare_result.get("checksumStatus", "FAIL"),
+        **_manifest_self_stats(work_dir, after_manifest, after_path),
     }
-    try:
-        write_json(summary_path, summary)
-    except OSError as exc:
-        warnings.append(f"could not update archiveManifest: {exc}")
-
-    # The first render is needed so the after-manifest includes a final report,
-    # but it predates the final manifest statistics.  Render and validate once
-    # more from the now-final summary so HTML never contradicts summary-data.
+    write_json(summary_path, summary)
     render_result = render_final_summary(work_dir, summary_path)
     if not render_result.get("ok"):
         payload["error"] = f"final summary re-render failed: {render_result.get('error')}"
         _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
         return 1, payload
+    summary = read_json(summary_path)
     validate_result = validate_summary(summary, html_path if html_path.is_file() else None)
     payload["steps"]["validate"] = validate_result
     summary.setdefault("reportPipeline", {})["validationIssues"] = validate_result.get("issues") or []
     write_json(summary_path, summary)
 
-    # --- 7. delete original only if validate+manifest OK ---
-    # After move, "original" is gone; on failure we restore. On success, ensure
-    # the changes path does not linger.
+    # --- 11. closure: only when both validators and manifest pass ---
     validate_ok = bool(validate_result.get("ok"))
     manifest_ok = bool(compare_result.get("ok"))
     can_close = validate_ok and manifest_ok
@@ -2722,18 +2962,9 @@ def cmd_finalize(
         payload["error"] = "validate or manifest check failed; original change dir restored"
         payload["steps"]["delete_original"] = {"ok": False, "deleted": False}
         _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
-        _safe_append_restored = original_change_dir if original_change_dir.is_dir() else None
-        if _safe_append_restored:
-            try:
-                append_event(
-                    _safe_append_restored,
-                    phase="archive",
-                    type_="phase.end",
-                    status="FAIL",
-                    note="finalize aborted; original preserved",
-                )
-            except OSError:
-                pass
+        _append_finalize_failure_issue(
+            original_change_dir, "closure-failed", payload["error"]
+        )
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
@@ -2753,16 +2984,7 @@ def cmd_finalize(
             "note": "removed by move",
         }
 
-    _safe_append(
-        phase="archive",
-        type_="verification",
-        name="archive-closure",
-        status="ok",
-        note="manifest+validate passed; original removed",
-    )
-
-    # --- 8. maintenance outbox + service (§8.2: close no longer runs the four
-    # knowledge subprocesses; it enqueues a pending outbox item and returns) ---
+    # --- 12. maintenance outbox + service ---
     if skip_ingest:
         payload["steps"]["knowledge"] = {"skipped": True, "reason": "--skip-ingest"}
         payload["knowledgeMaintenance"] = "SKIPPED"
@@ -2780,74 +3002,6 @@ def cmd_finalize(
     payload["steps"]["service_stop"] = service_result
     if service_result.get("warning"):
         warnings.append(str(service_result["warning"]))
-
-    # --- 9a. archive-meta + artifact event BEFORE phase.end ---
-    # phase.end must remain the last archive event; patch (9b) still runs after
-    # phase.end so it can read duration/status from events.
-    try:
-        summary = read_json(summary_path)
-        meta_path = write_archive_meta(work_dir, summary)
-        payload["steps"]["archive_meta"] = {"ok": True, "path": str(meta_path)}
-        _safe_append(
-            phase="archive",
-            type_="artifact",
-            path="meta/archive-meta.md",
-            kind="archive-meta",
-        )
-    except Exception as exc:  # noqa: BLE001 — meta soft-fail
-        warnings.append(f"archive-meta write failed: {exc}")
-        payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
-
-    _safe_append(
-        phase="archive",
-        type_="phase.end",
-        status="WARN" if warnings else "OK",
-        note="finalize complete",
-    )
-
-    # --- 9b. patch archive stage + remanifest + single render (no more events) ---
-    try:
-        _patch_archive_stage(summary_path, work_dir, render=False)
-        payload["steps"]["patch_archive"] = {"ok": True}
-    except Exception as exc:  # noqa: BLE001 — patch must not roll back archive
-        warnings.append(f"archive stage patch failed: {exc}")
-        payload["steps"]["patch_archive"] = {"ok": False, "error": str(exc)}
-
-    try:
-        summary = read_json(summary_path)
-        # Refresh archive-meta with patched stageStatus/durations (no new event).
-        meta_path = write_archive_meta(work_dir, summary)
-        payload["steps"]["archive_meta"] = {"ok": True, "path": str(meta_path)}
-        after_manifest = generate_manifest(work_dir, after_path)
-        before_in_archive = work_dir / "evidence" / "archive-manifest-before.json"
-        if before_in_archive.is_file():
-            before_manifest = read_json(before_in_archive)
-        if before_manifest is None:
-            raise ValueError(
-                "before-manifest unavailable for remanifest compare "
-                f"(missing {before_in_archive.as_posix()})"
-            )
-        compare_result = compare_manifests(before_manifest, after_manifest)
-        summary["archiveManifest"] = {
-            "movedFiles": compare_result.get("movedFiles", 0),
-            "generatedFiles": compare_result.get("generatedFiles", 0),
-            "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
-            "checksumStatus": compare_result.get("checksumStatus", "FAIL"),
-        }
-        write_json(summary_path, summary)
-        render_final_summary(work_dir, summary_path)
-        payload["steps"]["after_manifest"] = {
-            "ok": True,
-            "path": str(after_path),
-            "compare": compare_result,
-            "includesArchiveMeta": True,
-        }
-    except Exception as exc:  # noqa: BLE001 — meta/remanifest soft-fail
-        warnings.append(f"archive-meta/remanifest failed: {exc}")
-        payload["steps"]["archive_meta"] = {
-            "ok": False,
-            "error": str(exc),
-        }
 
     payload["ok"] = True
     payload["warnings"] = warnings
@@ -2981,6 +3135,144 @@ def cmd_replay_cli(args: argparse.Namespace) -> int:
     return code
 
 
+def _render_html_to(
+    change_dir: Path,
+    summary_path: Path,
+    out_path: Path,
+) -> dict[str, Any]:
+    """Render summary HTML to an arbitrary path (node first, python fallback).
+
+    Unlike ``render_final_summary`` this never touches the canonical
+    ``reports/final/final-summary.html`` — repair renders into staging.
+    """
+    project = find_project_root(change_dir)
+    node = resolve_node_path(project)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if node and RENDER_SCRIPT.is_file():
+        try:
+            proc = subprocess.run(
+                [node, str(RENDER_SCRIPT), "--summary", str(summary_path), "--out", str(out_path)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+            if proc.returncode == 0 and out_path.is_file():
+                return {"ok": True, "renderer": "node", "out_path": str(out_path)}
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        summary = read_json(summary_path)
+        html = render_fallback_html(summary)
+        out_path.write_text(html, encoding="utf-8", newline="\n")
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return {"ok": False, "renderer": "none", "error": str(exc)}
+    return {"ok": True, "renderer": "python-fallback", "out_path": str(out_path)}
+
+
+def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
+    """Versioned repair (task 11 / RET-40).
+
+    Re-collect a candidate from the frozen sources, run both validators, and
+    only then write an immutable ``derived/v<N>/`` plus a repair record. The
+    original summary/HTML/manifest is never overwritten; the authoritative
+    pointer moves only when both validators pass.
+    """
+    payload: dict[str, Any] = {
+        "ok": False,
+        "action": "repair",
+        "archive_dir": str(archive_dir),
+    }
+    if not archive_dir.is_dir():
+        payload["error"] = f"archive dir not found: {archive_dir}"
+        return 1, payload
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    if not summary_path.is_file():
+        payload["error"] = "summary-data.json missing; cannot repair"
+        return 1, payload
+
+    # 1. candidate: fresh collect from frozen sources (read-only on archive).
+    try:
+        candidate = collect_summary_data(archive_dir, write=False, for_replay=False)
+    except Exception as exc:  # noqa: BLE001
+        payload["error"] = f"repair collect failed: {exc}"
+        return 1, payload
+
+    # 2. stage outside the archive; run both validators on the candidate.
+    staging = Path(tempfile.mkdtemp(prefix="harness-repair-"))
+    try:
+        staged_summary = staging / "summary-data.json"
+        write_json(staged_summary, candidate)
+        source_result = validate_source_consistency(archive_dir, candidate)
+        render_result = _render_html_to(
+            archive_dir, staged_summary, staging / "final-summary.html"
+        )
+        staged_html = staging / "final-summary.html"
+        renderer_result = validate_summary(
+            candidate,
+            staged_html if staged_html.is_file() else None,
+        )
+        payload["validators"] = {
+            "source": source_result,
+            "renderer": renderer_result,
+        }
+        if not (source_result.get("ok") and renderer_result.get("ok")):
+            payload["error"] = "repair validators failed; derived version not written"
+            return 1, payload
+
+        # 3. immutable derived version.
+        derived = archive_dir / "derived"
+        derived.mkdir(exist_ok=True)
+        existing = [
+            int(p.name[1:])
+            for p in derived.iterdir()
+            if p.is_dir() and p.name.startswith("v") and p.name[1:].isdigit()
+        ]
+        version = f"v{(max(existing) + 1) if existing else 1}"
+        version_dir = derived / version
+        version_dir.mkdir()
+        final_summary = version_dir / "summary-data.json"
+        write_json(final_summary, candidate)
+        if staged_html.is_file():
+            shutil.copy2(staged_html, version_dir / "final-summary.html")
+        record = {
+            "version": version,
+            "createdAt": now_iso(),
+            "summarySha256": "sha256:" + hashlib.sha256(final_summary.read_bytes()).hexdigest(),
+            "baseSummarySha256": "sha256:" + hashlib.sha256(summary_path.read_bytes()).hexdigest(),
+            "validators": {
+                "source": {"ok": bool(source_result.get("ok")), "issues": source_result.get("issues") or []},
+                "renderer": {"ok": bool(renderer_result.get("ok")), "issues": renderer_result.get("issues") or []},
+            },
+        }
+        write_json(version_dir / "repair-record.json", record)
+
+        # 4. authoritative pointer — only after both validators passed.
+        write_json(
+            derived / "authoritative.json",
+            {
+                "version": version,
+                "summarySha256": record["summarySha256"],
+                "updatedAt": record["createdAt"],
+            },
+        )
+        payload["ok"] = True
+        payload["version"] = version
+        payload["derived_dir"] = str(version_dir)
+        return 0, payload
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def cmd_repair_cli(args: argparse.Namespace) -> int:
+    archive_dir = resolve_path(args.archive_dir)
+    code, payload = cmd_repair(archive_dir)
+    emit_json(payload)
+    return code
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_archive.py",
@@ -3015,6 +3307,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_rep.add_argument("--out", default=None, help="write summary-data JSON outside archive")
     p_rep.add_argument("--json", action="store_true", default=True)
     p_rep.set_defaults(func=cmd_replay_cli)
+
+    p_repair = sub.add_parser(
+        "repair", help="versioned repair: validated derived version, original untouched"
+    )
+    p_repair.add_argument("--archive-dir", required=True)
+    p_repair.add_argument("--json", action="store_true", default=True)
+    p_repair.set_defaults(func=cmd_repair_cli)
 
     return parser
 

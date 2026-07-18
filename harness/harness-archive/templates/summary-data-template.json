@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2.2",
+  "schemaVersion": "2.3",
   "changeName": "<change-name>",
   "businessGoal": "本次变更为了做什么",
   "finalStatus": "OK | WARN | CONDITIONAL_OK | FAIL",
@@ -119,7 +119,11 @@
         "phase": "archive"
       }
     ],
-    "validationIssues": []
+    "validationIssues": [],
+    "sourceConsistency": {
+      "ok": true,
+      "issues": []
+    }
   },
   "uncommittedTestEvidence": [],
   "maintenanceNotes": [],

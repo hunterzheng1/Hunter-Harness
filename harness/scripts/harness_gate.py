@@ -751,7 +751,7 @@ def append_phase_event(
             if key not in event and value is not None:
                 event[key] = value
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-    lock_path = change_dir / "events.ndjson.lock"
+    lock_path = events_file.with_name(events_file.name + ".lock")
     with he.event_file_lock(lock_path):
         he.atomic_append_line(events_file, line)
     rendered = False

@@ -10,6 +10,7 @@ import {
 import { parse as parseYaml } from "yaml";
 
 import {
+  collectFreshness,
   refreshProject,
   uuidV7,
   type HarnessProfile,
@@ -222,6 +223,15 @@ export async function runRefresh(
       forceManaged: options.forceManaged === true
     });
     const output = summarize(result);
+    // per-agent identity + freshness 六态（task 12）：legacy 字段不动，新增 freshness 数组。
+    const freshness = await collectFreshness({
+      projectRoot: dependencies.cwd,
+      resourcesRoot: dependencies.resourcesRoot,
+      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
+      agents: targetAgents,
+      codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface)
+    });
+    output.freshness = freshness.agents;
     if (options.json === true) {
       dependencies.stdout(serializeCliResult({ ...output, request_id: requestId }));
     } else {

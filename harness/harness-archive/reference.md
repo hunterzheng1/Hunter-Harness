@@ -12,7 +12,7 @@ description: harness-archive 的归档流程、manifest、summary-data、final-s
 - **Phase 3 执行归档**：
   1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
   2. `meta/archive-meta.md` 由 finalize 生成（与 summary `finalStatus` 同源）；禁止手写。维护者结论写入 events 即可。finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。
-  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。
+  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。finalize 为冻结优先（freeze-first）：collect 前先 fsync 事件并写 `evidence/evidence-cutoff.json`，cutoff 后不再追加事件；随后依次执行 source consistency（层 1，写入 `reportPipeline.sourceConsistency`）→ render → renderer consistency（层 2），任一层失败即恢复原目录并非零退出。
 - **Phase 4 验证与提示**：见 `checklist.md` 归档后验证项。
 
 ## manifest 生成
@@ -39,7 +39,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 
 ## summary-data.json 与 harness_archive.py
 
-`reports/final/summary-data.json` 只能由 `harness_archive.py finalize`（归档时）或 `replay`（回放时）生成/校验；**禁止 agent 临场手写或拼装等价数据**，也不存在独立的 `report collect`/`report validate` CLI（参见 `../protocols/report-pipeline-protocol.md` 与 `templates/summary-data-template.json` schemaVersion 2.2）。必须保留原 final report 维度。必须包含：
+`reports/final/summary-data.json` 只能由 `harness_archive.py finalize`（归档时）或 `replay`（回放时）生成/校验；**禁止 agent 临场手写或拼装等价数据**，也不存在独立的 `report collect`/`report validate` CLI（参见 `../protocols/report-pipeline-protocol.md` 与 `templates/summary-data-template.json` schemaVersion 2.3）。必须保留原 final report 维度。必须包含：
 
 - `businessGoal`：本次变更为了做什么；
 - `stageStatus`：plan/run/test/review/submit/archive；
@@ -67,6 +67,16 @@ powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-arch
 禁止模型临场手写大段 HTML。确需临时修 HTML，只能修模板，不得让统计数字脱离 `summary-data.json`。
 
 `validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不再作为独立 `report validate` CLI 调用）。finalize 在 validate error 存在时恢复原 `.harness/changes/<change>` 目录并 exit 非 0，绝不归档未通过校验的变更。
+
+## repair（归档后修复，不改写原版）
+
+归档后发现 source/renderer 不一致时，使用显式修复（`replay` 仍为只读）：
+
+```powershell
+python <skills-root>/scripts/harness_archive.py repair --archive-dir ".harness/archive/<archive-id>" --json
+```
+
+repair 在 archive 外生成候选版本，两层 validator 通过后写入不可变 `derived/v<N>/`（summary-data.json + final-summary.html + repair-record.json），并更新 `derived/authoritative.json` pointer；原 summary、HTML、manifest 不覆盖。知识层仅从 authoritative pointer 且 hash 校验通过的版本提取。
 
 ## archive-meta.md 模板
 

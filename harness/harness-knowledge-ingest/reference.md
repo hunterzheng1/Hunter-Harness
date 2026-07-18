@@ -145,6 +145,13 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sugge
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' promote --project '<project-root>' --id '<entry-id>' --note '<人工确认说明>'"
 ```
 
+**发布门禁（archive publication gate）**：promote / judge apply / autoPromote 只处理来自**已验证归档**的条目。以下来源归档会被阻断并在条目上标记 `lifecycle.publishBlocked`（ingest 仍可生成 quarantined candidate，但不得 active/promote）：
+
+- 归档 summary 缺少 `reportPipeline.sourceConsistency`（source consistency 未运行）或 `ok=false`；
+- `derived/authoritative.json` pointer 缺失、版本目录不可读，或 repair record / pointer 的 summary hash 不匹配（DEGRADED）。
+
+修复路径：先运行 `harness_archive.py repair` 生成通过两层 validator 的新 derived version，再重新 ingest（旧错误条目标记 superseded），之后 promote 才放行。
+
 将一条 `candidate` 提升为 `active`，写入：
 
 ```text

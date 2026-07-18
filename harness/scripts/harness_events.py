@@ -23,6 +23,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -99,12 +105,16 @@ def resolve_change_dir(raw: str) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def _state_dir(change_dir: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+
+
 def events_path(change_dir: Path) -> Path:
-    return change_dir / "events.ndjson"
+    return _state_dir(change_dir) / "events.ndjson"
 
 
 def execution_log_path(change_dir: Path) -> Path:
-    return change_dir / "logs" / "execution-log.md"
+    return _state_dir(change_dir) / "logs" / "execution-log.md"
 
 
 def archived_change_dir(change_dir: Path) -> Path | None:
@@ -177,6 +187,26 @@ def load_events(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"event at {path} line {line_no} is not an object")
         events.append(normalize_event(obj))
     return events
+
+
+def merge_event_files(paths: list[Path]) -> list[dict[str, Any]]:
+    """Union events from multiple NDJSON files by event ID (UT-001/RET-05).
+
+    Each event ID appears exactly once; first-seen copy wins. Missing IDs are
+    kept keyed by (file index, line number) so unidentified events are never
+    silently dropped.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths:
+        for event in load_events(Path(path)):
+            event_id = str(event.get("id") or "").strip()
+            if event_id:
+                if event_id in seen:
+                    continue
+                seen.add(event_id)
+            merged.append(event)
+    return merged
 
 
 def atomic_append_line(path: Path, line: str) -> None:
@@ -433,14 +463,82 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
         elif etype == "phase.end":
             end_ts = event.get("timestamp")
     if start_ts and end_ts:
-        stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
-        effective_end = stamps[-1] if stamps else end_ts
-        return duration_ms_between(start_ts, effective_end)
+        # Closed phases end at the matching phase.end. Late events appended
+        # after closure are reported separately (late_event_stats) and never
+        # extend the closed duration (RET-21).
+        return duration_ms_between(start_ts, end_ts)
     # Fallback: first to last timestamp in the phase bucket.
     stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
     if len(stamps) >= 2:
         return duration_ms_between(stamps[0], stamps[-1])
     return None
+
+
+def late_event_stats(phase_events: list[dict[str, Any]]) -> dict[str, int]:
+    """Count events recorded after the closing phase.end (RET-21)."""
+    end_ts = None
+    for event in phase_events:
+        if event.get("type") == "phase.end":
+            end_ts = event.get("timestamp")
+    if not end_ts:
+        return {"lateEventCount": 0, "lateEventSpanMs": 0}
+    late_stamps = []
+    seen_end = False
+    for event in phase_events:
+        if event.get("type") == "phase.end" and not seen_end:
+            seen_end = True
+            continue
+        if seen_end and event.get("timestamp"):
+            late_stamps.append(event["timestamp"])
+    if not late_stamps:
+        return {"lateEventCount": 0, "lateEventSpanMs": 0}
+    span = duration_ms_between(end_ts, late_stamps[-1]) or 0
+    return {"lateEventCount": len(late_stamps), "lateEventSpanMs": span}
+
+
+def attempt_invocations(phase_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-attempt invocation view: attempt, status, durationMs (RET-22)."""
+    invocations: list[dict[str, Any]] = []
+    for attempt in split_phase_attempts(phase_events):
+        events_in = attempt.get("events") or []
+        start_ts = None
+        end_ts = None
+        status = None
+        for event in events_in:
+            if event.get("type") == "phase.start" and start_ts is None:
+                start_ts = event.get("timestamp")
+            elif event.get("type") == "phase.end":
+                end_ts = event.get("timestamp")
+                status = event.get("status", status)
+        duration = None
+        if start_ts and end_ts:
+            duration = duration_ms_between(start_ts, end_ts)
+        invocations.append(
+            {
+                "attempt": attempt.get("attempt"),
+                "status": status,
+                "durationMs": duration,
+            }
+        )
+    return invocations
+
+
+def canonical_phase_timing(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Single reducer for every duration view (RET-20).
+
+    activeExecutionMs: phase.start → matching phase.end (closed contract).
+    wallClockSpanMs: first → last timestamp in the bucket, late events included.
+    """
+    stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
+    active = phase_duration_ms(phase_events)
+    late = late_event_stats(phase_events)
+    wall = duration_ms_between(stamps[0], stamps[-1]) if len(stamps) >= 2 else active
+    return {
+        "activeExecutionMs": active,
+        "wallClockSpanMs": wall,
+        "lateEventCount": late["lateEventCount"],
+        "lateEventSpanMs": late["lateEventSpanMs"],
+    }
 
 
 def render_command_block(commands: list[dict[str, Any]]) -> list[str]:
@@ -686,7 +784,7 @@ def cmd_append(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
     path = events_path(change_dir)
-    lock_path = change_dir / "events.ndjson.lock"
+    lock_path = path.with_name(path.name + ".lock")
 
     # §6.1/§6.2: 普通 append = 加锁 -> 追加一行 -> fsync -> 解锁，不 load 历史、不渲染。
     # new_event_id 用完整 uuid，无需扫描去重。锁覆盖 atomic_append_line 的

@@ -315,3 +315,39 @@ ledger 的 `status` 与 final-summary 展示状态对应：
 ### 9.5 v1→v2 兼容
 
 v1 ledger 可读；entry 缺 v2 字段时 `can-reuse` 返回 `MISSING_V2_FIELDS`（insufficient-evidence），**不静默升级证据**。重新 `record`（自动补 v2 字段）后恢复复用。diffHash 算法升级后旧 ledger 一次性失效，不危险复用。
+
+## 十、Ledger v3（contract-gated，2026-07 起）
+
+v3 仅在 change contract 为 schemaVersion ≥ 2（或声明 `stateOwnership.runtimeRoot`，即 split-v1 布局）时启用；legacy v1 契约与无契约目录**行为完全不变**（零回归，旧 362 测试套件证明）。
+
+### 10.1 强制顶层身份
+
+v2 契约下 `record` 写入前强制解析并校验顶层身份字段，缺失且不可解析时**非零退出、不写账本**：
+
+| 字段 | 解析顺序 |
+|------|------|
+| `schemaVersion` | 固定 `3` |
+| `repositoryId` | `harness_paths.repository_identity(repo_root)`（远端规范化 + root commit；无远端回退 git common-dir，跨 worktree 稳定，RET-09） |
+| `changeName` | change 目录名 |
+| `baseCommit` | `--base-commit` → 既有 ledger 值 → `git rev-parse --verify HEAD` |
+| `currentHead` | `git rev-parse --verify HEAD`（验证执行时） |
+| `diffHash` | `--diff-hash` → 既有 ledger 值 → 按 ownership 范围重算（§10.3） |
+| `ownershipHash` | 契约 `ownership` 段规范化 JSON 的 sha256 |
+
+### 10.2 类型化 metrics 与 applicability
+
+- v2 契约下 `--metrics-json` 必须通过 `validate_metrics` 类型校验：`unitTest`/`unitTestFull` 要求 `total/passed/failed`；`apiContract` 要求 `scenariosTotal/passed/failed`；`browserE2E` 要求 `total/passed/failed`；`dbCompatibility` 要求 `applicability ∈ APPLICABLE|NOT_APPLICABLE`，`NOT_APPLICABLE` 必须带 `reason`（UT-005/RET-15、UT-006/RET-16）。未知 verification 类型放行。
+- `--applicability APPLICABLE|NOT_APPLICABLE` + `--applicability-reason` 写入 entry 级 applicability；`NOT_APPLICABLE` 无 reason 直接报错。applicability **既不计入通过也不计入失败**（UT-012/RET-24）。
+- legacy 契约不校验 metrics 形状（旧的 `{"run","failures"}` 松散格式继续可用）。
+
+### 10.3 ownership 范围 diffHash（RET-18）
+
+`compute_ownership_diff(repo_root, base, change_dir)` 只对本变更 ownership 范围内的路径计算 diffHash：
+
+- 排除 `.harness/state/**` 动态运行时证据（计入 `excludedRuntimeCount`）
+- 他变更路径（`.harness/changes/<other>/`、`.harness/state/changes/<other>/`）单列 `foreignPaths`，不混入哈希
+- 输出 `diffHash/files/foreignPaths/excludedRuntimeCount/ownedFileCount/ownershipHash`
+
+### 10.4 原子写入
+
+`write_ledger` 采用 tmp → fsync → `os.replace`；replace 失败时旧账本字节不变、不留 `.tmp` 残骸。所有写路径（record / 其他命令）统一走原子写。

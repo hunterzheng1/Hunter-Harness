@@ -63,7 +63,7 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 ### 提交流程（步骤 0–7）
 
 0. **启动准备** — `harness_change.py resolve` 确定变更名；**`harness_gate.py begin --phase submit --change <id>`**；读 ledger，以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 计算 diffHash + post-test 7 类分类（禁止手写 ledger / 手工 phase.end）
-1. **合并最新代码** — 主目录：`stash` → `pull --rebase` → `stash pop`；**worktree：N/A**（远端同步在合并段主分支完成）
+1. **合并最新代码** — 主目录与 worktree 均**不在业务工作区 stash/pull**；远端同步由合并段 integration transaction 在隔离 integration worktree 内完成（见「worktree 合并流程」）；**正常路径禁止 `git stash` / `stash pop`**
 2. **最终验证** — ledger 复用优先；**提交前最终门禁只调 `can-reuse`**（删除与 coverage 冲突的二次全量门禁）：`harness_ledger.py can-reuse --verification unitTestFull --scope module --project . --profile-input unitTestFull --command <resolved commands.unitTestFull.command>`。`--command` **按 profile key resolve**：读 `build-profile.json` 的 `commands.unitTestFull.command`（v2），或 `harness_profile.py resolve --project . --key unitTestFull --json` 取 resolved command，**不复制示例模块名**（文档示例只展示 key）。`--profile-input unitTestFull` 从 `verificationInputs.unitTestFull`（v2 由 `commands.unitTestFull.inputs` 派生）展开依赖闭包，**禁止用仅含 staged 文件的 `--files` 快捷方式**冒充全量闭包。`reuse=true` → 不再执行二次全量测试；仅 `reuse=false` 时执行**同一 resolved verification**（profile `unitTestFull` 命令），成功后用同一文件集、command、`scope=module` 经 **`harness_ledger.py record`** 写回 ledger `unitTestFull` 项。增量 `unitTest` 永远不能冒充 `unitTestFull` 门禁。
 3. **.gitignore + 精确暂存** ⚠️ — 检查 `.harness/` 在 `.gitignore`；**禁止 `git add -A`**。若存在 `evidence/test-tracking.json`，先执行 `python <skills-root>/scripts/harness_test_guard.py stage --project . --change-dir ".harness/changes/<change-name>" --json`；失败即硬停止。无 manifest 时不使用 `-f`。manifest 之外的文件按精确业务路径正常暂存，**禁止全局 force-add**。
 4. **提交方式** — 主目录：AskUserQuestion 三选项（commit+push / 仅本地 / 取消）；**worktree：固定仅本地 commit**
@@ -75,15 +75,20 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 
 ### worktree 合并流程（requested=true，commit 后自动执行）
 
+合并由 `harness_integration.py` transaction 执行：隔离 integration worktree + journal + 保护 ref + 精确清理。skill 只负责确认提交信息、调用子命令、展示结构化结果；**禁止手工 `checkout --ours/--theirs`**。
+
 M0. append `phase.start`（phase=merge，若从 `/harness-merge` 重入则 note 标注重入）
-M1. **切回主目录主分支** — `symbolic-ref origin/HEAD` 读主分支名；必要时 stash；确认 checkout 主分支
-M2. **fetch + pull --rebase** — 记录是否引入他人提交（决定 M4 是否重跑验证）
-M3. **`git merge --no-ff worktree/<change-name>`** — 合并消息可让用户改文案，**方式固定 --no-ff**
-M4. **冲突处理** — 若 `CONFLICT` → **停下**，列出冲突文件，提示用户手动解决后重跑；**禁止 `checkout --theirs/--ours`**；状态 🟡WARN，不得宣称合并成功
-M5. **合并后验证** — 他人提交引入 → 必须重跑构建+测试；否则 ledger 复用 🔁REUSED
-M6. **push 主分支** — fetch 后 `log HEAD..@{u}` 非空则回 M2；否则 push，记录 `mergeFinalHash`
-M7. **清理 worktree** — `worktree remove` + `branch -D`（Windows 兜底见 `reference.md`）；更新 `worktree.json`（`created=false` + removedAt 等）
-M8. **ledger + 收尾** — 经 `harness_ledger.py record` 写入 `mergeFinalHash`；**`harness_gate.py close --phase merge`**（禁止手工 phase.end）；提示 `/harness-archive`
+M1. **preflight** — `harness_integration.py preflight --change <id> --run-id <run> --feature-branch worktree/<id> --target-branch <主分支> --temp-root <task temp>`；获取 integration lock、写 journal 与保护 ref；锁被持有即停止
+M2. **prepare** — fetch 后从已提交 target 创建临时 integration worktree；primary 的 dirty 状态不被触碰
+M3. **merge** — `--no-ff` 合并 feature 分支；merge diff 出现其他 Change 的 contract/runtime 路径 → 结构化拒绝；冲突 → step FAILED，**停下**列出冲突文件，人工解决后以 `recover` 续跑（已完成步骤返回 REUSED，不重复 merge/push）
+M4. **verify** — 在 integration worktree 内执行组合态验证；他人提交引入或 ledger 不可复用时必跑
+M5. **push** — 仅在验证身份与远端基线仍匹配时 push；远端漂移 → `TARGET_MOVED` 结构化失败，不继续
+M6. **cleanup** — `git worktree remove --force` 精确路径 + 临时分支 + （push 成功后）保护 ref；释放 integration lock；失败保留 journal 与诊断证据；更新 `worktree.json`（`created=false` + removedAt）
+M7. **ledger + 收尾** — 经 `harness_ledger.py record` 写入 `mergeFinalHash`（= journal `pushedHead`）；**`harness_gate.py close --phase merge`**（禁止手工 phase.end）；提示 `/harness-archive`
+
+> Ledger v3（v2 契约 / split-v1 布局起）：`record` 强制顶层身份（`schemaVersion=3/repositoryId/baseCommit/currentHead/diffHash/ownershipHash`，缺失非零退出、不写账本）与 typed metrics；legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
+
+正常路径**禁止创建、应用或删除仓库级 stash**。中断恢复：`harness_integration.py status` 读 journal，`recover` 从首个未完成步骤续跑；protection refs 只在 push 成功后的 cleanup 删除。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]

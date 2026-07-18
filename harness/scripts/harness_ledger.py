@@ -15,10 +15,18 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -143,6 +151,22 @@ def _git_bytes(args: list[str], cwd: Path) -> bytes:
     return proc.stdout
 
 
+def _git_text(cwd: Path, *args: str) -> str | None:
+    """Run git, return stripped stdout; None on non-zero exit."""
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip()
+
+
 def _root_commit(repo_root: Path) -> str | None:
     out = _git_bytes(["rev-list", "--max-parents=0", "HEAD"], repo_root)
     lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
@@ -195,10 +219,12 @@ def _tracked_test_contents(
     if not candidate.is_absolute():
         candidate = repo_root / candidate
     change_root = candidate.resolve()
-    if not _inside(change_root, repo_root):
+    main_root = harness_paths.resolve_main_project_root(repo_root)
+    if not (_inside(change_root, repo_root) or _inside(change_root, main_root)):
         raise ValueError("TEST_TRACKING_CHANGE_DIR_OUTSIDE_PROJECT")
-    manifest_path = (change_root / TEST_TRACKING_REL).resolve()
-    if not _inside(manifest_path, change_root):
+    state_root = _state_dir(change_root)
+    manifest_path = (state_root / TEST_TRACKING_REL).resolve()
+    if not _inside(manifest_path, state_root):
         raise ValueError("TEST_TRACKING_MANIFEST_OUTSIDE_CHANGE")
     if not manifest_path.is_file():
         return {}, None
@@ -206,6 +232,8 @@ def _tracked_test_contents(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"TEST_TRACKING_MANIFEST_INVALID: {exc}") from exc
+    if isinstance(manifest, dict) and manifest.get("schemaVersion") == 2:
+        return _tracked_test_contents_v2(repo_root, manifest, manifest_path)
     if (
         not isinstance(manifest, dict)
         or manifest.get("schemaVersion") != 1
@@ -245,6 +273,87 @@ def _tracked_test_contents(
             raise ValueError(f"TEST_TRACKING_HASH_DRIFT: {rel}")
         contents[rel] = content
     return {rel: contents[rel] for rel in sorted(contents)}, str(manifest_path)
+
+
+def _tracked_test_contents_v2(
+    repo_root: Path,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+) -> tuple[dict[str, bytes], str | None]:
+    """Validate a schema-2 manifest: repositoryId equality + logical hashes."""
+    if manifest.get("mode") != "force-track-touched":
+        raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+    repository_id = manifest.get("repositoryId")
+    if not isinstance(repository_id, str) or not repository_id.startswith("sha256:"):
+        raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+    if repository_id != harness_paths.repository_identity(repo_root):
+        raise ValueError("TEST_TRACKING_REPOSITORY_MISMATCH")
+    entries = manifest.get("files")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("TEST_TRACKING_MANIFEST_INVALID: EMPTY_FILES")
+
+    contents: dict[str, bytes] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+        rel = item.get("path")
+        expected = item.get("logicalHash") or item.get("binaryHash")
+        if (
+            not isinstance(rel, str)
+            or not rel
+            or not isinstance(expected, str)
+            or not (expected.startswith("gitblob:") or expected.startswith("sha256:"))
+            or item.get("reason") not in TEST_TRACKING_REASONS
+            or type(item.get("ignored")) is not bool
+            or not isinstance(item.get("introducedBy"), str)
+            or not isinstance(item.get("touchedBy"), list)
+            or item.get("commitScope") not in ("current-change", "foreign-change")
+        ):
+            raise ValueError("TEST_TRACKING_MANIFEST_INVALID")
+        raw_path = Path(rel)
+        resolved = (repo_root / raw_path).resolve()
+        if raw_path.is_absolute() or not _inside(resolved, repo_root):
+            raise ValueError(f"TEST_TRACKING_PATH_OUTSIDE_PROJECT: {rel}")
+        normalized = resolved.relative_to(repo_root).as_posix()
+        if normalized != rel or not resolved.is_file():
+            raise ValueError(f"TEST_TRACKING_FILE_INVALID: {rel}")
+        content = resolved.read_bytes()
+        actual = _logical_file_hash(repo_root, rel, content)
+        if actual != expected:
+            raise ValueError(f"TEST_TRACKING_HASH_DRIFT: {rel}")
+        contents[rel] = content
+    return {rel: contents[rel] for rel in sorted(contents)}, str(manifest_path)
+
+
+def _logical_file_hash(repo_root: Path, rel: str, content: bytes) -> str:
+    """Mirror of harness_test_guard.logical_file_hash for validation."""
+    attr = subprocess.run(
+        ["git", "check-attr", "text", "--", rel],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    attr_out = attr.stdout.strip() if attr.returncode == 0 else ""
+    byte_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+    if attr_out.endswith(": unset") or b"\x00" in content:
+        return byte_hash
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return byte_hash
+    proc = subprocess.run(
+        ["git", "hash-object", "--path", rel, "--stdin"],
+        input=content,
+        capture_output=True,
+        cwd=str(repo_root),
+        check=False,
+    )
+    if proc.returncode != 0:
+        return byte_hash
+    return "gitblob:" + proc.stdout.decode("ascii").strip()
 
 
 def compute_diff_hash(
@@ -367,11 +476,20 @@ def expand_profile_input_files(
     return sorted(seen), None
 
 
+def _state_dir(change_dir: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+
+
 def ledger_candidates(change_dir: Path) -> list[Path]:
-    return [
-        change_dir / "evidence" / "verification-ledger.json",
-        change_dir / "verification-ledger.json",
-    ]
+    state = _state_dir(change_dir)
+    contract = Path(change_dir)
+    candidates = [state / "evidence" / "verification-ledger.json"]
+    if state != contract:
+        candidates.append(contract / "evidence" / "verification-ledger.json")
+    candidates.append(state / "verification-ledger.json")
+    if state != contract:
+        candidates.append(contract / "verification-ledger.json")
+    return candidates
 
 
 def find_ledger_path(change_dir: Path) -> Path | None:
@@ -382,8 +500,9 @@ def find_ledger_path(change_dir: Path) -> Path | None:
 
 
 def preferred_write_path(change_dir: Path) -> Path:
-    # New writes always go to evidence/ (protocol preferred path).
-    return change_dir / "evidence" / "verification-ledger.json"
+    # New writes always go to evidence/ (protocol preferred path); split-v1
+    # changes route to the dynamic state root.
+    return _state_dir(change_dir) / "evidence" / "verification-ledger.json"
 
 
 def load_ledger(change_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:
@@ -402,9 +521,204 @@ def load_ledger(change_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:
 
 
 def write_ledger(path: Path, data: dict[str, Any]) -> None:
+    """Atomic ledger write: temp -> fsync -> replace (ledger v3)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    path.write_text(payload, encoding="utf-8", newline="\n")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+LEDGER_SCHEMA_VERSION = 3
+LEDGER_IDENTITY_FIELDS = (
+    "repositoryId",
+    "changeName",
+    "baseCommit",
+    "currentHead",
+    "diffHash",
+    "ownershipHash",
+)
+
+
+def validate_ledger_identity(ledger: dict[str, Any]) -> list[str]:
+    """Missing/invalid top-level identity fields (ledger v3)."""
+    missing: list[str] = []
+    if not isinstance(ledger, dict):
+        return ["ledger"]
+    if ledger.get("schemaVersion") != LEDGER_SCHEMA_VERSION:
+        missing.append("schemaVersion")
+    for field in LEDGER_IDENTITY_FIELDS:
+        value = ledger.get(field)
+        if not isinstance(value, str) or not value.strip():
+            missing.append(field)
+    return missing
+
+
+def _contract_is_v2(change_dir: Path) -> bool:
+    try:
+        contract = harness_paths.load_change_contract(change_dir)
+    except (OSError, ValueError):
+        return False
+    if harness_paths.contract_layout_kind(contract) == "split-v1":
+        return True
+    version = contract.get("schemaVersion")
+    return isinstance(version, int) and version >= 2
+
+
+def ownership_hash(contract: dict[str, Any]) -> str:
+    ownership = contract.get("ownership") or {}
+    canonical = json.dumps(ownership, ensure_ascii=False, sort_keys=True)
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_METRICS_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
+    "unitTest": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
+    "unitTestFull": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
+    "apiContract": {"required": ("scenariosTotal", "passed", "failed"), "optional": ("blocked",)},
+    "browserE2E": {"required": ("total", "passed", "failed"), "optional": ("skipped", "retries")},
+}
+
+
+def validate_metrics(verification: str, metrics: Any) -> list[str]:
+    """Typed metrics schema check; unknown verification types pass through."""
+    problems: list[str] = []
+    if not isinstance(metrics, dict):
+        return ["metrics must be an object"]
+    if verification == "dbCompatibility":
+        applicability = metrics.get("applicability")
+        if applicability not in ("APPLICABLE", "NOT_APPLICABLE"):
+            return ["dbCompatibility.applicability must be APPLICABLE|NOT_APPLICABLE"]
+        if applicability == "NOT_APPLICABLE":
+            reason = metrics.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                problems.append("dbCompatibility.reason required for NOT_APPLICABLE")
+        else:
+            if not isinstance(metrics.get("status"), str) or not metrics["status"]:
+                problems.append("dbCompatibility.status required for APPLICABLE")
+        return problems
+    schema = _METRICS_SCHEMAS.get(verification)
+    if schema is None:
+        return problems
+    allowed = set(schema["required"]) | set(schema["optional"])
+    for field in schema["required"]:
+        value = metrics.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            problems.append(f"metrics.{field} must be a non-negative int")
+    for field, value in metrics.items():
+        if field not in allowed:
+            problems.append(f"metrics.{field} is not a {verification} field")
+        elif not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            problems.append(f"metrics.{field} must be a non-negative int")
+    return problems
+
+
+def build_applicability_entry(value: str, reason: str | None = None) -> dict[str, Any]:
+    if value not in ("APPLICABLE", "NOT_APPLICABLE"):
+        raise ValueError("applicability must be APPLICABLE|NOT_APPLICABLE")
+    if value == "NOT_APPLICABLE" and not (isinstance(reason, str) and reason.strip()):
+        raise ValueError("NOT_APPLICABLE requires a scope reason")
+    entry: dict[str, Any] = {"applicability": value}
+    if reason and reason.strip():
+        entry["reason"] = reason.strip()
+    return entry
+
+
+def applicability_counts_as_success(entry: dict[str, Any]) -> bool:
+    """Applicability never contributes to success counters (RET-24)."""
+    return False
+
+
+def applicability_counts_as_failure(entry: dict[str, Any]) -> bool:
+    """NOT_APPLICABLE is not a failure; status decides for APPLICABLE."""
+    return False
+
+
+_DYNAMIC_OWN_DIRS = ("events.ndjson", "logs", "evidence", "reports", "runtime", "backups")
+
+
+def _classify_ownership_path(
+    rel: str, change_name: str, ownership: dict[str, Any]
+) -> str:
+    """owned | excludedRuntime | foreign for a repo-relative path."""
+    normalized = rel.replace("\\", "/")
+    if normalized.startswith(".harness/state/changes/"):
+        owner = normalized.split("/")[3] if len(normalized.split("/")) > 3 else ""
+        return "excludedRuntime" if owner == change_name else "foreign"
+    if normalized.startswith(".harness/state/"):
+        return "excludedRuntime"
+    if normalized.startswith(".harness/changes/"):
+        parts = normalized.split("/")
+        owner = parts[2] if len(parts) > 2 else ""
+        if owner and owner != change_name:
+            return "foreign"
+        remainder = "/".join(parts[3:]) if len(parts) > 3 else ""
+        head = remainder.split("/")[0] if remainder else ""
+        if remainder in _DYNAMIC_OWN_DIRS or head in _DYNAMIC_OWN_DIRS:
+            return "excludedRuntime"
+    for excluded in ownership.get("excludedPaths") or []:
+        if normalized.startswith(str(excluded).rstrip("/") + "/") or normalized == str(excluded).rstrip("/"):
+            return "excludedRuntime"
+    return "owned"
+
+
+def compute_ownership_diff(
+    repo_root: Path, *, base: str, change_dir: Path
+) -> dict[str, Any]:
+    """diffHash over the change's ownership scope only (RET-18).
+
+    Excludes .harness/state/** and dynamic evidence; reports foreign change
+    paths separately instead of folding them into the hash.
+    """
+    repo_root = Path(repo_root).resolve()
+    change_dir = Path(change_dir).resolve()
+    try:
+        contract = harness_paths.load_change_contract(change_dir)
+    except (OSError, ValueError):
+        contract = {}
+    ownership = contract.get("ownership") or {}
+    raw = _git_text(repo_root, "diff", "--name-only", base) or ""
+    owned: list[str] = []
+    foreign: list[str] = []
+    excluded_runtime = 0
+    for line in raw.splitlines():
+        rel = line.strip()
+        if not rel:
+            continue
+        verdict = _classify_ownership_path(rel, change_dir.name, ownership)
+        if verdict == "foreign":
+            foreign.append(rel)
+        elif verdict == "excludedRuntime":
+            excluded_runtime += 1
+        else:
+            owned.append(rel)
+    owned.sort()
+    foreign.sort()
+
+    hasher = hashlib.sha256()
+    for rel in owned:
+        hasher.update(rel.encode("utf-8"))
+        hasher.update(b"\x00")
+        content_path = (repo_root / rel).resolve()
+        if content_path.is_file() and _inside(content_path, repo_root):
+            hasher.update(hashlib.sha256(content_path.read_bytes()).hexdigest().encode("ascii"))
+        else:
+            hasher.update(b"<deleted>")
+        hasher.update(b"\x00")
+    return {
+        "diffHash": "sha256:" + hasher.hexdigest(),
+        "files": owned,
+        "foreignPaths": foreign,
+        "excludedRuntimeCount": excluded_runtime,
+        "ownedFileCount": len(owned),
+        "ownershipHash": ownership_hash(contract),
+    }
 
 
 def normalize_status(raw: str) -> str:
@@ -824,10 +1138,27 @@ def cmd_record(args: argparse.Namespace) -> int:
                 return emit_error("invalid --metrics-json", as_json=as_json)
             if not isinstance(metrics_obj, dict):
                 return emit_error("invalid --metrics-json", as_json=as_json)
+            if _contract_is_v2(change_dir):
+                # Typed metrics schemas are ledger v3 (contract-gated); legacy
+                # changes keep the loose run/failures shape (zero regression).
+                problems = validate_metrics(verification, metrics_obj)
+                if problems:
+                    return emit_error(
+                        "invalid metrics: " + "; ".join(problems), as_json=as_json
+                    )
             entry["metrics"] = metrics_obj
         elif "metrics" in entry:
             # Fresh record without metrics must not keep stale metrics from prev.
             entry.pop("metrics", None)
+        applicability_raw = getattr(args, "applicability", None)
+        if applicability_raw:
+            try:
+                entry["applicability"] = build_applicability_entry(
+                    str(applicability_raw).strip(),
+                    reason=getattr(args, "applicability_reason", None),
+                )
+            except ValueError as exc:
+                return emit_error(str(exc), as_json=as_json)
         if args.scope is not None and str(args.scope).strip():
             entry["scope"] = str(args.scope).strip()
         # No default scope: recording an incremental run as broad "module" scope
@@ -867,6 +1198,51 @@ def cmd_record(args: argparse.Namespace) -> int:
             ledger["stateDir"] = str(change_dir)
 
         out_path = preferred_write_path(change_dir)
+        if _contract_is_v2(change_dir):
+            # Ledger v3: forced top-level identity (RET-15/16, COM-002).
+            repo_root_raw = _git_text(change_dir, "rev-parse", "--show-toplevel")
+            if not repo_root_raw:
+                return emit_error(
+                    "record failed: change dir is not inside a git repository",
+                    as_json=as_json,
+                )
+            repo_root = Path(repo_root_raw).resolve()
+            try:
+                contract = harness_paths.load_change_contract(change_dir)
+            except (OSError, ValueError) as exc:
+                return emit_error(f"record failed: {exc}", as_json=as_json)
+            base_commit = getattr(args, "base_commit", None)
+            if not _nonempty_str(base_commit):
+                base_commit = ledger.get("baseCommit")
+            if not _nonempty_str(base_commit):
+                base_commit = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
+            current_head = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
+            diff_hash = getattr(args, "diff_hash", None)
+            if not _nonempty_str(diff_hash):
+                diff_hash = ledger.get("diffHash")
+            if not _nonempty_str(diff_hash) and _nonempty_str(base_commit):
+                try:
+                    diff_hash = compute_ownership_diff(
+                        repo_root, base=str(base_commit).strip(), change_dir=change_dir
+                    )["diffHash"]
+                except (OSError, ValueError, RuntimeError):
+                    diff_hash = None
+            ledger["schemaVersion"] = LEDGER_SCHEMA_VERSION
+            ledger["repositoryId"] = harness_paths.repository_identity(repo_root)
+            ledger["changeName"] = change_dir.name
+            if _nonempty_str(base_commit):
+                ledger["baseCommit"] = str(base_commit).strip()
+            if _nonempty_str(current_head):
+                ledger["currentHead"] = str(current_head).strip()
+            if _nonempty_str(diff_hash):
+                ledger["diffHash"] = str(diff_hash).strip()
+            ledger["ownershipHash"] = ownership_hash(contract)
+            missing = validate_ledger_identity(ledger)
+            if missing:
+                return emit_error(
+                    "ledger identity incomplete: " + ", ".join(missing),
+                    as_json=as_json,
+                )
         write_ledger(out_path, ledger)
     except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
         return emit_error(f"record failed: {exc}", as_json=as_json)
@@ -1030,6 +1406,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--metrics-json",
         default=None,
         help='structured counts, e.g. \'{"run":155,"failures":0}\' or \'{"total":3,"passed":3}\'',
+    )
+    p_record.add_argument(
+        "--base-commit",
+        default=None,
+        help="ledger v3: base commit for identity (default: existing ledger value, else HEAD)",
+    )
+    p_record.add_argument(
+        "--diff-hash",
+        default=None,
+        help="ledger v3: precomputed ownership diff hash (default: existing, else computed)",
+    )
+    p_record.add_argument(
+        "--applicability",
+        choices=("APPLICABLE", "NOT_APPLICABLE"),
+        default=None,
+        help="ledger v3: applicability of this verification to the change",
+    )
+    p_record.add_argument(
+        "--applicability-reason",
+        default=None,
+        help="ledger v3: scope reason (required when --applicability NOT_APPLICABLE)",
     )
     p_record.set_defaults(func=cmd_record)
 

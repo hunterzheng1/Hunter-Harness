@@ -75,8 +75,8 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 | state 目录 | `.harness/state/baseline/` 存在（internal_state） | ✅OK | 无需操作 |
 | codebase map | `.harness/codebase/map/` 状态 | — | 见第 3 步 |
 | 整体缺失 | `project.yaml` 与 `context-index.json` 均不存在 | ❌FAIL(未初始化) | 执行 `hunter-harness init`（见下方风险规程） |
-| .gitignore 选择性跟踪 | 未整条忽略 `.harness/`：user_editable（project.yaml/knowledge/）、generated_reviewable（codebase/map）多需跟踪；internal_state（state/）、generated_cache（cache/、generated/、reports/）不跟踪 | ✅OK | 无需操作 |
-| .gitignore 整体忽略 | `.gitignore` 含整条 `.harness/` | 🟡WARN(过度忽略) | 提示按 file-policy 拆分跟踪策略，而非整体忽略 |
+
+> sync 不读取、不修改也不建议修改项目 `.gitignore` 策略（RET-34/35）：三种跟踪策略（整体忽略 / 选择性跟踪 / 完全跟踪）下完整性结论相同，新鲜度由 post-adaptation projection 判定，与 Git 策略无关。
 
 > ⚠️ **`hunter-harness init` 风险规程**（`.harness/` 未初始化时触发）：
 > 1. **预览**：`node packages/cli/dist/bin.js --non-interactive --dry-run --adapter claude-code --profile general --json`，确认将写入的路径清单与 `project_id`（`null` = 未绑服务器，本地自治理）。

@@ -145,14 +145,17 @@ class InstallDiffTests(unittest.TestCase):
         self.assertTrue(Path(result["backup"]).is_dir())
         self.assertTrue((target / "harness-demo" / "SKILL.md").is_file())
 
-    def test_diff_detects_outdated_file(self) -> None:
-        target = self.project / ".claude" / "skills"
-        hd.cmd_install(self.out, self.project, target)
-        skill = target / "harness-demo" / "SKILL.md"
-        skill.write_text(skill.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
-        diff = hd.cmd_diff(self.out, self.project, target)
-        self.assertTrue(diff["stale"])
-        self.assertIn("harness-demo/SKILL.md", diff["outdated"])
+    def test_diff_subcommand_removed(self) -> None:
+        """RET-35/task 13：raw build vs installed 字节比较已删除——post-adaptation
+        projection 才是正式比较入口；deploy CLI 不得再暴露 diff。"""
+        parser = hd.build_parser()
+        group = getattr(parser, "_subparsers", None)
+        actions = getattr(group, "_group_actions", []) if group is not None else []
+        sub_action = actions[0] if actions else None
+        self.assertIsNotNone(sub_action)
+        choices = set(getattr(sub_action, "choices", {}).keys())
+        self.assertNotIn("diff", choices, "diff subcommand must be removed")
+        self.assertFalse(hasattr(hd, "cmd_diff"), "cmd_diff must be removed")
 
     def test_core_hash_covers_runtime_reference_files(self) -> None:
         _write(self.root / "harness-demo" / "reference.md", "first\n")
@@ -371,29 +374,6 @@ class AgentAdapterBuildTests(unittest.TestCase):
         hd.cmd_build(self.root, out, None, agent="codebuddy")
         body = (out / "agents" / "demo-agent.md").read_text(encoding="utf-8")
         self.assertIn("codebuddy override", body)
-
-
-class DiffExtraStaleTests(unittest.TestCase):
-    """UT-031: cmd_diff stale must include extra files (design §3.8 要点3)."""
-
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="deploy-diff-extra-"))
-        self.root = _fixture_root(self.tmp)
-        self.out = self.tmp / "build-out"
-        hd.cmd_build(self.root, self.out, None)
-        self.project = self.tmp / "project"
-        self.project.mkdir()
-
-    def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_diff_extra_file_marks_stale(self) -> None:
-        target = self.project / ".claude" / "skills"
-        hd.cmd_install(self.out, self.project, target)
-        _write(target / "stray-extra.md", "stray\n")
-        diff = hd.cmd_diff(self.out, self.project, target)
-        self.assertTrue(diff["stale"], "extra file must mark diff stale")
-        self.assertIn("stray-extra.md", diff["extra"])
 
 
 class InstallConservativeTests(unittest.TestCase):
