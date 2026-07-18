@@ -950,6 +950,15 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertIn("activeLifecycle auto-demotion", demoted["lifecycle"]["demotionReason"])
             self.assertIn("auto demotion:", "\n".join(demoted["lifecycle"]["staleReasons"]))
 
+            current = self.run_cli("sync", "--project", str(project))
+            self.assertEqual(current.returncode, 0, current.stderr)
+            current_payload = json.loads(current.stdout)
+            self.assertTrue(
+                current_payload["upToDate"],
+                "an ingest that mutates preserved lifecycle state must persist its final inputs hash",
+            )
+            self.assertEqual(current_payload["reasons"], [])
+
     def test_configured_validators_mark_active_stale_when_symbol_disappears(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = self.make_project(Path(tmp))
