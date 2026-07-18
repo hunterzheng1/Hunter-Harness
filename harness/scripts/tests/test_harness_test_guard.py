@@ -230,6 +230,34 @@ class TestGuardTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "TEST_PATH_NOT_ALLOWED")
 
+    def test_begin_prunes_excluded_roots_before_recursive_hashing(self) -> None:
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps(
+                {
+                    "excludedRoots": ["node_modules", ".git", ".harness"],
+                    "testTracking": {"paths": ["**/*.test.js"]},
+                }
+            ),
+        )
+        included = self.project / "src" / "included.test.js"
+        excluded = self.project / "node_modules" / "pkg" / "excluded.test.js"
+        self._write(included)
+        self._write(excluded)
+        hashed: list[Path] = []
+        real_sha256 = guard._sha256
+
+        def recording_sha256(path: Path) -> str:
+            hashed.append(path)
+            return real_sha256(path)
+
+        with mock.patch.object(guard, "_sha256", side_effect=recording_sha256):
+            result = guard.begin(self.project, self.change)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["files"], ["src/included.test.js"])
+        self.assertIn(included.resolve(), hashed)
+        self.assertNotIn(excluded.resolve(), hashed)
+
     @unittest.skipUnless(os.name == "nt", "Windows path comparison regression")
     def test_profile_excluded_root_rejects_case_variant_on_windows(self) -> None:
         self._write(

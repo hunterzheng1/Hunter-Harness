@@ -68,6 +68,9 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events as he  # noqa: E402
+import harness_ledger as hl  # noqa: E402
+import harness_paths as hp  # noqa: E402
+import harness_review as hr  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1503,6 +1506,37 @@ def _review_summary(
         "yellowDeferred": 0,
         "summary": "",
     }
+    sidecar = hr.findings_path(change_dir)
+    if sidecar.is_file():
+        status = hr.status(change_dir)
+        items = status.get("items") or []
+        red_items = [item for item in items if item.get("severity") == "RED"]
+        yellow_items = [item for item in items if item.get("severity") == "YELLOW"]
+        base.update(
+            {
+                "status": "ADVISORY",
+                "red": len(red_items),
+                "yellow": len(yellow_items),
+                "redFixed": sum(
+                    1 for item in red_items if item.get("disposition") == "FIXED"
+                ),
+                "redConfirmed": sum(
+                    1
+                    for item in red_items
+                    if item.get("disposition") in {"OPEN", "ACCEPTED_RISK", "DEFERRED"}
+                ),
+                "yellowFixed": sum(
+                    1 for item in yellow_items if item.get("disposition") == "FIXED"
+                ),
+                "yellowDeferred": sum(
+                    1
+                    for item in yellow_items
+                    if item.get("disposition") in {"DEFERRED", "ACCEPTED_RISK"}
+                ),
+                "summary": f"structured review run {status.get('runId') or 'unknown'}",
+            }
+        )
+        return base
     if existing and isinstance(existing.get("reviewSummary"), dict):
         merged = dict(base)
         merged.update(existing["reviewSummary"])
@@ -1793,6 +1827,32 @@ def collect_summary_data(
         head = data.get("finalCommit")
         if base and head and base != NOT_AVAILABLE and head != NOT_AVAILABLE:
             diff_stat, changed = _changed_files_from_git(project, str(base), str(head))
+            ownership_projection: dict[str, Any] | None = None
+            try:
+                hp.load_change_contract(change_dir)
+                ownership_projection = hl.compute_ownership_diff(
+                    project,
+                    base=str(base),
+                    head=str(head),
+                    change_dir=change_dir,
+                )
+            except (OSError, ValueError, RuntimeError):
+                ownership_projection = None
+            if ownership_projection is not None:
+                allowed = set(ownership_projection.get("files") or [])
+                changed = [item for item in changed if item.get("path") in allowed]
+                diff_stat = {
+                    **diff_stat,
+                    "filesChanged": len(changed),
+                    "insertions": sum(int(item.get("insertions") or 0) for item in changed),
+                    "deletions": sum(int(item.get("deletions") or 0) for item in changed),
+                }
+                data["ownershipDiff"] = ownership_projection
+                if write:
+                    write_json(
+                        change_dir / "evidence" / "ownership-diff.json",
+                        ownership_projection,
+                    )
             if changed:
                 data["diffStat"] = diff_stat
                 data["changedFiles"] = changed
@@ -1818,6 +1878,17 @@ def collect_summary_data(
                 "range": NOT_AVAILABLE if for_replay else "",
             }
             data["changedFiles"] = []
+
+    data.setdefault(
+        "ownershipDiff",
+        {
+            "files": [item.get("path") for item in data.get("changedFiles") or []],
+            "staticEvidenceFiles": [],
+            "foreignPaths": [],
+            "excludedRuntimeCount": 0,
+            "ownedFileCount": len(data.get("changedFiles") or []),
+        },
+    )
 
     # artifacts (build products stay empty unless already known; reportPipeline has event artifacts)
     if not isinstance(data.get("artifacts"), list):
@@ -2258,10 +2329,11 @@ def validate_source_consistency(
     """
     issues: list[dict[str, str]] = []
 
-    # 1. event count vs frozen cutoff (fallback: live events file).
+    # 1. event count/hash vs frozen cutoff (fallback: live events file).
     events_file = he.events_path(change_dir)
     actual_count = None
     cutoff_path = change_dir / "evidence" / "evidence-cutoff.json"
+    cutoff: dict[str, Any] | None = None
     if cutoff_path.is_file():
         try:
             cutoff = read_json(cutoff_path)
@@ -2281,6 +2353,17 @@ def validate_source_consistency(
                         f"summary event_count={summary_count} but cutoff has "
                         f"{actual_count} events"
                     ),
+                }
+            )
+
+    if cutoff is not None and events_file.is_file():
+        actual_hash = "sha256:" + hashlib.sha256(events_file.read_bytes()).hexdigest()
+        if cutoff.get("sha256") != actual_hash:
+            issues.append(
+                {
+                    "code": "cutoff-hash-mismatch",
+                    "severity": "error",
+                    "message": "evidence cutoff hash does not match events.ndjson",
                 }
             )
 
@@ -2319,6 +2402,86 @@ def validate_source_consistency(
                         ),
                     }
                 )
+
+    # 3. Rebuild canonical projections from frozen sources and compare the
+    # fields that must never come from prose or an existing summary.
+    expected = collect_summary_data(change_dir, write=False, for_replay=False)
+    projection_fields = {
+        "reviewSummary": "review-mismatch",
+        "knownRisks": "risk-mismatch",
+        "manualActions": "manual-actions-mismatch",
+        "durations": "phase-timing-mismatch",
+        "changedFiles": "ownership-diff-mismatch",
+        "ownershipDiff": "ownership-diff-mismatch",
+        "artifacts": "artifact-mismatch",
+    }
+    for field, code in projection_fields.items():
+        if summary.get(field) != expected.get(field):
+            issues.append(
+                {
+                    "code": code,
+                    "severity": "error",
+                    "message": f"summary {field} does not match frozen source projection",
+                }
+            )
+
+    # 4. Manifest structure/checksums and summary semantics.
+    before_path = change_dir / "evidence" / "archive-manifest-before.json"
+    if before_path.is_file():
+        try:
+            manifest = read_json(before_path)
+            entries = manifest.get("files") if isinstance(manifest, dict) else None
+            valid = isinstance(entries, list) and manifest.get("fileCount") == len(entries)
+            seen: set[str] = set()
+            if valid:
+                for entry in entries:
+                    rel = str(entry.get("path") or "") if isinstance(entry, dict) else ""
+                    digest = str(entry.get("sha256") or "") if isinstance(entry, dict) else ""
+                    if (
+                        not rel
+                        or rel in seen
+                        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    ):
+                        valid = False
+                        break
+                    seen.add(rel)
+                    target = (change_dir / rel).resolve()
+                    if not target.is_relative_to(change_dir.resolve()) or not target.is_file():
+                        valid = False
+                        break
+                    if not _manifest_path_excluded(rel) and sha256_file(target) != digest:
+                        valid = False
+                        break
+            if not valid:
+                issues.append(
+                    {
+                        "code": "manifest-invalid",
+                        "severity": "error",
+                        "message": "archive-manifest-before structure or checksum is invalid",
+                    }
+                )
+        except (OSError, json.JSONDecodeError):
+            issues.append(
+                {
+                    "code": "manifest-invalid",
+                    "severity": "error",
+                    "message": "archive-manifest-before is unreadable",
+                }
+            )
+
+    # 5. Artifact paths must resolve to immutable files inside the archive.
+    root = change_dir.resolve()
+    for artifact in summary.get("artifacts") or []:
+        raw = str(artifact.get("path") or "") if isinstance(artifact, dict) else ""
+        candidate = (root / raw).resolve() if raw else root
+        if not raw or not candidate.is_relative_to(root) or not candidate.is_file():
+            issues.append(
+                {
+                    "code": "artifact-missing",
+                    "severity": "error",
+                    "message": f"artifact path is missing or outside archive: {raw}",
+                }
+            )
 
     errors = [i for i in issues if i.get("severity") == "error"]
     warnings = [i for i in issues if i.get("severity") != "error"]
@@ -2670,6 +2833,43 @@ def cmd_finalize(
     archive_root.mkdir(parents=True, exist_ok=True)
     archive_dir = archive_root / f"{today_date()}-{change_name}"
     project_root = find_project_root(original_change_dir)
+    try:
+        resolved_state_dir = hp.resolve_state_dir_for_contract(
+            original_change_dir, project_root
+        )
+    except ValueError as exc:
+        return 1, {
+            "ok": False,
+            "action": "finalize",
+            "change_dir": str(original_change_dir),
+            "error": f"invalid split runtime root: {exc}",
+        }
+    split_state_dir = (
+        resolved_state_dir
+        if resolved_state_dir.resolve() != original_change_dir.resolve()
+        else None
+    )
+    split_materialized_names = (
+        {item.name for item in split_state_dir.iterdir()}
+        if split_state_dir is not None and split_state_dir.is_dir()
+        else set()
+    )
+
+    def _restore_finalize_failure() -> None:
+        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        if split_state_dir is None or not original_change_dir.is_dir():
+            return
+        # The split state remains authoritative on failure. Remove only the
+        # top-level names materialized from that state so retry starts clean.
+        for name in sorted(split_materialized_names):
+            target = original_change_dir / name
+            try:
+                if target.is_dir():
+                    shutil.rmtree(target)
+                elif target.exists():
+                    target.unlink()
+            except OSError as exc:
+                warnings.append(f"could not dematerialize split state {target}: {exc}")
 
     payload: dict[str, Any] = {
         "ok": False,
@@ -2704,7 +2904,7 @@ def cmd_finalize(
 
     # --- 0. cleanup transients (before before-manifest) ---
     try:
-        cleanup_result = _cleanup_transients(work_dir)
+        cleanup_result = _cleanup_transients(split_state_dir or work_dir)
         payload["steps"]["cleanup"] = cleanup_result
         deleted_n = len(cleanup_result.get("deleted") or [])
         trunc_n = len(cleanup_result.get("truncated") or [])
@@ -2718,6 +2918,13 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"cleanup failed: {exc}")
         payload["steps"]["cleanup"] = {"ok": False, "error": str(exc)}
+
+    if split_state_dir is not None and split_state_dir.is_dir():
+        _merge_runtime_state(split_state_dir, work_dir)
+        payload["steps"]["split_state_merge"] = {
+            "ok": True,
+            "stateDir": str(split_state_dir),
+        }
 
     # --- 1. before-manifest ---
     before_path = work_dir / "evidence" / "archive-manifest-before.json"
@@ -2751,6 +2958,10 @@ def cmd_finalize(
             message=str(exc),
         )
         return 1, payload
+
+    # Sync events/evidence appended after the first materialization.
+    if split_state_dir is not None and split_state_dir.is_dir():
+        _merge_runtime_state(split_state_dir, work_dir)
 
     # --- 2. move ---
     try:
@@ -2806,7 +3017,7 @@ def cmd_finalize(
     except OSError as exc:
         payload["error"] = f"freeze failed: {exc}"
         payload["steps"]["freeze"] = {"ok": False, "error": str(exc)}
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         return 1, payload
 
     # --- 4. collect (pure function of frozen sources) ---
@@ -2829,7 +3040,7 @@ def cmd_finalize(
     except Exception as exc:  # noqa: BLE001 — surface collect failures
         payload["error"] = f"collect failed: {exc}"
         payload["steps"]["collect"] = {"ok": False, "error": str(exc)}
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         return 1, payload
 
     # --- 5. source consistency (layer 1; UT-014) ---
@@ -2846,7 +3057,7 @@ def cmd_finalize(
     if not source_result.get("ok"):
         payload["issues"] = source_result.get("issues") or []
         payload["error"] = "source consistency failed; original change dir restored"
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         _append_finalize_failure_issue(original_change_dir, "source-consistency-failed", payload["error"])
         payload["warnings"] = warnings
         payload["ok"] = False
@@ -2859,7 +3070,7 @@ def cmd_finalize(
         # 永不关闭一个没有 final-summary 的归档。
         msg = str(render_result.get("fallbackReason") or "render failed")
         payload["error"] = f"final-summary render failed: {msg}"
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         _append_finalize_failure_issue(original_change_dir, "render-failed", msg)
         payload["warnings"] = warnings
         payload["ok"] = False
@@ -2916,7 +3127,7 @@ def cmd_finalize(
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         payload["error"] = f"after-manifest failed: {exc}"
         payload["steps"]["after_manifest"] = {"ok": False, "error": str(exc)}
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         return 1, payload
 
     # --- 10. final summary update + final render/validate (no more events) ---
@@ -2932,7 +3143,7 @@ def cmd_finalize(
     render_result = render_final_summary(work_dir, summary_path)
     if not render_result.get("ok"):
         payload["error"] = f"final summary re-render failed: {render_result.get('error')}"
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         return 1, payload
     summary = read_json(summary_path)
     validate_result = validate_summary(summary, html_path if html_path.is_file() else None)
@@ -2961,7 +3172,7 @@ def cmd_finalize(
         payload["issues"] = issues_out
         payload["error"] = "validate or manifest check failed; original change dir restored"
         payload["steps"]["delete_original"] = {"ok": False, "deleted": False}
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
+        _restore_finalize_failure()
         _append_finalize_failure_issue(
             original_change_dir, "closure-failed", payload["error"]
         )
@@ -2983,6 +3194,14 @@ def cmd_finalize(
             "deleted": True,
             "note": "removed by move",
         }
+
+    if split_state_dir is not None and split_state_dir.is_dir():
+        try:
+            shutil.rmtree(split_state_dir)
+            payload["steps"]["delete_runtime_state"] = {"ok": True, "deleted": True}
+        except OSError as exc:
+            warnings.append(f"could not remove archived runtime state: {exc}")
+            payload["steps"]["delete_runtime_state"] = {"ok": False, "error": str(exc)}
 
     # --- 12. maintenance outbox + service ---
     if skip_ingest:
@@ -3008,6 +3227,17 @@ def cmd_finalize(
     payload["summary_data"] = str(summary_path)
     payload["final_summary"] = str(html_path) if html_path.is_file() else None
     return 0, payload
+
+
+def _merge_runtime_state(state_dir: Path, contract_dir: Path) -> None:
+    """Materialize split-v1 dynamic state into the archive contract tree."""
+    for source in sorted(state_dir.iterdir()):
+        target = contract_dir / source.name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True, copy_function=shutil.copy2)
+        elif source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
 
 def _restore_on_failure(

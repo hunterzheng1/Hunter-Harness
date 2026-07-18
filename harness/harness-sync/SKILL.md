@@ -32,6 +32,21 @@ disallowed-tools:
 
 ## Workflow（薄编排）
 
+运行开始先执行受管 runtime 生命周期：
+
+```powershell
+python <skills-root>/scripts/harness_sync.py reap --project . --json
+python <skills-root>/scripts/harness_sync.py begin --project . --run-id <run-id> --agent <agent> --purpose harness-sync --json
+```
+
+所有 deploy 临时产物只能写入 `begin` 返回的 `workspace`。无论正常完成、命令失败还是异常退出，都必须在 `finally` 中执行：
+
+```powershell
+python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-id> --json
+```
+
+禁止重新使用固定 `sync-deploy-*` 目录；`--keep-temp` 仅供显式诊断。
+
 | Phase | 检查 → 动作 |
 |-------|-------------|
 | 0 | 读 SKILL + `reference.md` + protocols |

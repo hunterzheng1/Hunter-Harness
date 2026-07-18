@@ -703,11 +703,10 @@ export interface FreshnessIdentity {
   coreHash: string | null;
   /** 安装侧 .harness-build.json marker 的 coreHash；不可读/无效为 null。 */
   installedCoreHash: string | null;
-  /**
-   * reserved：构建管线不产出独立 adapter 哈希——overlay 内容已折叠进 coreHash
-   * （见 harness_deploy.py core_content_hash）。保留以对齐设计契约，当前恒为 null。
-   */
+  /** 官方 post-adaptation 投影（target path + expected sha256）的稳定哈希。 */
   adapterHash: string | null;
+  /** 安装侧同一 target 集合当前字节的稳定哈希；缺文件时仍包含 null。 */
+  installedAdapterHash: string | null;
 }
 
 export interface AgentFreshness {
@@ -780,7 +779,8 @@ export async function collectFreshness(
       installedManifestHash: installedManifest?.bundle_manifest_hash ?? null,
       coreHash: null,
       installedCoreHash: null,
-      adapterHash: null
+      adapterHash: null,
+      installedAdapterHash: null
     };
 
     // Official bundle identity is loaded for every state we can verify.
@@ -820,6 +820,20 @@ export async function collectFreshness(
       profile: installedProfile,
       codebuddySurface
     });
+    identity.adapterHash = sha256Bytes(canonicalJson(
+      targets
+        .map((target) => ({ path: target.target_path.replace(/\\/g, "/"), sha256: target.sha256 }))
+        .sort((a, b) => a.path.localeCompare(b.path))
+    ));
+    const installedProjection = await Promise.all(
+      targets.map(async (target) => ({
+        path: target.target_path.replace(/\\/g, "/"),
+        sha256: await fileHex(join(root, target.target_path))
+      }))
+    );
+    identity.installedAdapterHash = sha256Bytes(canonicalJson(
+      installedProjection.sort((a, b) => a.path.localeCompare(b.path))
+    ));
     const markerTarget = targets.find((target) =>
       target.target_path.replace(/\\/g, "/").endsWith(`/${BUILD_MARKER_BUNDLE_PATH}`) ||
       target.target_path === BUILD_MARKER_BUNDLE_PATH

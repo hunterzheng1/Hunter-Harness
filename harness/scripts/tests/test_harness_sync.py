@@ -267,6 +267,56 @@ class NoGitPolicyTests(SyncRuntimeTestBase):
 
 
 class SyncCliTests(SyncRuntimeTestBase):
+    def test_begin_and_finalize_cli_manage_run_lifecycle(self) -> None:
+        begin = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_sync.py"),
+                "begin",
+                "--project",
+                str(self.project),
+                "--run-id",
+                "cli-lifecycle",
+                "--agent",
+                "codex",
+                "--purpose",
+                "harness-sync",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(begin.returncode, 0, begin.stderr)
+        payload = json.loads(begin.stdout)
+        self.assertTrue(Path(payload["workspace"]).is_dir())
+        finish = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_sync.py"),
+                "finalize",
+                "--project",
+                str(self.project),
+                "--run-id",
+                "cli-lifecycle",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(finish.returncode, 0, finish.stderr)
+        self.assertFalse((self.sync_root / "cli-lifecycle").exists())
+
+    def test_canonical_skill_wires_reap_begin_and_finally_finalize(self) -> None:
+        text = (SCRIPTS_DIR.parent / "harness-sync" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("harness_sync.py reap", text)
+        self.assertIn("harness_sync.py begin", text)
+        self.assertIn("harness_sync.py finalize", text)
+        self.assertIn("finally", text.lower())
+
     def test_reap_cli_emits_json_payload(self) -> None:
         run_dir = self.sync_root / "cli-run"
         self._write_owner(run_dir, run_id="cli-run", pid=999999, expired=True)

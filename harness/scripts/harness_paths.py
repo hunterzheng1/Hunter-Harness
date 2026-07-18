@@ -161,6 +161,22 @@ def contract_layout_kind(contract: dict[str, Any]) -> str:
     return "legacy-colocated"
 
 
+def _resolve_runtime_root(main_root: Path, change_name: str, runtime_root: Any) -> Path:
+    raw = Path(str(runtime_root or ""))
+    if not str(runtime_root or "").strip() or raw.is_absolute():
+        raise ValueError("stateOwnership.runtimeRoot must be a project-relative path")
+    state_parent = (main_root / ".harness" / "state" / "changes").resolve()
+    resolved = (main_root / raw).resolve()
+    assert_path_within(resolved, state_parent)
+    expected = (state_parent / change_name).resolve()
+    if resolved != expected:
+        raise ValueError(
+            "stateOwnership.runtimeRoot must equal "
+            f".harness/state/changes/{change_name}"
+        )
+    return resolved
+
+
 def resolve_change_layout(
     cwd_hint: Path, change_id_or_dir: str | Path
 ) -> dict[str, Any]:
@@ -192,7 +208,7 @@ def resolve_change_layout(
     layout_kind = contract_layout_kind(contract)
     if layout_kind == "split-v1":
         runtime_rel = contract["stateOwnership"]["runtimeRoot"]
-        state_root = (main_root / runtime_rel).resolve()
+        state_root = _resolve_runtime_root(main_root, change_name, runtime_rel)
     else:
         state_root = contract_dir
 
@@ -229,7 +245,9 @@ def resolve_state_dir_for_contract(
     expected = (main_root / ".harness" / "changes" / contract_dir.name).resolve()
     if contract_dir != expected:
         return contract_dir
-    return (main_root / contract["stateOwnership"]["runtimeRoot"]).resolve()
+    return _resolve_runtime_root(
+        main_root, contract_dir.name, contract["stateOwnership"]["runtimeRoot"]
+    )
 
 
 def assert_path_within(

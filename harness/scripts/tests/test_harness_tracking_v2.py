@@ -202,6 +202,40 @@ class ManifestV2WriteTests(TrackingFixture):
         self.assertEqual(entry["introducedBy"], "other")
         self.assertEqual(entry["touchedBy"], ["other"])
 
+    def test_stage_v2_only_stages_current_change_scope(self) -> None:
+        current = self._write_test_file()
+        foreign = self.project / "tests" / "test_foreign.py"
+        foreign.write_bytes(b"def test_foreign():\n    assert True\n")
+        result = guard.record(
+            self.project, self.change_dir, [str(current)], "tdd-created"
+        )
+        self.assertTrue(result["ok"], result)
+
+        manifest_path = Path(result["manifestPath"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        foreign_hash = guard.logical_file_hash(self.project, "tests/test_foreign.py")
+        manifest["files"].append(
+            {
+                "path": "tests/test_foreign.py",
+                "logicalHash": foreign_hash,
+                "binaryHash": None,
+                "reason": "test-updated",
+                "ignored": False,
+                "introducedBy": "other",
+                "touchedBy": ["other"],
+                "commitScope": "foreign-change",
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        staged = guard.stage(self.project, self.change_dir)
+
+        self.assertTrue(staged["ok"], staged)
+        self.assertEqual(staged["files"], ["tests/test_demo.py"])
+        cached = git(self.project, "diff", "--cached", "--name-only").stdout.splitlines()
+        self.assertIn("tests/test_demo.py", cached)
+        self.assertNotIn("tests/test_foreign.py", cached)
+
 
 class RootMigrationTests(TrackingFixture):
     def test_manifest_validates_across_roots_with_same_repository_id(self) -> None:
@@ -285,6 +319,41 @@ class LegacyV1ReadTests(TrackingFixture):
         )
         self.assertIsNotNone(manifest_path)
         self.assertEqual(contents["tests/test_legacy.py"], content)
+
+    def test_v1_manifest_stage_remains_supported(self) -> None:
+        target = self.project / "tests" / "test_legacy_stage.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        content = b"def test_legacy_stage():\n    assert True\n"
+        target.write_bytes(content)
+        import hashlib
+
+        legacy_dir = self.project / ".harness" / "changes" / "legacy-stage"
+        (legacy_dir / "evidence").mkdir(parents=True)
+        (legacy_dir / "evidence" / "test-tracking.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "mode": "force-track-touched",
+                    "projectRoot": str(self.project.resolve()),
+                    "files": [
+                        {
+                            "path": "tests/test_legacy_stage.py",
+                            "sha256": "sha256:"
+                            + hashlib.sha256(content).hexdigest(),
+                            "reason": "tdd-created",
+                            "ignored": False,
+                            "trackedBefore": False,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        staged = guard.stage(self.project, legacy_dir)
+
+        self.assertTrue(staged["ok"], staged)
+        self.assertEqual(staged["files"], ["tests/test_legacy_stage.py"])
 
 
 if __name__ == "__main__":

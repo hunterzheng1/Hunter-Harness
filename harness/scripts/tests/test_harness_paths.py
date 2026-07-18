@@ -220,6 +220,23 @@ class ResolveChangeLayoutTests(unittest.TestCase):
             Path(layout["projectRoot"]).resolve(), self.project.resolve()
         )
 
+    def test_split_v1_runtime_root_cannot_escape_project(self) -> None:
+        contract_dir = self._make_change(
+            "escape-change",
+            {
+                "schemaVersion": 2,
+                "changeId": "escape-change",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/escape-change",
+                    "runtimeRoot": "../../outside-runtime",
+                },
+            },
+        )
+        with self.assertRaises(ValueError):
+            paths.resolve_change_layout(self.project, "escape-change")
+        with self.assertRaises(ValueError):
+            paths.resolve_state_dir_for_contract(contract_dir, self.project)
+
     def test_legacy_layout_keeps_colocated_state(self) -> None:
         """Old changes without stateOwnership keep reading the colocated layout."""
         self._make_change(

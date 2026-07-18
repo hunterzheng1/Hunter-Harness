@@ -214,6 +214,27 @@ def finalize_run(run: SyncRun) -> None:
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
+def finalize_run_id(
+    project_root: Path | str, run_id: str, *, keep_temp: bool = False
+) -> dict[str, Any]:
+    """Finalize one exact CLI-managed run with the same boundary checks."""
+    run_id = _validate_run_id(run_id)
+    root = sync_runtime_root(project_root).resolve()
+    run_dir = (root / run_id).resolve()
+    if not _inside_resolved(run_dir, root) or run_dir == root:
+        raise ValueError(f"run path escapes sync root: {run_dir}")
+    existed = run_dir.is_dir()
+    if existed and not keep_temp:
+        shutil.rmtree(run_dir)
+    return {
+        "ok": True,
+        "action": "finalize",
+        "runId": run_id,
+        "deleted": existed and not keep_temp,
+        "kept": bool(existed and keep_temp),
+    }
+
+
 def _inside_resolved(child: Path, parent: Path) -> bool:
     try:
         resolved_child = child.resolve()
@@ -310,12 +331,55 @@ def cmd_reap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_begin(args: argparse.Namespace) -> int:
+    run = begin_run(
+        Path(args.project),
+        run_id=args.run_id,
+        agent=args.agent,
+        purpose=args.purpose,
+        ttl_seconds=args.ttl_seconds,
+        keep_temp=bool(args.keep_temp),
+    )
+    payload = {
+        "ok": True,
+        "action": "begin",
+        "runId": run.run_id,
+        "runDir": str(run.run_dir.resolve()),
+        "workspace": str(run.workspace(args.agent).resolve()),
+    }
+    print(json.dumps(payload, ensure_ascii=False) if args.json else payload["workspace"])
+    return 0
+
+
+def cmd_finalize(args: argparse.Namespace) -> int:
+    payload = finalize_run_id(
+        Path(args.project), args.run_id, keep_temp=bool(args.keep_temp)
+    )
+    print(json.dumps(payload, ensure_ascii=False) if args.json else payload["runId"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_sync",
         description="managed sync runtime owner/TTL/finally cleaner",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    p_begin = sub.add_parser("begin", help="create one owned sync runtime")
+    p_begin.add_argument("--project", required=True)
+    p_begin.add_argument("--run-id")
+    p_begin.add_argument("--agent", required=True)
+    p_begin.add_argument("--purpose", required=True)
+    p_begin.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
+    p_begin.add_argument("--keep-temp", action="store_true")
+    p_begin.add_argument("--json", action="store_true")
+    p_begin.set_defaults(func=cmd_begin)
+    p_finalize = sub.add_parser("finalize", help="remove one exact owned sync runtime")
+    p_finalize.add_argument("--project", required=True)
+    p_finalize.add_argument("--run-id", required=True)
+    p_finalize.add_argument("--keep-temp", action="store_true")
+    p_finalize.add_argument("--json", action="store_true")
+    p_finalize.set_defaults(func=cmd_finalize)
     p_reap = sub.add_parser("reap", help="reap dead-owner past-TTL sync run dirs")
     p_reap.add_argument("--project", required=True, help="project root path")
     p_reap.add_argument("--json", action="store_true", help="emit JSON payload")

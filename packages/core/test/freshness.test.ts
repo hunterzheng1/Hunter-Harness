@@ -73,6 +73,8 @@ describe("Post-adaptation freshness projection (变更簇 D / task 12)", () => {
     // review fixback #1：coreHash/installedCoreHash 必须填充真实 marker 值。
     expect(entry.identity.coreHash).toBeTruthy();
     expect(entry.identity.installedCoreHash).toBe(entry.identity.coreHash);
+    expect(entry.identity.adapterHash).toBeTruthy();
+    expect(entry.identity.installedAdapterHash).toBe(entry.identity.adapterHash);
     expect(entry.profile).toBe("general");
   });
 
@@ -105,6 +107,7 @@ describe("Post-adaptation freshness projection (变更簇 D / task 12)", () => {
     expect(entry.status).toBe("LOCALLY_MODIFIED");
     expect(entry.driftedFiles).toEqual([REVIEW_SKILL_TARGET]);
     expect(entry.missingFiles).toHaveLength(0);
+    expect(entry.identity.installedAdapterHash).not.toBe(entry.identity.adapterHash);
   });
 
   it("a missing managed target yields MISSING listing the target", async () => {

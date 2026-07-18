@@ -576,12 +576,18 @@ def _stage_locked(
         return _result(False, action, "MANIFEST_MISSING", [])
     except (OSError, json.JSONDecodeError) as exc:
         return _result(False, action, "MANIFEST_INVALID", [], error=str(exc))
-    error, entries = _validate_existing_manifest(
-        project_root, manifest, require_files=True
-    )
+    is_v2 = isinstance(manifest, dict) and manifest.get("schemaVersion") == 2
+    validator = _validate_existing_manifest_v2 if is_v2 else _validate_existing_manifest
+    error, entries = validator(project_root, manifest, require_files=True)
     if error:
         return _result(False, action, error, [])
-    rels = list(entries)
+    rels = [
+        rel
+        for rel, entry in entries.items()
+        if not is_v2 or entry.get("commitScope") == "current-change"
+    ]
+    if not rels:
+        return _result(True, action, "STAGED", [])
 
     before_cached_result = _git(project_root, "diff", "--cached", "--name-only")
     if before_cached_result.returncode != 0:
@@ -631,15 +637,38 @@ def _stage_locked(
         temp_index.unlink(missing_ok=True)
 
 
-def _glob_files_for_pattern(base: Path, pattern: str) -> list[Path]:
-    normalized = pattern.replace("\\", "/")
-    if normalized.endswith("/**"):
-        prefix = normalized[:-3].rstrip("/")
-        root = base / prefix
-        if not root.is_dir():
-            return []
-        return [path for path in root.rglob("*") if path.is_file()]
-    return [path for path in base.glob(normalized) if path.is_file()]
+def _path_is_excluded(rel: str, excluded_roots: list[str]) -> bool:
+    rel_parts = tuple(os.path.normcase(part) for part in rel.split("/") if part)
+    for excluded in excluded_roots:
+        excluded_parts = tuple(
+            os.path.normcase(part) for part in excluded.split("/") if part
+        )
+        if excluded_parts and rel_parts[: len(excluded_parts)] == excluded_parts:
+            return True
+    return False
+
+
+def _walk_matching_files(
+    base: Path, patterns: list[str], excluded_roots: list[str]
+) -> list[Path]:
+    """Walk once and prune excluded roots before matching recursive globs."""
+    matches: list[Path] = []
+    for root_raw, dir_names, file_names in os.walk(base, followlinks=False):
+        root = Path(root_raw)
+        root_rel = root.relative_to(base).as_posix()
+        prefix = "" if root_rel == "." else root_rel + "/"
+        dir_names[:] = [
+            name
+            for name in dir_names
+            if not _path_is_excluded(prefix + name, excluded_roots)
+        ]
+        for name in file_names:
+            rel = prefix + name
+            if _path_is_excluded(rel, excluded_roots):
+                continue
+            if any(_matches_pattern(rel, pattern) for pattern in patterns):
+                matches.append(root / name)
+    return matches
 
 
 def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
@@ -648,20 +677,22 @@ def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
     config = _profile_config(project_root)
     if config is None:
         patterns = ["test/**", "tests/**", "src/test/**"]
+        excluded_roots = [
+            ".git", ".harness", "node_modules", "dist", "build", "__pycache__"
+        ]
     else:
-        patterns, _excluded = config
+        patterns, excluded_roots = config
     base = project_root.resolve()
     seen: set[str] = set()
-    for pattern in patterns:
-        for match in _glob_files_for_pattern(base, pattern):
-            resolved = match.resolve()
-            if not _inside(resolved, base):
-                continue
-            rel = resolved.relative_to(base).as_posix()
-            if rel in seen or not _allowed_test_path(project_root, rel):
-                continue
-            seen.add(rel)
-            found[rel] = _sha256(resolved)
+    for match in _walk_matching_files(base, patterns, excluded_roots):
+        resolved = match.resolve()
+        if not _inside(resolved, base):
+            continue
+        rel = resolved.relative_to(base).as_posix()
+        if rel in seen or not _allowed_test_path(project_root, rel):
+            continue
+        seen.add(rel)
+        found[rel] = _sha256(resolved)
     return found
 
 

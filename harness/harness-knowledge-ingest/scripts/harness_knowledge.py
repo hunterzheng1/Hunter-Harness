@@ -372,6 +372,45 @@ def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any
     except (OSError, json.JSONDecodeError):
         result["reasons"].append("summary-data.json unreadable")
         return result
+    if not isinstance(summary, dict):
+        result["reasons"].append("summary-data.json must be an object")
+        return result
+
+    # A versioned repair becomes authoritative only after its pointer and
+    # repair-record hashes are verified. Gate the authoritative summary, not
+    # the known-bad original that caused the repair.
+    pointer_path = archive_dir / "derived" / "authoritative.json"
+    if pointer_path.is_file():
+        try:
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            version = str(pointer.get("version") or "")
+            if re.fullmatch(r"v[0-9]+", version) is None:
+                raise ValueError("invalid authoritative version")
+            version_dir = (archive_dir / "derived" / version).resolve()
+            if not version_dir.is_relative_to((archive_dir / "derived").resolve()):
+                raise ValueError("authoritative version escapes derived root")
+            record = json.loads(
+                (version_dir / "repair-record.json").read_text(encoding="utf-8")
+            )
+            derived_path = version_dir / "summary-data.json"
+            summary_bytes = derived_path.read_bytes()
+            actual = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
+            if record.get("summarySha256") != actual:
+                result["status"] = "degraded"
+                result["reasons"].append("repair record summary hash mismatch")
+                return result
+            if pointer.get("summarySha256") not in {None, actual}:
+                result["status"] = "degraded"
+                result["reasons"].append("authoritative pointer hash mismatch")
+                return result
+            summary = json.loads(summary_bytes.decode("utf-8"))
+            if not isinstance(summary, dict):
+                raise ValueError("authoritative summary must be an object")
+            result["authoritativeVersion"] = version
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            result["status"] = "degraded"
+            result["reasons"].append("authoritative version unreadable")
+            return result
 
     consistency = (summary.get("reportPipeline") or {}).get("sourceConsistency")
     if consistency is None:
@@ -390,30 +429,13 @@ def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any
         )
         return result
 
-    # Repair lineage: authoritative pointer must reference a hash-valid version.
-    pointer_path = archive_dir / "derived" / "authoritative.json"
-    if pointer_path.is_file():
-        try:
-            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-            version = str(pointer.get("version") or "")
-            version_dir = archive_dir / "derived" / version
-            record = json.loads(
-                (version_dir / "repair-record.json").read_text(encoding="utf-8")
-            )
-            summary_bytes = (version_dir / "summary-data.json").read_bytes()
-            actual = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
-            if record.get("summarySha256") != actual:
-                result["status"] = "degraded"
-                result["reasons"].append("repair record summary hash mismatch")
-                return result
-            if pointer.get("summarySha256") not in {None, actual}:
-                result["status"] = "degraded"
-                result["reasons"].append("authoritative pointer hash mismatch")
-                return result
-        except (OSError, json.JSONDecodeError):
-            result["status"] = "degraded"
-            result["reasons"].append("authoritative version unreadable")
-            return result
+    final_status = str(summary.get("finalStatus") or "").upper()
+    if final_status not in {"OK", "CONDITIONAL_OK"}:
+        result["status"] = "degraded" if final_status == "DEGRADED" else "unverified"
+        result["reasons"].append(
+            f"authoritative finalStatus is not publishable: {final_status or 'missing'}"
+        )
+        return result
 
     result["status"] = "ok"
     result["allowed"] = True
