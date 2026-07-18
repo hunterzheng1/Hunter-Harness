@@ -31,6 +31,8 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import harness_paths  # noqa: E402
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -208,6 +210,20 @@ def change_dir_for_id(project_root: Path, change_id: str) -> Path | None:
     return None
 
 
+def _layout_fields(project_root: Path, change_id: str) -> dict[str, Any]:
+    """Layout enrichment for resolve payloads; empty on any resolution issue."""
+    try:
+        layout = harness_paths.resolve_change_layout(project_root, change_id)
+    except (FileNotFoundError, ValueError, OSError):
+        return {}
+    return {
+        "contractRoot": layout["contractRoot"],
+        "stateRoot": layout["stateRoot"],
+        "layout": layout["layout"],
+        "repositoryId": layout["repositoryId"],
+    }
+
+
 def resolve_change(
     project_root: Path,
     change_id: str | None,
@@ -229,6 +245,7 @@ def resolve_change(
             "changeDir": str(resolved),
             "projectRoot": str(project_root.resolve()),
             "activeCount": len(active),
+            **_layout_fields(project_root, change_id),
         }
     if not active:
         return {
@@ -247,6 +264,7 @@ def resolve_change(
             "projectRoot": str(project_root.resolve()),
             "activeCount": 1,
             "autoSelected": True,
+            **_layout_fields(project_root, only["changeId"]),
         }
     return {
         "ok": False,

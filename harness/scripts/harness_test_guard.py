@@ -21,6 +21,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 SCHEMA_VERSION = 1
 MODE = "force-track-touched"
 MANIFEST_REL = Path("evidence") / "test-tracking.json"
@@ -166,13 +172,18 @@ def _change_dir(project: Path, change_dir: Path | str) -> Path | None:
     return resolved if any(_inside(resolved, root) for root in allowed_roots) else None
 
 
+def _state_root(change_root: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_root))
+
+
 def _manifest_path(change_root: Path) -> Path | None:
-    evidence = change_root / MANIFEST_REL.parent
-    manifest = change_root / MANIFEST_REL
+    state_root = _state_root(change_root)
+    evidence = state_root / MANIFEST_REL.parent
+    manifest = state_root / MANIFEST_REL
     expected_evidence = evidence.absolute()
     resolved_evidence = evidence.resolve()
     if (
-        not _inside(resolved_evidence, change_root.resolve())
+        not _inside(resolved_evidence, state_root.resolve())
         or os.path.normcase(str(resolved_evidence))
         != os.path.normcase(str(expected_evidence))
     ):
@@ -181,9 +192,10 @@ def _manifest_path(change_root: Path) -> Path | None:
 
 
 def _manifest_target_inside(change_root: Path, manifest: Path) -> bool:
+    state_root = _state_root(change_root)
     resolved = manifest.resolve()
     return (
-        _inside(resolved, change_root.resolve())
+        _inside(resolved, state_root.resolve())
         and _inside(resolved, manifest.parent.absolute())
     )
 
@@ -510,7 +522,7 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     manifest_path = _manifest_path(change_root)
     if manifest_path is None:
         return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
-    snapshot_path = change_root / SNAPSHOT_REL
+    snapshot_path = _state_root(change_root) / SNAPSHOT_REL
     if not _manifest_target_inside(change_root, snapshot_path):
         return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
 
@@ -542,7 +554,7 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
-    snapshot_path = change_root / SNAPSHOT_REL
+    snapshot_path = _state_root(change_root) / SNAPSHOT_REL
     if not snapshot_path.is_file():
         return _result(False, action, "SNAPSHOT_MISSING", [])
     try:

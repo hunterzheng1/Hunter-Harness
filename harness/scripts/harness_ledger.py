@@ -20,6 +20,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -197,8 +203,9 @@ def _tracked_test_contents(
     change_root = candidate.resolve()
     if not _inside(change_root, repo_root):
         raise ValueError("TEST_TRACKING_CHANGE_DIR_OUTSIDE_PROJECT")
-    manifest_path = (change_root / TEST_TRACKING_REL).resolve()
-    if not _inside(manifest_path, change_root):
+    state_root = _state_dir(change_root)
+    manifest_path = (state_root / TEST_TRACKING_REL).resolve()
+    if not _inside(manifest_path, state_root):
         raise ValueError("TEST_TRACKING_MANIFEST_OUTSIDE_CHANGE")
     if not manifest_path.is_file():
         return {}, None
@@ -367,11 +374,20 @@ def expand_profile_input_files(
     return sorted(seen), None
 
 
+def _state_dir(change_dir: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+
+
 def ledger_candidates(change_dir: Path) -> list[Path]:
-    return [
-        change_dir / "evidence" / "verification-ledger.json",
-        change_dir / "verification-ledger.json",
-    ]
+    state = _state_dir(change_dir)
+    contract = Path(change_dir)
+    candidates = [state / "evidence" / "verification-ledger.json"]
+    if state != contract:
+        candidates.append(contract / "evidence" / "verification-ledger.json")
+    candidates.append(state / "verification-ledger.json")
+    if state != contract:
+        candidates.append(contract / "verification-ledger.json")
+    return candidates
 
 
 def find_ledger_path(change_dir: Path) -> Path | None:
@@ -382,8 +398,9 @@ def find_ledger_path(change_dir: Path) -> Path | None:
 
 
 def preferred_write_path(change_dir: Path) -> Path:
-    # New writes always go to evidence/ (protocol preferred path).
-    return change_dir / "evidence" / "verification-ledger.json"
+    # New writes always go to evidence/ (protocol preferred path); split-v1
+    # changes route to the dynamic state root.
+    return _state_dir(change_dir) / "evidence" / "verification-ledger.json"
 
 
 def load_ledger(change_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:

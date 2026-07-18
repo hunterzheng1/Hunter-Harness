@@ -23,6 +23,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -99,12 +105,16 @@ def resolve_change_dir(raw: str) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def _state_dir(change_dir: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+
+
 def events_path(change_dir: Path) -> Path:
-    return change_dir / "events.ndjson"
+    return _state_dir(change_dir) / "events.ndjson"
 
 
 def execution_log_path(change_dir: Path) -> Path:
-    return change_dir / "logs" / "execution-log.md"
+    return _state_dir(change_dir) / "logs" / "execution-log.md"
 
 
 def archived_change_dir(change_dir: Path) -> Path | None:
@@ -686,7 +696,7 @@ def cmd_append(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
     path = events_path(change_dir)
-    lock_path = change_dir / "events.ndjson.lock"
+    lock_path = path.with_name(path.name + ".lock")
 
     # §6.1/§6.2: 普通 append = 加锁 -> 追加一行 -> fsync -> 解锁，不 load 历史、不渲染。
     # new_event_id 用完整 uuid，无需扫描去重。锁覆盖 atomic_append_line 的
