@@ -26,6 +26,11 @@ def write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# Fixture archives simulate finalized, source-consistent summaries so the
+# knowledge publication gate (API-006/RET-40) allows promote/judge paths.
+VERIFIED_REPORT_PIPELINE = {"sourceConsistency": {"ok": True, "issues": []}}
+
+
 class HarnessKnowledgeCliTest(unittest.TestCase):
     def make_project(self, root: Path, final_commit: str = "abc1234") -> Path:
         project = root / "sample-project"
@@ -34,6 +39,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "ai-check-job",
                 "businessGoal": "实现异步 AI 检查 job，复用现有 LlmClient 和 draft.aiChecks 结果展示。",
                 "finalStatus": "OK",
@@ -84,6 +90,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "ai-check-job-followup",
                 "businessGoal": "调整异步 AI 检查 job 展示与 registry store 持久化策略，替代上一版前端轮询假设。",
                 "finalStatus": "OK",
@@ -113,6 +120,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "candidate-note",
                 "businessGoal": "记录一个仍需人工确认的候选知识条目。",
                 "finalStatus": "OK",
@@ -134,6 +142,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "old-decision",
                 "businessGoal": "旧归档知识应在 TTL 过期后要求重新确认。",
                 "finalStatus": "OK",
@@ -155,6 +164,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "ai-check-conflict",
                 "businessGoal": "不再使用 draft.aiChecks 作为唯一来源，改为 server aiJobResult 替代旧展示结果。",
                 "finalStatus": "OK",
@@ -178,6 +188,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "ai-check-test-regression",
                 "businessGoal": "验证异步 AI 检查 job 后续改动时发现 registry store 相关测试退化。",
                 "finalStatus": "WARN",
@@ -272,6 +283,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "independent-feature",
                 "businessGoal": "独立功能 X，与 AI job 模块无关。",
                 "finalStatus": "OK",
@@ -1291,6 +1303,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             archive,
             {
                 "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                 "changeName": "skill-center-per-agent-version-implementation-long-name-archive",
                 "businessGoal": "长归档名验证 entry 文件名末尾哈希不被 72 字符截断。",
                 "finalStatus": "OK",
@@ -1870,6 +1883,8 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
                 archive,
                 {
                     "schemaVersion": "2.1",
+                    "reportPipeline": VERIFIED_REPORT_PIPELINE,
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
                     "changeName": "ai-check-job-dup",
                     "businessGoal": "实现异步 AI 检查 job，复用现有 LlmClient 和 draft.aiChecks 结果展示。",
                     "finalStatus": "OK",

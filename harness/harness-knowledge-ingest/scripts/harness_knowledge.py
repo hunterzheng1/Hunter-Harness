@@ -353,6 +353,73 @@ def changed_file_paths(summary: dict[str, Any]) -> list[str]:
     return files
 
 
+def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any]:
+    """Knowledge publication gate for one archive (API-006/RET-40).
+
+    Blocks judge/apply/promote when: source consistency never ran or failed,
+    the authoritative version is missing or hash-mismatched, or the archive
+    is DEGRADED/UNVERIFIED. Ordinary ingest may still build quarantined
+    candidates, but nothing from a blocked archive becomes active.
+    """
+    result: dict[str, Any] = {"status": "missing", "allowed": False, "reasons": []}
+    archive_dir = (Path(project) / archive_rel).resolve()
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    if not summary_path.is_file():
+        result["reasons"].append("summary-data.json missing")
+        return result
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        result["reasons"].append("summary-data.json unreadable")
+        return result
+
+    consistency = (summary.get("reportPipeline") or {}).get("sourceConsistency")
+    if consistency is None:
+        result["status"] = "unverified"
+        result["reasons"].append("source consistency never ran")
+        return result
+    if not consistency.get("ok"):
+        result["status"] = "failed"
+        codes = [
+            str(i.get("code"))
+            for i in (consistency.get("issues") or [])
+            if isinstance(i, dict) and i.get("code")
+        ]
+        result["reasons"].append(
+            "source consistency failed" + (f": {', '.join(codes)}" if codes else "")
+        )
+        return result
+
+    # Repair lineage: authoritative pointer must reference a hash-valid version.
+    pointer_path = archive_dir / "derived" / "authoritative.json"
+    if pointer_path.is_file():
+        try:
+            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+            version = str(pointer.get("version") or "")
+            version_dir = archive_dir / "derived" / version
+            record = json.loads(
+                (version_dir / "repair-record.json").read_text(encoding="utf-8")
+            )
+            summary_bytes = (version_dir / "summary-data.json").read_bytes()
+            actual = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
+            if record.get("summarySha256") != actual:
+                result["status"] = "degraded"
+                result["reasons"].append("repair record summary hash mismatch")
+                return result
+            if pointer.get("summarySha256") not in {None, actual}:
+                result["status"] = "degraded"
+                result["reasons"].append("authoritative pointer hash mismatch")
+                return result
+        except (OSError, json.JSONDecodeError):
+            result["status"] = "degraded"
+            result["reasons"].append("authoritative version unreadable")
+            return result
+
+    result["status"] = "ok"
+    result["allowed"] = True
+    return result
+
+
 def archive_summary_records(project: Path, summary_paths: list[Path]) -> list[dict[str, Any]]:
     records = []
     for summary_path in summary_paths:
@@ -938,6 +1005,9 @@ def apply_confidence_scores(entries: list[dict[str, Any]], config: dict[str, Any
 
 def should_auto_promote(entry: dict[str, Any], policy: dict[str, Any]) -> bool:
     if not policy["enabled"]:
+        return False
+    # API-006/RET-40: entries from blocked archives stay quarantined.
+    if entry.get("lifecycle", {}).get("publishBlocked"):
         return False
     if entry.get("type") not in set(policy["allowedTypes"]):
         return False
@@ -1946,6 +2016,17 @@ def build_index(
                     ingest_mode["cacheWrites"] += 1
             else:
                 ingest_mode["archivesReused"] += 1
+            # API-006/RET-40: entries from archives failing the publication
+            # gate stay quarantined (candidate only, never active/promoted).
+            archive_rel = rel_to_project(project, archive_dir_from_summary(summary_path))
+            publication = archive_publication_status(project, archive_rel)
+            if not publication.get("allowed"):
+                for entry in archive_entries:
+                    lifecycle = entry.setdefault("lifecycle", {})
+                    lifecycle["publishBlocked"] = list(publication.get("reasons") or [])
+                    if entry.get("status") == "active":
+                        entry["status"] = "candidate"
+                        ingest_mode["activeAutoDemoted"] += 1
             entries.extend(archive_entries)
         except Exception as exc:  # keep one bad archive from blocking the index
             failures.append({"path": rel_to_project(project, summary_path), "error": str(exc)})
@@ -2064,6 +2145,20 @@ def promote_entry(project: Path, entry_id: str, note: str, allow_stale: bool = F
         raise ValueError(f"entry not found in promotable statuses: {entry_id}")
 
     source_path, entry = found
+    # API-006/RET-40: refuse promotion of entries from blocked archives.
+    blocked = (entry.get("lifecycle") or {}).get("publishBlocked")
+    if blocked:
+        raise ValueError(
+            "publication blocked: " + "; ".join(str(r) for r in blocked)
+        )
+    archive_rel = (entry.get("source") or {}).get("archive")
+    if archive_rel:
+        publication = archive_publication_status(project, archive_rel)
+        if not publication.get("allowed"):
+            raise ValueError(
+                "publication blocked: "
+                + "; ".join(str(r) for r in (publication.get("reasons") or []))
+            )
     entry["status"] = "active"
     lifecycle = entry.setdefault("lifecycle", {})
     lifecycle["promotedAt"] = now_iso()

@@ -153,6 +153,8 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync 
 
 仅在用户点名单条、或 `manualReview=true` 需人工确认时使用 `promote` / `demote`。日常归档后不要逐条人工复核。
 
+**发布门禁**：promote / judge apply / autoPromote 会校验来源归档——`reportPipeline.sourceConsistency` 缺失或失败、authoritative pointer /hash 不通过的归档，其条目带 `lifecycle.publishBlocked`，只能停留在 quarantined candidate。先 `harness_archive.py repair` 修复并重新 ingest，再 promote（详见 `reference.md`「发布门禁」）。
+
 ### Phase 6：解释同步结果
 
 回复用户或交给后续 skill 前，应说明：

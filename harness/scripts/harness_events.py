@@ -189,6 +189,26 @@ def load_events(path: Path) -> list[dict[str, Any]]:
     return events
 
 
+def merge_event_files(paths: list[Path]) -> list[dict[str, Any]]:
+    """Union events from multiple NDJSON files by event ID (UT-001/RET-05).
+
+    Each event ID appears exactly once; first-seen copy wins. Missing IDs are
+    kept keyed by (file index, line number) so unidentified events are never
+    silently dropped.
+    """
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths:
+        for event in load_events(Path(path)):
+            event_id = str(event.get("id") or "").strip()
+            if event_id:
+                if event_id in seen:
+                    continue
+                seen.add(event_id)
+            merged.append(event)
+    return merged
+
+
 def atomic_append_line(path: Path, line: str) -> None:
     """Write line to a temp file first, then append to the target (append-only)."""
     path.parent.mkdir(parents=True, exist_ok=True)
