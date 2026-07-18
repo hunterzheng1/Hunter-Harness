@@ -70,6 +70,9 @@ describe("Post-adaptation freshness projection (变更簇 D / task 12)", () => {
     expect(entry.identity.bundleVersion).toBeTruthy();
     expect(entry.identity.manifestHash).toBeTruthy();
     expect(entry.identity.installedManifestHash).toBe(entry.identity.manifestHash);
+    // review fixback #1：coreHash/installedCoreHash 必须填充真实 marker 值。
+    expect(entry.identity.coreHash).toBeTruthy();
+    expect(entry.identity.installedCoreHash).toBe(entry.identity.coreHash);
     expect(entry.profile).toBe("general");
   });
 

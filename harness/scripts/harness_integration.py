@@ -19,6 +19,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -567,9 +568,18 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return _emit(_txn_from_args(args).merge())
 
 
+def _parse_verify_commands(values: Sequence[str] | None) -> list[list[str]]:
+    """Split ``--command`` strings honoring quotes (shlex, POSIX mode).
+
+    Plain ``str.split(" ")`` breaks quoted arguments (e.g. ``-k 'a b'``).
+    POSIX shlex semantics: single/double quotes group tokens, backslash
+    escapes the next character (quote Windows paths).
+    """
+    return [shlex.split(value) for value in (values or [])]
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
-    commands = [cmd.split(" ") for cmd in (args.command or [])]
-    return _emit(_txn_from_args(args).verify(commands=commands))
+    return _emit(_txn_from_args(args).verify(commands=_parse_verify_commands(args.command)))
 
 
 def cmd_push(args: argparse.Namespace) -> int:

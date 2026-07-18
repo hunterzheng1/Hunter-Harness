@@ -493,5 +493,21 @@ class VerifyInIntegrationWorktreeTests(TransactionFixture):
         )
 
 
+class VerifyCommandParsingTests(unittest.TestCase):
+    def test_quoted_arguments_survive_parsing(self) -> None:
+        commands = integration._parse_verify_commands(
+            ["python -m pytest -k 'alpha beta' --maxfail=1"]
+        )
+        self.assertEqual(
+            commands,
+            [["python", "-m", "pytest", "-k", "alpha beta", "--maxfail=1"]],
+        )
+
+    def test_plain_command_still_splits_on_spaces(self) -> None:
+        commands = integration._parse_verify_commands(["npm run check:all"])
+        self.assertEqual(commands, [["npm", "run", "check:all"]])
+        self.assertEqual(integration._parse_verify_commands(None), [])
+
+
 if __name__ == "__main__":
     unittest.main()
