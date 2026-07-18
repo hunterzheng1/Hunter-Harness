@@ -708,6 +708,8 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verif
 python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
 ```
 
+> **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 强制顶层身份（缺失非零退出、不写账本）；`--metrics-json` 必须过 typed schema（unit/apiContract/browserE2E/dbCompatibility 各有不同必填键）；dbCompatibility 等不适用验证用 `--applicability NOT_APPLICABLE --applicability-reason "<scope 原因>"`（不计通过也不计失败）。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
+
 ### 常见报错对照
 
 | 报错 | 原因 | 处理 |

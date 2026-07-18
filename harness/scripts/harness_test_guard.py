@@ -279,6 +279,52 @@ def _validate_file(project: Path, raw: str) -> tuple[Path | None, str | None, st
     return resolved, rel, None
 
 
+def _contract_is_v2(change_root: Path) -> bool:
+    try:
+        contract = harness_paths.load_change_contract(change_root)
+    except (OSError, ValueError):
+        return False
+    if harness_paths.contract_layout_kind(contract) == "split-v1":
+        return True
+    version = contract.get("schemaVersion")
+    return isinstance(version, int) and version >= 2
+
+
+def _byte_hash(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def logical_file_hash(repo_root: Path, rel: str) -> str:
+    """Logical identity for a tracked file (RET-10).
+
+    Text files hash with git blob semantics (path filters/attributes applied,
+    so LF/CRLF spellings of one logical text agree). Binary files keep byte
+    hash. Indeterminate content falls back to byte hash.
+    """
+    path = repo_root / rel
+    content = path.read_bytes()
+    attr = _git(repo_root, "check-attr", "text", "--", rel)
+    attr_out = attr.stdout.strip() if attr.returncode == 0 else ""
+    if attr_out.endswith(": unset"):
+        return _byte_hash(path)
+    if b"\x00" in content:
+        return _byte_hash(path)
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError:
+        return _byte_hash(path)
+    proc = subprocess.run(
+        ["git", "hash-object", "--path", rel, "--stdin"],
+        input=content,
+        capture_output=True,
+        cwd=str(repo_root),
+        check=False,
+    )
+    if proc.returncode != 0:
+        return _byte_hash(path)
+    return "gitblob:" + proc.stdout.decode("ascii").strip()
+
+
 def _entry_shape_valid(item: Any) -> bool:
     return (
         isinstance(item, dict)
@@ -290,6 +336,78 @@ def _entry_shape_valid(item: Any) -> bool:
         and type(item.get("ignored")) is bool
         and type(item.get("trackedBefore")) is bool
     )
+
+
+def _entry_shape_valid_v2(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if not isinstance(item.get("path"), str) or not item["path"]:
+        return False
+    logical = item.get("logicalHash")
+    binary = item.get("binaryHash")
+    logical_ok = isinstance(logical, str) and (
+        logical.startswith("gitblob:") or logical.startswith("sha256:")
+    )
+    binary_ok = binary is None or (
+        isinstance(binary, str) and binary.startswith("sha256:")
+    )
+    if not (logical_ok or binary_ok):
+        return False
+    if item.get("reason") not in REASONS:
+        return False
+    if type(item.get("ignored")) is not bool:
+        return False
+    if not isinstance(item.get("introducedBy"), str) or not item["introducedBy"]:
+        return False
+    touched = item.get("touchedBy")
+    if not isinstance(touched, list) or not all(isinstance(t, str) for t in touched):
+        return False
+    return item.get("commitScope") in ("current-change", "foreign-change")
+
+
+def _validate_existing_manifest_v2(
+    project: Path,
+    manifest: Any,
+    *,
+    allow_hash_drift: set[str] | None = None,
+    require_files: bool,
+) -> tuple[str | None, dict[str, dict[str, Any]]]:
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schemaVersion") != 2
+        or manifest.get("mode") != MODE
+    ):
+        return "MANIFEST_INVALID", {}
+    repository_id = manifest.get("repositoryId")
+    if not isinstance(repository_id, str) or not repository_id.startswith("sha256:"):
+        return "MANIFEST_INVALID", {}
+    if repository_id != harness_paths.repository_identity(project):
+        return "MANIFEST_PROJECT_MISMATCH", {}
+    entries = manifest.get("files")
+    if not isinstance(entries, list):
+        return "MANIFEST_INVALID", {}
+    if require_files and not entries:
+        return "EMPTY_MANIFEST", {}
+
+    allowed_drift = allow_hash_drift or set()
+    validated: dict[str, dict[str, Any]] = {}
+    for item in entries:
+        if not _entry_shape_valid_v2(item):
+            return "MANIFEST_INVALID", {}
+        rel = item["path"]
+        if rel in validated:
+            return "MANIFEST_INVALID", {}
+        path, normalized, error = _validate_file(project, rel)
+        if error or normalized != rel or path is None:
+            return error or "MANIFEST_INVALID", {}
+        expected = item.get("logicalHash") or item.get("binaryHash")
+        if expected != logical_file_hash(project, rel) and rel not in allowed_drift:
+            return "HASH_DRIFT" if require_files else "MANIFEST_INVALID", {}
+        ignored_now = _is_ignored(project, rel)
+        if item["ignored"] != ignored_now:
+            return "MANIFEST_INVALID", {}
+        validated[rel] = dict(item)
+    return None, validated
 
 
 def _validate_existing_manifest(
@@ -378,7 +496,12 @@ def record(
                     return _result(
                         False, action, "MANIFEST_INVALID", [], error=str(exc)
                     )
-                error, existing_files = _validate_existing_manifest(
+                validator = (
+                    _validate_existing_manifest_v2
+                    if isinstance(existing, dict) and existing.get("schemaVersion") == 2
+                    else _validate_existing_manifest
+                )
+                error, existing_files = validator(
                     project_root,
                     existing,
                     allow_hash_drift={rel for _, rel in validated},
@@ -387,25 +510,54 @@ def record(
                 if error:
                     return _result(False, action, error, [])
 
-            for path, rel in validated:
-                ignored = _is_ignored(project_root, rel)
-                tracked = _git(
-                    project_root, "ls-files", "--error-unmatch", "--", rel
-                ).returncode == 0
-                existing_files[rel] = {
-                    "path": rel,
-                    "sha256": _sha256(path),
-                    "reason": reason,
-                    "ignored": ignored,
-                    "trackedBefore": tracked,
+            if _contract_is_v2(change_root):
+                change_id = change_root.name
+                for path, rel in validated:
+                    ignored = _is_ignored(project_root, rel)
+                    previous = existing_files.get(rel, {})
+                    touched = [
+                        item for item in previous.get("touchedBy", [])
+                        if isinstance(item, str)
+                    ]
+                    if change_id not in touched:
+                        touched.append(change_id)
+                    digest = logical_file_hash(project_root, rel)
+                    existing_files[rel] = {
+                        "path": rel,
+                        "logicalHash": digest,
+                        "binaryHash": None if digest.startswith("gitblob:") else digest,
+                        "reason": reason,
+                        "ignored": ignored,
+                        "introducedBy": previous.get("introducedBy", change_id),
+                        "touchedBy": touched,
+                        "commitScope": "current-change",
+                    }
+                manifest = {
+                    "schemaVersion": 2,
+                    "repositoryId": harness_paths.repository_identity(project_root),
+                    "mode": MODE,
+                    "files": [existing_files[key] for key in sorted(existing_files)],
                 }
+            else:
+                for path, rel in validated:
+                    ignored = _is_ignored(project_root, rel)
+                    tracked = _git(
+                        project_root, "ls-files", "--error-unmatch", "--", rel
+                    ).returncode == 0
+                    existing_files[rel] = {
+                        "path": rel,
+                        "sha256": _sha256(path),
+                        "reason": reason,
+                        "ignored": ignored,
+                        "trackedBefore": tracked,
+                    }
 
-            manifest = {
-                "schemaVersion": SCHEMA_VERSION,
-                "mode": MODE,
-                "projectRoot": str(project_root),
-                "files": [existing_files[key] for key in sorted(existing_files)],
-            }
+                manifest = {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "mode": MODE,
+                    "projectRoot": str(project_root),
+                    "files": [existing_files[key] for key in sorted(existing_files)],
+                }
             _write_json(manifest_path, manifest)
     except LockUnavailable:
         return _result(False, action, "MANIFEST_LOCKED", [])

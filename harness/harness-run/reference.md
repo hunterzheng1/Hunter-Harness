@@ -528,6 +528,8 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 > `content-changeset-2` 同时读取 tracked diff、标准 untracked 文件和 manifest 的精确测试路径。manifest 缺失时保持普通行为；manifest 存在但路径越界、内容 hash 漂移或结构非法时命令失败，ledger 不可复用。checkpoint commit 不改变各路径的工作树内容，因此提交前后 hash 保持一致。
 
 > 这样 harness-test 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
+>
+> **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 自动解析并强制顶层身份（`schemaVersion=3/repositoryId/changeName/baseCommit/currentHead/diffHash/ownershipHash`），缺字段非零退出、不写账本；`--metrics-json` 必须通过 typed schema（unit=`total/passed/failed`，apiContract=`scenariosTotal/passed/failed`，browserE2E=`total/passed/failed`，dbCompatibility=`applicability(+reason)`）；新增 `--base-commit/--diff-hash/--applicability/--applicability-reason`。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
 
 阶段边界：`harness_gate.py begin/close`；测试跟踪：`harness_test_guard.py begin/close`。close 失败不得用自然语言覆盖。
 

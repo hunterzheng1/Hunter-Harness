@@ -443,14 +443,82 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
         elif etype == "phase.end":
             end_ts = event.get("timestamp")
     if start_ts and end_ts:
-        stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
-        effective_end = stamps[-1] if stamps else end_ts
-        return duration_ms_between(start_ts, effective_end)
+        # Closed phases end at the matching phase.end. Late events appended
+        # after closure are reported separately (late_event_stats) and never
+        # extend the closed duration (RET-21).
+        return duration_ms_between(start_ts, end_ts)
     # Fallback: first to last timestamp in the phase bucket.
     stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
     if len(stamps) >= 2:
         return duration_ms_between(stamps[0], stamps[-1])
     return None
+
+
+def late_event_stats(phase_events: list[dict[str, Any]]) -> dict[str, int]:
+    """Count events recorded after the closing phase.end (RET-21)."""
+    end_ts = None
+    for event in phase_events:
+        if event.get("type") == "phase.end":
+            end_ts = event.get("timestamp")
+    if not end_ts:
+        return {"lateEventCount": 0, "lateEventSpanMs": 0}
+    late_stamps = []
+    seen_end = False
+    for event in phase_events:
+        if event.get("type") == "phase.end" and not seen_end:
+            seen_end = True
+            continue
+        if seen_end and event.get("timestamp"):
+            late_stamps.append(event["timestamp"])
+    if not late_stamps:
+        return {"lateEventCount": 0, "lateEventSpanMs": 0}
+    span = duration_ms_between(end_ts, late_stamps[-1]) or 0
+    return {"lateEventCount": len(late_stamps), "lateEventSpanMs": span}
+
+
+def attempt_invocations(phase_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-attempt invocation view: attempt, status, durationMs (RET-22)."""
+    invocations: list[dict[str, Any]] = []
+    for attempt in split_phase_attempts(phase_events):
+        events_in = attempt.get("events") or []
+        start_ts = None
+        end_ts = None
+        status = None
+        for event in events_in:
+            if event.get("type") == "phase.start" and start_ts is None:
+                start_ts = event.get("timestamp")
+            elif event.get("type") == "phase.end":
+                end_ts = event.get("timestamp")
+                status = event.get("status", status)
+        duration = None
+        if start_ts and end_ts:
+            duration = duration_ms_between(start_ts, end_ts)
+        invocations.append(
+            {
+                "attempt": attempt.get("attempt"),
+                "status": status,
+                "durationMs": duration,
+            }
+        )
+    return invocations
+
+
+def canonical_phase_timing(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Single reducer for every duration view (RET-20).
+
+    activeExecutionMs: phase.start → matching phase.end (closed contract).
+    wallClockSpanMs: first → last timestamp in the bucket, late events included.
+    """
+    stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
+    active = phase_duration_ms(phase_events)
+    late = late_event_stats(phase_events)
+    wall = duration_ms_between(stamps[0], stamps[-1]) if len(stamps) >= 2 else active
+    return {
+        "activeExecutionMs": active,
+        "wallClockSpanMs": wall,
+        "lateEventCount": late["lateEventCount"],
+        "lateEventSpanMs": late["lateEventSpanMs"],
+    }
 
 
 def render_command_block(commands: list[dict[str, Any]]) -> list[str]:
