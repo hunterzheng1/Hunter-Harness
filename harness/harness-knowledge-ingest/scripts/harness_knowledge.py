@@ -1823,6 +1823,19 @@ def compute_inputs_hash(
     versions + preserved entries (active / manually demoted), so promote/demote
     correctly invalidate the no-op fast path.
     """
+    return compute_inputs_hash_from_preserved(
+        records,
+        config,
+        load_preserved_entries(knowledge),
+    )
+
+
+def compute_inputs_hash_from_preserved(
+    records: list[dict[str, Any]],
+    config: dict[str, Any],
+    preserved_entries: list[dict[str, Any]],
+) -> str:
+    """Hash knowledge inputs using an already-resolved preserved closure."""
     archive_fingerprint = json.dumps(
         sorted(
             (
@@ -1843,7 +1856,6 @@ def compute_inputs_hash(
         },
         sort_keys=True,
     )
-    preserved = load_preserved_entries(knowledge)
     preserved_fingerprint = json.dumps(
         sorted(
             (
@@ -1852,7 +1864,7 @@ def compute_inputs_hash(
                     "status": e.get("status"),
                     "lifecycle": e.get("lifecycle", {}),
                 }
-                for e in preserved
+                for e in preserved_entries
             ),
             key=lambda item: item["id"] or "",
         ),
@@ -2119,6 +2131,16 @@ def build_index(
     ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     ingest_mode["confidenceScored"] = len(indexed_entries)
     ingest_mode["entriesPruned"] = prune_generated_entries(knowledge, indexed_entries)
+
+    # Lifecycle policies above may relocate or mutate preserved entries. The
+    # pre-build hash remains useful for the no-op gate, but the persisted index
+    # must describe the final preserved closure or an immediate sync will mark
+    # the freshly rebuilt index stale.
+    ingest_mode["inputsHash"] = compute_inputs_hash_from_preserved(
+        archive_records,
+        config,
+        load_preserved_entries(knowledge),
+    )
 
     sqlite_stats = write_sqlite(knowledge / "index.sqlite", indexed_entries)
     ingest_mode.update(sqlite_stats)
