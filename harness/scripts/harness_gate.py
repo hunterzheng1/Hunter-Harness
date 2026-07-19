@@ -147,6 +147,19 @@ def _git_text(cwd: Path, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def _git_is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def resolve_execution_root(main_project: Path, raw: str | None) -> Path:
     candidate = Path(raw).expanduser().resolve() if raw else main_project.resolve()
     if not candidate.is_dir():
@@ -203,6 +216,7 @@ def validate_phase_capsule(
     project: Path,
     execution_root: Path,
     skills_root: Path | None = None,
+    allow_head_advance: bool = False,
 ) -> None:
     """Fail closed when a resume/close capsule no longer identifies this run."""
     required = (
@@ -234,9 +248,15 @@ def validate_phase_capsule(
     if capsule.get("repositoryId") != current_repository:
         raise ValueError("phase capsule repositoryId mismatch")
     current_head = _git_text(execution_root, "rev-parse", "--verify", "HEAD")
-    if capsule.get("currentHead") != current_head:
+    capsule_head = str(capsule["currentHead"])
+    head_advanced = (
+        allow_head_advance
+        and isinstance(current_head, str)
+        and _git_is_ancestor(execution_root, capsule_head, current_head)
+    )
+    if capsule_head != current_head and not head_advanced:
         raise ValueError(
-            f"phase capsule currentHead mismatch: expected {capsule.get('currentHead')}, "
+            f"phase capsule currentHead mismatch: expected {capsule_head}, "
             f"found {current_head}"
         )
 
@@ -1381,6 +1401,7 @@ def cmd_close(args: argparse.Namespace) -> int:
                 run_id=run_id,
                 project=project,
                 execution_root=execution_root,
+                allow_head_advance=args.phase in {"run", "submit", "merge"},
             )
         except ValueError as exc:
             return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)

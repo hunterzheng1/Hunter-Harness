@@ -666,6 +666,56 @@ class HarnessGateTests(unittest.TestCase):
                 skills_root=self.project / ".different-skills",
             )
 
+    def test_submit_close_accepts_descendant_commit_from_same_run(self) -> None:
+        self._write_checkpoints("approved")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+        run_id = "submit-commit"
+        capsule = {
+            "schemaVersion": 1,
+            "changeId": "demo",
+            "phase": "submit",
+            "runId": run_id,
+            "projectRoot": str(self.project.resolve()),
+            "stateRoot": str(self.change_dir.resolve()),
+            "executionRoot": str(self.project.resolve()),
+            "skillsRoot": str((self.project / ".agents" / "skills").resolve()),
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "baseCommit": head,
+            "currentHead": head,
+            "createdAt": gate.he.now_iso(),
+        }
+        gate.write_phase_capsule(self.change_dir, "submit", run_id, capsule)
+        (self.project / "submitted.txt").write_text("submitted\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "submitted.txt"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "submit"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "submit", "--change", "demo",
+            "--run-id", run_id, "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={
+                 "runId": run_id, "phase": "submit"
+             }), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
+                 "ok": True, "code": "LEDGER_OK"
+             }), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}):
+            self.assertEqual(gate.cmd_close(args), 0)
+
     def test_close_release_failure_persists_retryable_capsule(self) -> None:
         self._write_checkpoints("approved")
         head = subprocess.run(
