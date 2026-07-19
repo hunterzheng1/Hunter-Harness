@@ -21,7 +21,7 @@ const python = process.env.PYTHON ?? (process.platform === "win32" ? "python" : 
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.11";
+const BUNDLE_VERSION = "0.2.12";
 
 async function syncInputHash() {
   const inputs = [
