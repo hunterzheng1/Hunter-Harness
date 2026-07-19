@@ -12,10 +12,13 @@ Python 3.10+, stdlib only. UTF-8 without BOM. Windows path safe.
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -44,7 +47,9 @@ EVENT_TYPES = frozenset(
         "verification",
         "artifact",
         "issue",
+        "issue.resolve",
         "decision",
+        "correction",
     }
 )
 
@@ -69,6 +74,12 @@ OPTIONAL_FIELDS = (
     "message",
     "decision",
     "reason",
+    "issue_id",
+    "scope",
+    "target_event_id",
+    "target_field",
+    "old_value_hash",
+    "new_value_json",
     "run_id",
     "attempt",
     "executor_tool",
@@ -76,6 +87,78 @@ OPTIONAL_FIELDS = (
     "executor_model",
     "handoff_from_tool",
     "handoff_reason",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "runner_ms",
+    "orchestration_active_ms",
+    "wall_clock_ms",
+    "user_wait_ms",
+)
+
+_PROVENANCE_FIELDS = frozenset(
+    {
+        "run_id",
+        "attempt",
+        "executor_tool",
+        "executor_agent",
+        "executor_model",
+        "handoff_from_tool",
+        "handoff_reason",
+        "trace_id",
+        "span_id",
+        "parent_span_id",
+        "runner_ms",
+        "orchestration_active_ms",
+        "wall_clock_ms",
+        "user_wait_ms",
+    }
+)
+_EVENT_ALLOWED_FIELDS = {
+    "phase.start": frozenset({"note"}) | _PROVENANCE_FIELDS,
+    "phase.end": frozenset(
+        {"status", "duration_ms", "note", "reason", "issue_id"}
+    )
+    | _PROVENANCE_FIELDS,
+    "command": frozenset({"command", "exit_code", "duration_ms", "note"})
+    | _PROVENANCE_FIELDS,
+    "verification": frozenset(
+        {"name", "status", "reason", "command", "exit_code", "duration_ms", "note"}
+    )
+    | _PROVENANCE_FIELDS,
+    "artifact": frozenset({"path", "kind", "note"}) | _PROVENANCE_FIELDS,
+    "issue": frozenset({"code", "scope", "severity", "message", "reason", "note"})
+    | frozenset({"issue_id"})
+    | _PROVENANCE_FIELDS,
+    "issue.resolve": frozenset({"issue_id", "reason", "note"})
+    | _PROVENANCE_FIELDS,
+    "decision": frozenset({"decision", "reason", "note"}) | _PROVENANCE_FIELDS,
+    "correction": frozenset(
+        {
+            "target_event_id",
+            "target_field",
+            "old_value_hash",
+            "new_value_json",
+            "reason",
+            "note",
+        }
+    )
+    | _PROVENANCE_FIELDS,
+}
+_EVENT_REQUIRED_FIELDS = {
+    "issue": ("severity",),
+    "issue.resolve": ("issue_id", "reason"),
+    "verification": ("name", "status"),
+    "correction": (
+        "target_event_id",
+        "target_field",
+        "old_value_hash",
+        "new_value_json",
+        "reason",
+    ),
+}
+_CORRECTION_PROTECTED_FIELDS = frozenset(
+    {"schema_version", "id", "timestamp", "phase", "type"}
 )
 
 
@@ -92,8 +175,16 @@ def emit_json(payload: dict[str, Any], *, as_json: bool) -> None:
         sys.stdout.write(f"{msg}\n")
 
 
-def emit_error(message: str, *, as_json: bool, code: int = 1) -> int:
+def emit_error(
+    message: str,
+    *,
+    as_json: bool,
+    code: int = 1,
+    error_code: str | None = None,
+) -> int:
     payload = {"ok": False, "error": message}
+    if error_code:
+        payload["code"] = error_code
     if as_json:
         sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
     else:
@@ -165,9 +256,107 @@ def normalize_event(raw: dict[str, Any]) -> dict[str, Any]:
     except (TypeError, ValueError):
         version_int = 1
     event["schema_version"] = version_int
+    if version_int < SCHEMA_VERSION and "schemaValidation" not in event:
+        event["schemaValidation"] = "legacy"
     if "note" not in event or event["note"] is None:
         event["note"] = ""
     return event
+
+
+def canonical_value_hash(value: Any) -> str:
+    """Return the stable optimistic-concurrency hash for a corrected value."""
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def apply_event_corrections(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project append-only correction events without mutating event history.
+
+    Corrections may target only earlier events and use an old-value hash as an
+    optimistic-concurrency guard. The correction records remain in the raw
+    stream; projections return only the corrected domain events.
+    """
+    projected: list[dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for raw in events:
+        event = copy.deepcopy(raw)
+        if event.get("type") != "correction":
+            projected.append(event)
+            event_id = str(event.get("id") or "").strip()
+            if event_id:
+                by_id[event_id] = event
+            continue
+
+        correction_id = str(event.get("id") or "<unknown>")
+        target_id = str(event.get("target_event_id") or "").strip()
+        target = by_id.get(target_id)
+        if target is None:
+            raise ValueError(
+                f"CORRECTION_TARGET_NOT_FOUND: {correction_id} targets {target_id}"
+            )
+        field = str(event.get("target_field") or "").strip()
+        if not field or field in _CORRECTION_PROTECTED_FIELDS:
+            raise ValueError(
+                f"CORRECTION_FIELD_NOT_ALLOWED: {correction_id} targets {field}"
+            )
+        actual_hash = canonical_value_hash(target.get(field))
+        expected_hash = str(event.get("old_value_hash") or "").strip()
+        if actual_hash != expected_hash:
+            raise ValueError(
+                "CORRECTION_OLD_VALUE_MISMATCH: "
+                f"{correction_id} expected {expected_hash}, found {actual_hash}"
+            )
+        target[field] = copy.deepcopy(event.get("new_value"))
+    return projected
+
+
+def _issue_identity(event: dict[str, Any]) -> str:
+    explicit = str(event.get("issue_id") or "").strip()
+    if explicit:
+        return explicit
+    code = str(event.get("code") or "").strip()
+    scope = str(event.get("scope") or "").strip()
+    if code:
+        return f"code:{code}|scope:{scope}"
+    return str(event.get("id") or "").strip()
+
+
+def current_issues(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return unresolved issues while preserving the full append-only history."""
+    active: dict[str, dict[str, Any]] = {}
+    for event in apply_event_corrections(events):
+        event_type = event.get("type")
+        if event_type == "issue":
+            identity = _issue_identity(event)
+            if identity:
+                item = copy.deepcopy(event)
+                item["issue_id"] = identity
+                active[identity] = item
+        elif event_type == "issue.resolve":
+            active.pop(_issue_identity(event), None)
+        elif event_type == "phase.end" and str(event.get("status") or "").upper() == "OK":
+            identity = str(event.get("issue_id") or "").strip()
+            if not identity:
+                continue
+            phase = event.get("phase")
+            attempt = event.get("attempt")
+            issue = active.get(identity)
+            if issue is None or issue.get("phase") != phase:
+                continue
+            issue_attempt = issue.get("attempt")
+            if (
+                isinstance(attempt, int)
+                and isinstance(issue_attempt, int)
+                and issue_attempt >= attempt
+            ):
+                continue
+            active.pop(identity, None)
+    return list(active.values())
 
 
 def load_events(path: Path) -> list[dict[str, Any]]:
@@ -329,7 +518,12 @@ def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dic
         value = getattr(args, field, None)
         if value is None:
             continue
-        event[field] = value
+        if field == "new_value_json":
+            event["new_value"] = json.loads(value)
+        else:
+            event[field] = value
+    if args.type == "issue" and not event.get("issue_id"):
+        event["issue_id"] = _issue_identity(event)
     environment_defaults = {
         "run_id": "HUNTER_HARNESS_RUN_ID",
         "executor_tool": "HUNTER_HARNESS_TOOL",
@@ -342,6 +536,61 @@ def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dic
     if "note" not in event:
         event["note"] = ""
     return event
+
+
+def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
+    """Validate type-specific append fields before any file is mutated."""
+    event_type = str(args.type)
+    for field in _EVENT_REQUIRED_FIELDS.get(event_type, ()):
+        value = getattr(args, field, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return (
+                "EVENT_REQUIRED_FIELD",
+                f"EVENT_REQUIRED_FIELD: {event_type} requires --{field.replace('_', '-')}",
+            )
+    allowed = _EVENT_ALLOWED_FIELDS[event_type]
+    for field in OPTIONAL_FIELDS:
+        value = getattr(args, field, None)
+        if value is not None and field not in allowed:
+            return (
+                "EVENT_FIELD_NOT_ALLOWED",
+                "EVENT_FIELD_NOT_ALLOWED: "
+                f"{event_type} does not accept --{field.replace('_', '-')}",
+            )
+    for field, length in (("trace_id", 32), ("span_id", 16), ("parent_span_id", 16)):
+        value = getattr(args, field, None)
+        if value is not None and not re.fullmatch(rf"[0-9a-f]{{{length}}}", str(value)):
+            return (
+                "EVENT_TRACE_FIELD_INVALID",
+                f"EVENT_TRACE_FIELD_INVALID: --{field.replace('_', '-')} must be {length} lowercase hex characters",
+            )
+    for field in (
+        "runner_ms",
+        "orchestration_active_ms",
+        "wall_clock_ms",
+        "user_wait_ms",
+    ):
+        value = getattr(args, field, None)
+        if value is not None and (not isinstance(value, int) or value < 0):
+            return (
+                "EVENT_TIMING_FIELD_INVALID",
+                f"EVENT_TIMING_FIELD_INVALID: --{field.replace('_', '-')} must be a nonnegative integer",
+            )
+    if event_type == "correction":
+        target_field = str(getattr(args, "target_field", "") or "").strip()
+        if target_field in _CORRECTION_PROTECTED_FIELDS:
+            return (
+                "CORRECTION_FIELD_NOT_ALLOWED",
+                f"CORRECTION_FIELD_NOT_ALLOWED: cannot correct {target_field}",
+            )
+        try:
+            json.loads(str(getattr(args, "new_value_json", "")))
+        except json.JSONDecodeError as exc:
+            return (
+                "CORRECTION_VALUE_INVALID_JSON",
+                f"CORRECTION_VALUE_INVALID_JSON: {exc.msg}",
+            )
+    return None
 
 
 def status_symbol(status: Any, reason: Any = None) -> str:
@@ -475,21 +724,19 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
 
 
 def late_event_stats(phase_events: list[dict[str, Any]]) -> dict[str, int]:
-    """Count events recorded after the closing phase.end (RET-21)."""
-    end_ts = None
-    for event in phase_events:
+    """Count events recorded after the final closing phase.end (RET-21)."""
+    final_end_index = None
+    for index, event in enumerate(phase_events):
         if event.get("type") == "phase.end":
-            end_ts = event.get("timestamp")
-    if not end_ts:
+            final_end_index = index
+    if final_end_index is None:
         return {"lateEventCount": 0, "lateEventSpanMs": 0}
-    late_stamps = []
-    seen_end = False
-    for event in phase_events:
-        if event.get("type") == "phase.end" and not seen_end:
-            seen_end = True
-            continue
-        if seen_end and event.get("timestamp"):
-            late_stamps.append(event["timestamp"])
+    end_ts = phase_events[final_end_index].get("timestamp")
+    late_stamps = [
+        event["timestamp"]
+        for event in phase_events[final_end_index + 1 :]
+        if event.get("timestamp")
+    ]
     if not late_stamps:
         return {"lateEventCount": 0, "lateEventSpanMs": 0}
     span = duration_ms_between(end_ts, late_stamps[-1]) or 0
@@ -523,6 +770,20 @@ def attempt_invocations(phase_events: list[dict[str, Any]]) -> list[dict[str, An
     return invocations
 
 
+def phase_final_state(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reduce a phase to the state of its latest attempt."""
+    invocations = attempt_invocations(phase_events)
+    if not invocations:
+        return {"attempt": None, "status": None, "durationMs": None, "closed": False}
+    latest = invocations[-1]
+    return {
+        "attempt": latest.get("attempt"),
+        "status": latest.get("status"),
+        "durationMs": latest.get("durationMs"),
+        "closed": latest.get("status") is not None,
+    }
+
+
 def canonical_phase_timing(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
     """Single reducer for every duration view (RET-20).
 
@@ -530,7 +791,12 @@ def canonical_phase_timing(phase_events: list[dict[str, Any]]) -> dict[str, Any]
     wallClockSpanMs: first → last timestamp in the bucket, late events included.
     """
     stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
-    active = phase_duration_ms(phase_events)
+    invocation_durations = [
+        invocation["durationMs"]
+        for invocation in attempt_invocations(phase_events)
+        if invocation.get("durationMs") is not None
+    ]
+    active = sum(invocation_durations) if invocation_durations else None
     late = late_event_stats(phase_events)
     wall = duration_ms_between(stamps[0], stamps[-1]) if len(stamps) >= 2 else active
     return {
@@ -639,6 +905,18 @@ def render_event_line(event: dict[str, Any]) -> list[str]:
         code = event.get("code")
         prefix = f"[{code}] " if code else ""
         return [f"- issue: {prefix}{symbol}"]
+    if etype == "issue.resolve":
+        issue_id = str(event.get("issue_id") or "").strip()
+        reason = str(event.get("reason") or event.get("note") or "").strip()
+        suffix = f" — {reason}" if reason else ""
+        return [f"- issue.resolve: {issue_id}{suffix}"] if issue_id else []
+    if etype == "correction":
+        target = str(event.get("target_event_id") or "").strip()
+        field = str(event.get("target_field") or "").strip()
+        reason = str(event.get("reason") or event.get("note") or "").strip()
+        suffix = f" — {reason}" if reason else ""
+        label = f"{target}.{field}".strip(".")
+        return [f"- correction: {label}{suffix}"] if label else []
     if etype == "artifact":
         path = str(event.get("path") or "").strip()
         note = str(event.get("note") or "").strip()
@@ -666,7 +944,14 @@ def render_execution_log(events: list[dict[str, Any]]) -> str:
         lines.append("")
         return "\n".join(lines)
 
-    for phase, phase_events in group_events_by_phase(events):
+    projected_domain_events = iter(apply_event_corrections(events))
+    projected_events = [
+        copy.deepcopy(event)
+        if event.get("type") == "correction"
+        else next(projected_domain_events)
+        for event in events
+    ]
+    for phase, phase_events in group_events_by_phase(projected_events):
         attempts = split_phase_attempts(phase_events)
         for attempt_record in attempts:
             attempt_events = attempt_record["events"]
@@ -710,8 +995,9 @@ def write_execution_log(change_dir: Path, content: str) -> Path:
 def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     phases: dict[str, Any] = {}
     issues: list[dict[str, Any]] = []
+    projected_events = apply_event_corrections(events)
 
-    for phase, phase_events in group_events_by_phase(events):
+    for phase, phase_events in group_events_by_phase(projected_events):
         attempt_records: list[dict[str, Any]] = []
         for record in split_phase_attempts(phase_events):
             attempt_events = record["events"]
@@ -745,12 +1031,13 @@ def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, A
             "attempts": attempt_records,
         }
 
-    for event in events:
+    for event in projected_events:
         if event.get("type") != "issue":
             continue
         issues.append(
             {
                 "id": event.get("id"),
+                "issue_id": _issue_identity(event),
                 "timestamp": event.get("timestamp"),
                 "phase": event.get("phase"),
                 "code": event.get("code"),
@@ -765,7 +1052,40 @@ def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, A
         "event_count": len(events),
         "phases": phases,
         "issues": issues,
+        "current_issues": [
+            {
+                "id": event.get("id"),
+                "issue_id": _issue_identity(event),
+                "timestamp": event.get("timestamp"),
+                "phase": event.get("phase"),
+                "code": event.get("code"),
+                "severity": event.get("severity"),
+                "message": event.get("message"),
+            }
+            for event in current_issues(events)
+        ],
     }
+
+
+def phase_end_already_recorded(
+    events: list[dict[str, Any]], candidate: dict[str, Any]
+) -> bool:
+    """Return whether the candidate attempt already has a terminal event."""
+    phase_events = [
+        event for event in events if event.get("phase") == candidate.get("phase")
+    ]
+    candidate_attempt = candidate.get("attempt")
+    if isinstance(candidate_attempt, int):
+        return any(
+            event.get("type") == "phase.end"
+            and event.get("attempt") == candidate_attempt
+            for event in phase_events
+        )
+    attempts = split_phase_attempts(phase_events)
+    if not attempts:
+        return False
+    latest_events = attempts[-1].get("events") or []
+    return any(event.get("type") == "phase.end" for event in latest_events)
 
 
 def cmd_append(args: argparse.Namespace) -> int:
@@ -775,6 +1095,13 @@ def cmd_append(args: argparse.Namespace) -> int:
             f"unsupported type: {args.type}; expected one of {sorted(EVENT_TYPES)}",
             as_json=as_json,
         )
+    legacy_lenient = bool(getattr(args, "legacy_lenient", False))
+    validation = validate_append_event(args)
+    if validation:
+        error_code, message = validation
+        legacy_compatible = legacy_lenient and args.type in {"issue", "verification"}
+        if not legacy_compatible:
+            return emit_error(message, as_json=as_json, error_code=error_code)
     change_dir = resolve_change_dir(args.change_dir)
     archived = archived_change_dir(change_dir)
     if archived is not None:
@@ -790,24 +1117,55 @@ def cmd_append(args: argparse.Namespace) -> int:
     # new_event_id 用完整 uuid，无需扫描去重。锁覆盖 atomic_append_line 的
     # open/write/flush/fsync 全过程。
     event = build_event(args, [])
-    # Semantic hints (non-fatal): guide agents toward required fields.
-    if args.type == "issue" and not args.severity:
+    # Explicit compatibility mode preserves old append behavior and marks the
+    # resulting event so strict consumers can distinguish it from valid v3.
+    if validation:
+        event["schemaValidation"] = "legacy"
+    if legacy_lenient and args.type == "issue" and not args.severity:
         event["severity"] = "info"
         print(
             "warning: issue without --severity, defaulted to info",
             file=sys.stderr,
         )
-    if args.type == "verification" and (not args.name or not args.status):
+    if legacy_lenient and args.type == "verification" and (not args.name or not args.status):
         print(
             "warning: verification missing --name or --status",
             file=sys.stderr,
         )
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    phase_closed = False
+    projection_error: str | None = None
     try:
         with event_file_lock(lock_path):
-            atomic_append_line(path, line)
-    except (OSError, TimeoutError) as exc:
+            existing_events = (
+                load_events(path)
+                if args.type in {"phase.end", "correction"}
+                else []
+            )
+            if args.type == "phase.end":
+                phase_closed = phase_end_already_recorded(existing_events, event)
+            elif args.type == "correction":
+                try:
+                    apply_event_corrections([*existing_events, event])
+                except ValueError as exc:
+                    projection_error = str(exc)
+            if not phase_closed and projection_error is None:
+                atomic_append_line(path, line)
+    except (OSError, TimeoutError, ValueError) as exc:
         return emit_error(f"append failed: {exc}", as_json=as_json)
+    if phase_closed:
+        return emit_error(
+            "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same attempt",
+            as_json=as_json,
+            error_code="PHASE_ALREADY_CLOSED",
+        )
+    if projection_error is not None:
+        error_code = projection_error.split(":", 1)[0]
+        return emit_error(
+            projection_error,
+            as_json=as_json,
+            error_code=error_code,
+        )
 
     # §6.1: phase.end append -> 追加成功后执行一次 render（从完整 events 重建 log）。
     # 普通 command/issue 等 append 不渲染（O(1)）；显式 `render` 子命令随时重建。
@@ -911,6 +1269,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_append.add_argument("--message", default=None)
     p_append.add_argument("--decision", default=None)
     p_append.add_argument("--reason", default=None)
+    p_append.add_argument("--issue-id", default=None)
+    p_append.add_argument("--scope", default=None)
+    p_append.add_argument("--target-event-id", default=None)
+    p_append.add_argument("--target-field", default=None)
+    p_append.add_argument("--old-value-hash", default=None)
+    p_append.add_argument("--new-value-json", default=None)
     p_append.add_argument("--run-id", default=None)
     p_append.add_argument("--attempt", type=int, default=None)
     p_append.add_argument("--executor-tool", default=None)
@@ -918,6 +1282,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_append.add_argument("--executor-model", default=None)
     p_append.add_argument("--handoff-from-tool", default=None)
     p_append.add_argument("--handoff-reason", default=None)
+    p_append.add_argument("--trace-id", default=None)
+    p_append.add_argument("--span-id", default=None)
+    p_append.add_argument("--parent-span-id", default=None)
+    p_append.add_argument("--runner-ms", type=int, default=None)
+    p_append.add_argument("--orchestration-active-ms", type=int, default=None)
+    p_append.add_argument("--wall-clock-ms", type=int, default=None)
+    p_append.add_argument("--user-wait-ms", type=int, default=None)
+    p_append.add_argument(
+        "--legacy-lenient",
+        action="store_true",
+        help="accept legacy incomplete/type-mismatched events and mark them explicitly",
+    )
     p_append.set_defaults(func=cmd_append)
 
     p_render = sub.add_parser(

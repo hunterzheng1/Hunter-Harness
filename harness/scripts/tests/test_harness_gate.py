@@ -130,6 +130,58 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(result["code"], "MISSING_V2_FIELDS")
         self.assertIn("natural-language override", result["detail"])
 
+    def test_split_contract_rejects_stale_ledger_identity(self) -> None:
+        context = {
+            "schemaVersion": 2,
+            "changeId": "demo",
+            "stateOwnership": {
+                "contractRoot": ".harness/changes/demo",
+                "runtimeRoot": ".harness/state/changes/demo",
+            },
+            "ownership": {
+                "productPaths": ["README.md"],
+                "staticEvidencePaths": [".harness/changes/demo/"],
+            },
+        }
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps(context) + "\n", encoding="utf-8"
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+        ledger = {
+            "schemaVersion": 3,
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "changeName": "demo",
+            "baseCommit": head,
+            "currentHead": head,
+            "diffHash": gate.hl.compute_ownership_diff(
+                self.project, base=head, change_dir=self.change_dir
+            )["diffHash"],
+            "ownershipHash": gate.hl.ownership_hash(context),
+            "validations": {
+                "compile": self._v2_entry(command="python -m compileall"),
+                "unitTest": self._v2_entry(),
+            },
+        }
+        ledger_path = (
+            self.project / ".harness" / "state" / "changes" / "demo"
+            / "evidence" / "verification-ledger.json"
+        )
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_text(json.dumps(ledger) + "\n", encoding="utf-8")
+        (self.project / "README.md").write_text("changed after verification\n", encoding="utf-8")
+
+        result = gate.validate_ledger_for_phase_close(
+            self.change_dir, "run", policy.load_policy(REPO_ROOT),
+            execution_root=self.project,
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "LEDGER_IDENTITY_MISMATCH")
+        self.assertNotEqual(result["storedDiffHash"], result["currentDiffHash"])
+
     def test_begin_blocks_task_6_while_checkpoint_pending(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
             with mock.patch.object(
@@ -503,6 +555,218 @@ class HarnessGateTests(unittest.TestCase):
             ])
             self.assertEqual(gate.cmd_begin(args), 0)
 
+    def test_phase_capsule_persists_and_reuses_execution_root(self) -> None:
+        self._write_checkpoints("approved")
+        execution = self.project.parent / f"{self.project.name}-feature"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature/capsule", str(execution)],
+            cwd=self.project, check=True, capture_output=True,
+        )
+        self.addCleanup(shutil.rmtree, execution, True)
+        skills_root = self.project / ".agents" / "skills"
+        skills_root.mkdir(parents=True)
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        identity = {"adapter": "codex", "bundleHash": "sha256:" + "a" * 64}
+        begin_args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "--project", str(execution), "--skills-root", str(skills_root), "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "claim_lease", return_value={"ok": True, "lease": {}}), \
+             mock.patch.object(gate, "validate_identity", return_value=identity), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "begin", return_value={"ok": True}) as guard_begin:
+            self.assertEqual(gate.cmd_begin(begin_args), 0)
+        guard_begin.assert_called_once_with(execution.resolve(), self.change_dir)
+
+        capsule = gate.load_phase_capsule(self.change_dir, "run", "capsule-run")
+        self.assertEqual(capsule["stateRoot"], str(self.change_dir.resolve()))
+        self.assertEqual(capsule["executionRoot"], str(execution.resolve()))
+        self.assertEqual(capsule["skillsRoot"], str(skills_root.resolve()))
+
+        resume_args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "--skills-root", str(skills_root), "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "run"}), \
+             mock.patch.object(gate.hc, "claim_lease", return_value={"ok": True, "lease": {}}), \
+             mock.patch.object(gate, "validate_identity", return_value=identity), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=True), \
+             mock.patch.object(gate.htg, "begin", return_value={"ok": True}) as resumed_guard:
+            self.assertEqual(gate.cmd_begin(resume_args), 0)
+        resumed_guard.assert_not_called()
+
+        close_args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "--status", "OK", "--json",
+        ])
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "run"}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True, "code": "LEDGER_OK"}), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}) as guard_close:
+            self.assertEqual(gate.cmd_close(close_args), 0)
+        guard_close.assert_called_once_with(execution.resolve(), self.change_dir)
+
+    def test_corrupt_phase_capsule_is_not_treated_as_absent(self) -> None:
+        path = gate._phase_capsule_path(self.change_dir, "run", "corrupt-run")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not-json\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            gate.load_phase_capsule(self.change_dir, "run", "corrupt-run")
+
+    def test_phase_capsule_rejects_head_and_skills_root_drift(self) -> None:
+        skills_root = (self.project / ".agents" / "skills").resolve()
+        capsule = {
+            "schemaVersion": 1,
+            "changeId": "demo",
+            "phase": "run",
+            "runId": "identity-run",
+            "projectRoot": str(self.project.resolve()),
+            "stateRoot": str(self.change_dir.resolve()),
+            "executionRoot": str(self.project.resolve()),
+            "skillsRoot": str(skills_root),
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "baseCommit": "0" * 40,
+            "currentHead": "0" * 40,
+        }
+        with self.assertRaisesRegex(ValueError, "currentHead"):
+            gate.validate_phase_capsule(
+                capsule,
+                change_dir=self.change_dir,
+                change_id="demo",
+                phase="run",
+                run_id="identity-run",
+                project=self.project,
+                execution_root=self.project,
+                skills_root=skills_root,
+            )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        capsule["currentHead"] = head
+        with self.assertRaisesRegex(ValueError, "skillsRoot"):
+            gate.validate_phase_capsule(
+                capsule,
+                change_dir=self.change_dir,
+                change_id="demo",
+                phase="run",
+                run_id="identity-run",
+                project=self.project,
+                execution_root=self.project,
+                skills_root=self.project / ".different-skills",
+            )
+
+    def test_submit_close_accepts_descendant_commit_from_same_run(self) -> None:
+        self._write_checkpoints("approved")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True, encoding="utf-8",
+        ).stdout.strip()
+        run_id = "submit-commit"
+        capsule = {
+            "schemaVersion": 1,
+            "changeId": "demo",
+            "phase": "submit",
+            "runId": run_id,
+            "projectRoot": str(self.project.resolve()),
+            "stateRoot": str(self.change_dir.resolve()),
+            "executionRoot": str(self.project.resolve()),
+            "skillsRoot": str((self.project / ".agents" / "skills").resolve()),
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "baseCommit": head,
+            "currentHead": head,
+            "createdAt": gate.he.now_iso(),
+        }
+        gate.write_phase_capsule(self.change_dir, "submit", run_id, capsule)
+        (self.project / "submitted.txt").write_text("submitted\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "submitted.txt"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "submit"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "submit", "--change", "demo",
+            "--run-id", run_id, "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={
+                 "runId": run_id, "phase": "submit"
+             }), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
+                 "ok": True, "code": "LEDGER_OK"
+             }), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}):
+            self.assertEqual(gate.cmd_close(args), 0)
+
+    def test_close_release_failure_persists_retryable_capsule(self) -> None:
+        self._write_checkpoints("approved")
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        capsule = {
+            "schemaVersion": 1,
+            "changeId": "demo",
+            "phase": "run",
+            "runId": "release-retry",
+            "projectRoot": str(self.project.resolve()),
+            "stateRoot": str(self.change_dir.resolve()),
+            "executionRoot": str(self.project.resolve()),
+            "skillsRoot": str((self.project / ".agents" / "skills").resolve()),
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "baseCommit": head,
+            "currentHead": head,
+            "createdAt": gate.he.now_iso(),
+        }
+        gate.write_phase_capsule(self.change_dir, "run", "release-retry", capsule)
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--run-id", "release-retry", "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={
+                 "runId": "release-retry", "phase": "run"
+             }), \
+             mock.patch.object(gate.hc, "release_lease", return_value={
+                 "ok": False, "code": "LEASE_IO_ERROR", "message": "busy"
+             }), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
+                 "ok": True, "code": "LEDGER_OK"
+             }), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch("sys.stderr"):
+            self.assertEqual(gate.cmd_close(args), 1)
+
+        updated = gate.load_phase_capsule(
+            self.change_dir, "run", "release-retry"
+        )
+        self.assertEqual(updated["closeTransaction"]["status"], "RELEASE_PENDING")
+        self.assertTrue(updated["closeTransaction"]["guardClosed"])
+        self.assertTrue(updated["closeTransaction"]["phaseEndRecorded"])
+        self.assertTrue(updated["closeTransaction"]["retryable"])
+
     # --- UT-306..309 classify persistence / override ---
 
     def test_classify_persists_gate_policy_ut306(self) -> None:
@@ -523,6 +787,96 @@ class HarnessGateTests(unittest.TestCase):
         self.assertIn("requiredValidations", data)
         self.assertIn("classifiedAt", data)
         self.assertIn("tierOverride", data)
+
+    def test_capability_tags_build_required_gate_dag(self) -> None:
+        spec_dir = self.change_dir / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "deployment-design.md").write_text(
+            "---\n"
+            "change-name: demo\n"
+            "capabilities: [deployment, container, api, database]\n"
+            "---\n"
+            "# Deployment design\n",
+            encoding="utf-8",
+        )
+        workflow = policy.load_policy(REPO_ROOT)
+
+        payload = gate.classify_risk(self.change_dir, "plan", workflow=workflow)
+
+        self.assertEqual(
+            payload["capabilities"],
+            ["api", "container", "database", "deployment"],
+        )
+        self.assertTrue({"package", "apiTest", "dbCompatibility"}.issubset(
+            payload["requiredValidations"]
+        ))
+        self.assertTrue(payload["stageDecisions"]["package"]["required"])
+        self.assertTrue(payload["stageDecisions"]["apidoc"]["required"])
+        self.assertTrue({"stage:package", "stage:apidoc", "validation:apiTest",
+                         "validation:dbCompatibility"}.issubset(
+            {node["id"] for node in payload["requiredGateDag"]["nodes"]}
+        ))
+
+        persisted = gate.gate_policy_document(payload)
+        self.assertEqual(persisted["capabilities"], payload["capabilities"])
+        self.assertEqual(persisted["stageDecisions"], payload["stageDecisions"])
+        self.assertEqual(persisted["requiredGateDag"], payload["requiredGateDag"])
+        self.assertIn("dbCompatibility", persisted["requiredValidationsByPhase"]["test"])
+
+    def test_close_uses_change_required_validations_by_phase(self) -> None:
+        policy_path = self.change_dir / "meta" / "gate-policy.json"
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        policy_path.write_text(json.dumps({
+            "schemaVersion": 1,
+            "requiredValidationsByPhase": {
+                "test": ["unitTestFull", "apiTest", "dbCompatibility"]
+            },
+        }) + "\n", encoding="utf-8")
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "test", "--change", "demo",
+            "--run-id", "dag-close", "--status", "OK", "--task", "1", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={
+                 "runId": "dag-close", "phase": "test"
+             }), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
+                 "ok": True, "code": "LEDGER_OK"
+             }) as validate, \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}):
+            self.assertEqual(gate.cmd_close(args), 0)
+
+        effective_policy = validate.call_args.args[2]
+        self.assertEqual(
+            effective_policy["requiredValidations"]["test"],
+            ["unitTestFull", "apiTest", "dbCompatibility"],
+        )
+
+    def test_post_run_owned_diff_adds_gate_capabilities(self) -> None:
+        changed = self.project / "deploy" / "Dockerfile"
+        changed.parent.mkdir(parents=True, exist_ok=True)
+        changed.write_text("FROM scratch\n", encoding="utf-8")
+        migration = self.project / "db" / "migration" / "001.sql"
+        migration.parent.mkdir(parents=True, exist_ok=True)
+        migration.write_text("select 1;\n", encoding="utf-8")
+        api = self.project / "src" / "api" / "controller.py"
+        api.parent.mkdir(parents=True, exist_ok=True)
+        api.write_text("# api\n", encoding="utf-8")
+
+        payload = gate.classify_risk(
+            self.change_dir, "post-run", workflow=policy.load_policy(REPO_ROOT)
+        )
+
+        self.assertTrue({"deployment", "container", "api", "database"}.issubset(
+            payload["capabilities"]
+        ))
+        self.assertTrue(payload["stageDecisions"]["package"]["required"])
+        self.assertTrue(payload["stageDecisions"]["apidoc"]["required"])
 
     def test_classify_missing_change_dir_ut307(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \

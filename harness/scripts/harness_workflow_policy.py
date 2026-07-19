@@ -19,6 +19,8 @@ TOP_LEVEL_KEYS = frozenset(
         "skills",
         "requiredArtifacts",
         "requiredValidations",
+        "validationPhases",
+        "capabilityGates",
         "conditionalStages",
         "interactionWhitelist",
         "checkpointRules",
@@ -48,6 +50,9 @@ SKILL_KEYS = frozenset(
 )
 
 CONDITIONAL_STAGE_KEYS = frozenset({"tiers", "signals"})
+CAPABILITY_GATE_KEYS = frozenset(
+    {"signals", "requiredStages", "requiredValidations"}
+)
 CHECKPOINT_RULE_KEYS = frozenset(
     {
         "afterTasks",
@@ -120,6 +125,20 @@ def validate_policy(data: Any) -> dict[str, Any]:
         _require_type(section_data, dict, section)
         for phase, items in section_data.items():
             _require_type(items, list, f"{section}.{phase}")
+
+    validation_phases = data["validationPhases"]
+    _require_type(validation_phases, dict, "validationPhases")
+    for verification, phase in validation_phases.items():
+        _require_type(phase, str, f"validationPhases.{verification}")
+
+    capability_gates = data["capabilityGates"]
+    _require_type(capability_gates, dict, "capabilityGates")
+    for capability, gate in capability_gates.items():
+        path = f"capabilityGates.{capability}"
+        _require_type(gate, dict, path)
+        _reject_unknown(gate, CAPABILITY_GATE_KEYS, path)
+        for key in CAPABILITY_GATE_KEYS:
+            _require_type(gate[key], list, f"{path}.{key}")
 
     conditional = data["conditionalStages"]
     _require_type(conditional, dict, "conditionalStages")

@@ -193,6 +193,44 @@ class IdentityEnforcementTests(LedgerV3Fixture):
         ):
             self.assertIn(field, missing)
 
+    def test_record_recomputes_implicit_diff_hash_after_worktree_changes(self) -> None:
+        argv = [
+            "--json", "record",
+            "--change-dir", str(self.change_dir),
+            "--project", str(self.project),
+            "--verification", "unitTest",
+            "--status", "ok",
+            "--command", "pytest -q",
+            "--exit-code", "0",
+            "--duration-ms", "100",
+            "--evidence", "1 passed",
+            "--scope", "module",
+            "--files", "src/app.py",
+        ]
+        ledger_path = (
+            self.project / ".harness" / "state" / "changes" / "demo"
+            / "evidence" / "verification-ledger.json"
+        )
+
+        code, _, err = self.run_cli(argv)
+        self.assertEqual(code, 0, err)
+        before = json.loads(ledger_path.read_text(encoding="utf-8"))["diffHash"]
+        (self.project / "src" / "app.py").write_text("print('v2')\n", encoding="utf-8")
+
+        code, _, err = self.run_cli(argv)
+        self.assertEqual(code, 0, err)
+        written = json.loads(ledger_path.read_text(encoding="utf-8"))
+
+        self.assertNotEqual(written["diffHash"], before)
+        self.assertEqual(
+            written["diffHash"],
+            ledger.compute_ownership_diff(
+                self.project,
+                base=written["baseCommit"],
+                change_dir=self.change_dir,
+            )["diffHash"],
+        )
+
     def test_legacy_contract_record_keeps_v2_shape(self) -> None:
         legacy_dir = self.project / ".harness" / "changes" / "legacy"
         (legacy_dir / "meta").mkdir(parents=True)
@@ -231,6 +269,102 @@ class IdentityEnforcementTests(LedgerV3Fixture):
         )
         self.assertNotEqual(written.get("schemaVersion"), 3)
 
+    def test_legacy_contract_rejects_explicit_identity_instead_of_dropping_it(self) -> None:
+        legacy_dir = self.project / ".harness" / "changes" / "legacy-explicit"
+        (legacy_dir / "meta").mkdir(parents=True)
+        (legacy_dir / "meta" / "change-context.json").write_text(
+            json.dumps({"schemaVersion": 1, "changeId": "legacy-explicit"}),
+            encoding="utf-8",
+        )
+        code, out, err = self.run_cli(
+            [
+                "--json", "record",
+                "--change-dir", str(legacy_dir),
+                "--verification", "unitTest",
+                "--status", "ok",
+                "--command", "pytest -q",
+                "--exit-code", "0",
+                "--duration-ms", "100",
+                "--evidence", "1 passed",
+                "--scope", "module",
+                "--files", str(self.project / "src" / "app.py"),
+                "--diff-hash", "sha256:deadbeef",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("IDENTITY_UNSUPPORTED", err)
+        self.assertFalse((legacy_dir / "evidence" / "verification-ledger.json").exists())
+
+    def test_record_resolves_relative_files_against_explicit_project(self) -> None:
+        code, out, err = self.run_cli(
+            [
+                "--json", "record",
+                "--change-dir", str(self.change_dir),
+                "--project", str(self.project),
+                "--verification", "unitTest",
+                "--status", "ok",
+                "--command", "pytest -q",
+                "--exit-code", "0",
+                "--duration-ms", "100",
+                "--evidence", "1 passed",
+                "--scope", "module",
+                "--files", "src/app.py",
+            ]
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(
+            payload["resolvedProjectRoot"], str(self.project.resolve())
+        )
+        self.assertEqual(
+            payload["inputsFiles"],
+            [(self.project / "src" / "app.py").resolve().as_posix()],
+        )
+
+    def test_record_supports_utf8_files_and_metrics_files(self) -> None:
+        files_manifest = self.tmp / "files.txt"
+        files_manifest.write_text("src/app.py\n", encoding="utf-8")
+        metrics_file = self.tmp / "metrics.json"
+        metrics_file.write_text(
+            json.dumps({
+                "applicability": "APPLICABLE",
+                "status": "OK",
+                "total": 3,
+                "passed": 3,
+                "failed": 0,
+                "evidenceHash": "sha256:" + "d" * 64,
+            }),
+            encoding="utf-8",
+        )
+        code, out, err = self.run_cli(
+            [
+                "--json", "record",
+                "--change-dir", str(self.change_dir),
+                "--project", str(self.project),
+                "--verification", "dbCompatibility",
+                "--status", "ok",
+                "--command", "pytest db_compat.py",
+                "--exit-code", "0",
+                "--duration-ms", "100",
+                "--evidence", "db compatibility passed",
+                "--scope", "module",
+                "--files-from", str(files_manifest),
+                "--metrics-file", str(metrics_file),
+            ]
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("dbCompatibility", ledger.VERIFICATIONS)
+        written = json.loads(
+            (
+                self.project / ".harness" / "state" / "changes" / "demo"
+                / "evidence" / "verification-ledger.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            written["validations"]["dbCompatibility"]["metrics"]["status"],
+            "OK",
+        )
+
 
 class TypedMetricsTests(LedgerV3Fixture):
     def test_unit_metrics_schema_ret15(self) -> None:
@@ -246,16 +380,98 @@ class TypedMetricsTests(LedgerV3Fixture):
         # Cross-type metrics must not validate:
         self.assertNotEqual(ledger.validate_metrics("apiContract", e2e), [])
 
+    def test_api_test_metrics_are_typed_separately_from_api_contract(self) -> None:
+        api_test = {"total": 7, "passed": 6, "failed": 1, "blocked": 0}
+
+        self.assertEqual(ledger.validate_metrics("apiTest", api_test), [])
+        self.assertNotEqual(
+            ledger.validate_metrics("apiTest", {"scenariosTotal": 7}), []
+        )
+
     def test_db_compatibility_metrics(self) -> None:
-        ok = {"applicability": "APPLICABLE", "status": "OK"}
+        ok = {
+            "applicability": "APPLICABLE",
+            "status": "OK",
+            "total": 3,
+            "passed": 3,
+            "failed": 0,
+            "evidenceHash": "sha256:" + "d" * 64,
+        }
         self.assertEqual(ledger.validate_metrics("dbCompatibility", ok), [])
         na = {"applicability": "NOT_APPLICABLE", "reason": "frontend-only change"}
         self.assertEqual(ledger.validate_metrics("dbCompatibility", na), [])
+
+    def test_db_compatibility_rejects_incomplete_or_inconsistent_metrics(self) -> None:
+        incomplete = {"applicability": "APPLICABLE", "status": "OK"}
+        self.assertNotEqual(ledger.validate_metrics("dbCompatibility", incomplete), [])
+        inconsistent = {
+            "applicability": "APPLICABLE",
+            "status": "OK",
+            "total": 2,
+            "passed": 2,
+            "failed": 1,
+            "evidenceHash": "not-a-sha256",
+        }
+        problems = ledger.validate_metrics("dbCompatibility", inconsistent)
+        self.assertTrue(any("counts" in item for item in problems), problems)
+        self.assertTrue(any("evidenceHash" in item for item in problems), problems)
 
     def test_invalid_metrics_rejected(self) -> None:
         self.assertNotEqual(
             ledger.validate_metrics("unitTest", {"passed": "many"}), []
         )
+
+
+class IntegrationFinalHashTests(LedgerV3Fixture):
+    def _identity(self) -> dict:
+        head = git(self.project, "rev-parse", "HEAD").stdout.strip()
+        return {
+            "schemaVersion": 3,
+            "repositoryId": paths.repository_identity(self.project),
+            "changeName": "demo",
+            "baseCommit": head,
+            "currentHead": head,
+            "diffHash": "sha256:" + "d" * 64,
+            "ownershipHash": "sha256:" + "e" * 64,
+            "validations": {},
+        }
+
+    def test_record_integration_hashes_updates_v3_atomically(self) -> None:
+        ledger_path = self.tmp / "verification-ledger.json"
+        ledger_path.write_text(json.dumps(self._identity()) + "\n", encoding="utf-8")
+        final_hash = git(self.project, "rev-parse", "HEAD").stdout.strip()
+
+        result = ledger.record_integration_hashes(
+            ledger_path,
+            repository_id=paths.repository_identity(self.project),
+            merge_final_hash=final_hash,
+            ci_expected_head=final_hash,
+            remote_head=final_hash,
+        )
+
+        self.assertTrue(result["ok"], result)
+        written = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["mergeFinalHash"], final_hash)
+        self.assertEqual(written["ciExpectedHead"], final_hash)
+        self.assertEqual(written["remoteHead"], final_hash)
+
+    def test_record_integration_hashes_rejects_legacy_without_writing(self) -> None:
+        ledger_path = self.tmp / "legacy-ledger.json"
+        ledger_path.write_text(json.dumps({"changeName": "demo"}) + "\n", encoding="utf-8")
+        before = ledger_path.read_bytes()
+        final_hash = git(self.project, "rev-parse", "HEAD").stdout.strip()
+
+        result = ledger.record_integration_hashes(
+            ledger_path,
+            repository_id=paths.repository_identity(self.project),
+            merge_final_hash=final_hash,
+            ci_expected_head=final_hash,
+            remote_head=final_hash,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "LEDGER_IDENTITY_INVALID")
+        self.assertEqual(ledger_path.read_bytes(), before)
 
 
 class ApplicabilityTests(LedgerV3Fixture):
@@ -335,6 +551,21 @@ class OwnershipDiffTests(LedgerV3Fixture):
             self.project, base=base, change_dir=self.change_dir
         )
         self.assertEqual(first["diffHash"], second["diffHash"])
+
+    def test_ownership_diff_includes_untracked_owned_and_foreign_files(self) -> None:
+        base = git(self.project, "rev-parse", "HEAD").stdout.strip()
+        (self.project / "src" / "untracked.py").write_text("x = 1\n", encoding="utf-8")
+        docs = self.project / "docs"
+        docs.mkdir()
+        (docs / "untracked.md").write_text("foreign\n", encoding="utf-8")
+
+        result = ledger.compute_ownership_diff(
+            self.project, base=base, change_dir=self.change_dir
+        )
+
+        self.assertIn("src/untracked.py", result["files"])
+        self.assertIn("docs/untracked.md", result["foreignPaths"])
+        self.assertEqual(result["ownedFileCount"], 1)
 
 
 if __name__ == "__main__":

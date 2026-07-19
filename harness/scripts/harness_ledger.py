@@ -16,6 +16,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -35,7 +36,17 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-VERIFICATIONS = frozenset({"compile", "unitTest", "unitTestFull", "apiTest", "install", "package"})
+VERIFICATIONS = frozenset(
+    {
+        "compile",
+        "unitTest",
+        "unitTestFull",
+        "apiTest",
+        "install",
+        "package",
+        "dbCompatibility",
+    }
+)
 STATUS_MAP = {
     "ok": "OK",
     "OK": "OK",
@@ -62,6 +73,7 @@ REQUIRED_COVERAGE = {
     "apiTest": 1,
     "install": 2,       # module-am or broader
     "package": 2,
+    "dbCompatibility": 1,
 }
 # git empty-tree object id (used as base fallback when no commit exists).
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -106,6 +118,51 @@ def parse_files_arg(raw: str | None) -> list[str]:
         return []
     parts = [p.strip() for p in str(raw).split(",")]
     return [p for p in parts if p]
+
+
+def parse_files_manifest(raw: str | None) -> list[str]:
+    if raw is None or not str(raw).strip():
+        return []
+    path = Path(str(raw)).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"files manifest not found: {path}")
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8-sig").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+def resolve_input_files(
+    files: list[str], project_root: Path | None
+) -> list[str]:
+    if project_root is None:
+        return files
+    root = project_root.expanduser().resolve()
+    resolved: list[str] = []
+    for raw in files:
+        candidate = Path(raw).expanduser()
+        candidate = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"INPUT_OUTSIDE_PROJECT: {candidate} is outside {root}"
+            ) from exc
+        resolved.append(str(candidate))
+    return resolved
+
+
+def input_files_from_args(args: argparse.Namespace) -> tuple[list[str], Path | None]:
+    project_raw = getattr(args, "project", None)
+    project_root = (
+        Path(str(project_raw)).expanduser().resolve() if project_raw else None
+    )
+    files = parse_files_arg(getattr(args, "files", None))
+    manifest = parse_files_manifest(getattr(args, "files_from", None))
+    if files and manifest:
+        raise ValueError("use only one of --files and --files-from")
+    return resolve_input_files(files or manifest, project_root), project_root
 
 
 def sha256_file(path: Path) -> str:
@@ -561,6 +618,68 @@ def validate_ledger_identity(ledger: dict[str, Any]) -> list[str]:
     return missing
 
 
+def record_integration_hashes(
+    ledger_path: Path,
+    *,
+    repository_id: str,
+    merge_final_hash: str,
+    ci_expected_head: str,
+    remote_head: str,
+) -> dict[str, Any]:
+    """Atomically attach post-push identity to an existing ledger v3."""
+    path = Path(ledger_path).resolve()
+    if not path.is_file():
+        return {"ok": False, "code": "LEDGER_MISSING", "ledgerPath": str(path)}
+    try:
+        ledger = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False, "code": "LEDGER_INVALID", "ledgerPath": str(path),
+            "message": str(exc),
+        }
+    missing = validate_ledger_identity(ledger)
+    if missing:
+        return {
+            "ok": False,
+            "code": "LEDGER_IDENTITY_INVALID",
+            "ledgerPath": str(path),
+            "missing": missing,
+        }
+    if ledger.get("repositoryId") != repository_id:
+        return {
+            "ok": False,
+            "code": "LEDGER_REPOSITORY_MISMATCH",
+            "ledgerPath": str(path),
+        }
+    values = {
+        "mergeFinalHash": merge_final_hash,
+        "ciExpectedHead": ci_expected_head,
+        "remoteHead": remote_head,
+    }
+    invalid = [
+        field for field, value in values.items()
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None
+    ]
+    if invalid:
+        return {
+            "ok": False,
+            "code": "FINAL_HASH_INVALID",
+            "ledgerPath": str(path),
+            "invalid": invalid,
+        }
+    if len(set(values.values())) != 1:
+        return {
+            "ok": False,
+            "code": "FINAL_HASH_MISMATCH",
+            "ledgerPath": str(path),
+            **values,
+        }
+    ledger.update(values)
+    ledger["integrationFinalizedAt"] = now_iso()
+    write_ledger(path, ledger)
+    return {"ok": True, "code": "INTEGRATION_HASHES_RECORDED", "ledgerPath": str(path), **values}
+
+
 def _contract_is_v2(change_dir: Path) -> bool:
     try:
         contract = harness_paths.load_change_contract(change_dir)
@@ -581,6 +700,7 @@ def ownership_hash(contract: dict[str, Any]) -> str:
 _METRICS_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     "unitTest": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
     "unitTestFull": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
+    "apiTest": {"required": ("total", "passed", "failed"), "optional": ("blocked",)},
     "apiContract": {"required": ("scenariosTotal", "passed", "failed"), "optional": ("blocked",)},
     "browserE2E": {"required": ("total", "passed", "failed"), "optional": ("skipped", "retries")},
 }
@@ -599,9 +719,37 @@ def validate_metrics(verification: str, metrics: Any) -> list[str]:
             reason = metrics.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 problems.append("dbCompatibility.reason required for NOT_APPLICABLE")
+            unknown = sorted(set(metrics) - {"applicability", "reason"})
+            problems.extend(
+                f"dbCompatibility.{field} is not valid for NOT_APPLICABLE"
+                for field in unknown
+            )
         else:
-            if not isinstance(metrics.get("status"), str) or not metrics["status"]:
-                problems.append("dbCompatibility.status required for APPLICABLE")
+            allowed = {
+                "applicability", "status", "total", "passed", "failed", "evidenceHash"
+            }
+            status = metrics.get("status")
+            if status not in {"OK", "FAIL"}:
+                problems.append("dbCompatibility.status must be OK|FAIL for APPLICABLE")
+            for field in ("total", "passed", "failed"):
+                value = metrics.get(field)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    problems.append(f"dbCompatibility.{field} must be a non-negative int")
+            total = metrics.get("total")
+            passed = metrics.get("passed")
+            failed = metrics.get("failed")
+            if all(isinstance(value, int) and not isinstance(value, bool)
+                   for value in (total, passed, failed)) and passed + failed != total:
+                problems.append("dbCompatibility counts must satisfy passed + failed == total")
+            evidence_hash = metrics.get("evidenceHash")
+            if not isinstance(evidence_hash, str) or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", evidence_hash
+            ):
+                problems.append("dbCompatibility.evidenceHash must be sha256:<64 lowercase hex>")
+            problems.extend(
+                f"dbCompatibility.{field} is not a supported field"
+                for field in sorted(set(metrics) - allowed)
+            )
         return problems
     schema = _METRICS_SCHEMAS.get(verification)
     if schema is None:
@@ -701,14 +849,19 @@ def compute_ownership_diff(
     if head:
         diff_args.append(head)
     raw = _git_text(repo_root, *diff_args) or ""
+    changed_paths = {line.strip() for line in raw.splitlines() if line.strip()}
+    if head is None:
+        untracked = _git_text(
+            repo_root, "ls-files", "--others", "--exclude-standard"
+        ) or ""
+        changed_paths.update(
+            line.strip() for line in untracked.splitlines() if line.strip()
+        )
     owned: list[str] = []
     static_evidence: list[str] = []
     foreign: list[str] = []
     excluded_runtime = 0
-    for line in raw.splitlines():
-        rel = line.strip()
-        if not rel:
-            continue
+    for rel in sorted(changed_paths):
         verdict = _classify_ownership_path(rel, change_dir.name, ownership)
         if verdict == "foreign":
             foreign.append(rel)
@@ -1040,8 +1193,10 @@ def decide_can_reuse(
 
 def cmd_hash(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
-    files = parse_files_arg(args.files)
     try:
+        files, project_root = input_files_from_args(args)
+        if not files:
+            return emit_error("hash requires --files or --files-from", as_json=as_json)
         inputs_hash, inputs_files = compute_inputs_hash(files)
     except (OSError, FileNotFoundError) as exc:
         return emit_error(str(exc), as_json=as_json)
@@ -1052,6 +1207,7 @@ def cmd_hash(args: argparse.Namespace) -> int:
         "inputsHash": inputs_hash,
         "inputsFiles": inputs_files,
         "fileCount": len(inputs_files),
+        "resolvedProjectRoot": str(project_root) if project_root else None,
     }
     emit_json(payload, as_json=as_json)
     return 0
@@ -1066,15 +1222,16 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             as_json=as_json,
         )
     change_dir = resolve_path(args.change_dir)
-    files = parse_files_arg(args.files)
+    try:
+        files, project_root = input_files_from_args(args)
+    except (OSError, ValueError) as exc:
+        return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
     profile_input = getattr(args, "profile_input", None)
     project_raw = getattr(args, "project", None)
     if profile_input:
         if not project_raw:
             return emit_error("--profile-input requires --project", as_json=as_json)
-        resolved_files, err = expand_profile_input_files(
-            Path(str(project_raw)).expanduser().resolve(), profile_input
-        )
+        resolved_files, err = expand_profile_input_files(project_root, profile_input)
         if err:
             # profile 未正确配置：不允许缓存复用，返回 insufficient-evidence（exit 0）。
             payload = {
@@ -1086,7 +1243,7 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             }
             emit_json(payload, as_json=as_json)
             return 0
-        files = resolved_files
+        files = resolve_input_files(resolved_files, project_root)
     if not files:
         return emit_error(
             "can-reuse requires --files or a non-empty --profile-input file set",
@@ -1114,18 +1271,33 @@ def cmd_record(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     change_dir = resolve_path(args.change_dir)
     verification = args.verification
-    files = parse_files_arg(args.files)
+    if verification not in VERIFICATIONS:
+        return emit_error(
+            f"unsupported verification: {verification}; expected one of {sorted(VERIFICATIONS)}",
+            as_json=as_json,
+        )
+    contract_v2 = _contract_is_v2(change_dir)
+    if not contract_v2 and any(
+        _nonempty_str(getattr(args, field, None))
+        for field in ("base_commit", "diff_hash")
+    ):
+        return emit_error(
+            "IDENTITY_UNSUPPORTED: explicit ledger identity requires a v2 change contract",
+            as_json=as_json,
+        )
+    try:
+        files, project_root = input_files_from_args(args)
+    except (OSError, ValueError) as exc:
+        return emit_error(f"record failed: {exc}", as_json=as_json)
     profile_input = getattr(args, "profile_input", None)
     project_raw = getattr(args, "project", None)
     if profile_input:
         if not project_raw:
             return emit_error("--profile-input requires --project", as_json=as_json)
-        resolved_files, err = expand_profile_input_files(
-            Path(str(project_raw)).expanduser().resolve(), profile_input
-        )
+        resolved_files, err = expand_profile_input_files(project_root, profile_input)
         if err:
             return emit_error(f"record failed: {err}", as_json=as_json)
-        files = resolved_files
+        files = resolve_input_files(resolved_files, project_root)
     if not files:
         return emit_error(
             "record requires --files or a non-empty --profile-input file set",
@@ -1164,6 +1336,19 @@ def cmd_record(args: argparse.Namespace) -> int:
             }
         )
         metrics_raw = getattr(args, "metrics_json", None)
+        metrics_file = getattr(args, "metrics_file", None)
+        if metrics_file and metrics_raw is not None and str(metrics_raw).strip():
+            return emit_error(
+                "use only one of --metrics-json and --metrics-file",
+                as_json=as_json,
+            )
+        if metrics_file:
+            try:
+                metrics_raw = Path(str(metrics_file)).expanduser().resolve().read_text(
+                    encoding="utf-8-sig"
+                )
+            except OSError as exc:
+                return emit_error(f"invalid --metrics-file: {exc}", as_json=as_json)
         if metrics_raw is not None and str(metrics_raw).strip() != "":
             try:
                 metrics_obj = json.loads(str(metrics_raw))
@@ -1171,7 +1356,7 @@ def cmd_record(args: argparse.Namespace) -> int:
                 return emit_error("invalid --metrics-json", as_json=as_json)
             if not isinstance(metrics_obj, dict):
                 return emit_error("invalid --metrics-json", as_json=as_json)
-            if _contract_is_v2(change_dir):
+            if contract_v2:
                 # Typed metrics schemas are ledger v3 (contract-gated); legacy
                 # changes keep the loose run/failures shape (zero regression).
                 problems = validate_metrics(verification, metrics_obj)
@@ -1231,9 +1416,10 @@ def cmd_record(args: argparse.Namespace) -> int:
             ledger["stateDir"] = str(change_dir)
 
         out_path = preferred_write_path(change_dir)
-        if _contract_is_v2(change_dir):
+        if contract_v2:
             # Ledger v3: forced top-level identity (RET-15/16, COM-002).
-            repo_root_raw = _git_text(change_dir, "rev-parse", "--show-toplevel")
+            repo_probe = project_root or change_dir
+            repo_root_raw = _git_text(repo_probe, "rev-parse", "--show-toplevel")
             if not repo_root_raw:
                 return emit_error(
                     "record failed: change dir is not inside a git repository",
@@ -1251,8 +1437,6 @@ def cmd_record(args: argparse.Namespace) -> int:
                 base_commit = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
             current_head = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
             diff_hash = getattr(args, "diff_hash", None)
-            if not _nonempty_str(diff_hash):
-                diff_hash = ledger.get("diffHash")
             if not _nonempty_str(diff_hash) and _nonempty_str(base_commit):
                 try:
                     diff_hash = compute_ownership_diff(
@@ -1289,6 +1473,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         "inputsFiles": inputs_files,
         "ledger_path": str(out_path),
         "diffHash": ledger.get("diffHash"),
+        "resolvedProjectRoot": str(project_root) if project_root else None,
     }
     emit_json(payload, as_json=as_json)
     return 0
@@ -1333,11 +1518,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p_hash = sub.add_parser("hash", parents=[shared_json], help="compute inputsHash for a file set")
-    p_hash.add_argument(
-        "--files",
-        required=True,
-        help="comma-separated source file paths",
-    )
+    hash_files = p_hash.add_mutually_exclusive_group()
+    hash_files.add_argument("--files", default=None, help="comma-separated source file paths")
+    hash_files.add_argument("--files-from", default=None, help="UTF-8 newline-delimited source paths")
+    p_hash.add_argument("--project", default=None, help="root for relative input paths")
     p_hash.set_defaults(func=cmd_hash)
 
     p_reuse = sub.add_parser("can-reuse", parents=[shared_json], help="decide whether a verification can be reused")
@@ -1351,6 +1535,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--files",
         default=None,
         help="comma-separated source file paths for current inputsHash",
+    )
+    p_reuse.add_argument(
+        "--files-from",
+        default=None,
+        help="UTF-8 newline-delimited source paths",
     )
     p_reuse.add_argument(
         "--project",
@@ -1397,7 +1586,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--command", required=True)
     p_record.add_argument("--exit-code", type=int, required=True)
     p_record.add_argument("--duration-ms", type=int, required=True)
-    p_record.add_argument("--files", default=None)
+    p_record_files = p_record.add_mutually_exclusive_group()
+    p_record_files.add_argument("--files", default=None)
+    p_record_files.add_argument("--files-from", default=None)
     p_record.add_argument("--evidence", required=True)
     p_record.add_argument(
         "--project",
@@ -1439,6 +1630,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--metrics-json",
         default=None,
         help='structured counts, e.g. \'{"run":155,"failures":0}\' or \'{"total":3,"passed":3}\'',
+    )
+    p_record.add_argument(
+        "--metrics-file",
+        default=None,
+        help="UTF-8 JSON file containing typed verification metrics",
     )
     p_record.add_argument(
         "--base-commit",

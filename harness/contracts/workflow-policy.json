@@ -138,6 +138,36 @@
     "submit": [],
     "package": ["package"]
   },
+  "validationPhases": {
+    "compile": "run",
+    "unitTest": "run",
+    "unitTestFull": "test",
+    "apiTest": "test",
+    "dbCompatibility": "test",
+    "package": "package"
+  },
+  "capabilityGates": {
+    "deployment": {
+      "signals": ["deploy-required"],
+      "requiredStages": ["package"],
+      "requiredValidations": ["package"]
+    },
+    "container": {
+      "signals": ["install-verification"],
+      "requiredStages": ["package"],
+      "requiredValidations": ["package"]
+    },
+    "api": {
+      "signals": ["api-diff-present"],
+      "requiredStages": ["apidoc"],
+      "requiredValidations": ["apiTest"]
+    },
+    "database": {
+      "signals": ["migration"],
+      "requiredStages": [],
+      "requiredValidations": ["dbCompatibility"]
+    }
+  },
   "conditionalStages": {
     "review": {
       "tiers": ["standard", "full"],

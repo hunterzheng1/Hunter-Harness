@@ -369,6 +369,102 @@ class SourceConsistencyTests(_FinalizeFixture):
             self.change.is_dir(), "original change dir must be restored on failure"
         )
 
+    def test_arc_cli002_failed_finalize_preserves_sources_and_appends_fail_terminal(self) -> None:
+        mutable_audit_paths = {"events.ndjson", "logs/execution-log.md"}
+        before = {
+            path.relative_to(self.change).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self.change.rglob("*")
+            if path.is_file()
+            and path.relative_to(self.change).as_posix() not in mutable_audit_paths
+        }
+        forced = {
+            "ok": False,
+            "issues": [{"code": "forced", "severity": "error", "message": "forced"}],
+            "error_count": 1,
+            "warning_count": 0,
+        }
+
+        with mock.patch.object(ha, "validate_source_consistency", return_value=forced):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+
+        after = {
+            path.relative_to(self.change).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in self.change.rglob("*")
+            if path.is_file()
+            and path.relative_to(self.change).as_posix() not in mutable_audit_paths
+        }
+        self.assertNotEqual(code, 0)
+        self.assertEqual(after, before)
+        self.assertEqual(payload.get("finalStatus"), "FAIL")
+        operation_record = Path(payload["operationRecord"])
+        record = json.loads(operation_record.read_text(encoding="utf-8"))
+        self.assertEqual(record["finalStatus"], "FAIL")
+        self.assertFalse(Path(payload["operationTempDir"]).exists())
+        archive_terminals = [
+            event
+            for event in _events_in(self.change)
+            if event.get("phase") == "archive" and event.get("type") == "phase.end"
+        ]
+        self.assertEqual([event.get("status") for event in archive_terminals], ["FAIL"])
+
+    def test_arc_int001_two_failed_attempts_do_not_poison_successful_retry(self) -> None:
+        forced = {
+            "ok": False,
+            "issues": [{"code": "forced", "severity": "error", "message": "forced"}],
+            "error_count": 1,
+            "warning_count": 0,
+        }
+        failed_records: list[Path] = []
+        for _ in range(2):
+            with mock.patch.object(ha, "validate_source_consistency", return_value=forced):
+                code, payload = _run(
+                    [
+                        "finalize",
+                        "--change-dir",
+                        str(self.change),
+                        "--archive-root",
+                        str(self.archive_root),
+                        "--skip-ingest",
+                        "--json",
+                    ]
+                )
+            self.assertNotEqual(code, 0)
+            failed_records.append(Path(payload["operationRecord"]))
+            self.assertTrue(self.change.is_dir())
+            self.assertFalse(Path(payload["archive_dir"]).exists())
+
+        code, payload = _run(
+            [
+                "finalize",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        self.assertTrue(Path(payload["archive_dir"]).is_dir())
+        self.assertTrue(all(path.is_file() for path in failed_records))
+        self.assertTrue(
+            all(
+                json.loads(path.read_text(encoding="utf-8"))["finalStatus"] == "FAIL"
+                for path in failed_records
+            )
+        )
+
 
 class OwnershipProjectionTests(unittest.TestCase):
     def test_summary_changed_files_uses_declared_product_scope(self) -> None:
@@ -804,6 +900,69 @@ class RepairTests(unittest.TestCase):
         )
         self.assertEqual(record.get("validators", {}).get("source", {}).get("ok"), True)
         self.assertEqual(record.get("validators", {}).get("renderer", {}).get("ok"), True)
+
+    def test_arc_ut004_repair_reuses_frozen_manifest_facts(self) -> None:
+        before_path = self.archive_dir / "evidence" / "archive-manifest-before.json"
+        after_path = self.archive_dir / "evidence" / "archive-manifest-after.json"
+        before_hash = hashlib.sha256(before_path.read_bytes()).hexdigest()
+        after_hash = hashlib.sha256(after_path.read_bytes()).hexdigest()
+        expected = ha.compare_manifests(
+            json.loads(before_path.read_text(encoding="utf-8")),
+            json.loads(after_path.read_text(encoding="utf-8")),
+        )
+
+        code, payload = _run(["repair", "--archive-dir", str(self.archive_dir), "--json"])
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        version_dir = Path(payload["derived_dir"])
+        summary = json.loads(
+            (version_dir / "summary-data.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            summary["archiveManifest"]["totalArchiveFiles"],
+            expected["totalArchiveFiles"],
+        )
+        self.assertEqual(
+            hashlib.sha256((version_dir / "archive-manifest-before.json").read_bytes()).hexdigest(),
+            before_hash,
+        )
+        self.assertEqual(
+            hashlib.sha256((version_dir / "archive-manifest-after.json").read_bytes()).hexdigest(),
+            after_hash,
+        )
+
+    def test_arc_cli003_repair_versions_are_immutable_and_pointer_advances(self) -> None:
+        code1, payload1 = _run(
+            ["repair", "--archive-dir", str(self.archive_dir), "--json"]
+        )
+        self.assertEqual(code1, 0, msg=json.dumps(payload1, ensure_ascii=False))
+        v1 = Path(payload1["derived_dir"])
+        v1_hashes = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in v1.iterdir()
+            if path.is_file()
+        }
+
+        code2, payload2 = _run(
+            ["repair", "--archive-dir", str(self.archive_dir), "--json"]
+        )
+
+        self.assertEqual(code2, 0, msg=json.dumps(payload2, ensure_ascii=False))
+        self.assertEqual(Path(payload2["derived_dir"]).name, "v2")
+        self.assertEqual(
+            {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in v1.iterdir()
+                if path.is_file()
+            },
+            v1_hashes,
+        )
+        pointer = json.loads(
+            (self.archive_dir / "derived" / "authoritative.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(pointer["version"], "v2")
 
 
 class KnowledgeGateTests(unittest.TestCase):

@@ -266,6 +266,8 @@ def capture_current_state(
         segment_files=files,
     )
     changed: list[str] = []
+    baseline_created = previous is None
+    unresolved: list[str] = []
     if previous:
         old_segments = previous.get("segments") or {}
         for name, segment in fresh["segments"].items():
@@ -275,7 +277,12 @@ def capture_current_state(
             else:
                 changed.append(name)
     else:
-        changed = list(fresh["segments"])
+        # A first observation establishes the baseline; it is not evidence
+        # that every segment changed during the current phase.
+        unresolved = sorted(fresh["segments"])
+    fresh["baselineCreated"] = baseline_created
+    fresh["changedSegments"] = sorted(changed)
+    fresh["unresolvedSegments"] = unresolved
     write_snapshot(change_dir, fresh)
     return fresh, changed
 
@@ -312,7 +319,13 @@ def main(argv: list[str] | None = None) -> int:
         "ok": True,
         "path": str(snapshot_path(change_dir)),
         "changedSegments": changed,
-        "reusedSegments": sorted(set(snapshot["segments"]) - set(changed)),
+        "reusedSegments": sorted(
+            set(snapshot["segments"])
+            - set(changed)
+            - set(snapshot.get("unresolvedSegments") or [])
+        ),
+        "baselineCreated": bool(snapshot.get("baselineCreated")),
+        "unresolvedSegments": list(snapshot.get("unresolvedSegments") or []),
         "git": snapshot["git"],
     }
     if args.json:

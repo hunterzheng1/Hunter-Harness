@@ -104,10 +104,6 @@ function VersionChangeSet({
   const safePage = Math.min(page, pageCount - 1);
   const pageItems = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
-  useEffect(() => {
-    setPage(0);
-  }, [opFilter, query, files]);
-
   return <div className="project-version-changeset">
     <div className="project-version-changeset-head">
       <h3>{copy.changeSet}</h3>
@@ -115,12 +111,12 @@ function VersionChangeSet({
     </div>
     <div className="project-version-changeset-tools">
       {presentOps.length > 1 ? <div className="project-version-op-filters" role="toolbar" aria-label={lang === "zh" ? "按变更类型筛选" : "Filter by change type"}>
-        <button type="button" className={opFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setOpFilter("all")}>{copy.all}</button>
-        {presentOps.map((op) => <button key={op} type="button" className={opFilter === op ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setOpFilter(op)}>{opLabel(op, lang)} · {counts[op]}</button>)}
+        <button type="button" className={opFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => { setOpFilter("all"); setPage(0); }}>{copy.all}</button>
+        {presentOps.map((op) => <button key={op} type="button" className={opFilter === op ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => { setOpFilter(op); setPage(0); }}>{opLabel(op, lang)} · {counts[op]}</button>)}
       </div> : null}
       {files.length > PAGE_SIZE || query !== "" ? <label className="project-version-file-search">
         <span>⌕</span>
-        <input aria-label={copy.search} placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} />
+        <input aria-label={copy.search} placeholder={copy.search} value={query} onChange={(event) => { setQuery(event.target.value); setPage(0); }} />
       </label> : null}
     </div>
     {pageItems.length === 0 ? <p className="project-empty-copy">{copy.emptyFilter}</p> : <ul className="project-version-files">

@@ -49,20 +49,22 @@ requested=true + path missing
 
 ### PowerShell 命令模板
 
+先执行 runtime doctor，并从 `meta/runtime.json` 读取 adapter 的 `path`、`branch` 以及 PowerShell `argvPrefix`；不要依赖裸 `python`/`powershell.exe`，也不要硬编码 Claude 路径。
+
 ```powershell
-powershell.exe -NoProfile -Command "git worktree add '.claude/worktrees/<change-name>' -b 'worktree/<change-name>'"
+& <powershell-argv-prefix> -Command "git worktree add -- '<adapter-worktree-path>' -b '<adapter-branch>'"
 ```
 
 如果分支已存在：
 
 ```powershell
-powershell.exe -NoProfile -Command "git worktree add '.claude/worktrees/<change-name>' 'worktree/<change-name>'"
+& <powershell-argv-prefix> -Command "git worktree add -- '<adapter-worktree-path>' '<adapter-branch>'"
 ```
 
 验证：
 
 ```powershell
-powershell.exe -NoProfile -Command "Test-Path '.claude/worktrees/<change-name>/.git'"
+& <powershell-argv-prefix> -Command "Test-Path -LiteralPath '<adapter-worktree-path>/.git'"
 ```
 
 ### 状态目录写入
@@ -72,7 +74,7 @@ powershell.exe -NoProfile -Command "Test-Path '.claude/worktrees/<change-name>/.
 ```json
 {
   "projectRoot": ".../udp",
-  "worktreeRoot": ".../udp/.claude/worktrees/<change-name>",
+  "worktreeRoot": ".../udp/<adapter-worktree-root>/<change-name>",
   "stateDir": ".../udp/.harness/changes/<change-name>"
 }
 ```

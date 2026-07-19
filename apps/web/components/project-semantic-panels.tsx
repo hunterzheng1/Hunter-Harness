@@ -1,7 +1,7 @@
 "use client";
 
 import type { SemanticDocument, SemanticEdge, SemanticOverview } from "@hunter-harness/contracts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 
 import type { HunterApi, ProjectSemanticGraph } from "../lib/api";
 import { useI18n } from "../lib/i18n";
@@ -231,14 +231,10 @@ function RelationWorkbench({
       ?? null;
   }, [graph, selectedId, candidates]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setNeighbourPage(1);
     setKindFilter("all");
   }, [focus?.document_id]);
-
-  useEffect(() => {
-    setNeighbourPage(1);
-  }, [kindFilter]);
 
   const filteredCandidates = useMemo(() => {
     const needle = focusQuery.trim().toLowerCase();
@@ -403,13 +399,13 @@ function RelationWorkbench({
         <header>
           <h3>{copy.neighbourhood}</h3>
           {presentKinds.length > 1 ? <div className="relation-kind-filters" role="toolbar" aria-label={lang === "zh" ? "按关系类型筛选" : "Filter by relation kind"}>
-            <button type="button" className={kindFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setKindFilter("all")}>{copy.allKinds}</button>
+            <button type="button" className={kindFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => { setKindFilter("all"); setNeighbourPage(1); }}>{copy.allKinds}</button>
             {presentKinds.map((kind) => <button
               key={kind}
               type="button"
               className={kindFilter === kind ? "selected" : ""}
               onMouseDown={suppressMouseFocusScroll}
-              onClick={() => setKindFilter(kind)}
+              onClick={() => { setKindFilter(kind); setNeighbourPage(1); }}
             >{edgeKindLabel(kind, lang)}</button>)}
           </div> : null}
         </header>

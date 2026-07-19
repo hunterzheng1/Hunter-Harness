@@ -32,6 +32,13 @@ export interface AdapterContextIndexEntry {
   rules: string[];
 }
 
+export interface AdapterWorktreeDecision {
+  root: string;
+  path: string;
+  branchPrefix: string;
+  branch: string;
+}
+
 export interface HarnessAgentAdapter {
   readonly name: HarnessAgent;
   readonly skillsRoot: string;
@@ -39,6 +46,7 @@ export interface HarnessAgentAdapter {
   readonly agentsRoot: string | null;
   readonly commandsRoot: string | null;
   readonly supportsExecutableHooks: false;
+  worktreeFor(changeId: string): AdapterWorktreeDecision;
   projectInstructionTargets(context: AdapterContext): readonly string[];
   projectBundle(
     bundle: LoadedAgentBundle,
@@ -55,6 +63,13 @@ function validateRelativeBundlePath(path: unknown): asserts path is string {
       path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:/.test(path) ||
       path.split("/").some((part) => part === "" || part === "." || part === "..")) {
     throw new Error("invalid Harness Bundle path");
+  }
+}
+
+function validateChangeId(changeId: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(changeId) ||
+      changeId === "." || changeId === "..") {
+    throw new Error(`invalid Harness change id: ${changeId}`);
   }
 }
 
@@ -114,6 +129,8 @@ function makeAdapter(spec: {
   agentsRoot: string | null;
   commandsRoot: string | null;
   instructions: string;
+  worktreeRoot: string;
+  branchPrefix: string;
   extraInstructionFiles: readonly string[];
   ruleExt: ".md" | ".mdc" | null;
 }): HarnessAgentAdapter {
@@ -124,6 +141,15 @@ function makeAdapter(spec: {
     agentsRoot: spec.agentsRoot,
     commandsRoot: spec.commandsRoot,
     supportsExecutableHooks: false,
+    worktreeFor(changeId) {
+      validateChangeId(changeId);
+      return {
+        root: spec.worktreeRoot,
+        path: `${spec.worktreeRoot}/${changeId}`,
+        branchPrefix: spec.branchPrefix,
+        branch: `${spec.branchPrefix}${changeId}`
+      };
+    },
     projectInstructionTargets() {
       return ["AGENTS.md", ...spec.extraInstructionFiles];
     },
@@ -173,6 +199,8 @@ const ADAPTERS: Record<HarnessAgent, HarnessAgentAdapter> = {
     agentsRoot: ".claude/agents",
     commandsRoot: null,
     instructions: "CLAUDE.md",
+    worktreeRoot: ".claude/worktrees",
+    branchPrefix: "claude/",
     extraInstructionFiles: ["CLAUDE.md"],
     ruleExt: ".md"
   }),
@@ -183,6 +211,8 @@ const ADAPTERS: Record<HarnessAgent, HarnessAgentAdapter> = {
     agentsRoot: null,
     commandsRoot: null,
     instructions: "AGENTS.md",
+    worktreeRoot: ".codex/worktrees",
+    branchPrefix: "codex/",
     extraInstructionFiles: [],
     ruleExt: null
   }),
@@ -193,6 +223,8 @@ const ADAPTERS: Record<HarnessAgent, HarnessAgentAdapter> = {
     agentsRoot: null,
     commandsRoot: ".cursor/commands",
     instructions: "AGENTS.md",
+    worktreeRoot: ".cursor/worktrees",
+    branchPrefix: "cursor/",
     extraInstructionFiles: [],
     ruleExt: ".mdc"
   }),
@@ -203,6 +235,8 @@ const ADAPTERS: Record<HarnessAgent, HarnessAgentAdapter> = {
     agentsRoot: ".codebuddy/agents",
     commandsRoot: ".codebuddy/commands",
     instructions: "CODEBUDDY.md",
+    worktreeRoot: ".codebuddy/worktrees",
+    branchPrefix: "codebuddy/",
     extraInstructionFiles: ["CODEBUDDY.md"],
     ruleExt: null
   })

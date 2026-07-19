@@ -2,5 +2,8 @@
 resources/harness/** text eol=lf
 harness/** text eol=lf
 
+# Frozen archive evidence is content-addressed and must never be EOL-normalized.
+.harness/archive/** -text
+
 # Frozen migration fixtures must keep committed bytes (CRLF) on all platforms.
 packages/core/test/fixtures/v0.1.1-bundles/** -text

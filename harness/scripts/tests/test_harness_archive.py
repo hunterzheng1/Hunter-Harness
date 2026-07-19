@@ -60,6 +60,7 @@ def _run(argv: list[str]) -> tuple[int, dict]:
 
 def _seed_change_dir(change_dir: Path) -> None:
     """Minimal change fixture with events + ledger + plan."""
+    _write(change_dir.parents[2] / ".gitattributes", ".harness/archive/** -text\n")
     _write(change_dir / "plans" / "demo-plan.md", "# plan\n\ngoal: demo archive\n")
     _write(
         change_dir / "tests" / "test-report-20260710.md",
@@ -332,6 +333,14 @@ class ValidateErrorKeepsOriginalTests(unittest.TestCase):
         issues = payload.get("issues") or (payload.get("steps", {}).get("validate") or {}).get("issues") or []
         codes = {i.get("code") for i in issues}
         self.assertIn("missing-change-id", codes)
+        events = he.load_events(self.change / "events.ndjson")
+        archive_terminals = [
+            event
+            for event in events
+            if event.get("phase") == "archive" and event.get("type") == "phase.end"
+        ]
+        self.assertEqual(len(archive_terminals), 1)
+        self.assertEqual(archive_terminals[0].get("status"), "FAIL")
 
 
 class MoveFailureTests(unittest.TestCase):
@@ -983,6 +992,39 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(api["total"], 0)
         self.assertEqual(api["passRate"], ha.NOT_AVAILABLE)
 
+    def test_arc_ut001_unit_typed_metrics_infer_run_from_counts(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTestFull": {
+                    "status": "OK",
+                    "metrics": {"passed": 321, "failed": 0, "skipped": 2},
+                }
+            }
+        }
+
+        result = ha._ledger_unit_tests(ledger)
+
+        self.assertEqual(result["run"], 323)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["passRate"], "99%")
+
+    def test_arc_ut002_api_typed_metrics_infer_missing_total(self) -> None:
+        ledger = {
+            "validations": {
+                "apiTest": {
+                    "status": "OK",
+                    "metrics": {"passed": 1, "failed": 0, "blocked": 0},
+                }
+            }
+        }
+
+        result = ha._ledger_api_tests(ledger)
+
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["passed"], 1)
+        self.assertEqual(result["passRate"], "100%")
+
 
 class FinalStatusReasonsTests(unittest.TestCase):
     """UT-110..111: finalStatusReasons."""
@@ -1050,6 +1092,8 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "issue",
                     "--code",
                     "info-note",
+                    "--severity",
+                    "info",
                     "--message",
                     "knowledge query result not a risk",
                 ]
@@ -1079,6 +1123,135 @@ class KnownRisksFilterTests(unittest.TestCase):
             result = ha.validate_summary(summary, html)
             codes = {i.get("code") for i in result.get("issues") or []}
             self.assertNotIn("missing-risk", codes)
+
+    def test_arc_ut003_resolved_issue_is_not_a_risk_or_stage_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            events = [
+                {
+                    "schema_version": 3,
+                    "id": "issue-1",
+                    "timestamp": "2026-07-19T10:00:00+08:00",
+                    "phase": "run",
+                    "type": "issue",
+                    "issue_id": "compile-warning",
+                    "severity": "warning",
+                    "message": "temporary warning",
+                },
+                {
+                    "schema_version": 3,
+                    "id": "resolve-1",
+                    "timestamp": "2026-07-19T10:01:00+08:00",
+                    "phase": "run",
+                    "type": "issue.resolve",
+                    "issue_id": "compile-warning",
+                },
+            ]
+            _write(
+                change / "events.ndjson",
+                "".join(json.dumps(event) + "\n" for event in events),
+            )
+
+            status = ha._stage_status_from_sources(events, None, change)
+            summary = ha.collect_summary_data(change, write=False)
+
+            self.assertEqual(status["run"], "OK")
+            self.assertEqual(summary["knownRisks"], [])
+
+
+class ArchiveCorrectionProjectionTests(unittest.TestCase):
+    def test_arc_ut004_artifact_correction_changes_projection_not_raw_history(self) -> None:
+        events = [
+            {
+                "schema_version": 3,
+                "id": "artifact-1",
+                "timestamp": "2026-07-19T10:00:00+08:00",
+                "phase": "run",
+                "type": "artifact",
+                "path": "reports/old.json",
+                "kind": "report",
+            },
+            {
+                "schema_version": 3,
+                "id": "correction-1",
+                "timestamp": "2026-07-19T10:01:00+08:00",
+                "phase": "run",
+                "type": "correction",
+                "target_event_id": "artifact-1",
+                "target_field": "path",
+                "old_value_hash": he.canonical_value_hash("reports/old.json"),
+                "new_value": "reports/final.json",
+            },
+        ]
+
+        projected = he.apply_event_corrections(events)
+        artifacts = ha._artifacts_from_events(projected)
+
+        self.assertEqual(artifacts[0]["path"], "reports/final.json")
+        self.assertEqual(events[0]["path"], "reports/old.json")
+
+
+class ArchiveTimingReducerTests(unittest.TestCase):
+    def test_arc_ut005_active_time_sums_closed_attempts(self) -> None:
+        events = [
+            {"type": "phase.start", "attempt": 1, "timestamp": "2026-07-19T10:00:00+00:00"},
+            {"type": "phase.end", "attempt": 1, "status": "FAIL", "timestamp": "2026-07-19T10:01:00+00:00"},
+            {"type": "phase.start", "attempt": 2, "timestamp": "2026-07-19T10:03:00+00:00"},
+            {"type": "phase.end", "attempt": 2, "status": "FAIL", "timestamp": "2026-07-19T10:05:00+00:00"},
+            {"type": "phase.start", "attempt": 3, "timestamp": "2026-07-19T10:10:00+00:00"},
+            {"type": "phase.end", "attempt": 3, "status": "OK", "timestamp": "2026-07-19T10:13:00+00:00"},
+        ]
+
+        timing = he.canonical_phase_timing(events)
+
+        self.assertEqual(timing["activeExecutionMs"], 6 * 60 * 1000)
+        self.assertEqual(timing["wallClockSpanMs"], 13 * 60 * 1000)
+
+    def test_arc_ut006_only_events_after_final_end_are_late(self) -> None:
+        events = [
+            {"type": "phase.start", "attempt": 1, "timestamp": "2026-07-19T10:00:00+00:00"},
+            {"type": "phase.end", "attempt": 1, "status": "FAIL", "timestamp": "2026-07-19T10:01:00+00:00"},
+            {"type": "phase.start", "attempt": 2, "timestamp": "2026-07-19T10:03:00+00:00"},
+            {"type": "command", "attempt": 2, "timestamp": "2026-07-19T10:04:00+00:00"},
+            {"type": "phase.end", "attempt": 2, "status": "OK", "timestamp": "2026-07-19T10:05:00+00:00"},
+            {"type": "artifact", "attempt": 2, "timestamp": "2026-07-19T10:07:00+00:00"},
+        ]
+
+        timing = he.canonical_phase_timing(events)
+
+        self.assertEqual(timing["lateEventCount"], 1)
+        self.assertEqual(timing["lateEventSpanMs"], 2 * 60 * 1000)
+
+    def test_arc_ut008_latest_phase_end_is_the_only_terminal_status(self) -> None:
+        events = [
+            {"type": "phase.end", "phase": "archive", "status": "FAIL"},
+            {"type": "phase.end", "phase": "archive", "status": "OK"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = ha._stage_status_from_sources(events, None, Path(tmp))
+
+        self.assertEqual(status["archive"], "OK")
+
+
+class ArchiveExactBytePolicyTests(unittest.TestCase):
+    def test_arc_cli004_reports_precise_attributes_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            result = ha.check_archive_exact_byte_policy(project)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["requiredRule"], ".harness/archive/** -text")
+        self.assertIn(".harness/archive/** -text", result["remediation"])
+
+    def test_arc_cli004_accepts_exact_byte_attributes_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            _write(project / ".gitattributes", ".harness/archive/** -text\n")
+
+            result = ha.check_archive_exact_byte_policy(project)
+
+        self.assertTrue(result["ok"])
 
 
 class CleanupTransientTests(unittest.TestCase):
