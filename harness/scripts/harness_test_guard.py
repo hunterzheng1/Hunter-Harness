@@ -564,6 +564,159 @@ def record(
     return _result(True, action, "RECORDED", [rel for _, rel in validated], manifestPath=str(manifest_path))
 
 
+def rehome(
+    from_project: Path | str,
+    to_project: Path | str,
+    change_dir: Path | str,
+    expected_head: str,
+) -> dict[str, Any]:
+    """Atomically hand test ownership from a merged feature worktree to target."""
+    action = "rehome"
+    from_root = Path(from_project).resolve()
+    to_root = Path(to_project).resolve()
+    if not from_root.is_dir() or not to_root.is_dir():
+        return _result(False, action, "PROJECT_ROOT_MISSING", [])
+    if harness_paths.repository_identity(from_root) != harness_paths.repository_identity(to_root):
+        return _result(False, action, "REPOSITORY_MISMATCH", [])
+    to_head_result = _git(to_root, "rev-parse", "--verify", "HEAD")
+    to_head = to_head_result.stdout.strip() if to_head_result.returncode == 0 else ""
+    if not expected_head or to_head != expected_head:
+        return _result(
+            False, action, "EXPECTED_HEAD_MISMATCH", [],
+            expectedHead=expected_head, actualHead=to_head,
+        )
+    from_head_result = _git(from_root, "rev-parse", "--verify", "HEAD")
+    from_head = from_head_result.stdout.strip() if from_head_result.returncode == 0 else ""
+    from_tree_result = _git(from_root, "rev-parse", "HEAD^{tree}")
+    to_tree_result = _git(to_root, "rev-parse", f"{expected_head}^{{tree}}")
+    from_tree = from_tree_result.stdout.strip() if from_tree_result.returncode == 0 else ""
+    to_tree = to_tree_result.stdout.strip() if to_tree_result.returncode == 0 else ""
+    if not from_tree or from_tree != to_tree:
+        return _result(
+            False, action, "TREE_MISMATCH", [],
+            fromHead=from_head, toHead=to_head, fromTree=from_tree, toTree=to_tree,
+        )
+
+    change_root = _change_dir(from_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is None:
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+    lock_path = manifest_path.with_name(manifest_path.name + ".lock")
+    try:
+        with _exclusive_lock(lock_path, wait_seconds=5.0):
+            try:
+                manifest = _read_json(manifest_path)
+            except FileNotFoundError:
+                return _result(False, action, "MANIFEST_MISSING", [])
+            except (OSError, json.JSONDecodeError) as exc:
+                return _result(False, action, "MANIFEST_INVALID", [], error=str(exc))
+            is_v2 = isinstance(manifest, dict) and manifest.get("schemaVersion") == 2
+            entries = manifest.get("files") if isinstance(manifest, dict) else None
+            if not isinstance(entries, list):
+                return _result(False, action, "MANIFEST_INVALID", [])
+            if not is_v2 and (
+                manifest.get("schemaVersion") != SCHEMA_VERSION
+                or manifest.get("mode") != MODE
+                or manifest.get("projectRoot") != str(from_root)
+            ):
+                return _result(False, action, "MANIFEST_PROJECT_MISMATCH", [])
+            if is_v2:
+                error, validated = _validate_existing_manifest_v2(
+                    from_root, manifest, require_files=False
+                )
+                if error:
+                    return _result(False, action, error, [])
+            else:
+                validated: dict[str, dict[str, Any]] = {}
+                for item in entries:
+                    if not _entry_shape_valid(item):
+                        return _result(False, action, "MANIFEST_INVALID", [])
+                    rel = item["path"]
+                    source, normalized, error = _validate_file(from_root, rel)
+                    if error or normalized != rel or source is None:
+                        return _result(False, action, error or "MANIFEST_INVALID", [rel])
+                    if item["sha256"] != _sha256(source):
+                        return _result(False, action, "HASH_DRIFT", [rel])
+                    validated[rel] = dict(item)
+
+            updated = json.loads(json.dumps(manifest))
+            updated_entries: list[dict[str, Any]] = []
+            for rel, item in sorted(validated.items()):
+                target, normalized, error = _validate_file(to_root, rel)
+                if error or normalized != rel or target is None:
+                    return _result(False, action, "TARGET_CONTENT_MISMATCH", [rel])
+                replacement = dict(item)
+                if is_v2:
+                    digest = logical_file_hash(to_root, rel)
+                    source_digest = item.get("logicalHash") or item.get("binaryHash")
+                    if digest != source_digest:
+                        return _result(False, action, "TARGET_CONTENT_MISMATCH", [rel])
+                    replacement["logicalHash"] = digest
+                    replacement["binaryHash"] = (
+                        None if digest.startswith("gitblob:") else digest
+                    )
+                    replacement["ignored"] = _is_ignored(to_root, rel)
+                else:
+                    digest = _sha256(target)
+                    if digest != item["sha256"]:
+                        return _result(False, action, "TARGET_CONTENT_MISMATCH", [rel])
+                    replacement["sha256"] = digest
+                    replacement["ignored"] = _is_ignored(to_root, rel)
+                    replacement["trackedBefore"] = (
+                        _git(to_root, "ls-files", "--error-unmatch", "--", rel).returncode == 0
+                    )
+                updated_entries.append(replacement)
+
+            before_hash = _sha256(manifest_path)
+            handoff_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            handoff_id = "handoff-" + hashlib.sha256(
+                f"{from_root}\0{to_root}\0{from_head}\0{to_head}".encode("utf-8")
+            ).hexdigest()[:20]
+            handoffs = updated.get("handoffs")
+            if handoffs is None:
+                handoffs = []
+            if not isinstance(handoffs, list):
+                return _result(False, action, "MANIFEST_INVALID", [])
+            handoff = {
+                "id": handoff_id,
+                "fromRoot": str(from_root),
+                "toRoot": str(to_root),
+                "fromHead": from_head,
+                "toHead": to_head,
+                "expectedHead": expected_head,
+                "treeHash": to_tree,
+                "at": handoff_at,
+                "manifestHashBefore": before_hash,
+            }
+            if not any(isinstance(item, dict) and item.get("id") == handoff_id for item in handoffs):
+                handoffs.append(handoff)
+            updated["files"] = updated_entries
+            updated["projectRoot"] = str(to_root)
+            updated["head"] = to_head
+            updated["handoffs"] = handoffs
+            _write_json(manifest_path, updated)
+            after_hash = _sha256(manifest_path)
+    except LockUnavailable:
+        return _result(False, action, "MANIFEST_LOCKED", [])
+    return _result(
+        True,
+        action,
+        "REHOMED",
+        sorted(validated),
+        fromRoot=str(from_root),
+        toRoot=str(to_root),
+        fromHead=from_head,
+        toHead=to_head,
+        treeHash=to_tree,
+        handoffId=handoff_id,
+        manifestHashBefore=before_hash,
+        manifestHashAfter=after_hash,
+        manifestPath=str(manifest_path),
+    )
+
+
 def _stage_locked(
     project_root: Path, change_root: Path, manifest_path: Path, index_path: Path
 ) -> dict[str, Any]:
@@ -708,6 +861,31 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     snapshot_path = _state_root(change_root) / SNAPSHOT_REL
     if not _manifest_target_inside(change_root, snapshot_path):
         return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
+
+    if snapshot_path.is_file():
+        try:
+            snapshot = _read_json(snapshot_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            return _result(False, action, "SNAPSHOT_INVALID", [], error=str(exc))
+        entries = snapshot.get("files") if isinstance(snapshot, dict) else None
+        if (
+            not isinstance(snapshot, dict)
+            or snapshot.get("schemaVersion") != SCHEMA_VERSION
+            or snapshot.get("mode") != MODE
+            or snapshot.get("projectRoot") != str(project_root)
+            or not isinstance(entries, list)
+            or any(not isinstance(item, dict) or not isinstance(item.get("path"), str)
+                   for item in entries)
+        ):
+            return _result(False, action, "SNAPSHOT_INVALID", [])
+        return _result(
+            True,
+            action,
+            "SNAPSHOT_REUSED",
+            [item["path"] for item in entries],
+            snapshotPath=str(snapshot_path),
+            fileCount=len(entries),
+        )
 
     files = _enumerate_allowed_test_files(project_root)
     snapshot = {
@@ -867,6 +1045,12 @@ def main(argv: list[str] | None = None) -> int:
     close_parser.add_argument("--project", required=True)
     close_parser.add_argument("--change-dir", required=True)
     close_parser.add_argument("--json", action="store_true")
+    rehome_parser = sub.add_parser("rehome")
+    rehome_parser.add_argument("--from", dest="from_project", required=True)
+    rehome_parser.add_argument("--to", dest="to_project", required=True)
+    rehome_parser.add_argument("--change-dir", required=True)
+    rehome_parser.add_argument("--expected-head", required=True)
+    rehome_parser.add_argument("--json", action="store_true")
     mark_parser = sub.add_parser("mark")
     mark_parser.add_argument("--project", required=True)
     mark_parser.add_argument("--change-dir", required=True)
@@ -883,6 +1067,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.action == "mark":
         files = [item.strip() for item in args.files.split(",") if item.strip()]
         result = mark(args.project, args.change_dir, files)
+    elif args.action == "rehome":
+        result = rehome(
+            args.from_project, args.to_project, args.change_dir, args.expected_head
+        )
     else:
         result = stage(args.project, args.change_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2 if args.json else None))

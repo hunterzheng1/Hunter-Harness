@@ -162,8 +162,14 @@ class SnapshotCaptureTests(unittest.TestCase):
             change_name="change-1",
             worktree_root=self.project,
         )
-        self.assertIn("profile", first_changed)
+        self.assertEqual(first_changed, [])
+        self.assertTrue(first["baselineCreated"])
+        self.assertIn("profile", first["unresolvedSegments"])
+        self.assertEqual(first["changedSegments"], [])
         self.assertEqual(second_changed, [])
+        self.assertFalse(second["baselineCreated"])
+        self.assertEqual(second["unresolvedSegments"], [])
+        self.assertEqual(second["changedSegments"], [])
         self.assertEqual(
             first["segments"]["profile"]["capturedAt"],
             second["segments"]["profile"]["capturedAt"],

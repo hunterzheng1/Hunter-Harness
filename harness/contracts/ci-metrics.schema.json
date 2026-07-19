@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.dev/contracts/ci-metrics.schema.json",
+  "title": "Hunter Harness CI Metrics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runner",
+    "source",
+    "suites",
+    "passed",
+    "failed",
+    "skipped",
+    "setupErrors",
+    "durationMs",
+    "headSha"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runner": { "enum": ["junit", "vitest", "playwright"] },
+    "source": { "type": ["string", "null"] },
+    "suites": { "type": ["integer", "null"], "minimum": 0 },
+    "passed": { "type": ["integer", "null"], "minimum": 0 },
+    "failed": { "type": ["integer", "null"], "minimum": 0 },
+    "skipped": { "type": ["integer", "null"], "minimum": 0 },
+    "setupErrors": { "type": ["integer", "null"], "minimum": 0 },
+    "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+    "headSha": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" }
+      ]
+    }
+  }
+}

@@ -43,6 +43,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 STEP_ORDER = ["preflight", "prepare", "merge", "verify", "push", "cleanup"]
+HEAVY_WORKTREE_ROOTS = (
+    "node_modules", ".venv", "venv", "build", "dist", "target", ".cache", "__pycache__"
+)
 _FOREIGN_PATTERNS = (
     re.compile(r"^\.harness/changes/([^/]+)(/|$)"),
     re.compile(r"^\.harness/state/changes/([^/]+)(/|$)"),
@@ -73,12 +76,31 @@ class VerificationFailedError(IntegrationError):
     code = "VERIFICATION_FAILED"
 
 
+class VerifyPlanMissingError(IntegrationError):
+    code = "VERIFY_PLAN_MISSING"
+
+
 class TargetMovedError(IntegrationError):
     code = "TARGET_MOVED"
 
 
+class LedgerSyncError(IntegrationError):
+    code = "LEDGER_SYNC_PENDING"
+
+
 class CleanupRefusedError(IntegrationError):
     code = "CLEANUP_REFUSED"
+
+
+class CleanupResidualError(IntegrationError):
+    code = "CLEANUP_RESIDUAL"
+
+    def __init__(self, result: dict[str, Any]):
+        self.result = result
+        super().__init__(
+            "worktree cleanup retained paths: "
+            + ", ".join(result.get("residualPaths") or ["<registration>"])
+        )
 
 
 class JournalConflictError(IntegrationError):
@@ -361,6 +383,120 @@ class IntegrationTransaction:
             "ledgerIdentity": ledger_identity,
         }
 
+    def _ledger_path(self) -> Path | None:
+        candidates = (
+            self.project_root / ".harness" / "state" / "changes" / self.change_id
+            / "evidence" / "verification-ledger.json",
+            self.project_root / ".harness" / "changes" / self.change_id
+            / "evidence" / "verification-ledger.json",
+            self.project_root / ".harness" / "state" / "changes" / self.change_id
+            / "verification-ledger.json",
+        )
+        return next((path for path in candidates if path.is_file()), None)
+
+    def _finalize_remote_push(
+        self,
+        journal: dict[str, Any],
+        *,
+        merge_commit: str,
+        remote_head: str,
+    ) -> None:
+        journal.update({
+            "pushedHead": merge_commit,
+            "mergeFinalHash": merge_commit,
+            "ciExpectedHead": merge_commit,
+            "remoteHead": remote_head,
+            "pushIntent": {
+                "status": "REMOTE_CONFIRMED",
+                "expectedRemoteHead": journal.get("remoteTargetHead") or journal.get("base"),
+                "mergeCommit": merge_commit,
+                "observedRemoteHead": remote_head,
+                "updatedAt": now_iso(),
+            },
+            "ledgerSync": {"status": "PENDING", "updatedAt": now_iso()},
+        })
+        self._save(journal)
+        ledger_path = self._ledger_path()
+        if ledger_path is None:
+            result = {"ok": False, "code": "LEDGER_MISSING"}
+        else:
+            result = hl.record_integration_hashes(
+                ledger_path,
+                repository_id=str(journal["repositoryId"]),
+                merge_final_hash=merge_commit,
+                ci_expected_head=merge_commit,
+                remote_head=remote_head,
+            )
+        journal = self._load()
+        journal["ledgerSync"] = {
+            "status": "DONE" if result.get("ok") else "FAILED",
+            "result": result,
+            "updatedAt": now_iso(),
+        }
+        self._save(journal)
+        if not result.get("ok"):
+            raise LedgerSyncError(
+                f"remote push is confirmed but ledger sync requires recovery: {result.get('code')}"
+            )
+
+    def _assert_cleanup_consistency(self, journal: dict[str, Any]) -> None:
+        push_step = self._step(journal, "push")
+        merge_commit = str(journal.get("mergeCommit") or "")
+        remote_line = self.runner.text(
+            self.project_root, "ls-remote", "origin", self.target_branch
+        )
+        observed_remote = (
+            remote_line.split()[0] if remote_line and remote_line.split() else ""
+        )
+        remote_contains_merge = bool(merge_commit and observed_remote == merge_commit)
+        if push_step.get("status") != "DONE" and not remote_contains_merge:
+            if self._step(journal, "prepare").get("status") == "DONE":
+                raise CleanupRefusedError(
+                    "push is not complete and remote does not contain the merge commit"
+                )
+            return
+        final_values = [
+            journal.get("pushedHead"),
+            journal.get("mergeFinalHash"),
+            journal.get("ciExpectedHead"),
+            journal.get("remoteHead"),
+            observed_remote,
+        ]
+        if any(not isinstance(value, str) or not value for value in final_values) or len(
+            set(final_values)
+        ) != 1:
+            raise CleanupRefusedError(
+                "remote/journal final hashes are missing or inconsistent"
+            )
+        ledger_path = self._ledger_path()
+        if ledger_path is None:
+            raise CleanupRefusedError("verification ledger missing before cleanup")
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise CleanupRefusedError(f"verification ledger unreadable: {exc}") from exc
+        ledger_values = [
+            ledger.get("mergeFinalHash"),
+            ledger.get("ciExpectedHead"),
+            ledger.get("remoteHead"),
+        ]
+        if len(set(ledger_values + [observed_remote])) != 1:
+            raise CleanupRefusedError(
+                "remote/journal/ledger final hashes are inconsistent"
+            )
+        ancestor = self.runner.run(
+            self.project_root,
+            "merge-base",
+            "--is-ancestor",
+            str(journal.get("featureHead") or ""),
+            observed_remote,
+            check=False,
+        )
+        if ancestor.returncode != 0:
+            raise CleanupRefusedError(
+                "feature head is not an ancestor of the pushed target"
+            )
+
     def _load(self) -> dict[str, Any]:
         return load_journal(self.project_root, self.transaction_id)
 
@@ -414,15 +550,68 @@ class IntegrationTransaction:
 
     def preflight(self) -> dict[str, Any]:
         def action(journal: dict[str, Any]) -> None:
-            base = self.runner.text(
+            self.runner.run(
+                self.project_root,
+                "fetch",
+                "origin",
+                self.target_branch,
+                check=False,
+            )
+            local_target = self.runner.text(
                 self.project_root, "rev-parse", self.target_branch
+            )
+            remote_line = self.runner.text(
+                self.project_root, "ls-remote", "origin", self.target_branch
+            )
+            remote_target = (
+                remote_line.split()[0] if remote_line and remote_line.split() else None
             )
             feature_head = self.runner.text(
                 self.project_root, "rev-parse", self.feature_branch
             )
-            if not base or not feature_head:
+            if not local_target or not feature_head:
                 raise IntegrationError("target or feature branch not found")
+            reconciliation_required = False
+            base = local_target
+            base_source = "local"
+            if remote_target:
+                if remote_target == local_target:
+                    base = remote_target
+                    base_source = "remote"
+                else:
+                    local_behind = self.runner.run(
+                        self.project_root,
+                        "merge-base",
+                        "--is-ancestor",
+                        local_target,
+                        remote_target,
+                        check=False,
+                    )
+                    remote_behind = self.runner.run(
+                        self.project_root,
+                        "merge-base",
+                        "--is-ancestor",
+                        remote_target,
+                        local_target,
+                        check=False,
+                    )
+                    if local_behind.returncode == 0:
+                        base = remote_target
+                        base_source = "remote-ahead"
+                        reconciliation_required = True
+                    elif remote_behind.returncode == 0:
+                        base = local_target
+                        base_source = "local-ahead"
+                    else:
+                        raise TargetMovedError(
+                            f"local and remote {self.target_branch} diverged: "
+                            f"local={local_target}, remote={remote_target}"
+                        )
             fresh = self._new_journal(base, feature_head)
+            fresh["baseSource"] = base_source
+            fresh["localTargetHead"] = local_target
+            fresh["remoteTargetHead"] = remote_target
+            fresh["primaryReconciliationRequired"] = reconciliation_required
             fresh["revision"] = int(journal.get("revision") or 0)
             journal.clear()
             journal.update(fresh)
@@ -500,11 +689,17 @@ class IntegrationTransaction:
         return self._run_step("prepare", action)
 
     def _foreign_paths(self, journal: dict[str, Any]) -> list[str]:
+        feature_base = self.runner.text(
+            self.project_root,
+            "merge-base",
+            journal["base"],
+            journal["featureHead"],
+        ) or journal["base"]
         diff = self.runner.text(
             self.project_root,
             "diff",
             "--name-only",
-            journal["base"],
+            feature_base,
             journal["featureHead"],
         )
         contract: dict[str, Any] = {}
@@ -558,11 +753,27 @@ class IntegrationTransaction:
             current_target = self.runner.text(
                 self.project_root, "rev-parse", self.target_branch
             )
-            if current_target != journal["base"]:
+            expected_local = journal.get("localTargetHead") or journal["base"]
+            if current_target != expected_local:
                 raise TargetMovedError(
                     f"local {self.target_branch} moved: expected "
-                    f"{journal['base']}, found {current_target}"
+                    f"{expected_local}, found {current_target}"
                 )
+            if journal.get("remoteTargetHead"):
+                remote_line = self.runner.text(
+                    self.project_root, "ls-remote", "origin", self.target_branch
+                )
+                current_remote = (
+                    remote_line.split()[0]
+                    if remote_line and remote_line.split()
+                    else None
+                )
+                expected_remote = journal.get("remoteTargetHead")
+                if current_remote != expected_remote:
+                    raise TargetMovedError(
+                        f"remote {self.target_branch} moved: expected "
+                        f"{expected_remote}, found {current_remote}"
+                    )
             foreign = self._foreign_paths(journal)
             if foreign:
                 raise ForeignChangePathsError(
@@ -589,6 +800,13 @@ class IntegrationTransaction:
         commands = list(commands or [])
 
         def action(journal: dict[str, Any]) -> None:
+            if not commands or any(
+                not isinstance(command, (list, tuple)) or not command or not command[0]
+                for command in commands
+            ):
+                raise VerifyPlanMissingError(
+                    "integration verification requires at least one executable command"
+                )
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
             for command in commands:
@@ -641,6 +859,24 @@ class IntegrationTransaction:
 
     def push(self) -> dict[str, Any]:
         def action(journal: dict[str, Any]) -> None:
+            verify_step = self._step(journal, "verify")
+            verify_results = journal.get("verifyResults")
+            if (
+                verify_step.get("status") != "DONE"
+                or not isinstance(verify_results, list)
+                or not verify_results
+                or any(
+                    not isinstance(item, dict)
+                    or item.get("exitCode") != 0
+                    or not isinstance(item.get("command"), list)
+                    or not item.get("command")
+                    for item in verify_results
+                )
+                or not isinstance(journal.get("verificationIdentity"), dict)
+            ):
+                raise VerifyPlanMissingError(
+                    "push requires a completed, non-empty verification plan"
+                )
             remote_head = self.runner.text(
                 self.project_root, "ls-remote", "origin", self.target_branch
             )
@@ -656,28 +892,60 @@ class IntegrationTransaction:
                 # The previous push may have reached the remote before the local
                 # process could persist pushedHead/step=DONE. Reconcile that
                 # successful outcome instead of misclassifying it as drift.
-                journal["pushedHead"] = merge_commit
-                self._save(journal)
+                self._finalize_remote_push(
+                    journal, merge_commit=merge_commit, remote_head=remote_head
+                )
                 return
-            if remote_head != journal["base"]:
+            expected_remote = journal.get("remoteTargetHead") or journal["base"]
+            if remote_head != expected_remote:
                 raise TargetMovedError(
                     f"remote {self.target_branch} moved: expected "
-                    f"{journal['base']}, found {remote_head}"
+                    f"{expected_remote}, found {remote_head}"
                 )
+            journal["pushIntent"] = {
+                "status": "PENDING",
+                "expectedRemoteHead": expected_remote,
+                "mergeCommit": merge_commit,
+                "updatedAt": now_iso(),
+            }
+            self._save(journal)
             self.runner.run(
                 self.project_root,
                 "push",
                 "origin",
                 f"{merge_commit}:refs/heads/{self.target_branch}",
             )
-            journal["pushedHead"] = merge_commit
-            self._save(journal)
+            remote_after_line = self.runner.text(
+                self.project_root, "ls-remote", "origin", self.target_branch
+            )
+            remote_after = (
+                remote_after_line.split()[0]
+                if remote_after_line and remote_after_line.split()
+                else ""
+            )
+            if remote_after != merge_commit:
+                journal = self._load()
+                journal["pushIntent"] = {
+                    "status": "REMOTE_UNCONFIRMED",
+                    "expectedRemoteHead": expected_remote,
+                    "mergeCommit": merge_commit,
+                    "observedRemoteHead": remote_after,
+                    "updatedAt": now_iso(),
+                }
+                self._save(journal)
+                raise IntegrationError(
+                    "push returned but the remote target does not equal the merge commit"
+                )
+            journal = self._load()
+            self._finalize_remote_push(
+                journal, merge_commit=merge_commit, remote_head=remote_after
+            )
 
         return self._run_step("push", action)
 
     # ------------------------------------------------------------ cleanup
 
-    def cleanup_target(self, target: Path) -> None:
+    def cleanup_target(self, target: Path) -> dict[str, Any]:
         """Boundary-checked removal of this transaction's exact worktree."""
         resolved = harness_paths.assert_path_within(target, self.temp_root)
         try:
@@ -692,15 +960,71 @@ class IntegrationTransaction:
             raise CleanupRefusedError(
                 f"refusing to clean non-transaction path: {resolved}"
             )
+        listed_before = self.runner.text(
+            self.project_root, "worktree", "list", "--porcelain"
+        )
+        registered_before = {
+            str(Path(line.removeprefix("worktree ")).resolve())
+            for line in (listed_before or "").splitlines()
+            if line.startswith("worktree ")
+        }
+        if resolved.exists() and str(resolved) not in registered_before:
+            raise CleanupRefusedError(
+                f"refusing to clean unregistered worktree path: {resolved}"
+            )
+
+        heavy_removed: list[str] = []
+        heavy_failures: list[dict[str, str]] = []
+        if resolved.is_dir():
+            for name in HEAVY_WORKTREE_ROOTS:
+                heavy = resolved / name
+                if not heavy.exists():
+                    continue
+                harness_paths.assert_path_within(heavy, resolved)
+                try:
+                    if heavy.is_dir() and not heavy.is_symlink():
+                        shutil.rmtree(heavy)
+                    else:
+                        heavy.unlink()
+                    heavy_removed.append(name)
+                except OSError as exc:
+                    heavy_failures.append({"path": name, "error": str(exc)})
         self.runner.run(
             self.project_root, "worktree", "remove", "--force", str(resolved),
             check=False,
         )
-        if resolved.exists():
-            shutil.rmtree(resolved)
         listed = self.runner.text(self.project_root, "worktree", "list", "--porcelain")
-        if listed and str(resolved) in listed:
-            raise IntegrationError(f"worktree still registered: {resolved}")
+        registered_after = {
+            str(Path(line.removeprefix("worktree ")).resolve())
+            for line in (listed or "").splitlines()
+            if line.startswith("worktree ")
+        }
+        still_registered = str(resolved) in registered_after
+        residual_paths: list[str] = []
+        if resolved.exists():
+            if resolved.is_file():
+                residual_paths.append(resolved.name)
+            else:
+                for root, dirs, files in os.walk(resolved):
+                    rel_root = Path(root).relative_to(resolved)
+                    for name in sorted(dirs + files):
+                        rel = (rel_root / name).as_posix()
+                        if rel not in residual_paths:
+                            residual_paths.append(rel)
+                        if len(residual_paths) >= 200:
+                            break
+                    if len(residual_paths) >= 200:
+                        break
+        ok = not heavy_failures and not still_registered and not residual_paths
+        return {
+            "ok": ok,
+            "code": "CLEANUP_COMPLETE" if ok else "CLEANUP_RESIDUAL",
+            "target": str(resolved),
+            "heavyRootsRemoved": heavy_removed,
+            "heavyRootFailures": heavy_failures,
+            "worktreeRegistered": still_registered,
+            "residualPaths": residual_paths,
+        }
 
     def cleanup(self) -> dict[str, Any]:
         try:
@@ -713,9 +1037,23 @@ class IntegrationTransaction:
             raise IntegrationError("cannot cleanup before preflight")
 
         def action(journal: dict[str, Any]) -> None:
+            self._assert_cleanup_consistency(journal)
             intg_root = Path(journal["integrationRoot"])
+            cleanup_result: dict[str, Any] = {
+                "ok": True,
+                "code": "ALREADY_ABSENT",
+                "target": str(intg_root.resolve()),
+                "heavyRootsRemoved": [],
+                "heavyRootFailures": [],
+                "worktreeRegistered": False,
+                "residualPaths": [],
+            }
             if intg_root.exists():
-                self.cleanup_target(intg_root)
+                cleanup_result = self.cleanup_target(intg_root)
+                journal["cleanupResult"] = cleanup_result
+                self._save(journal)
+                if not cleanup_result["ok"]:
+                    raise CleanupResidualError(cleanup_result)
             self.runner.run(
                 self.project_root, "branch", "-D", self.temp_branch, check=False
             )
@@ -725,6 +1063,49 @@ class IntegrationTransaction:
                     self.runner.run(
                         self.project_root, "update-ref", "-d", ref, check=False
                     )
+            worktrees = self.runner.text(
+                self.project_root, "worktree", "list", "--porcelain"
+            ) or ""
+            feature_ref = f"refs/heads/{self.feature_branch}"
+            feature_branch_retained = self.runner.run(
+                self.project_root,
+                "show-ref",
+                "--verify",
+                feature_ref,
+                check=False,
+            ).returncode == 0
+            local_target = self.runner.text(
+                self.project_root, "rev-parse", self.target_branch
+            )
+            remote_line = self.runner.text(
+                self.project_root, "ls-remote", "origin", self.target_branch
+            )
+            remote_target = (
+                remote_line.split()[0] if remote_line and remote_line.split() else None
+            )
+            journal["cleanupSummary"] = {
+                "transactionArtifactsRemoved": {
+                    "integrationWorktree": not intg_root.exists(),
+                    "temporaryBranch": self.runner.run(
+                        self.project_root,
+                        "show-ref",
+                        "--verify",
+                        f"refs/heads/{self.temp_branch}",
+                        check=False,
+                    ).returncode != 0,
+                    "protectionRefs": self._step(journal, "push")["status"] == "DONE",
+                    "heavyRoots": cleanup_result.get("heavyRootsRemoved") or [],
+                },
+                "sourceWorktreeRetained": f"branch {feature_ref}" in worktrees,
+                "featureBranchRetained": feature_branch_retained,
+                "primaryWorktreeUpdated": bool(
+                    local_target and remote_target and local_target == remote_target
+                ),
+                "primaryHead": local_target,
+                "remoteHead": remote_target,
+                "residualPaths": cleanup_result.get("residualPaths") or [],
+            }
+            self._save(journal)
 
         journal = self._run_step("cleanup", action)
         harness_change.integration_lock_release(self.project_root, run_id=self.run_id)
@@ -864,9 +1245,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except IntegrationError as exc:
+        extra = getattr(exc, "result", None)
+        payload = {"ok": False, "code": exc.code, "message": str(exc)}
+        if isinstance(extra, dict):
+            payload["cleanup"] = extra
         sys.stderr.write(
             json.dumps(
-                {"ok": False, "code": exc.code, "message": str(exc)},
+                payload,
                 ensure_ascii=False,
             )
             + "\n"

@@ -401,6 +401,73 @@ class TestGuardTests(unittest.TestCase):
         self.assertEqual(paths["src/test/java/NewTest.java"], "tdd-created")
         self.assertNotIn("src/test/java/ExistingTest.java", paths)
 
+    def test_begin_reuses_existing_snapshot_instead_of_recapturing(self) -> None:
+        target = self.project / "src" / "test" / "java" / "StableTest.java"
+        self._write(target, "before\n")
+        first = guard.begin(self.project, self.change)
+        self.assertTrue(first["ok"], first)
+        snapshot_path = Path(first["snapshotPath"])
+        before = snapshot_path.read_bytes()
+        self._write(target, "after\n")
+
+        second = guard.begin(self.project, self.change)
+
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(second["code"], "SNAPSHOT_REUSED")
+        self.assertEqual(snapshot_path.read_bytes(), before)
+
+    def test_rehome_moves_manifest_after_tree_equivalent_merge(self) -> None:
+        feature = self.outside / "feature-rehome"
+        self._git("worktree", "add", "-b", "feature/rehome", str(feature))
+        try:
+            target = feature / "src" / "test" / "java" / "RehomeTest.java"
+            self._write(target, "class RehomeTest {}\n")
+            subprocess.run(
+                ["git", "-C", str(feature), "add", "-f", "src/test/java/RehomeTest.java"],
+                check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(feature), "commit", "-m", "add rehome test"],
+                check=True, capture_output=True,
+            )
+            recorded = guard.record(feature, self.change, [str(target)], "tdd-created")
+            self.assertTrue(recorded["ok"], recorded)
+            self._git("merge", "--no-ff", "-m", "merge feature", "feature/rehome")
+            expected_head = self._git("rev-parse", "HEAD").stdout.strip()
+
+            result = guard.rehome(feature, self.project, self.change, expected_head)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "REHOMED")
+            self.assertEqual(result["fromRoot"], str(feature.resolve()))
+            self.assertEqual(result["toRoot"], str(self.project.resolve()))
+            self.assertEqual(result["toHead"], expected_head)
+            self.assertIn("manifestHashBefore", result)
+            self.assertIn("manifestHashAfter", result)
+            manifest = json.loads(
+                (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+            )
+            self.assertEqual(manifest["projectRoot"], str(self.project.resolve()))
+            self.assertEqual(manifest["handoffs"][-1]["toHead"], expected_head)
+        finally:
+            self._git("worktree", "remove", "--force", str(feature))
+
+    def test_rehome_rejects_wrong_expected_head_without_manifest_drift(self) -> None:
+        target = self.project / "src" / "test" / "java" / "RehomeTest.java"
+        self._write(target, "class RehomeTest {}\n")
+        recorded = self._record(target)
+        self.assertTrue(recorded["ok"], recorded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        before = manifest_path.read_bytes()
+
+        result = guard.rehome(
+            self.project, self.project, self.change, "0" * 40
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "EXPECTED_HEAD_MISMATCH")
+        self.assertEqual(manifest_path.read_bytes(), before)
+
     def test_begin_close_auto_tracks_modified_ignored_test_ut028(self) -> None:
         target = self.project / "src" / "test" / "java" / "MutableTest.java"
         self._write(target, "before\n")

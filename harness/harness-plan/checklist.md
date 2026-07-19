@@ -213,6 +213,12 @@ source: harness-plan
 
 > **缺任一文件 → ❌FAIL，不得宣称 plan 完成。**
 
+- [ ] 所有待发布产物先写入 staging，不直接覆盖正式 change 目录
+- [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id ... --attempt ... --json`
+- [ ] finalizer 返回 `ok=true` 与 `artifactsHash`；重复执行返回 `idempotent=true`
+- [ ] finalizer 失败时正式目录无半发布产物、无成功 `phase.end`、无伪造 execution log
+- [ ] 禁止在 finalizer 之前手工追加成功 `phase.end`
+
 | 文件 | 必须存在 | 检查结果 |
 |------|:---:|:---:|
 | `.harness/changes/<change>/spec/<change>-design.md` | ✅ | □ |

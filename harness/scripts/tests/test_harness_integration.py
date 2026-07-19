@@ -123,6 +123,23 @@ class TransactionFixture(unittest.TestCase):
         git(self.primary, "add", "-A")
         git(self.primary, "commit", "-m", "feature work")
         git(self.primary, "checkout", "main")
+        base = git(self.primary, "rev-parse", "main").stdout.strip()
+        feature_head = git(self.primary, "rev-parse", "feature/demo").stdout.strip()
+        self.ledger_path = (
+            self.primary / ".harness" / "state" / "changes" / "demo"
+            / "evidence" / "verification-ledger.json"
+        )
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        self.ledger_path.write_text(json.dumps({
+            "schemaVersion": 3,
+            "repositoryId": integration.harness_paths.repository_identity(self.primary),
+            "changeName": "demo",
+            "baseCommit": base,
+            "currentHead": feature_head,
+            "diffHash": "sha256:" + "d" * 64,
+            "ownershipHash": "sha256:" + "e" * 64,
+            "validations": {},
+        }) + "\n", encoding="utf-8")
         self.temp_root = self.tmp / "integration-temp"
         self.runner = integration.GitRunner()
 
@@ -226,7 +243,7 @@ class JournalLifecycleTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         txn.push()
         journal = txn.cleanup()
         steps = journal["steps"]
@@ -243,6 +260,18 @@ class JournalLifecycleTests(TransactionFixture):
             git(self.remote, "rev-parse", "main").stdout.strip(),
             journal["pushedHead"],
         )
+        self.assertEqual(journal["mergeFinalHash"], journal["pushedHead"])
+        self.assertEqual(journal["ciExpectedHead"], journal["pushedHead"])
+        self.assertEqual(journal["remoteHead"], journal["pushedHead"])
+        self.assertEqual(journal["ledgerSync"]["status"], "DONE")
+        ledger = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(ledger["mergeFinalHash"], journal["pushedHead"])
+        self.assertEqual(ledger["ciExpectedHead"], journal["pushedHead"])
+        self.assertEqual(ledger["remoteHead"], journal["pushedHead"])
+        self.assertIn("transactionArtifactsRemoved", journal["cleanupSummary"])
+        self.assertFalse(journal["cleanupSummary"]["sourceWorktreeRetained"])
+        self.assertTrue(journal["cleanupSummary"]["featureBranchRetained"])
+        self.assertFalse(journal["cleanupSummary"]["primaryWorktreeUpdated"])
 
     def test_reentry_returns_reused_without_side_effects(self) -> None:
         txn = self.make_txn()
@@ -275,7 +304,7 @@ class JournalLifecycleTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         txn.push()
         txn.cleanup()
         stash_calls = [
@@ -310,7 +339,7 @@ class DirtyPrimaryTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         txn.push()
         txn.cleanup()
 
@@ -353,7 +382,7 @@ class ForeignChangeIsolationTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         txn.push()
         txn.cleanup()
 
@@ -399,6 +428,35 @@ class ForeignChangeIsolationTests(TransactionFixture):
 
 
 class FailureRecoveryTests(TransactionFixture):
+    def test_preflight_reconciles_fast_forward_remote_target(self) -> None:
+        local_main = git(self.primary, "rev-parse", "main").stdout.strip()
+        other = self.tmp / "remote-advance"
+        git(self.tmp, "clone", str(self.remote), str(other))
+        git(other, "config", "user.email", "test@example.com")
+        git(other, "config", "user.name", "Test")
+        git(other, "config", "commit.gpgsign", "false")
+        (other / "remote.txt").write_text("remote advance\n", encoding="utf-8")
+        git(other, "add", "remote.txt")
+        git(other, "commit", "-m", "remote advance")
+        git(other, "push", "origin", "main")
+        remote_main = git(other, "rev-parse", "HEAD").stdout.strip()
+
+        txn = self.make_txn()
+        journal = txn.preflight()
+
+        self.assertEqual(journal["base"], remote_main)
+        self.assertEqual(journal["localTargetHead"], local_main)
+        self.assertEqual(journal["remoteTargetHead"], remote_main)
+        self.assertTrue(journal["primaryReconciliationRequired"])
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
+        verify_clone = self.tmp / "verify-remote"
+        git(self.tmp, "clone", str(self.remote), str(verify_clone))
+        self.assertTrue((verify_clone / "remote.txt").is_file())
+        self.assertTrue((verify_clone / "src" / "app.py").is_file())
+
     def test_merge_detects_target_moved_after_prepare(self) -> None:
         txn = self.make_txn()
         txn.preflight()
@@ -446,7 +504,7 @@ class FailureRecoveryTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         # Someone else advances remote main after our merge.
         other = self.tmp / "other-clone"
         git(self.tmp, "clone", str(self.remote), str(other))
@@ -467,7 +525,7 @@ class FailureRecoveryTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         journal = txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         merge_commit = journal["mergeCommit"]
 
         # Simulate a push that succeeded remotely while the local process failed
@@ -484,9 +542,57 @@ class FailureRecoveryTests(TransactionFixture):
         push_step = next(s for s in recovered["steps"] if s["name"] == "push")
         self.assertEqual(push_step["status"], "DONE")
         self.assertEqual(recovered["pushedHead"], merge_commit)
+        self.assertEqual(recovered["mergeFinalHash"], merge_commit)
+        self.assertEqual(recovered["ciExpectedHead"], merge_commit)
+        self.assertEqual(recovered["remoteHead"], merge_commit)
+        self.assertEqual(recovered["ledgerSync"]["status"], "DONE")
         self.assertFalse(
             any(args and args[0] == "push" for _cwd, args in self.runner.history)
         )
+
+    def test_cleanup_refuses_ledger_final_hash_drift(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
+        ledger = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        ledger["remoteHead"] = "0" * 40
+        self.ledger_path.write_text(json.dumps(ledger) + "\n", encoding="utf-8")
+
+        with self.assertRaises(integration.CleanupRefusedError):
+            txn.cleanup()
+
+    def test_recover_finishes_ledger_sync_after_remote_push(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        ledger_bytes = self.ledger_path.read_bytes()
+        self.ledger_path.unlink()
+
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+
+        failed = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(failed["remoteHead"], journal["mergeCommit"])
+        self.assertEqual(failed["ledgerSync"]["status"], "FAILED")
+        self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        self.ledger_path.write_bytes(ledger_bytes)
+        push_calls_before = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+
+        recovered = txn.push()
+
+        push_calls_after = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+        self.assertEqual(push_calls_after, push_calls_before)
+        self.assertEqual(recovered["ledgerSync"]["status"], "DONE")
+        self.assertEqual(recovered["mergeFinalHash"], journal["mergeCommit"])
 
     def test_recover_after_failed_verify_does_not_remerge(self) -> None:
         txn = self.make_txn()
@@ -497,7 +603,9 @@ class FailureRecoveryTests(TransactionFixture):
         with self.assertRaises(integration.VerificationFailedError):
             txn.verify(commands=[["python", "-c", "import sys; sys.exit(3)"]])
 
-        journal = txn.recover(verify_commands=[])
+        journal = txn.recover(
+            verify_commands=[[sys.executable, "-c", "pass"]]
+        )
         verify_step = [s for s in journal["steps"] if s["name"] == "verify"][0]
         self.assertEqual(verify_step["status"], "DONE")
         merge_step = [s for s in journal["steps"] if s["name"] == "merge"][0]
@@ -530,7 +638,7 @@ class IntegrationLockTests(TransactionFixture):
         txn.preflight()
         txn.prepare()
         txn.merge()
-        txn.verify(commands=[])
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
         txn.push()
         txn.cleanup()
         follower = self.make_txn(run_id="run-2")
@@ -539,6 +647,23 @@ class IntegrationLockTests(TransactionFixture):
 
 
 class CleanupBoundaryTests(TransactionFixture):
+    def test_cleanup_before_push_is_refused_and_keeps_integration_worktree(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        intg_root = Path(journal["integrationRoot"])
+
+        with self.assertRaises(integration.CleanupRefusedError):
+            txn.cleanup()
+
+        self.assertTrue(intg_root.exists())
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(
+            next(step for step in journal["steps"] if step["name"] == "push")["status"],
+            "PENDING",
+        )
+
     def test_cleanup_refuses_dangerous_targets_ret12(self) -> None:
         txn = self.make_txn()
         txn.preflight()
@@ -563,6 +688,9 @@ class CleanupBoundaryTests(TransactionFixture):
         journal = integration.load_journal(self.primary, txn.transaction_id)
         intg_root = Path(journal["integrationRoot"])
         self.assertTrue(intg_root.exists())
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
         txn.cleanup()
         self.assertFalse(intg_root.exists())
         worktrees = git(self.primary, "worktree", "list", "--porcelain").stdout
@@ -582,8 +710,62 @@ class CleanupBoundaryTests(TransactionFixture):
             second.cleanup_target(first_root)
         self.assertTrue(first_root.exists())
 
+    def test_cleanup_reports_residual_after_heavy_roots_are_removed(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        intg_root = Path(journal["integrationRoot"])
+        (intg_root / "node_modules" / "pkg").mkdir(parents=True)
+        (intg_root / "node_modules" / "pkg" / "cache.bin").write_bytes(b"x")
+        (intg_root / ".venv" / "Lib").mkdir(parents=True)
+        (intg_root / ".venv" / "Lib" / "site.py").write_text("x\n", encoding="utf-8")
+        original_run = txn.runner.run
+
+        def remove_then_recreate(cwd, *args, **kwargs):
+            if args[:3] == ("worktree", "remove", "--force"):
+                self.assertFalse((intg_root / "node_modules").exists())
+                self.assertFalse((intg_root / ".venv").exists())
+                result = original_run(cwd, *args, **kwargs)
+                intg_root.mkdir(parents=True, exist_ok=True)
+                (intg_root / "locked-residual.txt").write_text(
+                    "retained\n", encoding="utf-8"
+                )
+                return result
+            return original_run(cwd, *args, **kwargs)
+
+        with mock.patch.object(txn.runner, "run", side_effect=remove_then_recreate):
+            result = txn.cleanup_target(intg_root)
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "CLEANUP_RESIDUAL")
+        self.assertIn("node_modules", result["heavyRootsRemoved"])
+        self.assertIn(".venv", result["heavyRootsRemoved"])
+        self.assertEqual(result["residualPaths"], ["locked-residual.txt"])
+        self.assertFalse(result["worktreeRegistered"])
+
 
 class VerifyInIntegrationWorktreeTests(TransactionFixture):
+    def test_verify_requires_nonempty_plan(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        with self.assertRaises(integration.VerifyPlanMissingError):
+            txn.verify(commands=[])
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        step = next(item for item in journal["steps"] if item["name"] == "verify")
+        self.assertEqual(step["status"], "FAILED")
+        self.assertEqual(journal.get("verifyResults"), None)
+
+    def test_push_requires_completed_nonempty_verify(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        with self.assertRaises(integration.VerifyPlanMissingError):
+            txn.push()
+
     def test_verify_runs_inside_integration_root(self) -> None:
         txn = self.make_txn()
         txn.preflight()

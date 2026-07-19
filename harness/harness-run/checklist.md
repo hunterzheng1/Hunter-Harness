@@ -10,13 +10,14 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 ### 步骤 0.0：Worktree 决策执行 ⚠️
 
+- [ ] 运行 `harness_runtime.py doctor` 并读取 `meta/runtime.json`；后续使用绝对 executable 与 argv 数组
 - [ ] 读取 `.harness/changes/<change-name>/meta/worktree.json`（旧路径 `worktree.json` 兼容）
 - [ ] 如果文件缺失：🟡WARN，按 legacy 逻辑询问用户是否主目录执行或创建 worktree
 - [ ] `requested=false` → 主目录执行，记录原因
 - [ ] `requested=true` 且 worktree 存在 → 切换到 worktree 执行
 - [ ] `requested=true` 且 worktree 不存在 → 必须创建 worktree
 - [ ] worktree 创建命令必须使用 PowerShell：`git worktree add ...`
-- [ ] 创建后验证 `.claude/worktrees/<change-name>/.git` 存在
+- [ ] 创建后验证 `<adapter-worktree-root>/<change-name>/.git` 存在；Codex 必须是 `.codex/worktrees/<change-name>`
 - [ ] 创建成功后更新 `meta/worktree.json` 的 `created=true/createdAt/createdBy`
 - [ ] 创建失败 → 停止，或 AskUserQuestion 询问是否改为主目录执行
 - [ ] 禁止 `requested=true && worktree 不存在` 时直接主目录执行
@@ -219,7 +220,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 > 仅在 worktree 中执行时触发此步骤。在主目录执行时跳过（标记 ⏭️主目录跳过）。
 
-- [ ] 确认当前 cwd 在 `.claude/worktrees/<change-name>/` 下
+- [ ] 确认当前 cwd 在 `<adapter-worktree-root>/<change-name>/` 下，且 branch 使用 adapter 的 prefix
 - [ ] 生成变更摘要：`git diff --stat` + `git diff --stat --cached`
 - [ ] 构建 commit message：`wip(<scope>): <change-name> 编码完成 — N任务/M文件变更`
 - [ ] **⚠️ 强制阻断**：用 AskUserQuestion 展示变更列表 + commit message，等待用户确认

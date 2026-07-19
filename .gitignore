@@ -100,6 +100,7 @@ temp/
 .codegraph/
 .harness/
 .sync-staging/
+.codex-release/
 AGENTS.md
 CLAUDE.md
 CODEBUDDY.md
@@ -108,6 +109,8 @@ CODEBUDDY.md
 requirements/
 docs/*
 !docs/BACKLOG.md
+!docs/retrospectives/
+!docs/retrospectives/**
 !docs/superpowers/
 !docs/superpowers/**
 !docs/SERVER-DEPLOYMENT.md

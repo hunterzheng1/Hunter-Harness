@@ -70,6 +70,16 @@ CAPABILITY_MARKERS: dict[str, tuple[str, ...]] = {
     "integration-lock": ("harness_change.py integration-lock",),
 }
 
+DESIGN_GATE_CAPABILITIES = frozenset({"deployment", "container", "api", "database"})
+VALIDATION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "compile": (),
+    "unitTest": ("compile",),
+    "unitTestFull": ("unitTest",),
+    "apiTest": ("unitTest",),
+    "dbCompatibility": ("unitTest",),
+    "package": ("unitTestFull", "apiTest", "dbCompatibility"),
+}
+
 
 def _load_workflow_policy(
     *, project: Path | None = None, skills_root: Path | None = None
@@ -122,6 +132,113 @@ def _write_json(path: Path, data: Any) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def _git_text(cwd: Path, *args: str) -> str | None:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def resolve_execution_root(main_project: Path, raw: str | None) -> Path:
+    candidate = Path(raw).expanduser().resolve() if raw else main_project.resolve()
+    if not candidate.is_dir():
+        raise ValueError(f"execution root not found: {candidate}")
+    top = _git_text(candidate, "rev-parse", "--show-toplevel")
+    if not top:
+        raise ValueError(f"execution root is not a git worktree: {candidate}")
+    root = Path(top).resolve()
+    if hp.repository_identity(root) != hp.repository_identity(main_project):
+        raise ValueError("execution root belongs to a different repository")
+    return root
+
+
+def _phase_capsule_path(change_dir: Path, phase: str, run_id: str) -> Path:
+    key = hashlib.sha256(f"{phase}\0{run_id}".encode("utf-8")).hexdigest()[:20]
+    return (
+        Path(hp.resolve_state_dir_for_contract(change_dir))
+        / "runtime"
+        / "phase-context"
+        / f"{phase}-{key}.json"
+    )
+
+
+def load_phase_capsule(
+    change_dir: Path, phase: str, run_id: str
+) -> dict[str, Any] | None:
+    path = _phase_capsule_path(change_dir, phase, run_id)
+    if not path.is_file():
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"phase capsule is unreadable: {path}: {exc}") from exc
+    if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+        raise ValueError(f"phase capsule has an unsupported schema: {path}")
+    return data
+
+
+def write_phase_capsule(
+    change_dir: Path, phase: str, run_id: str, capsule: dict[str, Any]
+) -> Path:
+    path = _phase_capsule_path(change_dir, phase, run_id)
+    _write_json(path, capsule)
+    return path
+
+
+def validate_phase_capsule(
+    capsule: dict[str, Any],
+    *,
+    change_dir: Path,
+    change_id: str,
+    phase: str,
+    run_id: str,
+    project: Path,
+    execution_root: Path,
+    skills_root: Path | None = None,
+) -> None:
+    """Fail closed when a resume/close capsule no longer identifies this run."""
+    required = (
+        "changeId", "phase", "runId", "projectRoot", "stateRoot",
+        "executionRoot", "skillsRoot", "repositoryId", "baseCommit", "currentHead",
+    )
+    missing = [
+        field for field in required
+        if not isinstance(capsule.get(field), str) or not str(capsule[field]).strip()
+    ]
+    if missing:
+        raise ValueError("phase capsule missing: " + ", ".join(missing))
+    expected = {
+        "changeId": change_id,
+        "phase": phase,
+        "runId": run_id,
+        "projectRoot": str(project.resolve()),
+        "stateRoot": str(Path(hp.resolve_state_dir_for_contract(change_dir)).resolve()),
+        "executionRoot": str(execution_root.resolve()),
+    }
+    if skills_root is not None:
+        expected["skillsRoot"] = str(skills_root.resolve())
+    for field, value in expected.items():
+        if capsule.get(field) != value:
+            raise ValueError(
+                f"phase capsule {field} mismatch: expected {value}, found {capsule.get(field)}"
+            )
+    current_repository = hp.repository_identity(execution_root)
+    if capsule.get("repositoryId") != current_repository:
+        raise ValueError("phase capsule repositoryId mismatch")
+    current_head = _git_text(execution_root, "rev-parse", "--verify", "HEAD")
+    if capsule.get("currentHead") != current_head:
+        raise ValueError(
+            f"phase capsule currentHead mismatch: expected {capsule.get('currentHead')}, "
+            f"found {current_head}"
+        )
 
 
 def load_checkpoints(change_dir: Path) -> dict[str, Any] | None:
@@ -218,6 +335,8 @@ def validate_ledger_for_phase_close(
     change_dir: Path,
     phase: str,
     policy: dict[str, Any],
+    *,
+    execution_root: Path | None = None,
 ) -> dict[str, Any]:
     """Validate ledger v2 fields required for phase close (UT-026)."""
     required = policy.get("requiredValidations", {}).get(phase, [])
@@ -242,6 +361,65 @@ def validate_ledger_for_phase_close(
             "phase": phase,
             "ledgerPath": str(ledger_path) if ledger_path else None,
         }
+
+    try:
+        contract = hp.load_change_contract(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        contract = {}
+    contract_version = contract.get("schemaVersion")
+    contract_is_v2 = hp.contract_layout_kind(contract) == "split-v1" or (
+        isinstance(contract_version, int) and contract_version >= 2
+    )
+    if contract_is_v2:
+        missing_identity = hl.validate_ledger_identity(ledger)
+        if missing_identity:
+            return {
+                "ok": False,
+                "code": "LEDGER_IDENTITY_INVALID",
+                "message": "ledger identity is incomplete",
+                "phase": phase,
+                "missing": missing_identity,
+                "ledgerPath": str(ledger_path) if ledger_path else None,
+            }
+        root = Path(execution_root or hp.resolve_worktree_root(change_dir)).resolve()
+        try:
+            current_repository = hp.repository_identity(root)
+            current_ownership = hl.ownership_hash(contract)
+            current_diff = hl.compute_ownership_diff(
+                root,
+                base=str(ledger["baseCommit"]),
+                change_dir=change_dir,
+            )["diffHash"]
+            current_head = _git_text(root, "rev-parse", "--verify", "HEAD")
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {
+                "ok": False,
+                "code": "LEDGER_IDENTITY_INVALID",
+                "message": f"cannot resolve current ledger identity: {exc}",
+                "phase": phase,
+                "ledgerPath": str(ledger_path) if ledger_path else None,
+            }
+        identity_mismatch = (
+            ledger.get("repositoryId") != current_repository
+            or ledger.get("ownershipHash") != current_ownership
+            or ledger.get("diffHash") != current_diff
+        )
+        if identity_mismatch:
+            return {
+                "ok": False,
+                "code": "LEDGER_IDENTITY_MISMATCH",
+                "message": "verification ledger does not match the current change",
+                "phase": phase,
+                "storedRepositoryId": ledger.get("repositoryId"),
+                "currentRepositoryId": current_repository,
+                "storedOwnershipHash": ledger.get("ownershipHash"),
+                "currentOwnershipHash": current_ownership,
+                "storedDiffHash": ledger.get("diffHash"),
+                "currentDiffHash": current_diff,
+                "storedHead": ledger.get("currentHead"),
+                "currentHead": current_head,
+                "ledgerPath": str(ledger_path) if ledger_path else None,
+            }
 
     problems: list[dict[str, Any]] = []
     degraded: list[str] = []
@@ -307,6 +485,34 @@ def validate_ledger_for_phase_close(
         "validated": required,
         "ledgerPath": str(ledger_path) if ledger_path else None,
     }
+
+
+def effective_workflow_policy(
+    workflow: dict[str, Any], change_dir: Path
+) -> dict[str, Any]:
+    """Overlay a classified change's per-phase gate requirements."""
+    path = change_dir / "meta" / "gate-policy.json"
+    if not path.is_file():
+        return workflow
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or document.get("schemaVersion") != 1:
+        raise ValueError("gate-policy.json must be a schemaVersion 1 object")
+    by_phase = document.get("requiredValidationsByPhase")
+    if by_phase is None:
+        return workflow
+    if not isinstance(by_phase, dict):
+        raise ValueError("gate-policy.requiredValidationsByPhase must be an object")
+    known = set(workflow.get("validationPhases") or {})
+    required = dict(workflow.get("requiredValidations") or {})
+    for phase, validations in by_phase.items():
+        if not isinstance(phase, str) or not isinstance(validations, list):
+            raise ValueError("gate-policy phase requirements must be string arrays")
+        if any(not isinstance(item, str) or item not in known for item in validations):
+            raise ValueError(f"gate-policy contains unknown validation for phase {phase}")
+        required[phase] = _ordered_unique(validations)
+    effective = dict(workflow)
+    effective["requiredValidations"] = required
+    return effective
 
 
 def _sha256_file(path: Path) -> str:
@@ -448,6 +654,145 @@ def change_code_root(change_dir: Path) -> Path:
     return project
 
 
+def _design_capabilities(change_dir: Path) -> list[str]:
+    """Read explicit capability tags from design/plan YAML frontmatter."""
+    capabilities: set[str] = set()
+    candidates: list[Path] = []
+    for directory in (change_dir / "spec", change_dir / "plans"):
+        if directory.is_dir():
+            candidates.extend(sorted(directory.glob("*.md")))
+    for candidate in candidates:
+        text = candidate.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 3)
+        if end < 0:
+            continue
+        frontmatter = text[3:end]
+        inline = re.search(r"^capabilities\s*:\s*\[([^\]]*)\]\s*$", frontmatter, re.MULTILINE)
+        if inline:
+            values = (item.strip().strip("'\"") for item in inline.group(1).split(","))
+            capabilities.update(item for item in values if item in DESIGN_GATE_CAPABILITIES)
+            continue
+        block = re.search(
+            r"^capabilities\s*:\s*$((?:\n\s*-\s*[^\n]+)+)",
+            frontmatter,
+            re.MULTILINE,
+        )
+        if block:
+            for item in re.findall(r"^\s*-\s*([^\n]+)$", block.group(1), re.MULTILINE):
+                value = item.strip().strip("'\"")
+                if value in DESIGN_GATE_CAPABILITIES:
+                    capabilities.add(value)
+    return sorted(capabilities)
+
+
+def _diff_capabilities(changed: list[str]) -> list[str]:
+    """Conservatively infer capabilities from the owned post-run diff."""
+    lowered = "\n".join(path.lower().replace("\\", "/") for path in changed)
+    found: set[str] = set()
+    if any(marker in lowered for marker in ("deploy", "helm", "k8s", "kubernetes")):
+        found.add("deployment")
+    if any(marker in lowered for marker in ("dockerfile", "container", "compose.y")):
+        found.add("container")
+    if any(marker in lowered for marker in ("/api/", "openapi", "swagger", "controller")):
+        found.add("api")
+    if any(marker in lowered for marker in ("migration", "/sql/", ".sql", "schema")):
+        found.add("database")
+    return sorted(found)
+
+
+def _ordered_unique(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(items))
+
+
+def _apply_required_gate_contract(
+    payload: dict[str, Any],
+    workflow: dict[str, Any],
+    capabilities: list[str],
+) -> dict[str, Any]:
+    """Expand tier + capability facts into the persisted required-gate DAG."""
+    result = dict(payload)
+    tier = str(result["tier"])
+    tier_policy = workflow["riskTiers"][tier]
+    selected = sorted(set(capabilities) & set(workflow["capabilityGates"]))
+    signals = list(result.get("signals") or [])
+    required = list(tier_policy["requiredValidations"])
+    required_stages: set[str] = set()
+    for capability in selected:
+        contract = workflow["capabilityGates"][capability]
+        signals.extend(contract["signals"])
+        required.extend(contract["requiredValidations"])
+        required_stages.update(contract["requiredStages"])
+    signals = sorted(set(signals))
+    required = _ordered_unique(required)
+
+    stage_decisions = _stage_decisions_for_tier(workflow, tier, signals)
+    for stage_name in required_stages:
+        decision = stage_decisions.setdefault(
+            stage_name,
+            {"required": False, "reason": "not-triggered", "matchedSignals": []},
+        )
+        decision["required"] = True
+        if decision["reason"] == "not-triggered":
+            decision["reason"] = "capability"
+
+    validation_phases = workflow["validationPhases"]
+    by_phase: dict[str, list[str]] = {}
+    for verification in required:
+        phase = validation_phases.get(verification)
+        if isinstance(phase, str) and phase:
+            by_phase.setdefault(phase, []).append(verification)
+
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, str]] = []
+    required_set = set(required)
+    for verification in required:
+        dependencies = [
+            item for item in VALIDATION_DEPENDENCIES.get(verification, ())
+            if item in required_set
+        ]
+        node_id = f"validation:{verification}"
+        nodes.append({
+            "id": node_id,
+            "kind": "validation",
+            "phase": validation_phases.get(verification),
+            "dependsOn": [f"validation:{item}" for item in dependencies],
+        })
+        edges.extend(
+            {"from": f"validation:{item}", "to": node_id}
+            for item in dependencies
+        )
+    for stage_name, decision in sorted(stage_decisions.items()):
+        if not decision.get("required"):
+            continue
+        if stage_name == "package":
+            dependencies = [
+                f"validation:{item}" for item in required
+                if validation_phases.get(item) in {"run", "test"}
+            ]
+        elif stage_name == "apidoc" and "apiTest" in required_set:
+            dependencies = ["validation:apiTest"]
+        else:
+            dependencies = []
+        node_id = f"stage:{stage_name}"
+        nodes.append({
+            "id": node_id,
+            "kind": "stage",
+            "phase": stage_name,
+            "dependsOn": dependencies,
+        })
+        edges.extend({"from": item, "to": node_id} for item in dependencies)
+
+    result["capabilities"] = selected
+    result["signals"] = signals
+    result["requiredValidations"] = required
+    result["requiredValidationsByPhase"] = by_phase
+    result["stageDecisions"] = stage_decisions
+    result["requiredGateDag"] = {"schemaVersion": 1, "nodes": nodes, "edges": edges}
+    return result
+
+
 def classify_risk(
     change_dir: Path,
     stage: str,
@@ -455,6 +800,7 @@ def classify_risk(
 ) -> dict[str, Any]:
     tier = "full"
     source = "default-full"
+    capabilities = _design_capabilities(change_dir)
     plan_path = change_dir / "plans"
     for candidate in sorted(plan_path.glob("*.md")) if plan_path.is_dir() else []:
         text = candidate.read_text(encoding="utf-8", errors="replace")
@@ -486,6 +832,7 @@ def classify_risk(
             if not raw or raw.startswith(".harness/"):
                 continue
             changed.append(raw)
+        capabilities = sorted(set(capabilities) | set(_diff_capabilities(changed)))
         lowered = "\n".join(changed).lower()
         full_markers = {
             "auth": ("auth", "token", "credential", "permission"),
@@ -538,7 +885,7 @@ def classify_risk(
     }
     if stage == "post-run":
         _write_json(change_dir / "meta" / "risk-classification.json", payload)
-    return payload
+    return _apply_required_gate_contract(payload, workflow, capabilities)
 
 
 def _stage_decisions_for_tier(
@@ -582,7 +929,9 @@ def apply_tier_override(
     payload["conditionalStages"] = list(tier_policy["conditionalStages"])
     payload["stageDecisions"] = _stage_decisions_for_tier(workflow, tier, signals)
     payload["tierOverride"] = {"tier": tier, "by": override_by, "at": now}
-    return payload
+    return _apply_required_gate_contract(
+        payload, workflow, list(payload.get("capabilities") or [])
+    )
 
 
 def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
@@ -593,6 +942,13 @@ def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
         "source": payload["source"],
         "defaultPhases": list(payload.get("defaultPhases") or []),
         "requiredValidations": list(payload.get("requiredValidations") or []),
+        "requiredValidationsByPhase": dict(
+            payload.get("requiredValidationsByPhase") or {}
+        ),
+        "capabilities": list(payload.get("capabilities") or []),
+        "signals": list(payload.get("signals") or []),
+        "stageDecisions": dict(payload.get("stageDecisions") or {}),
+        "requiredGateDag": dict(payload.get("requiredGateDag") or {}),
         "classifiedAt": payload.get("classifiedAt") or hc.now_iso(),
         "tierOverride": payload.get("tierOverride"),
     }
@@ -607,7 +963,7 @@ def classify_defaults(
     tier = "full"
     source = "default-full"
     tier_policy = workflow["riskTiers"][tier]
-    return {
+    payload = {
         "ok": True,
         "code": "CLASSIFIED",
         "stage": stage,
@@ -620,6 +976,7 @@ def classify_defaults(
         "conditionalStages": list(tier_policy["conditionalStages"]),
         "stageDecisions": _stage_decisions_for_tier(workflow, tier, []),
     }
+    return _apply_required_gate_contract(payload, workflow, [])
 
 
 def lint_skill_tree(skills_root: Path) -> dict[str, Any]:
@@ -803,6 +1160,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
 
     try:
         policy = _load_workflow_policy(project=project)
+        policy = effective_workflow_policy(policy, change_dir)
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
 
@@ -827,6 +1185,31 @@ def cmd_begin(args: argparse.Namespace) -> int:
         if isinstance(current_lease, dict) and current_lease.get("phase") == args.phase
         else "run-" + uuid.uuid4().hex
     )
+    try:
+        capsule = load_phase_capsule(change_dir, args.phase, run_id)
+    except ValueError as exc:
+        return emit_error("PHASE_CAPSULE_INVALID", str(exc), as_json=as_json)
+    execution_hint = args.project
+    if not execution_hint and capsule is not None:
+        execution_hint = str(capsule.get("executionRoot") or "")
+    try:
+        execution_root = resolve_execution_root(project, execution_hint)
+    except ValueError as exc:
+        return emit_error("EXECUTION_ROOT_INVALID", str(exc), as_json=as_json)
+    if capsule is not None:
+        try:
+            validate_phase_capsule(
+                capsule,
+                change_dir=change_dir,
+                change_id=str(resolved["changeId"]),
+                phase=args.phase,
+                run_id=run_id,
+                project=project,
+                execution_root=execution_root,
+                skills_root=Path(args.skills_root).expanduser(),
+            )
+        except ValueError as exc:
+            return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
     claim = hc.claim_lease(
         project,
         change_id=resolved["changeId"],
@@ -842,7 +1225,45 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in claim.items() if k not in {"ok", "message", "code"}},
         )
 
+    guard_result: dict[str, Any] | None = None
     try:
+        if capsule is not None:
+            guard_result = {"ok": True, "code": "SNAPSHOT_REUSED"}
+        else:
+            if args.phase in {"run", "test"}:
+                guard_result = htg.begin(execution_root, change_dir)
+                if not guard_result.get("ok"):
+                    hc.release_lease(
+                        project,
+                        change_id=resolved["changeId"],
+                        phase=args.phase,
+                        run_id=run_id,
+                    )
+                    return emit_error(
+                        str(guard_result.get("code", "TEST_GUARD_BEGIN_FAILED")),
+                        "test guard begin failed",
+                        as_json=as_json,
+                        extra=guard_result,
+                    )
+            state_root = Path(hp.resolve_state_dir_for_contract(change_dir)).resolve()
+            current_head = _git_text(execution_root, "rev-parse", "--verify", "HEAD")
+            ledger, _ = hl.load_ledger(change_dir)
+            base_commit = ledger.get("baseCommit") if isinstance(ledger, dict) else None
+            capsule = {
+                "schemaVersion": 1,
+                "changeId": resolved["changeId"],
+                "phase": args.phase,
+                "runId": run_id,
+                "projectRoot": str(project.resolve()),
+                "stateRoot": str(state_root),
+                "executionRoot": str(execution_root),
+                "skillsRoot": str(Path(args.skills_root).expanduser().resolve()),
+                "repositoryId": hp.repository_identity(execution_root),
+                "baseCommit": base_commit or current_head,
+                "currentHead": current_head,
+                "createdAt": he.now_iso(),
+            }
+            write_phase_capsule(change_dir, args.phase, run_id, capsule)
         event_result = {"ok": True, "skipped": True, "reason": "already-recorded"} \
             if _phase_event_exists(change_dir, args.phase, "phase.start", run_id) \
             else append_phase_event(
@@ -869,9 +1290,13 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "changeId": resolved["changeId"],
         "changeDir": str(change_dir),
         "projectRoot": str(project),
+        "stateRoot": capsule.get("stateRoot") if capsule else None,
+        "executionRoot": capsule.get("executionRoot") if capsule else str(execution_root),
+        "skillsRoot": capsule.get("skillsRoot") if capsule else str(Path(args.skills_root).resolve()),
         "lease": claim.get("lease"),
         "identity": identity,
         "event": event_result,
+        "testGuard": guard_result,
         "policySchemaVersion": policy.get("schemaVersion"),
     }
     emit(payload, as_json=as_json)
@@ -901,6 +1326,7 @@ def cmd_close(args: argparse.Namespace) -> int:
 
     try:
         policy = _load_workflow_policy(project=project)
+        policy = effective_workflow_policy(policy, change_dir)
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
 
@@ -917,7 +1343,51 @@ def cmd_close(args: argparse.Namespace) -> int:
             extra={"holder": current_lease},
         )
 
-    ledger_result = validate_ledger_for_phase_close(change_dir, args.phase, policy)
+    try:
+        capsule = load_phase_capsule(change_dir, args.phase, run_id)
+    except ValueError as exc:
+        return emit_error("PHASE_CAPSULE_INVALID", str(exc), as_json=as_json)
+    if capsule is not None:
+        try:
+            execution_root = resolve_execution_root(
+                project, str(capsule.get("executionRoot") or "")
+            )
+            if args.project:
+                requested_root = resolve_execution_root(project, args.project)
+                if requested_root != execution_root:
+                    return emit_error(
+                        "EXECUTION_ROOT_MISMATCH",
+                        "close must use the execution root captured at begin",
+                        as_json=as_json,
+                        extra={
+                            "storedExecutionRoot": str(execution_root),
+                            "requestedExecutionRoot": str(requested_root),
+                        },
+                    )
+        except ValueError as exc:
+            return emit_error("EXECUTION_ROOT_INVALID", str(exc), as_json=as_json)
+    else:
+        try:
+            execution_root = resolve_execution_root(project, args.project)
+        except ValueError as exc:
+            return emit_error("EXECUTION_ROOT_INVALID", str(exc), as_json=as_json)
+    if capsule is not None:
+        try:
+            validate_phase_capsule(
+                capsule,
+                change_dir=change_dir,
+                change_id=str(resolved["changeId"]),
+                phase=args.phase,
+                run_id=run_id,
+                project=project,
+                execution_root=execution_root,
+            )
+        except ValueError as exc:
+            return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
+
+    ledger_result = validate_ledger_for_phase_close(
+        change_dir, args.phase, policy, execution_root=execution_root
+    )
     if not ledger_result.get("ok") and args.phase in {"run", "test", "package"}:
         return emit_error(
             str(ledger_result.get("code", "LEDGER_INVALID")),
@@ -934,28 +1404,79 @@ def cmd_close(args: argparse.Namespace) -> int:
         if close_status == "OK":
             close_status = "WARN"
 
+    close_transaction: dict[str, Any] = {}
+    if capsule is not None:
+        existing_transaction = capsule.get("closeTransaction")
+        if isinstance(existing_transaction, dict):
+            close_transaction.update(existing_transaction)
+        close_transaction.update({
+            "status": "CLOSING",
+            "retryable": True,
+            "guardClosed": bool(close_transaction.get("guardClosed")),
+            "phaseEndRecorded": bool(close_transaction.get("phaseEndRecorded")),
+            "leaseReleased": False,
+            "updatedAt": he.now_iso(),
+        })
+        capsule["closeTransaction"] = close_transaction
+        write_phase_capsule(change_dir, args.phase, run_id, capsule)
+
     guard_result = None
     if args.phase in {"run", "test"}:
-        project_root = args.project or str(project)
-        guard_result = htg.close(project_root, change_dir)
-        if not guard_result.get("ok"):
-            return emit_error(
-                str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
-                "test guard close failed",
-                as_json=as_json,
-                extra=guard_result,
-            )
+        if close_transaction.get("guardClosed"):
+            guard_result = {"ok": True, "code": "ALREADY_CLOSED", "reused": True}
+        else:
+            guard_result = htg.close(execution_root, change_dir)
+            if not guard_result.get("ok"):
+                if capsule is not None:
+                    close_transaction.update({
+                        "status": "GUARD_CLOSE_FAILED",
+                        "lastError": guard_result,
+                        "updatedAt": he.now_iso(),
+                    })
+                    write_phase_capsule(change_dir, args.phase, run_id, capsule)
+                return emit_error(
+                    str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
+                    "test guard close failed",
+                    as_json=as_json,
+                    extra=guard_result,
+                )
+            if capsule is not None:
+                close_transaction["guardClosed"] = True
+                close_transaction["updatedAt"] = he.now_iso()
+                write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
-    event_result = append_phase_event(
-        change_dir,
-        phase=args.phase,
-        type_="phase.end",
-        status=close_status,
-        note=args.note or "",
-        run_id=run_id,
-    ) if not _phase_event_exists(change_dir, args.phase, "phase.end", run_id) else {
-        "ok": True, "skipped": True, "reason": "already-recorded"
-    }
+    if close_transaction.get("phaseEndRecorded") or _phase_event_exists(
+        change_dir, args.phase, "phase.end", run_id
+    ):
+        event_result = {"ok": True, "skipped": True, "reason": "already-recorded"}
+    else:
+        try:
+            event_result = append_phase_event(
+                change_dir,
+                phase=args.phase,
+                type_="phase.end",
+                status=close_status,
+                note=args.note or "",
+                run_id=run_id,
+            )
+        except BaseException as exc:
+            if capsule is not None:
+                close_transaction.update({
+                    "status": "PHASE_END_FAILED",
+                    "lastError": {"type": type(exc).__name__, "message": str(exc)},
+                    "updatedAt": he.now_iso(),
+                })
+                write_phase_capsule(change_dir, args.phase, run_id, capsule)
+            return emit_error(
+                "PHASE_END_FAILED",
+                str(exc),
+                as_json=as_json,
+                extra={"retryable": True},
+            )
+    if capsule is not None:
+        close_transaction["phaseEndRecorded"] = True
+        close_transaction["updatedAt"] = he.now_iso()
+        write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
     release = hc.release_lease(
         project,
@@ -964,6 +1485,14 @@ def cmd_close(args: argparse.Namespace) -> int:
         run_id=run_id,
     )
     if not release.get("ok"):
+        if capsule is not None:
+            close_transaction.update({
+                "status": "RELEASE_PENDING",
+                "retryable": True,
+                "lastError": release,
+                "updatedAt": he.now_iso(),
+            })
+            write_phase_capsule(change_dir, args.phase, run_id, capsule)
         return emit_error(
             str(release.get("code", "LEASE_RELEASE_FAILED")),
             str(release.get("message", "lease release failed")),
@@ -971,12 +1500,26 @@ def cmd_close(args: argparse.Namespace) -> int:
             extra={k: v for k, v in release.items() if k not in {"ok", "message", "code"}},
         )
 
+    if capsule is not None:
+        close_transaction.update({
+            "status": "CLOSED",
+            "retryable": False,
+            "leaseReleased": True,
+            "updatedAt": he.now_iso(),
+        })
+        capsule["closedAt"] = he.now_iso()
+        capsule["closeStatus"] = close_status
+        write_phase_capsule(change_dir, args.phase, run_id, capsule)
+
     payload = {
         "ok": True,
         "code": close_code,
         "phase": args.phase,
         "status": close_status,
         "changeId": resolved["changeId"],
+        "stateRoot": capsule.get("stateRoot") if capsule else str(Path(hp.resolve_state_dir_for_contract(change_dir)).resolve()),
+        "executionRoot": str(execution_root),
+        "skillsRoot": capsule.get("skillsRoot") if capsule else None,
         "ledger": ledger_result,
         "testGuard": guard_result,
         "event": event_result,

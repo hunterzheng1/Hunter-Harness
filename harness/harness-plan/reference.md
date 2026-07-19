@@ -14,8 +14,11 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 {
   "requested": true,
   "created": false,
-  "path": ".claude/worktrees/<change-name>",
-  "branch": "worktree/<change-name>",
+  "agent": "<active-adapter>",
+  "worktreeRoot": "<adapter-worktree-root>",
+  "branchPrefix": "<adapter-branch-prefix>",
+  "path": "<adapter-worktree-root>/<change-name>",
+  "branch": "<adapter-branch-prefix><change-name>",
   "decisionBy": "user",
   "decisionAt": "YYYY-MM-DD HH:mm",
   "ownerSkill": "harness-run"
@@ -37,6 +40,8 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 ```
 
 ### 决策事件 note 示例
+
+`path` 与 `branch` 必须来自 `harness_runtime.py adapter`/`meta/runtime.json`，不得复制其他 agent 的历史路径。Codex 的合同固定为 `.codex/worktrees/<change-name>` 与 `codex/<change-name>`。
 
 `用户选择使用 Worktree；决策文件为 meta/worktree.json；requested=true, created=false；创建责任为 harness-run。`
 

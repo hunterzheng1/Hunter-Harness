@@ -43,7 +43,9 @@ DEFAULT_EXCLUDED_ROOTS: tuple[str, ...] = (
     ".git",
     ".harness",
     ".claude/worktrees",
+    ".codex/worktrees",
     ".cursor/worktrees",
+    ".codebuddy/worktrees",
     ".codeium/worktrees",
     "target",
     "build",
@@ -132,6 +134,27 @@ def detect_project_type(project: Path) -> str:
     if (project / "package.json").is_file():
         return "node"
     return "unknown"
+
+
+def discover_nested_components(
+    project: Path, excluded: tuple[str, ...] | list[str]
+) -> list[str]:
+    """Return deterministic type:path labels for supported nested projects."""
+    markers = {
+        "pyproject.toml": "python",
+        "package.json": "node",
+        "pom.xml": "java-maven",
+    }
+    found: list[tuple[str, str]] = []
+    for marker, kind in markers.items():
+        for path in project.rglob(marker):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(project)
+            if rel.parent == Path(".") or is_path_excluded(rel.as_posix(), excluded):
+                continue
+            found.append((rel.parent.as_posix(), kind))
+    return [f"{kind}:{rel}" for rel, kind in sorted(set(found))]
 
 
 def which_tool(name: str) -> str:
@@ -386,6 +409,32 @@ def detect(project: Path) -> dict[str, Any]:
     existing = load_profile(project)
     excluded = DEFAULT_EXCLUDED_ROOTS
     project_type = detect_project_type(project)
+    components = discover_nested_components(project, excluded)
+    component_types = {item.split(":", 1)[0] for item in components}
+    if project_type != "unknown":
+        component_types.add(project_type)
+    if (project_type == "unknown" and components) or len(component_types) > 1:
+        return {
+            "ok": False,
+            "code": "DETECTION_AMBIGUOUS",
+            "action": "detect",
+            "project": str(project),
+            "profilePath": str(project / PROFILE_REL),
+            "applied": False,
+            "detectedComponents": components,
+            "message": "multiple or nested project components require an explicit profile",
+        }
+    if project_type == "unknown" and existing:
+        return {
+            "ok": False,
+            "code": "DETECTION_INCONCLUSIVE",
+            "action": "detect",
+            "project": str(project),
+            "profilePath": str(project / PROFILE_REL),
+            "applied": False,
+            "detectedComponents": [],
+            "message": "detection was inconclusive; existing profile was preserved",
+        }
 
     profile = empty_profile_skeleton(excluded)
     profile["projectType"] = project_type
@@ -439,6 +488,7 @@ def detect(project: Path) -> dict[str, Any]:
         "profile": profile,
         "created": existing is None,
         "updated": True,
+        "applied": True,
     }
 
 

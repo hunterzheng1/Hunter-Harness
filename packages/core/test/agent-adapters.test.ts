@@ -77,6 +77,23 @@ describe("agent adapters", () => {
     ]);
     expect(adapter.contextIndex({ profile: "general", codebuddySurface: "both" }).rules)
       .toEqual([]);
+    expect(adapter.worktreeFor("runtime-plan")).toEqual({
+      root: ".codex/worktrees",
+      path: ".codex/worktrees/runtime-plan",
+      branchPrefix: "codex/",
+      branch: "codex/runtime-plan"
+    });
+  });
+
+  it("worktree decisions stay adapter-specific", () => {
+    expect(getAdapter("claude-code").worktreeFor("demo")).toEqual({
+      root: ".claude/worktrees",
+      path: ".claude/worktrees/demo",
+      branchPrefix: "claude/",
+      branch: "claude/demo"
+    });
+    expect(() => getAdapter("codex").worktreeFor("../escape"))
+      .toThrow("invalid Harness change id");
   });
 
   it("cursor emits .mdc rules and .cursor/skills targets", () => {

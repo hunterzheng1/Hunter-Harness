@@ -209,6 +209,59 @@ class DetectTests(unittest.TestCase):
         self.assertEqual(tracking["source"], "user")
         self.assertEqual(tracking["paths"], ["custom-tests/**"])
 
+    def test_detect_ambiguous_polyglot_preserves_existing_profile(self) -> None:
+        profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
+        existing = hp.empty_profile_skeleton(hp.DEFAULT_EXCLUDED_ROOTS)
+        existing["projectType"] = "python-node-polyglot"
+        existing["commands"] = {
+            "unitTestFull": {
+                "command": "run-all-tests",
+                "argvTemplate": ["run-all-tests"],
+                "scope": "full",
+                "inputs": ["backend/**/*.py", "frontend/**/*.ts"],
+                "coverage": "unitTestFull",
+                "source": "detected",
+                "basis": {"manualDetection": True},
+            }
+        }
+        _write(profile_path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n")
+        before = profile_path.read_bytes()
+        _write(self.tmp / "backend" / "pyproject.toml", "[project]\nname='backend'\n")
+        _write(
+            self.tmp / "frontend" / "package.json",
+            json.dumps({"scripts": {"test": "vitest run"}}),
+        )
+
+        result = hp.detect(self.tmp)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "DETECTION_AMBIGUOUS")
+        self.assertFalse(result["applied"])
+        self.assertEqual(profile_path.read_bytes(), before)
+        self.assertEqual(
+            result["detectedComponents"],
+            ["python:backend", "node:frontend"],
+        )
+
+    def test_detect_root_node_plus_nested_python_is_ambiguous(self) -> None:
+        profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
+        existing = hp.empty_profile_skeleton(hp.DEFAULT_EXCLUDED_ROOTS)
+        existing["projectType"] = "node-python-polyglot"
+        _write(profile_path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n")
+        before = profile_path.read_bytes()
+        _write(
+            self.tmp / "package.json",
+            json.dumps({"scripts": {"test": "vitest run"}}),
+        )
+        _write(self.tmp / "backend" / "pyproject.toml", "[project]\nname='backend'\n")
+
+        result = hp.detect(self.tmp)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "DETECTION_AMBIGUOUS")
+        self.assertEqual(profile_path.read_bytes(), before)
+        self.assertEqual(result["detectedComponents"], ["python:backend"])
+
 
 class CheckTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -445,8 +498,19 @@ class ExcludedRootsTests(unittest.TestCase):
         hp.detect(self.tmp)
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
         excluded = set(profile["excludedRoots"])
-        for required in (".git", ".harness", ".claude/worktrees", ".cursor/worktrees",
-                         "target", "build", "dist", "node_modules", ".gradle"):
+        for required in (
+            ".git",
+            ".harness",
+            ".claude/worktrees",
+            ".codex/worktrees",
+            ".cursor/worktrees",
+            ".codebuddy/worktrees",
+            "target",
+            "build",
+            "dist",
+            "node_modules",
+            ".gradle",
+        ):
             self.assertIn(required, excluded, msg=f"missing excluded root {required}")
 
     def test_is_path_excluded(self) -> None:

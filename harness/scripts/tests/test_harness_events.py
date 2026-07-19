@@ -562,7 +562,7 @@ class RenderQualityTests(unittest.TestCase):
         )
         self.assertEqual(decision, ["- decision: 采用方案A — 风险更低"])
 
-    def test_ut211_append_issue_defaults_severity_info(self) -> None:
+    def test_ut211_append_issue_requires_explicit_severity(self) -> None:
         code, out, err = self._run(
             [
                 "append",
@@ -577,12 +577,12 @@ class RenderQualityTests(unittest.TestCase):
                 "知识结论",
             ]
         )
-        self.assertEqual(code, 0, msg=err)
-        event = json.loads(out)["event"]
-        self.assertEqual(event["severity"], "info")
-        self.assertIn("issue without --severity", err)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("EVENT_REQUIRED_FIELD", err)
+        self.assertFalse((self.change_dir / "events.ndjson").exists())
 
-    def test_ut212_append_verification_missing_name_warns(self) -> None:
+    def test_ut212_append_verification_requires_name_and_status(self) -> None:
         code, out, err = self._run(
             [
                 "append",
@@ -599,9 +599,55 @@ class RenderQualityTests(unittest.TestCase):
                 "回归完成",
             ]
         )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("EVENT_REQUIRED_FIELD", err)
+        self.assertFalse((self.change_dir / "events.ndjson").exists())
+
+    def test_ut212b_issue_rejects_verification_status_field(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "run",
+                "--type",
+                "issue",
+                "--severity",
+                "warning",
+                "--status",
+                "WARN",
+                "--message",
+                "runtime missing",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(out, "")
+        self.assertIn("EVENT_FIELD_NOT_ALLOWED", err)
+        self.assertFalse((self.change_dir / "events.ndjson").exists())
+
+    def test_ut212c_legacy_lenient_is_explicit_and_marked(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--legacy-lenient",
+                "--phase",
+                "run",
+                "--type",
+                "issue",
+                "--note",
+                "legacy note",
+            ]
+        )
         self.assertEqual(code, 0, msg=err)
-        self.assertTrue(json.loads(out)["ok"])
-        self.assertIn("verification missing --name or --status", err)
+        event = json.loads(out)["event"]
+        self.assertEqual(event["severity"], "info")
+        self.assertEqual(event["schemaValidation"], "legacy")
 
     def test_ut213_legacy_mixed_events_rerender_clean(self) -> None:
         seed = [

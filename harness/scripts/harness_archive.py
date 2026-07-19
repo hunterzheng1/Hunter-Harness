@@ -318,6 +318,19 @@ def load_ledger(change_dir: Path) -> dict[str, Any] | None:
     return None
 
 
+def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Load schema-versioned runner metrics without parsing human CI logs."""
+    for relative in ("evidence/ci-metrics.json", "runtime/ci-metrics.json"):
+        path = change_dir / relative
+        if not path.is_file():
+            continue
+        value = read_json(path)
+        if value.get("schemaVersion") != 1:
+            raise ValueError(f"unsupported ci-metrics schema: {path}")
+        return value, relative
+    return None, None
+
+
 def load_execution_log(change_dir: Path) -> str:
     for rel in ("logs/execution-log.md", "execution-log.md"):
         path = change_dir / rel
@@ -433,6 +446,42 @@ def worktree_requested(change_dir: Path) -> bool:
     return False
 
 
+def check_archive_exact_byte_policy(project_root: Path) -> dict[str, Any]:
+    """Verify frozen archive paths are exempt from Git text conversion."""
+    required_rule = ".harness/archive/** -text"
+    attributes_path = project_root / ".gitattributes"
+    rules: list[str] = []
+    if attributes_path.is_file():
+        try:
+            rules = [
+                line.strip()
+                for line in attributes_path.read_text(encoding="utf-8-sig").splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            ]
+        except OSError:
+            rules = []
+    matching = []
+    for rule in rules:
+        fields = rule.split()
+        if not fields or fields[0] != ".harness/archive/**":
+            continue
+        matching.append(rule)
+        if "-text" in fields[1:] or "binary" in fields[1:]:
+            return {
+                "ok": True,
+                "path": str(attributes_path),
+                "requiredRule": required_rule,
+                "matchedRule": rule,
+            }
+    return {
+        "ok": False,
+        "path": str(attributes_path),
+        "requiredRule": required_rule,
+        "matchedRules": matching,
+        "remediation": f"add this exact-byte rule to .gitattributes: {required_rule}",
+    }
+
+
 # ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
@@ -460,6 +509,16 @@ def check_status(
 
     project = find_project_root(change_dir)
     checks["project_root"] = str(project)
+
+    exact_byte = check_archive_exact_byte_policy(project)
+    checks["archive_exact_byte"] = exact_byte
+    if not exact_byte["ok"]:
+        warnings.append(
+            {
+                "code": "archive-exact-byte-policy-missing",
+                "message": str(exact_byte["remediation"]),
+            }
+        )
 
     # --- commit pushed ---
     code, out, err = git_run(project, "rev-parse", "--is-inside-work-tree")
@@ -676,25 +735,40 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     status = str(unit.get("status") or "").upper()
 
     run = failures = errors = skipped = 0
+    passed_count: int | None = None
     pass_rate: Any = None
     source = "committed"
     counted = False
 
     metrics = unit.get("metrics")
     if isinstance(metrics, dict) and any(
-        k in metrics for k in ("run", "testsRun", "total", "failures", "errors", "skipped")
+        k in metrics
+        for k in (
+            "run",
+            "testsRun",
+            "total",
+            "passed",
+            "failed",
+            "failures",
+            "errors",
+            "skipped",
+        )
     ):
         if "total" in metrics:
             # ledger v3 typed metrics (UT-005/RET-15): total/passed/failed.
             run = int(metrics.get("total", 0) or 0)
-            failures = int(metrics.get("failed", 0) or 0)
-            errors = int(metrics.get("errors", 0) or 0)
-            skipped = int(metrics.get("skipped", 0) or 0)
-        else:
+        elif "run" in metrics or "testsRun" in metrics:
             run = int(metrics.get("run", metrics.get("testsRun", 0)) or 0)
-            failures = int(metrics.get("failures", 0) or 0)
-            errors = int(metrics.get("errors", 0) or 0)
-            skipped = int(metrics.get("skipped", 0) or 0)
+        else:
+            run = sum(
+                int(metrics.get(key, 0) or 0)
+                for key in ("passed", "failed", "errors", "skipped")
+            )
+        failures = int(metrics.get("failed", metrics.get("failures", 0)) or 0)
+        errors = int(metrics.get("errors", 0) or 0)
+        skipped = int(metrics.get("skipped", 0) or 0)
+        if "passed" in metrics:
+            passed_count = int(metrics.get("passed", 0) or 0)
         pass_rate = metrics.get("passRate")
         source = "committed"
         counted = run > 0 or failures > 0 or errors > 0 or skipped > 0
@@ -741,7 +815,11 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         source = "committed"
 
     if pass_rate is None and run > 0:
-        passed = max(run - failures - errors, 0)
+        passed = (
+            passed_count
+            if passed_count is not None
+            else max(run - failures - errors - skipped, 0)
+        )
         pass_rate = f"{passed / run:.0%}"
     elif pass_rate is None:
         pass_rate = NOT_AVAILABLE
@@ -794,10 +872,10 @@ def _ledger_api_tests(
     if isinstance(metrics, dict) and any(
         k in metrics for k in ("total", "passed", "failed", "blocked")
     ):
-        total = int(metrics.get("total", 0) or 0)
         passed = int(metrics.get("passed", 0) or 0)
         failed = int(metrics.get("failed", 0) or 0)
         blocked = int(metrics.get("blocked", 0) or 0)
+        total = int(metrics.get("total", passed + failed + blocked) or 0)
         pass_rate = metrics.get("passRate")
         source = "committed"
         counted = total > 0 or passed > 0 or failed > 0 or blocked > 0
@@ -1211,7 +1289,8 @@ def _stage_status_from_sources(
         "submit": "OK",
         "archive": "OK",
     }
-    for event in events:
+    projected_events = he.apply_event_corrections(events)
+    for event in projected_events:
         if event.get("type") != "phase.end":
             continue
         phase = str(event.get("phase") or "").lower()
@@ -1226,9 +1305,7 @@ def _stage_status_from_sources(
             raw = "USER_SKIPPED"
         status[phase] = raw
     # Issues in events can downgrade
-    for e in events:
-        if e.get("type") != "issue":
-            continue
+    for e in he.current_issues(events):
         sev = str(e.get("severity") or "").lower()
         issue_text = " ".join(str(e.get(key) or "") for key in ("message", "note", "code")).lower()
         if not sev:
@@ -1258,7 +1335,7 @@ def _stage_status_from_sources(
         if unit.get("source") == "not-run" and unit.get("run", 0) == 0:
             status["test"] = "NOT_RUN"
 
-    if not review_evidence_present(change_dir, events):
+    if not review_evidence_present(change_dir, projected_events):
         status["review"] = "ADVISORY"
 
     return status
@@ -1665,6 +1742,17 @@ def collect_summary_data(
     for_replay: bool = False,
 ) -> dict[str, Any]:
     """Build schema 2.2 summary-data from events/ledger/log/manifest/reports."""
+    if before_manifest is None:
+        frozen_before = change_dir / "evidence" / "archive-manifest-before.json"
+        if frozen_before.is_file():
+            before_manifest = read_json(frozen_before)
+    if after_manifest is None:
+        frozen_after = change_dir / "evidence" / "archive-manifest-after.json"
+        if frozen_after.is_file():
+            after_manifest = read_json(frozen_after)
+    if compare_result is None and before_manifest is not None and after_manifest is not None:
+        compare_result = compare_manifests(before_manifest, after_manifest)
+
     template = load_template()
     data = _deepcopy_json(template)
     # Clear placeholder strings from template
@@ -1682,10 +1770,15 @@ def collect_summary_data(
             sources.append("events.ndjson")
         except ValueError:
             events = []
+    projected_events = he.apply_event_corrections(events) if events else []
 
     ledger = load_ledger(change_dir)
     if ledger:
         sources.append("evidence/verification-ledger.json")
+
+    ci_metrics, ci_metrics_source = load_ci_metrics(change_dir)
+    if ci_metrics_source:
+        sources.append(ci_metrics_source)
 
     log_text = load_execution_log(change_dir)
     if log_text:
@@ -1733,13 +1826,13 @@ def collect_summary_data(
         if existing and existing.get("businessGoal"):
             data["businessGoal"] = existing["businessGoal"]
         else:
-            inferred_goal = _business_goal_from_sources(change_dir, events)
+            inferred_goal = _business_goal_from_sources(change_dir, projected_events)
             data["businessGoal"] = inferred_goal or (NOT_AVAILABLE if for_replay else "")
 
     # commits
     project = find_project_root(change_dir)
     if not data.get("finalCommit") or str(data.get("finalCommit")).startswith("<"):
-        final_commit = _final_commit_from_sources(ledger, events, existing, project)
+        final_commit = _final_commit_from_sources(ledger, projected_events, existing, project)
         data["finalCommit"] = final_commit or (NOT_AVAILABLE if for_replay else "")
 
     if not data.get("baseCommit") or str(data.get("baseCommit")).startswith("<"):
@@ -1782,6 +1875,8 @@ def collect_summary_data(
         for typed_key in ("apiContract", "browserE2E"):
             if typed_key in projection:
                 data["verification"][typed_key] = projection[typed_key]
+        if ci_metrics is not None:
+            data["verification"]["ciMetrics"] = _deepcopy_json(ci_metrics)
     else:
         # Ensure nested keys exist for old schema 2.1
         ver = data.setdefault("verification", {})
@@ -1894,15 +1989,15 @@ def collect_summary_data(
     if not isinstance(data.get("artifacts"), list):
         data["artifacts"] = []
     if not for_replay:
-        data["artifacts"] = _artifacts_from_events(events)
+        data["artifacts"] = _artifacts_from_events(projected_events)
 
     data["reviewSummary"] = _review_summary(
         change_dir,
         existing if for_replay else None,
-        events,
+        projected_events,
     )
     if not for_replay:
-        data["timeline"] = _timeline_from_events(event_summary, events)
+        data["timeline"] = _timeline_from_events(event_summary, projected_events)
     else:
         data.setdefault("timeline", [])
     data.setdefault("uncommittedTestEvidence", [])
@@ -1911,13 +2006,11 @@ def collect_summary_data(
     if not for_replay:
         maintenance_notes: list[str] = [
             str(event.get("note") or event.get("message") or "")
-            for event in events
+            for event in projected_events
             if event.get("type") == "decision" and (event.get("note") or event.get("message"))
         ]
         known_risks: list[dict[str, Any]] = []
-        for event in events:
-            if event.get("type") != "issue":
-                continue
+        for event in he.current_issues(events):
             if event.get("phase") == "archive" and event.get("code") == "missing-command":
                 continue
             sev = str(event.get("severity") or "").strip().lower()
@@ -1973,12 +2066,12 @@ def collect_summary_data(
     data["archiveManifest"] = am
 
     # reportPipeline
-    commands = _commands_from_events(events)
+    commands = _commands_from_events(projected_events)
     if not commands and for_replay:
         # Cannot invent commands
         pass
-    verification_checks = _verification_checks_from_events(events, ledger)
-    pipeline_artifacts = _artifacts_from_events(events)
+    verification_checks = _verification_checks_from_events(projected_events, ledger)
+    pipeline_artifacts = _artifacts_from_events(projected_events)
     if not sources:
         sources = [NOT_AVAILABLE]
 
@@ -2234,26 +2327,28 @@ def _manifest_self_stats(
     }
 
 
-def _append_finalize_failure_issue(
-    original_change_dir: Path,
-    code: str,
+def _append_finalize_failure_terminal(
+    authoritative_change_dir: Path,
     message: str,
+    *,
+    operation_id: str,
 ) -> None:
-    """Record a finalize failure on the restored original as an issue event.
-
-    Never a second phase.end: the frozen cutoff already closed the archive
-    phase exactly once (RET-19/RET-21).
-    """
-    if not original_change_dir.is_dir():
+    """Persist one failed finalize attempt on the authoritative change source."""
+    if not authoritative_change_dir.is_dir():
         return
     try:
         append_event(
-            original_change_dir,
+            authoritative_change_dir,
             phase="archive",
-            type_="issue",
-            code=code,
-            severity="error",
-            message=message,
+            type_="phase.start",
+            note=f"finalize operation {operation_id} failed before publish",
+        )
+        append_event(
+            authoritative_change_dir,
+            phase="archive",
+            type_="phase.end",
+            status="FAIL",
+            note=f"finalize operation {operation_id} discarded: {message}",
         )
     except OSError:
         pass
@@ -2849,27 +2944,38 @@ def cmd_finalize(
         if resolved_state_dir.resolve() != original_change_dir.resolve()
         else None
     )
-    split_materialized_names = (
-        {item.name for item in split_state_dir.iterdir()}
-        if split_state_dir is not None and split_state_dir.is_dir()
-        else set()
-    )
+    operation_id = f"archive-{uuid.uuid4().hex}"
+    operation_root = project_root / ".harness" / "archive-operations"
+    operation_temp_dir = operation_root / "staging" / operation_id / change_name
+    operation_record = operation_root / f"{operation_id}.json"
 
     def _restore_finalize_failure() -> None:
-        _restore_on_failure(archive_dir, original_change_dir, payload, warnings)
-        if split_state_dir is None or not original_change_dir.is_dir():
-            return
-        # The split state remains authoritative on failure. Remove only the
-        # top-level names materialized from that state so retry starts clean.
-        for name in sorted(split_materialized_names):
-            target = original_change_dir / name
-            try:
-                if target.is_dir():
-                    shutil.rmtree(target)
-                elif target.exists():
-                    target.unlink()
-            except OSError as exc:
-                warnings.append(f"could not dematerialize split state {target}: {exc}")
+        shutil.rmtree(operation_temp_dir.parent, ignore_errors=True)
+        payload["original_preserved"] = original_change_dir.is_dir()
+        payload["finalStatus"] = "FAIL"
+        _append_finalize_failure_terminal(
+            split_state_dir
+            if split_state_dir is not None and split_state_dir.is_dir()
+            else original_change_dir,
+            str(payload.get("error") or "archive finalize failed"),
+            operation_id=operation_id,
+        )
+        try:
+            write_json(
+                operation_record,
+                {
+                    "schemaVersion": 1,
+                    "operationId": operation_id,
+                    "changeName": change_name,
+                    "sourceDir": str(original_change_dir),
+                    "archiveDir": str(archive_dir),
+                    "finalStatus": "FAIL",
+                    "error": payload.get("error"),
+                    "finishedAt": now_iso(),
+                },
+            )
+        except OSError as exc:
+            warnings.append(f"could not persist failed archive operation: {exc}")
 
     payload: dict[str, Any] = {
         "ok": False,
@@ -2877,6 +2983,9 @@ def cmd_finalize(
         "change_dir": str(original_change_dir),
         "archive_dir": str(archive_dir),
         "change_name": change_name,
+        "operationId": operation_id,
+        "operationTempDir": str(operation_temp_dir),
+        "operationRecord": str(operation_record),
         "warnings": warnings,
         "steps": {},
     }
@@ -2889,8 +2998,45 @@ def cmd_finalize(
         payload["error"] = f"archive target already exists: {archive_dir}"
         return 1, payload
 
-    work_dir = original_change_dir
+    exact_byte = check_archive_exact_byte_policy(project_root)
+    payload["steps"]["archive_exact_byte"] = exact_byte
+    if not exact_byte["ok"]:
+        warnings.append(str(exact_byte["remediation"]))
+
+    try:
+        operation_temp_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            original_change_dir,
+            operation_temp_dir,
+            copy_function=shutil.copy2,
+        )
+        write_json(
+            operation_record,
+            {
+                "schemaVersion": 1,
+                "operationId": operation_id,
+                "changeName": change_name,
+                "sourceDir": str(original_change_dir),
+                "archiveDir": str(archive_dir),
+                "finalStatus": "RUNNING",
+                "startedAt": now_iso(),
+            },
+        )
+    except OSError as exc:
+        shutil.rmtree(operation_temp_dir.parent, ignore_errors=True)
+        payload["error"] = f"operation staging failed: {exc}"
+        _restore_finalize_failure()
+        return 1, payload
+
+    work_dir = operation_temp_dir
     before_manifest: dict[str, Any] | None = None
+
+    if split_state_dir is not None and split_state_dir.is_dir():
+        _merge_runtime_state(split_state_dir, work_dir)
+        payload["steps"]["split_state_merge"] = {
+            "ok": True,
+            "stateDir": str(split_state_dir),
+        }
 
     def _safe_append(**kwargs: Any) -> None:
         nonlocal work_dir
@@ -2904,7 +3050,7 @@ def cmd_finalize(
 
     # --- 0. cleanup transients (before before-manifest) ---
     try:
-        cleanup_result = _cleanup_transients(split_state_dir or work_dir)
+        cleanup_result = _cleanup_transients(work_dir)
         payload["steps"]["cleanup"] = cleanup_result
         deleted_n = len(cleanup_result.get("deleted") or [])
         trunc_n = len(cleanup_result.get("truncated") or [])
@@ -2918,13 +3064,6 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"cleanup failed: {exc}")
         payload["steps"]["cleanup"] = {"ok": False, "error": str(exc)}
-
-    if split_state_dir is not None and split_state_dir.is_dir():
-        _merge_runtime_state(split_state_dir, work_dir)
-        payload["steps"]["split_state_merge"] = {
-            "ok": True,
-            "stateDir": str(split_state_dir),
-        }
 
     # --- 1. before-manifest ---
     before_path = work_dir / "evidence" / "archive-manifest-before.json"
@@ -2957,41 +3096,7 @@ def cmd_finalize(
             severity="error",
             message=str(exc),
         )
-        return 1, payload
-
-    # Sync events/evidence appended after the first materialization.
-    if split_state_dir is not None and split_state_dir.is_dir():
-        _merge_runtime_state(split_state_dir, work_dir)
-
-    # --- 2. move ---
-    try:
-        archive_root.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(original_change_dir), str(archive_dir))
-        work_dir = archive_dir
-        payload["steps"]["move"] = {"ok": True, "to": str(archive_dir)}
-        _safe_append(
-            phase="archive",
-            type_="command",
-            command=f"move → {archive_dir.name}",
-            exit_code=0,
-            note="moved change dir to archive",
-        )
-    except OSError as exc:
-        # Move failed: original intact, stop immediately
-        payload["error"] = f"move failed: {exc}"
-        payload["steps"]["move"] = {"ok": False, "error": str(exc)}
-        payload["original_preserved"] = original_change_dir.is_dir()
-        try:
-            append_event(
-                original_change_dir,
-                phase="archive",
-                type_="issue",
-                code="move-failed",
-                severity="error",
-                message=str(exc),
-            )
-        except OSError:
-            pass
+        _restore_finalize_failure()
         return 1, payload
 
     # --- 2b. user-flag decision (archive fact, must precede the cutoff) ---
@@ -3002,9 +3107,11 @@ def cmd_finalize(
             note="review missing on full tier (allowed by user)",
         )
 
-    # --- 3. unique phase.end + freeze cutoff (RET-19 freeze-first) ---
-    # From here on, NO event may be appended to the archived events file;
-    # report generation runs as pure functions over the frozen sources.
+    # --- 3. candidate phase.end + freeze cutoff (RET-19 freeze-first) ---
+    # This terminal exists only inside the isolated operation staging tree. It
+    # becomes authoritative atomically at publish; validation failure discards
+    # it and _restore_finalize_failure records the real FAIL attempt instead.
+    # From here on, NO event may be appended to the staged events file.
     _safe_append(
         phase="archive",
         type_="phase.end",
@@ -3056,9 +3163,8 @@ def cmd_finalize(
         warnings.append(f"could not write sourceConsistency: {exc}")
     if not source_result.get("ok"):
         payload["issues"] = source_result.get("issues") or []
-        payload["error"] = "source consistency failed; original change dir restored"
+        payload["error"] = "source consistency failed; staged operation discarded"
         _restore_finalize_failure()
-        _append_finalize_failure_issue(original_change_dir, "source-consistency-failed", payload["error"])
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
@@ -3071,7 +3177,6 @@ def cmd_finalize(
         msg = str(render_result.get("fallbackReason") or "render failed")
         payload["error"] = f"final-summary render failed: {msg}"
         _restore_finalize_failure()
-        _append_finalize_failure_issue(original_change_dir, "render-failed", msg)
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
@@ -3170,17 +3275,30 @@ def cmd_finalize(
                 }
             )
         payload["issues"] = issues_out
-        payload["error"] = "validate or manifest check failed; original change dir restored"
+        payload["error"] = "validate or manifest check failed; staged operation discarded"
         payload["steps"]["delete_original"] = {"ok": False, "deleted": False}
         _restore_finalize_failure()
-        _append_finalize_failure_issue(
-            original_change_dir, "closure-failed", payload["error"]
-        )
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
 
-    # Success path: original already relocated; confirm absence
+    # Publish only after every validator passes. The archive path is never used
+    # as mutable staging, so a failed attempt cannot poison the next retry.
+    try:
+        archive_root.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(operation_temp_dir), str(archive_dir))
+        shutil.rmtree(operation_temp_dir.parent, ignore_errors=True)
+        work_dir = archive_dir
+        summary_path = work_dir / "reports" / "final" / "summary-data.json"
+        html_path = work_dir / "reports" / "final" / "final-summary.html"
+        payload["steps"]["move"] = {"ok": True, "to": str(archive_dir)}
+    except OSError as exc:
+        payload["error"] = f"publish failed: {exc}"
+        payload["steps"]["move"] = {"ok": False, "error": str(exc)}
+        _restore_finalize_failure()
+        return 1, payload
+
+    # Success path: the validated copy is published; now retire its source.
     if original_change_dir.exists():
         try:
             shutil.rmtree(original_change_dir)
@@ -3192,7 +3310,7 @@ def cmd_finalize(
         payload["steps"]["delete_original"] = {
             "ok": True,
             "deleted": True,
-            "note": "removed by move",
+            "note": "source already absent",
         }
 
     if split_state_dir is not None and split_state_dir.is_dir():
@@ -3222,7 +3340,28 @@ def cmd_finalize(
     if service_result.get("warning"):
         warnings.append(str(service_result["warning"]))
 
+    try:
+        write_json(
+            operation_record,
+            {
+                "schemaVersion": 1,
+                "operationId": operation_id,
+                "changeName": change_name,
+                "sourceDir": str(original_change_dir),
+                "archiveDir": str(archive_dir),
+                "finalStatus": "OK",
+                "publishedAt": now_iso(),
+                "summarySha256": sha256_file(summary_path),
+                "manifestSha256": sha256_file(
+                    archive_dir / "evidence" / "archive-manifest-after.json"
+                ),
+            },
+        )
+    except OSError as exc:
+        warnings.append(f"could not persist completed archive operation: {exc}")
+
     payload["ok"] = True
+    payload["finalStatus"] = "OK"
     payload["warnings"] = warnings
     payload["summary_data"] = str(summary_path)
     payload["final_summary"] = str(html_path) if html_path.is_file() else None
@@ -3422,6 +3561,21 @@ def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
     if not summary_path.is_file():
         payload["error"] = "summary-data.json missing; cannot repair"
         return 1, payload
+    frozen_manifest_paths = {
+        name: archive_dir / "evidence" / name
+        for name in (
+            "archive-manifest-before.json",
+            "archive-manifest-after.json",
+        )
+    }
+    missing_manifests = [
+        name for name, path in frozen_manifest_paths.items() if not path.is_file()
+    ]
+    if missing_manifests:
+        payload["error"] = (
+            "frozen manifests missing; cannot repair: " + ", ".join(missing_manifests)
+        )
+        return 1, payload
 
     # 1. candidate: fresh collect from frozen sources (read-only on archive).
     try:
@@ -3462,22 +3616,30 @@ def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
         ]
         version = f"v{(max(existing) + 1) if existing else 1}"
         version_dir = derived / version
-        version_dir.mkdir()
-        final_summary = version_dir / "summary-data.json"
+        staged_version_dir = staging / version
+        staged_version_dir.mkdir()
+        final_summary = staged_version_dir / "summary-data.json"
         write_json(final_summary, candidate)
+        frozen_manifest_hashes: dict[str, str] = {}
+        for manifest_name, source_manifest in frozen_manifest_paths.items():
+            target_manifest = staged_version_dir / manifest_name
+            shutil.copy2(source_manifest, target_manifest)
+            frozen_manifest_hashes[manifest_name] = "sha256:" + sha256_file(target_manifest)
         if staged_html.is_file():
-            shutil.copy2(staged_html, version_dir / "final-summary.html")
+            shutil.copy2(staged_html, staged_version_dir / "final-summary.html")
         record = {
             "version": version,
             "createdAt": now_iso(),
             "summarySha256": "sha256:" + hashlib.sha256(final_summary.read_bytes()).hexdigest(),
             "baseSummarySha256": "sha256:" + hashlib.sha256(summary_path.read_bytes()).hexdigest(),
+            "frozenManifestHashes": frozen_manifest_hashes,
             "validators": {
                 "source": {"ok": bool(source_result.get("ok")), "issues": source_result.get("issues") or []},
                 "renderer": {"ok": bool(renderer_result.get("ok")), "issues": renderer_result.get("issues") or []},
             },
         }
-        write_json(version_dir / "repair-record.json", record)
+        write_json(staged_version_dir / "repair-record.json", record)
+        shutil.move(str(staged_version_dir), str(version_dir))
 
         # 4. authoritative pointer — only after both validators passed.
         write_json(
