@@ -319,6 +319,24 @@ async function reconcileContextIndex(
   codebuddySurface: CodeBuddySurface
 ): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
+  let codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
+    map: ".harness/codebase/map",
+    status: "missing"
+  };
+  try {
+    const parsed = JSON.parse(existing) as {
+      codebase?: { map?: unknown; status?: unknown };
+    };
+    const current = parsed.codebase;
+    if (
+      typeof current?.map === "string" &&
+      (current.status === "missing" || current.status === "stale" || current.status === "fresh")
+    ) {
+      codebase = { map: current.map, status: current.status };
+    }
+  } catch {
+    // Invalid or absent context indexes are rebuilt with the safe missing default.
+  }
   const record = {
     schema_version: 2,
     project: {
@@ -331,7 +349,7 @@ async function reconcileContextIndex(
       ]))
     },
     knowledge: { index: ".harness/knowledge/index.json" },
-    codebase: { map: ".harness/codebase/map", status: "missing" },
+    codebase,
     skill_bundles: Object.fromEntries(manifests.map((manifest) => [
       manifest.adapter,
       { registry_version: manifest.bundle_version, bundle_hash: manifest.bundle_manifest_hash }

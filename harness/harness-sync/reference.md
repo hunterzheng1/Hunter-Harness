@@ -19,16 +19,17 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 
 ### 2. CodeGraph 索引
 
-检查索引状态，**优先使用 MCP 工具**（若当前环境提供 `mcp__codegraph__codegraph_status` 则调用）；该工具不可用时**降级**为用 Glob 比对 `.codegraph/` 目录修改时间与最近提交时间。不允许通过普通 Bash 调 codegraph 命令：
+检查索引状态，**优先使用 MCP 工具**：若当前环境提供 `mcp__codegraph__codegraph_status` 则调用；没有 status 工具但提供 `codegraph_explore` 时，执行一次只读查询验证索引确实可响应，再用 Glob 比对 `.codegraph/` 目录修改时间与最近提交时间。两种 MCP 工具都不可用时才仅按时间戳降级。不允许通过普通 Bash 调 codegraph 命令：
 
 | 判断条件 | 状态 | 操作 |
 |----------|:----:|------|
 | 覆盖率 > 0% 且索引时间在最近提交之后 | ✅OK | 无需操作 |
+| `codegraph_explore` 查询成功且索引时间在最近提交之后 | ✅OK（功能已验证，覆盖率数值未暴露） | 报告真实证据，不虚构覆盖率百分比 |
 | 覆盖率 = 0% | ❌FAIL(未初始化) | 通过 PowerShell 执行 `npx @colbymchenry/codegraph && codegraph init --index` |
 | 索引时间在最近提交之前 | 🟡WARN(过期) | 同上 |
 
 > 前提：项目构建命令必须已成功。构建失败时先执行 `npx hunter-harness` 初始化检查。
-> 若 MCP 工具与 codegraph CLI 均不可用，标记 🟡WARN(CodeGraph 状态无法验证) 并在报告中说明"CodeGraph 状态无法验证，需用户手动确认"。
+> 若 status/explore MCP 工具均不可用，且时间戳证据也不足，标记 🟡WARN(CodeGraph 状态无法验证) 并在报告中说明具体缺失证据。成功的 explore 只能证明索引可用，不得伪造覆盖率数值。
 
 ### 3. harness-codebase-map 分析文档
 
@@ -61,7 +62,7 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 
 ### 5. AGENTS.md 一致性
 
-检查 `AGENTS.md` 是否引用最新版 CLAUDE.md，是否包含项目概述和规则索引。如果 CLAUDE.md 刚刚更新过，同步更新 AGENTS.md 中的引用描述。
+检查 `AGENTS.md` 是否包含项目概述和规则索引。Claude Code adapter 启用时，检查 `CLAUDE.md` 引用 `AGENTS.md`（canonical managed block 使用 `@AGENTS.md`），让共享约束保持单一来源；不得要求 `AGENTS.md` 反向引用 `CLAUDE.md`，否则会形成循环，且会破坏未启用 Claude Code 的项目。
 
 ### 6. .harness/ 完整性
 
@@ -133,7 +134,7 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 | CodeGraph | 🟡WARN(索引过期) | 索引已过期（上次: 3天前，最近提交: 今天），已重新索引 |
 | harness-codebase-map (.harness/codebase/map/) | ✅OK | 2 天前更新，变更量 5 个文件，无需更新 |
 | CLAUDE.md | ✅OK | 180 行，6 个必要章节完整 |
-| AGENTS.md | ✅OK | 已正确引用 CLAUDE.md |
+| AGENTS.md | ✅OK | 共享规则索引完整；CLAUDE.md 已单向引用 AGENTS.md |
 | .harness/ | ✅OK | config 目录存在，1 个变更目录（contribution-module） |
 
 ### 自动更新

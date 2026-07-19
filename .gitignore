@@ -98,6 +98,7 @@ temp/
 .codebuddy/
 .cursor/
 .codegraph/
+.mcp.json
 .harness/
 .sync-staging/
 .codex-release/

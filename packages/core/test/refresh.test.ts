@@ -84,6 +84,34 @@ describe("Conservative Refresh", () => {
     expect(result.conflicts).toHaveLength(0);
   });
 
+  it("preserves the codebase-map status maintained by harness-codebase-map", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-codebase-status-"));
+    await installFirst(root, "general");
+    const contextIndexPath = join(root, ".harness", "context-index.json");
+    const contextIndex = JSON.parse(await readFile(contextIndexPath, "utf8")) as {
+      codebase: { map: string; status: string };
+    };
+    contextIndex.codebase = { map: ".harness/codebase/map", status: "fresh" };
+    await writeFile(contextIndexPath, JSON.stringify(contextIndex, null, 2) + "\n");
+
+    await refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      profile: "general",
+      agents: ["claude-code"],
+      dryRun: false,
+      forceManaged: false
+    });
+
+    const refreshed = JSON.parse(await readFile(contextIndexPath, "utf8")) as {
+      codebase: { map: string; status: string };
+    };
+    expect(refreshed.codebase).toEqual({
+      map: ".harness/codebase/map",
+      status: "fresh"
+    });
+  });
+
   it("adds a missing Bundle target", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-add-"));
     await installFirst(root, "general");

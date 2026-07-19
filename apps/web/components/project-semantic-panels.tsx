@@ -89,9 +89,9 @@ function DocumentBrowser({
     ?? pageItems[0]
     ?? null;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setPage(0);
-  }, [items, statusFilter]);
+  }, [items]);
 
   useEffect(() => {
     if (!showStatusFilters && statusFilter !== "all") setStatusFilter("all");
@@ -124,8 +124,8 @@ function DocumentBrowser({
   return <div className="knowledge-browser">
     <div className="knowledge-list-pane">
       {showStatusFilters ? <div className="knowledge-status-filters" role="toolbar" aria-label={lang === "zh" ? "按状态筛选" : "Filter by status"}>
-          <button type="button" className={statusFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setStatusFilter("all")}>{copy.all}</button>
-          {statuses.map((status) => <button key={status} type="button" className={statusFilter === status ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => setStatusFilter(status)}>{status}</button>)}
+          <button type="button" className={statusFilter === "all" ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => { setStatusFilter("all"); setPage(0); }}>{copy.all}</button>
+          {statuses.map((status) => <button key={status} type="button" className={statusFilter === status ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => { setStatusFilter(status); setPage(0); }}>{status}</button>)}
         </div> : null}
       <div className="knowledge-list">
         {pageItems.length === 0 ? <div className="knowledge-empty compact"><p>{copy.emptyFilter}</p></div> : pageItems.map((item) => <button key={item.document_id} type="button" className={item.document_id === selected?.document_id ? "selected" : ""} onMouseDown={suppressMouseFocusScroll} onClick={() => onSelect(item.document_id)}>

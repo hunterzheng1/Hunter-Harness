@@ -317,6 +317,14 @@ class SyncCliTests(SyncRuntimeTestBase):
         self.assertIn("harness_sync.py finalize", text)
         self.assertIn("finally", text.lower())
 
+    def test_reference_uses_explore_fallback_and_one_way_instruction_reference(self) -> None:
+        text = (SCRIPTS_DIR.parent / "harness-sync" / "reference.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("codegraph_explore", text)
+        self.assertIn("CLAUDE.md` 引用 `AGENTS.md", text)
+        self.assertNotIn("AGENTS.md` 是否引用最新版 CLAUDE.md", text)
+
     def test_reap_cli_emits_json_payload(self) -> None:
         run_dir = self.sync_root / "cli-run"
         self._write_owner(run_dir, run_id="cli-run", pid=999999, expired=True)

@@ -56,7 +56,7 @@ python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-
 | 3.5 | `harness_knowledge.py sync`；可 `sync --update`；失败不得假装可用。**知识闭环主入口**是 `/harness-knowledge-ingest auto`（含 Agent judge），sync 不重复列人工知识待办 |
 | 3.6 | 单次运行 `harness_knowledge.py maintain --project . --drain --json`，有界推进全部 `.harness/knowledge/maintenance-outbox/{pending,failed}`；不得为每个条目重复启动 Python/重建索引（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/pending-judge） |
 | 4 | CLAUDE.md 完整性/行数 → 超限 AskUserQuestion 瘦身 |
-| 5 | AGENTS.md 与 CLAUDE.md 一致 |
+| 5 | AGENTS.md 与各 Agent 指令入口一致；Claude Code 启用时验证 CLAUDE.md 引用 AGENTS.md，禁止反向循环引用 |
 | 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；已装 skill 新鲜度只经 `hunter-harness refresh --dry-run --json` 的 post-adaptation freshness 判断，禁止 raw build 字节比较 |
 | 7–9 | `项目规则（见 .harness/context-index.json）/`、构建配置、测试目录 — **只提示不自动修复** |
 
