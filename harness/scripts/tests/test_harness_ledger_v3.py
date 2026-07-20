@@ -473,6 +473,32 @@ class IntegrationFinalHashTests(LedgerV3Fixture):
         self.assertEqual(result["code"], "LEDGER_IDENTITY_INVALID")
         self.assertEqual(ledger_path.read_bytes(), before)
 
+    def test_record_integration_hashes_preserves_legacy_contract_lifecycle(self) -> None:
+        change_dir = self.project / ".harness" / "changes" / "legacy-demo"
+        ledger_path = change_dir / "evidence" / "verification-ledger.json"
+        ledger_path.parent.mkdir(parents=True)
+        ledger_path.write_text(
+            json.dumps({"changeName": "legacy-demo", "validations": {}}) + "\n",
+            encoding="utf-8",
+        )
+        final_hash = git(self.project, "rev-parse", "HEAD").stdout.strip()
+
+        result = ledger.record_integration_hashes(
+            ledger_path,
+            change_dir=change_dir,
+            repository_id=paths.repository_identity(self.project),
+            merge_final_hash=final_hash,
+            ci_expected_head=final_hash,
+            remote_head=final_hash,
+        )
+
+        self.assertTrue(result["ok"], result)
+        written = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["mergeFinalHash"], final_hash)
+        self.assertEqual(written["ciExpectedHead"], final_hash)
+        self.assertEqual(written["remoteHead"], final_hash)
+        self.assertNotIn("schemaVersion", written)
+
 
 class ApplicabilityTests(LedgerV3Fixture):
     def test_not_applicable_neither_pass_nor_fail_ret24(self) -> None:

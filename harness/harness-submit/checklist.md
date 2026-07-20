@@ -119,7 +119,7 @@ python <skills-root>/scripts/harness_ledger.py can-reuse `
 
 - [ ] 检查 `.harness/changes/<change-name>/evidence/test-tracking.json` 是否存在
 - [ ] 存在时先执行 `python <skills-root>/scripts/harness_test_guard.py stage --project . --change-dir ".harness/changes/<change-name>" --json`；任一 manifest/path/hash/index 校验失败立即停止
-- [ ] 用 `git diff --cached --name-only` 验证 manifest 中每个精确路径均已暂存，且没有 guard 引入的额外路径
+- [ ] 用 `git diff --cached --name-only` 验证 guard 响应 `files` 中的每个精确路径均已暂存，且没有 guard 引入的额外路径；manifest 中已由 `HEAD` 跟踪且未变化的历史条目无需进入本次 cached diff
 - [ ] 无 manifest 时禁止使用 `git add -f`；有 manifest 时也只允许 guard 内部的 exact force-add，**禁止全局 force-add**、目录级 force-add 和全局修改 `.gitignore`
 
 提交前**强制检查 `.gitignore`** 是否包含 `.harness/`：

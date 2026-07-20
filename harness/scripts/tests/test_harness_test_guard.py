@@ -331,11 +331,14 @@ class TestGuardTests(unittest.TestCase):
                 record_result = record_future.result(timeout=6)
 
         self.assertTrue(stage_result["ok"], stage_result)
-        self.assertFalse(record_result["ok"], record_result)
+        self.assertTrue(record_result["ok"], record_result)
         manifest = json.loads(
             (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
         )
-        self.assertEqual([item["path"] for item in manifest["files"]], ["src/test/java/FirstTest.java"])
+        self.assertEqual(
+            [item["path"] for item in manifest["files"]],
+            ["src/test/java/FirstTest.java", "src/test/java/SecondTest.java"],
+        )
 
     def test_stage_force_adds_only_manifest_test_file(self) -> None:
         selected = self.project / "src" / "test" / "java" / "SelectedTest.java"
@@ -478,6 +481,39 @@ class TestGuardTests(unittest.TestCase):
         manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
         self.assertEqual(len(manifest["files"]), 1)
         self.assertEqual(manifest["files"][0]["reason"], "test-updated")
+
+    def test_checkpointed_manifest_can_track_and_stage_later_test_updates(self) -> None:
+        tests = [
+            self.project / "src" / "test" / "java" / f"Checkpoint{index}Test.java"
+            for index in range(4)
+        ]
+        for path in tests:
+            self._write(path, f"before {path.stem}\n")
+        recorded = self._record(*tests)
+        self.assertTrue(recorded["ok"], recorded)
+
+        self._git("add", "-f", *(str(path.relative_to(self.project)) for path in tests))
+        self._git("commit", "-m", "checkpoint tests")
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        for path in tests[:3]:
+            self._write(path, f"after {path.stem}\n")
+        close = guard.close(self.project, self.change)
+
+        self.assertTrue(close["ok"], close)
+        expected = [str(path.relative_to(self.project)).replace("\\", "/") for path in tests[:3]]
+        self.assertEqual(close["files"], expected)
+        manifest = json.loads(
+            (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+        )
+        self.assertTrue(all(item["trackedBefore"] for item in manifest["files"]))
+
+        staged = guard.stage(self.project, self.change)
+
+        self.assertTrue(staged["ok"], staged)
+        self.assertEqual(staged["files"], expected)
+        self.assertEqual(self._git("diff", "--cached", "--name-only").stdout.splitlines(), expected)
 
     def test_preexisting_unchanged_ignored_test_not_tracked_ut030(self) -> None:
         preexisting = self.project / "src" / "test" / "java" / "StableTest.java"

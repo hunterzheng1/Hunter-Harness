@@ -422,6 +422,9 @@ class IntegrationTransaction:
         else:
             result = hl.record_integration_hashes(
                 ledger_path,
+                change_dir=(
+                    self.project_root / ".harness" / "changes" / self.change_id
+                ),
                 repository_id=str(journal["repositoryId"]),
                 merge_final_hash=merge_commit,
                 ci_expected_head=merge_commit,

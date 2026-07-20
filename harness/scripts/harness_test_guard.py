@@ -448,9 +448,18 @@ def _validate_existing_manifest(
         tracked_now = _git(
             project, "ls-files", "--error-unmatch", "--", rel
         ).returncode == 0
-        if item["ignored"] != ignored_now or item["trackedBefore"] != tracked_now:
+        checkpointed = not item["trackedBefore"] and tracked_now
+        if (
+            item["trackedBefore"] != tracked_now and not checkpointed
+        ) or (
+            item["ignored"] != ignored_now and not checkpointed
+        ):
             return "MANIFEST_INVALID", {}
-        validated[rel] = dict(item)
+        normalized_item = dict(item)
+        if checkpointed:
+            normalized_item["trackedBefore"] = True
+            normalized_item["ignored"] = ignored_now
+        validated[rel] = normalized_item
     return None, validated
 
 
@@ -734,11 +743,26 @@ def _stage_locked(
     error, entries = validator(project_root, manifest, require_files=True)
     if error:
         return _result(False, action, error, [])
-    rels = [
-        rel
-        for rel, entry in entries.items()
-        if not is_v2 or entry.get("commitScope") == "current-change"
-    ]
+    rels: list[str] = []
+    for rel, entry in entries.items():
+        if is_v2:
+            if entry.get("commitScope") == "current-change":
+                rels.append(rel)
+            continue
+        if not entry["trackedBefore"]:
+            rels.append(rel)
+            continue
+        changed = _git(project_root, "diff", "--quiet", "HEAD", "--", rel)
+        if changed.returncode == 1:
+            rels.append(rel)
+        elif changed.returncode != 0:
+            return _result(
+                False,
+                action,
+                "GIT_DIFF_FAILED",
+                [rel],
+                error=changed.stderr.strip(),
+            )
     if not rels:
         return _result(True, action, "STAGED", [])
 
@@ -963,15 +987,23 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
         if before[rel]["sha256"] != digest:
             touched.append((rel, "test-updated"))
 
-    recorded: list[str] = []
-    for rel, reason in touched:
-        result = record(project_root, change_root, [str(project_root / rel)], reason)
+    for reason in ("tdd-created", "test-updated"):
+        rels = [rel for rel, item_reason in touched if item_reason == reason]
+        if not rels:
+            continue
+        result = record(
+            project_root,
+            change_root,
+            [str(project_root / rel) for rel in rels],
+            reason,
+        )
         if not result.get("ok"):
             code = result.get("code", "RECORD_FAILED")
             if code == "TEST_PATH_NOT_ALLOWED":
-                return _result(False, action, "UNCLASSIFIABLE_TEST", [rel])
+                return _result(False, action, "UNCLASSIFIABLE_TEST", rels)
             return result
-        recorded.append(rel)
+
+    recorded = [rel for rel, _ in touched]
 
     return _result(
         True,

@@ -621,12 +621,13 @@ def validate_ledger_identity(ledger: dict[str, Any]) -> list[str]:
 def record_integration_hashes(
     ledger_path: Path,
     *,
+    change_dir: Path | None = None,
     repository_id: str,
     merge_final_hash: str,
     ci_expected_head: str,
     remote_head: str,
 ) -> dict[str, Any]:
-    """Atomically attach post-push identity to an existing ledger v3."""
+    """Atomically attach post-push hashes using the change contract's ledger rules."""
     path = Path(ledger_path).resolve()
     if not path.is_file():
         return {"ok": False, "code": "LEDGER_MISSING", "ledgerPath": str(path)}
@@ -637,15 +638,26 @@ def record_integration_hashes(
             "ok": False, "code": "LEDGER_INVALID", "ledgerPath": str(path),
             "message": str(exc),
         }
+    legacy_contract = False
+    if change_dir is not None:
+        resolved_change_dir = Path(change_dir).resolve()
+        if ledger.get("changeName") != resolved_change_dir.name:
+            return {
+                "ok": False,
+                "code": "LEDGER_CHANGE_MISMATCH",
+                "ledgerPath": str(path),
+            }
+        legacy_contract = not _contract_is_v2(resolved_change_dir)
+
     missing = validate_ledger_identity(ledger)
-    if missing:
+    if missing and not legacy_contract:
         return {
             "ok": False,
             "code": "LEDGER_IDENTITY_INVALID",
             "ledgerPath": str(path),
             "missing": missing,
         }
-    if ledger.get("repositoryId") != repository_id:
+    if not missing and ledger.get("repositoryId") != repository_id:
         return {
             "ok": False,
             "code": "LEDGER_REPOSITORY_MISMATCH",
