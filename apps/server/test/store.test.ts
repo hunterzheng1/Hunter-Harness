@@ -115,13 +115,13 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
       await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
     });
 
-    it("rejects unsafe file path with SKILL_VALIDATION_FAILED (UT-037)", async () => {
+    it("rejects unsafe file path with SKILL_BUNDLE_INVALID (UT-037)", async () => {
       const store = newStore();
       await expect(store.uploadDraft({
         files: [{ path: "../escape.md", content: "x" }],
         actorId: "owner",
         agent: CC
-      })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+      })).rejects.toMatchObject({ code: "SKILL_BUNDLE_INVALID" });
     });
 
     it("redirects workflow package to workflow center (UT-020, workflow.yaml + skills/)", async () => {
@@ -600,12 +600,12 @@ describe("RegistryStore uploadDraft validation", () => {
     await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
   });
 
-  it("rejects unsafe file path with SKILL_VALIDATION_FAILED", async () => {
+  it("rejects unsafe file path with SKILL_BUNDLE_INVALID", async () => {
     const store = newStore();
     await expect(store.uploadDraft({
       files: [{ path: "../escape.md", content: "x" }],
       actorId: "owner", agent: CC
-    })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+    })).rejects.toMatchObject({ code: "SKILL_BUNDLE_INVALID" });
   });
 
   it("rejects workflow package with WORKFLOW_PACKAGE_REDIRECT (UT-038)", async () => {
@@ -779,7 +779,7 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
     expect(store.listSkills()).toEqual([]);
   });
 
-  it("skips corrupt skill with invalid version during migration", async () => {
+  it("fails atomically on a corrupt skill snapshot and preserves the source snapshot", async () => {
     const p = new MemoryPersistence();
     p.snapshot = {
       schemaVersion: 1,
@@ -796,9 +796,10 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
       }]],
       proposals: [], tags: [], workflows: [], projectBindings: []
     };
+    const original = structuredClone(p.snapshot);
     const store = newStore(p);
-    await store.initialize();
-    expect(() => store.getSkill("harness-corrupt")).toThrow();
+    await expect(store.initialize()).rejects.toMatchObject({ code: "REGISTRY_SNAPSHOT_INVALID" });
+    expect(p.snapshot).toEqual(original);
   });
 });
 

@@ -268,7 +268,8 @@ function decodeUtf8(buffer: Buffer, path: string): string {
 
 function resolveUploadFiles(
   collected: ReadonlyArray<{ path: string; buffer: Buffer }>,
-  limits: { maxFileBytes: number; maxUploadFiles: number; maxProposalBytes: number }
+  limits: { maxFileBytes: number; maxUploadFiles: number; maxProposalBytes: number },
+  tooLargeCode = "PROPOSAL_TOO_LARGE"
 ): SourceFile[] {
   if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
     const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
@@ -277,21 +278,21 @@ function resolveUploadFiles(
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
       if (files.length >= limits.maxUploadFiles) {
-        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip contains too many files");
+        throw new ServerDomainError(413, tooLargeCode, "zip contains too many files");
       }
       if (DANGEROUS_PATH.test(entry.entryName)) {
-        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "zip slip detected: " + entry.entryName);
+        throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "zip slip detected: " + entry.entryName);
       }
       const expanded = entry.header.size;
       const compressed = entry.header.compressedSize;
       if (expanded > limits.maxFileBytes || expandedBytes + expanded > limits.maxProposalBytes ||
           (expanded > 1024 * 1024 && (compressed === 0 || expanded / compressed > 100))) {
-        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip expanded size or compression ratio exceeds the upload limit");
+        throw new ServerDomainError(413, tooLargeCode, "zip expanded size or compression ratio exceeds the upload limit");
       }
       const data = entry.getData();
       expandedBytes += data.byteLength;
       if (data.byteLength !== expanded || expandedBytes > limits.maxProposalBytes) {
-        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip expanded size exceeds the upload limit");
+        throw new ServerDomainError(413, tooLargeCode, "zip expanded size exceeds the upload limit");
       }
       files.push({ path: entry.entryName, content: decodeUtf8(data, entry.entryName) });
     }
@@ -444,7 +445,9 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     } else if (typeof error === "object" && error !== null &&
         "statusCode" in error && error.statusCode === 413) {
       status = 413;
-      code = "PROPOSAL_TOO_LARGE";
+      code = request.routeOptions.url === "/api/v1/skills/draft"
+        ? "SKILL_UPLOAD_TOO_LARGE"
+        : "PROPOSAL_TOO_LARGE";
       message = "Request body exceeds the configured limit.";
     }
     let requestId: string;
@@ -1293,7 +1296,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         }
       }
     }
-    const files = resolveUploadFiles(collected, config);
+    const files = resolveUploadFiles(collected, config, "SKILL_UPLOAD_TOO_LARGE");
     const review = sensitiveReview === undefined
       ? undefined
       : sensitiveReviewSubmissionSchema.parse(sensitiveReview);

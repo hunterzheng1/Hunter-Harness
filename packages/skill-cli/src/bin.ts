@@ -494,10 +494,42 @@ async function installV3Package(input: {
     agent, join(stateRoot, agent, input.slug + ".json")
   ]));
   const existingManifests = new Map<SkillTargetAgent, MultiInstallManifest>();
+  const legacyStatePath = join(stateRoot, input.slug + ".json");
+  const legacyState = input.choices.scope === "project"
+    ? await readManifest(legacyStatePath)
+    : null;
 
   for (const variant of plan.variants) {
     const statePath = statePaths.get(variant.agent) as string;
-    const existing = await readManifest(statePath) as MultiInstallManifest | null;
+    let existing = await readManifest(statePath) as MultiInstallManifest | null;
+    if (existing === null && legacyState !== null &&
+        legacyState.slug === input.slug && legacyState.agent === variant.agent) {
+      const migratedFiles: Record<string, string> = {};
+      let complete = true;
+      for (const [sourcePath, digest] of Object.entries(legacyState.files)) {
+        const operation = variant.operations.find((candidate) =>
+          candidate.role === "skill" && candidate.sourcePath === sourcePath
+        );
+        if (operation === undefined) {
+          complete = false;
+          break;
+        }
+        migratedFiles[operation.destinationPath] = digest;
+      }
+      if (complete) {
+        existing = {
+          schema_version: 2,
+          slug: legacyState.slug,
+          version: legacyState.version,
+          agent: variant.agent,
+          scope: "project",
+          source_url: legacyState.source_url,
+          artifact_sha256: legacyState.artifact_sha256,
+          files: migratedFiles,
+          installed_at: legacyState.installed_at
+        };
+      }
+    }
     if (existing !== null && existing.schema_version === 2) existingManifests.set(variant.agent, existing);
     if (existing === null && input.options.force !== true) {
       const occupied = await Promise.all(variant.operations.map((operation) => fileExists(operation.destinationPath)));

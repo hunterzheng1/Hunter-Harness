@@ -674,6 +674,62 @@ describe("@hunter-harness/skill-cli", () => {
     expect(output.join("")) .toContain("install-preview");
   });
 
+  it("migrates a uniquely identified slug-only project install state during a v3 update", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-legacy-state-"));
+    const installedSkill = join(cwd, ".claude", "skills", "harness-sync", "SKILL.md");
+    await mkdir(join(installedSkill, ".."), { recursive: true });
+    await writeFile(installedSkill, DEFAULT_SKILL_CONTENT, "utf8");
+    const legacyState = join(cwd, ".harness", "state", "local", "skill-installs", "harness-sync.json");
+    await mkdir(join(legacyState, ".."), { recursive: true });
+    await writeFile(legacyState, JSON.stringify({
+      schema_version: 1,
+      slug: "harness-sync",
+      version: "1.0.0",
+      agent: "claude-code",
+      source_url: "npm:@hunter-skills/harness-sync",
+      artifact_sha256: "sha256:legacy-artifact",
+      files: { "SKILL.md": sha256Bytes(DEFAULT_SKILL_CONTENT) },
+      installed_at: "2026-07-01T00:00:00.000Z"
+    }), "utf8");
+
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync",
+      "--agent", "claude-code", "--scope", "project", "--project", cwd,
+      "--from", "npm", "--npm-scope", "@hunter-skills", "--yes"
+    ], {
+      cwd,
+      env: tokenEnv,
+      pacoteTarball: async () => Buffer.from("v3-legacy-migration-package"),
+      pacoteExtract: async (_packageName, destination) => {
+        await writeFile(join(destination, "SKILL.md"), DEFAULT_SKILL_CONTENT, "utf8");
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 3,
+          slug: "harness-sync",
+          version: "2.0.0",
+          files: [{
+            path: "SKILL.md",
+            sha256: sha256Bytes(DEFAULT_SKILL_CONTENT),
+            size: Buffer.byteLength(DEFAULT_SKILL_CONTENT)
+          }],
+          components: [{ role: "skill", source: "." }],
+          variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+            status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill"]
+          }]))
+        }), "utf8");
+      },
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+
+    expect(exitCode).toBe(0);
+    const migratedState = JSON.parse(await readFile(
+      join(cwd, ".harness", "state", "local", "skill-installs", "claude-code", "harness-sync.json"),
+      "utf8"
+    )) as { schema_version: number; agent: string; scope: string };
+    expect(migratedState).toMatchObject({ schema_version: 2, agent: "claude-code", scope: "project" });
+    expect(await pathExists(legacyState)).toBe(true);
+  });
+
   it("installs cursor and codebuddy v3 variants into the current-user scope", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-cwd-"));
     const userHome = await mkdtemp(join(tmpdir(), "hunter-skill-v3-home-"));

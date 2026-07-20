@@ -21,6 +21,7 @@ import { packageNameForSkill, packageNameForWorkflowFamily } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 const MANIFEST_SCHEMA_VERSION = 3;
+const SAFE_NPM_PUBLISH_FAILURE_MESSAGE = "npm registry rejected the publish request";
 const RESERVED_PACKAGE_PATHS = new Set([
   ".npmrc",
   "hunter-skill.json",
@@ -287,8 +288,7 @@ export async function publishSkillNpmPackage(
         tarballHash
       };
     }
-    const message = error instanceof Error ? error.message : "npm publish failed";
-    return { status: "failed", error: message, tarballHash };
+    return { status: "failed", error: SAFE_NPM_PUBLISH_FAILURE_MESSAGE, tarballHash };
   }
 }
 
@@ -414,8 +414,7 @@ export async function publishWorkflowFamilyNpmPackage(
         tarballHash
       };
     }
-    const message = error instanceof Error ? error.message : "npm publish failed";
-    return { status: "failed", error: message, tarballHash };
+    return { status: "failed", error: SAFE_NPM_PUBLISH_FAILURE_MESSAGE, tarballHash };
   }
 }
 

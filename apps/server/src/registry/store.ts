@@ -405,8 +405,7 @@ export class RegistryStore {
       };
       this.compilerVersion = value.compilerVersion;
       for (const [key, raw] of value.skills) {
-        const state = this.migrateSkillState(raw);
-        if (state !== null) this.skills.set(key, state);
+        this.skills.set(key, this.migrateSkillState(raw));
       }
       for (const [key, state] of value.proposals) this.proposals.set(key, state);
       // skill-proposal 轨已删除：旧快照 proposals 可读但不保留业务状态（兼容读后清空）
@@ -534,7 +533,7 @@ export class RegistryStore {
     this.externalFetcherDeps = deps;
   }
 
-  private migrateSkillState(raw: unknown): SkillState | null {
+  private migrateSkillState(raw: unknown): SkillState {
     try {
       const obj = (raw ?? {}) as Record<string, unknown>;
       const detail = migrateSkillDetail(obj.detail);
@@ -562,11 +561,12 @@ export class RegistryStore {
         versions,
         npmReleases: detailFinal.npmReleases
       };
-    } catch (error) {
-      // 损坏 skill（如旧 snapshot 的 ir:null）无法迁移为合法 detail — 跳过该条目并记录警告，
-      // 避免单个损坏条目阻塞整体 initialize（与旧数据兼容迁移的不报错语义一致）
-      console.warn("[registry] skipping corrupt skill during migration:", (error as Error).message);
-      return null;
+    } catch {
+      throw new ServerDomainError(
+        500,
+        "REGISTRY_SNAPSHOT_INVALID",
+        "registry snapshot contains an invalid skill record"
+      );
     }
   }
 
@@ -665,7 +665,7 @@ export class RegistryStore {
     }
     const unsafe = input.files.find((f) => DANGEROUS_PATH.test(f.path));
     if (unsafe !== undefined) {
-      throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "unsafe file path: " + unsafe.path);
+      throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "unsafe file path: " + unsafe.path);
     }
     let slug: string;
     try {
@@ -673,7 +673,7 @@ export class RegistryStore {
     } catch (error) {
       if (error instanceof SkillEntryError) {
         if (error.code === SKILL_ERROR_CODE.ENTRY_NOT_FOUND) {
-          throw new ServerDomainError(422, SKILL_ERROR_CODE.ENTRY_NOT_FOUND, error.message, { agent: input.agent });
+          throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", error.message, { agent: input.agent });
         }
         throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, error.message);
       }
@@ -1086,17 +1086,25 @@ export class RegistryStore {
     config: NpmPublishConfig,
     publishNpm: (input: SkillNpmPackageInput) => Promise<NpmPublishAttemptResult>
   ): Promise<PublishSkillResponse> {
-    const attemptKey = `${input.slug}\0${input.sourceAgent}\0${input.version}\0${input.draftRevision}`;
-    const completed = this.successfulPublishAttempts.get(attemptKey);
-    if (completed !== undefined) {
-      return structuredClone({
-        ...completed,
-        npmRelease: { ...completed.npmRelease, status: "idempotent" }
+    const attemptPrefix = `${input.slug}\0${input.sourceAgent}\0${input.version}\0${input.draftRevision}`;
+    const draft = this.getDraftState(input.slug, input.sourceAgent);
+    if (draft === undefined) {
+      const completed = this.successfulPublishAttempts.get(attemptPrefix)
+        ?? [...this.successfulPublishAttempts.entries()]
+          .find(([key]) => key.startsWith(attemptPrefix + "\0"))?.[1];
+      if (completed !== undefined) {
+        return structuredClone({
+          ...completed,
+          npmRelease: { ...completed.npmRelease, status: "idempotent" }
+        });
+      }
+      throw new ServerDomainError(409, "SKILL_DRAFT_STALE", "skill draft revision is stale", {
+        slug: input.slug,
+        sourceAgent: input.sourceAgent,
+        provided: input.draftRevision
       });
     }
-
-    const draft = this.getDraftState(input.slug, input.sourceAgent);
-    if (draft === undefined || draft.revision !== input.draftRevision) {
+    if (draft.revision !== input.draftRevision) {
       throw new ServerDomainError(409, "SKILL_DRAFT_STALE", "skill draft revision is stale", {
         slug: input.slug,
         sourceAgent: input.sourceAgent,
@@ -1183,13 +1191,13 @@ export class RegistryStore {
     });
     const npmResult = await publishNpm(npmInput);
     if (npmResult.status === "failed") {
-      throw new ServerDomainError(502, "NPM_PUBLISH_FAILED", npmResult.error ?? "npm publish failed", {
+      throw new ServerDomainError(502, "NPM_PUBLISH_FAILED", "npm registry rejected the publish request", {
         slug: input.slug,
         version: input.version
       });
     }
     if (npmResult.status === "conflict") {
-      throw new ServerDomainError(409, "NPM_PUBLISH_CONFLICT", npmResult.error ?? "npm package version conflicts with remote content", {
+      throw new ServerDomainError(409, "SKILL_VERSION_CONFLICT", "npm package version conflicts with remote content", {
         slug: input.slug,
         version: input.version
       });
@@ -1237,6 +1245,7 @@ export class RegistryStore {
         tarballHash: npmResult.tarballHash
       }
     };
+    const attemptKey = `${attemptPrefix}\0${npmResult.tarballHash}`;
     const previousDrafts = this.drafts.get(input.slug);
     this.skills.set(input.slug, nextState);
     this.drafts.delete(input.slug);

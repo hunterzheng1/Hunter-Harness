@@ -216,6 +216,25 @@ describe("skill npm publisher", () => {
     expect(result.status).toBe("conflict");
     expect(result.error).toContain("newer registry version");
   });
+
+  it("redacts registry error details before returning a failed result", async () => {
+    const sensitiveMarker = "SENSITIVE_SENTINEL_VALUE";
+    const sensitivePath = "C:\\Users\\Example\\private\\npmrc";
+    const result = await publishSkillNpmPackage(
+      sampleInput,
+      { scope: "@hunter-skills", token: "secret-token" },
+      {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => {
+          throw new Error(`registry rejected credential=${sensitiveMarker} at ${sensitivePath}`);
+        }
+      }
+    );
+    expect(result.status).toBe("failed");
+    expect(result.error).toBe("npm registry rejected the publish request");
+    expect(result.error).not.toContain(sensitiveMarker);
+    expect(result.error).not.toContain(sensitivePath);
+  });
 });
 
 const workflowFamilyInput: WorkflowFamilyNpmPackageInput = {
@@ -280,5 +299,22 @@ describe("workflow family npm publisher", () => {
     );
     expect(result.status).toBe("conflict");
     expect(result.error).toContain("newer family version");
+  });
+
+  it("redacts workflow registry error details before returning a failed result", async () => {
+    const sensitiveMarker = "SENSITIVE_SENTINEL_VALUE";
+    const result = await publishWorkflowFamilyNpmPackage(
+      workflowFamilyInput,
+      { scope: "@hunter-skills", token: "secret-token" },
+      {
+        packDirectory: async () => Buffer.from("fake-tarball"),
+        publish: async () => {
+          throw new Error(`registry rejected credential=${sensitiveMarker}`);
+        }
+      }
+    );
+    expect(result.status).toBe("failed");
+    expect(result.error).toBe("npm registry rejected the publish request");
+    expect(result.error).not.toContain(sensitiveMarker);
   });
 });
