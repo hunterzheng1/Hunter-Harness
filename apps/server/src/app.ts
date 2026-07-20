@@ -7,9 +7,11 @@ import {
   finalizeProposalSchema,
   providerModelSchema,
   publishSkillRequestSchema,
+  publishUnifiedSkillRequestSchema,
   publishWorkflowFamilyRequestSchema,
   registryAgentSchema,
   registrySlugSchema,
+  sensitiveReviewSubmissionSchema,
   setDefaultAgentRequestSchema,
   workflowFamilyMutationSchema,
   bindProjectWorkflowFamilyRequestSchema,
@@ -246,20 +248,56 @@ const DANGEROUS_PATH = /(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/;
 // ????? WRITABLE_APPLIES_TO ? as const ?????????
 const emptySummary = Object.freeze({ autoCount: 0, confirmCount: 0, suggestCount: 0, changedFiles: 0, changedLines: 0 });
 
-function resolveUploadFiles(collected: ReadonlyArray<{ path: string; buffer: Buffer }>): SourceFile[] {
+function normalizeBundleRoot(files: SourceFile[]): SourceFile[] {
+  const normalized = files.map((file) => ({ ...file, path: file.path.replaceAll("\\", "/") }));
+  if (normalized.some((file) => file.path === "SKILL.md")) return normalized;
+  const roots = new Set(normalized.map((file) => file.path.split("/")[0]).filter(Boolean));
+  if (roots.size !== 1 || normalized.some((file) => !file.path.includes("/"))) return normalized;
+  const root = [...roots][0] as string;
+  const stripped = normalized.map((file) => ({ ...file, path: file.path.slice(root.length + 1) }));
+  return stripped.some((file) => file.path === "SKILL.md") ? stripped : normalized;
+}
+
+function decodeUtf8(buffer: Buffer, path: string): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, `binary or invalid UTF-8 skill file is not supported: ${path}`);
+  }
+}
+
+function resolveUploadFiles(
+  collected: ReadonlyArray<{ path: string; buffer: Buffer }>,
+  limits: { maxFileBytes: number; maxUploadFiles: number; maxProposalBytes: number }
+): SourceFile[] {
   if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
     const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
     const files: SourceFile[] = [];
+    let expandedBytes = 0;
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
+      if (files.length >= limits.maxUploadFiles) {
+        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip contains too many files");
+      }
       if (DANGEROUS_PATH.test(entry.entryName)) {
         throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, "zip slip detected: " + entry.entryName);
       }
-      files.push({ path: entry.entryName, content: entry.getData().toString("utf8") });
+      const expanded = entry.header.size;
+      const compressed = entry.header.compressedSize;
+      if (expanded > limits.maxFileBytes || expandedBytes + expanded > limits.maxProposalBytes ||
+          (expanded > 1024 * 1024 && (compressed === 0 || expanded / compressed > 100))) {
+        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip expanded size or compression ratio exceeds the upload limit");
+      }
+      const data = entry.getData();
+      expandedBytes += data.byteLength;
+      if (data.byteLength !== expanded || expandedBytes > limits.maxProposalBytes) {
+        throw new ServerDomainError(413, "PROPOSAL_TOO_LARGE", "zip expanded size exceeds the upload limit");
+      }
+      files.push({ path: entry.entryName, content: decodeUtf8(data, entry.entryName) });
     }
-    return files;
+    return normalizeBundleRoot(files);
   }
-  return collected.map((c) => ({ path: c.path, content: c.buffer.toString("utf8") }));
+  return normalizeBundleRoot(collected.map((c) => ({ path: c.path, content: decodeUtf8(c.buffer, c.path) })));
 }
 
 async function authenticated(
@@ -384,6 +422,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     (_request, body, done) => done(null, body)
   );
   await app.register(multipart, {
+    preservePath: true,
     limits: { fileSize: config.maxFileBytes, files: config.maxUploadFiles }
   });
 
@@ -1238,15 +1277,35 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     }
     const agent = agentResult.data;
     const collected: Array<{ path: string; buffer: Buffer }> = [];
+    let sensitiveReview: unknown;
     for await (const part of request.parts()) {
-      if (part.type !== "file") continue;
-      collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
+      if (part.type === "file") {
+        collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
+      } else if (part.fieldname === "sensitive_review") {
+        const raw = String(part.value);
+        if (Buffer.byteLength(raw, "utf8") > 16_384) {
+          throw new ServerDomainError(413, "SKILL_UPLOAD_TOO_LARGE", "sensitive review payload is too large");
+        }
+        try {
+          sensitiveReview = JSON.parse(raw);
+        } catch {
+          throw new ServerDomainError(422, "VALIDATION_FAILED", "sensitive_review must be valid JSON");
+        }
+      }
     }
-    const files = resolveUploadFiles(collected);
+    const files = resolveUploadFiles(collected, config);
+    const review = sensitiveReview === undefined
+      ? undefined
+      : sensitiveReviewSubmissionSchema.parse(sensitiveReview);
     // agent ?? bodyHash?? Idempotency-Key ? agent ??? IDEMPOTENCY_KEY_REUSED ??????
     const bodyHash = sha256Bytes(canonicalJson({ agent, files: files.map((f) => ({ path: f.path, content: f.content })) }));
     const result = await mutation(request, repository, actor, requestId, async () => {
-      const draft = await registry.uploadDraft({ files, actorId: actor.actorId, agent });
+      const draft = await registry.uploadDraft({
+        files,
+        actorId: actor.actorId,
+        agent,
+        ...(review === undefined ? {} : { review })
+      });
       await writeAudit(repository, {
         actorId: actor.actorId, projectId: null,
         action: draft.revision === 1 ? "skill.draft.created" : "skill.draft.updated",
@@ -1310,6 +1369,48 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     return send(reply, requestId, result);
   });
 
+  app.post("/api/v1/skills/:slug/publish", async (request, reply) => {
+    const { actor, requestId } = await authenticated(request, repository);
+    const { slug } = request.params as { slug: string };
+    const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    if (!isNpmPublishConfigured(npmConfig)) {
+      throw new ServerDomainError(
+        503,
+        "NPM_PUBLISH_NOT_CONFIGURED",
+        "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN_FILE)"
+      );
+    }
+    const body = publishUnifiedSkillRequestSchema.parse(request.body);
+    const result = await mutation(request, repository, actor, requestId, async () => {
+      const published = await registry.publishUnified({
+        slug,
+        version: body.version,
+        sourceAgent: body.sourceAgent,
+        draftRevision: body.draftRevision,
+        releaseNote: body.releaseNote ?? null,
+        actorId: actor.actorId
+      }, npmConfig, async (input) => publishSkillNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {}));
+      await writeAudit(repository, {
+        actorId: actor.actorId,
+        projectId: null,
+        action: "skill.published",
+        targetId: slug,
+        requestId,
+        details: {
+          slug,
+          version: published.release.version,
+          sourceAgent: body.sourceAgent,
+          draftRevision: body.draftRevision,
+          npmPackage: published.npmRelease.packageName,
+          npmStatus: published.npmRelease.status,
+          tarballHash: published.npmRelease.tarballHash
+        }
+      });
+      return { statusCode: 200, body: published };
+    });
+    return send(reply, requestId, result);
+  });
+
   app.post("/api/v1/skills/:slug/draft/:agent/publish", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const { slug, agent: agentValue } = request.params as { slug: string; agent: string };
@@ -1318,8 +1419,32 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       throw new ServerDomainError(422, "VALIDATION_FAILED", "agent path param must be a valid registry agent");
     }
     const agent = agentResult.data;
+    reply.header("Deprecation", "true");
     const result = await mutation(request, repository, actor, requestId, async () => {
       const body = publishSkillRequestSchema.parse(request.body);
+      const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+      if (isNpmPublishConfigured(npmConfig)) {
+        const draft = registry.getDraft(slug, agent);
+        if (draft === undefined) {
+          throw new ServerDomainError(404, SKILL_ERROR_CODE.DRAFT_NOT_FOUND, "skill draft not found", { slug, agent });
+        }
+        await registry.publishUnified({
+          slug,
+          version: body.version,
+          sourceAgent: agent,
+          draftRevision: draft.revision,
+          releaseNote: body.releaseNote ?? null,
+          actorId: actor.actorId
+        }, npmConfig, async (input) => publishSkillNpmPackage(input, npmConfig, options.npmPublisherDeps ?? {}));
+        const projected = registry.listVersions(slug, agent)
+          .find((version) => version.version === body.version);
+        if (projected === undefined) throw new Error("unified publish did not create the requested compatibility projection");
+        await writeAudit(repository, {
+          actorId: actor.actorId, projectId: null, action: "skill.published",
+          targetId: slug, requestId, details: { slug, agent, version: projected.version, lifecycle: "unified" }
+        });
+        return { statusCode: 200, body: projected };
+      }
       // R3 ????publish???? persist(tx)?+ writeAudit(tx) ?? withTransaction?
       // audit ? registry_state ???? R3??memory fallback withTransaction no-op?????????
       // PG ?? ? registry_state/audit ??? + version ????in-memory ???? design �3.5 ?????? registry_state ????
@@ -1342,6 +1467,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
     const { actor, requestId } = await authenticated(request, repository);
     const { slug } = request.params as { slug: string };
     const npmConfig = options.npmPublishConfig ?? loadNpmPublishConfig();
+    reply.header("Deprecation", "true");
     if (!isNpmPublishConfigured(npmConfig)) {
       throw new ServerDomainError(
         503,
@@ -1373,6 +1499,14 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
           409,
           "NPM_PUBLISH_CONFLICT",
           release.error ?? "npm registry already has this package version",
+          { release }
+        );
+      }
+      if (release.status === "failed") {
+        throw new ServerDomainError(
+          502,
+          "NPM_PUBLISH_FAILED",
+          release.error ?? "npm publish failed",
           { release }
         );
       }
@@ -1695,7 +1829,7 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
       if (part.type !== "file") continue;
       collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
     }
-    const files = resolveUploadFiles(collected);
+    const files = resolveUploadFiles(collected, config);
     const bodyHash = sha256Bytes(canonicalJson(files.map((f) => ({ path: f.path, content: f.content }))));
     const result = await mutation(request, repository, actor, requestId, async () => {
       const draft = await registry.uploadWorkflowFamilyProfileDraft({

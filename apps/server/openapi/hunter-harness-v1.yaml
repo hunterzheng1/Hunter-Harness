@@ -246,8 +246,23 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/RegistryAgent"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: array
+                  items: { type: string, format: binary }
+                sensitive_review:
+                  $ref: "#/components/schemas/SensitiveReviewSubmission"
       responses:
-        "201": { description: Per-agent Skill draft created or updated from uploaded files for the specified agent }
+        "201": { description: Skill source variant draft created or updated }
+        "409": { description: Review fingerprints or scanner version are stale (SENSITIVE_REVIEW_STALE) }
+        "413": { description: Upload or review payload exceeds server limits (SKILL_UPLOAD_TOO_LARGE) }
+        "422": { description: Bundle invalid, high-risk content blocked, or explicit sensitive review required }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/draft/{agent}:
     get:
@@ -338,6 +353,7 @@ paths:
   /api/v1/skills/{slug}/draft/{agent}/publish:
     post:
       operationId: publishSkillDraft
+      deprecated: true
       parameters:
         - $ref: "#/components/parameters/SkillSlug"
         - $ref: "#/components/parameters/Agent"
@@ -345,15 +361,41 @@ paths:
       responses:
         "200": { description: Per-agent Skill draft promoted to a new published version with one artifact for the specified agent }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skills/{slug}/publish:
+    post:
+      operationId: publishUnifiedSkill
+      parameters:
+        - $ref: "#/components/parameters/SkillSlug"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishUnifiedSkillRequest"
+      responses:
+        "200":
+          description: Registry release and scoped public npm publication completed atomically from the caller perspective
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishSkillResponse"
+        "409": { description: Draft revision/version conflict or remote package digest conflict }
+        "422": { description: Sensitive content or target variant validation failed }
+        "502": { description: npm registry rejected or failed publication (NPM_PUBLISH_FAILED) }
+        "503": { description: npm scope or token secret is not configured (NPM_PUBLISH_NOT_CONFIGURED) }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/npm-release:
     post:
       operationId: releaseSkillToNpm
+      deprecated: true
       parameters:
         - $ref: "#/components/parameters/SkillSlug"
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "200": { description: Latest published skill version released to npm as a data-only package }
         "503": { description: npm publish is not configured on the server (NPM_PUBLISH_NOT_CONFIGURED) }
+        "502": { description: npm registry rejected publication (NPM_PUBLISH_FAILED) }
         "409": { description: npm registry already has this package version (NPM_PUBLISH_CONFLICT) }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}/draft/{agent}/diff:
@@ -888,7 +930,51 @@ components:
               type: object
     RegistryAgent:
       type: string
-      enum: ["claude-code", "codex", "cursor", "generic", "mcp"]
+      enum: ["claude-code", "codex", "cursor", "codebuddy", "generic", "mcp"]
+    SkillTargetAgent:
+      type: string
+      enum: ["claude-code", "codex", "cursor", "codebuddy"]
+    SensitiveReviewSubmission:
+      type: object
+      additionalProperties: false
+      required: [scanner_version, finding_fingerprints, reason]
+      properties:
+        scanner_version: { type: string, minLength: 1 }
+        finding_fingerprints:
+          type: array
+          minItems: 1
+          items: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        reason: { type: string, minLength: 3, maxLength: 500 }
+    PublishUnifiedSkillRequest:
+      type: object
+      additionalProperties: false
+      required: [version, sourceAgent, draftRevision]
+      properties:
+        version: { type: string, pattern: "^\\d+\\.\\d+\\.\\d+$" }
+        sourceAgent: { $ref: '#/components/schemas/RegistryAgent' }
+        draftRevision: { type: integer, minimum: 1 }
+        releaseNote: { type: string, minLength: 1, maxLength: 2000 }
+    PublishSkillResponse:
+      type: object
+      additionalProperties: false
+      required: [release, npmRelease]
+      properties:
+        release:
+          type: object
+          additionalProperties: false
+          required: [slug, version]
+          properties:
+            slug: { type: string }
+            version: { type: string }
+        npmRelease:
+          type: object
+          additionalProperties: false
+          required: [status, packageName, version, tarballHash]
+          properties:
+            status: { type: string, enum: [published, idempotent] }
+            packageName: { type: string }
+            version: { type: string }
+            tarballHash: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
     SetDefaultAgentRequest:
       type: object
       additionalProperties: false

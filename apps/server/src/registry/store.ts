@@ -28,6 +28,7 @@ import {
   type ExternalSkillSource,
   type FixPlan,
   type NpmReleaseRecord,
+  type PublishSkillResponse,
   type RegistryAgent,
   type RegistryArtifact,
   type RegistryProjectWorkflowBinding,
@@ -35,6 +36,8 @@ import {
   type RegistrySkillProposal,
   type RegistrySkillVersion,
   type RegistryTag,
+  type SensitiveReviewEvidence,
+  type SensitiveReviewSubmission,
   type SkillCheckResult,
   type SkillDiffFile,
   type SkillFrontmatter,
@@ -48,6 +51,7 @@ import {
 import {
   AGENT_DESCRIPTORS,
   INSTALLABLE_AGENTS,
+  SKILL_TARGET_AGENTS,
   buildFixPatch,
   bumpPatch,
   checkSkill,
@@ -326,6 +330,9 @@ export class RegistryStore {
   private readonly projectBindings = new Map<string, RegistryProjectWorkflowBinding>();
   // per-agent 独立草稿：Map<slug, Map<agent, DraftState>>。每 agent 独立 draftVersion/revision/checks。
   private readonly drafts = new Map<string, Map<RegistryAgent, DraftState>>();
+  private readonly sensitiveReviews = new Map<string, SensitiveReviewEvidence[]>();
+  private readonly successfulPublishAttempts = new Map<string, PublishSkillResponse>();
+  private readonly publishingSlugs = new Set<string>();
   private readonly workflowFamilies = new Map<string, WorkflowFamilyState>();
   private readonly workflowFamilyDrafts = new Map<string, WorkflowFamilyDraftState>();
   private readonly workflowFamilyStore: WorkflowFamilyStore;
@@ -370,6 +377,13 @@ export class RegistryStore {
     if (inner.size === 0) this.drafts.delete(slug);
   }
 
+  private reviewMatches(slug: string, agent: RegistryAgent, fingerprints: readonly string[]): boolean {
+    const accepted = this.sensitiveReviews.get(`${slug}\0${agent}`)
+      ?.flatMap((review) => review.finding_fingerprints)
+      .sort() ?? [];
+    return canonicalJson(accepted) === canonicalJson([...fingerprints].sort());
+  }
+
   async initialize(bundle?: BootstrapBundle): Promise<void> {
     const snapshot = await this.persistence?.load();
     if (snapshot !== null && snapshot !== undefined) {
@@ -386,6 +400,8 @@ export class RegistryStore {
         externalSkills?: Array<[string, unknown]>;
         aiConfig?: unknown;
         aiUsage?: unknown;
+        sensitiveReviews?: Array<[string, SensitiveReviewEvidence[]]>;
+        successfulPublishAttempts?: Array<[string, PublishSkillResponse]>;
       };
       this.compilerVersion = value.compilerVersion;
       for (const [key, raw] of value.skills) {
@@ -421,6 +437,12 @@ export class RegistryStore {
           const parsed = draftStateSchema.safeParse({ ...obj, agent });
           if (parsed.success) this.setDraftState(key, agent, parsed.data);
         }
+      }
+      for (const [key, reviews] of value.sensitiveReviews ?? []) {
+        if (Array.isArray(reviews)) this.sensitiveReviews.set(key, structuredClone(reviews));
+      }
+      for (const [key, attempt] of value.successfulPublishAttempts ?? []) {
+        this.successfulPublishAttempts.set(key, structuredClone(attempt));
       }
       // 草稿加载完成后重算各 skill 的 agents：draftVersion 字段需反映已加载草稿（migrateSkillState 迁移时 drafts 尚未加载，传 undefined）
       for (const [slug, state] of this.skills) {
@@ -503,6 +525,8 @@ export class RegistryStore {
       workflowFamilyDrafts: [...this.workflowFamilyDrafts.entries()],
       externalSkills: [...this.externalSkills.entries()],
       aiConfig: this.aiConfig
+      ,sensitiveReviews: [...this.sensitiveReviews.entries()]
+      ,successfulPublishAttempts: [...this.successfulPublishAttempts.entries()]
     }, tx);
   }
 
@@ -624,7 +648,12 @@ export class RegistryStore {
     await this.persist();
   }
 
-  async uploadDraft(input: { files: SourceFile[]; actorId: string; agent: RegistryAgent }): Promise<DraftState> {
+  async uploadDraft(input: {
+    files: SourceFile[];
+    actorId: string;
+    agent: RegistryAgent;
+    review?: SensitiveReviewSubmission | undefined;
+  }): Promise<DraftState> {
     const paths = input.files.map((f) => f.path);
     const hasWorkflow = paths.some((p) => /(^|\/)workflow\.ya?ml$/i.test(p));
     const hasSkillsDir = paths.some((p) => /(^|\/)skills\//i.test(p));
@@ -653,16 +682,49 @@ export class RegistryStore {
     const fileMap: Record<string, string> = {};
     for (const f of input.files) fileMap[f.path] = f.content;
     const findings = scanSensitiveFiles(fileMap);
-    if (findings.blocked) {
+    const safeFindings = findings.findings.map(({ disposition, ...finding }) => {
+      void disposition;
+      return finding;
+    });
+    if (findings.hard_blocked) {
       throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
-        finding_count: findings.findings.length
+        scanner_version: findings.scanner_version,
+        finding_count: findings.findings.length,
+        findings: safeFindings
       });
     }
-    // per-agent draftVersion：从该 agent 自有 version 序列取最大，无则 0.1.0
+    if (findings.review_required) {
+      if (input.review === undefined) {
+        throw new ServerDomainError(422, "SENSITIVE_CONTENT_REVIEW_REQUIRED", "skill contains content that requires explicit review", {
+          scanner_version: findings.scanner_version,
+          finding_count: findings.findings.length,
+          findings: safeFindings
+        });
+      }
+      const expected = findings.findings.map((finding) => finding.fingerprint).sort();
+      const provided = [...input.review.finding_fingerprints].sort();
+      if (input.review.scanner_version !== findings.scanner_version || canonicalJson(expected) !== canonicalJson(provided)) {
+        throw new ServerDomainError(409, "SENSITIVE_REVIEW_STALE", "sensitive review no longer matches the uploaded files", {
+          scanner_version: findings.scanner_version,
+          findings: safeFindings
+        });
+      }
+      const acceptedAt = new Date().toISOString();
+      this.sensitiveReviews.set(`${slug}\0${input.agent}`, expected.map((fingerprint) => ({
+        scanner_version: findings.scanner_version,
+        finding_fingerprints: [fingerprint],
+        reason: input.review?.reason ?? "",
+        actor: input.actorId,
+        accepted_at: acceptedAt
+      })));
+    } else {
+      this.sensitiveReviews.delete(`${slug}\0${input.agent}`);
+    }
+    // A Skill owns one semver across all target agents. The source agent only
+    // selects the uploaded variant; the candidate always advances global latest.
     const skillState = this.skills.get(slug);
-    const ownVersions = skillState?.versions.filter((v) => v.agent === input.agent) ?? [];
-    const agentLatest = maxVersionOf(ownVersions);
-    const draftVersion = agentLatest === null ? "0.1.0" : bumpPatch(agentLatest);
+    const latest = skillState?.detail.latest_version ?? maxVersionOf(skillState?.versions ?? []);
+    const draftVersion = latest === null ? "0.1.0" : bumpPatch(latest);
     return this.upsertDraft({ slug, agent: input.agent, sourceFiles: input.files, draftVersion });
   }
 
@@ -906,7 +968,11 @@ export class RegistryStore {
     const fileMap: Record<string, string> = {};
     for (const f of draft.sourceFiles) fileMap[f.path] = f.content;
     const findings = scanSensitiveFiles(fileMap);
-    if (findings.blocked) {
+    if (findings.hard_blocked || (findings.review_required && !this.reviewMatches(
+      input.slug,
+      input.agent,
+      findings.findings.map((finding) => finding.fingerprint)
+    ))) {
       throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
         finding_count: findings.findings.length
       });
@@ -981,6 +1047,210 @@ export class RegistryStore {
     this.invalidateTagUsageCache();
     await this.persist(tx);
     return structuredClone(version);
+  }
+
+  async publishUnified(
+    input: {
+      slug: string;
+      version: string;
+      sourceAgent: RegistryAgent;
+      draftRevision: number;
+      releaseNote?: string | null;
+      actorId: string;
+    },
+    config: NpmPublishConfig,
+    publishNpm: (input: SkillNpmPackageInput) => Promise<NpmPublishAttemptResult>
+  ): Promise<PublishSkillResponse> {
+    if (this.publishingSlugs.has(input.slug)) {
+      throw new ServerDomainError(409, "SKILL_PUBLISH_IN_PROGRESS", "another publish is already in progress for this skill", {
+        slug: input.slug
+      });
+    }
+    this.publishingSlugs.add(input.slug);
+    try {
+      return await this.publishUnifiedLocked(input, config, publishNpm);
+    } finally {
+      this.publishingSlugs.delete(input.slug);
+    }
+  }
+
+  private async publishUnifiedLocked(
+    input: {
+      slug: string;
+      version: string;
+      sourceAgent: RegistryAgent;
+      draftRevision: number;
+      releaseNote?: string | null;
+      actorId: string;
+    },
+    config: NpmPublishConfig,
+    publishNpm: (input: SkillNpmPackageInput) => Promise<NpmPublishAttemptResult>
+  ): Promise<PublishSkillResponse> {
+    const attemptKey = `${input.slug}\0${input.sourceAgent}\0${input.version}\0${input.draftRevision}`;
+    const completed = this.successfulPublishAttempts.get(attemptKey);
+    if (completed !== undefined) {
+      return structuredClone({
+        ...completed,
+        npmRelease: { ...completed.npmRelease, status: "idempotent" }
+      });
+    }
+
+    const draft = this.getDraftState(input.slug, input.sourceAgent);
+    if (draft === undefined || draft.revision !== input.draftRevision) {
+      throw new ServerDomainError(409, "SKILL_DRAFT_STALE", "skill draft revision is stale", {
+        slug: input.slug,
+        sourceAgent: input.sourceAgent,
+        provided: input.draftRevision
+      });
+    }
+    const sourceAgent = input.sourceAgent;
+    const existing = this.skills.get(input.slug);
+    const latest = existing?.detail.latest_version ?? maxVersionOf(existing?.versions ?? []);
+    if (latest !== null && compareSemver(input.version, latest) <= 0) {
+      throw new ServerDomainError(409, "SKILL_VERSION_CONFLICT", "skill version must be greater than the global latest version", {
+        latest_version: latest,
+        proposed_version: input.version
+      });
+    }
+
+    let sourceFiles = structuredClone(draft.sourceFiles);
+    if (!sourceFiles.some((file) => file.path === "SKILL.md")) {
+      const legacyEntry = findEntryFile(sourceFiles, sourceAgent);
+      sourceFiles = [{ path: "SKILL.md", content: legacyEntry.content }, ...sourceFiles];
+    }
+    const fileMap = Object.fromEntries(sourceFiles.map((file) => [file.path, file.content]));
+    const sensitive = scanSensitiveFiles(fileMap);
+    if (sensitive.hard_blocked) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_BLOCKED", "skill contains sensitive content", {
+        finding_count: sensitive.findings.length
+      });
+    }
+    if (sensitive.review_required && !this.reviewMatches(
+      input.slug,
+      sourceAgent,
+      sensitive.findings.map((finding) => finding.fingerprint)
+    )) {
+      throw new ServerDomainError(422, "SENSITIVE_CONTENT_REVIEW_REQUIRED", "skill review is missing or stale", {
+        finding_count: sensitive.findings.length,
+        scanner_version: sensitive.scanner_version
+      });
+    }
+    const meta = parseFrontmatter(findEntryFile(sourceFiles, sourceAgent).content);
+    const createdAt = new Date().toISOString();
+    const builtArtifacts: Array<{ version: RegistrySkillVersion; bytes: Uint8Array; hash: string }> = [];
+    for (const targetAgent of SKILL_TARGET_AGENTS) {
+      const built = buildArtifactFor(sourceFiles, input.slug, input.version, targetAgent);
+      if (built === null) {
+        throw new ServerDomainError(422, SKILL_ERROR_CODE.VALIDATION_FAILED, `skill variant is not installable: ${targetAgent}`);
+      }
+      const hash = sha256Bytes(built.bytes);
+      const artifact: RegistryArtifact = {
+        artifact_id: id("ska_"),
+        skill_slug: input.slug,
+        version: input.version,
+        agent: targetAgent,
+        content_sha256: hash,
+        size_bytes: built.bytes.byteLength,
+        source_proposal_id: null,
+        created_at: createdAt
+      };
+      builtArtifacts.push({
+        bytes: built.bytes,
+        hash,
+        version: {
+          skill_slug: input.slug,
+          version: input.version,
+          agent: targetAgent,
+          artifacts: [artifact],
+          source_proposal_id: null,
+          sourceFiles: structuredClone(sourceFiles),
+          examples: structuredClone(draft.examples),
+          changeNote: input.releaseNote ?? null,
+          created_at: createdAt
+        }
+      });
+    }
+    // Blob writes are content-addressed and safe to retry. Complete every local
+    // validation and blob write before the irreversible npm side effect.
+    for (const built of builtArtifacts) await this.storage.putBlob(built.hash, built.bytes);
+
+    const npmInput = skillNpmPackageInput(config, {
+      slug: input.slug,
+      version: input.version,
+      description: meta.description,
+      agent: sourceAgent,
+      sourceFiles
+    });
+    const npmResult = await publishNpm(npmInput);
+    if (npmResult.status === "failed") {
+      throw new ServerDomainError(502, "NPM_PUBLISH_FAILED", npmResult.error ?? "npm publish failed", {
+        slug: input.slug,
+        version: input.version
+      });
+    }
+    if (npmResult.status === "conflict") {
+      throw new ServerDomainError(409, "NPM_PUBLISH_CONFLICT", npmResult.error ?? "npm package version conflicts with remote content", {
+        slug: input.slug,
+        version: input.version
+      });
+    }
+
+    const versions = [...(existing?.versions ?? []), ...builtArtifacts.map((built) => built.version)];
+    const defaultAgent = existing?.detail.defaultAgent ?? sourceAgent;
+    const detail = registrySkillDetailSchema.parse({
+      ...(existing?.detail ?? {
+        skill_id: id("skl_"),
+        slug: input.slug,
+        name: meta.name,
+        tags: [],
+        created_at: createdAt
+      }),
+      name: meta.name,
+      description: meta.description,
+      kind: meta.kind ?? null,
+      status: "published",
+      latest_version: input.version,
+      defaultAgent,
+      agents: agentsFor(input.slug, defaultAgent, versions, undefined),
+      revision: (existing?.detail.revision ?? 0) + 1,
+      updated_at: createdAt
+    });
+    const npmRecord = npmReleaseRecordSchema.parse({
+      version: input.version,
+      packageName: npmInput.packageName,
+      status: "published",
+      publishedAt: createdAt,
+      error: null
+    });
+    const npmReleases = [...(existing?.npmReleases ?? []), npmRecord];
+    const nextState: SkillState = {
+      detail: registrySkillDetailSchema.parse({ ...detail, npmReleases }),
+      versions,
+      npmReleases
+    };
+    const response: PublishSkillResponse = {
+      release: { slug: input.slug, version: input.version },
+      npmRelease: {
+        status: npmResult.status,
+        packageName: npmInput.packageName,
+        version: input.version,
+        tarballHash: npmResult.tarballHash
+      }
+    };
+    const previousDrafts = this.drafts.get(input.slug);
+    this.skills.set(input.slug, nextState);
+    this.drafts.delete(input.slug);
+    this.successfulPublishAttempts.set(attemptKey, structuredClone(response));
+    try {
+      await this.persist();
+    } catch (error) {
+      if (existing === undefined) this.skills.delete(input.slug);
+      else this.skills.set(input.slug, existing);
+      if (previousDrafts !== undefined) this.drafts.set(input.slug, previousDrafts);
+      this.successfulPublishAttempts.delete(attemptKey);
+      throw error;
+    }
+    return response;
   }
 
   diffDraft(slug: string, agent: RegistryAgent): SkillDiffFile[] {
@@ -1573,7 +1843,7 @@ export class RegistryStore {
     const record = npmReleaseRecordSchema.parse({
       version,
       packageName: packageInput.packageName,
-      status: result.status,
+      status: result.status === "idempotent" ? "published" : result.status,
       publishedAt: new Date().toISOString(),
       error: result.error
     });
@@ -1623,7 +1893,7 @@ export class RegistryStore {
     const record = npmReleaseRecordSchema.parse({
       version,
       packageName: packageInput.packageName,
-      status: result.status,
+      status: result.status === "idempotent" ? "published" : result.status,
       publishedAt: new Date().toISOString(),
       error: result.error
     });

@@ -38,7 +38,7 @@ describe("sensitive information scanner", () => {
     expect(allowed.override_evidence[0]).toMatchObject({
       actor: "local-owner",
       reason: "documented non-secret fixture",
-      scanner_version: "1.0.0"
+      scanner_version: "1.1.0"
     });
     expect(Object.isFrozen(allowed.override_evidence[0])).toBe(true);
   });
@@ -110,6 +110,28 @@ describe("sensitive information scanner", () => {
       }, null, 2)
     });
     expect(result.findings).toEqual([]);
+    expect(result.blocked).toBe(false);
+  });
+
+  it("does not treat PowerShell location expressions as password values", () => {
+    const result = scanSensitiveFiles({
+      "scripts/check-frontend-env.ps1": 'Write-Host "pwd: $(Get-Location)"\n'
+    });
+    expect(result.findings.some((item) => item.rule_id === "HH_PASSWORD_VALUE")).toBe(false);
+    expect(result.blocked).toBe(false);
+  });
+
+  it("ignores obvious credential placeholders", () => {
+    const result = scanSensitiveFiles({
+      "README.md": [
+        "password=${PASSWORD}",
+        "token=example",
+        "api_key=<YOUR_API_KEY>"
+      ].join("\n")
+    });
+    expect(result.findings.filter((item) =>
+      item.rule_id === "HH_PASSWORD_VALUE" || item.rule_id === "HH_HIGH_ENTROPY"
+    )).toEqual([]);
     expect(result.blocked).toBe(false);
   });
 });

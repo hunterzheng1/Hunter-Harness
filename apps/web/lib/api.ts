@@ -13,6 +13,8 @@ import {
   type FileOperation,
   type FixPlan,
   type NpmReleaseResponse,
+  type PublishSkillResponse,
+  type PublishUnifiedSkillRequest,
   type PublishSkillRequest,
   type RegistryAgent,
   type RegistryArtifact,
@@ -24,6 +26,7 @@ import {
   type SetDefaultAgentRequest,
   type SkillCheckResult,
   type SkillDiffFile,
+  type SensitiveReviewSubmission,
   type WorkflowFamily,
   type WorkflowFamilyDraftState,
   type WorkflowFamilyMutation,
@@ -248,6 +251,7 @@ export interface HunterApi {
   discardSkillDraft?(slug: string, agent: RegistryAgent, revision: number): Promise<{ slug: string; discarded: boolean }>;
   runSkillDraftChecks?(slug: string, agent: RegistryAgent): Promise<SkillCheckResult>;
   publishSkillDraft?(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion>;
+  publishSkill?(slug: string, req: PublishUnifiedSkillRequest): Promise<PublishSkillResponse>;
   releaseSkillToNpm?(slug: string): Promise<NpmReleaseResponse>;
   releaseWorkflowFamilyToNpm?(slug: string): Promise<NpmReleaseResponse>;
   diffSkillDraft?(slug: string, agent: RegistryAgent): Promise<SkillDiffFile[]>;
@@ -314,13 +318,14 @@ export async function sha256Text(value: string): Promise<string> {
   return "sha256:" + [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export function buildUploadFormData(files: File[]): FormData {
+export function buildUploadFormData(files: File[], review?: SensitiveReviewSubmission): FormData {
   const fd = new FormData();
   for (const f of files) {
     const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
     const filename = rel && rel.length > 0 ? rel : f.name;
     fd.append("file", f, filename);
   }
+  if (review !== undefined) fd.append("sensitive_review", JSON.stringify(review));
   return fd;
 }
 
@@ -836,12 +841,13 @@ export class HttpHunterApi implements HunterApi {
     } catch {
       throw new ApiClientError(0, "NETWORK_ERROR", "Unable to reach the governance server while uploading " + path + ".");
     }
-    const payload = await response.json() as { error?: { code?: string; message?: string } } & T;
+    const payload = await response.json() as { error?: { code?: string; message?: string; details?: unknown } } & T;
     if (!response.ok) {
       throw new ApiClientError(
         response.status,
         payload.error?.code ?? "HTTP_ERROR",
-        payload.error?.message ?? "Skill upload failed."
+        payload.error?.message ?? "Skill upload failed.",
+        payload.error?.details
       );
     }
     return payload;
@@ -869,6 +875,10 @@ export class HttpHunterApi implements HunterApi {
 
   async publishSkillDraft(slug: string, agent: RegistryAgent, req: PublishSkillRequest): Promise<RegistrySkillVersion> {
     return this.request("POST", this.draftPath(slug, agent, "/publish"), req);
+  }
+
+  async publishSkill(slug: string, req: PublishUnifiedSkillRequest): Promise<PublishSkillResponse> {
+    return this.request("POST", "/api/v1/skills/" + encodeURIComponent(slug) + "/publish", req);
   }
 
   async releaseSkillToNpm(slug: string): Promise<NpmReleaseResponse> {

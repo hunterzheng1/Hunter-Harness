@@ -55,6 +55,7 @@ describe("OpenAPI v1 contract", () => {
       "/api/v1/skills/{slug}/draft/{agent}/fix-preview",
       "/api/v1/skills/{slug}/draft/{agent}/fix-suggestions",
       "/api/v1/skills/{slug}/draft/{agent}/publish",
+      "/api/v1/skills/{slug}/publish",
       "/api/v1/skills/{slug}/npm-release",
       "/api/v1/skills/{slug}/draft/{agent}/release-note:generate",
       "/api/v1/skills/{slug}/tags/{tag_id}",
@@ -83,6 +84,28 @@ describe("OpenAPI v1 contract", () => {
       Object.values(path).map((operation) => operation.operationId).filter(Boolean)
     );
     expect(new Set(operationIds).size).toBe(operationIds.length);
+  });
+
+  it("documents unified publish, review errors, and deprecated compatibility routes", async () => {
+    const document = parseYaml(await readFile(
+      new URL("../openapi/hunter-harness-v1.yaml", import.meta.url),
+      "utf8"
+    )) as {
+      paths: Record<string, Record<string, {
+        deprecated?: boolean;
+        responses?: Record<string, unknown>;
+        requestBody?: { content?: Record<string, { schema?: { $ref?: string } }> };
+      }>>;
+      components: { schemas: Record<string, { enum?: string[] }> };
+    };
+    const publish = document.paths["/api/v1/skills/{slug}/publish"]?.post;
+    expect(publish?.responses).toHaveProperty("502");
+    expect(publish?.responses).toHaveProperty("503");
+    expect(publish?.requestBody?.content?.["application/json"]?.schema?.$ref)
+      .toBe("#/components/schemas/PublishUnifiedSkillRequest");
+    expect(document.paths["/api/v1/skills/{slug}/draft/{agent}/publish"]?.post?.deprecated).toBe(true);
+    expect(document.paths["/api/v1/skills/{slug}/npm-release"]?.post?.deprecated).toBe(true);
+    expect(document.components.schemas.RegistryAgent?.enum).toContain("codebuddy");
   });
 
   it("documents STALE_PUSH as a 409 response on finalizeProposal", async () => {

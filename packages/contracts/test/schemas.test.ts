@@ -191,6 +191,7 @@ describe("shared contracts", () => {
 
   it("validates governed registry records and direct workflow metadata", () => {
     expect(registryAgentSchema.parse("claude-code")).toBe("claude-code");
+    expect(registryAgentSchema.parse("codebuddy")).toBe("codebuddy");
     expect(registryAgentSchema.safeParse("unknown-agent").success).toBe(false);
     expect(registrySkillDetailSchema.parse({
       skill_id: "skl_review",

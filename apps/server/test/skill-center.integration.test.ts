@@ -293,7 +293,7 @@ describe("skill-center end-to-end (tasks 14-17)", () => {
     const byAgent = new Map(skill.agents.map((a: { agent: string }) => [a.agent, a]));
     expect(byAgent.get("cursor")?.latestVersion).toBe("1.0.0");
     expect(byAgent.get("claude-code")?.latestVersion).toBe(null);
-    expect(byAgent.get("cursor")?.installTarget).toBe(".cursor/rules/harness-cursor.mdc");
+    expect(byAgent.get("cursor")?.installTarget).toBe(".cursor/skills/harness-cursor/");
 
     // API-104 + INT-101: GET /skills/{slug}/artifacts/cursor/download → 200 + cursor zip + X-Content-SHA256
     const dlRes = await app.inject({ method: "GET", url: "/api/v1/skills/harness-cursor/artifacts/cursor/download", headers: headers() });

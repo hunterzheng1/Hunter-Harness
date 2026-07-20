@@ -30,6 +30,7 @@ services:
       HUNTER_HARNESS_AI_SECRET_FILE: /var/lib/hunter-harness/secrets/ai-providers.json
       HUNTER_HARNESS_BOOTSTRAP_ACTOR: ${HUNTER_HARNESS_BOOTSTRAP_ACTOR:-actor_owner}
       HUNTER_HARNESS_BOOTSTRAP_NAME: ${HUNTER_HARNESS_BOOTSTRAP_NAME:-Owner}
+      HUNTER_HARNESS_NPM_SCOPE: ${HUNTER_HARNESS_NPM_SCOPE:-@hunter-harness}
     entrypoint:
       - /bin/sh
       - -ec

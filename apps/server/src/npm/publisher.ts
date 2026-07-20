@@ -5,20 +5,29 @@ import { join, dirname } from "node:path";
 import { promisify } from "node:util";
 
 import {
+  authorSkillBundleManifestSchema,
   canonicalJson,
-  type NpmReleaseStatus,
+  skillPackageManifestV3Schema,
   type RegistryAgent,
   type SourceFile,
   type WorkflowFamilyVersion
 } from "@hunter-harness/contracts";
-import { AGENT_DESCRIPTORS, sha256Bytes } from "@hunter-harness/core";
+import { SKILL_TARGET_AGENTS, sha256Bytes } from "@hunter-harness/core";
 import { publish as libnpmPublish } from "libnpmpublish";
+import { parse as parseYaml } from "yaml";
 
 import type { NpmPublishConfig } from "./config.js";
 import { packageNameForSkill, packageNameForWorkflowFamily } from "./config.js";
 
 const execFileAsync = promisify(execFile);
-const MANIFEST_SCHEMA_VERSION = 2;
+const MANIFEST_SCHEMA_VERSION = 3;
+const RESERVED_PACKAGE_PATHS = new Set([
+  ".npmrc",
+  "hunter-skill.json",
+  "npm-shrinkwrap.json",
+  "package-lock.json",
+  "package.json"
+]);
 
 export interface SkillNpmPackageInput {
   packageName: string;
@@ -36,8 +45,9 @@ export interface SkillNpmPackageBuild {
 }
 
 export interface NpmPublishAttemptResult {
-  status: NpmReleaseStatus;
+  status: "published" | "idempotent" | "failed" | "conflict";
   error: string | null;
+  tarballHash: string;
 }
 
 export interface NpmPublisherDeps {
@@ -45,8 +55,10 @@ export interface NpmPublisherDeps {
   publish?: (
     manifest: Record<string, unknown>,
     tarball: Buffer,
-    options: { token: string }
+    options: { token: string; access: "public" }
   ) => Promise<unknown>;
+  createTarballDigest?: (tarball: Buffer) => string;
+  readRemotePackageDigest?: (packageName: string, version: string) => Promise<string | null>;
 }
 
 function buildHunterSkillManifest(
@@ -55,23 +67,63 @@ function buildHunterSkillManifest(
   agent: RegistryAgent,
   sourceFiles: SourceFile[]
 ): Record<string, unknown> {
-  const descriptor = AGENT_DESCRIPTORS[agent];
+  for (const file of sourceFiles) {
+    const normalized = file.path.replaceAll("\\", "/").toLowerCase();
+    if (RESERVED_PACKAGE_PATHS.has(normalized)) {
+      throw new Error(`reserved npm package path is not allowed: ${file.path}`);
+    }
+  }
   const sourceSha256 = sha256Bytes(canonicalJson(
     [...sourceFiles].sort((a, b) => a.path.localeCompare(b.path))
       .map((f) => ({ path: f.path, content: f.content }))
   ));
-  const manifest: Record<string, unknown> = {
+  const authorManifestFile = sourceFiles.find((file) =>
+    file.path === "hunter-skill.yaml" || file.path === "hunter-skill.yml"
+  );
+  const components = authorManifestFile === undefined
+    ? [{ role: "skill" as const, source: "." as const }]
+    : authorSkillBundleManifestSchema.parse(parseYaml(authorManifestFile.content)).components;
+  const availableFiles = new Set(sourceFiles.map((file) => file.path));
+  for (const component of components) {
+    if (component.role === "skill") {
+      const prefix = component.source === "." ? "" : component.source.replace(/\/$/, "") + "/";
+      if (!availableFiles.has(prefix + "SKILL.md")) {
+        throw new Error(`skill component is missing SKILL.md: ${component.source}`);
+      }
+      continue;
+    }
+    for (const sourcePath of Object.values(component.variants ?? {})) {
+      if (!availableFiles.has(sourcePath)) {
+        throw new Error(`subagent variant file is missing: ${sourcePath}`);
+      }
+    }
+  }
+  const manifest = skillPackageManifestV3Schema.parse({
     schema_version: MANIFEST_SCHEMA_VERSION,
     slug,
     version,
-    agent,
-    source_sha256: sourceSha256,
-    target_path: descriptor.installTarget(slug),
-    install_mode: descriptor.installMode
-  };
-  if (descriptor.blockId !== undefined) {
-    manifest.block_id = descriptor.blockId(slug);
-  }
+    files: [...sourceFiles]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((file) => ({
+        path: file.path,
+        sha256: sha256Bytes(file.content),
+        size: Buffer.byteLength(file.content, "utf8")
+      })),
+    components,
+    variants: Object.fromEntries(SKILL_TARGET_AGENTS.map((targetAgent) => [targetAgent, {
+      status: components.some((component) => component.role === "subagent" && component.variants?.[targetAgent] === undefined)
+        ? "degraded"
+        : "ready",
+      adapterVersion: "1",
+      buildHash: sourceSha256,
+      components: components.flatMap((component) => component.role === "skill"
+        ? [`skill:${component.source}`]
+        : component.variants?.[targetAgent] === undefined ? [] : [`subagent:${component.name}`])
+    }]))
+  });
+  // The source agent is retained by the Registry compatibility projection, but
+  // package metadata deliberately models one version with all native variants.
+  void agent;
   return manifest;
 }
 
@@ -103,22 +155,65 @@ async function writePackageDirectory(
   );
   for (const file of input.sourceFiles) {
     const target = join(directory, file.path);
+    await mkdir(dirname(target), { recursive: true });
     await writeFile(target, file.content, "utf8");
+  }
+}
+
+export function validatePacklist(expected: readonly string[], actual: readonly string[]): void {
+  const normalize = (items: readonly string[]): string[] => [...new Set(items)].sort();
+  const expectedFiles = normalize(expected);
+  const actualFiles = normalize(actual);
+  if (canonicalJson(expectedFiles) !== canonicalJson(actualFiles)) {
+    throw new Error("npm packlist does not match the declared package files");
   }
 }
 
 async function defaultPackDirectory(directory: string): Promise<Buffer> {
   const { stdout } = await execFileAsync(
     "npm",
-    ["pack", "--json", "--pack-destination", directory],
+    ["pack", "--ignore-scripts", "--json", "--pack-destination", directory],
     { cwd: directory }
   );
-  const parsed = JSON.parse(stdout) as Array<{ filename: string }>;
+  const parsed = JSON.parse(stdout) as Array<{
+    filename: string;
+    files?: Array<{ path: string }>;
+  }>;
   const filename = parsed[0]?.filename;
   if (filename === undefined) {
     throw new Error("npm pack did not return a tarball filename");
   }
+  const packageJson = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as {
+    files?: string[];
+  };
+  validatePacklist(
+    ["package.json", ...(packageJson.files ?? [])],
+    parsed[0]?.files?.map((file) => file.path) ?? []
+  );
   return readFile(join(directory, filename));
+}
+
+async function defaultReadRemotePackageDigest(
+  packageName: string,
+  version: string,
+  token: string
+): Promise<string | null> {
+  const registry = (process.env.npm_config_registry ?? "https://registry.npmjs.org").replace(/\/$/, "");
+  const metadataResponse = await fetch(`${registry}/${encodeURIComponent(packageName)}`, {
+    headers: { authorization: `Bearer ${token}` }
+  });
+  if (metadataResponse.status === 404) return null;
+  if (!metadataResponse.ok) return null;
+  const metadata = await metadataResponse.json() as {
+    versions?: Record<string, { dist?: { tarball?: string } }>;
+  };
+  const tarballUrl = metadata.versions?.[version]?.dist?.tarball;
+  if (tarballUrl === undefined) return null;
+  const tarballResponse = await fetch(tarballUrl, {
+    headers: { authorization: `Bearer ${token}` }
+  });
+  if (!tarballResponse.ok) return null;
+  return sha256Bytes(new Uint8Array(await tarballResponse.arrayBuffer()));
 }
 
 export async function buildSkillNpmTarball(
@@ -154,11 +249,12 @@ function isNpmConflictError(error: unknown): boolean {
 async function defaultPublish(
   manifest: Record<string, unknown>,
   tarball: Buffer,
-  options: { token: string }
+  options: { token: string; access: "public" }
 ): Promise<void> {
   await libnpmPublish(manifest as Parameters<typeof libnpmPublish>[0], tarball, {
     token: options.token,
-    forceAuth: { token: options.token }
+    forceAuth: { token: options.token },
+    access: options.access
   });
 }
 
@@ -169,22 +265,30 @@ export async function publishSkillNpmPackage(
 ): Promise<NpmPublishAttemptResult> {
   const publishFn = deps.publish ?? defaultPublish;
   const built = await buildSkillNpmTarball(input, deps);
+  const tarballHash = (deps.createTarballDigest ?? sha256Bytes)(built.tarball);
   const token = config.token;
   if (token === null || token === "") {
-    return { status: "failed", error: "npm token is not configured" };
+    return { status: "failed", error: "npm token is not configured", tarballHash };
   }
   try {
-    await publishFn(built.packageJson, built.tarball, { token });
-    return { status: "published", error: null };
+    await publishFn(built.packageJson, built.tarball, { token, access: "public" });
+    return { status: "published", error: null, tarballHash };
   } catch (error) {
     if (isNpmConflictError(error)) {
+      const remoteDigest = await (deps.readRemotePackageDigest === undefined
+        ? defaultReadRemotePackageDigest(input.packageName, input.version, token)
+        : deps.readRemotePackageDigest(input.packageName, input.version));
+      if (remoteDigest !== undefined && remoteDigest !== null && remoteDigest === tarballHash) {
+        return { status: "idempotent", error: null, tarballHash };
+      }
       return {
         status: "conflict",
-        error: "npm registry already has this package version; publish a newer registry version first"
+        error: "npm registry already has this package version with different content; publish a newer registry version first",
+        tarballHash
       };
     }
     const message = error instanceof Error ? error.message : "npm publish failed";
-    return { status: "failed", error: message };
+    return { status: "failed", error: message, tarballHash };
   }
 }
 
@@ -294,22 +398,24 @@ export async function publishWorkflowFamilyNpmPackage(
 ): Promise<NpmPublishAttemptResult> {
   const publishFn = deps.publish ?? defaultPublish;
   const built = await buildWorkflowFamilyNpmTarball(input, deps);
+  const tarballHash = (deps.createTarballDigest ?? sha256Bytes)(built.tarball);
   const token = config.token;
   if (token === null || token === "") {
-    return { status: "failed", error: "npm token is not configured" };
+    return { status: "failed", error: "npm token is not configured", tarballHash };
   }
   try {
-    await publishFn(built.packageJson, built.tarball, { token });
-    return { status: "published", error: null };
+    await publishFn(built.packageJson, built.tarball, { token, access: "public" });
+    return { status: "published", error: null, tarballHash };
   } catch (error) {
     if (isNpmConflictError(error)) {
       return {
         status: "conflict",
-        error: "npm registry already has this package version; publish a newer family version first"
+        error: "npm registry already has this package version; publish a newer family version first",
+        tarballHash
       };
     }
     const message = error instanceof Error ? error.message : "npm publish failed";
-    return { status: "failed", error: message };
+    return { status: "failed", error: message, tarballHash };
   }
 }
 
