@@ -985,7 +985,9 @@ class HarnessGateTests(unittest.TestCase):
         self.assertFalse(result["ok"], result)
         problems = result.get("problems") or []
         unit = next(p for p in problems if p["verification"] == "unitTest")
-        self.assertIn("status=OK", unit["missing"])
+        # Retro §5.14: missing now carries the actual status value, not a
+        # fixed "status=OK" string, so callers can distinguish FAIL/NOT_RUN.
+        self.assertTrue(any(m.startswith("status=") for m in unit["missing"]))
 
     def test_all_ok_ledger_close_unchanged_ut313(self) -> None:
         self._write_v2_ledger(unit_status="OK", unit_evidence="evidence/unit.log")

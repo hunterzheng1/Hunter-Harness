@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 
 import {
@@ -8,6 +8,7 @@ import {
   initConfigSchema,
   projectConfigSchema,
   sortHarnessAgents,
+  type CodeBuddySurface,
   type HarnessAgent,
   type InitConfig,
   type ProjectConfig
@@ -16,6 +17,8 @@ import {
   parse as parseYaml,
   stringify as stringifyYaml
 } from "yaml";
+
+import { aggregateInstalledContentHash } from "../fs/hash.js";
 
 import { sha256Bytes } from "../fs/hash.js";
 import { upsertManagedBlockById } from "../managed/managed-block.js";
@@ -33,9 +36,35 @@ import {
 import {
   loadAgentBundle,
   type HarnessProfile,
+  type LoadedAgentBundle,
   type ProjectedBundleFile
 } from "./profile-bundle.js";
 import { uuidV7 } from "./uuid-v7.js";
+
+const CONTEXT_INDEX_PATH = ".harness/context-index.json";
+
+async function fileHex(path: string): Promise<string | null> {
+  try {
+    const data = await readFile(path);
+    return createHash("sha256").update(data).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+async function readExistingSkillBundles(
+  root: string
+): Promise<Map<string, Record<string, unknown>>> {
+  const text = await readOptional(join(root, CONTEXT_INDEX_PATH));
+  if (text === "") return new Map();
+  try {
+    const parsed = JSON.parse(text) as { skill_bundles?: Record<string, Record<string, unknown>> };
+    const bundles = parsed.skill_bundles ?? {};
+    return new Map(Object.entries(bundles));
+  } catch {
+    return new Map();
+  }
+}
 
 export interface InitializeProjectOptions {
   projectRoot: string;
@@ -235,7 +264,10 @@ export async function initializeProject(
     skills_root: string;
     rules: string[];
   }> = {};
-  const skillBundles: Record<string, { registry_version: string; bundle_hash: string }> = {};
+  const skillBundles: Record<string, Record<string, unknown>> = {};
+  // Preserve per-file verification fields from an existing context-index so
+  // re-installs don't churn verifiedAt (retro §5.1 idempotency).
+  const existingContextBundles = await readExistingSkillBundles(root);
 
   let primaryBundleHash = "";
   let primaryRegistryVersion = "";
@@ -257,7 +289,8 @@ export async function initializeProject(
     });
     skillBundles[agent] = {
       registry_version: bundle.manifest.bundle_version,
-      bundle_hash: bundleHash
+      bundle_hash: bundleHash,
+      ...(existingContextBundles.get(agent) ?? {})
     };
     adaptersIndex[agent] = adapter.contextIndex(adapterContext);
     for (const target of targets) {
@@ -406,6 +439,12 @@ export async function initializeProject(
       [...files.entries()].map(async ([path, content]) => operationFor(root, path, content))
     );
     await runTransaction(root, writeOperations, { kind: "init" });
+
+    // Per-file content verification (retro §5.1): now that managed files are
+    // on disk, compute installedContentHash/verificationStatus for each
+    // adapter and enrich context-index so it carries per-file proof, not
+    // just the aggregate bundle hash.
+    await enrichContextIndexWithVerification(root, enabledAgents, profile, options.resourcesRoot, adapterContext);
   }
   return {
     projectConfig,
@@ -413,4 +452,58 @@ export async function initializeProject(
     bundleHash: primaryBundleHash,
     registryVersion: primaryRegistryVersion
   };
+}
+
+async function enrichContextIndexWithVerification(
+  root: string,
+  agents: readonly HarnessAgent[],
+  profile: HarnessProfile,
+  resourcesRoot: string,
+  adapterContext: { profile: HarnessProfile; codebuddySurface: CodeBuddySurface }
+): Promise<void> {
+  const contextPath = join(root, CONTEXT_INDEX_PATH);
+  const existing = await readOptional(join(contextPath));
+  if (existing === "") return;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(existing) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const bundles = (parsed.skill_bundles as Record<string, Record<string, unknown>>) ?? {};
+  for (const agent of agents) {
+    const entry = bundles[agent];
+    if (!entry) continue;
+    let loadedBundle: LoadedAgentBundle;
+    try {
+      loadedBundle = await loadAgentBundle(resourcesRoot, profile, agent);
+    } catch {
+      continue;
+    }
+    const targets = managedTargetsFor(getAdapter(agent), loadedBundle, adapterContext);
+    const mismatches: Array<{ relpath: string; expected: string; actual: string }> = [];
+    const entries: Array<{ relpath: string; sha256: string }> = [];
+    for (const target of targets) {
+      const rel = target.target_path.replace(/\\/g, "/");
+      const actual = await fileHex(join(root, target.target_path));
+      entries.push({ relpath: rel, sha256: actual ?? "" });
+      if (actual === null) {
+        mismatches.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });
+      } else if (actual !== target.sha256) {
+        mismatches.push({ relpath: rel, expected: target.sha256, actual });
+      }
+    }
+    entry.installedContentHash = aggregateInstalledContentHash(entries);
+    // Preserve verifiedAt when content is still verified to keep installs
+    // idempotent (otherwise the timestamp alone makes context-index churn).
+    const newStatus = mismatches.length === 0 ? "verified" : "degraded";
+    if (newStatus === "verified" && typeof entry.verifiedAt === "string" && entry.verifiedAt !== "") {
+      // keep existing verifiedAt
+    } else {
+      entry.verifiedAt = new Date().toISOString();
+    }
+    entry.verificationStatus = newStatus;
+    entry.mismatchDetails = mismatches;
+  }
+  await writeFile(contextPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
 }

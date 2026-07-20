@@ -224,6 +224,60 @@ def _layout_fields(project_root: Path, change_id: str) -> dict[str, Any]:
     }
 
 
+def read_concurrency_mode(project_root: Path) -> str:
+    """Return the configured concurrency mode (retro §5.2).
+
+    Defaults to ``single-active`` when no config declares a mode. Supported
+    values: ``single-active`` (default, blocks a second active Change),
+    ``isolated-multi-active`` (allows multiple active Changes but all
+    Change-scoped commands require ``--change``).
+    """
+    cfg = project_root / ".harness" / "config.json"
+    if cfg.is_file():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                mode = data.get("concurrencyMode")
+                if isinstance(mode, str) and mode in {
+                    "single-active",
+                    "isolated-multi-active",
+                }:
+                    return mode
+        except (OSError, json.JSONDecodeError):
+            pass
+    return "single-active"
+
+
+def check_concurrency_block(
+    project_root: Path, change_id: str
+) -> dict[str, Any] | None:
+    """Return a blocking payload when a second active Change is forbidden.
+
+    Returns ``None`` when the begin may proceed. In ``single-active`` mode a
+    second active Change (any other than ``change_id``) blocks begin; in
+    ``isolated-multi-active`` mode multiple active Changes are allowed.
+    """
+    mode = read_concurrency_mode(project_root)
+    if mode == "isolated-multi-active":
+        return None
+    active = list_active_changes(project_root)
+    others = [entry for entry in active if entry.get("changeId") != change_id]
+    if not others:
+        return None
+    return {
+        "ok": False,
+        "code": "SINGLE_ACTIVE_BLOCKED",
+        "message": (
+            "single-active concurrency mode: another active Change exists; "
+            "use portfolio/decompose to sequence multiple Changes, or switch "
+            "to isolated-multi-active after ensuring full Change-scoped isolation"
+        ),
+        "concurrencyMode": mode,
+        "activeChanges": active,
+        "blockingChanges": others,
+    }
+
+
 def resolve_change(
     project_root: Path,
     change_id: str | None,

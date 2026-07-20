@@ -29,6 +29,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
+import harness_change as hc  # noqa: E402
 import harness_profile as hprof  # noqa: E402
 
 
@@ -67,6 +68,52 @@ def cmd_check(project: Path) -> dict[str, Any]:
     if result.get("stale") and "hint" not in result:
         result["hint"] = _DETECT_HINT
     return result
+
+
+def check_concurrency(project: Path) -> dict[str, Any]:
+    """Report the configured concurrency mode and active Change landscape.
+
+    Retro §5.2: preflight must surface concurrencyMode, activeChanges, and
+    allowedParallelLevels so agents don't have to guess whether parallel
+    Changes are supported.
+    """
+    mode = hc.read_concurrency_mode(project)
+    active = hc.list_active_changes(project)
+    shared_conflicts: list[dict[str, Any]] = []
+    # In isolated-multi-active, surface any shared-state conflicts (e.g. same
+    # worktree path) so callers know isolation is incomplete.
+    if mode == "isolated-multi-active" and len(active) > 1:
+        seen_worktrees: dict[str, str] = {}
+        for entry in active:
+            change_dir = Path(entry["path"])
+            worktree_meta = change_dir / "meta" / "worktree.json"
+            if not worktree_meta.is_file():
+                continue
+            try:
+                meta = json.loads(worktree_meta.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            wt = meta.get("path") if isinstance(meta, dict) else None
+            if isinstance(wt, str) and wt:
+                if wt in seen_worktrees:
+                    shared_conflicts.append({
+                        "kind": "worktree",
+                        "path": wt,
+                        "changes": [seen_worktrees[wt], entry["changeId"]],
+                    })
+                else:
+                    seen_worktrees[wt] = entry["changeId"]
+    levels = ["change-internal"] if mode == "single-active" else [
+        "change-internal",
+        "multi-change",
+    ]
+    return {
+        "ok": True,
+        "concurrencyMode": mode,
+        "activeChanges": active,
+        "sharedStateConflicts": shared_conflicts,
+        "allowedParallelLevels": levels,
+    }
 
 
 # ---------------------------------------------------------------------------

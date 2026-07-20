@@ -2799,6 +2799,130 @@ def _html_escape(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
+    """Validate that final summary is factually complete (retro §5.32).
+
+    The archive validator must not return all-green when the summary is
+    factually incomplete. This gate checks independent sources (git facts,
+    typed metrics, stage status) rather than comparing the summary against
+    a lossy projection of itself.
+    """
+    issues: list[dict[str, str]] = []
+
+    git_facts = summary.get("gitFacts") or {}
+    if isinstance(git_facts, dict):
+        base = str(git_facts.get("baseCommit") or "").strip()
+        final = str(git_facts.get("finalCommit") or "").strip()
+        files_changed = int(git_facts.get("filesChanged") or 0)
+        # base != final but diff=0 → factually incomplete.
+        if base and final and base != final and files_changed == 0:
+            issues.append({
+                "code": "DIFF_ZERO_WITH_NONEMPTY_COMMIT",
+                "severity": "error",
+                "message": f"final commit {final} differs from base {base} but filesChanged=0",
+            })
+
+    # Typed metrics missing despite test report artifacts present.
+    verification = summary.get("verification") or {}
+    if isinstance(verification, dict):
+        unit = verification.get("unitTests") or {}
+        api = verification.get("apiTests") or {}
+        artifacts = summary.get("artifacts") or []
+        has_test_report = any(
+            isinstance(a, dict) and "test" in str(a.get("path") or "").lower()
+            for a in artifacts
+        ) if isinstance(artifacts, list) else False
+        unit_pass = int(unit.get("passed") or 0) if isinstance(unit, dict) else 0
+        api_status = str(api.get("status") or "") if isinstance(api, dict) else ""
+        if has_test_report and unit_pass == 0 and api_status in {"", "not_available"}:
+            issues.append({
+                "code": "TYPED_METRICS_MISSING",
+                "severity": "error",
+                "message": "test report artifacts present but unitTests/apiTests typed metrics are empty",
+            })
+
+    # stageStatus contradicts event reducer.
+    stage = summary.get("stageStatus") or {}
+    stage_from_events = summary.get("stageStatusFromEvents") or {}
+    if isinstance(stage, dict) and isinstance(stage_from_events, dict):
+        for phase, status in stage.items():
+            event_status = stage_from_events.get(phase)
+            if event_status is not None and str(status) != str(event_status):
+                issues.append({
+                    "code": "STAGE_STATUS_CONTRADICTION",
+                    "severity": "error",
+                    "message": f"stageStatus.{phase}={status} but event reducer says {event_status}",
+                })
+
+    return {"ok": not issues, "issues": issues}
+
+
+def artifact_preflight(change_dir: Path) -> dict[str, Any]:
+    """Classify artifact events before destructive finalize (retro §5.31).
+
+    Returns per-artifact classification: informational (no path, OK),
+    canonicalizable (same-change repo-relative path, auto-normalize), or
+    blocking (cross-change/absolute/escaping path, fail closed).
+    """
+    change_dir = change_dir.resolve()
+    events_p = change_dir / "events.ndjson"
+    items: list[dict[str, Any]] = []
+    blocking: list[dict[str, Any]] = []
+    if not events_p.is_file():
+        return {"ok": True, "items": [], "blocking": []}
+    change_id = change_dir.name
+    for line in events_p.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "artifact":
+            continue
+        path = str(event.get("path") or "").strip()
+        kind = str(event.get("kind") or "").strip()
+        event_id = str(event.get("id") or "")
+        if not path:
+            items.append({
+                "eventId": event_id,
+                "category": "informational",
+                "kind": kind or "informational",
+                "note": str(event.get("note") or "")[:80],
+            })
+            continue
+        # Check for escaping/cross-change paths.
+        parts = path.replace("\\", "/").split("/")
+        if ".." in parts or path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+            item = {
+                "eventId": event_id,
+                "category": "blocking",
+                "path": path,
+                "reason": "absolute or escaping path",
+            }
+            items.append(item)
+            blocking.append(item)
+            continue
+        # Same-change repo-relative path: canonicalizable.
+        prefix = f".harness/changes/{change_id}/"
+        if path.startswith(prefix):
+            canonical = path[len(prefix):]
+            items.append({
+                "eventId": event_id,
+                "category": "canonicalizable",
+                "path": path,
+                "canonicalPath": canonical,
+                "correction": f"append correction --target-event-id {event_id} --target-field path --new-value-json \"{canonical}\"",
+            })
+            continue
+        # Change-relative path: OK.
+        items.append({
+            "eventId": event_id,
+            "category": "file-backed",
+            "path": path,
+            "exists": (change_dir / path).is_file(),
+        })
+    return {"ok": not blocking, "items": items, "blocking": blocking}
+
+
 def run_knowledge_poststeps(project_root: Path) -> dict[str, Any]:
     results: dict[str, Any] = {"ran": False, "steps": [], "warnings": []}
     if not KNOWLEDGE_SCRIPT.is_file():

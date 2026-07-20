@@ -623,6 +623,107 @@ def collect_files(root: Path) -> dict[str, str]:
     return files
 
 
+# --- Per-file bundle manifest (retro 2026-07-20 §5.1/5.25) -----------------
+#
+# registry_version + bundle_hash alone cannot prove every installed file
+# belongs to the declared bundle. The bundle therefore ships a per-file
+# manifest (relpath/sha256/size/mode/adapterTransformationId); install
+# verifies staging content against it BEFORE the atomic switch and never
+# updates metadata on partial failure.
+
+BUNDLE_MANIFEST_NAME = "bundle-manifest.json"
+_MANIFEST_EXCLUDED = frozenset(
+    {BUILD_MARKER, MANIFEST_NAME, AGENTS_MANAGED_NAME, BUNDLE_MANIFEST_NAME}
+)
+
+
+def build_manifest(root: Path, transformation_id: str = "raw") -> list[dict[str, Any]]:
+    """Return per-file manifest entries for every bundle file under ``root``.
+
+    Install metadata (build marker, managed manifests, the manifest itself)
+    is excluded. Entries are sorted by relpath for deterministic output.
+    """
+    root = root.resolve()
+    entries: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel in _MANIFEST_EXCLUDED:
+            continue
+        stat = path.stat()
+        entries.append(
+            {
+                "relpath": rel,
+                "sha256": sha256_file(path),
+                "size": stat.st_size,
+                "mode": stat.st_mode,
+                "adapterTransformationId": transformation_id,
+            }
+        )
+    return entries
+
+
+def compute_bundle_manifest_hash(entries: list[dict[str, Any]]) -> str:
+    """Deterministic aggregate hash over manifest entries (order-independent).
+
+    Must match packages/contracts/src/bundle-manifest.ts computeBundleManifestHash.
+    """
+    ordered = sorted(entries, key=lambda entry: entry["relpath"])
+    lines = [
+        f"{entry['relpath']}:{entry['sha256']}:{entry['size']}:{entry['mode']}:{entry['adapterTransformationId']}"
+        for entry in ordered
+    ]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def aggregate_installed_content_hash(files: dict[str, str]) -> str:
+    """Deterministic aggregate hash over actually-installed relpath->sha256."""
+    lines = [f"{rel}:{files[rel]}" for rel in sorted(files)]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def _verify_tree_against_manifest(
+    root: Path, entries: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Return mismatch details for files under ``root`` vs manifest entries."""
+    mismatches: list[dict[str, str]] = []
+    actual = collect_files(root)
+    declared = {entry["relpath"]: entry["sha256"] for entry in entries}
+    for rel, expected in sorted(declared.items()):
+        if rel not in actual:
+            mismatches.append({"relpath": rel, "expected": expected, "actual": "<missing>"})
+        elif actual[rel] != expected:
+            mismatches.append(
+                {"relpath": rel, "expected": expected, "actual": actual[rel]}
+            )
+    return mismatches
+
+
+def cmd_verify_installed(
+    installed_dir: Path, entries: list[dict[str, Any]], bundle_version: str
+) -> dict[str, Any]:
+    """Verify installed content against the bundle manifest, per file."""
+    installed_dir = installed_dir.resolve()
+    mismatches = _verify_tree_against_manifest(installed_dir, entries)
+    actual = collect_files(installed_dir)
+    declared = {entry["relpath"] for entry in entries}
+    content = {
+        rel: digest
+        for rel, digest in actual.items()
+        if rel not in _MANIFEST_EXCLUDED and rel in declared
+    }
+    return {
+        "ok": not mismatches,
+        "action": "verify-installed",
+        "bundleVersion": bundle_version,
+        "verificationStatus": "verified" if not mismatches else "degraded",
+        "installedContentHash": aggregate_installed_content_hash(content),
+        "verifiedAt": now_iso(),
+        "mismatchDetails": mismatches,
+    }
+
+
 def cmd_install(build_out: Path, project: Path, target: Path | None) -> dict[str, Any]:
     build_out = build_out.resolve()
     project = project.resolve()
@@ -644,6 +745,23 @@ def cmd_install(build_out: Path, project: Path, target: Path | None) -> dict[str
     backup: str | None = None
     staging = dest.parent / f".{dest.name}.staging-{uuid.uuid4().hex[:8]}"
     shutil.copytree(build_out, staging)
+    # Per-file content proof (retro §5.1): if the build carries a
+    # bundle-manifest.json, staging must match it exactly before anything is
+    # switched. A mismatch aborts the install without touching dest or any
+    # metadata — never a partial install under a fresh version label.
+    manifest_path = staging / BUNDLE_MANIFEST_NAME
+    if manifest_path.is_file():
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_entries = (
+            manifest_data.get("files", []) if isinstance(manifest_data, dict) else []
+        )
+        mismatches = _verify_tree_against_manifest(staging, manifest_entries)
+        if mismatches:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise ValueError(
+                "BUNDLE_CONTENT_MISMATCH: staging diverges from bundle-manifest.json: "
+                + ", ".join(m["relpath"] for m in mismatches)
+            )
     if dest.exists() and any(dest.iterdir()):
         managed_old = _read_managed_set(dest / MANIFEST_NAME)
         # Preserve user-owned files: anything in dest that was NOT managed by a
@@ -771,6 +889,28 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--bundle", type=Path, required=True)
     v.add_argument("--manifest", type=Path, required=True)
     v.add_argument("--json", action="store_true")
+
+    g = sub.add_parser(
+        "generate-manifest",
+        help="Generate per-file bundle-manifest.json for a bundle dir",
+    )
+    g.add_argument("--bundle", type=Path, required=True)
+    g.add_argument("--bundle-version", required=True)
+    g.add_argument(
+        "--transformation",
+        choices=["raw", "adapted", "workflow-packaged"],
+        default="raw",
+    )
+    g.add_argument("--out", type=Path)
+    g.add_argument("--json", action="store_true")
+
+    vi = sub.add_parser(
+        "verify-installed",
+        help="Verify installed tree content against bundle-manifest.json",
+    )
+    vi.add_argument("--installed", type=Path, required=True)
+    vi.add_argument("--manifest", type=Path, required=True)
+    vi.add_argument("--json", action="store_true")
     return p
 
 
@@ -791,6 +931,43 @@ def main(argv: list[str] | None = None) -> int:
                 else []
             )
             result = cmd_validate_manifest(args.bundle, entries)
+            if args.json:
+                return emit_json(result)
+            return 0 if result["ok"] else 1
+        if args.command == "generate-manifest":
+            entries = build_manifest(args.bundle, transformation_id=args.transformation)
+            manifest = {
+                "schemaVersion": 1,
+                "bundleVersion": args.bundle_version,
+                "bundleManifestHash": compute_bundle_manifest_hash(entries),
+                "files": entries,
+            }
+            text = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+            if args.out is not None:
+                args.out.parent.mkdir(parents=True, exist_ok=True)
+                args.out.write_text(text, encoding="utf-8", newline="\n")
+            result = {
+                "ok": True,
+                "action": "generate-manifest",
+                "bundleVersion": args.bundle_version,
+                "bundleManifestHash": manifest["bundleManifestHash"],
+                "fileCount": len(entries),
+                "out": str(args.out) if args.out is not None else None,
+            }
+            if args.json:
+                return emit_json(result)
+            if args.out is None:
+                print(text, end="")
+            return 0
+        if args.command == "verify-installed":
+            manifest_data = json.loads(args.manifest.read_text(encoding="utf-8"))
+            if not isinstance(manifest_data, dict):
+                raise ValueError("manifest must be a JSON object")
+            result = cmd_verify_installed(
+                args.installed,
+                manifest_data.get("files", []),
+                str(manifest_data.get("bundleVersion", "")),
+            )
             if args.json:
                 return emit_json(result)
             return 0 if result["ok"] else 1

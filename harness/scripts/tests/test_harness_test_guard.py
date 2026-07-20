@@ -534,7 +534,10 @@ class TestGuardTests(unittest.TestCase):
         snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
         result = guard.close(self.project, self.change)
         self.assertFalse(result["ok"])
-        self.assertEqual(result["code"], "SNAPSHOT_INVALID")
+        # Retro §5.10: a projectRoot mismatch is now EXECUTION_ROOT_MISMATCH,
+        # not the generic SNAPSHOT_INVALID, so callers can distinguish wrong
+        # root from corrupt snapshot.
+        self.assertEqual(result["code"], "EXECUTION_ROOT_MISMATCH")
 
 
 if __name__ == "__main__":

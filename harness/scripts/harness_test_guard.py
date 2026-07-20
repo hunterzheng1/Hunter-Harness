@@ -949,9 +949,22 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     if (
         not isinstance(snapshot, dict)
         or snapshot.get("schemaVersion") != SCHEMA_VERSION
-        or snapshot.get("projectRoot") != str(project_root)
     ):
         return _result(False, action, "SNAPSHOT_INVALID", [])
+    # Execution-root contract (retro §5.10): a snapshot captured against a
+    # different project root must fail with EXECUTION_ROOT_MISMATCH before
+    # the generic SNAPSHOT_INVALID, so callers can distinguish "wrong root"
+    # from "corrupt snapshot".
+    snapshot_root = snapshot.get("projectRoot")
+    if snapshot_root is not None and snapshot_root != str(project_root):
+        return _result(
+            False,
+            action,
+            "EXECUTION_ROOT_MISMATCH",
+            [],
+            expectedRoot=snapshot_root,
+            actualRoot=str(project_root),
+        )
 
     before_entries = snapshot.get("files")
     if not isinstance(before_entries, list):
@@ -1004,6 +1017,34 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             return result
 
     recorded = [rel for rel, _ in touched]
+
+    # Cross-check (retro §5.10): if the manifest has active entries for this
+    # change but close computed recordedCount=0, the snapshot/manifest/diff
+    # are inconsistent. Fail closed instead of silently returning success.
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is not None and manifest_path.is_file():
+        try:
+            manifest = _read_json(manifest_path)
+        except (OSError, json.JSONDecodeError):
+            manifest = None
+        if isinstance(manifest, dict):
+            manifest_files = manifest.get("files")
+            if isinstance(manifest_files, list):
+                active_entries = [
+                    f for f in manifest_files
+                    if isinstance(f, dict)
+                    and f.get("reason") in ("tdd-created", "test-updated", "stale-test-repair")
+                ]
+                if active_entries and not recorded:
+                    return _result(
+                        False,
+                        action,
+                        "MANIFEST_DIFF_HASH_MISMATCH",
+                        [],
+                        manifestEntries=len(active_entries),
+                        recordedCount=0,
+                        detail="manifest has active entries but close computed 0 recorded tests",
+                    )
 
     return _result(
         True,

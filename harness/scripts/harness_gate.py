@@ -329,6 +329,12 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
 
     Returns ``(missing_fields, degraded_ok)`` where ``degraded_ok`` is True only when
     the entry is a valid DEGRADED NOT_RUN record with no other missing fields.
+
+    Retro §5.14: ``status=OK``/``status=NOT_RUN``/``status=FAIL`` in the
+    missing list is a *status value* hint, not a field-completeness defect.
+    Callers consuming this under ``phase_status=FAIL`` must filter out
+    ``status=*`` entries from the missing list before treating them as
+    blocking problems.
     """
     missing: list[str] = []
     degraded = is_degraded_ledger_entry(entry)
@@ -341,7 +347,7 @@ def validate_ledger_entry_v2(entry: dict[str, Any], verification: str) -> tuple[
                 missing.append("inputsFiles(non-empty)")
         elif field == "status":
             if value != "OK" and not degraded:
-                missing.append("status=OK")
+                missing.append(f"status={value}")
         elif not (isinstance(value, str) and value.strip()):
             missing.append(field)
         elif field == "coverage" and str(value).strip() not in hl.COVERAGE_RANK:
@@ -357,8 +363,16 @@ def validate_ledger_for_phase_close(
     policy: dict[str, Any],
     *,
     execution_root: Path | None = None,
+    phase_status: str = "OK",
 ) -> dict[str, Any]:
-    """Validate ledger v2 fields required for phase close (UT-026)."""
+    """Validate ledger v2 fields required for phase close (UT-026).
+
+    Retro §5.14: ``phase_status`` separates phase outcome from promotion gate.
+    ``phase_status=OK`` (default) requires all required validations to be OK;
+    ``phase_status=FAIL`` validates field completeness and identity but allows
+    individual validation status to be FAIL/NOT_RUN, so a failing phase can
+    close honestly without polluting evidence or blocking lease release.
+    """
     required = policy.get("requiredValidations", {}).get(phase, [])
     if not required:
         return {"ok": True, "code": "LEDGER_NOT_REQUIRED", "phase": phase}
@@ -443,6 +457,7 @@ def validate_ledger_for_phase_close(
 
     problems: list[dict[str, Any]] = []
     degraded: list[str] = []
+    fail_status: list[str] = []
     for verification in required:
         entry = validations.get(verification)
         if not isinstance(entry, dict):
@@ -455,6 +470,12 @@ def validate_ledger_for_phase_close(
             )
             continue
         missing, is_degraded = validate_ledger_entry_v2(entry, verification)
+        # Retro §5.14: under phase_status=FAIL/WARN, status value hints
+        # (status=FAIL, status=NOT_RUN) are acceptable; only real field-
+        # completeness defects block close. Under phase_status=OK, status
+        # value hints are blocking.
+        if phase_status.upper() in {"FAIL", "WARN"}:
+            missing = [m for m in missing if not m.startswith("status=")]
         if missing:
             code = (
                 "MISSING_V2_FIELDS"
@@ -476,8 +497,21 @@ def validate_ledger_for_phase_close(
                     "code": code,
                 }
             )
-        elif is_degraded:
+            continue
+        if is_degraded:
             degraded.append(verification)
+            continue
+        # Under phase_status=FAIL/WARN, a FAIL/NOT_RUN status is acceptable.
+        entry_status = str(entry.get("status") or "").upper()
+        if entry_status in {"FAIL", "NOT_RUN"}:
+            if phase_status.upper() in {"FAIL", "WARN"}:
+                fail_status.append(verification)
+            else:
+                problems.append({
+                    "verification": verification,
+                    "missing": [f"status={entry_status}"],
+                    "code": "VALIDATION_NOT_OK",
+                })
 
     if problems:
         return {
@@ -488,6 +522,16 @@ def validate_ledger_for_phase_close(
             "problems": problems,
             "ledgerPath": str(ledger_path) if ledger_path else None,
             "detail": "natural-language override is not permitted",
+        }
+    if fail_status:
+        return {
+            "ok": True,
+            "code": "LEDGER_OK_FAIL",
+            "phase": phase,
+            "validated": required,
+            "failed": fail_status,
+            "degraded": degraded,
+            "ledgerPath": str(ledger_path) if ledger_path else None,
         }
     if degraded:
         return {
@@ -1169,6 +1213,14 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
         )
     change_dir = Path(resolved["changeDir"])
+    concurrency_block = hc.check_concurrency_block(project, resolved["changeId"])
+    if concurrency_block is not None:
+        return emit_error(
+            str(concurrency_block.get("code", "CONCURRENCY_BLOCKED")),
+            str(concurrency_block.get("message", "concurrency mode blocked begin")),
+            as_json=as_json,
+            extra={k: v for k, v in concurrency_block.items() if k not in {"ok", "message"}},
+        )
     blocked = foundation_gate_blocks(getattr(args, "task", None), change_dir)
     if blocked:
         return emit_error(
@@ -1407,7 +1459,8 @@ def cmd_close(args: argparse.Namespace) -> int:
             return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
 
     ledger_result = validate_ledger_for_phase_close(
-        change_dir, args.phase, policy, execution_root=execution_root
+        change_dir, args.phase, policy, execution_root=execution_root,
+        phase_status=args.status,
     )
     if not ledger_result.get("ok") and args.phase in {"run", "test", "package"}:
         return emit_error(

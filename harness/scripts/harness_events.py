@@ -506,6 +506,81 @@ def new_event_id(existing: list[dict[str, Any]] | None = None) -> str:
     return f"evt-{uuid.uuid4().hex}"
 
 
+def append_event(
+    change_dir: Path,
+    *,
+    phase: str,
+    type_: str,
+    note: str = "",
+    kind: str | None = None,
+    path: str | None = None,
+    run_id: str | None = None,
+    executor_tool: str | None = None,
+) -> dict[str, Any]:
+    """Programmatic append API (retro §5.31 C5/T16).
+
+    Validates and appends an event without going through argparse. Returns
+    a payload dict with ``ok``/``code``/``event``.
+    """
+    args = argparse.Namespace(
+        change_dir=str(change_dir),
+        phase=phase,
+        type=type_,
+        note=note,
+        kind=kind,
+        path=path,
+        run_id=run_id,
+        executor_tool=executor_tool,
+        command=None,
+        exit_code=None,
+        duration_ms=None,
+        status=None,
+        name=None,
+        code=None,
+        severity=None,
+        message=None,
+        decision=None,
+        reason=None,
+        issue_id=None,
+        scope=None,
+        target_event_id=None,
+        target_field=None,
+        old_value_hash=None,
+        new_value_json=None,
+        attempt=None,
+        executor_agent=None,
+        executor_model=None,
+        handoff_from_tool=None,
+        handoff_reason=None,
+        trace_id=None,
+        span_id=None,
+        parent_span_id=None,
+        runner_ms=None,
+        orchestration_active_ms=None,
+        wall_clock_ms=None,
+        user_wait_ms=None,
+        legacy_lenient=False,
+        json=True,
+    )
+    as_json = True
+    if type_ not in EVENT_TYPES:
+        return {"ok": False, "code": "EVENT_TYPE_INVALID", "message": f"unsupported type: {type_}"}
+    validation = validate_append_event(args)
+    if validation:
+        error_code, message = validation
+        return {"ok": False, "code": error_code, "message": message}
+    archived = archived_change_dir(change_dir)
+    if archived is not None:
+        return {"ok": False, "code": "ARCHIVED_CHANGE_IMMUTABLE", "message": str(archived)}
+    events_path_obj = events_path(change_dir)
+    lock_path = events_path_obj.with_name(events_path_obj.name + ".lock")
+    existing = []
+    event = build_event(args, existing)
+    with event_file_lock(lock_path):
+        atomic_append_line(events_path_obj, json.dumps(event, ensure_ascii=False))
+    return {"ok": True, "event": event, "events_path": str(events_path_obj), "rendered": False}
+
+
 def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dict[str, Any]:
     event: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -588,8 +663,31 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
         except json.JSONDecodeError as exc:
             return (
                 "CORRECTION_VALUE_INVALID_JSON",
-                f"CORRECTION_VALUE_INVALID_JSON: {exc.msg}",
+                f"CORRECTION_VALUE_INVALID_JSON: {exc}",
             )
+    # Retro §5.31: artifact events must distinguish file-backed from
+    # informational. file-backed requires a change-relative path; informational
+    # (preview/summary) must not masquerade as a file artifact. Legacy kind
+    # values (ledger, report, etc.) are treated as file-backed aliases.
+    if event_type == "artifact":
+        kind = str(getattr(args, "kind", "") or "").strip()
+        path = str(getattr(args, "path", "") or "").strip()
+        is_informational = kind == "informational"
+        if kind == "file-backed" and not path:
+            return (
+                "ARTIFACT_PATH_REQUIRED",
+                "ARTIFACT_PATH_REQUIRED: file-backed artifact requires --path",
+            )
+        # If kind is explicitly informational, path is optional. If kind is
+        # absent and path is absent, reject (can't infer file-backed without path).
+        if not kind and not path:
+            return (
+                "ARTIFACT_PATH_REQUIRED",
+                "ARTIFACT_PATH_REQUIRED: artifact without --kind or --path is ambiguous; "
+                "use --kind informational for previews or --path for file artifacts",
+            )
+        # If no kind is provided, infer from path presence: a path implies
+        # file-backed, absence implies informational (legacy compatibility).
     return None
 
 

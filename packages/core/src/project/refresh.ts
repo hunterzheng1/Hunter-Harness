@@ -10,7 +10,7 @@ import {
 } from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
-import { sha256Bytes } from "../fs/hash.js";
+import { aggregateInstalledContentHash, sha256Bytes } from "../fs/hash.js";
 import {
   refreshManagedBlockById,
   removeManagedBlock,
@@ -316,7 +316,8 @@ async function reconcileContextIndex(
   agents: HarnessAgent[],
   profiles: ReadonlyMap<HarnessAgent, HarnessProfile>,
   manifests: InstalledBundleStateV4["manifests"],
-  codebuddySurface: CodeBuddySurface
+  codebuddySurface: CodeBuddySurface,
+  verifications: ReadonlyMap<HarnessAgent, FreshnessIdentity>
 ): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
   let codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
@@ -350,10 +351,20 @@ async function reconcileContextIndex(
     },
     knowledge: { index: ".harness/knowledge/index.json" },
     codebase,
-    skill_bundles: Object.fromEntries(manifests.map((manifest) => [
-      manifest.adapter,
-      { registry_version: manifest.bundle_version, bundle_hash: manifest.bundle_manifest_hash }
-    ]))
+    skill_bundles: Object.fromEntries(manifests.map((manifest) => {
+      const ver = verifications.get(manifest.adapter as HarnessAgent);
+      return [
+        manifest.adapter,
+        {
+          registry_version: manifest.bundle_version,
+          bundle_hash: manifest.bundle_manifest_hash,
+          installedContentHash: ver?.installedContentHash ?? null,
+          verifiedAt: ver?.verifiedAt ?? null,
+          verificationStatus: ver?.verificationStatus ?? "unknown",
+          mismatchDetails: ver?.mismatchDetails ?? []
+        }
+      ];
+    }))
   };
   const next = JSON.stringify(record, null, 2) + "\n";
   if (existing === next) return null;
@@ -618,8 +629,57 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     root, agents, profiles, codebuddySurface
   );
   if (projectOperation !== null) ops.push(projectOperation);
+
+  // Per-file content verification (retro §5.1): compute installedContentHash
+  // and mismatchDetails for each selected adapter so context-index carries
+  // per-file proof, not just the aggregate bundle hash.
+  // Note: fileHex is called per-target; this is not a hot path (runs only on
+  // refresh, not per-test). If refresh latency becomes a concern, batch reads
+  // can replace the per-target loop.
+  const verifications = new Map<HarnessAgent, FreshnessIdentity>();
+  for (const agent of selectedAgents) {
+    const agentProfile = profiles.get(agent) ?? profile;
+    let bundleForVerify: LoadedAgentBundle;
+    try {
+      bundleForVerify = await loadAgentBundle(options.resourcesRoot, agentProfile, agent);
+    } catch {
+      continue;
+    }
+    const verifyTargets = managedTargetsFor(getAdapter(agent), bundleForVerify, {
+      profile: agentProfile,
+      codebuddySurface
+    });
+    const verifyMismatches: Array<{ relpath: string; expected: string; actual: string }> = [];
+    const verifyEntries: Array<{ relpath: string; sha256: string }> = [];
+    for (const target of verifyTargets) {
+      const rel = target.target_path.replace(/\\/g, "/");
+      const actual = await fileHex(join(root, target.target_path));
+      verifyEntries.push({ relpath: rel, sha256: actual ?? "" });
+      if (actual === null) {
+        verifyMismatches.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });
+      } else if (actual !== target.sha256) {
+        verifyMismatches.push({ relpath: rel, expected: target.sha256, actual });
+      }
+    }
+    verifications.set(agent, {
+      adapter: agent,
+      bundleVersion: bundleForVerify.manifest.bundle_version,
+      installedBundleVersion: null,
+      manifestHash: null,
+      installedManifestHash: null,
+      coreHash: null,
+      installedCoreHash: null,
+      adapterHash: null,
+      installedAdapterHash: null,
+      installedContentHash: aggregateInstalledContentHash(verifyEntries),
+      verifiedAt: new Date().toISOString(),
+      verificationStatus: verifyMismatches.length === 0 ? "verified" : "degraded",
+      mismatchDetails: verifyMismatches
+    });
+  }
+
   const contextOperation = await reconcileContextIndex(
-    root, agents, profiles, manifests, codebuddySurface
+    root, agents, profiles, manifests, codebuddySurface, verifications
   );
   if (contextOperation !== null) ops.push(contextOperation);
 
@@ -725,6 +785,22 @@ export interface FreshnessIdentity {
   adapterHash: string | null;
   /** 安装侧同一 target 集合当前字节的稳定哈希；缺文件时仍包含 null。 */
   installedAdapterHash: string | null;
+  /**
+   * Per-file aggregate hash over actually-installed managed files (retro §5.1).
+   * Unlike installedAdapterHash, this is the canonical content hash shared with
+   * the bundle manifest contract — null when no managed files can be read.
+   */
+  installedContentHash: string | null;
+  /** Timestamp (ISO8601) of the last per-file verification; null when unknown. */
+  verifiedAt: string | null;
+  /** Per-file verification status: verified | stale | degraded | unknown. */
+  verificationStatus: "verified" | "stale" | "degraded" | "unknown";
+  /** Per-file mismatch details (relpath/expected/actual); empty when verified. */
+  mismatchDetails: ReadonlyArray<{
+    relpath: string;
+    expected: string;
+    actual: string;
+  }>;
 }
 
 export interface AgentFreshness {
@@ -757,6 +833,18 @@ function freshnessEntry(
   identity: FreshnessIdentity
 ): AgentFreshness {
   return { agent, profile, status, identity, driftedFiles: [], missingFiles: [] };
+}
+
+function emptyVerification(): Pick<
+  FreshnessIdentity,
+  "installedContentHash" | "verifiedAt" | "verificationStatus" | "mismatchDetails"
+> {
+  return {
+    installedContentHash: null,
+    verifiedAt: null,
+    verificationStatus: "unknown",
+    mismatchDetails: []
+  };
 }
 
 const BUILD_MARKER_BUNDLE_PATH = ".harness-build.json";
@@ -798,7 +886,8 @@ export async function collectFreshness(
       coreHash: null,
       installedCoreHash: null,
       adapterHash: null,
-      installedAdapterHash: null
+      installedAdapterHash: null,
+      ...emptyVerification()
     };
 
     // Official bundle identity is loaded for every state we can verify.
@@ -861,6 +950,27 @@ export async function collectFreshness(
         await readOptionalText(join(root, markerTarget.target_path))
       );
     }
+
+    // Per-file content verification (retro §5.1): compare each managed
+    // target's actual sha256 against the official bundle projection. This
+    // is the per-file proof that registry_version+bundle_hash alone cannot
+    // provide; it feeds installedContentHash/verificationStatus/mismatchDetails.
+    const mismatchDetails: Array<{ relpath: string; expected: string; actual: string }> = [];
+    const contentEntries: Array<{ relpath: string; sha256: string }> = [];
+    for (const target of targets) {
+      const rel = target.target_path.replace(/\\/g, "/");
+      const actual = await fileHex(join(root, target.target_path));
+      contentEntries.push({ relpath: rel, sha256: actual ?? "" });
+      if (actual === null) {
+        mismatchDetails.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });
+      } else if (actual !== target.sha256) {
+        mismatchDetails.push({ relpath: rel, expected: target.sha256, actual });
+      }
+    }
+    identity.installedContentHash = aggregateInstalledContentHash(contentEntries);
+    identity.verifiedAt = new Date().toISOString();
+    identity.verificationStatus = mismatchDetails.length === 0 ? "verified" : "degraded";
+    identity.mismatchDetails = mismatchDetails;
 
     // 2. agent/profile 不匹配 → PROFILE_MISMATCH
     if (requestedProfile !== installedProfile) {

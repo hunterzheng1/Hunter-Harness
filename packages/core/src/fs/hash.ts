@@ -8,3 +8,12 @@ export function sha256Bytes(content: Uint8Array | string): string {
 export async function sha256File(path: string): Promise<string> {
   return sha256Bytes(await readFile(path));
 }
+
+export function aggregateInstalledContentHash(
+  files: ReadonlyArray<{ relpath: string; sha256: string }>
+): string {
+  const lines = [...files]
+    .sort((a, b) => a.relpath.localeCompare(b.relpath))
+    .map((entry) => `${entry.relpath}:${entry.sha256}`);
+  return createHash("sha256").update(lines.join("\n"), "utf8").digest("hex");
+}
