@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.20] — hunter-harness / [0.2.14] — @hunter-harness/workflow-harness
+
+### Fixed (P0 — 2026-07-20 phase1b 复盘)
+
+- **C1 bundle 逐文件 manifest + 安装事务**（§5.1/5.25）：发布 bundle 生成逐文件 manifest（relpath/sha256/size/mode/adapterTransformationId）；install 在原子切换前逐文件校验 staging，mismatch 时 fail closed 不更新元数据；context-index 增加 `installedContentHash`/`verifiedAt`/`verificationStatus`/`mismatchDetails`；`harness_deploy.py` 新增 `generate-manifest`/`verify-installed` 子命令。
+- **C2 并发模式合同**（§5.2）：effective config 声明 `concurrencyMode`（`single-active` 默认 / `isolated-multi-active`）；`harness_gate.py begin` 在 single-active 下阻断第二个 active change；`harness_preflight.py` 输出 `concurrencyMode`/`activeChanges`/`allowedParallelLevels`。
+- **C3 execution-root 合同**（§5.10/5.21）：`harness_test_guard.py close` 在 projectRoot 不匹配时返回 `EXECUTION_ROOT_MISMATCH`（优先于 `SNAPSHOT_INVALID`）；close 交叉校验 manifest active entries vs recordedCount=0，不一致时 fail closed。
+- **C4 失败态 gate close**（§5.14）：`validate_ledger_for_phase_close` 新增 `phase_status` 参数；`close --status FAIL` 允许 validation FAIL/NOT_RUN，写 `LEDGER_OK_FAIL`；`close --status OK` 在失败 ledger 上必须失败；`validate_ledger_entry_v2` 动态 status 值提示。
+- **C5 archive status preflight**（§5.31）：`harness_events.py` artifact 按 `kind` 区分 `file-backed`/`informational`，file-backed 必须有 path；`harness_archive.py` 新增 `artifact_preflight` 分类 informational/canonicalizable/blocking；新增 `append_event` 可编程 API。
+- **C6 archive report adequacy**（§5.32）：`harness_archive.py` 新增 `validate_report_adequacy`，检查 diff=0+commit 非空、typed metrics 缺失、stageStatus 与 event reducer 矛盾，阻断全绿归档。
+
+### Known Limitations (P1 deferred)
+
+- T4 信任根脚本自校验未实现（避免加载时循环依赖）
+- T8-T11 snapshot v2 schema 升级、CLI `--main-project`/`--execution-root` 拆分、phase capsule 持久化为较大重构
+- T13 promotion gate 分离、T14 `abort` 命令未实现（`close --status FAIL` 已可用）
+- T20 独立 source projection、T21 typed sidecar、T22 duration 互斥、T23 `repair` 命令为较大重构
+- `artifact_preflight` 尚未集成到 `cmd_finalize` 前置（需手工 correction artifact path）
+
 ## [0.2.17] — hunter-harness / [0.2.10] — @hunter-harness/workflow-harness
 
 ### Fixed
