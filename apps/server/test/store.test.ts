@@ -345,8 +345,8 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     if (cursorArt === undefined) throw new Error("cursor artifact missing");
     const bytes = await store.artifactBytes(cursorArt);
     const zip = new AdmZip(Buffer.from(bytes));
-    const manifestEntry = zip.getEntry("hunter-skill.json");
-    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifestEntry = zip.getEntry("hunter-harness.skill.json");
+    if (manifestEntry === null) throw new Error("hunter-harness.skill.json missing");
     const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
     expect(manifest.agent).toBe(CURSOR);
     expect(manifest.target_path).toBe(".cursor/skills/harness-x/");
@@ -361,8 +361,8 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     if (codexArt === undefined) throw new Error("codex artifact missing");
     const bytes = await store.artifactBytes(codexArt);
     const zip = new AdmZip(Buffer.from(bytes));
-    const manifestEntry = zip.getEntry("hunter-skill.json");
-    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifestEntry = zip.getEntry("hunter-harness.skill.json");
+    if (manifestEntry === null) throw new Error("hunter-harness.skill.json missing");
     const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
     expect(manifest.agent).toBe(CODEX);
     expect(manifest.target_path).toBe(".agents/skills/harness-x/");

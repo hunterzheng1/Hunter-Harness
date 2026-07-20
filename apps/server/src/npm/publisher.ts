@@ -24,6 +24,7 @@ const MANIFEST_SCHEMA_VERSION = 3;
 const SAFE_NPM_PUBLISH_FAILURE_MESSAGE = "npm registry rejected the publish request";
 const RESERVED_PACKAGE_PATHS = new Set([
   ".npmrc",
+  "hunter-harness.skill.json",
   "hunter-skill.json",
   "npm-shrinkwrap.json",
   "package-lock.json",
@@ -130,7 +131,7 @@ function buildHunterSkillManifest(
 
 export function buildSkillNpmPackageJson(input: SkillNpmPackageInput): Record<string, unknown> {
   const files = [
-    "hunter-skill.json",
+    "hunter-harness.skill.json",
     ...input.sourceFiles.map((f) => f.path).sort((a, b) => a.localeCompare(b))
   ];
   return {
@@ -150,7 +151,7 @@ async function writePackageDirectory(
 ): Promise<void> {
   await writeFile(join(directory, "package.json"), JSON.stringify(packageJson, null, 2) + "\n", "utf8");
   await writeFile(
-    join(directory, "hunter-skill.json"),
+    join(directory, "hunter-harness.skill.json"),
     JSON.stringify(hunterSkillManifest, null, 2) + "\n",
     "utf8"
   );
@@ -200,7 +201,8 @@ async function defaultReadRemotePackageDigest(
   token: string
 ): Promise<string | null> {
   const registry = (process.env.npm_config_registry ?? "https://registry.npmjs.org").replace(/\/$/, "");
-  const metadataResponse = await fetch(`${registry}/${encodeURIComponent(packageName)}`, {
+  const metadataUrl = new URL(`${registry}/${encodeURIComponent(packageName)}`);
+  const metadataResponse = await fetch(metadataUrl, {
     headers: { authorization: `Bearer ${token}` }
   });
   if (metadataResponse.status === 404) return null;
@@ -210,9 +212,15 @@ async function defaultReadRemotePackageDigest(
   };
   const tarballUrl = metadata.versions?.[version]?.dist?.tarball;
   if (tarballUrl === undefined) return null;
-  const tarballResponse = await fetch(tarballUrl, {
-    headers: { authorization: `Bearer ${token}` }
-  });
+  let resolvedTarballUrl: URL;
+  try {
+    resolvedTarballUrl = new URL(tarballUrl, metadataUrl);
+  } catch {
+    return null;
+  }
+  const tarballResponse = await fetch(resolvedTarballUrl, resolvedTarballUrl.origin === metadataUrl.origin
+    ? { headers: { authorization: `Bearer ${token}` } }
+    : undefined);
   if (!tarballResponse.ok) return null;
   return sha256Bytes(new Uint8Array(await tarballResponse.arrayBuffer()));
 }

@@ -113,7 +113,7 @@ export function SkillUploadPanel(props: {
 
   async function submit(evidence?: SensitiveReviewSubmission): Promise<void> {
     const upload = props.api.uploadSkillDraft;
-    if (upload === undefined || files.length === 0 || summary?.entryPath === null) return;
+    if (upload === undefined || files.length === 0 || summary === null || summary.entryPath === null) return;
     setState("uploading");
     setError(null);
     try {
@@ -191,7 +191,7 @@ export function SkillUploadPanel(props: {
     </div>}
     {error === null ? null : <div className="notice danger" role="alert">{error}</div>}
     {state === "success" ? <div className="notice success" role="status">{copy.uploadSuccess}</div> : null}
-    {review === null ? <button type="button" disabled={files.length === 0 || summary?.entryPath === null || state === "uploading"} onClick={() => void submit()}>
+    {review === null ? <button type="button" disabled={files.length === 0 || summary === null || summary.entryPath === null || state === "uploading"} onClick={() => void submit()}>
       {state === "uploading" ? copy.uploading : props.hasDraft === true ? copy.replaceDraft : copy.addUnpublishedSkill}
     </button> : null}
   </div>;

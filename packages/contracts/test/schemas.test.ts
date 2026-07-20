@@ -34,6 +34,7 @@ import {
   modifyOperationSchema,
   projectConfigSchema,
   publishSkillRequestSchema,
+  publishUnifiedSkillRequestSchema,
   registryAgentSchema,
   registryArtifactSchema,
   registrySkillDetailSchema,
@@ -46,6 +47,7 @@ import {
   skillCheckResultSchema,
   skillDiffFileSchema,
   skillFrontmatterSchema,
+  skillTargetAgentSchema,
   skillNameSchema,
   skillUsageExampleSchema,
   sortHarnessAgents,
@@ -60,6 +62,17 @@ import {
   workflowFamilyVersionSchema,
   workflowBundleManifestSchema,
 } from "../src/index.js";
+
+describe("active Skill target contracts", () => {
+  it.each(["generic", "mcp"])("rejects legacy agent %s for unified publish", (sourceAgent) => {
+    expect(skillTargetAgentSchema.safeParse(sourceAgent).success).toBe(false);
+    expect(publishUnifiedSkillRequestSchema.safeParse({
+      version: "1.0.0",
+      sourceAgent,
+      draftRevision: 1
+    }).success).toBe(false);
+  });
+});
 
 describe("multi-agent contracts", () => {
   it("harnessAgentSchema accepts exactly four agents", () => {

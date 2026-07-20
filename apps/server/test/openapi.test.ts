@@ -93,10 +93,14 @@ describe("OpenAPI v1 contract", () => {
     )) as {
       paths: Record<string, Record<string, {
         deprecated?: boolean;
+        parameters?: Array<{ schema?: { $ref?: string } }>;
         responses?: Record<string, unknown>;
         requestBody?: { content?: Record<string, { schema?: { $ref?: string } }> };
       }>>;
-      components: { schemas: Record<string, { enum?: string[] }> };
+      components: { schemas: Record<string, {
+        enum?: string[];
+        properties?: Record<string, { $ref?: string }>;
+      }> };
     };
     const publish = document.paths["/api/v1/skills/{slug}/publish"]?.post;
     expect(publish?.responses).toHaveProperty("502");
@@ -106,6 +110,10 @@ describe("OpenAPI v1 contract", () => {
     expect(document.paths["/api/v1/skills/{slug}/draft/{agent}/publish"]?.post?.deprecated).toBe(true);
     expect(document.paths["/api/v1/skills/{slug}/npm-release"]?.post?.deprecated).toBe(true);
     expect(document.components.schemas.RegistryAgent?.enum).toContain("codebuddy");
+    expect(document.paths["/api/v1/skills/draft"]?.post?.parameters?.[1]?.schema?.$ref)
+      .toBe("#/components/schemas/SkillTargetAgent");
+    expect(document.components.schemas.PublishUnifiedSkillRequest?.properties?.sourceAgent?.$ref)
+      .toBe("#/components/schemas/SkillTargetAgent");
   });
 
   it("documents STALE_PUSH as a 409 response on finalizeProposal", async () => {

@@ -7,6 +7,7 @@ import type {
   FixPlanItem,
   PublishSkillResponse,
   RegistryAgent,
+  SkillTargetAgent,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
@@ -32,6 +33,10 @@ import {
   tagSlug
 } from "./skill-shared";
 import { SkillUploadPanel } from "./skill-upload-panel";
+
+function isSkillTargetAgent(agent: RegistryAgent): agent is SkillTargetAgent {
+  return agent === "claude-code" || agent === "codex" || agent === "cursor" || agent === "codebuddy";
+}
 
 function ContractSecurityOverview({ frontmatter, t }: { frontmatter: SkillFrontmatter | null; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
   return <div className="contract-card-grid">
@@ -344,7 +349,7 @@ function AgentCheckPanel({
   }
 
   async function publish(): Promise<void> {
-    if (draft === null || publishPending) return;
+    if (draft === null || publishPending || !isSkillTargetAgent(currentAgent)) return;
     setError(null);
     setPublishPending(true);
     try {
@@ -440,7 +445,9 @@ function AgentCheckPanel({
 
   return <div className="check-publish-layout">
     <div className="publish-toolbar publish-toolbar-stacked">
-      <SkillUploadPanel api={api} agent={currentAgent} hasDraft={draft !== null} onUploaded={() => onPublished()} />
+      {isSkillTargetAgent(currentAgent)
+        ? <SkillUploadPanel api={api} agent={currentAgent} hasDraft={draft !== null} onUploaded={() => onPublished()} />
+        : null}
       <div className="publish-toolbar-actions">
         {draft === null ? null : <>
           <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
@@ -449,7 +456,7 @@ function AgentCheckPanel({
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className="secondary prominent-action" disabled={fixing} onClick={() => void previewFix(null)}>{sd.oneClickFix}</button>
           <button type="button" className="secondary prominent-action" disabled={fixSuggestionRun} onClick={() => void fetchFixSuggestions()}>{sd.aiFixSuggestion}</button>
-          <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
+          {isSkillTargetAgent(currentAgent) ? <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button> : null}
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
           {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
         </>}

@@ -249,10 +249,10 @@ interface BuiltArtifact {
   bytes: Uint8Array;
 }
 
-// zip 内 hunter-skill.json manifest 的 schema 版本（zip 元数据，无 contracts schema 约束，skill-cli 不 parse 该字段；Y-8 去魔法值）
+// zip 内 hunter-harness.skill.json manifest 的 schema 版本（zip 元数据，无 contracts schema 约束，skill-cli 不 parse 该字段；Y-8 去魔法值）
 const MANIFEST_SCHEMA_VERSION = 2;
 
-// 单 agent 制品构建（源文件驱动）：zip 全部 sourceFiles + hunter-skill.json manifest。
+// 单 agent 制品构建（源文件驱动）：zip 全部 sourceFiles + hunter-harness.skill.json manifest。
 // installable 才构建；entry 缺失抛 422 SKILL_ENTRY_NOT_FOUND；agent 未 installable 返回 null（由调用方决定 422）。
 // manifest source_sha256（取代旧 source_ir_sha256）= sourceFiles canonical sha256；target_path = installTarget(slug) 文件夹根（设计 §3.4）。
 function buildArtifactFor(
@@ -292,7 +292,7 @@ function buildArtifactFor(
   for (const f of sourceFiles) {
     zip.addFile(f.path, Buffer.from(f.content, "utf8"));
   }
-  zip.addFile("hunter-skill.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8"));
+  zip.addFile("hunter-harness.skill.json", Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8"));
   return { agent, bytes: zip.toBuffer() };
 }
 
@@ -1203,6 +1203,14 @@ export class RegistryStore {
       });
     }
 
+    const previousDrafts = this.drafts.get(input.slug);
+    const remainingDrafts = previousDrafts === undefined
+      ? undefined
+      : new Map(previousDrafts);
+    remainingDrafts?.delete(sourceAgent);
+    const nextDrafts = remainingDrafts !== undefined && remainingDrafts.size > 0
+      ? remainingDrafts
+      : undefined;
     const versions = [...(existing?.versions ?? []), ...builtArtifacts.map((built) => built.version)];
     const defaultAgent = existing?.detail.defaultAgent ?? sourceAgent;
     const detail = registrySkillDetailSchema.parse({
@@ -1219,7 +1227,7 @@ export class RegistryStore {
       status: "published",
       latest_version: input.version,
       defaultAgent,
-      agents: agentsFor(input.slug, defaultAgent, versions, undefined),
+      agents: agentsFor(input.slug, defaultAgent, versions, nextDrafts),
       revision: (existing?.detail.revision ?? 0) + 1,
       updated_at: createdAt
     });
@@ -1246,9 +1254,9 @@ export class RegistryStore {
       }
     };
     const attemptKey = `${attemptPrefix}\0${npmResult.tarballHash}`;
-    const previousDrafts = this.drafts.get(input.slug);
     this.skills.set(input.slug, nextState);
-    this.drafts.delete(input.slug);
+    if (nextDrafts === undefined) this.drafts.delete(input.slug);
+    else this.drafts.set(input.slug, nextDrafts);
     this.successfulPublishAttempts.set(attemptKey, structuredClone(response));
     try {
       await this.persist();

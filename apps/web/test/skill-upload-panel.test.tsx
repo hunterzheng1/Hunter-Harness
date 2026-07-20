@@ -38,6 +38,22 @@ describe("SkillUploadPanel", () => {
     expect(screen.getByLabelText(/选择 ZIP|choose zip/i)).toHaveAttribute("accept", ".zip");
   });
 
+  it("keeps submission disabled when the selected ZIP cannot be inspected", async () => {
+    const uploadSkillDraft = vi.fn();
+    const api = { uploadSkillDraft } as unknown as HunterApi;
+    render(<SkillUploadPanel api={api} agent="claude-code" onUploaded={() => undefined} />);
+
+    fireEvent.change(screen.getByLabelText(/选择 ZIP|choose zip/i), {
+      target: { files: [new File(["not-a-zip"], "broken.zip", { type: "application/zip" })] }
+    });
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: /添加为未发布技能|add as unpublished/i });
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(uploadSkillDraft).not.toHaveBeenCalled();
+  });
+
   it("keeps selected files while reviewing safe findings and retries with evidence", async () => {
     const uploadSkillDraft = vi.fn()
       .mockRejectedValueOnce(new ApiClientError(422, "SENSITIVE_CONTENT_REVIEW_REQUIRED", "review", {

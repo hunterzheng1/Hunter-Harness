@@ -12,6 +12,7 @@ import {
   registryAgentSchema,
   registrySlugSchema,
   sensitiveReviewSubmissionSchema,
+  skillTargetAgentSchema,
   setDefaultAgentRequestSchema,
   workflowFamilyMutationSchema,
   bindProjectWorkflowFamilyRequestSchema,
@@ -272,31 +273,36 @@ function resolveUploadFiles(
   tooLargeCode = "PROPOSAL_TOO_LARGE"
 ): SourceFile[] {
   if (collected.length === 1 && /\.zip$/i.test(collected[0]?.path ?? "")) {
-    const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
-    const files: SourceFile[] = [];
-    let expandedBytes = 0;
-    for (const entry of zip.getEntries()) {
-      if (entry.isDirectory) continue;
-      if (files.length >= limits.maxUploadFiles) {
-        throw new ServerDomainError(413, tooLargeCode, "zip contains too many files");
+    try {
+      const zip = new AdmZip(collected[0]?.buffer ?? Buffer.alloc(0));
+      const files: SourceFile[] = [];
+      let expandedBytes = 0;
+      for (const entry of zip.getEntries()) {
+        if (entry.isDirectory) continue;
+        if (files.length >= limits.maxUploadFiles) {
+          throw new ServerDomainError(413, tooLargeCode, "zip contains too many files");
+        }
+        if (DANGEROUS_PATH.test(entry.entryName)) {
+          throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "zip slip detected: " + entry.entryName);
+        }
+        const expanded = entry.header.size;
+        const compressed = entry.header.compressedSize;
+        if (expanded > limits.maxFileBytes || expandedBytes + expanded > limits.maxProposalBytes ||
+            (expanded > 1024 * 1024 && (compressed === 0 || expanded / compressed > 100))) {
+          throw new ServerDomainError(413, tooLargeCode, "zip expanded size or compression ratio exceeds the upload limit");
+        }
+        const data = entry.getData();
+        expandedBytes += data.byteLength;
+        if (data.byteLength !== expanded || expandedBytes > limits.maxProposalBytes) {
+          throw new ServerDomainError(413, tooLargeCode, "zip expanded size exceeds the upload limit");
+        }
+        files.push({ path: entry.entryName, content: decodeUtf8(data, entry.entryName) });
       }
-      if (DANGEROUS_PATH.test(entry.entryName)) {
-        throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "zip slip detected: " + entry.entryName);
-      }
-      const expanded = entry.header.size;
-      const compressed = entry.header.compressedSize;
-      if (expanded > limits.maxFileBytes || expandedBytes + expanded > limits.maxProposalBytes ||
-          (expanded > 1024 * 1024 && (compressed === 0 || expanded / compressed > 100))) {
-        throw new ServerDomainError(413, tooLargeCode, "zip expanded size or compression ratio exceeds the upload limit");
-      }
-      const data = entry.getData();
-      expandedBytes += data.byteLength;
-      if (data.byteLength !== expanded || expandedBytes > limits.maxProposalBytes) {
-        throw new ServerDomainError(413, tooLargeCode, "zip expanded size exceeds the upload limit");
-      }
-      files.push({ path: entry.entryName, content: decodeUtf8(data, entry.entryName) });
+      return normalizeBundleRoot(files);
+    } catch (error) {
+      if (error instanceof ServerDomainError) throw error;
+      throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "skill ZIP archive is invalid");
     }
-    return normalizeBundleRoot(files);
   }
   return normalizeBundleRoot(collected.map((c) => ({ path: c.path, content: decodeUtf8(c.buffer, c.path) })));
 }
@@ -1274,16 +1280,26 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
   app.post("/api/v1/skills/draft", async (request, reply) => {
     const { actor, requestId } = await authenticated(request, repository);
     const query = request.query as Record<string, string | undefined>;
-    const agentResult = registryAgentSchema.safeParse(query.agent);
+    const registryAgentResult = registryAgentSchema.safeParse(query.agent);
+    if (!registryAgentResult.success) {
+      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent query param must be a valid registry agent");
+    }
+    const agentResult = skillTargetAgentSchema.safeParse(registryAgentResult.data);
     if (!agentResult.success) {
-      throw new ServerDomainError(422, "VALIDATION_FAILED", "agent query param is required and must be a valid registry agent");
+      throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "agent query param must be an active Skill target agent");
     }
     const agent = agentResult.data;
     const collected: Array<{ path: string; buffer: Buffer }> = [];
+    let collectedBytes = 0;
     let sensitiveReview: unknown;
     for await (const part of request.parts()) {
       if (part.type === "file") {
-        collected.push({ path: part.filename ?? "file", buffer: await part.toBuffer() });
+        const buffer = await part.toBuffer();
+        collectedBytes += buffer.byteLength;
+        if (collectedBytes > config.maxProposalBytes) {
+          throw new ServerDomainError(413, "SKILL_UPLOAD_TOO_LARGE", "skill upload exceeds the total size limit");
+        }
+        collected.push({ path: part.filename ?? "file", buffer });
       } else if (part.fieldname === "sensitive_review") {
         const raw = String(part.value);
         if (Buffer.byteLength(raw, "utf8") > 16_384) {
@@ -1383,7 +1399,15 @@ export async function createServer(options: CreateServerOptions): Promise<Fastif
         "npm publish is not configured on the server (set HUNTER_HARNESS_NPM_SCOPE and HUNTER_HARNESS_NPM_TOKEN_FILE)"
       );
     }
-    const body = publishUnifiedSkillRequestSchema.parse(request.body);
+    const rawBody = request.body as { sourceAgent?: unknown };
+    const registrySourceAgentResult = registryAgentSchema.safeParse(rawBody.sourceAgent);
+    if (!registrySourceAgentResult.success) {
+      throw new ServerDomainError(400, "VALIDATION_FAILED", "sourceAgent must be a valid registry agent");
+    }
+    if (!skillTargetAgentSchema.safeParse(registrySourceAgentResult.data).success) {
+      throw new ServerDomainError(422, "SKILL_BUNDLE_INVALID", "sourceAgent must be an active Skill target agent");
+    }
+    const body = publishUnifiedSkillRequestSchema.parse(rawBody);
     const result = await mutation(request, repository, actor, requestId, async () => {
       const published = await registry.publishUnified({
         slug,

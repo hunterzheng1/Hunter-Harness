@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { isNpmPublishConfigured, loadNpmPublishConfig, packageNameForSkill, packageNameForWorkflowFamily } from "../src/npm/config.js";
 import {
@@ -47,13 +47,18 @@ describe("npm publish config", () => {
 });
 
 describe("skill npm publisher", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
   it("builds a data-only package.json without bin or scripts", () => {
     const packageJson = buildSkillNpmPackageJson(sampleInput);
     expect(packageJson).toMatchObject({
       name: "@hunter-skills/harness-sync",
       version: "1.1.0",
       license: "UNLICENSED",
-      files: ["hunter-skill.json", "SKILL.md"]
+      files: ["hunter-harness.skill.json", "SKILL.md"]
     });
     expect(packageJson).not.toHaveProperty("bin");
     expect(packageJson).not.toHaveProperty("scripts");
@@ -88,6 +93,10 @@ describe("skill npm publisher", () => {
     }, {
       packDirectory: async (directory) => {
         expect(await readFile(`${directory}/examples/nested/prompt.md`, "utf8")).toBe("# prompt\n");
+        expect(JSON.parse(await readFile(`${directory}/hunter-harness.skill.json`, "utf8"))).toMatchObject({
+          schema_version: 3,
+          slug: "harness-sync"
+        });
         return Buffer.from("fake-tarball");
       }
     });
@@ -104,7 +113,7 @@ describe("skill npm publisher", () => {
     });
   });
 
-  it.each(["package.json", "hunter-skill.json", ".npmrc", "package-lock.json"])(
+  it.each(["package.json", "hunter-harness.skill.json", "hunter-skill.json", ".npmrc", "package-lock.json"])(
     "rejects authored npm control file %s before packing",
     async (path) => {
       let packed = false;
@@ -197,6 +206,51 @@ describe("skill npm publisher", () => {
       createTarballDigest: () => "sha256:" + "same-tarball"
     });
     expect(result.status).toBe("idempotent");
+  });
+
+  it("does not forward npm authorization to a cross-origin tarball URL", async () => {
+    const requests: Array<{ url: string; authorization: string | null }> = [];
+    vi.stubEnv("npm_config_registry", "https://registry.example.test");
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({
+        url,
+        authorization: new Headers(init?.headers).get("authorization")
+      });
+      if (url.startsWith("https://registry.example.test/")) {
+        return new Response(JSON.stringify({
+          versions: {
+            "1.1.0": { dist: { tarball: "https://cdn.example.test/harness-sync.tgz" } }
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("same-tarball", { status: 200 });
+    });
+
+    const result = await publishSkillNpmPackage(
+      sampleInput,
+      { scope: "@hunter-skills", token: "secret-token" },
+      {
+        packDirectory: async () => Buffer.from("same-tarball"),
+        publish: async () => {
+          const error = new Error("version conflict") as Error & { statusCode?: number };
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+    );
+
+    expect(result.status).toBe("idempotent");
+    expect(requests).toEqual([
+      {
+        url: "https://registry.example.test/%40hunter-skills%2Fharness-sync",
+        authorization: "Bearer secret-token"
+      },
+      {
+        url: "https://cdn.example.test/harness-sync.tgz",
+        authorization: null
+      }
+    ]);
   });
 
   it("maps npm 409 conflicts without throwing", async () => {

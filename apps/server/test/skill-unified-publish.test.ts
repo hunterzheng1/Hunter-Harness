@@ -45,6 +45,27 @@ function singleFileMultipart(filename: string, content: string): { payload: stri
   return { payload, headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
 }
 
+function multiFileMultipart(files: Array<{ path: string; content: string }>): { payload: string; headers: Record<string, string> } {
+  const boundary = "----multi-skill-upload";
+  const parts = files.map(({ path, content }) =>
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${path}"\r\nContent-Type: text/plain\r\n\r\n${content}\r\n`
+  );
+  parts.push(`--${boundary}--\r\n`);
+  return { payload: parts.join(""), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
+function corruptZipMultipart(): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = "----corrupt-zip-upload";
+  return {
+    payload: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="skill.zip"\r\nContent-Type: application/zip\r\n\r\n`),
+      Buffer.from("this is not a ZIP archive"),
+      Buffer.from(`\r\n--${boundary}--\r\n`)
+    ]),
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` }
+  };
+}
+
 function maliciousZipMultipart(): { payload: Buffer; headers: Record<string, string> } {
   const zip = new AdmZip();
   zip.addFile("SKILL.md", Buffer.from(skill));
@@ -381,6 +402,69 @@ describe("unified skill publish", () => {
     expect(response.json().error.code).toBe("SKILL_UPLOAD_TOO_LARGE");
   });
 
+  it("rejects folder uploads whose files cumulatively exceed maxProposalBytes", async () => {
+    await app.close();
+    const limitedRepository = new MemoryRepository();
+    await limitedRepository.createActorWithToken({ actorId: "actor_owner", token });
+    app = await createServer({
+      repository: limitedRepository,
+      storage: new MemoryArtifactStorage(),
+      config: { maxFileBytes: 96, maxProposalBytes: 100 },
+      npmPublishConfig: { scope: "@hunter-harness", token: "npm-token" }
+    });
+    const upload = multiFileMultipart([
+      { path: "SKILL.md", content: skill },
+      { path: "notes.md", content: "x".repeat(64) }
+    ]);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/draft?agent=claude-code",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    expect(response.statusCode).toBe(413);
+    expect(response.json().error.code).toBe("SKILL_UPLOAD_TOO_LARGE");
+    const draft = await app.inject({
+      method: "GET",
+      url: "/api/v1/skills/frontend-ui-beautify/draft/claude-code",
+      headers: headers()
+    });
+    expect(draft.statusCode).toBe(404);
+  });
+
+  it.each(["generic", "mcp"])("rejects legacy agent %s on new upload and publish APIs", async (agent) => {
+    const upload = multipart();
+    const uploaded = await app.inject({
+      method: "POST",
+      url: `/api/v1/skills/draft?agent=${agent}`,
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    expect(uploaded.statusCode).toBe(422);
+    expect(uploaded.json().error.code).toBe("SKILL_BUNDLE_INVALID");
+
+    const published = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/frontend-ui-beautify/publish",
+      payload: { version: "0.1.0", sourceAgent: agent, draftRevision: 1 },
+      headers: headers()
+    });
+    expect(published.statusCode).toBe(422);
+    expect(published.json().error.code).toBe("SKILL_BUNDLE_INVALID");
+  });
+
+  it("maps a corrupt ZIP archive to the Skill bundle contract", async () => {
+    const upload = corruptZipMultipart();
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/skills/draft?agent=claude-code",
+      payload: upload.payload,
+      headers: { ...headers(), ...upload.headers }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json().error.code).toBe("SKILL_BUNDLE_INVALID");
+  });
+
   it("maps ZIP path traversal to the Skill bundle contract", async () => {
     const upload = maliciousZipMultipart();
     const response = await app.inject({
@@ -412,6 +496,34 @@ describe("unified skill publish", () => {
     expect(published.statusCode).toBe(200);
     const detail = await app.inject({ method: "GET", url: "/api/v1/skills/frontend-ui-beautify", headers: headers() });
     expect(detail.json().defaultAgent).toBe("codebuddy");
+
+    const retained = await app.inject({
+      method: "GET",
+      url: "/api/v1/skills/frontend-ui-beautify/draft/claude-code",
+      headers: headers()
+    });
+    expect(retained.statusCode).toBe(200);
+
+    await app.close();
+    app = await createServer({
+      repository,
+      storage,
+      registryPersistence: {
+        load: () => repository.loadRegistryState(),
+        save: (snapshot) => repository.saveRegistryState(snapshot)
+      },
+      npmPublishConfig: { scope: "@hunter-harness", token: "npm-token" },
+      npmPublisherDeps: {
+        packDirectory: async () => Buffer.from("unified-tarball"),
+        publish: async () => { publishCount += 1; }
+      }
+    });
+    const retainedAfterRestart = await app.inject({
+      method: "GET",
+      url: "/api/v1/skills/frontend-ui-beautify/draft/claude-code",
+      headers: headers()
+    });
+    expect(retainedAfterRestart.statusCode).toBe(200);
   });
 
   it("keeps the draft and returns a non-2xx response when npm rejects publish", async () => {

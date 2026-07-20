@@ -35,6 +35,10 @@ import { planSkillInstall } from "@hunter-harness/core";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
 
+const SKILL_PACKAGE_MANIFEST = "hunter-harness.skill.json";
+const LEGACY_SKILL_PACKAGE_MANIFEST = "hunter-skill.json";
+const SKILL_PACKAGE_MANIFESTS = new Set([SKILL_PACKAGE_MANIFEST, LEGACY_SKILL_PACKAGE_MANIFEST]);
+
 export interface SkillCliDependencies {
   cwd?: string;
   env?: Readonly<Record<string, string | undefined>>;
@@ -42,7 +46,7 @@ export interface SkillCliDependencies {
   stdout?: (value: string) => void;
   stderr?: (value: string) => void;
   pacoteTarball?: (packageName: string) => Promise<Buffer>;
-  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  extractNpmTarball?: (tarball: Buffer, destination: string) => Promise<void>;
   fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
   userHome?: string;
   isTTY?: boolean;
@@ -56,7 +60,7 @@ interface ResolvedSkillCliDependencies {
   stdout: (value: string) => void;
   stderr: (value: string) => void;
   pacoteTarball?: (packageName: string) => Promise<Buffer>;
-  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  extractNpmTarball?: (tarball: Buffer, destination: string) => Promise<void>;
   fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
   userHome: string;
   isTTY: boolean;
@@ -275,26 +279,31 @@ async function walkSourceFiles(root: string, relative = ""): Promise<SourceFile[
 }
 
 async function extractTarGzToDirectory(tarball: Buffer, destination: string): Promise<void> {
-  const tarPath = join(destination, "package.tgz");
-  const extractDir = join(destination, "extracted");
-  await writeFile(tarPath, tarball);
-  await mkdir(extractDir, { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
-      if (error !== null) reject(error);
-      else resolve();
+  const workspace = await mkdtemp(join(tmpdir(), "hunter-skill-npm-unpack-"));
+  try {
+    const tarPath = join(workspace, "package.tgz");
+    const extractDir = join(workspace, "extracted");
+    await writeFile(tarPath, tarball);
+    await mkdir(extractDir, { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
+        if (error !== null) reject(error);
+        else resolve();
+      });
     });
-  });
-  const packageDir = join(extractDir, "package");
-  const entries = await readdir(packageDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const source = join(packageDir, entry.name);
-    const target = join(destination, entry.name);
-    if (entry.isDirectory()) {
-      await cp(source, target, { recursive: true });
-    } else {
-      await copyFile(source, target);
+    const packageDir = join(extractDir, "package");
+    const entries = await readdir(packageDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const source = join(packageDir, entry.name);
+      const target = join(destination, entry.name);
+      if (entry.isDirectory()) {
+        await cp(source, target, { recursive: true });
+      } else {
+        await copyFile(source, target);
+      }
     }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 }
 
@@ -304,28 +313,26 @@ async function extractNpmSkillPackage(
 ): Promise<{ bytes: Buffer; metadata: unknown; sourceFiles: SourceFile[] }> {
   const directory = await mkdtemp(join(tmpdir(), "hunter-skill-npm-install-"));
   try {
-    if (dependencies.pacoteExtract !== undefined) {
-      await dependencies.pacoteExtract(packageName, directory);
-    } else if (dependencies.fetchNpmTarball !== undefined || dependencies.pacoteTarball !== undefined) {
-      const tarball = dependencies.fetchNpmTarball !== undefined
-        ? await dependencies.fetchNpmTarball(packageName)
-        : dependencies.pacoteTarball !== undefined
-          ? await dependencies.pacoteTarball(packageName)
-          : Buffer.alloc(0);
-      await extractTarGzToDirectory(tarball, directory);
-    } else {
-      const pacote = await import("pacote");
-      await pacote.default.extract(packageName, directory);
-    }
     const bytes = dependencies.pacoteTarball !== undefined
       ? await dependencies.pacoteTarball(packageName)
       : dependencies.fetchNpmTarball !== undefined
         ? await dependencies.fetchNpmTarball(packageName)
         : await (await import("pacote")).default.tarball(packageName);
-    const manifestRaw = await readFile(join(directory, "hunter-skill.json"), "utf8");
+    if (dependencies.extractNpmTarball !== undefined) {
+      await dependencies.extractNpmTarball(bytes, directory);
+    } else {
+      await extractTarGzToDirectory(bytes, directory);
+    }
+    let manifestRaw: string;
+    try {
+      manifestRaw = await readFile(join(directory, SKILL_PACKAGE_MANIFEST), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      manifestRaw = await readFile(join(directory, LEGACY_SKILL_PACKAGE_MANIFEST), "utf8");
+    }
     const metadata: unknown = JSON.parse(manifestRaw);
     const sourceFiles = (await walkSourceFiles(directory))
-      .filter((file) => file.path !== "hunter-skill.json");
+      .filter((file) => !SKILL_PACKAGE_MANIFESTS.has(file.path));
     if (sourceFiles.length === 0) {
       throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "npm package is missing skill source files");
     }
@@ -656,14 +663,14 @@ async function runInstall(
       throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "downloaded artifact failed SHA-256 verification");
     }
     const zip = new AdmZip(Buffer.from(bytes));
-    const metadataEntry = zip.getEntry("hunter-skill.json");
+    const metadataEntry = zip.getEntry(SKILL_PACKAGE_MANIFEST) ?? zip.getEntry(LEGACY_SKILL_PACKAGE_MANIFEST);
     if (metadataEntry === null || metadataEntry.isDirectory) {
       throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
     }
     metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as unknown;
     sourceFiles = [];
     for (const entry of zip.getEntries()) {
-      if (entry.isDirectory || entry.entryName === "hunter-skill.json") continue;
+      if (entry.isDirectory || SKILL_PACKAGE_MANIFESTS.has(entry.entryName)) continue;
       if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
         throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path: " + entry.entryName);
       }
@@ -898,7 +905,7 @@ export async function runSkillCli(
       }
     }),
     ...(overrides.pacoteTarball !== undefined ? { pacoteTarball: overrides.pacoteTarball } : {}),
-    ...(overrides.pacoteExtract !== undefined ? { pacoteExtract: overrides.pacoteExtract } : {}),
+    ...(overrides.extractNpmTarball !== undefined ? { extractNpmTarball: overrides.extractNpmTarball } : {}),
     ...(overrides.fetchNpmTarball !== undefined ? { fetchNpmTarball: overrides.fetchNpmTarball } : {})
   };
   const program = new Command()

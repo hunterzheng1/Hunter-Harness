@@ -155,7 +155,7 @@ export const publishSkillRequestSchema = z.object({
 
 export const publishUnifiedSkillRequestSchema = z.object({
   version: registrySemverSchema,
-  sourceAgent: registryAgentSchema,
+  sourceAgent: skillTargetAgentSchema,
   draftRevision: z.number().int().positive(),
   releaseNote: z.string().trim().min(1).max(2_000).optional()
 }).strict();
