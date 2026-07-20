@@ -32,7 +32,14 @@ export function packageNameForSkill(config: NpmPublishConfig, slug: string): str
   if (scope === null || scope === "") {
     throw new Error("npm scope is required to build a package name");
   }
-  return `${scope.replace(/\/$/, "")}/${slug}`;
+  const normalizedScope = scope.replace(/\/$/, "");
+  if (!/^@[a-z0-9][a-z0-9._-]*$/.test(normalizedScope)) {
+    throw new Error("npm scope must be a lowercase scoped package name");
+  }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    throw new Error("skill slug is not a valid npm package suffix");
+  }
+  return `${normalizedScope}/${slug}`;
 }
 
 export function packageNameForWorkflowFamily(config: NpmPublishConfig, familySlug: string): string {

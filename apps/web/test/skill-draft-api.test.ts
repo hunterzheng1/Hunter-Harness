@@ -28,6 +28,16 @@ describe("buildUploadFormData", () => {
     const fd = buildUploadFormData([new File(["x"], "a.md")]);
     expect(fd.getAll("file")).toHaveLength(1);
   });
+
+  it("复核重试追加 sensitive_review JSON 且保留文件", () => {
+    const fd = buildUploadFormData([new File(["x"], "SKILL.md")], {
+      scanner_version: "1.1.0",
+      finding_fingerprints: ["sha256:" + "a".repeat(64)],
+      reason: "confirmed sample"
+    });
+    expect(fd.getAll("file")).toHaveLength(1);
+    expect(JSON.parse(String(fd.get("sensitive_review")))).toMatchObject({ scanner_version: "1.1.0" });
+  });
 });
 
 describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
@@ -127,6 +137,24 @@ describe("HttpHunterApi skill draft/check/publish/diff/delete", () => {
       status: 401,
       code: "AUTH_REQUIRED"
     });
+  });
+
+  it("uploadSkillDraft preserves structured review details", async () => {
+    const details = { scanner_version: "1.1.0", findings: [{ rule_id: "HH_PASSWORD_VALUE" }] };
+    fetchMock.mockResolvedValueOnce(resMock({
+      error: { code: "SENSITIVE_CONTENT_REVIEW_REQUIRED", message: "review", details }
+    }, false, 422));
+    await expect(api.uploadSkillDraft(buildUploadFormData([new File(["x"], "SKILL.md")]), "claude-code"))
+      .rejects.toMatchObject({ code: "SENSITIVE_CONTENT_REVIEW_REQUIRED", details });
+  });
+
+  it("publishSkill: POST unified publish with the server draft revision", async () => {
+    fetchMock.mockResolvedValueOnce(resMock({ release: { slug: "s", version: "0.1.0" }, npmRelease: {} }));
+    await api.publishSkill("s", { version: "0.1.0", sourceAgent: "claude-code", draftRevision: 3, releaseNote: "ready" });
+    const { url, init } = await lastCall();
+    expect(url).toBe("http://srv/api/v1/skills/s/publish");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(JSON.stringify({ version: "0.1.0", sourceAgent: "claude-code", draftRevision: 3, releaseNote: "ready" }));
   });
 
   it("diffSkillDraft: 后端 DRAFT_NOT_FOUND 抛 ApiClientError", async () => {

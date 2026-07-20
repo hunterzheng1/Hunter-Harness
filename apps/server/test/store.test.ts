@@ -115,13 +115,13 @@ describe("RegistryStore per-agent drafts CRUD (UT-001~007)", () => {
       await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
     });
 
-    it("rejects unsafe file path with SKILL_VALIDATION_FAILED (UT-037)", async () => {
+    it("rejects unsafe file path with SKILL_BUNDLE_INVALID (UT-037)", async () => {
       const store = newStore();
       await expect(store.uploadDraft({
         files: [{ path: "../escape.md", content: "x" }],
         actorId: "owner",
         agent: CC
-      })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+      })).rejects.toMatchObject({ code: "SKILL_BUNDLE_INVALID" });
     });
 
     it("redirects workflow package to workflow center (UT-020, workflow.yaml + skills/)", async () => {
@@ -337,7 +337,7 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     await store.publish({ slug: "harness-x", agent, version, actorId: "owner" });
   }
 
-  it("cursor artifact manifest target_path .cursor/rules + install_mode file", async () => {
+  it("cursor artifact manifest uses the native .cursor/skills folder", async () => {
     const store = newStore();
     await publishAgent(store, CURSOR, "1.0.0");
     const versions = store.listVersions("harness-x", CURSOR);
@@ -345,15 +345,15 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     if (cursorArt === undefined) throw new Error("cursor artifact missing");
     const bytes = await store.artifactBytes(cursorArt);
     const zip = new AdmZip(Buffer.from(bytes));
-    const manifestEntry = zip.getEntry("hunter-skill.json");
-    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifestEntry = zip.getEntry("hunter-harness.skill.json");
+    if (manifestEntry === null) throw new Error("hunter-harness.skill.json missing");
     const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
     expect(manifest.agent).toBe(CURSOR);
-    expect(manifest.target_path).toBe(".cursor/rules/harness-x.mdc");
-    expect(manifest.install_mode).toBe("file");
+    expect(manifest.target_path).toBe(".cursor/skills/harness-x/");
+    expect(manifest.install_mode).toBe("folder");
   });
 
-  it("codex artifact manifest install_mode managed_block + block_id", async () => {
+  it("codex artifact manifest uses the native .agents/skills folder", async () => {
     const store = newStore();
     await publishAgent(store, CODEX, "1.0.0");
     const versions = store.listVersions("harness-x", CODEX);
@@ -361,12 +361,13 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     if (codexArt === undefined) throw new Error("codex artifact missing");
     const bytes = await store.artifactBytes(codexArt);
     const zip = new AdmZip(Buffer.from(bytes));
-    const manifestEntry = zip.getEntry("hunter-skill.json");
-    if (manifestEntry === null) throw new Error("hunter-skill.json missing");
+    const manifestEntry = zip.getEntry("hunter-harness.skill.json");
+    if (manifestEntry === null) throw new Error("hunter-harness.skill.json missing");
     const manifest = JSON.parse(manifestEntry.getData().toString("utf8"));
     expect(manifest.agent).toBe(CODEX);
-    expect(manifest.install_mode).toBe("managed_block");
-    expect(manifest.block_id).toBe("harness-skill-harness-x");
+    expect(manifest.target_path).toBe(".agents/skills/harness-x/");
+    expect(manifest.install_mode).toBe("folder");
+    expect(manifest).not.toHaveProperty("block_id");
   });
 
   it("publish fills installTarget for every enabled installable agent (UT-101 修正)", async () => {
@@ -375,9 +376,10 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     const skill = store.getSkill("harness-x");
     const byAgent = new Map(skill.agents.map((a) => [a.agent, a]));
     // 4 个 enabled installable agent 都在 agents，mcp 不在
-    expect(byAgent.get(CURSOR)?.installTarget).toBe(".cursor/rules/harness-x.mdc");
-    expect(byAgent.get(CODEX)?.installTarget).toBe("AGENTS.md");
-    expect(byAgent.get("generic")?.installTarget).toBe(".agent-skills/harness-x.md");
+    expect(byAgent.get(CURSOR)?.installTarget).toBe(".cursor/skills/harness-x/");
+    expect(byAgent.get(CODEX)?.installTarget).toBe(".agents/skills/harness-x/");
+    expect(byAgent.get("codebuddy")?.installTarget).toBe(".codebuddy/skills/harness-x/");
+    expect(byAgent.get("generic")).toBeUndefined();
     expect(byAgent.get(CC)?.installTarget).toBe(".claude/skills/harness-x/");
     expect(byAgent.get("mcp")).toBeUndefined();
     expect(skill.defaultAgent).toBe(CC);
@@ -392,9 +394,9 @@ describe("RegistryStore per-agent publish manifest + adapterPreview (T12-14)", (
     expect(cc.installTarget).toBe(".claude/skills/harness-x/");
     expect(cc.sourceFiles.some((f) => f.path === "SKILL.md")).toBe(true);
     const cursor = store.adapterPreview("harness-x", CURSOR);
-    expect(cursor.installTarget).toBe(".cursor/rules/harness-x.mdc");
+    expect(cursor.installTarget).toBe(".cursor/skills/harness-x/");
     const codex = store.adapterPreview("harness-x", CODEX);
-    expect(codex.installTarget).toBe("AGENTS.md");
+    expect(codex.installTarget).toBe(".agents/skills/harness-x/");
   });
 
   it("adapterPreview mcp throws 422 ADAPTER_NOT_IMPLEMENTED (API-008)", async () => {
@@ -598,12 +600,12 @@ describe("RegistryStore uploadDraft validation", () => {
     await expect(store.uploadDraft({ files: [{ path: "SKILL.md", content: ":bad" }], actorId: "owner", agent: CC })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
   });
 
-  it("rejects unsafe file path with SKILL_VALIDATION_FAILED", async () => {
+  it("rejects unsafe file path with SKILL_BUNDLE_INVALID", async () => {
     const store = newStore();
     await expect(store.uploadDraft({
       files: [{ path: "../escape.md", content: "x" }],
       actorId: "owner", agent: CC
-    })).rejects.toMatchObject({ code: "SKILL_VALIDATION_FAILED" });
+    })).rejects.toMatchObject({ code: "SKILL_BUNDLE_INVALID" });
   });
 
   it("rejects workflow package with WORKFLOW_PACKAGE_REDIRECT (UT-038)", async () => {
@@ -621,6 +623,51 @@ describe("RegistryStore uploadDraft validation", () => {
     const store = newStore();
     await setupPublished(store, CC, "1.0.0", files);
     const draft = await store.uploadDraft({ files, actorId: "owner", agent: CC });
+    expect(draft.draftVersion).toBe("1.0.1");
+  });
+
+  it("requires an explicit redacted review for overridable findings and rejects stale evidence", async () => {
+    const store = newStore();
+    const reviewedFiles = [...files, { path: "notes.md", content: "password=example-password" }];
+    let reviewDetails: { scanner_version: string; findings: Array<{ fingerprint: string; redacted_preview: string }> } | undefined;
+    try {
+      await store.uploadDraft({ files: reviewedFiles, actorId: "owner", agent: CC });
+    } catch (error) {
+      const value = error as { code?: string; details?: typeof reviewDetails };
+      expect(value.code).toBe("SENSITIVE_CONTENT_REVIEW_REQUIRED");
+      reviewDetails = value.details;
+    }
+    expect(reviewDetails?.findings).toHaveLength(1);
+    expect(reviewDetails?.findings[0]?.redacted_preview).toBe("[REDACTED:HH_PASSWORD_VALUE]");
+
+    await expect(store.uploadDraft({
+      files: reviewedFiles,
+      actorId: "owner",
+      agent: CC,
+      review: {
+        scanner_version: reviewDetails?.scanner_version ?? "",
+        finding_fingerprints: ["sha256:" + "0".repeat(64)],
+        reason: "known example value"
+      }
+    })).rejects.toMatchObject({ code: "SENSITIVE_REVIEW_STALE", status: 409 });
+
+    const accepted = await store.uploadDraft({
+      files: reviewedFiles,
+      actorId: "owner",
+      agent: CC,
+      review: {
+        scanner_version: reviewDetails?.scanner_version ?? "",
+        finding_fingerprints: reviewDetails?.findings.map((finding) => finding.fingerprint) ?? [],
+        reason: "known example value"
+      }
+    });
+    expect(accepted.revision).toBe(1);
+  });
+
+  it("uses the global skill version when a different source agent creates a draft", async () => {
+    const store = newStore();
+    await setupPublished(store, CC, "1.0.0", files);
+    const draft = await store.uploadDraft({ files: filesMulti, actorId: "owner", agent: CURSOR });
     expect(draft.draftVersion).toBe("1.0.1");
   });
 });
@@ -732,7 +779,7 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
     expect(store.listSkills()).toEqual([]);
   });
 
-  it("skips corrupt skill with invalid version during migration", async () => {
+  it("fails atomically on a corrupt skill snapshot and preserves the source snapshot", async () => {
     const p = new MemoryPersistence();
     p.snapshot = {
       schemaVersion: 1,
@@ -749,9 +796,10 @@ describe("RegistryStore legacy snapshot compatibility + listSkills", () => {
       }]],
       proposals: [], tags: [], workflows: [], projectBindings: []
     };
+    const original = structuredClone(p.snapshot);
     const store = newStore(p);
-    await store.initialize();
-    expect(() => store.getSkill("harness-corrupt")).toThrow();
+    await expect(store.initialize()).rejects.toMatchObject({ code: "REGISTRY_SNAPSHOT_INVALID" });
+    expect(p.snapshot).toEqual(original);
   });
 });
 

@@ -2,7 +2,15 @@ import { z } from "zod";
 
 import { sha256Schema } from "./protocol.js";
 
-export const registryAgentSchema = z.enum(["claude-code", "codex", "cursor", "generic", "mcp"]);
+export const skillTargetAgentSchema = z.enum(["claude-code", "codex", "cursor", "codebuddy"]);
+export const registryAgentSchema = z.enum([
+  "claude-code",
+  "codex",
+  "cursor",
+  "codebuddy",
+  "generic",
+  "mcp"
+]);
 export const registrySkillStatusSchema = z.enum([
   "draft",
   "pending_review",
@@ -19,6 +27,7 @@ export const registrySemverSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
 export const registrySlugSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 export const checkStatusSchema = z.enum(["green", "yellow", "red"]);
+export const skillVariantStatusSchema = z.enum(["ready", "degraded", "unsupported"]);
 
 export const sourceFileSchema = z.object({
   path: z.string(),
@@ -53,6 +62,44 @@ export const skillUsageExampleSchema = z.object({
   request: z.string(),
   result: z.string(),
   files: z.array(z.string()).default([])
+}).strict();
+
+export const sensitiveFindingViewSchema = z.object({
+  rule_id: z.string().min(1),
+  severity: z.enum(["high", "medium", "low"]),
+  path: z.string().min(1),
+  line: z.number().int().positive(),
+  column: z.number().int().positive(),
+  fingerprint: sha256Schema,
+  redacted_preview: z.string(),
+  overridable: z.boolean()
+}).strict();
+
+export const sensitiveReviewSubmissionSchema = z.object({
+  scanner_version: z.string().min(1),
+  finding_fingerprints: z.array(sha256Schema).min(1),
+  reason: z.string().trim().min(3).max(500)
+}).strict();
+
+export const sensitiveReviewEvidenceSchema = sensitiveReviewSubmissionSchema.extend({
+  actor: z.string().min(1),
+  accepted_at: z.iso.datetime()
+}).strict();
+
+export const skillVariantSchema = z.object({
+  agent: skillTargetAgentSchema,
+  status: skillVariantStatusSchema,
+  buildHash: sha256Schema.nullable(),
+  adapterVersion: z.string().min(1),
+  components: z.array(z.string().min(1))
+}).strict();
+
+export const skillReleaseSchema = z.object({
+  version: registrySemverSchema,
+  packageName: z.string().min(1),
+  packageDigest: z.string().min(1),
+  variants: z.partialRecord(skillTargetAgentSchema, skillVariantSchema),
+  created_at: z.iso.datetime()
 }).strict();
 
 export const agentSkillConfigSchema = z.object({
@@ -104,6 +151,26 @@ export const draftStateSchema = z.object({
 export const publishSkillRequestSchema = z.object({
   version: registrySemverSchema,
   releaseNote: z.string().optional()
+}).strict();
+
+export const publishUnifiedSkillRequestSchema = z.object({
+  version: registrySemverSchema,
+  sourceAgent: skillTargetAgentSchema,
+  draftRevision: z.number().int().positive(),
+  releaseNote: z.string().trim().min(1).max(2_000).optional()
+}).strict();
+
+export const publishSkillResponseSchema = z.object({
+  release: z.object({
+    slug: registrySlugSchema,
+    version: registrySemverSchema
+  }).strict(),
+  npmRelease: z.object({
+    status: z.enum(["published", "idempotent"]),
+    packageName: z.string().min(1),
+    version: registrySemverSchema,
+    tarballHash: z.string().min(1)
+  }).strict()
 }).strict();
 
 export const setDefaultAgentRequestSchema = z.object({
@@ -214,6 +281,13 @@ export const registryTagSchema = z.object({
 }).strict();
 
 export type RegistryAgent = z.infer<typeof registryAgentSchema>;
+export type SkillTargetAgent = z.infer<typeof skillTargetAgentSchema>;
+export type SkillVariantStatus = z.infer<typeof skillVariantStatusSchema>;
+export type SkillVariant = z.infer<typeof skillVariantSchema>;
+export type SkillRelease = z.infer<typeof skillReleaseSchema>;
+export type SensitiveFindingView = z.infer<typeof sensitiveFindingViewSchema>;
+export type SensitiveReviewSubmission = z.infer<typeof sensitiveReviewSubmissionSchema>;
+export type SensitiveReviewEvidence = z.infer<typeof sensitiveReviewEvidenceSchema>;
 export type RegistryArtifact = z.infer<typeof registryArtifactSchema>;
 export type RegistrySkillVersion = z.infer<typeof registrySkillVersionSchema>;
 export type RegistrySkillSummary = z.infer<typeof registrySkillSummarySchema>;
@@ -231,5 +305,7 @@ export type SkillCheckItem = z.infer<typeof skillCheckItemSchema>;
 export type SkillCheckResult = z.infer<typeof skillCheckResultSchema>;
 export type DraftState = z.infer<typeof draftStateSchema>;
 export type PublishSkillRequest = z.infer<typeof publishSkillRequestSchema>;
+export type PublishUnifiedSkillRequest = z.infer<typeof publishUnifiedSkillRequestSchema>;
+export type PublishSkillResponse = z.infer<typeof publishSkillResponseSchema>;
 export type SetDefaultAgentRequest = z.infer<typeof setDefaultAgentRequestSchema>;
 export type SkillDiffFile = z.infer<typeof skillDiffFileSchema>;

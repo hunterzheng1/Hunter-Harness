@@ -5,16 +5,18 @@ import type {
   DraftState,
   FixPlan,
   FixPlanItem,
+  PublishSkillResponse,
   RegistryAgent,
+  SkillTargetAgent,
   SkillCheckItem,
   SkillCheckResult,
   SkillDiffFile,
   SkillFrontmatter,
   RegistrySkillVersion
 } from "@hunter-harness/contracts";
-import { type ChangeEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { buildUploadFormData, type HunterApi } from "../lib/api";
+import { type HunterApi } from "../lib/api";
 import type { useI18n } from "../lib/i18n";
 import {
   CheckLight,
@@ -26,11 +28,15 @@ import {
   computeDiff,
   diffStats,
   displayValue,
-  nextPatchVersion,
   required,
   shiftPatchVersion,
   tagSlug
 } from "./skill-shared";
+import { SkillUploadPanel } from "./skill-upload-panel";
+
+function isSkillTargetAgent(agent: RegistryAgent): agent is SkillTargetAgent {
+  return agent === "claude-code" || agent === "codex" || agent === "cursor" || agent === "codebuddy";
+}
 
 function ContractSecurityOverview({ frontmatter, t }: { frontmatter: SkillFrontmatter | null; t: ReturnType<typeof useI18n>["t"]["skillDetail"] }) {
   return <div className="contract-card-grid">
@@ -250,11 +256,12 @@ function AgentCheckPanel({
   const [selectedFile, setSelectedFile] = useState(0);
   const [checking, setChecking] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [publishPending, setPublishPending] = useState(false);
+  const [publishResult, setPublishResult] = useState<PublishSkillResponse | null>(null);
   const [publishVersion, setPublishVersion] = useState("");
   const [publishNote, setPublishNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
-  const [pendingUpload, setPendingUpload] = useState<File[] | null>(null);
   const [fixPlan, setFixPlan] = useState<FixPlan | null>(null);
   const [fixing, setFixing] = useState(false);
   const [fixPreviewRun, setFixPreviewRun] = useState(false);
@@ -278,7 +285,7 @@ function AgentCheckPanel({
     ...(checksResult?.items ?? []),
     ...(aiChecksResult?.items ?? [])
   ];
-  const defaultPublishVersion = nextPatchVersion(draft?.draftVersion ?? undefined);
+  const defaultPublishVersion = draft?.draftVersion ?? "0.1.0";
   const resolvedPublishVersion = publishVersion || defaultPublishVersion;
   const resolvedPublishNote = publishNote || sd.defaultPublishModalNote;
   const activeFile = diffFiles[selectedFile] ?? diffFiles[0];
@@ -342,22 +349,23 @@ function AgentCheckPanel({
   }
 
   async function publish(): Promise<void> {
+    if (draft === null || publishPending || !isSkillTargetAgent(currentAgent)) return;
     setError(null);
+    setPublishPending(true);
     try {
-      await required(api, "publishSkillDraft")(slug, currentAgent, { version: resolvedPublishVersion, releaseNote: resolvedPublishNote });
+      const result = await required(api, "publishSkill")(slug, {
+        version: resolvedPublishVersion,
+        sourceAgent: currentAgent,
+        draftRevision: draft.revision,
+        releaseNote: resolvedPublishNote
+      });
+      setPublishResult(result);
       setPublishing(false);
       setPublishVersion("");
       setPublishNote("");
       onPublished();
     } catch (reason) { setError(apiError(reason, t)); }
-  }
-
-  async function upload(files: File[]): Promise<void> {
-    setError(null);
-    try {
-      await required(api, "uploadSkillDraft")(buildUploadFormData(files), currentAgent);
-      onPublished();
-    } catch (reason) { setError(apiError(reason, t)); }
+    finally { setPublishPending(false); }
   }
 
   async function discard(): Promise<void> {
@@ -367,13 +375,6 @@ function AgentCheckPanel({
       setDiscarding(false);
       onPublished();
     } catch (reason) { setError(apiError(reason, t)); }
-  }
-
-  async function confirmOverwrite(): Promise<void> {
-    if (pendingUpload === null) return;
-    const files = pendingUpload;
-    setPendingUpload(null);
-    await upload(files);
   }
 
   async function previewFix(checkIds: string[] | null): Promise<void> {
@@ -442,21 +443,11 @@ function AgentCheckPanel({
     finally { setAdoptingSuggestion(false); }
   }
 
-  function onUploadChange(event: ChangeEvent<HTMLInputElement>): void {
-    const files = event.target.files;
-    if (files === null || files.length === 0) return;
-    const list = Array.from(files);
-    if (draft !== null) setPendingUpload(list);
-    else void upload(list);
-  }
-
   return <div className="check-publish-layout">
-    <div className="publish-toolbar">
-      <label className="upload-drop-strip">
-        <input type="file" multiple accept=".zip" onChange={onUploadChange} {...{ webkitdirectory: "" }} />
-        <strong>{sd.uploadSkillPackage}</strong>
-        <span>{sd.uploadSkillPackageHint}</span>
-      </label>
+    <div className="publish-toolbar publish-toolbar-stacked">
+      {isSkillTargetAgent(currentAgent)
+        ? <SkillUploadPanel api={api} agent={currentAgent} hasDraft={draft !== null} onUploaded={() => onPublished()} />
+        : null}
       <div className="publish-toolbar-actions">
         {draft === null ? null : <>
           <button type="button" className="secondary prominent-action" disabled={checking} onClick={() => void runChecks()}>{checking ? sd.checkRunning : sd.checkAction}</button>
@@ -465,12 +456,17 @@ function AgentCheckPanel({
           <button type="button" className="secondary prominent-action" onClick={() => void runDiff()}>{sd.versionDiff}</button>
           <button type="button" className="secondary prominent-action" disabled={fixing} onClick={() => void previewFix(null)}>{sd.oneClickFix}</button>
           <button type="button" className="secondary prominent-action" disabled={fixSuggestionRun} onClick={() => void fetchFixSuggestions()}>{sd.aiFixSuggestion}</button>
-          <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button>
+          {isSkillTargetAgent(currentAgent) ? <button type="button" className={`prominent-action ${summary.red > 0 ? "danger" : ""}`} onClick={() => { setPublishVersion(defaultPublishVersion); setPublishNote(sd.defaultPublishModalNote); setPublishing(true); }}>{sd.publishAction}</button> : null}
           <button type="button" className="secondary" onClick={() => setDiscarding(true)}>{sd.discardAction}</button>
           {summary.red > 0 ? <span className="publish-warning">{sd.redPublishWarning}</span> : null}
         </>}
       </div>
     </div>
+    {publishResult === null ? null : <div className="publish-result-card notice success" role="status">
+      <strong>{publishResult.release.slug} v{publishResult.release.version}</strong>
+      <span>{publishResult.npmRelease.packageName}@{publishResult.npmRelease.version}</span>
+      <code>{publishResult.npmRelease.tarballHash}</code>
+    </div>}
     {draft === null ? <Empty>{sd.draftEmpty}</Empty> : <>
     <div className="check-metrics">
       {metricCards.map((metric) => <button type="button" className={`check-metric-card check-metric-${metric.key}`} key={metric.key} onClick={() => setSelectedStatus((cur) => cur === metric.key ? null : metric.key)}>
@@ -569,7 +565,7 @@ function AgentCheckPanel({
         <div className="publish-modal-footer">
           <span>{sd.publishModalHint}</span>
           <div className="editable-card-actions">
-            <button type="button" onClick={() => void publish()}>{sd.confirmPublish}</button>
+            <button type="button" disabled={publishPending} onClick={() => void publish()}>{publishPending ? "…" : sd.confirmPublish}</button>
             <button type="button" className="secondary" onClick={() => setPublishing(false)}>{sd.cancelEdit}</button>
           </div>
         </div>
@@ -586,21 +582,6 @@ function AgentCheckPanel({
           <div className="editable-card-actions">
             <button type="button" onClick={() => void discard()}>{sd.confirmDiscard}</button>
             <button type="button" className="secondary" onClick={() => setDiscarding(false)}>{sd.cancelEdit}</button>
-          </div>
-        </div>
-      </div>
-    </div>}
-    {pendingUpload === null ? null : <div className="modal-backdrop" role="presentation" onClick={() => setPendingUpload(null)}>
-      <div className="publish-modal" role="dialog" aria-modal="true" aria-labelledby="overwrite-modal-title" onClick={(event) => event.stopPropagation()}>
-        <div className="panel-title">
-          <h2 id="overwrite-modal-title">{sd.overwriteConfirmTitle}</h2>
-          <button type="button" className="icon-button" aria-label={sd.close} onClick={() => setPendingUpload(null)}>×</button>
-        </div>
-        <p>{sd.overwriteConfirm}</p>
-        <div className="publish-modal-footer">
-          <div className="editable-card-actions">
-            <button type="button" onClick={() => void confirmOverwrite()}>{sd.overwriteConfirmAction}</button>
-            <button type="button" className="secondary" onClick={() => setPendingUpload(null)}>{sd.cancelEdit}</button>
           </div>
         </div>
       </div>

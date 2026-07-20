@@ -8,20 +8,36 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  lstat,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
   stat,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { SKILL_ERROR_CODE, SKILL_NAME_REGEX, canonicalJson, type RegistryAgent, type SourceFile } from "@hunter-harness/contracts";
+import {
+  SKILL_ERROR_CODE,
+  SKILL_NAME_REGEX,
+  canonicalJson,
+  skillPackageManifestV3Schema,
+  type RegistryAgent,
+  type SkillPackageManifestV3,
+  type SkillTargetAgent,
+  type SourceFile
+} from "@hunter-harness/contracts";
+import { planSkillInstall } from "@hunter-harness/core";
 import AdmZip from "adm-zip";
 import { Command, CommanderError } from "commander";
+
+const SKILL_PACKAGE_MANIFEST = "hunter-harness.skill.json";
+const LEGACY_SKILL_PACKAGE_MANIFEST = "hunter-skill.json";
+const SKILL_PACKAGE_MANIFESTS = new Set([SKILL_PACKAGE_MANIFEST, LEGACY_SKILL_PACKAGE_MANIFEST]);
 
 export interface SkillCliDependencies {
   cwd?: string;
@@ -30,8 +46,11 @@ export interface SkillCliDependencies {
   stdout?: (value: string) => void;
   stderr?: (value: string) => void;
   pacoteTarball?: (packageName: string) => Promise<Buffer>;
-  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  extractNpmTarball?: (tarball: Buffer, destination: string) => Promise<void>;
   fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
+  userHome?: string;
+  isTTY?: boolean;
+  prompt?: (question: string) => Promise<string>;
 }
 
 interface ResolvedSkillCliDependencies {
@@ -41,18 +60,24 @@ interface ResolvedSkillCliDependencies {
   stdout: (value: string) => void;
   stderr: (value: string) => void;
   pacoteTarball?: (packageName: string) => Promise<Buffer>;
-  pacoteExtract?: (packageName: string, destination: string) => Promise<void>;
+  extractNpmTarball?: (tarball: Buffer, destination: string) => Promise<void>;
   fetchNpmTarball?: (packageName: string) => Promise<Buffer>;
+  userHome: string;
+  isTTY: boolean;
+  prompt: (question: string) => Promise<string>;
 }
 
 interface CommonOptions {
-  agent: string;
+  agent?: string | string[];
   serverUrl?: string;
   tokenEnv?: string;
   json?: boolean;
   force?: boolean;
   from?: string;
   npmScope?: string;
+  scope?: string;
+  project?: string;
+  yes?: boolean;
 }
 
 interface InstallManifest {
@@ -68,9 +93,32 @@ interface InstallManifest {
 
 // skill-cli 独立 upload 白名单：建 per-agent draft（低风险），扩 codex/generic（#1 后有真 render + per-agent version）。
 // mcp 仍不支持（installable=false，不参与 upload/install）。
-const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "generic"]);
+const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy"]);
 // skill-cli 独立 install 白名单：install 链路 codex/generic 未验证，维持 claude-code/cursor。
-const INSTALLABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor"]);
+const INSTALLABLE_AGENTS: ReadonlySet<SkillTargetAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy"]);
+
+interface LegacyArtifactMetadata {
+  schema_version?: 1 | 2;
+  slug: string;
+  version: string;
+  agent: string;
+  target_path: string;
+  source_sha256?: string;
+  source_ir_sha256?: string;
+  install_mode?: string;
+}
+
+interface MultiInstallManifest {
+  schema_version: 2;
+  slug: string;
+  version: string;
+  agent: SkillTargetAgent;
+  scope: "project" | "user";
+  source_url: string;
+  artifact_sha256: string;
+  files: Record<string, string>;
+  installed_at: string;
+}
 
 class CliFailure extends Error {
   constructor(readonly exitCode: number, readonly code: string, message: string) {
@@ -231,73 +279,60 @@ async function walkSourceFiles(root: string, relative = ""): Promise<SourceFile[
 }
 
 async function extractTarGzToDirectory(tarball: Buffer, destination: string): Promise<void> {
-  const tarPath = join(destination, "package.tgz");
-  const extractDir = join(destination, "extracted");
-  await writeFile(tarPath, tarball);
-  await mkdir(extractDir, { recursive: true });
-  await new Promise<void>((resolve, reject) => {
-    execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
-      if (error !== null) reject(error);
-      else resolve();
+  const workspace = await mkdtemp(join(tmpdir(), "hunter-skill-npm-unpack-"));
+  try {
+    const tarPath = join(workspace, "package.tgz");
+    const extractDir = join(workspace, "extracted");
+    await writeFile(tarPath, tarball);
+    await mkdir(extractDir, { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      execFile("tar", ["-xzf", tarPath, "-C", extractDir], (error) => {
+        if (error !== null) reject(error);
+        else resolve();
+      });
     });
-  });
-  const packageDir = join(extractDir, "package");
-  const entries = await readdir(packageDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const source = join(packageDir, entry.name);
-    const target = join(destination, entry.name);
-    if (entry.isDirectory()) {
-      await cp(source, target, { recursive: true });
-    } else {
-      await copyFile(source, target);
+    const packageDir = join(extractDir, "package");
+    const entries = await readdir(packageDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const source = join(packageDir, entry.name);
+      const target = join(destination, entry.name);
+      if (entry.isDirectory()) {
+        await cp(source, target, { recursive: true });
+      } else {
+        await copyFile(source, target);
+      }
     }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 }
 
 async function extractNpmSkillPackage(
   packageName: string,
   dependencies: ResolvedSkillCliDependencies
-): Promise<{ bytes: Buffer; metadata: {
-  slug: string;
-  version: string;
-  agent: string;
-  target_path: string;
-  source_sha256?: string;
-  source_ir_sha256?: string;
-  install_mode?: string;
-}; sourceFiles: SourceFile[] }> {
+): Promise<{ bytes: Buffer; metadata: unknown; sourceFiles: SourceFile[] }> {
   const directory = await mkdtemp(join(tmpdir(), "hunter-skill-npm-install-"));
   try {
-    if (dependencies.pacoteExtract !== undefined) {
-      await dependencies.pacoteExtract(packageName, directory);
-    } else if (dependencies.fetchNpmTarball !== undefined || dependencies.pacoteTarball !== undefined) {
-      const tarball = dependencies.fetchNpmTarball !== undefined
-        ? await dependencies.fetchNpmTarball(packageName)
-        : dependencies.pacoteTarball !== undefined
-          ? await dependencies.pacoteTarball(packageName)
-          : Buffer.alloc(0);
-      await extractTarGzToDirectory(tarball, directory);
-    } else {
-      const pacote = await import("pacote");
-      await pacote.default.extract(packageName, directory);
-    }
     const bytes = dependencies.pacoteTarball !== undefined
       ? await dependencies.pacoteTarball(packageName)
       : dependencies.fetchNpmTarball !== undefined
         ? await dependencies.fetchNpmTarball(packageName)
         : await (await import("pacote")).default.tarball(packageName);
-    const manifestRaw = await readFile(join(directory, "hunter-skill.json"), "utf8");
-    const metadata = JSON.parse(manifestRaw) as {
-      slug: string;
-      version: string;
-      agent: string;
-      target_path: string;
-      source_sha256?: string;
-      source_ir_sha256?: string;
-      install_mode?: string;
-    };
+    if (dependencies.extractNpmTarball !== undefined) {
+      await dependencies.extractNpmTarball(bytes, directory);
+    } else {
+      await extractTarGzToDirectory(bytes, directory);
+    }
+    let manifestRaw: string;
+    try {
+      manifestRaw = await readFile(join(directory, SKILL_PACKAGE_MANIFEST), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      manifestRaw = await readFile(join(directory, LEGACY_SKILL_PACKAGE_MANIFEST), "utf8");
+    }
+    const metadata: unknown = JSON.parse(manifestRaw);
     const sourceFiles = (await walkSourceFiles(directory))
-      .filter((file) => file.path !== "hunter-skill.json");
+      .filter((file) => !SKILL_PACKAGE_MANIFESTS.has(file.path));
     if (sourceFiles.length === 0) {
       throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "npm package is missing skill source files");
     }
@@ -305,6 +340,286 @@ async function extractNpmSkillPackage(
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function optionAgents(value: CommonOptions["agent"]): string[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+async function resolveInstallChoices(
+  options: CommonOptions,
+  dependencies: ResolvedSkillCliDependencies
+): Promise<{ agents: SkillTargetAgent[]; scope: "project" | "user"; root: string }> {
+  let requested = optionAgents(options.agent);
+  if (requested.length === 0 && dependencies.isTTY) {
+    requested = (await dependencies.prompt(
+      "Install for which agents? (claude-code,codex,cursor,codebuddy): "
+    )).split(",").map((value) => value.trim()).filter(Boolean);
+  }
+  if (requested.length === 0) {
+    throw new CliFailure(3, "CONFIG_INVALID", "at least one --agent is required");
+  }
+  const invalid = requested.find((agent) => !INSTALLABLE_AGENTS.has(agent as SkillTargetAgent));
+  if (invalid !== undefined) {
+    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", `unsupported install agent: ${invalid}`);
+  }
+  const agents = [...new Set(requested)] as SkillTargetAgent[];
+
+  let scope = options.scope;
+  if (scope === undefined && dependencies.isTTY) {
+    scope = (await dependencies.prompt("Install scope? (project/user): ")).trim().toLowerCase();
+  }
+  scope ??= "project";
+  if (scope !== "project" && scope !== "user") {
+    throw new CliFailure(3, "CONFIG_INVALID", "--scope must be 'project' or 'user'");
+  }
+  const root = scope === "project" ? resolve(options.project ?? dependencies.cwd) : resolve(dependencies.userHome);
+  return { agents, scope, root };
+}
+
+function verifyV3Package(
+  slug: string,
+  manifest: SkillPackageManifestV3,
+  sourceFiles: readonly SourceFile[]
+): void {
+  if (manifest.slug !== slug) {
+    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "package identity does not match request");
+  }
+  const actual = new Map(sourceFiles.map((file) => [file.path, file]));
+  if (actual.size !== manifest.files.length) {
+    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "package file list does not match its manifest");
+  }
+  for (const declared of manifest.files) {
+    const file = actual.get(declared.path);
+    if (file === undefined || Buffer.byteLength(file.content, "utf8") !== declared.size ||
+        sha256(Buffer.from(file.content, "utf8")) !== declared.sha256) {
+      throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", `package file verification failed: ${declared.path}`);
+    }
+  }
+}
+
+async function isMultiInstallDirty(manifest: MultiInstallManifest): Promise<boolean> {
+  for (const [path, expected] of Object.entries(manifest.files)) {
+    try {
+      if (sha256(await readFile(path)) !== expected) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function assertSafeInstallPath(root: string, path: string): Promise<void> {
+  const rootPath = resolve(root);
+  const targetPath = resolve(path);
+  const remainder = relative(rootPath, targetPath);
+  if (remainder.startsWith("..") || isAbsolute(remainder)) {
+    throw new CliFailure(7, "INSTALL_PATH_UNSAFE", `install target escapes the selected scope: ${path}`);
+  }
+  const rootReal = await realpath(rootPath);
+  let existing = rootPath;
+  for (const segment of remainder.split(/[\\/]/).filter(Boolean)) {
+    const candidate = join(existing, segment);
+    try {
+      const info = await lstat(candidate);
+      if (info.isSymbolicLink()) {
+        throw new CliFailure(7, "INSTALL_PATH_UNSAFE", `install target traverses a symbolic link or junction: ${candidate}`);
+      }
+      existing = candidate;
+    } catch (error) {
+      if (error instanceof CliFailure) throw error;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+      throw error;
+    }
+  }
+  const existingReal = await realpath(existing);
+  const realRemainder = relative(rootReal, existingReal);
+  if (realRemainder.startsWith("..") || isAbsolute(realRemainder)) {
+    throw new CliFailure(7, "INSTALL_PATH_UNSAFE", `install target resolves outside the selected scope: ${path}`);
+  }
+}
+
+async function writeFileAtomically(root: string, path: string, bytes: Buffer): Promise<void> {
+  await assertSafeInstallPath(root, path);
+  await mkdir(dirname(path), { recursive: true });
+  await assertSafeInstallPath(root, path);
+  const temporary = path + ".tmp-" + randomUUID();
+  const backup = path + ".bak-" + randomUUID();
+  await writeFile(temporary, bytes, { flag: "wx" });
+  let movedExisting = false;
+  try {
+    if (await fileExists(path)) {
+      await rename(path, backup);
+      movedExisting = true;
+    }
+    await rename(temporary, path);
+    if (movedExisting) await rm(backup, { force: true });
+  } catch (error) {
+    if (movedExisting && !await fileExists(path) && await fileExists(backup)) await rename(backup, path);
+    throw error;
+  } finally {
+    await rm(temporary, { force: true });
+    await rm(backup, { force: true });
+  }
+}
+
+async function installV3Package(input: {
+  slug: string;
+  manifest: SkillPackageManifestV3;
+  sourceFiles: SourceFile[];
+  artifactHash: string;
+  sourceUrl: string;
+  choices: Awaited<ReturnType<typeof resolveInstallChoices>>;
+  options: CommonOptions;
+  dependencies: ResolvedSkillCliDependencies;
+}): Promise<void> {
+  verifyV3Package(input.slug, input.manifest, input.sourceFiles);
+  const authorManifest = {
+    apiVersion: "hunter-harness/v1" as const,
+    kind: "SkillBundle" as const,
+    components: input.manifest.components
+  };
+  let plan;
+  try {
+    plan = planSkillInstall({
+      slug: input.slug,
+      agents: input.choices.agents,
+      scope: input.choices.scope,
+      ...(input.choices.scope === "project" ? { projectRoot: input.choices.root } : { userHome: input.choices.root }),
+      files: input.sourceFiles.map((file) => file.path),
+      manifest: authorManifest
+    });
+  } catch (error) {
+    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", error instanceof Error ? error.message : "invalid install plan");
+  }
+  const byPath = new Map(input.sourceFiles.map((file) => [file.path, Buffer.from(file.content, "utf8")]));
+  const stateRoot = input.choices.scope === "project"
+    ? join(input.choices.root, ".harness", "state", "local", "skill-installs")
+    : join(input.choices.root, ".hunter-harness", "state", "skill-installs");
+  const statePaths = new Map(input.choices.agents.map((agent) => [
+    agent, join(stateRoot, agent, input.slug + ".json")
+  ]));
+  const existingManifests = new Map<SkillTargetAgent, MultiInstallManifest>();
+  const legacyStatePath = join(stateRoot, input.slug + ".json");
+  const legacyState = input.choices.scope === "project"
+    ? await readManifest(legacyStatePath)
+    : null;
+
+  for (const variant of plan.variants) {
+    const statePath = statePaths.get(variant.agent) as string;
+    let existing = await readManifest(statePath) as MultiInstallManifest | null;
+    if (existing === null && legacyState !== null &&
+        legacyState.slug === input.slug && legacyState.agent === variant.agent) {
+      const migratedFiles: Record<string, string> = {};
+      let complete = true;
+      for (const [sourcePath, digest] of Object.entries(legacyState.files)) {
+        const operation = variant.operations.find((candidate) =>
+          candidate.role === "skill" && candidate.sourcePath === sourcePath
+        );
+        if (operation === undefined) {
+          complete = false;
+          break;
+        }
+        migratedFiles[operation.destinationPath] = digest;
+      }
+      if (complete) {
+        existing = {
+          schema_version: 2,
+          slug: legacyState.slug,
+          version: legacyState.version,
+          agent: variant.agent,
+          scope: "project",
+          source_url: legacyState.source_url,
+          artifact_sha256: legacyState.artifact_sha256,
+          files: migratedFiles,
+          installed_at: legacyState.installed_at
+        };
+      }
+    }
+    if (existing !== null && existing.schema_version === 2) existingManifests.set(variant.agent, existing);
+    if (existing === null && input.options.force !== true) {
+      const occupied = await Promise.all(variant.operations.map((operation) => fileExists(operation.destinationPath)));
+      if (occupied.some(Boolean)) {
+        throw new CliFailure(5, "LOCAL_SKILL_UNMANAGED", `${variant.agent} target contains unmanaged files; use --force to overwrite`);
+      }
+    }
+    if (existing !== null && await isMultiInstallDirty(existing) && input.options.force !== true) {
+      throw new CliFailure(5, "LOCAL_SKILL_DIRTY", `${variant.agent} installation has local edits; use --force to overwrite`);
+    }
+  }
+
+  input.dependencies.stdout(JSON.stringify({
+    ok: true,
+    action: "install-preview",
+    slug: input.slug,
+    version: input.manifest.version,
+    scope: input.choices.scope,
+    variants: plan.variants.map((variant) => ({
+      agent: variant.agent,
+      status: variant.status,
+      warnings: variant.warnings,
+      targets: variant.operations.map((operation) => operation.destinationPath)
+    }))
+  }) + "\n");
+  if (input.options.yes !== true && input.dependencies.isTTY) {
+    const answer = (await input.dependencies.prompt("Proceed with this install? (y/N): ")).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") {
+      throw new CliFailure(6, "INSTALL_CANCELLED", "installation cancelled");
+    }
+  }
+
+  const snapshots = new Map<string, Buffer | null>();
+  const obsoleteTargets = [...existingManifests.entries()].flatMap(([agent, manifest]) => {
+    const variant = plan.variants.find((candidate) => candidate.agent === agent);
+    const next = new Set(variant?.operations.map((operation) => operation.destinationPath) ?? []);
+    return Object.keys(manifest.files).filter((path) => !next.has(path));
+  });
+  const allTargets = [
+    ...new Set(plan.operations.map((operation) => operation.destinationPath)),
+    ...obsoleteTargets,
+    ...statePaths.values()
+  ];
+  for (const path of allTargets) {
+    await assertSafeInstallPath(input.choices.root, path);
+    snapshots.set(path, await readFile(path).catch(() => null));
+  }
+  try {
+    for (const path of obsoleteTargets) await rm(path, { force: true });
+    for (const operation of plan.operations) {
+      const bytes = byPath.get(operation.sourcePath);
+      if (bytes === undefined) throw new Error(`missing planned source: ${operation.sourcePath}`);
+      await writeFileAtomically(input.choices.root, operation.destinationPath, bytes);
+    }
+    for (const variant of plan.variants) {
+      const files = Object.fromEntries(variant.operations.map((operation) => {
+        const bytes = byPath.get(operation.sourcePath) as Buffer;
+        return [operation.destinationPath, sha256(bytes)];
+      }));
+      const state: MultiInstallManifest = {
+        schema_version: 2,
+        slug: input.slug,
+        version: input.manifest.version,
+        agent: variant.agent,
+        scope: input.choices.scope,
+        source_url: input.sourceUrl,
+        artifact_sha256: input.artifactHash,
+        files,
+        installed_at: new Date().toISOString()
+      };
+      await writeFileAtomically(input.choices.root, statePaths.get(variant.agent) as string, Buffer.from(JSON.stringify(state, null, 2) + "\n"));
+    }
+  } catch (error) {
+    for (const [path, previous] of [...snapshots.entries()].reverse()) {
+      if (previous === null) await rm(path, { force: true });
+      else await writeFileAtomically(input.choices.root, path, previous);
+    }
+    throw error;
+  }
+  input.dependencies.stdout(JSON.stringify({
+    ok: true, action: "installed", slug: input.slug, version: input.manifest.version,
+    agents: input.choices.agents, scope: input.choices.scope
+  }) + "\n");
 }
 
 async function runInstall(
@@ -315,21 +630,11 @@ async function runInstall(
   if (!SKILL_NAME_REGEX.test(slug)) {
     throw new CliFailure(3, SKILL_ERROR_CODE.SLUG_INVALID, "skill slug is invalid: must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase alphanumeric with single hyphens, at most 64 chars)");
   }
-  if (!INSTALLABLE_AGENTS.has(options.agent as RegistryAgent)) {
-    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "standalone install supports claude-code and cursor only");
-  }
+  const choices = await resolveInstallChoices(options, dependencies);
 
   const installFrom = options.from ?? "server";
   let bytes: Uint8Array;
-  let metadata: {
-    slug: string;
-    version: string;
-    agent: string;
-    target_path: string;
-    source_sha256?: string;
-    source_ir_sha256?: string;
-    install_mode?: string;
-  };
+  let metadata: unknown;
   let sourceFiles: SourceFile[];
   let sourceUrl: string;
 
@@ -341,10 +646,13 @@ async function runInstall(
     sourceFiles = npmPackage.sourceFiles;
     sourceUrl = `npm:${packageName}`;
   } else if (installFrom === "server") {
+    if (choices.agents.length !== 1) {
+      throw new CliFailure(3, "CONFIG_INVALID", "multi-agent installation requires --from npm");
+    }
     const { serverUrl, token } = configuration(options, dependencies.env);
     const response = await request(
       dependencies.fetch,
-      `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/${encodeURIComponent(options.agent)}/download`,
+      `${serverUrl}/api/v1/skills/${encodeURIComponent(slug)}/artifacts/${encodeURIComponent(choices.agents[0] as SkillTargetAgent)}/download`,
       token
     );
     bytes = new Uint8Array(await response.arrayBuffer());
@@ -355,14 +663,14 @@ async function runInstall(
       throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "downloaded artifact failed SHA-256 verification");
     }
     const zip = new AdmZip(Buffer.from(bytes));
-    const metadataEntry = zip.getEntry("hunter-skill.json");
+    const metadataEntry = zip.getEntry(SKILL_PACKAGE_MANIFEST) ?? zip.getEntry(LEGACY_SKILL_PACKAGE_MANIFEST);
     if (metadataEntry === null || metadataEntry.isDirectory) {
       throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
     }
-    metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as typeof metadata;
+    metadata = JSON.parse(metadataEntry.getData().toString("utf8")) as unknown;
     sourceFiles = [];
     for (const entry of zip.getEntries()) {
-      if (entry.isDirectory || entry.entryName === "hunter-skill.json") continue;
+      if (entry.isDirectory || SKILL_PACKAGE_MANIFESTS.has(entry.entryName)) continue;
       if (/(^|[/\\])\.\.([/\\]|$)|^\/|^\\|^[a-zA-Z]:/.test(entry.entryName)) {
         throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact contains an unsafe path: " + entry.entryName);
       }
@@ -376,21 +684,39 @@ async function runInstall(
   }
 
   const actualArtifactHash = sha256(bytes);
+  const parsedV3 = skillPackageManifestV3Schema.safeParse(metadata);
+  if (parsedV3.success) {
+    await installV3Package({
+      slug,
+      manifest: parsedV3.data,
+      sourceFiles,
+      artifactHash: actualArtifactHash,
+      sourceUrl,
+      choices,
+      options,
+      dependencies
+    });
+    return;
+  }
+  if (choices.agents.length !== 1) {
+    throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "legacy packages support exactly one agent");
+  }
+  const legacy = metadata as LegacyArtifactMetadata;
   // identity 校验 agent 与请求一致；target_path 提供 install 目录（folder=文件夹根，file=文件路径）。
   if (
-    metadata.slug !== slug ||
-    metadata.agent !== options.agent ||
-    typeof metadata.target_path !== "string" ||
-    metadata.target_path.length === 0
+    legacy.slug !== slug ||
+    legacy.agent !== choices.agents[0] ||
+    typeof legacy.target_path !== "string" ||
+    legacy.target_path.length === 0
   ) {
     throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact identity does not match request");
   }
   // target_path 防逃逸：拦截绝对路径/驱动器前缀/.. 父段。folder 模式 target_path 以 / 结尾（如 .claude/skills/<slug>/）。
   // 按路径片段判断 ".."，避免误伤含 ".." 的合法文件名（如 notes..v1.md）。
   if (
-    metadata.target_path.split(/[/\\]/).some((seg) => seg === "..") ||
-    /^[a-zA-Z]:/.test(metadata.target_path) ||
-    metadata.target_path.startsWith("/")
+    legacy.target_path.split(/[/\\]/).some((seg) => seg === "..") ||
+    /^[a-zA-Z]:/.test(legacy.target_path) ||
+    legacy.target_path.startsWith("/")
   ) {
     throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path is unsafe");
   }
@@ -401,14 +727,14 @@ async function runInstall(
     [...sourceFiles].sort((a, b) => a.path.localeCompare(b.path))
       .map((f) => ({ path: f.path, content: f.content }))
   ), "utf8"));
-  const declaredSourceHash = metadata.source_sha256 ?? metadata.source_ir_sha256;
+  const declaredSourceHash = legacy.source_sha256 ?? legacy.source_ir_sha256;
   if (declaredSourceHash !== undefined && declaredSourceHash !== computedSourceHash) {
     throw new CliFailure(7, "ARTIFACT_HASH_MISMATCH", "artifact source files failed SHA-256 verification");
   }
 
   // install mode：manifest 显式提供则用，否则按 target_path 尾部分隔符推断（folder=/结尾，file=其余）。
-  const installMode = metadata.install_mode ??
-    (/(?:[\\/])$/.test(metadata.target_path) ? "folder" : "file");
+  const installMode = legacy.install_mode ??
+    (/(?:[\\/])$/.test(legacy.target_path) ? "folder" : "file");
 
   // folder 模式：installRoot=target_path 文件夹根，装全部文件（保留目录结构，references/scripts 一起落地）；
   // file 模式：installRoot=dirname(target_path)，只装 entry（basename）。
@@ -417,13 +743,13 @@ async function runInstall(
   let manifestFiles: Record<string, string>;
   let primaryName: string | null = null; // file 模式 = filename（unmanaged 检查用）；folder 模式 = null
   if (installMode === "folder") {
-    installRoot = join(dependencies.cwd, metadata.target_path);
+    installRoot = join(choices.root, legacy.target_path);
     filesToInstall = sourceFiles.map((f) => ({ name: f.path, bytes: Buffer.from(f.content, "utf8") }));
     manifestFiles = Object.fromEntries(
       sourceFiles.map((f) => [f.path, sha256(Buffer.from(f.content, "utf8"))])
     );
   } else {
-    const filename = metadata.target_path.split(/[/\\]/).at(-1);
+    const filename = legacy.target_path.split(/[/\\]/).at(-1);
     if (filename === undefined || filename === "") {
       throw new CliFailure(7, "ARTIFACT_PATH_INVALID", "artifact target path has no filename");
     }
@@ -433,16 +759,18 @@ async function runInstall(
     if (entry === undefined) {
       throw new CliFailure(7, "ARTIFACT_SCHEMA_INVALID", "artifact is missing required files");
     }
-    installRoot = join(dependencies.cwd, dirname(metadata.target_path));
+    installRoot = join(choices.root, dirname(legacy.target_path));
     filesToInstall = [{ name: filename, bytes: Buffer.from(entry.content, "utf8") }];
     manifestFiles = { [filename]: sha256(Buffer.from(entry.content, "utf8")) };
     primaryName = filename;
   }
 
-  const manifestPath = join(
-    dependencies.cwd, ".harness", "state", "local", "skill-installs", slug + ".json"
-  );
-  const existing = await readManifest(manifestPath);
+  const stateRoot = choices.scope === "project"
+    ? join(choices.root, ".harness", "state", "local", "skill-installs")
+    : join(choices.root, ".hunter-harness", "state", "skill-installs");
+  const manifestPath = join(stateRoot, choices.agents[0], slug + ".json");
+  const legacyManifestPath = join(dependencies.cwd, ".harness", "state", "local", "skill-installs", slug + ".json");
+  const existing = await readManifest(manifestPath) ?? await readManifest(legacyManifestPath);
   // unmanaged：无 manifest 且目标已存在内容（folder=目录有文件，file=目标文件存在）。
   if (existing === null && options.force !== true) {
     const occupied = primaryName === null
@@ -458,15 +786,15 @@ async function runInstall(
     throw new CliFailure(5, "LOCAL_SKILL_DIRTY", "local skill has uncommitted edits; use --force to confirm overwrite");
   }
   if (existing?.artifact_sha256 === actualArtifactHash && !(await isDirty(installRoot, existing))) {
-    dependencies.stdout(JSON.stringify({ ok: true, action: "noop", slug, version: metadata.version }) + "\n");
+    dependencies.stdout(JSON.stringify({ ok: true, action: "noop", slug, version: legacy.version }) + "\n");
     return;
   }
   await atomicInstall({ target: installRoot, files: filesToInstall });
   const manifest: InstallManifest = {
     schema_version: 1,
     slug,
-    version: metadata.version,
-    agent: options.agent as RegistryAgent,
+    version: legacy.version,
+    agent: choices.agents[0] as RegistryAgent,
     source_url: sourceUrl,
     artifact_sha256: actualArtifactHash,
     files: manifestFiles,
@@ -476,7 +804,7 @@ async function runInstall(
   const manifestTemp = manifestPath + ".tmp-" + randomUUID();
   await writeFile(manifestTemp, JSON.stringify(manifest, null, 2) + "\n");
   await rename(manifestTemp, manifestPath);
-  dependencies.stdout(JSON.stringify({ ok: true, action: existing === null ? "installed" : "updated", slug, version: metadata.version }) + "\n");
+  dependencies.stdout(JSON.stringify({ ok: true, action: existing === null ? "installed" : "updated", slug, version: legacy.version }) + "\n");
 }
 
 // readSourceFiles：读 skill 源（目录递归 / ZIP 解包 / 单文件）为 SourceFile[]（{path, content}）。
@@ -525,9 +853,11 @@ async function runUpload(
   options: CommonOptions,
   dependencies: ResolvedSkillCliDependencies
 ): Promise<void> {
-  if (!UPLOADABLE_AGENTS.has(options.agent as RegistryAgent)) {
-    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports claude-code, cursor, codex and generic only");
+  const agents = optionAgents(options.agent);
+  if (agents.length !== 1 || !UPLOADABLE_AGENTS.has(agents[0] as RegistryAgent)) {
+    throw new CliFailure(3, "ADAPTER_UNSUPPORTED", "upload supports one of claude-code, codex, cursor or codebuddy");
   }
+  const agent = agents[0] as string;
   const { serverUrl, token } = configuration(options, dependencies.env);
   const files = await readSourceFiles(resolve(dependencies.cwd, sourceValue));
   // multipart：每文件一个 "file" part，filename=相对路径；agent 走 query param。
@@ -539,7 +869,7 @@ async function runUpload(
   }
   const response = await request(
     dependencies.fetch,
-    `${serverUrl}/api/v1/skills/draft?agent=${encodeURIComponent(options.agent)}`,
+    `${serverUrl}/api/v1/skills/draft?agent=${encodeURIComponent(agent)}`,
     token,
     { method: "POST", body: form }
   );
@@ -563,8 +893,19 @@ export async function runSkillCli(
     fetch: overrides.fetch ?? globalThis.fetch,
     stdout: overrides.stdout ?? ((value) => process.stdout.write(value)),
     stderr: overrides.stderr ?? ((value) => process.stderr.write(value)),
+    userHome: overrides.userHome ?? homedir(),
+    isTTY: overrides.isTTY ?? Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    prompt: overrides.prompt ?? (async (question) => {
+      const { createInterface } = await import("node:readline/promises");
+      const interface_ = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await interface_.question(question);
+      } finally {
+        interface_.close();
+      }
+    }),
     ...(overrides.pacoteTarball !== undefined ? { pacoteTarball: overrides.pacoteTarball } : {}),
-    ...(overrides.pacoteExtract !== undefined ? { pacoteExtract: overrides.pacoteExtract } : {}),
+    ...(overrides.extractNpmTarball !== undefined ? { extractNpmTarball: overrides.extractNpmTarball } : {}),
     ...(overrides.fetchNpmTarball !== undefined ? { fetchNpmTarball: overrides.fetchNpmTarball } : {})
   };
   const program = new Command()
@@ -573,17 +914,21 @@ export async function runSkillCli(
     .showHelpAfterError()
     .exitOverride()
     .configureOutput({ writeOut: dependencies.stdout, writeErr: dependencies.stderr });
-  const addOptions = (command: Command) => command
-    .requiredOption("--agent <agent>")
+  const addNetworkOptions = (command: Command) => command
     .option("--server-url <url>")
     .option("--token-env <ENV_NAME>")
     .option("--json");
-  addOptions(program.command("install <skill-slug>"))
+  addNetworkOptions(program.command("install <skill-slug>"))
+    .option("--agent <agent>", "target agent; repeat to install multiple variants", (value, previous: string[]) => [...previous, value], [])
+    .option("--scope <scope>", "installation scope: project or user")
+    .option("--project <path>", "project root for project-scoped installation")
+    .option("--yes", "approve the displayed installation plan")
     .option("--from <source>", "install source: server or npm", "server")
     .option("--npm-scope <scope>", "npm scope for --from npm (default: HUNTER_HARNESS_NPM_SCOPE)")
     .option("--force", "confirm overwrite of a locally modified installed skill")
     .action(async (slug: string, options: CommonOptions) => runInstall(slug, options, dependencies));
-  addOptions(program.command("upload <skill-directory-or-zip>"))
+  addNetworkOptions(program.command("upload <skill-directory-or-zip>"))
+    .requiredOption("--agent <agent>")
     .action(async (source: string, options: CommonOptions) => runUpload(source, options, dependencies));
   try {
     await program.parseAsync([...argv], { from: "node" });

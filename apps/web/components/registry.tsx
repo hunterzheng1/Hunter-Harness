@@ -8,16 +8,16 @@ import type {
   RegistrySkillVersion,
   RegistryTag
 } from "@hunter-harness/contracts";
-import JSZip from "jszip";
 import Link from "next/link";
-import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import { browserApi, buildUploadFormData, type HunterApi } from "../lib/api";
+import { browserApi, type HunterApi } from "../lib/api";
 import type { DemoAgent } from "../lib/demo-skills/types";
 import { findDemoSourceSkill } from "../lib/demo-skills/sap-field-mapper";
 import { useI18n } from "../lib/i18n";
 import { mockApi } from "../lib/mock-api";
 import { DemoSystemConfig } from "./demo-system-config";
+import { SkillUploadPanel } from "./skill-upload-panel";
 import {
   AgentCheckPanel,
   AgentConfigsOverview,
@@ -56,51 +56,6 @@ function skillStatusLabel(status: RegistrySkillDetail["status"], t: ReturnType<t
 
 type SkillDetailTab = "source" | "examples" | "definition" | "checks" | "versions" | "governance";
 
-const SKILL_ENTRY_PATTERN = /(^|\/)SKILL\.md$/i;
-
-// 客户端预览：从上传的 zip/folder 找 SKILL.md entry，解析 frontmatter 取 name（取代旧 skill IR 解析）。
-// 后端 authoritative 解析；此处仅用于上传后提示文案，失败静默回退 draft.slug。
-async function parseSkillFile(input: File | FileList | File[]): Promise<{ name: string; sourceName: string }> {
-  const files: File[] = Array.isArray(input)
-    ? input
-    : input instanceof FileList
-      ? Array.from(input)
-      : [input];
-  if (files.length === 0) throw new Error("No file selected");
-
-  const first = files[0];
-  if (first !== undefined && files.length === 1 && first.name.toLowerCase().endsWith(".zip")) {
-    const zip = await JSZip.loadAsync(await first.arrayBuffer());
-    const entry = Object.values(zip.files).find((item) =>
-      !item.dir && SKILL_ENTRY_PATTERN.test(item.name) && !item.name.includes("..")
-    );
-    if (entry === undefined) throw new Error("ZIP: SKILL.md not found");
-    const content = await entry.async("text");
-    const fm = parseSkillFrontmatter(content);
-    return { name: fm?.name ?? first.name, sourceName: first.name };
-  }
-
-  const folderEntry = files
-    .map((file) => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name }))
-    .filter(({ path }) => SKILL_ENTRY_PATTERN.test(path) && !path.includes(".."))
-    .sort((left, right) => left.path.split("/").length - right.path.split("/").length)[0];
-  if (folderEntry === undefined) throw new Error("Folder: SKILL.md not found");
-  const content = await folderEntry.file.text();
-  const fm = parseSkillFrontmatter(content);
-  const rootName = folderEntry.path.includes("/") ? (folderEntry.path.split("/")[0] ?? folderEntry.file.name) : folderEntry.file.name;
-  return { name: fm?.name ?? rootName, sourceName: rootName };
-}
-
-function uploadLabel(files: File[] | null, fallback: string): string {
-  if (files === null || files.length === 0) return fallback;
-  const first = files[0];
-  if (first === undefined) return fallback;
-  if (files.length === 1) return first.name;
-  const relative = (first as File & { webkitRelativePath?: string }).webkitRelativePath ?? "";
-  const segment = relative.split("/")[0];
-  return segment !== undefined && segment !== "" ? segment : files.length + " files";
-}
-
 export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const { t } = useI18n();
   const api = useApi(apiValue);
@@ -114,7 +69,6 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
   const [status, setStatus] = useState<"" | "published" | "unpublished">("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
-  const [upload, setUpload] = useState<File[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [deleteModal, setDeleteModal] = useState<RegistrySkillDetail | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -182,28 +136,6 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
     setSelectedTags((current) => current.includes(slug) ? current.filter((item) => item !== slug) : [...current, slug]);
   }
 
-  async function submitUpload(): Promise<void> {
-    if (upload === null || upload.length === 0) return;
-    const files = upload;
-    try {
-      const hasWorkflowYaml = files.some((f) => {
-        const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath ?? f.name;
-        return /(^|\/)workflow\.ya?ml$/i.test(rel);
-      });
-      if (hasWorkflowYaml) {
-        setMessage(t.skills.uploadWorkflowFamilyRedirect);
-        setUpload(null);
-        return;
-      }
-      const draft = await required(api, "uploadSkillDraft")(buildUploadFormData(files), "claude-code");
-      await refresh();
-      let previewName = draft.slug;
-      try { previewName = (await parseSkillFile(files)).name || draft.slug; } catch { /* optional client-side preview; backend re-parses authoritatively */ }
-      setMessage(t.skills.uploadedAsDraft.replace("{name}", previewName));
-      setUpload(null);
-    } catch (reason) { setError(apiError(reason, t)); }
-  }
-
   async function submitImport(): Promise<void> {
     const raw = importRef.trim();
     if (raw.length === 0 || importing) return;
@@ -260,7 +192,7 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
       <div className="registry-toolbar registry-toolbar-expanded panel panel-themed panel-toolbar">
         <label className="search-wide">{t.skills.searchSkills}<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t.skills.searchPlaceholder} /></label>
         <label>{t.skills.source}<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as typeof sourceFilter)}><option value="">{t.skills.sourceAll}</option><option value="registry">{t.skills.sourceRegistry}</option><option value="external">{t.skills.sourceExternal}</option><option value="npm">{t.skills.sourceNpm}</option><option value="github">{t.skills.sourceGithub}</option></select></label>
-        <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="generic">Generic</option><option value="mcp">MCP</option></select></label>
+        <label>{t.skills.agent}<select value={agent} onChange={(event) => setAgent(event.target.value)}><option value="">{t.common.all}</option><option value="claude-code">Claude Code</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="codebuddy">CodeBuddy</option></select></label>
         <label>{t.skills.status}<select value={status} onChange={(event) => setStatus(event.target.value as "" | "published" | "unpublished")}><option value="">{t.common.all}</option><option value="published">{t.skills.statusPublished}</option><option value="unpublished">{t.skills.statusUnpublished}</option></select></label>
         <div className="tag-filter-panel">
           <span>{t.skills.tag}</span>
@@ -324,8 +256,10 @@ export function SkillRegistry({ api: apiValue }: { api?: HunterApi }) {
           <div className="panel panel-themed panel-upload compact-form">
             <div className="panel-title"><h2>{t.skills.uploadSkill}</h2><Status value="draft" /></div>
             <p>{t.skills.uploadHint}</p>
-            <label className="upload-drop-strip"><input type="file" multiple accept=".zip" onChange={(event: ChangeEvent<HTMLInputElement>) => { const files = event.target.files; setUpload(files === null || files.length === 0 ? null : Array.from(files)); }} {...{ webkitdirectory: "" }} /><strong>{t.skills.chooseFile}</strong><span>{uploadLabel(upload, t.skills.uploadDropHint)}</span></label>
-            <button disabled={upload === null} onClick={() => void submitUpload()}>{t.skills.addUnpublishedSkill}</button>
+            <SkillUploadPanel api={api} agent="claude-code" onUploaded={(draft) => {
+              void refresh();
+              setMessage(t.skills.uploadedAsDraft.replace("{name}", draft.slug));
+            }} />
           </div>
           <div className="panel panel-themed panel-upload compact-form">
             <div className="panel-title"><h2>{t.skills.importExternal}</h2><span>{t.skills.externalBadge}</span></div>
@@ -400,8 +334,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [skillDraft, setSkillDraft] = useState<DraftState | null>(null);
-  const [npmPublishAvailable, setNpmPublishAvailable] = useState(false);
-  const [publishingNpm, setPublishingNpm] = useState(false);
   const userTouchedRef = useRef(false);
 
   async function refresh(forAgent: RegistryAgent = currentAgent): Promise<void> {
@@ -411,7 +343,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         required(api, "listTags")()
       ]);
       setSkill(detail); setVersions(history); setTags(allTags);
-      setNpmPublishAvailable((detail as { npm_publish_available?: boolean }).npm_publish_available === true);
       setError(null);
     } catch (reason) {
       setError(apiError(reason, t));
@@ -471,7 +402,7 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
     userTouchedRef.current = false;
     setCurrentAgent("claude-code");
     const stored = globalThis.localStorage?.getItem("hunter-harness-default-agent");
-    if (stored === "claude-code" || stored === "cursor" || stored === "codex" || stored === "generic" || stored === "mcp") setAgent(stored as DemoAgent);
+    if (stored === "claude-code" || stored === "cursor" || stored === "codex" || stored === "codebuddy") setAgent(stored as DemoAgent);
     void refresh("claude-code");
     void refreshDraft("claude-code");
   }, [api, skillId]);
@@ -498,24 +429,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
       : latestNpmRelease?.status === "conflict"
         ? t.skillDetail.npmBadgeConflict
         : t.skillDetail.npmBadgeUnpublished;
-  const npmPublishDisabled = process.env.NEXT_PUBLIC_HUNTER_HARNESS_DEMO === "true"
-    || !npmPublishAvailable
-    || skill?.status !== "published"
-    || skill?.latest_version === null
-    || latestNpmRelease?.status === "published";
-  async function publishToNpm(): Promise<void> {
-    if (skill === null || npmPublishDisabled) return;
-    try {
-      setPublishingNpm(true);
-      await required(api, "releaseSkillToNpm")(skillId);
-      await refresh();
-      setMessage(t.skillDetail.npmPublished);
-    } catch (reason) {
-      setError(apiError(reason, t));
-    } finally {
-      setPublishingNpm(false);
-    }
-  }
   async function copyCommand(): Promise<void> {
     await navigator.clipboard.writeText(command); setMessage(t.skillDetail.installCopied);
   }
@@ -589,14 +502,6 @@ export function SkillDetail({ api: apiValue, skillId }: { api?: HunterApi; skill
         <code className="command-code">{command}</code>
         <button onClick={() => void copyCommand()}>{t.skillDetail.copyCommand}</button>
         <button className="secondary" onClick={() => void download()}>{t.skillDetail.downloadZip}</button>
-        <button
-          className="secondary"
-          disabled={npmPublishDisabled || publishingNpm}
-          title={npmPublishAvailable ? undefined : t.skillDetail.npmPublishUnavailable}
-          onClick={() => void publishToNpm()}
-        >
-          {publishingNpm ? "…" : t.skillDetail.npmPublish}
-        </button>
         <code className="command-code npm-command-code">{npmCommand}</code>
       </div>
 

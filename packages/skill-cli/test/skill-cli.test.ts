@@ -1,4 +1,4 @@
-import { access, mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,6 +28,29 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function v3Extract(files: Record<string, string>, version: string) {
+  return async (_tarball: Buffer, destination: string): Promise<void> => {
+    for (const [path, content] of Object.entries(files)) {
+      await mkdir(join(destination, path, ".."), { recursive: true });
+      await writeFile(join(destination, path), content);
+    }
+    // npm always supplies this envelope; the installer must ignore it.
+    await writeFile(join(destination, "package.json"), JSON.stringify({ name: "@hunter-skills/harness-sync", version }));
+    await writeFile(join(destination, "hunter-harness.skill.json"), JSON.stringify({
+      schema_version: 3,
+      slug: "harness-sync",
+      version,
+      files: Object.entries(files).map(([path, content]) => ({
+        path, sha256: sha256Bytes(content), size: Buffer.byteLength(content)
+      })),
+      components: [{ role: "skill", source: "." }],
+      variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+        status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill:."]
+      }]))
+    }));
+  };
 }
 
 // folder zip fixture（claude-code 新模型）：多文件 SKILL.md + references/，target_path=文件夹根，install_mode=folder。
@@ -278,7 +301,7 @@ describe("@hunter-harness/skill-cli", () => {
     expect(await readFile(join(cwd, ".cursor/rules/harness-sync.mdc"), "utf8"))
       .toBe("# harness-sync\n");
     const manifest = JSON.parse(await readFile(
-      join(cwd, ".harness", "state", "local", "skill-installs", "harness-sync.json"), "utf8"
+      join(cwd, ".harness", "state", "local", "skill-installs", "cursor", "harness-sync.json"), "utf8"
     ));
     expect(manifest.agent).toBe("cursor");
     expect(manifest.files).toHaveProperty("harness-sync.mdc");
@@ -391,18 +414,18 @@ describe("@hunter-harness/skill-cli", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("uploads with agent=generic to the draft endpoint (UT-004 upload 白名单扩展)", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-generic-upload-"));
+  it("uploads with agent=codebuddy to the draft endpoint (UT-004 upload allowlist)", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-codebuddy-upload-"));
     const source = join(cwd, "candidate");
     await writeSkillSource(source);
     const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      expect(String(input)).toContain("agent=generic");
+      expect(String(input)).toContain("agent=codebuddy");
       expect(init?.body).toBeInstanceOf(FormData);
-      return draftResponse("harness-candidate", "generic");
+      return draftResponse("harness-candidate", "codebuddy");
     });
     expect(await runSkillCli([
       "node", "skill-cli", "upload", source,
-      "--agent", "generic", "--server-url", "https://harness.example",
+      "--agent", "codebuddy", "--server-url", "https://harness.example",
       "--token-env", "HH_SKILL_TOKEN", "--json"
     ], { cwd, env: tokenEnv, fetch, stdout: () => undefined, stderr: () => undefined })).toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
@@ -503,10 +526,10 @@ describe("@hunter-harness/skill-cli", () => {
     }
   });
 
-  it("rejects install with unsupported agent (codex) ADAPTER_UNSUPPORTED exit 3 (白名单边界回归)", async () => {
-    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-codex-"));
+  it("rejects install with unsupported agent (mcp) ADAPTER_UNSUPPORTED exit 3", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-mcp-"));
     const exitCode = await runSkillCli([
-      "node", "skill-cli", "install", "harness-sync", "--agent", "codex",
+      "node", "skill-cli", "install", "harness-sync", "--agent", "mcp",
       "--server-url", "https://harness.example", "--token-env", "HH_SKILL_TOKEN"
     ], { cwd, env: tokenEnv, fetch: vi.fn(), stdout: () => undefined, stderr: () => undefined });
     expect(exitCode).toBe(3);
@@ -567,7 +590,7 @@ describe("@hunter-harness/skill-cli", () => {
       cwd,
       env: { ...tokenEnv, HUNTER_HARNESS_NPM_SCOPE: "@hunter-skills" },
       pacoteTarball: async () => zipBytes(skillContent),
-      pacoteExtract: async (_packageName, destination) => {
+      extractNpmTarball: async (_tarball, destination) => {
         await mkdir(join(destination, "references"), { recursive: true });
         await writeFile(join(destination, "SKILL.md"), skillContent, "utf8");
         await writeFile(join(destination, "references", "guide.md"), guide, "utf8");
@@ -586,5 +609,272 @@ describe("@hunter-harness/skill-cli", () => {
     });
     expect(exitCode).toBe(0);
     expect(await readFile(join(cwd, ".claude", "skills", "harness-sync", "SKILL.md"), "utf8")).toBe(skillContent);
+  });
+
+  it("downloads an npm package once and extracts the exact downloaded bytes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-npm-single-fetch-"));
+    const packageBytes = Buffer.from("single-fetch-package");
+    const pacoteTarball = vi.fn(async () => packageBytes);
+    const extractNpmTarball = vi.fn(async (received: Buffer, destination: string) => {
+      await writeFile(join(destination, "SKILL.md"), DEFAULT_SKILL_CONTENT, "utf8");
+      await writeFile(join(destination, "hunter-harness.skill.json"), JSON.stringify({
+        schema_version: 3,
+        slug: "harness-sync",
+        version: "2.0.0",
+        files: [{
+          path: "SKILL.md",
+          sha256: sha256Bytes(DEFAULT_SKILL_CONTENT),
+          size: Buffer.byteLength(DEFAULT_SKILL_CONTENT)
+        }],
+        components: [{ role: "skill", source: "." }],
+        variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+          status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill:."]
+        }]))
+      }), "utf8");
+      expect(received).toBe(packageBytes);
+    });
+
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--agent", "codex",
+      "--scope", "project", "--project", cwd, "--from", "npm",
+      "--npm-scope", "@hunter-skills", "--yes"
+    ], {
+      cwd,
+      env: tokenEnv,
+      pacoteTarball,
+      extractNpmTarball,
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+
+    expect(exitCode).toBe(0);
+    expect(pacoteTarball).toHaveBeenCalledTimes(1);
+    expect(extractNpmTarball).toHaveBeenCalledTimes(1);
+    expect(await readFile(join(cwd, ".agents", "skills", "harness-sync", "SKILL.md"), "utf8"))
+      .toBe(DEFAULT_SKILL_CONTENT);
+  });
+
+  it("installs one v3 package for multiple agents with nested resources and native subagents", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-project-"));
+    const files = {
+      "SKILL.md": DEFAULT_SKILL_CONTENT,
+      "references/guide.md": "# guide\n",
+      "scripts/check.ts": "console.log('check');\n",
+      "subagents/reviewer.md": "# reviewer\n",
+      "subagents/reviewer.toml": "name = \"reviewer\"\n"
+    };
+    const output: string[] = [];
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync",
+      "--agent", "claude-code", "--agent", "codex",
+      "--scope", "project", "--project", cwd,
+      "--from", "npm", "--npm-scope", "@hunter-skills", "--yes", "--json"
+    ], {
+      cwd,
+      env: tokenEnv,
+      pacoteTarball: async () => Buffer.from("v3-package"),
+      extractNpmTarball: async (_tarball, destination) => {
+        for (const [path, content] of Object.entries(files)) {
+          await mkdir(join(destination, path, ".."), { recursive: true });
+          await writeFile(join(destination, path), content, "utf8");
+        }
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 3,
+          slug: "harness-sync",
+          version: "2.0.0",
+          files: Object.entries(files).map(([path, content]) => ({
+            path, sha256: sha256Bytes(content), size: Buffer.byteLength(content)
+          })),
+          components: [
+            { role: "skill", source: "." },
+            {
+              role: "subagent", source: ".", name: "reviewer",
+              variants: {
+                "claude-code": "subagents/reviewer.md",
+                codex: "subagents/reviewer.toml",
+                cursor: "subagents/reviewer.md",
+                codebuddy: "subagents/reviewer.md"
+              }
+            }
+          ],
+          variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+            status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill", "subagent:reviewer"]
+          }]))
+        }), "utf8");
+      },
+      stdout: (value) => output.push(value),
+      stderr: () => undefined
+    });
+
+    expect(exitCode).toBe(0);
+    expect(await readFile(join(cwd, ".claude/skills/harness-sync/references/guide.md"), "utf8")).toBe("# guide\n");
+    expect(await readFile(join(cwd, ".agents/skills/harness-sync/scripts/check.ts"), "utf8")).toContain("console.log");
+    expect(await readFile(join(cwd, ".claude/agents/reviewer.md"), "utf8")).toBe("# reviewer\n");
+    expect(await readFile(join(cwd, ".codex/agents/reviewer.toml"), "utf8")).toContain("name =");
+    expect(await pathExists(join(cwd, ".agents/skills/harness-sync/subagents/reviewer.toml"))).toBe(false);
+    expect(await pathExists(join(cwd, ".harness/state/local/skill-installs/claude-code/harness-sync.json"))).toBe(true);
+    expect(await pathExists(join(cwd, ".harness/state/local/skill-installs/codex/harness-sync.json"))).toBe(true);
+    expect(output.join("")) .toContain("install-preview");
+  });
+
+  it("migrates a uniquely identified slug-only project install state during a v3 update", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-legacy-state-"));
+    const installedSkill = join(cwd, ".claude", "skills", "harness-sync", "SKILL.md");
+    await mkdir(join(installedSkill, ".."), { recursive: true });
+    await writeFile(installedSkill, DEFAULT_SKILL_CONTENT, "utf8");
+    const legacyState = join(cwd, ".harness", "state", "local", "skill-installs", "harness-sync.json");
+    await mkdir(join(legacyState, ".."), { recursive: true });
+    await writeFile(legacyState, JSON.stringify({
+      schema_version: 1,
+      slug: "harness-sync",
+      version: "1.0.0",
+      agent: "claude-code",
+      source_url: "npm:@hunter-skills/harness-sync",
+      artifact_sha256: "sha256:legacy-artifact",
+      files: { "SKILL.md": sha256Bytes(DEFAULT_SKILL_CONTENT) },
+      installed_at: "2026-07-01T00:00:00.000Z"
+    }), "utf8");
+
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync",
+      "--agent", "claude-code", "--scope", "project", "--project", cwd,
+      "--from", "npm", "--npm-scope", "@hunter-skills", "--yes"
+    ], {
+      cwd,
+      env: tokenEnv,
+      pacoteTarball: async () => Buffer.from("v3-legacy-migration-package"),
+      extractNpmTarball: async (_tarball, destination) => {
+        await writeFile(join(destination, "SKILL.md"), DEFAULT_SKILL_CONTENT, "utf8");
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 3,
+          slug: "harness-sync",
+          version: "2.0.0",
+          files: [{
+            path: "SKILL.md",
+            sha256: sha256Bytes(DEFAULT_SKILL_CONTENT),
+            size: Buffer.byteLength(DEFAULT_SKILL_CONTENT)
+          }],
+          components: [{ role: "skill", source: "." }],
+          variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+            status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill"]
+          }]))
+        }), "utf8");
+      },
+      stdout: () => undefined,
+      stderr: () => undefined
+    });
+
+    expect(exitCode).toBe(0);
+    const migratedState = JSON.parse(await readFile(
+      join(cwd, ".harness", "state", "local", "skill-installs", "claude-code", "harness-sync.json"),
+      "utf8"
+    )) as { schema_version: number; agent: string; scope: string };
+    expect(migratedState).toMatchObject({ schema_version: 2, agent: "claude-code", scope: "project" });
+    expect(await pathExists(legacyState)).toBe(true);
+  });
+
+  it("installs cursor and codebuddy v3 variants into the current-user scope", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-cwd-"));
+    const userHome = await mkdtemp(join(tmpdir(), "hunter-skill-v3-home-"));
+    const files = { "SKILL.md": DEFAULT_SKILL_CONTENT, "subagents/reviewer.md": "# reviewer\n" };
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync",
+      "--agent", "cursor", "--agent", "codebuddy", "--scope", "user",
+      "--from", "npm", "--npm-scope", "@hunter-skills", "--yes"
+    ], {
+      cwd, userHome, env: tokenEnv,
+      pacoteTarball: async () => Buffer.from("v3-user-package"),
+      extractNpmTarball: async (_tarball, destination) => {
+        await mkdir(join(destination, "subagents"), { recursive: true });
+        for (const [path, content] of Object.entries(files)) await writeFile(join(destination, path), content);
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 3, slug: "harness-sync", version: "2.0.0",
+          files: Object.entries(files).map(([path, content]) => ({ path, sha256: sha256Bytes(content), size: Buffer.byteLength(content) })),
+          components: [
+            { role: "skill", source: "." },
+            { role: "subagent", source: ".", name: "reviewer", variants: {
+              "claude-code": "subagents/reviewer.md", codex: "subagents/reviewer.toml",
+              cursor: "subagents/reviewer.md", codebuddy: "subagents/reviewer.md"
+            } }
+          ],
+          variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+            status: agent === "codex" ? "degraded" : "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill"]
+          }]))
+        }));
+      },
+      stdout: () => undefined, stderr: () => undefined
+    });
+
+    expect(exitCode).toBe(0);
+    expect(await pathExists(join(userHome, ".cursor/skills/harness-sync/SKILL.md"))).toBe(true);
+    expect(await pathExists(join(userHome, ".codebuddy/skills/harness-sync/SKILL.md"))).toBe(true);
+    expect(await pathExists(join(userHome, ".cursor/agents/reviewer.md"))).toBe(true);
+    expect(await pathExists(join(userHome, ".codebuddy/agents/reviewer.md"))).toBe(true);
+    expect(await pathExists(join(userHome, ".hunter-harness/state/skill-installs/cursor/harness-sync.json"))).toBe(true);
+  });
+
+  it("prompts for agents, scope and confirmation when install choices are omitted in a TTY", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-prompt-"));
+    const answers = ["claude-code,codex", "project", "y"];
+    const questions: string[] = [];
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--from", "npm", "--npm-scope", "@hunter-skills"
+    ], {
+      cwd, env: tokenEnv, isTTY: true,
+      prompt: async (question) => { questions.push(question); return answers.shift() ?? ""; },
+      pacoteTarball: async () => Buffer.from("v3-prompt-package"),
+      extractNpmTarball: async (_tarball, destination) => {
+        await writeFile(join(destination, "SKILL.md"), DEFAULT_SKILL_CONTENT);
+        await writeFile(join(destination, "hunter-skill.json"), JSON.stringify({
+          schema_version: 3, slug: "harness-sync", version: "2.0.0",
+          files: [{ path: "SKILL.md", sha256: sha256Bytes(DEFAULT_SKILL_CONTENT), size: Buffer.byteLength(DEFAULT_SKILL_CONTENT) }],
+          components: [{ role: "skill", source: "." }],
+          variants: Object.fromEntries(["claude-code", "codex", "cursor", "codebuddy"].map((agent) => [agent, {
+            status: "ready", adapterVersion: "1.0.0", buildHash: null, components: ["skill"]
+          }]))
+        }));
+      },
+      stdout: () => undefined, stderr: () => undefined
+    });
+    expect(exitCode).toBe(0);
+    expect(questions).toHaveLength(3);
+    expect(await pathExists(join(cwd, ".agents/skills/harness-sync/SKILL.md"))).toBe(true);
+  });
+
+  it("removes files managed by the previous v3 installation when an update drops them", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-update-"));
+    const args = ["node", "skill-cli", "install", "harness-sync", "--agent", "codex", "--scope", "project",
+      "--project", cwd, "--from", "npm", "--npm-scope", "@hunter-skills", "--yes"];
+    const firstFiles = { "SKILL.md": DEFAULT_SKILL_CONTENT, "scripts/obsolete.ts": "export {};\n" };
+    expect(await runSkillCli(args, {
+      cwd, env: tokenEnv, pacoteTarball: async () => Buffer.from("v3-first"),
+      extractNpmTarball: v3Extract(firstFiles, "2.0.0"), stdout: () => undefined, stderr: () => undefined
+    })).toBe(0);
+    const obsolete = join(cwd, ".agents/skills/harness-sync/scripts/obsolete.ts");
+    expect(await pathExists(obsolete)).toBe(true);
+
+    expect(await runSkillCli(args, {
+      cwd, env: tokenEnv, pacoteTarball: async () => Buffer.from("v3-second"),
+      extractNpmTarball: v3Extract({ "SKILL.md": DEFAULT_SKILL_CONTENT }, "2.0.1"),
+      stdout: () => undefined, stderr: () => undefined
+    })).toBe(0);
+    expect(await pathExists(obsolete)).toBe(false);
+  });
+
+  it("rejects a v3 install path that traverses an existing junction or symlink", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "hunter-skill-v3-link-"));
+    const outside = await mkdtemp(join(tmpdir(), "hunter-skill-v3-outside-"));
+    await mkdir(join(cwd, ".agents", "skills"), { recursive: true });
+    await symlink(outside, join(cwd, ".agents", "skills", "harness-sync"), process.platform === "win32" ? "junction" : "dir");
+    const exitCode = await runSkillCli([
+      "node", "skill-cli", "install", "harness-sync", "--agent", "codex", "--scope", "project",
+      "--project", cwd, "--from", "npm", "--npm-scope", "@hunter-skills", "--yes", "--force"
+    ], {
+      cwd, env: tokenEnv, pacoteTarball: async () => Buffer.from("v3-link"),
+      extractNpmTarball: v3Extract({ "SKILL.md": DEFAULT_SKILL_CONTENT }, "2.0.0"),
+      stdout: () => undefined, stderr: () => undefined
+    });
+    expect(exitCode).toBe(7);
+    expect(await pathExists(join(outside, "SKILL.md"))).toBe(false);
   });
 });

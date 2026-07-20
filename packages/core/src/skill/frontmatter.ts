@@ -61,14 +61,17 @@ export function parseFrontmatter(content: string): SkillFrontmatter {
 }
 
 /**
- * 按 agent 约定定位 entry 文件：claude-code→SKILL.md，cursor→*.mdc（根级首个）。
+ * Native skills use SKILL.md for all active agents. Cursor's historical .mdc
+ * entry remains a read-only fallback for v2 artifacts.
  * 找不到 → SkillEntryError("SKILL_ENTRY_NOT_FOUND")。
  */
 export function findEntryFile(files: SourceFile[], agent: RegistryAgent): SourceFile {
-  const pattern = agent === "cursor"
-    ? /(^|\/)[^/]+\.mdc$/i
-    : /(^|\/)SKILL\.md$/i;
-  const matches = files.filter((f) => pattern.test(f.path));
+  const nativeMatches = files.filter((file) => /(^|\/)SKILL\.md$/i.test(file.path));
+  const matches = nativeMatches.length > 0
+    ? nativeMatches
+    : agent === "cursor"
+      ? files.filter((file) => /(^|\/)[^/]+\.mdc$/i.test(file.path))
+      : [];
   if (matches.length === 0) {
     throw new SkillEntryError(SKILL_ERROR_CODE.ENTRY_NOT_FOUND, `no ${agent === "cursor" ? ".mdc" : "SKILL.md"} entry found for agent ${agent}`);
   }

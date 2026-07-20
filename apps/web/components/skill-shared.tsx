@@ -185,10 +185,9 @@ function FilePreview({ path, content, showRaw, showRendered }: { path: string; c
 
 const detailAgents: Array<{ value: DemoAgent; label: string }> = [
   { value: "claude-code", label: "Claude Code" },
-  { value: "cursor", label: "Cursor" },
   { value: "codex", label: "Codex" },
-  { value: "generic", label: "Generic Markdown" },
-  { value: "mcp", label: "MCP" }
+  { value: "cursor", label: "Cursor" },
+  { value: "codebuddy", label: "CodeBuddy" }
 ];
 
 function agentLabel(agent: DemoAgent): string {

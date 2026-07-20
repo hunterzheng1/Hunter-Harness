@@ -3,7 +3,7 @@ import { normalizeManagedPath } from "../fs/path-safety.js";
 import { parseInlineIgnores } from "./allowlist.js";
 import { highEntropyCandidates } from "./entropy.js";
 
-export const SENSITIVE_SCANNER_VERSION = "1.0.0";
+export const SENSITIVE_SCANNER_VERSION = "1.1.0";
 
 export type FindingSeverity = "high" | "medium" | "low";
 
@@ -109,6 +109,9 @@ function rawFindings(content: string): RawFinding[] {
   for (const rule of RULES) {
     for (const match of content.matchAll(rule.pattern)) {
       const value = match[rule.valueGroup ?? 0] ?? match[0];
+      if (rule.id === "HH_PASSWORD_VALUE" && isObviousPlaceholder(value)) {
+        continue;
+      }
       const relative = match[0].indexOf(value);
       findings.push({
         ruleId: rule.id,
@@ -119,6 +122,7 @@ function rawFindings(content: string): RawFinding[] {
     }
   }
   for (const candidate of highEntropyCandidates(content)) {
+    if (!hasSensitiveLexicalContext(content, candidate.offset)) continue;
     findings.push({
       ruleId: "HH_HIGH_ENTROPY",
       severity: "high",
@@ -129,12 +133,32 @@ function rawFindings(content: string): RawFinding[] {
   return findings;
 }
 
+function isObviousPlaceholder(value: string): boolean {
+  const trimmed = value.trim();
+  return /^\$\([^)]+\)$/.test(trimmed) ||
+    /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(trimmed) ||
+    /^\{\{[^{}]+\}\}$/.test(trimmed) ||
+    /^<[^<>]+>$/.test(trimmed) ||
+    /^(?:example|placeholder|your[-_][a-z0-9_-]+)$/i.test(trimmed);
+}
+
+function hasSensitiveLexicalContext(content: string, offset: number): boolean {
+  const lineStart = content.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const nextLineBreak = content.indexOf("\n", offset);
+  const lineEnd = nextLineBreak === -1 ? content.length : nextLineBreak;
+  const line = content.slice(lineStart, lineEnd);
+  return /(?:secret|token|password|passwd|pwd|api[_-]?key|credential|authorization|bearer)\s*[:=]\s*["']?[A-Za-z0-9._~+/-]{8,}/i
+    .test(line);
+}
+
 export function scanSensitiveFiles(
   files: Readonly<Record<string, string>>,
   options: ScanOptions = {}
 ): {
   scanner_version: string;
   blocked: boolean;
+  hard_blocked: boolean;
+  review_required: boolean;
   findings: SensitiveFinding[];
   override_evidence: ReadonlyArray<Readonly<OverrideEvidence>>;
 } {
@@ -204,6 +228,12 @@ export function scanSensitiveFiles(
   return {
     scanner_version: SENSITIVE_SCANNER_VERSION,
     blocked: findings.some((finding) => finding.disposition === "blocked"),
+    hard_blocked: findings.some((finding) =>
+      finding.disposition === "blocked" && finding.severity === "high"
+    ),
+    review_required: findings.some((finding) =>
+      finding.disposition === "blocked" && finding.severity !== "high"
+    ),
     findings,
     override_evidence: Object.freeze(evidence)
   };

@@ -136,6 +136,15 @@ function api(overrides: Partial<HunterApi> = {}): HunterApi {
       changeNote: "published",
       created_at: "2026-06-22T00:00:00Z"
     })),
+    publishSkill: vi.fn(async () => ({
+      release: { slug: skill.slug, version: "0.1.0" },
+      npmRelease: {
+        status: "published" as const,
+        packageName: "@hunter-harness/harness-review",
+        version: "0.1.0",
+        tarballHash: "sha256:" + "b".repeat(64)
+      }
+    })),
     discardSkillDraft: vi.fn(async () => ({ slug: skill.slug, discarded: true })),
     ...overrides
   } as unknown as HunterApi;
@@ -303,6 +312,30 @@ describe("governed workflow and Skill Center", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: /^AI 生成$|^AI generate$/i }));
     await waitFor(() => expect(generateReleaseNote).toHaveBeenCalledWith("harness-review", "claude-code"));
     expect(await screen.findByDisplayValue("AI: 新增触发质量检查与发布校验")).toBeInTheDocument();
+  });
+
+  it("publishes the draft and npm package through one request without double bumping", async () => {
+    const publishSkill = vi.fn(async () => ({
+      release: { slug: skill.slug, version: "0.1.0" },
+      npmRelease: {
+        status: "published" as const,
+        packageName: "@hunter-harness/harness-review",
+        version: "0.1.0",
+        tarballHash: "sha256:" + "c".repeat(64)
+      }
+    }));
+    render(<SkillDetail api={api({ publishSkill })} skillId="harness-review" />);
+    await screen.findByRole("heading", { name: "harness-review" });
+    fireEvent.click(screen.getByRole("tab", { name: /检查与发布|checks & publish/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^发布$|^Publish$/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /确认发布|confirm publish/i }));
+    await waitFor(() => expect(publishSkill).toHaveBeenCalledWith("harness-review", expect.objectContaining({
+      version: "0.1.0",
+      sourceAgent: "claude-code",
+      draftRevision: 1
+    })));
+    expect(await screen.findByText("@hunter-harness/harness-review@0.1.0")).toBeInTheDocument();
   });
 
   it("AI generate degraded shows aiGenerateFailed notice (T15 #1)", async () => {
