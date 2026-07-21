@@ -50,6 +50,7 @@ EVENT_TYPES = frozenset(
         "issue.resolve",
         "decision",
         "correction",
+        "change.rename",
     }
 )
 
@@ -94,6 +95,9 @@ OPTIONAL_FIELDS = (
     "orchestration_active_ms",
     "wall_clock_ms",
     "user_wait_ms",
+    "renamed_from",
+    "renamed_to",
+    "change_uuid",
 )
 
 _PROVENANCE_FIELDS = frozenset(
@@ -142,6 +146,10 @@ _EVENT_ALLOWED_FIELDS = {
             "reason",
             "note",
         }
+    )
+    | _PROVENANCE_FIELDS,
+    "change.rename": frozenset(
+        {"renamed_from", "renamed_to", "change_uuid", "note"}
     )
     | _PROVENANCE_FIELDS,
 }
@@ -516,6 +524,9 @@ def append_event(
     path: str | None = None,
     run_id: str | None = None,
     executor_tool: str | None = None,
+    renamed_from: str | None = None,
+    renamed_to: str | None = None,
+    change_uuid: str | None = None,
 ) -> dict[str, Any]:
     """Programmatic append API (retro §5.31 C5/T16).
 
@@ -547,6 +558,9 @@ def append_event(
         target_field=None,
         old_value_hash=None,
         new_value_json=None,
+        renamed_from=renamed_from,
+        renamed_to=renamed_to,
+        change_uuid=change_uuid,
         attempt=None,
         executor_agent=None,
         executor_model=None,

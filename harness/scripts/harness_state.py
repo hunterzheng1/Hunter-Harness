@@ -268,6 +268,7 @@ def capture_current_state(
     changed: list[str] = []
     baseline_created = previous is None
     unresolved: list[str] = []
+    unresolved_reasons: list[dict[str, str]] = []
     if previous:
         old_segments = previous.get("segments") or {}
         for name, segment in fresh["segments"].items():
@@ -276,13 +277,17 @@ def capture_current_state(
                 segment["capturedAt"] = old.get("capturedAt", segment["capturedAt"])
             else:
                 changed.append(name)
-    else:
-        # A first observation establishes the baseline; it is not evidence
-        # that every segment changed during the current phase.
-        unresolved = sorted(fresh["segments"])
+    # First observation establishes the baseline; it is not evidence that
+    # segments changed, nor that they are "unresolved". Segments are only
+    # unresolved when they genuinely fail to read/compute (retro §5.6).
+    # On first capture, all successfully-captured segments are baseline,
+    # not unresolved.
     fresh["baselineCreated"] = baseline_created
     fresh["changedSegments"] = sorted(changed)
     fresh["unresolvedSegments"] = unresolved
+    fresh["unresolvedReasons"] = unresolved_reasons
+    fresh["comparisonAvailable"] = not baseline_created
+    fresh["baselineStatus"] = "created" if baseline_created else "reused"
     write_snapshot(change_dir, fresh)
     return fresh, changed
 
@@ -325,7 +330,10 @@ def main(argv: list[str] | None = None) -> int:
             - set(snapshot.get("unresolvedSegments") or [])
         ),
         "baselineCreated": bool(snapshot.get("baselineCreated")),
+        "baselineStatus": snapshot.get("baselineStatus", "reused"),
+        "comparisonAvailable": bool(snapshot.get("comparisonAvailable", True)),
         "unresolvedSegments": list(snapshot.get("unresolvedSegments") or []),
+        "unresolvedReasons": list(snapshot.get("unresolvedReasons") or []),
         "git": snapshot["git"],
     }
     if args.json:

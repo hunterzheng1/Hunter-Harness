@@ -177,6 +177,82 @@ def _terminal_exists(change_dir: Path, run_id: str, attempt: int) -> bool:
     )
 
 
+def _read_design_capabilities(staging: Path, change_name: str) -> list[str]:
+    """Read capabilities from design frontmatter (retro §5.4)."""
+    design_path = staging / "spec" / f"{change_name}-design.md"
+    if not design_path.is_file():
+        return []
+    try:
+        text = design_path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    frontmatter = _frontmatter(text)
+    if not frontmatter:
+        return []
+    raw = frontmatter.get("capabilities") or ""
+    if not raw:
+        return []
+    # capabilities may be comma-separated or YAML list
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(c) for c in parsed if isinstance(c, str)]
+        except json.JSONDecodeError:
+            pass
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def _reclassify_gate_policy(
+    staging: Path,
+    change_name: str,
+) -> dict[str, Any]:
+    """Reclassify gate policy based on approved design capabilities (retro §5.4).
+
+    Reads design frontmatter `capabilities`, invokes harness_gate.py classify
+    to recompute the gate DAG, and updates staging/meta/gate-policy.json.
+    Returns {"ok": bool, "capabilities": [...], "drift": bool}.
+    """
+    capabilities = _read_design_capabilities(staging, change_name)
+    if not capabilities:
+        return {"ok": True, "capabilities": [], "drift": False, "updated": False}
+
+    gate_policy_path = staging / "meta" / "gate-policy.json"
+    try:
+        existing = json.loads(gate_policy_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+
+    existing_caps = set(existing.get("capabilities") or [])
+    design_caps = set(capabilities)
+    drift = existing_caps != design_caps
+
+    if drift:
+        # Update gate-policy.json with design capabilities
+        existing["capabilities"] = sorted(design_caps)
+        try:
+            gate_policy_path.write_text(
+                json.dumps(existing, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            return {
+                "ok": False,
+                "error": f"failed to update gate-policy.json: {exc}",
+                "capabilities": capabilities,
+                "drift": True,
+                "updated": False,
+            }
+
+    return {
+        "ok": True,
+        "capabilities": sorted(design_caps),
+        "drift": drift,
+        "updated": drift,
+    }
+
+
 def _append_terminal(change_dir: Path, run_id: str, attempt: int) -> tuple[int, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -214,6 +290,15 @@ def finalize_plan(
 ) -> dict[str, Any]:
     change_dir = change_dir.resolve()
     staging = staging.resolve()
+
+    # C2 (retro §5.4): reclassify gate policy based on approved design capabilities.
+    # This updates staging/meta/gate-policy.json before validation, so the hash
+    # reflects the final gate policy. Drift between design capabilities and
+    # gate-policy capabilities is resolved in favor of the approved design.
+    reclassify = _reclassify_gate_policy(staging, change_name)
+    if not reclassify.get("ok"):
+        return _result_error("CAPABILITY_GATE_DRIFT", reclassify.get("error", "reclassify failed"))
+
     validation = validate_staging(staging, change_name)
     if not validation["ok"]:
         return validation

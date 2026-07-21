@@ -164,16 +164,55 @@ class SnapshotCaptureTests(unittest.TestCase):
         )
         self.assertEqual(first_changed, [])
         self.assertTrue(first["baselineCreated"])
-        self.assertIn("profile", first["unresolvedSegments"])
+        # First capture: no unresolved segments (retro §5.6); successfully
+        # captured segments are baseline, not unresolved.
+        self.assertEqual(first["unresolvedSegments"], [])
         self.assertEqual(first["changedSegments"], [])
+        self.assertFalse(first["comparisonAvailable"])
+        self.assertEqual(first["baselineStatus"], "created")
         self.assertEqual(second_changed, [])
         self.assertFalse(second["baselineCreated"])
         self.assertEqual(second["unresolvedSegments"], [])
         self.assertEqual(second["changedSegments"], [])
+        self.assertTrue(second["comparisonAvailable"])
+        self.assertEqual(second["baselineStatus"], "reused")
         self.assertEqual(
             first["segments"]["profile"]["capturedAt"],
             second["segments"]["profile"]["capturedAt"],
         )
+
+    def test_first_capture_returns_empty_unresolved(self) -> None:
+        """C4 (retro §5.6): first capture must return unresolvedSegments=[],
+        comparisonAvailable=false, baselineStatus=created."""
+        first, _ = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+        self.assertEqual(first["unresolvedSegments"], [])
+        self.assertFalse(first["comparisonAvailable"])
+        self.assertEqual(first["baselineStatus"], "created")
+        self.assertTrue(first["baselineCreated"])
+
+    def test_second_capture_with_no_changes_returns_empty_unresolved(self) -> None:
+        """C4: second capture with no changes returns comparisonAvailable=true,
+        baselineStatus=reused, unresolvedSegments=[]."""
+        hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+        second, _ = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+        self.assertEqual(second["unresolvedSegments"], [])
+        self.assertTrue(second["comparisonAvailable"])
+        self.assertEqual(second["baselineStatus"], "reused")
 
     def test_discovery_without_git_keeps_code_segment_empty(self) -> None:
         segments = hst.discover_segment_files(

@@ -590,7 +590,9 @@ def lease_port(
         }
         for port in range(start, end + 1):
             if port not in used:
+                lease_id = str(uuid.uuid4())
                 entry = {
+                    "leaseId": lease_id,
                     "changeId": change_id,
                     "runId": run_id,
                     "pid": os.getpid(),
@@ -603,7 +605,7 @@ def lease_port(
                 leases.append(entry)
                 registry["leases"] = leases
                 _write_json(registry_path, registry)
-                return {"ok": True, "code": "PORT_LEASED", "port": port, "lease": entry}
+                return {"ok": True, "code": "PORT_LEASED", "port": port, "leaseId": lease_id, "lease": entry}
     return {
         "ok": False,
         "code": "PORT_RANGE_EXHAUSTED",
@@ -616,7 +618,16 @@ def release_port(
     *,
     change_id: str,
     run_id: str,
+    port: int | None = None,
+    lease_id: str | None = None,
 ) -> dict[str, Any]:
+    """Release port leases by subset (retro §5.16).
+
+    - `--lease-id`: release only the matching leaseId.
+    - `--port`: release only the matching port (must match changeId+runId).
+    - Neither: release all leases matching (changeId, runId) — does NOT require
+      all leases under changeId to have the same runId.
+    """
     registry_path = project_root / PORTS_REL / "registry.json"
     if not registry_path.is_file():
         return {"ok": True, "code": "PORT_LEASE_ABSENT", "changeId": change_id}
@@ -628,27 +639,84 @@ def release_port(
         leases = registry.get("leases") if isinstance(registry, dict) else None
         if not isinstance(leases, list):
             return {"ok": False, "code": "PORT_REGISTRY_INVALID", "message": "leases is not a list"}
-        owned = [
-            item for item in leases
-            if isinstance(item, dict) and str(item.get("changeId")) == change_id
-        ]
-        if not owned:
+
+        # Select the subset to release based on lease_id, port, or (changeId, runId)
+        if lease_id is not None:
+            to_release = [
+                item for item in leases
+                if isinstance(item, dict) and str(item.get("leaseId")) == lease_id
+            ]
+            # Validate that the lease belongs to this change
+            for item in to_release:
+                if str(item.get("changeId")) != change_id:
+                    return {
+                        "ok": False,
+                        "code": "PORT_LEASE_OWNER_MISMATCH",
+                        "message": "leaseId does not belong to this change",
+                        "holder": item,
+                    }
+        elif port is not None:
+            to_release = [
+                item for item in leases
+                if isinstance(item, dict)
+                and item.get("port") == port
+                and str(item.get("changeId")) == change_id
+            ]
+            # Validate runId matches
+            for item in to_release:
+                if str(item.get("runId")) != run_id:
+                    return {
+                        "ok": False,
+                        "code": "PORT_LEASE_OWNER_MISMATCH",
+                        "message": f"port {port} owned by different runId",
+                        "holder": item,
+                        "conflictingOwners": [
+                            {"runId": str(i.get("runId")), "port": i.get("port")}
+                            for i in leases
+                            if isinstance(i, dict)
+                            and i.get("port") == port
+                            and str(i.get("changeId")) == change_id
+                        ],
+                    }
+        else:
+            # Release all matching (changeId, runId) — subset release
+            to_release = [
+                item for item in leases
+                if isinstance(item, dict)
+                and str(item.get("changeId")) == change_id
+                and str(item.get("runId")) == run_id
+            ]
+
+        if not to_release:
+            # Check if there are other leases under this changeId (different runId)
+            other_owned = [
+                item for item in leases
+                if isinstance(item, dict)
+                and str(item.get("changeId")) == change_id
+                and str(item.get("runId")) != run_id
+            ]
+            if other_owned:
+                return {
+                    "ok": False,
+                    "code": "PORT_LEASE_OWNER_MISMATCH",
+                    "message": "no matching leases for this runId; other runIds exist under this changeId",
+                    "conflictingOwners": [
+                        {"runId": str(i.get("runId")), "port": i.get("port"), "leaseId": i.get("leaseId")}
+                        for i in other_owned
+                    ],
+                }
             return {"ok": True, "code": "PORT_LEASE_ABSENT", "changeId": change_id}
-        if any(str(item.get("runId")) != run_id for item in owned):
-            return {
-                "ok": False,
-                "code": "PORT_LEASE_OWNER_MISMATCH",
-                "message": "run id does not match port lease owner",
-                "holder": owned[0],
-            }
-        released_ports = [item.get("port") for item in owned]
-        registry["leases"] = [item for item in leases if item not in owned]
+
+        released_ports = [item.get("port") for item in to_release]
+        released_ids = [item.get("leaseId") for item in to_release]
+        registry["leases"] = [item for item in leases if item not in to_release]
         _write_json(registry_path, registry)
         return {
             "ok": True,
             "code": "PORT_LEASE_RELEASED",
             "changeId": change_id,
             "ports": released_ports,
+            "leaseIds": released_ids,
         }
 
 
@@ -848,7 +916,13 @@ def cmd_lease_port(args: argparse.Namespace) -> int:
 
 def cmd_release_port(args: argparse.Namespace) -> int:
     project = resolve_main_project_root()
-    payload = release_port(project, change_id=args.change, run_id=args.run_id)
+    payload = release_port(
+        project,
+        change_id=args.change,
+        run_id=args.run_id,
+        port=getattr(args, "port", None),
+        lease_id=getattr(args, "lease_id", None),
+    )
     if payload.get("ok"):
         emit(payload, as_json=bool(args.json))
         return 0
@@ -879,6 +953,161 @@ def cmd_integration_lock(args: argparse.Namespace) -> int:
         as_json=bool(args.json),
         extra={k: v for k, v in payload.items() if k not in {"ok", "message"}},
     )
+
+
+def _ensure_change_identity(change_dir: Path) -> dict[str, str]:
+    """Ensure meta/change-identity.json exists with a stable UUID (retro §5.5).
+
+    Returns the identity dict with changeUuid and changeName.
+    """
+    identity_path = change_dir / "meta" / "change-identity.json"
+    if identity_path.is_file():
+        try:
+            data = json.loads(identity_path.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict) and data.get("changeUuid"):
+                return data
+        except (OSError, json.JSONDecodeError):
+            pass
+    # Generate new identity
+    identity = {
+        "schemaVersion": 1,
+        "changeUuid": str(uuid.uuid4()),
+        "changeName": change_dir.name,
+        "createdAt": now_iso(),
+    }
+    identity_path.parent.mkdir(parents=True, exist_ok=True)
+    identity_path.write_text(
+        json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return identity
+
+
+def cmd_rename(args: argparse.Namespace) -> int:
+    """Rename a change atomically: directory, pointers, worktree, identity (retro §5.5).
+
+    Appends a change.rename event; does not rewrite history.
+    """
+    project = resolve_main_project_root()
+    changes_root = project / ".harness" / "changes"
+    old_dir = changes_root / args.change
+    new_dir = changes_root / args.to
+
+    if not old_dir.is_dir():
+        return emit_error(
+            "CHANGE_NOT_FOUND",
+            f"change directory not found: {old_dir}",
+            as_json=bool(args.json),
+        )
+    if new_dir.exists():
+        return emit_error(
+            "CHANGE_ALREADY_EXISTS",
+            f"target change directory already exists: {new_dir}",
+            as_json=bool(args.json),
+        )
+
+    # Ensure identity exists before rename
+    identity = _ensure_change_identity(old_dir)
+    old_uuid = identity.get("changeUuid", "")
+
+    # Rename directory
+    import shutil
+    shutil.move(str(old_dir), str(new_dir))
+
+    # Update knowledge-context.json.changeId if present
+    kc_path = new_dir / "meta" / "knowledge-context.json"
+    if kc_path.is_file():
+        try:
+            kc = json.loads(kc_path.read_text(encoding="utf-8-sig"))
+            if isinstance(kc, dict):
+                kc["changeId"] = args.to
+                kc["changeUuid"] = old_uuid
+                kc_path.write_text(
+                    json.dumps(kc, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Update worktree.json path/branch if present
+    wt_path = new_dir / "meta" / "worktree.json"
+    if wt_path.is_file():
+        try:
+            wt = json.loads(wt_path.read_text(encoding="utf-8-sig"))
+            if isinstance(wt, dict):
+                old_name = args.change
+                new_name = args.to
+                # Update path and branch if they contain old name
+                if isinstance(wt.get("path"), str) and old_name in wt["path"]:
+                    wt["path"] = wt["path"].replace(old_name, new_name)
+                if isinstance(wt.get("branch"), str) and old_name in wt["branch"]:
+                    wt["branch"] = wt["branch"].replace(old_name, new_name)
+                wt_path.write_text(
+                    json.dumps(wt, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Update change-identity.json.changeName
+    identity_path = new_dir / "meta" / "change-identity.json"
+    if identity_path.is_file():
+        try:
+            ident = json.loads(identity_path.read_text(encoding="utf-8-sig"))
+            if isinstance(ident, dict):
+                ident["changeName"] = args.to
+                ident["renamedFrom"] = args.change
+                identity_path.write_text(
+                    json.dumps(ident, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    # Append change.rename event (does not rewrite history)
+    try:
+        import harness_events
+        harness_events.append_event(
+            new_dir,
+            phase="plan",
+            type_="change.rename",
+            renamed_from=args.change,
+            renamed_to=args.to,
+            change_uuid=old_uuid,
+            note=f"change renamed from {args.change} to {args.to}",
+        )
+    except Exception:
+        pass  # event append failure should not block rename
+
+    payload = {
+        "ok": True,
+        "code": "RENAMED",
+        "changeUuid": old_uuid,
+        "renamedFrom": args.change,
+        "renamedTo": args.to,
+        "changeDir": str(new_dir),
+    }
+    emit(payload, as_json=bool(args.json))
+    return 0
+
+
+def cmd_ensure_identity(args: argparse.Namespace) -> int:
+    """Ensure meta/change-identity.json exists with a stable UUID (retro §5.5)."""
+    project = resolve_main_project_root()
+    change_dir = project / ".harness" / "changes" / args.change
+    if not change_dir.is_dir():
+        return emit_error(
+            "CHANGE_NOT_FOUND",
+            f"change directory not found: {change_dir}",
+            as_json=bool(args.json),
+        )
+    identity = _ensure_change_identity(change_dir)
+    emit(identity, as_json=bool(args.json))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -923,6 +1152,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_port_release = sub.add_parser("release-port", parents=[shared])
     p_port_release.add_argument("--change", required=True)
     p_port_release.add_argument("--run-id", required=True)
+    p_port_release.add_argument("--port", type=int, default=None)
+    p_port_release.add_argument("--lease-id", default=None)
     p_port_release.set_defaults(func=cmd_release_port)
 
     p_lock = sub.add_parser("integration-lock", parents=[shared])
@@ -930,6 +1161,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_lock.add_argument("--run-id", required=True)
     p_lock.add_argument("--ttl-seconds", type=int, default=3600)
     p_lock.set_defaults(func=cmd_integration_lock)
+
+    p_rename = sub.add_parser("rename", parents=[shared])
+    p_rename.add_argument("--change", required=True)
+    p_rename.add_argument("--to", required=True)
+    p_rename.set_defaults(func=cmd_rename)
+
+    p_identity = sub.add_parser("ensure-identity", parents=[shared])
+    p_identity.add_argument("--change", required=True)
+    p_identity.set_defaults(func=cmd_ensure_identity)
 
     return parser
 

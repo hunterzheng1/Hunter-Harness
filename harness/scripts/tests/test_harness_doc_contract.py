@@ -149,6 +149,29 @@ class DocCliContractTests(unittest.TestCase):
             text = doc.read_text(encoding="utf-8")
             self.assertNotIn("harness_deploy.py diff", text, f"{doc.relative_to(ROOT)}")
 
+    def test_worktree_argv_template_order(self) -> None:
+        """RET-5.11：worktree 创建模板必须使用 `git worktree add -b <branch> -- <path>`。
+
+        `git worktree add -- <path> -b <branch>` 中 `--` 后的 `-b` 会被 Git 视为
+        位置参数，命令直接打印 usage 并失败。模板必须把 `-b <branch>` 放在 `--` 之前。
+        """
+        # 只匹配实际命令模板（以 & 或 powershell.exe 开头的行，或在 powershell 代码块内），
+        # 不匹配行内反引号说明（如 `git worktree add -- <path> -b <branch>` 的解释文本）。
+        # 错误模式：`git worktree add -- '...' -b` 或 `git worktree add -- "..." -b`
+        bad_pattern = re.compile(
+            r'(?:^|&\s|powershell\.exe\s+\S+\s+-Command\s+")'
+            r'git worktree add\s+--\s+[\'"]?[^\s\'"]+[\'"]?\s+-b\s',
+            re.MULTILINE,
+        )
+        for doc in _doc_files():
+            text = doc.read_text(encoding="utf-8")
+            match = bad_pattern.search(text)
+            if match:
+                self.fail(
+                    f"{doc.relative_to(ROOT)}: worktree argv template uses wrong order "
+                    f"(found `{match.group(0)}`); expected `git worktree add -b <branch> -- <path>`"
+                )
+
     def test_docs_reference_at_least_one_subcommand_per_core_script(self) -> None:
         """核心脚本（archive/events/gate/ledger/change）必须在文档中有真实引用。"""
         referenced: dict[str, set[str]] = {}

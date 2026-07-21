@@ -1739,5 +1739,67 @@ class NoPatchConsistencyTests(unittest.TestCase):
         self.assertGreaterEqual(timeline[-1]["durationMs"], 0)
 
 
+class ArtifactPreflightIntegrationTests(unittest.TestCase):
+    """C14 (retro §5.31): artifact_preflight 与 validate_report_adequacy 集成到
+    check_status / cmd_finalize。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-preflight-"))
+        self.change = self.tmp / ".harness" / "changes" / "preflight-demo"
+        self.change.mkdir(parents=True)
+        _seed_change_dir(self.change)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_status_includes_artifact_preflight(self) -> None:
+        """check_status 输出必须含 checks.artifact_preflight。"""
+        code, payload = _run(["status", "--change-dir", str(self.change), "--json"])
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        checks = payload.get("checks") or {}
+        self.assertIn(
+            "artifact_preflight",
+            checks,
+            "check_status must include checks.artifact_preflight",
+        )
+
+    def test_status_blocks_on_artifact_preflight_blocking(self) -> None:
+        """含 blocking artifact path（绝对路径）时 archivable=false。"""
+        # 追加一个含绝对路径的 artifact 事件
+        he.append_event(
+            self.change,
+            phase="run",
+            type_="artifact",
+            path="C:/secret/escape.txt",
+            kind="file-backed",
+            note="escape attempt",
+        )
+        code, payload = _run(["status", "--change-dir", str(self.change), "--json"])
+        self.assertEqual(code, 0)
+        self.assertFalse(
+            payload.get("archivable"),
+            "blocking artifact path must make archivable=false",
+        )
+        blockers = payload.get("blockers") or []
+        codes = [b.get("code") for b in blockers]
+        self.assertIn("artifact-path-blocking", codes)
+
+    def test_status_warns_on_canonicalizable_path(self) -> None:
+        """同 change 仓库相对路径应分类为 canonicalizable（warning，非 blocker）。"""
+        he.append_event(
+            self.change,
+            phase="run",
+            type_="artifact",
+            path=f".harness/changes/preflight-demo/reports/run-task-status.md",
+            kind="file-backed",
+            note="repo-relative",
+        )
+        code, payload = _run(["status", "--change-dir", str(self.change), "--json"])
+        self.assertEqual(code, 0)
+        warnings = payload.get("warnings") or []
+        codes = [w.get("code") for w in warnings]
+        self.assertIn("artifact-path-canonicalizable", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

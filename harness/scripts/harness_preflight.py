@@ -367,8 +367,39 @@ def _resolve_agents_root(skills_root: Path, agents_root: Path | None) -> tuple[P
     if skills_root.name == "skills" and skills_root.parent.name in (".claude", ".codebuddy"):
         return (skills_root.parent / "agents").resolve(), None
     if skills_root.name == "skills" and skills_root.parent.name in (".agents", ".cursor"):
-        return None, "CUSTOM_AGENTS_UNSUPPORTED"
+        # These adapters (Codex/Cursor) may provide agent roles via host
+        # capability manifest rather than local .md files. Return None without
+        # a hard error; the caller checks runtime.json for host capabilities.
+        return None, None
     return (skills_root / "agents").resolve(), None
+
+
+def _read_host_capabilities(skills_root: Path) -> set[str]:
+    """Read agent capabilities declared by the host adapter (retro §5.3).
+
+    Adapter installs may declare available agent roles in
+    `meta/runtime.json` under `agentCapabilities` (list of role names).
+    Returns an empty set if the file or field is absent.
+    """
+    # runtime.json lives in the change's meta/ dir, but agent capabilities are
+    # project-level. Check the adapter's runtime.json at the project root.
+    candidates = [
+        skills_root.parent / "runtime.json",
+        skills_root / "runtime.json",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        caps = data.get("agentCapabilities")
+        if isinstance(caps, list):
+            return {str(c) for c in caps if isinstance(c, str)}
+    return set()
 
 
 def cmd_check_agents(
@@ -388,98 +419,136 @@ def cmd_check_agents(
             "reason": "agent name is empty",
         }
 
-    resolved_agents_root, capability_error = _resolve_agents_root(skills_root, agents_root)
-    if capability_error is not None:
-        return {
-            "ok": True,
-            "action": "check-agents",
-            "agent": agent_name,
-            "usable": False,
-            "definitionValid": False,
-            "runtimeSupported": False,
-            "reasonCode": capability_error,
-            "reason": "current adapter runtime does not support custom agent definitions; use main-session fallback",
-        }
+    resolved_agents_root, _ = _resolve_agents_root(skills_root, agents_root)
+    host_capabilities = _read_host_capabilities(skills_root)
+    host_callable = agent_name in host_capabilities
 
-    assert resolved_agents_root is not None
-    # Accept bare name or with .md
-    filename = agent_name if agent_name.endswith(".md") else f"{agent_name}.md"
-    agent_path = resolved_agents_root / filename
+    # Three independent fields (retro §5.3):
+    # - definitionPresent: local .md file exists
+    # - hostCallable: host adapter declares this agent role
+    # - toolContractValid: tools declaration is valid (non-empty list)
+    definition_present = False
+    tool_contract_valid = False
+    agent_path: Path | None = None
+    meta: dict[str, Any] | None = None
 
-    if not agent_path.is_file():
+    if resolved_agents_root is not None:
+        filename = agent_name if agent_name.endswith(".md") else f"{agent_name}.md"
+        agent_path = resolved_agents_root / filename
+        definition_present = agent_path.is_file()
+
+    # If no local definition and host doesn't declare the role, we can't
+    # determine usability. Distinguish "host says no" from "unknown".
+    if not definition_present and not host_callable:
+        # Check if this adapter is known to not support custom agents
+        adapter_name = skills_root.parent.name
+        if adapter_name in (".agents", ".cursor"):
+            # Codex/Cursor: may support via host manifest. If runtime.json
+            # has agentCapabilities but this role isn't listed, it's a
+            # genuine "not available". If no agentCapabilities field at all,
+            # we can't know — return UNKNOWN.
+            runtime_path = skills_root.parent / "runtime.json"
+            if not runtime_path.is_file():
+                return {
+                    "ok": True,
+                    "action": "check-agents",
+                    "agent": agent_name,
+                    "usable": False,
+                    "definitionPresent": False,
+                    "hostCallable": False,
+                    "toolContractValid": False,
+                    "reasonCode": "UNKNOWN",
+                    "reason": (
+                        "no local agent definition and no host capability manifest; "
+                        "cannot determine agent availability"
+                    ),
+                }
         return {
             "ok": False,
             "action": "check-agents",
             "agent": agent_name,
-            "path": str(agent_path),
-            "agentsRoot": str(resolved_agents_root),
+            "path": str(agent_path) if agent_path else None,
+            "agentsRoot": str(resolved_agents_root) if resolved_agents_root else None,
             "usable": False,
-            "definitionValid": False,
-            "runtimeSupported": True,
+            "definitionPresent": False,
+            "hostCallable": False,
+            "toolContractValid": False,
             "reasonCode": "AGENT_DEFINITION_NOT_FOUND",
-            "reason": f"agent file not found: {agent_path}",
+            "reason": f"agent file not found and host does not declare role: {agent_name}",
         }
 
-    try:
-        text = agent_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return {
-            "ok": False,
-            "action": "check-agents",
-            "agent": agent_name,
-            "path": str(agent_path),
-            "usable": False,
-            "reason": f"cannot read agent file: {exc}",
-        }
+    # If definition present, validate frontmatter and tools
+    if definition_present and agent_path is not None:
+        try:
+            text = agent_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return {
+                "ok": False,
+                "action": "check-agents",
+                "agent": agent_name,
+                "path": str(agent_path),
+                "usable": False,
+                "definitionPresent": True,
+                "hostCallable": host_callable,
+                "toolContractValid": False,
+                "reason": f"cannot read agent file: {exc}",
+            }
 
-    meta, err = parse_frontmatter(text)
-    if err or meta is None:
-        return {
-            "ok": False,
-            "action": "check-agents",
-            "agent": agent_name,
-            "path": str(agent_path),
-            "usable": False,
-            "reason": f"frontmatter parse failed: {err or 'unknown'}",
-        }
+        meta, err = parse_frontmatter(text)
+        if err or meta is None:
+            return {
+                "ok": False,
+                "action": "check-agents",
+                "agent": agent_name,
+                "path": str(agent_path),
+                "usable": False,
+                "definitionPresent": True,
+                "hostCallable": host_callable,
+                "toolContractValid": False,
+                "reason": f"frontmatter parse failed: {err or 'unknown'}",
+            }
 
-    tools = meta.get("tools")
-    if tools is None:
-        return {
-            "ok": False,
-            "action": "check-agents",
-            "agent": agent_name,
-            "path": str(agent_path),
-            "usable": False,
-            "reason": "tools declaration missing",
-            "frontmatter": meta,
-        }
-    if not isinstance(tools, list) or len(tools) == 0:
-        return {
-            "ok": False,
-            "action": "check-agents",
-            "agent": agent_name,
-            "path": str(agent_path),
-            "usable": False,
-            "reason": "tools declaration empty or invalid",
-            "frontmatter": meta,
-        }
+        tools = meta.get("tools")
+        if tools is None:
+            tool_contract_valid = False
+        elif isinstance(tools, list) and len(tools) > 0:
+            tool_contract_valid = True
+        else:
+            tool_contract_valid = False
 
-    name_field = meta.get("name")
+    # usable = hostCallable (host provides the agent role, tools validated by host)
+    # OR definitionPresent AND toolContractValid (definition-based adapters)
+    usable = host_callable or (
+        definition_present and tool_contract_valid
+    )
+
+    name_field = meta.get("name") if meta else None
+    tools_field = meta.get("tools") if meta else None
+
+    reason_code = "READY" if usable else "AGENT_DEFINITION_NOT_FOUND"
+    if not definition_present and host_callable:
+        reason_code = "DEFINITION_NOT_FOUND_HOST_CAPABLE"
+
     return {
         "ok": True,
         "action": "check-agents",
         "agent": agent_name,
-        "path": str(agent_path),
-        "agentsRoot": str(resolved_agents_root),
-        "usable": True,
-        "definitionValid": True,
-        "runtimeSupported": True,
-        "reasonCode": "READY",
-        "reason": "agent file exists; frontmatter parsed; tools declared",
+        "path": str(agent_path) if agent_path else None,
+        "agentsRoot": str(resolved_agents_root) if resolved_agents_root else None,
+        "usable": usable,
+        "definitionPresent": definition_present,
+        "hostCallable": host_callable,
+        "toolContractValid": tool_contract_valid,
+        "reasonCode": reason_code,
+        "reason": (
+            "agent available; "
+            f"definition={'present' if definition_present else 'absent'}, "
+            f"hostCallable={host_callable}, "
+            f"tools={'valid' if tool_contract_valid else 'invalid'}"
+        ),
         "name": name_field,
-        "tools": tools,
-        "frontmatterKeys": sorted(meta.keys()),
+        "tools": tools_field,
+        "frontmatterKeys": sorted(meta.keys()) if meta else [],
     }
 
 

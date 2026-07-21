@@ -807,5 +807,116 @@ class VerifyCommandParsingTests(unittest.TestCase):
         self.assertEqual(integration._parse_verify_commands(None), [])
 
 
+class RemoteProbeTests(unittest.TestCase):
+    """C13 (retro §5.28): remote probe typed error.
+
+    `ls-remote` failure must not be folded into `TARGET_MOVED found None`;
+    network/auth/process failures must return `REMOTE_PROBE_FAILED` with
+    redacted stderr, allowing bounded retry.
+    """
+
+    def test_remote_probe_returns_typed_result_on_success(self) -> None:
+        runner = integration.GitRunner()
+        # Use a real git repo (the test's own repo) to probe origin
+        result = runner.remote_probe(
+            Path(__file__).resolve().parents[3],
+            "rev-parse",
+            "HEAD",
+        )
+        self.assertEqual(result["exitCode"], 0)
+        self.assertEqual(result["category"], "ok")
+        self.assertIsNotNone(result["stdoutHash"])
+
+    def test_remote_probe_returns_probe_failed_on_nonzero_exit(self) -> None:
+        runner = integration.GitRunner()
+        result = runner.remote_probe(
+            Path(__file__).resolve().parents[3],
+            "ls-remote",
+            "origin",
+            "nonexistent-branch-xyz",
+        )
+        # ls-remote on a nonexistent branch returns exit 0 with empty stdout on
+        # some git versions, or exit 2 on others. Either way, stdoutHash is None
+        # when no hash is available, and category is never "target-moved".
+        if result["exitCode"] != 0:
+            self.assertIn(result["category"], {"probe-failed", "auth-failed"})
+            self.assertIsNone(result["stdoutHash"])
+        else:
+            # exit=0 but no hash (empty stdout) — category=ok, stdoutHash=None
+            self.assertEqual(result["category"], "ok")
+
+    def test_remote_probe_redacts_credentials_in_stderr(self) -> None:
+        """stderr with credential patterns must be redacted."""
+        runner = integration.GitRunner()
+        # Simulate a probe with auth failure by mocking run()
+        fake_proc = subprocess.CompletedProcess(
+            args=["git", "ls-remote"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: Authentication failed for https://user:pass@github.com/repo.git",
+        )
+        with mock.patch.object(runner, "run", return_value=fake_proc):
+            result = runner.remote_probe(
+                Path(__file__).resolve().parents[3],
+                "ls-remote",
+                "origin",
+                "main",
+            )
+        self.assertEqual(result["exitCode"], 128)
+        self.assertEqual(result["category"], "auth-failed")
+        self.assertIsNone(result["stdoutHash"])
+        # Credentials must be redacted
+        self.assertNotIn("user:pass", result["redactedStderr"])
+        self.assertIn("***", result["redactedStderr"])
+
+    def test_merge_returns_remote_probe_failed_on_network_error(self) -> None:
+        """When ls-remote fails (non-zero exit), merge must raise
+        RemoteProbeFailedError, not TargetMovedError with found=None."""
+        txn_fixture = TransactionFixture()
+        txn_fixture.setUp()
+        try:
+            txn = txn_fixture.make_txn()
+            txn.preflight()
+            txn.prepare()
+            # Mock remote_probe to return a probe-failed result
+            probe_result = {
+                "exitCode": 128,
+                "stdoutHash": None,
+                "redactedStderr": "fatal: unable to access: Network unreachable",
+                "category": "probe-failed",
+            }
+            with mock.patch.object(
+                txn_fixture.runner, "remote_probe", return_value=probe_result
+            ):
+                with self.assertRaises(integration.RemoteProbeFailedError):
+                    txn.merge()
+        finally:
+            txn_fixture.tearDown()
+
+    def test_merge_returns_target_moved_only_on_exit_zero_hash_mismatch(self) -> None:
+        """When ls-remote succeeds (exit=0) but hash differs, merge must raise
+        TargetMovedError (not RemoteProbeFailedError)."""
+        txn_fixture = TransactionFixture()
+        txn_fixture.setUp()
+        try:
+            txn = txn_fixture.make_txn()
+            txn.preflight()
+            txn.prepare()
+            # Mock remote_probe to return exit=0 but different hash
+            probe_result = {
+                "exitCode": 0,
+                "stdoutHash": "deadbeef" * 5,  # different from expected
+                "redactedStderr": "",
+                "category": "ok",
+            }
+            with mock.patch.object(
+                txn_fixture.runner, "remote_probe", return_value=probe_result
+            ):
+                with self.assertRaises(integration.TargetMovedError):
+                    txn.merge()
+        finally:
+            txn_fixture.tearDown()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -913,6 +915,63 @@ class O1ConcurrentAppendTests(unittest.TestCase):
         self.assertLess(p95, 1.0, f"p95 append {p95:.3f}s > 1s")
         events = he.load_events(self.change_dir / "events.ndjson")
         self.assertEqual(len(events), 500)
+
+
+class ChangeRenameEventTests(unittest.TestCase):
+    """C3/R3 (retro §5.5): change.rename event field validation."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-events-rename-"))
+        self.change_dir = self.tmp / "change"
+        self.change_dir.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_change_rename_event_accepted_with_renamed_fields(self) -> None:
+        """change.rename event accepts renamed_from/renamed_to/change_uuid."""
+        result = he.append_event(
+            self.change_dir,
+            phase="plan",
+            type_="change.rename",
+            renamed_from="old-name",
+            renamed_to="new-name",
+            change_uuid="abc-123-def",
+            note="rename test",
+        )
+        self.assertTrue(result.get("ok"), msg=json.dumps(result, ensure_ascii=False))
+        events = he.load_events(self.change_dir / "events.ndjson")
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["type"], "change.rename")
+        self.assertEqual(event["renamed_from"], "old-name")
+        self.assertEqual(event["renamed_to"], "new-name")
+        self.assertEqual(event["change_uuid"], "abc-123-def")
+
+    def test_change_rename_event_rejects_disallowed_fields(self) -> None:
+        """change.rename event rejects fields not in allowed set (via CLI)."""
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE_PATH),
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--phase",
+                "plan",
+                "--type",
+                "change.rename",
+                "--command",
+                "should-not-be-allowed",
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("EVENT_FIELD_NOT_ALLOWED", proc.stderr)
 
 
 if __name__ == "__main__":

@@ -683,6 +683,34 @@ def check_status(
             else:
                 blockers.append(tier_issue)
 
+    # --- artifact preflight (retro §5.31) ---
+    # Classify artifact events before destructive finalize: informational (OK),
+    # canonicalizable (same-change repo-relative path, warning), or blocking
+    # (cross-change/absolute/escaping path, fail closed).
+    try:
+        preflight = artifact_preflight(change_dir)
+    except Exception as exc:  # noqa: BLE001 — preflight must not crash status
+        preflight = {"ok": False, "items": [], "blocking": [], "error": str(exc)}
+    checks["artifact_preflight"] = preflight
+    for item in preflight.get("blocking") or []:
+        blockers.append({
+            "code": "artifact-path-blocking",
+            "message": (
+                f"artifact event {item.get('eventId', '')} path "
+                f"{item.get('path', '')}: {item.get('reason', 'blocking')}"
+            ),
+        })
+    for item in preflight.get("items") or []:
+        if item.get("category") == "canonicalizable":
+            warnings.append({
+                "code": "artifact-path-canonicalizable",
+                "message": (
+                    f"artifact event {item.get('eventId', '')} path "
+                    f"{item.get('path', '')} is repo-relative; "
+                    f"canonical={item.get('canonicalPath', '')}"
+                ),
+            })
+
     archivable = len(blockers) == 0
     return {
         "ok": True,
@@ -3231,6 +3259,36 @@ def cmd_finalize(
             note="review missing on full tier (allowed by user)",
         )
 
+    # --- 2c. artifact preflight (retro §5.31) ---
+    # Classify artifact events before freeze: blocking paths must fail closed
+    # before the staged operation commits a phase.end.
+    try:
+        preflight = artifact_preflight(work_dir)
+    except Exception as exc:  # noqa: BLE001 — preflight must not crash finalize
+        preflight = {"ok": False, "items": [], "blocking": [], "error": str(exc)}
+    payload["steps"]["artifact_preflight"] = {
+        "ok": bool(preflight.get("ok")),
+        "blockingCount": len(preflight.get("blocking") or []),
+        "itemsCount": len(preflight.get("items") or []),
+    }
+    if preflight.get("blocking"):
+        payload["error"] = (
+            f"artifact preflight blocking: "
+            f"{len(preflight['blocking'])} path(s) cannot be archived"
+        )
+        payload["issues"] = [
+            {
+                "code": "ARTIFACT_PATH_BLOCKING",
+                "severity": "error",
+                "message": f"{item.get('path', '')}: {item.get('reason', 'blocking')}",
+            }
+            for item in preflight["blocking"]
+        ]
+        _restore_finalize_failure()
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        return 1, payload
+
     # --- 3. candidate phase.end + freeze cutoff (RET-19 freeze-first) ---
     # This terminal exists only inside the isolated operation staging tree. It
     # becomes authoritative atomically at publish; validation failure discards
@@ -3288,6 +3346,28 @@ def cmd_finalize(
     if not source_result.get("ok"):
         payload["issues"] = source_result.get("issues") or []
         payload["error"] = "source consistency failed; staged operation discarded"
+        _restore_finalize_failure()
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        return 1, payload
+
+    # --- 5b. report adequacy (retro §5.32) ---
+    # Validate that the summary is factually complete: no diff=0 with non-empty
+    # commit, no missing typed metrics despite test reports, no stageStatus
+    # contradictions. Fail closed rather than archiving an incomplete summary.
+    adequacy_result = validate_report_adequacy(summary)
+    payload["steps"]["report_adequacy"] = adequacy_result
+    summary.setdefault("reportPipeline", {})["reportAdequacy"] = {
+        "ok": bool(adequacy_result.get("ok")),
+        "issues": adequacy_result.get("issues") or [],
+    }
+    try:
+        write_json(summary_path, summary)
+    except OSError as exc:
+        warnings.append(f"could not write reportAdequacy: {exc}")
+    if not adequacy_result.get("ok"):
+        payload["issues"] = adequacy_result.get("issues") or []
+        payload["error"] = "report adequacy failed; staged operation discarded"
         _restore_finalize_failure()
         payload["warnings"] = warnings
         payload["ok"] = False

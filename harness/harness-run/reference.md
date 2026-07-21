@@ -52,7 +52,7 @@ requested=true + path missing
 先执行 runtime doctor，并从 `meta/runtime.json` 读取 adapter 的 `path`、`branch` 以及 PowerShell `argvPrefix`；不要依赖裸 `python`/`powershell.exe`，也不要硬编码 Claude 路径。
 
 ```powershell
-& <powershell-argv-prefix> -Command "git worktree add -- '<adapter-worktree-path>' -b '<adapter-branch>'"
+& <powershell-argv-prefix> -Command "git worktree add -b '<adapter-branch>' -- '<adapter-worktree-path>'"
 ```
 
 如果分支已存在：
@@ -60,6 +60,8 @@ requested=true + path missing
 ```powershell
 & <powershell-argv-prefix> -Command "git worktree add -- '<adapter-worktree-path>' '<adapter-branch>'"
 ```
+
+> ⚠️ **argv 顺序**（复盘 §5.11）：`-b <branch>` 必须在 `--` 之前；`git worktree add -- <path> -b <branch>` 中 `--` 后的 `-b` 会被 Git 视为位置参数，命令直接失败。等价 argv 数组：`["git","worktree","add","-b",branch,"--",path]`。
 
 验证：
 

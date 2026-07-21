@@ -396,8 +396,52 @@ class CheckAgentsTests(unittest.TestCase):
         skills = self.tmp / ".agents" / "skills"
         result = hp.cmd_check_agents(skills, "harness-explorer")
         self.assertFalse(result["usable"])
-        self.assertEqual(result["reasonCode"], "CUSTOM_AGENTS_UNSUPPORTED")
-        self.assertIn("runtime", result["reason"])
+        # C1 (retro §5.3): unknown state returns UNKNOWN, not CUSTOM_AGENTS_UNSUPPORTED
+        self.assertEqual(result["reasonCode"], "UNKNOWN")
+        self.assertIn("cannot determine", result["reason"])
+
+    def test_host_callable_without_definition(self) -> None:
+        """C1 (retro §5.3): host declares agent role via runtime.json
+        agentCapabilities, even without local .md definition."""
+        skills = self.tmp / ".agents" / "skills"
+        skills.mkdir(parents=True)
+        runtime = self.tmp / ".agents" / "runtime.json"
+        _write(
+            runtime,
+            json.dumps({"agentCapabilities": ["harness-explorer"]}) + "\n",
+        )
+        result = hp.cmd_check_agents(skills, "harness-explorer")
+        self.assertTrue(result["hostCallable"])
+        self.assertFalse(result["definitionPresent"])
+        self.assertTrue(result["usable"])
+        self.assertEqual(result["reasonCode"], "DEFINITION_NOT_FOUND_HOST_CAPABLE")
+
+    def test_unknown_state_returns_unknown(self) -> None:
+        """C1: no local definition and no host capability manifest → UNKNOWN."""
+        skills = self.tmp / ".agents" / "skills"
+        skills.mkdir(parents=True)
+        # No runtime.json, no agents/ dir
+        result = hp.cmd_check_agents(skills, "harness-explorer")
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["reasonCode"], "UNKNOWN")
+
+    def test_three_fields_present_in_output(self) -> None:
+        """C1: check-agents output must include definitionPresent/hostCallable/toolContractValid."""
+        _write(
+            self.agents / "harness-reviewer.md",
+            "---\n"
+            "name: harness-reviewer\n"
+            'description: "reviewer"\n'
+            "tools: [Read, Glob, Grep, Bash(powershell.exe:*)]\n"
+            "---\n\n"
+            "# body\n",
+        )
+        result = hp.cmd_check_agents(self.tmp, "harness-reviewer")
+        self.assertIn("definitionPresent", result)
+        self.assertIn("hostCallable", result)
+        self.assertIn("toolContractValid", result)
+        self.assertTrue(result["definitionPresent"])
+        self.assertTrue(result["toolContractValid"])
 
 
 class CliSmokeTests(unittest.TestCase):

@@ -216,5 +216,77 @@ class PlanFinalizeTests(unittest.TestCase):
             )
 
 
+class CapabilityReclassifyTests(unittest.TestCase):
+    """C2 (retro §5.4): approved design capability → reclassify gate policy."""
+
+    def test_finalize_reclassifies_on_design_capabilities(self) -> None:
+        """Design with capabilities=[database] → final gate-policy has database."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            # Write design with capabilities
+            write(
+                staging / "spec" / "demo-design.md",
+                "---\n"
+                "change-name: demo\n"
+                "status: approved\n"
+                "capabilities: database,api\n"
+                "---\n\n"
+                "# Design\n",
+            )
+            # gate-policy has empty capabilities (drift)
+            write(
+                staging / "meta" / "gate-policy.json",
+                json.dumps({"schemaVersion": 1, "capabilities": []}),
+            )
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+            self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
+
+            # Published gate-policy.json must have database,api capabilities
+            published = json.loads(
+                (change_dir / "meta" / "gate-policy.json").read_text(encoding="utf-8")
+            )
+            caps = set(published.get("capabilities") or [])
+            self.assertIn("database", caps)
+            self.assertIn("api", caps)
+
+    def test_finalize_no_capabilities_no_drift(self) -> None:
+        """Design without capabilities → no reclassify, no drift."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            # design has no capabilities
+            # gate-policy has empty capabilities
+            write(
+                staging / "meta" / "gate-policy.json",
+                json.dumps({"schemaVersion": 1, "capabilities": []}),
+            )
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+            self.assertTrue(result["ok"])
+
+            published = json.loads(
+                (change_dir / "meta" / "gate-policy.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(published.get("capabilities") or [], [])
+
+
 if __name__ == "__main__":
     unittest.main()

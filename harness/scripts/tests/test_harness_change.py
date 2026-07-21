@@ -255,5 +255,267 @@ class HarnessChangeTests(unittest.TestCase):
         self.assertIn("resolve", proc.stdout)
 
 
+class PortLeaseSubsetTests(unittest.TestCase):
+    """C10 (retro §5.16): port lease ID + subset release."""
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-port-subset-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def test_lease_port_returns_lease_id(self) -> None:
+        """C10: lease-port returns leaseId (UUID4)."""
+        result = change.lease_port(
+            self.project, change_id="c1", run_id="r1", port_range=(55432, 55435)
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("leaseId", result)
+        import re
+        self.assertRegex(
+            result["leaseId"],
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+
+    def test_release_port_by_lease_id(self) -> None:
+        """C10: release by leaseId only deletes matching subset."""
+        a = change.lease_port(self.project, change_id="c1", run_id="r1", port_range=(55432, 55435))
+        b = change.lease_port(self.project, change_id="c1", run_id="r2", port_range=(55432, 55435))
+        self.assertTrue(a["ok"])
+        self.assertTrue(b["ok"])
+        self.assertNotEqual(a["port"], b["port"])
+
+        # Release only lease a by leaseId
+        released = change.release_port(
+            self.project, change_id="c1", run_id="r1", lease_id=a["leaseId"]
+        )
+        self.assertTrue(released["ok"])
+        self.assertIn(a["port"], released["ports"])
+
+        # Lease b should still be active
+        released_b = change.release_port(self.project, change_id="c1", run_id="r2")
+        self.assertTrue(released_b["ok"])
+        self.assertIn(b["port"], released_b["ports"])
+
+    def test_release_port_by_port_number(self) -> None:
+        """C10: release by --port only deletes matching port."""
+        a = change.lease_port(self.project, change_id="c1", run_id="r1", port_range=(55432, 55435))
+        b = change.lease_port(self.project, change_id="c1", run_id="r2", port_range=(55432, 55435))
+        self.assertTrue(a["ok"])
+        self.assertTrue(b["ok"])
+
+        # Release port a by --port
+        released = change.release_port(
+            self.project, change_id="c1", run_id="r1", port=a["port"]
+        )
+        self.assertTrue(released["ok"])
+        self.assertIn(a["port"], released["ports"])
+
+        # Port b should still be active
+        released_b = change.release_port(self.project, change_id="c1", run_id="r2")
+        self.assertTrue(released_b["ok"])
+        self.assertIn(b["port"], released_b["ports"])
+
+    def test_subset_release_does_not_require_all_owners_match(self) -> None:
+        """C10: releasing run B's ports must not fail because run A's ports exist."""
+        a = change.lease_port(self.project, change_id="c1", run_id="r1", port_range=(55432, 55435))
+        b = change.lease_port(self.project, change_id="c1", run_id="r2", port_range=(55432, 55435))
+        self.assertTrue(a["ok"])
+        self.assertTrue(b["ok"])
+
+        # Release run B's ports — should succeed even though run A's ports exist
+        released = change.release_port(self.project, change_id="c1", run_id="r2")
+        self.assertTrue(released["ok"])
+        self.assertIn(b["port"], released["ports"])
+        self.assertNotIn(a["port"], released["ports"])
+
+        # Run A's port should still be active
+        released_a = change.release_port(self.project, change_id="c1", run_id="r1")
+        self.assertTrue(released_a["ok"])
+        self.assertIn(a["port"], released_a["ports"])
+
+
+class ChangeRenameTests(unittest.TestCase):
+    """C3 (retro §5.5): Change rename transaction with stable UUID."""
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-rename-"))
+        self.changes = self.project / ".harness" / "changes"
+        self.old_dir = self.changes / "old-name"
+        meta = self.old_dir / "meta"
+        meta.mkdir(parents=True)
+        (meta / "change-context.json").write_text(
+            json.dumps({"schemaVersion": 1, "changeId": "old-name"}),
+            encoding="utf-8",
+        )
+        # knowledge-context.json with old changeId
+        (meta / "knowledge-context.json").write_text(
+            json.dumps({"changeId": "old-name"}),
+            encoding="utf-8",
+        )
+        # worktree.json with old name in path/branch
+        (meta / "worktree.json").write_text(
+            json.dumps({
+                "requested": True,
+                "path": ".codebuddy/worktrees/old-name",
+                "branch": "codebuddy/old-name",
+            }),
+            encoding="utf-8",
+        )
+        self._git_init()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _git_init(self) -> None:
+        subprocess.run(["git", "init"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        (self.project / "README.md").write_text("demo\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_ensure_identity_generates_uuid(self) -> None:
+        """C3: ensure-identity creates meta/change-identity.json with UUID4."""
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_change.py"),
+                "ensure-identity",
+                "--change", "old-name",
+                "--json",
+            ],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertIn("changeUuid", data)
+        # UUID4 format: 8-4-4-4-12 hex
+        import re
+        self.assertRegex(
+            data["changeUuid"],
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+        self.assertEqual(data["changeName"], "old-name")
+        # File exists
+        identity_path = self.old_dir / "meta" / "change-identity.json"
+        self.assertTrue(identity_path.is_file())
+
+    def test_rename_updates_directory_and_pointers(self) -> None:
+        """C3: rename --change old --to new updates directory, pointers, worktree."""
+        # First ensure identity exists
+        subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_change.py"),
+                "ensure-identity",
+                "--change", "old-name",
+                "--json",
+            ],
+            cwd=self.project,
+            capture_output=True,
+            check=True,
+        )
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_change.py"),
+                "rename",
+                "--change", "old-name",
+                "--to", "new-name",
+                "--json",
+            ],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertEqual(data["code"], "RENAMED")
+        self.assertEqual(data["renamedFrom"], "old-name")
+        self.assertEqual(data["renamedTo"], "new-name")
+
+        # Old directory gone, new directory exists
+        self.assertFalse(self.old_dir.exists())
+        new_dir = self.changes / "new-name"
+        self.assertTrue(new_dir.is_dir())
+
+        # knowledge-context.json.changeId updated
+        kc = json.loads((new_dir / "meta" / "knowledge-context.json").read_text(encoding="utf-8"))
+        self.assertEqual(kc["changeId"], "new-name")
+
+        # worktree.json path/branch updated
+        wt = json.loads((new_dir / "meta" / "worktree.json").read_text(encoding="utf-8"))
+        self.assertIn("new-name", wt["path"])
+        self.assertIn("new-name", wt["branch"])
+
+        # change-identity.json.changeName updated, renamedFrom preserved
+        ident = json.loads((new_dir / "meta" / "change-identity.json").read_text(encoding="utf-8"))
+        self.assertEqual(ident["changeName"], "new-name")
+        self.assertEqual(ident["renamedFrom"], "old-name")
+
+    def test_rename_appends_change_rename_event(self) -> None:
+        """C3: rename appends change.rename event to events.ndjson."""
+        # Ensure identity
+        subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_change.py"),
+                "ensure-identity",
+                "--change", "old-name",
+                "--json",
+            ],
+            cwd=self.project,
+            capture_output=True,
+            check=True,
+        )
+        # Rename
+        subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS_DIR / "harness_change.py"),
+                "rename",
+                "--change", "old-name",
+                "--to", "new-name",
+                "--json",
+            ],
+            cwd=self.project,
+            capture_output=True,
+            check=True,
+        )
+        # Check events.ndjson
+        new_dir = self.changes / "new-name"
+        events_path = new_dir / "events.ndjson"
+        self.assertTrue(events_path.is_file())
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rename_events = [e for e in events if e.get("type") == "change.rename"]
+        self.assertEqual(len(rename_events), 1)
+        self.assertEqual(rename_events[0]["renamed_from"], "old-name")
+        self.assertEqual(rename_events[0]["renamed_to"], "new-name")
+        self.assertIn("change_uuid", rename_events[0])
+
+
 if __name__ == "__main__":
     unittest.main()

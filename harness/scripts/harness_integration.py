@@ -84,6 +84,12 @@ class TargetMovedError(IntegrationError):
     code = "TARGET_MOVED"
 
 
+class RemoteProbeFailedError(IntegrationError):
+    """Remote probe failed (network/auth/process error), not target moved (retro §5.28)."""
+
+    code = "REMOTE_PROBE_FAILED"
+
+
 class LedgerSyncError(IntegrationError):
     code = "LEDGER_SYNC_PENDING"
 
@@ -138,6 +144,52 @@ class GitRunner:
         if proc.returncode != 0:
             return None
         return proc.stdout.strip()
+
+    def remote_probe(self, cwd: Path, *args: str) -> dict[str, Any]:
+        """Typed remote probe result (retro §5.28).
+
+        Returns:
+            {
+                "exitCode": int,
+                "stdoutHash": str | None,   # first whitespace-delimited token
+                "redactedStderr": str,       # stderr with credentials redacted
+                "category": "ok" | "target-moved" | "probe-failed" | "auth-failed",
+            }
+
+        `category` distinguishes:
+        - `ok`: exit=0, hash available
+        - `target-moved`: only meaningful when caller compares hash to expected
+        - `probe-failed`: exit!=0, network/process error (allow bounded retry)
+        - `auth-failed`: exit!=0, stderr contains auth/credential indicators
+
+        `None` must never enter the "found head" field; callers must branch on
+        `exitCode` before comparing hashes.
+        """
+        proc = self.run(cwd, *args, check=False)
+        stderr = (proc.stderr or "").strip()
+        # Redact potential credentials in stderr (URLs with user:pass@, tokens)
+        redacted = re.sub(
+            r"(https?|ssh)://[^\s]+@[^\s]+", r"\1://***@***", stderr
+        )
+        redacted = re.sub(r"(token|password|secret|key)\s*[:=]\s*\S+", r"\1=***", redacted, flags=re.I)
+        stdout_hash: str | None = None
+        if proc.returncode == 0:
+            stdout = (proc.stdout or "").strip()
+            if stdout:
+                stdout_hash = stdout.split()[0]
+        # Classify category
+        if proc.returncode == 0:
+            category = "ok"
+        elif re.search(r"auth|credential|permission|forbidden|unauthorized", stderr, re.I):
+            category = "auth-failed"
+        else:
+            category = "probe-failed"
+        return {
+            "exitCode": proc.returncode,
+            "stdoutHash": stdout_hash,
+            "redactedStderr": redacted,
+            "category": category,
+        }
 
 
 def _sanitize(value: str) -> str:
@@ -763,16 +815,21 @@ class IntegrationTransaction:
                     f"{expected_local}, found {current_target}"
                 )
             if journal.get("remoteTargetHead"):
-                remote_line = self.runner.text(
+                # Use typed remote probe (retro §5.28): distinguish probe failure
+                # (network/auth/process) from genuine target movement. `None`
+                # must never enter the "found head" field.
+                probe = self.runner.remote_probe(
                     self.project_root, "ls-remote", "origin", self.target_branch
                 )
-                current_remote = (
-                    remote_line.split()[0]
-                    if remote_line and remote_line.split()
-                    else None
-                )
                 expected_remote = journal.get("remoteTargetHead")
-                if current_remote != expected_remote:
+                if probe["exitCode"] != 0:
+                    # Probe failed: network/auth/process error, not target moved.
+                    raise RemoteProbeFailedError(
+                        f"remote probe failed (exit={probe['exitCode']}, "
+                        f"category={probe['category']}): {probe['redactedStderr']}"
+                    )
+                current_remote = probe["stdoutHash"]
+                if current_remote is not None and current_remote != expected_remote:
                     raise TargetMovedError(
                         f"remote {self.target_branch} moved: expected "
                         f"{expected_remote}, found {current_remote}"
