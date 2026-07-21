@@ -1201,6 +1201,70 @@ def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -
     )
 
 
+def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
+    """C9: validate all P0 scenarios have a ledger entry with scenarioIds covering them.
+
+    Reads meta/scenario-manifest.json and evidence/verification-ledger.json.
+    Returns ok=True when manifest missing (backward compat) or all P0 scenarios covered.
+    """
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    if not manifest_path.is_file():
+        return {"ok": True, "code": "MANIFEST_MISSING", "skipped": True}
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_INVALID",
+            "message": f"scenario-manifest.json unreadable: {exc}",
+        }
+    scenarios = manifest.get("scenarios") or []
+    p0_ids = {
+        str(s.get("id"))
+        for s in scenarios
+        if isinstance(s, dict)
+        and str(s.get("priority", "")).upper() == "P0"
+        and s.get("requiredEvidenceKind") == "ledger"
+    }
+    if not p0_ids:
+        return {"ok": True, "code": "NO_P0_SCENARIOS"}
+
+    ledger_path = change_dir / "evidence" / "verification-ledger.json"
+    if not ledger_path.is_file():
+        return {
+            "ok": False,
+            "code": "SCENARIO_COVERAGE_FAILED",
+            "message": "ledger missing; cannot verify P0 scenario coverage",
+            "missing": sorted(p0_ids),
+        }
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "SCENARIO_COVERAGE_FAILED",
+            "message": f"ledger unreadable: {exc}",
+            "missing": sorted(p0_ids),
+        }
+    covered: set[str] = set()
+    validations = ledger.get("validations") or {}
+    if isinstance(validations, dict):
+        for entry in validations.values():
+            if isinstance(entry, dict):
+                ids = entry.get("scenarioIds")
+                if isinstance(ids, list):
+                    covered.update(str(i) for i in ids)
+    missing = sorted(p0_ids - covered)
+    if missing:
+        return {
+            "ok": False,
+            "code": "SCENARIO_COVERAGE_FAILED",
+            "message": f"P0 scenarios without ledger entry: {', '.join(missing)}",
+            "missing": missing,
+        }
+    return {"ok": True, "code": "SCENARIO_COVERAGE_OK", "covered": sorted(covered & p0_ids)}
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     project = hc.resolve_main_project_root()
@@ -1469,6 +1533,17 @@ def cmd_close(args: argparse.Namespace) -> int:
             as_json=as_json,
             extra={k: v for k, v in ledger_result.items() if k not in {"ok", "message", "code"}},
         )
+
+    # C9: scenario coverage check — all P0 scenarios must have a ledger entry.
+    if args.phase in {"run", "test"}:
+        coverage = _validate_scenario_coverage(change_dir)
+        if not coverage.get("ok"):
+            return emit_error(
+                str(coverage.get("code", "SCENARIO_COVERAGE_FAILED")),
+                str(coverage.get("message", "scenario coverage validation failed")),
+                as_json=as_json,
+                extra={k: v for k, v in coverage.items() if k not in {"ok", "message", "code"}},
+            )
 
     close_status = args.status
     close_code = "PHASE_CLOSED"

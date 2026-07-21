@@ -4552,6 +4552,11 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--status", action="append", dest="statuses", default=[], help="Only return entries with this lifecycle status")
     query.add_argument("--type", action="append", dest="types", default=[], help="Only return entries of this knowledge type")
     query.add_argument("--change", default=None, help="Write a change-scoped knowledge-context pointer")
+    query.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Emit full payload including matches array (default: compact output for host decisioning)",
+    )
 
     promote = sub.add_parser("promote", help="Promote a candidate knowledge entry to active")
     promote.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
@@ -4652,7 +4657,17 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.project), args.query, args.limit, args.files, args.statuses,
             args.types, args.change,
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        if getattr(args, "verbose", False):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            # C5: compact output — omit matches array; host reads context pack for details.
+            compact = {
+                "query": result["query"],
+                "matchCount": result["matchCount"],
+                "contextPack": result["contextPack"],
+                "planInput": result["planInput"],
+            }
+            print(json.dumps(compact, ensure_ascii=False, indent=2))
         return 0
     if args.command == "promote":
         try:

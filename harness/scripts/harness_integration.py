@@ -1266,6 +1266,31 @@ def cmd_status(args: argparse.Namespace) -> int:
     return _emit(_txn_from_args(args).status())
 
 
+def cmd_journal(args: argparse.Namespace) -> int:
+    """C5: journal 子命令 — 默认 compact (transactionId/currentStep/status)，--verbose 全量。"""
+    txn = _txn_from_args(args)
+    full = txn.status()
+    if getattr(args, "verbose", False):
+        return _emit(full)
+    # Derive currentStep: first non-DONE step, or last step name if all DONE.
+    current_step = None
+    for step in full.get("steps", []):
+        if step.get("status") != "DONE":
+            current_step = step.get("name")
+            break
+    if current_step is None and full.get("steps"):
+        current_step = full["steps"][-1].get("name")
+    overall_status = "DONE" if all(
+        step.get("status") == "DONE" for step in full.get("steps", [])
+    ) else "IN_PROGRESS"
+    compact = {
+        "transactionId": full.get("transactionId"),
+        "currentStep": current_step,
+        "status": overall_status,
+    }
+    return _emit(compact)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_integration.py")
     sub = parser.add_subparsers(dest="command_name", required=True)
@@ -1286,6 +1311,19 @@ def build_parser() -> argparse.ArgumentParser:
     add("cleanup", cmd_cleanup)
     add("recover", cmd_recover)
     add("status", cmd_status)
+
+    p_journal = sub.add_parser("journal")
+    p_journal.add_argument("--change", required=True)
+    p_journal.add_argument("--run-id", required=True)
+    p_journal.add_argument("--target-branch", default="main")
+    p_journal.add_argument("--feature-branch", required=True)
+    p_journal.add_argument("--temp-root", required=True)
+    p_journal.add_argument(
+        "--verbose",
+        action="store_true",
+        help="emit full journal payload (default: compact transactionId/currentStep/status)",
+    )
+    p_journal.set_defaults(func=cmd_journal)
 
     p_verify = sub.add_parser("verify")
     p_verify.add_argument("--change", required=True)

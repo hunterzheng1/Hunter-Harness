@@ -444,6 +444,7 @@ class CanReuseTests(unittest.TestCase):
                         "unitTestFull",
                         "--command",
                         command,
+                        "--verbose",
                     ]
                 )
             self.assertEqual(ccode, 0, msg=buf2.getvalue())
@@ -606,6 +607,7 @@ class CliSmokeTests(unittest.TestCase):
                         "--files",
                         str(src),
                         "--json",
+                        "--verbose",
                     ]
                 )
             self.assertEqual(code, 0, msg=buf.getvalue())
@@ -1396,6 +1398,233 @@ class MetricsJsonRecordTests(unittest.TestCase):
                 )
             )
             self.assertNotIn("metrics", data["validations"]["unitTest"])
+
+
+class CompactOutputTests(unittest.TestCase):
+    """C5: record/can-reuse 默认 compact 输出，--verbose 展开全量。"""
+
+    def _record(self, change_dir: Path, src: Path, extra: list[str]) -> tuple[int, dict]:
+        from io import StringIO
+        from contextlib import redirect_stdout
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = harness_ledger.main(
+                [
+                    "--json",
+                    "record",
+                    "--change-dir",
+                    str(change_dir),
+                    "--verification",
+                    "unitTest",
+                    "--status",
+                    "ok",
+                    "--command",
+                    "pytest",
+                    "--exit-code",
+                    "0",
+                    "--duration-ms",
+                    "100",
+                    "--files",
+                    str(src),
+                    "--evidence",
+                    "pass",
+                    "--scope",
+                    "module",
+                    *extra,
+                ]
+            )
+        return code, json.loads(buf.getvalue())
+
+    def _can_reuse(self, change_dir: Path, src: Path, extra: list[str]) -> tuple[int, dict]:
+        from io import StringIO
+        from contextlib import redirect_stdout
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = harness_ledger.main(
+                [
+                    "--json",
+                    "can-reuse",
+                    "--change-dir",
+                    str(change_dir),
+                    "--verification",
+                    "unitTest",
+                    "--files",
+                    str(src),
+                    *extra,
+                ]
+            )
+        return code, json.loads(buf.getvalue())
+
+    def test_record_default_compact_has_only_required_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-compact-rec"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            code, payload = self._record(change, src, [])
+            self.assertEqual(code, 0, msg=payload)
+            # compact: only ok/action/verification/status (no inputsHash/inputsFiles/ledger_path)
+            self.assertEqual(payload["ok"], True)
+            self.assertEqual(payload["action"], "record")
+            self.assertEqual(payload["verification"], "unitTest")
+            self.assertEqual(payload["status"], "OK")
+            self.assertNotIn("inputsHash", payload)
+            self.assertNotIn("inputsFiles", payload)
+            self.assertNotIn("ledger_path", payload)
+
+    def test_record_verbose_returns_full_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-verbose-rec"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            code, payload = self._record(change, src, ["--verbose"])
+            self.assertEqual(code, 0, msg=payload)
+            self.assertEqual(payload["ok"], True)
+            self.assertIn("inputsHash", payload)
+            self.assertIn("inputsFiles", payload)
+            self.assertIn("ledger_path", payload)
+
+    def test_can_reuse_default_compact_has_only_required_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-compact-reuse"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            code, payload = self._can_reuse(change, src, [])
+            self.assertEqual(code, 0, msg=payload)
+            # compact: only ok/reuse/code (no reason/verification/detail/ledger_path)
+            self.assertEqual(payload["ok"], True)
+            self.assertIn("reuse", payload)
+            self.assertIn("code", payload)
+            self.assertNotIn("reason", payload)
+            self.assertNotIn("verification", payload)
+            self.assertNotIn("ledger_path", payload)
+            self.assertNotIn("inputsHash", payload)
+
+    def test_can_reuse_verbose_returns_full_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-verbose-reuse"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            code, payload = self._can_reuse(change, src, ["--verbose"])
+            self.assertEqual(code, 0, msg=payload)
+            self.assertEqual(payload["ok"], True)
+            self.assertIn("reason", payload)
+            self.assertIn("verification", payload)
+            self.assertIn("detail", payload)
+
+
+class ScenarioIdsTests(unittest.TestCase):
+    """C9: ledger record --scenario-ids 绑定场景 ID 到 ledger entry。"""
+
+    def _record_with_scenarios(self, change_dir: Path, src: Path, scenario_ids: str) -> tuple[int, dict]:
+        from io import StringIO
+        from contextlib import redirect_stdout
+
+        buf = StringIO()
+        with redirect_stdout(buf):
+            code = harness_ledger.main(
+                [
+                    "--json",
+                    "record",
+                    "--change-dir",
+                    str(change_dir),
+                    "--verification",
+                    "unitTest",
+                    "--status",
+                    "ok",
+                    "--command",
+                    "pytest",
+                    "--exit-code",
+                    "0",
+                    "--duration-ms",
+                    "100",
+                    "--files",
+                    str(src),
+                    "--evidence",
+                    "pass",
+                    "--scope",
+                    "module",
+                    "--scenario-ids",
+                    scenario_ids,
+                    "--verbose",
+                ]
+            )
+        return code, json.loads(buf.getvalue())
+
+    def test_record_writes_scenario_ids_to_ledger_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-scen"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            code, payload = self._record_with_scenarios(change, src, "C5-S1,C5-S2")
+            self.assertEqual(code, 0, msg=payload)
+
+            ledger = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            entry = ledger["validations"]["unitTest"]
+            self.assertIn("scenarioIds", entry)
+            self.assertEqual(entry["scenarioIds"], ["C5-S1", "C5-S2"])
+
+    def test_record_without_scenario_ids_has_no_field(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-no-scen"
+            change.mkdir()
+            src = change / "Svc.java"
+            src.write_text("class Svc {}", encoding="utf-8")
+
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            buf = StringIO()
+            with redirect_stdout(buf):
+                code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTest",
+                        "--status",
+                        "ok",
+                        "--command",
+                        "pytest",
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "100",
+                        "--files",
+                        str(src),
+                        "--evidence",
+                        "pass",
+                        "--scope",
+                        "module",
+                        "--verbose",
+                    ]
+                )
+            self.assertEqual(code, 0)
+
+            ledger = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            entry = ledger["validations"]["unitTest"]
+            self.assertNotIn("scenarioIds", entry)
 
 
 if __name__ == "__main__":

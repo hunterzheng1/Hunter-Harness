@@ -84,3 +84,16 @@ RED 高风险建议: N | YELLOW 中低风险建议: M | 仅供参考，不阻塞
 ```
 
 fixback 是给后续修复循环使用的结构化清单，不替代 review-report；无 RED/YELLOW 时记录跳过原因，不生成空文件。
+
+## CodeGraph Identity 合同（C12）
+
+调用 `codegraph_explore` 后必须校验响应中的 `repositoryId` / `indexedHead` / `indexedAt`：
+
+- `repositoryId` 必须与 `harness_paths.repository_identity(project_root)` 一致
+- `indexedHead` 必须与当前 HEAD 一致
+- `indexedAt` 必须存在
+
+identity 不匹配时记 `CODEGRAPH_IDENTITY_MISMATCH` warning，降级为 Grep/Glob + Read。
+identity 匹配时正常使用 codegraph 结果。
+
+校验函数：`harness_review.validate_codegraph_identity(response, expected_repository_id, expected_head)`。

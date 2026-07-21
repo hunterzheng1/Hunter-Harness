@@ -918,5 +918,66 @@ class RemoteProbeTests(unittest.TestCase):
             txn_fixture.tearDown()
 
 
+class JournalCompactOutputTests(TransactionFixture):
+    """C5: journal 子命令默认 compact 输出，--verbose 展开全量。"""
+
+    def _run_cli(self, args: list[str]) -> tuple[int, str, str]:
+        from io import StringIO
+        from contextlib import redirect_stdout, redirect_stderr
+
+        buf = StringIO()
+        err = StringIO()
+        orig_cwd = os.getcwd()
+        os.chdir(self.primary)
+        try:
+            with redirect_stdout(buf), redirect_stderr(err):
+                code = integration.main(args)
+        finally:
+            os.chdir(orig_cwd)
+        return code, buf.getvalue(), err.getvalue()
+
+    def test_journal_default_compact_has_only_required_fields(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()  # ensure journal exists
+
+        code, out, err = self._run_cli([
+            "journal",
+            "--change", "demo",
+            "--run-id", "run-1",
+            "--target-branch", "main",
+            "--feature-branch", "feature/demo",
+            "--temp-root", str(self.temp_root),
+        ])
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        # compact: only transactionId/currentStep/status
+        self.assertIn("transactionId", payload)
+        self.assertIn("currentStep", payload)
+        self.assertIn("status", payload)
+        self.assertNotIn("steps", payload)
+        self.assertNotIn("mergeCommit", payload)
+        self.assertNotIn("pushedHead", payload)
+
+    def test_journal_verbose_returns_full_payload(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()  # ensure journal exists
+
+        code, out, err = self._run_cli([
+            "journal",
+            "--change", "demo",
+            "--run-id", "run-1",
+            "--target-branch", "main",
+            "--feature-branch", "feature/demo",
+            "--temp-root", str(self.temp_root),
+            "--verbose",
+        ])
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIn("transactionId", payload)
+        self.assertIn("steps", payload)
+        self.assertIn("mergeCommit", payload)
+        self.assertIn("pushedHead", payload)
+
+
 if __name__ == "__main__":
     unittest.main()

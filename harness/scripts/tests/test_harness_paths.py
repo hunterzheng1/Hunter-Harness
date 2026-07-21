@@ -350,5 +350,33 @@ class AssertPathWithinTests(unittest.TestCase):
             paths.assert_path_within(link / "payload", self.root)
 
 
+class CommonRootTests(unittest.TestCase):
+    """C7: common_root 从 git common dir 解析；worktree 返回主项目根。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-paths-common-"))
+        self.repo = self.tmp / "repo"
+        init_repo(self.repo)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_common_root_of_main_repo_is_repo_root(self) -> None:
+        result = paths.common_root(self.repo)
+        self.assertEqual(result, self.repo.resolve())
+
+    def test_common_root_of_worktree_is_main_repo_root(self) -> None:
+        worktree = self.tmp / "wt"
+        git(self.repo, "worktree", "add", str(worktree), "-b", "wt-branch")
+        result = paths.common_root(worktree)
+        self.assertEqual(result, self.repo.resolve())
+
+    def test_common_root_outside_git_repo_returns_input_resolved(self) -> None:
+        non_repo = self.tmp / "not-a-repo"
+        non_repo.mkdir()
+        result = paths.common_root(non_repo)
+        self.assertEqual(result, non_repo.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()

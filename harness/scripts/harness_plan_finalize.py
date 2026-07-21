@@ -30,9 +30,115 @@ if hasattr(sys.stderr, "reconfigure"):
 SCHEMA_VERSION = 1
 _LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
+# C8: valid ownerPhase values (lifecycle phases that can own tasks).
+VALID_OWNER_PHASES = {"plan", "run", "test", "review", "submit"}
+
+# C9: map scenario priority to required evidence kind.
+PRIORITY_EVIDENCE_KIND = {
+    "P0": "ledger",
+    "P1": "ledger",
+    "P2": "advisory",
+}
+
 
 def _result_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "error": message}
+
+
+def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
+    """C9: parse test-scenarios.md tables, extracting scenario rows.
+
+    Returns a list of dicts with keys: id / priority / scenario / verification /
+    ownerPhase / requiredEvidenceKind (last one derived from priority).
+    """
+    text = Path(scenarios_path).read_text(encoding="utf-8-sig")
+    lines = text.splitlines()
+    scenarios: list[dict[str, str]] = []
+    # Find all tables whose header includes "ID" and "优先级" (or "priority").
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("|") and "ID" in line and ("优先级" in line or "priority" in line):
+            header_line = line
+            headers = [h.strip() for h in header_line.strip("|").split("|")]
+            col_map: dict[str, int] = {}
+            for idx, name in enumerate(headers):
+                key = name.lower()
+                col_map[key] = idx
+            # Skip separator row
+            i += 2
+            while i < len(lines):
+                row = lines[i].strip()
+                if not row.startswith("|"):
+                    break
+                cells = [c.strip() for c in row.strip("|").split("|")]
+                if len(cells) < len(headers):
+                    i += 1
+                    continue
+                scenario: dict[str, str] = {}
+                for cn, en in (
+                    ("ID", "id"),
+                    ("优先级", "priority"),
+                    ("场景", "scenario"),
+                    ("验证方式", "verification"),
+                    ("owner phase", "ownerPhase"),
+                ):
+                    if cn.lower() in col_map:
+                        scenario[en] = cells[col_map[cn.lower()]]
+                # Derive requiredEvidenceKind from priority
+                priority = scenario.get("priority", "")
+                scenario["requiredEvidenceKind"] = PRIORITY_EVIDENCE_KIND.get(priority, "advisory")
+                scenarios.append(scenario)
+                i += 1
+            continue
+        i += 1
+    return scenarios
+
+
+def parse_plan_tasks(plan_path: Path) -> list[dict[str, str]]:
+    """C8: parse plan.md task table rows, extracting optional ownerPhase/implementationDoneWhen/verificationPhase columns.
+
+    Returns a list of dicts with keys: # / 簇 / 任务 / ownerPhase / implementationDoneWhen /
+    verificationPhase / requiresExplicitAuthority (last four optional, only present when
+    the column header includes them).
+    """
+    text = Path(plan_path).read_text(encoding="utf-8-sig")
+    lines = text.splitlines()
+    # Find the task table: a header row starting with "| #" followed by a separator row.
+    header_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and "#" in stripped and "任务" in stripped:
+            header_idx = i
+            break
+    if header_idx < 0:
+        return []
+    header_line = lines[header_idx]
+    headers = [h.strip() for h in header_line.strip().strip("|").split("|")]
+    # Map header names to column indices (case-insensitive, English keys).
+    col_map: dict[str, int] = {}
+    for idx, name in enumerate(headers):
+        key = name.lower()
+        col_map[key] = idx
+    tasks: list[dict[str, str]] = []
+    for line in lines[header_idx + 2 :]:  # skip header + separator
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            break  # end of table
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < len(headers):
+            continue
+        task: dict[str, str] = {}
+        # Chinese headers
+        for cn, en in (("#", "num"), ("簇", "cluster"), ("任务", "task")):
+            if cn in col_map:
+                task[en] = cells[col_map[cn]]
+        # English optional columns
+        for en in ("ownerPhase", "implementationDoneWhen", "verificationPhase", "requiresExplicitAuthority"):
+            if en.lower() in col_map:
+                task[en] = cells[col_map[en.lower()]]
+        tasks.append(task)
+    return tasks
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -146,6 +252,21 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
                         f"{rel.as_posix()}: missing reference {raw_link}",
                     )
 
+    # C8: validate ownerPhase values in plan.md task table.
+    plan_path = staging / "plans" / f"{change_name}-plan.md"
+    tasks = parse_plan_tasks(plan_path)
+    for task in tasks:
+        owner = task.get("ownerPhase")
+        if owner is not None and owner != "" and owner not in VALID_OWNER_PHASES:
+            return _result_error(
+                "PLAN_OWNER_PHASE_INVALID",
+                f"task {task.get('num', '?')}: ownerPhase '{owner}' not in {sorted(VALID_OWNER_PHASES)}",
+            )
+
+    # C9: parse test-scenarios.md for scenario manifest.
+    scenarios_path = staging / "plans" / f"{change_name}-test-scenarios.md"
+    scenarios = parse_test_scenarios(scenarios_path)
+
     digest = hashlib.sha256()
     artifact_names: list[str] = []
     for path in files:
@@ -159,6 +280,8 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
         "ok": True,
         "files": artifact_names,
         "artifactsHash": "sha256:" + digest.hexdigest(),
+        "tasks": tasks,
+        "scenarios": scenarios,
     }
 
 
@@ -366,6 +489,30 @@ def finalize_plan(
                 created.append(target)
             finally:
                 tmp.unlink(missing_ok=True)
+
+        # C8: write implementation-checkpoints.json with parsed task ownerPhase.
+        tasks = validation.get("tasks") or []
+        if tasks:
+            checkpoints_path = change_dir / "meta" / "implementation-checkpoints.json"
+            checkpoints_payload = {
+                "schemaVersion": 1,
+                "changeName": change_name,
+                "tasks": tasks,
+                "foundationGate": "approved",
+            }
+            _atomic_write_json(checkpoints_path, checkpoints_payload)
+            created.append(checkpoints_path)
+
+        # C9: write scenario-manifest.json with parsed scenarios.
+        scenarios = validation.get("scenarios") or []
+        manifest_path = change_dir / "meta" / "scenario-manifest.json"
+        manifest_payload = {
+            "schemaVersion": 1,
+            "changeName": change_name,
+            "scenarios": scenarios,
+        }
+        _atomic_write_json(manifest_path, manifest_payload)
+        created.append(manifest_path)
 
         pending_receipt = {
             "schemaVersion": SCHEMA_VERSION,

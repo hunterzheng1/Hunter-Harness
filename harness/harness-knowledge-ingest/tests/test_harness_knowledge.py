@@ -559,6 +559,7 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
                 "apps/web/components/registry.tsx",
                 "--status",
                 "candidate",
+                "--verbose",
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -2403,6 +2404,46 @@ class KnowledgeContractParityTest(unittest.TestCase):
             )
             self.assertEqual(entry["schemaVersion"], 1)
             self.assertEqual(entry["type"], "decision")
+
+
+class QueryCompactOutputTests(unittest.TestCase):
+    """C5: query 默认 compact 输出，--verbose 展开全量。"""
+
+    def setUp(self) -> None:
+        self._cli = HarnessKnowledgeCliTest()
+
+    def test_query_default_compact_omits_matches_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._cli.make_project(Path(tmp))
+            self._cli.run_cli("ingest", "--project", str(project))
+
+            result = self._cli.run_cli(
+                "query", "--project", str(project), "--query", "异步 AI 检查 job",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            # compact: 无 matches 数组
+            self.assertNotIn("matches", payload)
+            # compact 必备字段
+            self.assertIn("matchCount", payload)
+            self.assertIn("contextPack", payload)
+            self.assertIn("planInput", payload)
+            self.assertGreaterEqual(payload["matchCount"], 1)
+
+    def test_query_verbose_returns_full_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._cli.make_project(Path(tmp))
+            self._cli.run_cli("ingest", "--project", str(project))
+
+            result = self._cli.run_cli(
+                "query", "--project", str(project), "--query", "异步 AI 检查 job",
+                "--verbose",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertIn("matches", payload)
+            self.assertGreaterEqual(len(payload["matches"]), 1)
+            self.assertIn("planInput", payload)
 
 
 if __name__ == "__main__":

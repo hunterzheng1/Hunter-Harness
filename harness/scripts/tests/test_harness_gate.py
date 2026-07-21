@@ -1022,5 +1022,155 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(payload["code"], "CLOSED_DEGRADED")
 
 
+class ScenarioCoverageTests(unittest.TestCase):
+    """C9: gate close 校验 P0 场景都有 ledger entry。"""
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-gate-scen-"))
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        self.change_dir.mkdir(parents=True)
+        # checkpoints approved
+        (self.change_dir / "meta").mkdir(parents=True, exist_ok=True)
+        (self.change_dir / "meta" / "implementation-checkpoints.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "changeName": "demo",
+                "checkpoints": [
+                    {
+                        "id": "foundation-gate",
+                        "afterTasks": [1, 2, 3, 4],
+                        "beforeTasks": [6, 7, 8, 9, 10],
+                        "status": "approved",
+                        "blocking": True,
+                        "reviewerTool": "codex",
+                        "requiredReport": "reports/review/foundation-gate-review.md",
+                    }
+                ],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        # workflow policy
+        policy_target = self.project / "harness" / "contracts" / "workflow-policy.json"
+        policy_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO_ROOT / "harness" / "contracts" / "workflow-policy.json", policy_target)
+        subprocess.run(["git", "init"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=self.project, check=True, capture_output=True)
+        (self.project / "README.md").write_text("demo\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=self.project, check=True, capture_output=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _write_manifest(self, scenarios: list[dict]) -> None:
+        (self.change_dir / "meta" / "scenario-manifest.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "changeName": "demo",
+                "scenarios": scenarios,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_ledger(self, scenario_ids: list[str]) -> None:
+        (self.change_dir / "evidence").mkdir(parents=True, exist_ok=True)
+        (self.change_dir / "evidence" / "verification-ledger.json").write_text(
+            json.dumps({
+                "changeName": "demo",
+                "validations": {
+                    "unitTest": {
+                        "status": "OK",
+                        "command": "pytest",
+                        "evidence": "pass",
+                        "inputsHash": "sha256:abc",
+                        "inputsFiles": ["src/app.py"],
+                        "algorithmVersion": "harness-ledger-2",
+                        "coverage": "module",
+                        "scope": "module",
+                        "scenarioIds": scenario_ids,
+                    }
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    def _close_args(self) -> object:
+        return gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--status", "OK", "--run-id", "run-1", "--task", "5",
+            "--json",
+        ])
+
+    def test_close_fails_when_p0_scenario_missing(self) -> None:
+        self._write_manifest([
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+        ])
+        # ledger only covers C5-S2, missing C5-S1 (P0)
+        self._write_ledger(["C5-S2"])
+
+        args = self._close_args()
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}):
+            with mock.patch("sys.stderr"):
+                code = gate.cmd_close(args)
+        self.assertEqual(code, 1)
+
+    def test_close_passes_when_all_p0_scenarios_covered(self) -> None:
+        self._write_manifest([
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+        ])
+        # ledger covers both P0 and P1
+        self._write_ledger(["C5-S1", "C5-S2"])
+
+        args = self._close_args()
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch("sys.stdout"):
+            code = gate.cmd_close(args)
+        self.assertEqual(code, 0)
+
+    def test_close_skips_coverage_when_manifest_missing(self) -> None:
+        # No scenario-manifest.json — skip coverage check (backward compat)
+        self._write_ledger([])
+
+        args = self._close_args()
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch("sys.stdout"):
+            code = gate.cmd_close(args)
+        self.assertEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

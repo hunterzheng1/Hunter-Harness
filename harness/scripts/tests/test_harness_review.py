@@ -279,5 +279,114 @@ class ReviewSkillWiringTests(unittest.TestCase):
         self.assertIn("review-findings.json", text)
 
 
+class DispatchReviewTests(ReviewFixture):
+    """C11: dispatch_review 有界等待 — 返回 reviewTaskId/deadline/heartbeatAt。"""
+
+    def test_dispatch_returns_required_fields(self) -> None:
+        result = review.dispatch_review(
+            change_dir=self.change_dir,
+            run_id="review-run-1",
+            budget_seconds=300,
+        )
+        self.assertTrue(result.get("ok"))
+        self.assertIn("reviewTaskId", result)
+        self.assertIn("deadline", result)
+        self.assertIn("heartbeatAt", result)
+        # reviewTaskId is non-empty
+        self.assertTrue(str(result["reviewTaskId"]))
+        # deadline is ISO-format after now
+        self.assertTrue(str(result["deadline"]))
+
+    def test_dispatch_default_budget_300s(self) -> None:
+        result = review.dispatch_review(
+            change_dir=self.change_dir,
+            run_id="review-run-1",
+        )
+        self.assertTrue(result.get("ok"))
+        # default budget is 300s — deadline should be ~300s in the future
+        import datetime as dt
+        deadline = dt.datetime.fromisoformat(result["deadline"])
+        now = dt.datetime.now(deadline.tzinfo)
+        delta = (deadline - now).total_seconds()
+        # allow some slack
+        self.assertGreater(delta, 280)
+        self.assertLess(delta, 310)
+
+
+class PartialFindingsTests(ReviewFixture):
+    """C11: 超时后收集 partial findings + 降级矩阵。"""
+
+    def test_collect_partial_findings_on_timeout(self) -> None:
+        # Simulate a partial review: some dimensions completed, some not
+        partial = review.collect_partial_findings(
+            change_dir=self.change_dir,
+            run_id="review-run-1",
+            completed_dimensions=["architecture", "security"],
+            pending_dimensions=["tests", "performance"],
+        )
+        self.assertTrue(partial.get("ok"))
+        self.assertEqual(partial["code"], "PARTIAL_FINDINGS")
+        self.assertIn("completedDimensions", partial)
+        self.assertEqual(partial["completedDimensions"], ["architecture", "security"])
+        self.assertIn("degradationMatrix", partial)
+
+    def test_degradation_matrix_subagent_timeout_falls_back_to_main(self) -> None:
+        matrix = review.degradation_matrix(
+            subagent_timed_out=True,
+            main_session_available=True,
+        )
+        self.assertEqual(matrix["fallback"], "main-session")
+        self.assertEqual(matrix["status"], "DEGRADED")
+
+    def test_degradation_matrix_main_session_fails_advisory(self) -> None:
+        matrix = review.degradation_matrix(
+            subagent_timed_out=True,
+            main_session_available=False,
+        )
+        self.assertEqual(matrix["fallback"], "advisory")
+        self.assertEqual(matrix["status"], "ADVISORY")
+
+
+class CodeGraphIdentityTests(ReviewFixture):
+    """C12: CodeGraph identity 校验。"""
+
+    def test_validate_identity_passes_on_match(self) -> None:
+        result = review.validate_codegraph_identity(
+            response={
+                "repositoryId": "sha256:abc",
+                "indexedHead": "def456",
+                "indexedAt": "2026-07-21T10:00:00+08:00",
+            },
+            expected_repository_id="sha256:abc",
+            expected_head="def456",
+        )
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(result["code"], "IDENTITY_OK")
+
+    def test_validate_identity_mismatch_triggers_warning(self) -> None:
+        result = review.validate_codegraph_identity(
+            response={
+                "repositoryId": "sha256:wrong",
+                "indexedHead": "def456",
+                "indexedAt": "2026-07-21T10:00:00+08:00",
+            },
+            expected_repository_id="sha256:abc",
+            expected_head="def456",
+        )
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result["code"], "CODEGRAPH_IDENTITY_MISMATCH")
+        self.assertIn("fallback", result)
+        self.assertEqual(result["fallback"], "grep-glob-read")
+
+    def test_validate_identity_missing_fields_triggers_warning(self) -> None:
+        result = review.validate_codegraph_identity(
+            response={"repositoryId": "sha256:abc"},
+            expected_repository_id="sha256:abc",
+            expected_head="def456",
+        )
+        self.assertFalse(result.get("ok"))
+        self.assertEqual(result["code"], "CODEGRAPH_IDENTITY_MISMATCH")
+
+
 if __name__ == "__main__":
     unittest.main()

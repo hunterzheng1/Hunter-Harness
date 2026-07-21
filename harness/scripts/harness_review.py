@@ -14,6 +14,7 @@ Python 3.10+, stdlib only.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -268,6 +269,112 @@ def status(change_dir: Path) -> dict[str, Any]:
 def _emit(payload: Any, *, as_json: bool) -> int:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return 0 if payload.get("ok") else 1
+
+
+def dispatch_review(
+    *,
+    change_dir: Path,
+    run_id: str,
+    budget_seconds: int = 300,
+) -> dict[str, Any]:
+    """C11: dispatch a bounded review task.
+
+    Returns reviewTaskId / deadline / heartbeatAt. The caller is expected to
+    poll the review subagent and collect partial findings on timeout.
+    """
+    now = dt.datetime.now(dt.timezone.utc).astimezone()
+    task_id = f"review-{uuid.uuid4().hex}"
+    deadline = now + dt.timedelta(seconds=budget_seconds)
+    # heartbeat at midpoint of the budget
+    heartbeat = now + dt.timedelta(seconds=budget_seconds // 2)
+    return {
+        "ok": True,
+        "code": "DISPATCHED",
+        "reviewTaskId": task_id,
+        "runId": run_id,
+        "deadline": deadline.isoformat(timespec="milliseconds"),
+        "heartbeatAt": heartbeat.isoformat(timespec="milliseconds"),
+        "budgetSeconds": budget_seconds,
+    }
+
+
+def collect_partial_findings(
+    *,
+    change_dir: Path,
+    run_id: str,
+    completed_dimensions: list[str],
+    pending_dimensions: list[str],
+) -> dict[str, Any]:
+    """C11: collect partial findings after timeout — completed dimensions only.
+
+    Applies the degradation matrix to decide the fallback path.
+    """
+    matrix = degradation_matrix(
+        subagent_timed_out=bool(pending_dimensions),
+        main_session_available=True,
+    )
+    return {
+        "ok": True,
+        "code": "PARTIAL_FINDINGS",
+        "runId": run_id,
+        "completedDimensions": list(completed_dimensions),
+        "pendingDimensions": list(pending_dimensions),
+        "degradationMatrix": matrix,
+    }
+
+
+def degradation_matrix(
+    *,
+    subagent_timed_out: bool,
+    main_session_available: bool,
+) -> dict[str, Any]:
+    """C11: degradation matrix — subagent timeout → main session; main fail → ADVISORY."""
+    if not subagent_timed_out:
+        return {"fallback": "none", "status": "OK"}
+    if main_session_available:
+        return {"fallback": "main-session", "status": "DEGRADED"}
+    return {"fallback": "advisory", "status": "ADVISORY"}
+
+
+def validate_codegraph_identity(
+    *,
+    response: dict[str, Any],
+    expected_repository_id: str,
+    expected_head: str,
+) -> dict[str, Any]:
+    """C12: validate CodeGraph identity — repositoryId/indexedHead must match.
+
+    On mismatch, signal CODEGRAPH_IDENTITY_MISMATCH with fallback to Grep/Glob + Read.
+    """
+    repo_id = response.get("repositoryId")
+    indexed_head = response.get("indexedHead")
+    indexed_at = response.get("indexedAt")
+    if (
+        repo_id == expected_repository_id
+        and indexed_head == expected_head
+        and indexed_at
+    ):
+        return {
+            "ok": True,
+            "code": "IDENTITY_OK",
+            "repositoryId": repo_id,
+            "indexedHead": indexed_head,
+            "indexedAt": indexed_at,
+        }
+    return {
+        "ok": False,
+        "code": "CODEGRAPH_IDENTITY_MISMATCH",
+        "expected": {
+            "repositoryId": expected_repository_id,
+            "indexedHead": expected_head,
+        },
+        "actual": {
+            "repositoryId": repo_id,
+            "indexedHead": indexed_head,
+            "indexedAt": indexed_at,
+        },
+        "fallback": "grep-glob-read",
+    }
 
 
 def cmd_validate_findings(args: argparse.Namespace) -> int:

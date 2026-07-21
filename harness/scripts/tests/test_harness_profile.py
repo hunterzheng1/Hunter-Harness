@@ -594,5 +594,113 @@ class NodeCommandsTests(unittest.TestCase):
             self.assertIn(pattern, tracking["paths"])
 
 
+class LoadProfileLayeredTests(unittest.TestCase):
+    """C7: load_profile 先读 common 再叠加 execution override。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="profile-layered-"))
+        self.common = self.tmp / "common"
+        self.common.mkdir()
+        self.execution = self.tmp / "execution"
+        self.execution.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_profile(self, root: Path, data: dict) -> None:
+        path = root / ".harness" / "config" / "build-profile.json"
+        _write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+    def test_load_profile_reads_common_then_overlays_execution(self) -> None:
+        # common profile has unitTest + compile
+        self._write_profile(self.common, {
+            "schemaVersion": 1,
+            "buildCommands": {
+                "unitTest": "mvn test",
+                "compile": "mvn compile",
+            },
+        })
+        # execution profile overrides unitTest only
+        self._write_profile(self.execution, {
+            "schemaVersion": 1,
+            "buildCommands": {
+                "unitTest": "mvn test -pl module",
+            },
+        })
+
+        # Mock common_root to return self.common for self.execution
+        from unittest import mock
+        with mock.patch.object(hp.harness_paths, "common_root", return_value=self.common.resolve()):
+            profile = hp.load_profile(self.execution)
+        self.assertIsNotNone(profile)
+        cmds = profile["buildCommands"]
+        # unitTest overridden by execution
+        self.assertEqual(cmds["unitTest"], "mvn test -pl module")
+        # compile preserved from common
+        self.assertEqual(cmds["compile"], "mvn compile")
+
+    def test_load_profile_falls_back_to_common_when_execution_missing(self) -> None:
+        self._write_profile(self.common, {
+            "schemaVersion": 1,
+            "buildCommands": {"unitTest": "mvn test"},
+        })
+        # execution has no build-profile.json
+        from unittest import mock
+        with mock.patch.object(hp.harness_paths, "common_root", return_value=self.common.resolve()):
+            profile = hp.load_profile(self.execution)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["buildCommands"]["unitTest"], "mvn test")
+
+    def test_load_profile_returns_none_when_both_missing(self) -> None:
+        from unittest import mock
+        with mock.patch.object(hp.harness_paths, "common_root", return_value=self.common.resolve()):
+            profile = hp.load_profile(self.execution)
+        self.assertIsNone(profile)
+
+
+class ResolveCommandPlaceholderTests(unittest.TestCase):
+    """C7: resolve_command 支持 {commonRoot}/{executionRoot} 占位符。"""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="profile-placeholder-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_resolve_command_substitutes_common_root(self) -> None:
+        profile = {
+            "commands": {
+                "buildIndex": {
+                    "command": "python {commonRoot}/scripts/build.py",
+                    "scope": "module",
+                }
+            }
+        }
+        resolved = hp.resolve_command(
+            profile, "buildIndex",
+            common_root=self.tmp,
+        )
+        self.assertNotIn("{commonRoot}", resolved["command"])
+        self.assertIn(str(self.tmp), resolved["command"])
+
+    def test_resolve_command_substitutes_execution_root(self) -> None:
+        exec_root = self.tmp / "worktree"
+        exec_root.mkdir()
+        profile = {
+            "commands": {
+                "localTest": {
+                    "command": "mvn test -pl {executionRoot}",
+                    "scope": "module",
+                }
+            }
+        }
+        resolved = hp.resolve_command(
+            profile, "localTest",
+            execution_root=exec_root,
+        )
+        self.assertNotIn("{executionRoot}", resolved["command"])
+        self.assertIn(str(exec_root), resolved["command"])
+
+
 if __name__ == "__main__":
     unittest.main()

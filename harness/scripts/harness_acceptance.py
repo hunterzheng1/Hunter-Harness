@@ -153,6 +153,7 @@ def check_unittest_full_cli(skills_root: Path) -> dict[str, Any]:
             "--files",
             str(any_file),
             "--json",
+            "--verbose",
         ],
         capture_output=True,
         text=True,

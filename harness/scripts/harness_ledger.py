@@ -100,6 +100,37 @@ def emit_json(payload: dict[str, Any], *, as_json: bool) -> None:
             sys.stdout.write(("ok" if ok else "error") + "\n")
 
 
+def _compact_record_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """C5: record compact — ok/action/verification/status only."""
+    return {
+        "ok": payload.get("ok", True),
+        "action": payload.get("action"),
+        "verification": payload.get("verification"),
+        "status": payload.get("status"),
+    }
+
+
+def _compact_can_reuse_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """C5: can-reuse compact — ok/reuse/code only."""
+    return {
+        "ok": payload.get("ok", True),
+        "reuse": payload.get("reuse"),
+        "code": payload.get("code"),
+    }
+
+
+def emit_compact_or_verbose(
+    payload: dict[str, Any],
+    *,
+    as_json: bool,
+    verbose: bool,
+    compact_fn,
+) -> None:
+    """Emit compact payload by default; full payload when --verbose."""
+    out = payload if verbose else compact_fn(payload)
+    emit_json(out, as_json=as_json)
+
+
 def emit_error(message: str, *, as_json: bool, code: int = 1) -> int:
     payload = {"ok": False, "error": message}
     if as_json:
@@ -1227,6 +1258,7 @@ def cmd_hash(args: argparse.Namespace) -> int:
 
 def cmd_can_reuse(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
+    verbose = bool(getattr(args, "verbose", False))
     verification = args.verification
     if verification not in VERIFICATIONS:
         return emit_error(
@@ -1253,7 +1285,10 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
                 "verification": verification,
                 "detail": err,
             }
-            emit_json(payload, as_json=as_json)
+            emit_compact_or_verbose(
+                payload, as_json=as_json, verbose=verbose,
+                compact_fn=_compact_can_reuse_payload,
+            )
             return 0
         files = resolve_input_files(resolved_files, project_root)
     if not files:
@@ -1275,12 +1310,16 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
 
-    emit_json(payload, as_json=as_json)
+    emit_compact_or_verbose(
+        payload, as_json=as_json, verbose=verbose,
+        compact_fn=_compact_can_reuse_payload,
+    )
     return 0
 
 
 def cmd_record(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
+    verbose = bool(getattr(args, "verbose", False))
     change_dir = resolve_path(args.change_dir)
     verification = args.verification
     if verification not in VERIFICATIONS:
@@ -1421,6 +1460,16 @@ def cmd_record(args: argparse.Namespace) -> int:
             if _nonempty_str(getattr(args, "tests_reused_from", None)):
                 entry["testsReusedFrom"] = str(args.tests_reused_from).strip()
 
+        # C9: bind scenario IDs from --scenario-ids to this ledger entry.
+        scenario_ids_raw = getattr(args, "scenario_ids", None)
+        if _nonempty_str(scenario_ids_raw):
+            ids = [s.strip() for s in str(scenario_ids_raw).split(",") if s.strip()]
+            if ids:
+                entry["scenarioIds"] = ids
+        elif "scenarioIds" in entry:
+            # Fresh record without scenario-ids must not keep stale ids from prev.
+            entry.pop("scenarioIds", None)
+
         ledger["validations"][verification] = entry
         if "changeName" not in ledger:
             ledger["changeName"] = change_dir.name
@@ -1487,7 +1536,10 @@ def cmd_record(args: argparse.Namespace) -> int:
         "diffHash": ledger.get("diffHash"),
         "resolvedProjectRoot": str(project_root) if project_root else None,
     }
-    emit_json(payload, as_json=as_json)
+    emit_compact_or_verbose(
+        payload, as_json=as_json, verbose=verbose,
+        compact_fn=_compact_record_payload,
+    )
     return 0
 
 
@@ -1589,6 +1641,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional environment hash to compare against ledger entry (UT-017)",
     )
+    p_reuse.add_argument(
+        "--verbose",
+        action="store_true",
+        help="emit full payload (default: compact ok/reuse/code)",
+    )
     p_reuse.set_defaults(func=cmd_can_reuse)
 
     p_record = sub.add_parser("record", parents=[shared_json], help="write validation result into ledger")
@@ -1668,6 +1725,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--applicability-reason",
         default=None,
         help="ledger v3: scope reason (required when --applicability NOT_APPLICABLE)",
+    )
+    p_record.add_argument(
+        "--scenario-ids",
+        default=None,
+        help="comma-separated scenario IDs from scenario-manifest.json to bind to this entry",
+    )
+    p_record.add_argument(
+        "--verbose",
+        action="store_true",
+        help="emit full payload (default: compact ok/action/verification/status)",
     )
     p_record.set_defaults(func=cmd_record)
 

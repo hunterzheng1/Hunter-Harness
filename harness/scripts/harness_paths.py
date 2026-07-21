@@ -83,6 +83,23 @@ def _git_common_dir(cwd: Path) -> Path | None:
     return common
 
 
+def common_root(project_root: Path) -> Path:
+    """Resolve the shared "common" root for a project.
+
+    For a linked worktree, ``git rev-parse --git-common-dir`` points at the
+    main repository's ``.git`` directory; its parent is the main project root.
+    For the main worktree, the common dir is ``<root>/.git`` so the parent is
+    the project root itself. Falls back to the resolved input when not in a
+    git repo (e.g. exploratory scratch dirs).
+    """
+    cwd = Path(project_root).resolve()
+    common = _git_common_dir(cwd)
+    if common is None:
+        return cwd
+    # common dir is <root>/.git — its parent is the main project root.
+    return common.parent.resolve()
+
+
 def _root_commit(cwd: Path) -> str | None:
     raw = _git_text(cwd, "rev-list", "--max-parents=0", "HEAD")
     if not raw:

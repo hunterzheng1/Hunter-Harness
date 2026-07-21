@@ -309,6 +309,7 @@ class IdentityEnforcementTests(LedgerV3Fixture):
                 "--evidence", "1 passed",
                 "--scope", "module",
                 "--files", "src/app.py",
+                "--verbose",
             ]
         )
         self.assertEqual(code, 0, err)

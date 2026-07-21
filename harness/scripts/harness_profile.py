@@ -27,6 +27,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -358,14 +364,53 @@ def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, A
 
 
 def load_profile(project: Path) -> dict[str, Any] | None:
-    path = project / PROFILE_REL
-    if not path.is_file():
+    """C7: 分层读取 — 先读 common_root 的 build-profile.json，再叠加 execution root 的 override。
+
+    common_root 是 worktree 共享的主项目根（git common dir 的父目录）；
+    execution root 是当前工作目录（可能是 linked worktree）。
+    override 合并策略：execution 的 buildCommands 覆盖 common 的同名 key；
+    common 独有的 key 保留。
+    """
+    project = Path(project).resolve()
+    common = harness_paths.common_root(project)
+    common_path = common / PROFILE_REL
+    exec_path = project / PROFILE_REL
+
+    common_data: dict[str, Any] | None = None
+    if common_path.is_file():
+        try:
+            data = read_json(common_path)
+            if isinstance(data, dict):
+                common_data = data
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    exec_data: dict[str, Any] | None = None
+    if exec_path.is_file():
+        try:
+            data = read_json(exec_path)
+            if isinstance(data, dict):
+                exec_data = data
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    if common_data is None and exec_data is None:
         return None
-    try:
-        data = read_json(path)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
+    if common_data is None:
+        return exec_data
+    if exec_data is None:
+        return common_data
+
+    # Merge: start from common, overlay execution's buildCommands.
+    merged = dict(common_data)
+    common_cmds = common_data.get("buildCommands") or {}
+    exec_cmds = exec_data.get("buildCommands") or {}
+    if common_cmds or exec_cmds:
+        merged_cmds = dict(common_cmds) if isinstance(common_cmds, dict) else {}
+        if isinstance(exec_cmds, dict):
+            merged_cmds.update(exec_cmds)
+        merged["buildCommands"] = merged_cmds
+    return merged
 
 
 def _merge_user_overrides(
@@ -616,6 +661,8 @@ def resolve_command(
     *,
     test_classes: list[str] | None = None,
     modules: list[str] | None = None,
+    common_root: Path | None = None,
+    execution_root: Path | None = None,
 ) -> dict[str, Any]:
     cmd = (profile.get("commands") or {}).get(key)
     if not isinstance(cmd, dict):
@@ -625,6 +672,10 @@ def resolve_command(
         replacements["{testClasses}"] = ",".join(test_classes)
     if modules is not None:
         replacements["{modules}"] = ",".join(modules)
+    if common_root is not None:
+        replacements["{commonRoot}"] = str(common_root)
+    if execution_root is not None:
+        replacements["{executionRoot}"] = str(execution_root)
 
     command = cmd.get("command", "")
     for placeholder, val in replacements.items():
