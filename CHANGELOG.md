@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.16] — @hunter-harness/workflow-harness
+
+### Fixed (P1 — 2026-07-20 phase1b 复盘续 2)
+
+- **C5 CLI 默认 compact 输出**（§5.7）：`harness_knowledge.py` query 子命令默认返回 compact JSON（无 matches 数组），`--verbose` 展开全量；`harness_ledger.py` record/can-reuse 默认 compact（ok/action/verification/status 或 ok/reuse/code），`--verbose` 展开；`harness_integration.py` 新增 `journal` 子命令（compact: transactionId/currentStep/status）。
+- **C7 common profile 与 execution-root 分层**（§5.8）：`harness_paths.py` 新增 `common_root()`，通过 `git rev-parse --git-common-dir` 解析主项目根；`harness_profile.py` `load_profile` 先读 common_root 再叠加 execution root override；`resolve_command` 支持 `{commonRoot}`/`{executionRoot}` 占位符替换。
+- **C8 Plan task phase ownership**（§5.9）：`harness_plan_finalize.py` 解析 plan.md 任务表 `ownerPhase`/`implementationDoneWhen`/`verificationPhase` 列；校验 `ownerPhase` 值（plan/run/test/review/submit）；写入 `meta/implementation-checkpoints.json`。
+- **C9 scenario manifest + 测试 ID 绑定**（§5.17）：`harness_plan_finalize.py` 解析 test-scenarios.md，输出 `meta/scenario-manifest.json`；`harness_ledger.py record --scenario-ids` 绑定场景 ID 到 ledger entry；`harness_gate.py close` 校验所有 P0 场景都有对应的 ledger entry（`_validate_scenario_coverage`）。
+- **C11 reviewer 有界等待与降级**（§5.27）：`harness_review.py` 新增 `dispatch_review()`（返回 reviewTaskId/deadline/heartbeatAt）、`collect_partial_findings()`（超时后收集已完成维度）、`degradation_matrix()`（subagent 超时 → 主会话；主会话失败 → ADVISORY）。
+- **C12 CodeGraph identity 校验**（§5.29）：`harness_review.py` `validate_codegraph_identity()` 校验 repositoryId/indexedHead/indexedAt；identity 不匹配时记 `CODEGRAPH_IDENTITY_MISMATCH` warning，降级为 Grep/Glob + Read；`harness-review/reference.md` 声明 identity 合同。
+
+### Known Limitations
+
+- 无（0.2.15 的 P1 deferred 已全部修复）。
+
 ## [0.2.15] — @hunter-harness/workflow-harness
 
 ### Fixed (P1 — 2026-07-20 phase1b 复盘续)
@@ -13,9 +28,9 @@
 - **C13 remote probe typed error**（§5.28）：`harness_integration.py` `GitRunner.remote_probe` typed result（`exitCode`/`stdoutHash`/`redactedStderr`/`category`）；`RemoteProbeFailedError` 与 `TargetMovedError` 分离；`None` 不再进入 found head 字段；stderr 凭证 redact。
 - **C14 archive preflight 集成**（§5.31）：`harness_archive.py` check_status 集成 `artifact_preflight`；cmd_finalize 集成 `artifact_preflight` + `validate_report_adequacy`；blocking 项 fail closed。
 
-### Known Limitations (P1 deferred)
+### Known Limitations (P1 deferred — 已在 0.2.16 修复)
 
-- C5 CLI compact 输出、C7 profile 分层、C8 task ownerPhase、C9 scenario manifest、C11 reviewer 有界等待、C12 CodeGraph identity 校验 — 留作后续 change。
+- C5 CLI compact 输出、C7 profile 分层、C8 task ownerPhase、C9 scenario manifest、C11 reviewer 有界等待、C12 CodeGraph identity 校验 — 已在 0.2.16 修复。
 
 ## [0.2.20] — hunter-harness / [0.2.14] — @hunter-harness/workflow-harness
 
