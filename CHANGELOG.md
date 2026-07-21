@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.17] — @hunter-harness/workflow-harness
+
+### Fixed (P2 — 2026-07-20 phase1b 复盘续 3)
+
+- **5.8 Plan verify 子命令**：`harness_plan_finalize.py` 新增 `verify` 子命令，基于正式产物、receipt 和 `events.ndjson` 做只读验证，不依赖 staging。返回 `artifactsHash`/`phaseEndCount`/`frontmatter`/`gatePolicyConsistent`/`receiptConsistent`。解析错误非零退出。覆盖中文 NDJSON 场景。
+- **5.9 审批协议宿主无关**：将 25 个文件中的 `AskUserQuestion` 替换为宿主无关术语 `blocking user confirmation`，adapter 按映射表映射到具体工具（Claude/CodeBuddy → AskUserQuestion，Codex → request_user_input，Cursor → 普通对话）。finalizer 只校验 approval receipt/decision 顺序和内容，不校验交互工具品牌。`CONTEXT.md` 增加宿主无关审批映射说明表。
+- **5.17 Skill include/wiki link 闭包校验**：`scripts/sync-harness.mjs` 的 `assertSupportFilesPresent` 扩展，校验 `[[shared/xxx.md|...]]` wiki link 和未展开的 `<!-- @include shared/xxx.md -->` 引用。任一悬空引用 fail closed（`SUPPORT_FILE_MISSING`/`DANGLING_SHARED_REF`）。`harness_deploy.py` 的 `expand_includes` 清理 wiki link 为 alias 文本。
+- **5.22 API batch/request 分层耗时 schema**：`harness-test/reference.md` 和 `checklist.md` 区分 `batchDurationMs`（runner wall-clock）、`scenarioDurationMs`（聚合场景）、`requestDurationMs`（单 HTTP 请求）。聚合合同套件场景只记录 batch reference/coveredTests，禁止均摊生成伪请求耗时。超时规则分别针对 runner wall-clock 与真实请求耗时。
+- **5.23 受控 cleanup helper**：新增 `harness/scripts/harness_test_cleanup.py`，子命令 `cleanup` 输入 execution root 与 profile 声明的 cleanup roots，内部 realpath containment、拒绝 symlink/reparse escape、列出精确计数后删除，输出结构化 receipt（`CLEANUP_COMPLETE`/`PATH_ESCAPE_REJECTED`/`SYMLINK_ESCAPE_REJECTED`/`ALREADY_ABSENT`）。
+- **5.30 Windows worktree remove 半成功状态**：`harness_integration.py` 的 `cleanup_target` 中，当 `git worktree remove` 返回非零但注册已删除时，返回 `REGISTRATION_REMOVED_RESIDUAL_PRESENT` 状态，再走 allowlisted residual cleaner。receipt 分别记录 registration、disk path、branch 三个结果。
+
+### Known Limitations
+
+- 无（0.2.16 的 P2 已全部修复，复盘 §5 完全闭合）。
+
 ## [0.2.16] — @hunter-harness/workflow-harness
 
 ### Fixed (P1 — 2026-07-20 phase1b 复盘续 2)
