@@ -151,7 +151,7 @@ spring:
 powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module-from-build-profile> -Dspring-boot.run.profiles=local-dev -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml'"
 ```
 
-不得默认使用 `.harness/changes/<change>/runtime/application-harness-test.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked yml，先 AskUserQuestion，最终报告至少 🟡 WARN。
+不得默认使用 `.harness/changes/<change>/runtime/application-harness-test.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked yml，先 blocking user confirmation，最终报告至少 🟡 WARN。
 
 ## Service Decision Gate 与服务生命周期管理
 

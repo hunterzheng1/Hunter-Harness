@@ -300,6 +300,152 @@ def _terminal_exists(change_dir: Path, run_id: str, attempt: int) -> bool:
     )
 
 
+def verify_plan(change_dir: Path) -> dict[str, Any]:
+    """Read-only verification of a finalized plan (retro §5.8).
+
+    Validates the published artifacts, receipt and events stream without
+    requiring the original staging directory. Returns the artifact hash,
+    phase.end count/status, frontmatter, and consistency checks. Any parse
+    error or inconsistency results in ok=false with a non-zero exit code.
+    """
+    change_dir = change_dir.resolve()
+    receipt_path = change_dir / "meta" / "plan-finalization.json"
+    if not receipt_path.is_file():
+        return _result_error("RECEIPT_MISSING", f"receipt not found: {receipt_path}")
+
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("RECEIPT_INVALID", str(exc))
+    if not isinstance(receipt, dict):
+        return _result_error("RECEIPT_INVALID", "receipt top-level must be an object")
+
+    change_name = str(receipt.get("changeName") or "").strip()
+    if not change_name:
+        return _result_error("RECEIPT_INVALID", "receipt missing changeName")
+
+    expected_hash = str(receipt.get("artifactsHash") or "").strip()
+    if not expected_hash.startswith("sha256:"):
+        return _result_error("RECEIPT_INVALID", "receipt artifactsHash missing or malformed")
+
+    files_list = receipt.get("files")
+    if not isinstance(files_list, list) or not files_list:
+        return _result_error("RECEIPT_INVALID", "receipt files list missing or empty")
+
+    # Recompute artifacts hash from published files.
+    digest = hashlib.sha256()
+    artifact_names: list[str] = []
+    for rel_text in files_list:
+        rel = rel_text.as_posix() if hasattr(rel_text, "as_posix") else str(rel_text)
+        target = change_dir / rel
+        if not target.is_file():
+            return _result_error(
+                "ARTIFACT_MISSING", f"published artifact missing: {rel}"
+            )
+        artifact_names.append(rel)
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(target.read_bytes())
+        digest.update(b"\0")
+    actual_hash = "sha256:" + digest.hexdigest()
+    if actual_hash != expected_hash:
+        return _result_error(
+            "ARTIFACT_HASH_DRIFT",
+            f"published artifacts hash {actual_hash} != receipt {expected_hash}",
+        )
+
+    # Validate frontmatter on markdown artifacts.
+    frontmatter_results: dict[str, Any] = {}
+    for rel in artifact_names:
+        if not rel.endswith(".md"):
+            continue
+        target = change_dir / rel
+        try:
+            text = target.read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            return _result_error("ARTIFACT_UNREADABLE", f"{rel}: {exc}")
+        fm = _frontmatter(text)
+        if fm is None:
+            return _result_error(
+                "ARTIFACT_FRONTMATTER_MISSING", f"{rel}: no frontmatter"
+            )
+        if fm.get("change-name") != change_name:
+            return _result_error(
+                "ARTIFACT_FRONTMATTER_INVALID",
+                f"{rel}: change-name '{fm.get('change-name')}' != '{change_name}'",
+            )
+        frontmatter_results[rel] = {
+            "change-name": fm.get("change-name"),
+            "status": fm.get("status"),
+        }
+
+    # Validate gate-policy.json is parseable JSON.
+    gate_policy_path = change_dir / "meta" / "gate-policy.json"
+    gate_policy_consistent = True
+    if gate_policy_path.is_file():
+        try:
+            json.loads(gate_policy_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            gate_policy_consistent = False
+    else:
+        gate_policy_consistent = False
+
+    # Validate events.ndjson: count phase.end, check for parse errors.
+    events_path = change_dir / "events.ndjson"
+    phase_end_count = 0
+    phase_end_status: str | None = None
+    events_parse_errors: list[str] = []
+    if events_path.is_file():
+        for line_no, line in enumerate(events_path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                events_parse_errors.append(f"line {line_no}: {exc}")
+                continue
+            if not isinstance(event, dict):
+                events_parse_errors.append(f"line {line_no}: not an object")
+                continue
+            if (
+                event.get("phase") == "plan"
+                and event.get("type") == "phase.end"
+            ):
+                phase_end_count += 1
+                phase_end_status = str(event.get("status") or "").upper()
+    else:
+        events_parse_errors.append("events.ndjson missing")
+
+    if events_parse_errors:
+        return _result_error(
+            "EVENTS_PARSE_ERROR", "; ".join(events_parse_errors[:5])
+        )
+
+    if phase_end_count == 0:
+        return _result_error("PHASE_END_MISSING", "no plan phase.end event found")
+    if phase_end_count > 1:
+        return _result_error(
+            "PHASE_END_DUPLICATE", f"found {phase_end_count} phase.end events"
+        )
+
+    # Receipt consistency: status should be finalized.
+    receipt_consistent = receipt.get("status") == "finalized"
+
+    return {
+        "ok": True,
+        "action": "verify",
+        "changeDir": str(change_dir),
+        "changeName": change_name,
+        "artifactsHash": actual_hash,
+        "phaseEndCount": phase_end_count,
+        "phaseEndStatus": phase_end_status,
+        "frontmatter": frontmatter_results,
+        "gatePolicyConsistent": gate_policy_consistent,
+        "receiptConsistent": receipt_consistent,
+        "files": artifact_names,
+    }
+
+
 def _read_design_capabilities(staging: Path, change_name: str) -> list[str]:
     """Read capabilities from design frontmatter (retro §5.4)."""
     design_path = staging / "spec" / f"{change_name}-design.md"
@@ -569,18 +715,24 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--run-id", required=True)
     finalize.add_argument("--attempt", required=True, type=int)
     finalize.add_argument("--json", action="store_true")
+    verify = sub.add_parser("verify")
+    verify.add_argument("--change-dir", required=True)
+    verify.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = finalize_plan(
-        Path(args.change_dir),
-        Path(args.staging_dir),
-        change_name=args.change,
-        run_id=args.run_id,
-        attempt=args.attempt,
-    )
+    if args.command == "verify":
+        result = verify_plan(Path(args.change_dir))
+    else:
+        result = finalize_plan(
+            Path(args.change_dir),
+            Path(args.staging_dir),
+            change_name=args.change,
+            run_id=args.run_id,
+            attempt=args.attempt,
+        )
     stream = sys.stdout if result["ok"] else sys.stderr
     if args.json:
         stream.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")

@@ -6,7 +6,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 ## 阶段 0：工作区变更检查 ⚠️ 强制检查
 
-> 有未提交业务变更（排除 `.harness/`）→ **默认 baseline 隔离**，append `decision` 事件，**不 AskUserQuestion**，继续规划。PowerShell 失败 → ❌ 停止。
+> 有未提交业务变更（排除 `.harness/`）→ **默认 baseline 隔离**，append `decision` 事件，**不 blocking user confirmation**，继续规划。PowerShell 失败 → ❌ 停止。
 
 **固定命令**：`powershell.exe -Command "git -C '<项目路径>' status --porcelain"`
 
@@ -27,7 +27,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 ## 设计审批包字段：Worktree
 
-> worktree 不再单独询问。阶段 4 **设计审批包** 一次 AskUserQuestion 含 worktree 选项（推荐值读 `harness.json` `defaultWorktree`）。确认后写入 `meta/worktree.json`。
+> worktree 不再单独询问。阶段 4 **设计审批包** 一次 blocking user confirmation 含 worktree 选项（推荐值读 `harness.json` `defaultWorktree`）。确认后写入 `meta/worktree.json`。
 
 - [ ] 审批包确认后写入 worktree.json（`requested` true/false）
 - [ ] 阶段 8 检查 worktree.json 存在
@@ -63,7 +63,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 - [ ] 变更涉及 HTTP/RPC 客户端（Feign/RestTemplate/SDK 封装）时：取客户端注解路径（类级 + 方法级拼接），与服务提供方 controller 的 `@RequestMapping` + 方法级注解**完整拼接路径**逐一比对，在计划/执行记录中列出比对结果。只看方法级注解不算完成。
 
-## 阶段 4：设计审批包 ⚠️ 强制阻断（一次 AskUserQuestion）
+## 阶段 4：设计审批包 ⚠️ 强制阻断（一次 blocking user confirmation）
 
 > 合并原「设计审核 + worktree + 场景表预览 + change-name」。推荐 worktree 读 `harness.json` `defaultWorktree`。
 
@@ -89,7 +89,7 @@ source: harness-plan
 ---
 ```
 
-展示可审核包后，使用 `AskUserQuestion` 询问用户：
+展示可审核包后，使用 `blocking user confirmation` 询问用户：
 - **确认**：设计方向正确，继续任务拆分
 - **修改**：某个部分需要调整，修改后再审核
 - **取消**：方向不对，回到需求澄清阶段
@@ -154,7 +154,7 @@ source: harness-plan
 阶段 7.5 执行完成后，确认以下事项：
 
 ```
-□ 已用 **设计审批包** 一次 AskUserQuestion（设计 + 场景表摘要 + worktree + change-name）
+□ 已用 **设计审批包** 一次 blocking user confirmation（设计 + 场景表摘要 + worktree + change-name）
 □ **未**单独询问 worktree 或对抗评审（对抗评审仅 `--adversarial`）
 □ 用户同意后，已用 Agent 工具委派 harness-evaluator（haiku, context:fork, plan 模式只读, maxTurns:8）
 □ 已用 context:fork 隔离上下文（evaluator 未参与规划，破除确认偏误）

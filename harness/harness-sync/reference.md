@@ -58,7 +58,7 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 
 **瘦身策略**：如果超过 200 行，不是简单截断——而是把可独立成篇的细节（如完整编码规范、详细架构图）迁移到 `项目规则（见 .harness/context-index.json）/` 下，CLAUDE.md 保留简洁的索引和关键命令。
 
-> ⚠️ CLAUDE.md 需要瘦身时，必须用 AskUserQuestion 与用户确认拆分方案后再执行。
+> ⚠️ CLAUDE.md 需要瘦身时，必须用 blocking user confirmation 与用户确认拆分方案后再执行。
 
 ### 5. AGENTS.md 一致性
 

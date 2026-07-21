@@ -62,7 +62,7 @@ disallowed-tools:
 
 ## 交互白名单
 
-**无** AskUserQuestion；冲突/失败记 `issue`/`decision`。
+**无** blocking user confirmation；冲突/失败记 `issue`/`decision`。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`package`

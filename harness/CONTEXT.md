@@ -53,8 +53,21 @@ _Avoid_: 仅凭 diffHash 复用, 无证据跳过
 _Avoid_: 每轮测试后必杀服务
 
 **交互白名单**:
-每个 skill 显式声明的允许 AskUserQuestion 场景清单。白名单外一律取默认值并记 decision 事件。
+每个 skill 显式声明的允许 `blocking user confirmation` 场景清单。白名单外一律取默认值并记 decision 事件。
 _Avoid_: 逐决策点询问
+
+**阻断式用户确认（blocking user confirmation）**:
+宿主无关的审批原语。canonical skill 使用此术语表达"展示完整审批包并等待明确答复"的语义，不绑定具体宿主工具。adapter 按下表映射到宿主具体工具：
+
+| Adapter | 工具 |
+|---------|------|
+| claude-code | AskUserQuestion |
+| codebuddy | AskUserQuestion |
+| codex | request_user_input 或普通对话 |
+| cursor | 普通对话 |
+
+finalizer 只校验 approval receipt/decision 的顺序和内容，不校验交互工具品牌。
+_Avoid_: 硬编码宿主工具名, 跨宿主不可移植
 
 **部署合成**:
 `harness_deploy.py build` 把通用核心 + shared 片段 + overlay 合成为自包含 SKILL.md 后部署。Vault 源头 DRY，运行时单文件。

@@ -26,6 +26,10 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 INCLUDE_RE = re.compile(r"<!--\s*@include\s+shared/([^\s]+)\s*-->")
+# retro §5.17: wiki links [[shared/xxx.md|alias]] reference shared fragments
+# that are inlined by expand_includes. After expansion, replace the wiki link
+# with the alias text (the shared content is already in the document).
+WIKI_LINK_RE = re.compile(r"\[\[shared/([^\]|]+)\|([^\]]*)\]\]")
 # §7.5: overlay anchors support both new section-id and legacy section:"title".
 OVERRIDE_RE = re.compile(r'<!--\s*@override\s+(?:section-id:"([^"]+)"|section:"([^"]+)")\s*-->')
 APPEND_RE = re.compile(r'<!--\s*@append-after\s+(?:section-id:"([^"]+)"|section:"([^"]+)")\s*-->')
@@ -148,6 +152,9 @@ def expand_includes(text: str, shared_dir: Path) -> str:
         return body
 
     expanded = INCLUDE_RE.sub(repl, text)
+    # §5.17: replace [[shared/xxx.md|alias]] wiki links with the alias text,
+    # since the shared content has been inlined by @include expansion above.
+    expanded = WIKI_LINK_RE.sub(lambda m: m.group(2), expanded)
     lines = [ln for ln in expanded.splitlines() if not FRAGMENT_HINT_RE.match(ln)]
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 

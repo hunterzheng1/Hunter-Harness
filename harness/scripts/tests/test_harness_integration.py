@@ -744,6 +744,52 @@ class CleanupBoundaryTests(TransactionFixture):
         self.assertEqual(result["residualPaths"], ["locked-residual.txt"])
         self.assertFalse(result["worktreeRegistered"])
 
+    def test_cleanup_reports_registration_removed_residual_present(self) -> None:
+        """§5.30: git worktree remove returns non-zero but registration is
+        already deleted and disk path remains — return structured half-success
+        status, not generic CLEANUP_RESIDUAL."""
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        intg_root = Path(journal["integrationRoot"])
+        (intg_root / "residual.txt").write_text("leftover\n", encoding="utf-8")
+        original_run = txn.runner.run
+        original_text = txn.runner.text
+        call_state = {"remove_called": False}
+
+        def remove_fails_registration_gone(cwd, *args, **kwargs):
+            if args[:3] == ("worktree", "remove", "--force"):
+                # Simulate Windows "Directory not empty": git returns non-zero
+                # but registration is already removed.
+                call_state["remove_called"] = True
+                # Return a fake non-zero result without actually running git.
+                class FakeResult:
+                    returncode = 1
+                    stdout = ""
+                    stderr = "fatal: Directory not empty"
+                return FakeResult()
+            return original_run(cwd, *args, **kwargs)
+
+        def worktree_list(cwd, *args, **kwargs):
+            if args[:2] == ("worktree", "list"):
+                if call_state["remove_called"]:
+                    # After remove: registration gone.
+                    return ""
+                # Before remove: include the intg_root as registered.
+                return f"worktree {intg_root}\n"
+            return original_text(cwd, *args, **kwargs)
+
+        with mock.patch.object(txn.runner, "run", side_effect=remove_fails_registration_gone), \
+             mock.patch.object(txn.runner, "text", side_effect=worktree_list):
+            result = txn.cleanup_target(intg_root)
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "REGISTRATION_REMOVED_RESIDUAL_PRESENT")
+        self.assertFalse(result["worktreeRegistered"])
+        self.assertTrue(result["diskPathPresent"])
+        self.assertIn("residual.txt", result["residualPaths"])
+
 
 class VerifyInIntegrationWorktreeTests(TransactionFixture):
     def test_verify_requires_nonempty_plan(self) -> None:

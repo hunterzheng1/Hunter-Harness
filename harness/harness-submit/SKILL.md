@@ -66,7 +66,7 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 1. **合并最新代码** — 主目录与 worktree 均**不在业务工作区 stash/pull**；远端同步由合并段 integration transaction 在隔离 integration worktree 内完成（见「worktree 合并流程」）；**正常路径禁止 `git stash` / `stash pop`**
 2. **最终验证** — ledger 复用优先；**提交前最终门禁只调 `can-reuse`**（删除与 coverage 冲突的二次全量门禁）：`harness_ledger.py can-reuse --verification unitTestFull --scope module --project . --profile-input unitTestFull --command <resolved commands.unitTestFull.command>`。`--command` **按 profile key resolve**：读 `build-profile.json` 的 `commands.unitTestFull.command`（v2），或 `harness_profile.py resolve --project . --key unitTestFull --json` 取 resolved command，**不复制示例模块名**（文档示例只展示 key）。`--profile-input unitTestFull` 从 `verificationInputs.unitTestFull`（v2 由 `commands.unitTestFull.inputs` 派生）展开依赖闭包，**禁止用仅含 staged 文件的 `--files` 快捷方式**冒充全量闭包。`reuse=true` → 不再执行二次全量测试；仅 `reuse=false` 时执行**同一 resolved verification**（profile `unitTestFull` 命令），成功后用同一文件集、command、`scope=module` 经 **`harness_ledger.py record`** 写回 ledger `unitTestFull` 项。增量 `unitTest` 永远不能冒充 `unitTestFull` 门禁。
 3. **.gitignore + 精确暂存** ⚠️ — 检查 `.harness/` 在 `.gitignore`；**禁止 `git add -A`**。若存在 `evidence/test-tracking.json`，先执行 `python <skills-root>/scripts/harness_test_guard.py stage --project . --change-dir ".harness/changes/<change-name>" --json`；失败即硬停止。无 manifest 时不使用 `-f`。manifest 之外的文件按精确业务路径正常暂存，**禁止全局 force-add**。
-4. **提交方式** — 主目录：AskUserQuestion 三选项（commit+push / 仅本地 / 取消）；**worktree：固定仅本地 commit**
+4. **提交方式** — 主目录：blocking user confirmation 三选项（commit+push / 仅本地 / 取消）；**worktree：固定仅本地 commit**
 5. **commit-message.txt** ⚠️ — 展示 staged、diff stat、完整中文 message；用户确认
 6. **commit / push** — `git commit -F`；主目录按选项 push（push 前 fetch 检查远端）；**worktree：只 commit，记录 local hash**
 7. **收尾** — **`harness_gate.py close --phase submit --status ...`**；主目录：可选 worktree 清理 + 提示 `/harness-archive`；**worktree：接续下方合并流程**
@@ -137,7 +137,7 @@ git 经 PowerShell；commit/报告不得含明文密钥。遵循 `../protocols/s
 
 ## 交互白名单
 
-本 skill **仅允许**以下 AskUserQuestion；其余默认值 + `decision` 事件：
+本 skill **仅允许**以下 blocking user confirmation；其余默认值 + `decision` 事件：
 
 1. **提交方式 + commit message**（主目录一次确认）；worktree 固定仅本地 commit，仅确认 message
 2. **远程有新提交**（push 前）：重新验证 / 停止 push

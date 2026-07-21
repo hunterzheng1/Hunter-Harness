@@ -138,7 +138,7 @@ review 读取 `state-snapshot.json`（`harness_state.py` / state-layout-protocol
 
 ## 交互白名单
 
-**无** AskUserQuestion（审查全自动）。委派失败 → 主会话审查 + `decision` 事件。
+**无** blocking user confirmation（审查全自动）。委派失败 → 主会话审查 + `decision` 事件。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`review` · 事件：phase/decision/verification/issue/artifact

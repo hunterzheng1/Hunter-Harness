@@ -85,7 +85,7 @@ disallowed-tools:
 
 ### Phase 2：确认归档 ⚠️ 强制阻断
 
-AskUserQuestion 让用户确认归档操作。**用户拒绝 → 终止流程，不执行任何操作。**
+blocking user confirmation 让用户确认归档操作。**用户拒绝 → 终止流程，不执行任何操作。**
 
 - **Read `reference.md`** — 确认对话框的内容格式
 
@@ -118,7 +118,7 @@ AskUserQuestion 让用户确认归档操作。**用户拒绝 → 终止流程，
 
 ### 二、归档前确认是强制阻断检查点
 
-AskUserQuestion 确认；用户拒绝 → 终止，不执行任何操作。
+blocking user confirmation 确认；用户拒绝 → 终止，不执行任何操作。
 
 ### 三、文件移动只用内置工具或 PowerShell
 
@@ -187,7 +187,7 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 fi
 
 ## 交互白名单
 
-**仅允许**归档确认（Phase 2 AskUserQuestion）；拒绝 → 终止，不执行任何移动。
+**仅允许**归档确认（Phase 2 blocking user confirmation）；拒绝 → 终止，不执行任何移动。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`archive`

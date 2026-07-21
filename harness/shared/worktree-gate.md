@@ -8,7 +8,7 @@
 | `requested=true` + path 存在 | 切换 worktree 执行 |
 | `requested=true` + path 不存在 | **必须创建**（run）或 **停止**（test/review/submit） |
 
-**严禁** `requested=true` 时静默回主目录。创建失败 → 停止或 AskUserQuestion 降级（须 🟡WARN + 用户确认）。
+**严禁** `requested=true` 时静默回主目录。创建失败 → 停止或 blocking user confirmation 降级（须 🟡WARN + 用户确认）。
 
 **状态与代码分离**：代码/编译/测试在 `worktreeRoot`；`stateDir`（logs/events/ledger/reports）写回 `.harness/changes/<change-name>/`。
 

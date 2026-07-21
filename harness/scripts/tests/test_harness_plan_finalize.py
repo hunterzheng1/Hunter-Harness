@@ -496,5 +496,92 @@ class ScenarioManifestTests(unittest.TestCase):
             self.assertEqual(data["scenarios"], [])
 
 
+class PlanVerifyTests(unittest.TestCase):
+    """Tests for the `verify` subcommand (retro §5.8)."""
+
+    def _finalize_and_verify(self, change: str = "verify-demo") -> tuple[Path, dict]:
+        # Use a persistent temp dir that survives until the test method returns;
+        # TemporaryDirectory context manager would delete the change_dir before
+        # verify_plan runs.
+        root = Path(tempfile.mkdtemp(prefix="plan-verify-"))
+        staging = root / "staging"
+        change_dir = root / ".harness" / "changes" / change
+        seed_staging(staging, change)
+        finalize_result = finalizer.finalize_plan(
+            change_dir,
+            staging,
+            change_name=change,
+            run_id="plan-run",
+            attempt=1,
+        )
+        assert finalize_result["ok"], finalize_result
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        return change_dir, finalize_result
+
+    def test_verify_succeeds_after_finalize(self) -> None:
+        change_dir, finalize_result = self._finalize_and_verify()
+        result = finalizer.verify_plan(change_dir)
+        self.assertTrue(result["ok"], msg=result)
+        self.assertEqual(result["action"], "verify")
+        self.assertEqual(result["artifactsHash"], finalize_result["artifactsHash"])
+        self.assertEqual(result["phaseEndCount"], 1)
+        self.assertEqual(result["phaseEndStatus"], "OK")
+        self.assertTrue(result["receiptConsistent"])
+        self.assertTrue(result["gatePolicyConsistent"])
+
+    def test_verify_works_without_staging(self) -> None:
+        change_dir, _ = self._finalize_and_verify()
+        # staging dir is external to change_dir; verify must not require it.
+        result = finalizer.verify_plan(change_dir)
+        self.assertTrue(result["ok"], msg=result)
+        self.assertNotIn("stagingDir", result)
+
+    def test_verify_handles_chinese_ndjson(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-chinese")
+        # Append an event with Chinese note to events.ndjson
+        events_path = change_dir / "events.ndjson"
+        original = events_path.read_text(encoding="utf-8")
+        # Append a decision event with Chinese text
+        chinese_event = (
+            '{"schema_version":3,"id":"evt-test","timestamp":"2026-07-21T16:00:00+08:00",'
+            '"phase":"plan","type":"decision","note":"用户确认设计审批包：范围覆盖 6 个 P2 项"}\n'
+        )
+        events_path.write_text(original + chinese_event, encoding="utf-8")
+        result = finalizer.verify_plan(change_dir)
+        self.assertTrue(result["ok"], msg=result)
+        self.assertEqual(result["phaseEndCount"], 1)
+
+    def test_verify_fails_when_phase_end_missing(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-no-end")
+        # Remove the phase.end event by rewriting events.ndjson with only phase.start
+        events_path = change_dir / "events.ndjson"
+        lines = events_path.read_text(encoding="utf-8").splitlines()
+        kept = [
+            line for line in lines
+            if line.strip() and json.loads(line).get("type") != "phase.end"
+        ]
+        events_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PHASE_END_MISSING")
+
+    def test_verify_fails_when_receipt_missing(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-no-receipt")
+        (change_dir / "meta" / "plan-finalization.json").unlink()
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_MISSING")
+
+    def test_verify_fails_on_artifact_hash_drift(self) -> None:
+        change_dir, finalize_result = self._finalize_and_verify("verify-drift")
+        # Modify a published artifact to invalidate the hash
+        design_path = change_dir / "spec" / "verify-drift-design.md"
+        original = design_path.read_text(encoding="utf-8")
+        design_path.write_text(original + "\n<!-- drift -->\n", encoding="utf-8")
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "ARTIFACT_HASH_DRIFT")
+
+
 if __name__ == "__main__":
     unittest.main()

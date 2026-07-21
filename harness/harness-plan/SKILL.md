@@ -57,7 +57,7 @@ disallowed-tools:
 | 1 | `harness-knowledge-query` 单次 query（内部 ensure-current；失败记 `issue`） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
-| 4 | **设计审批包** AskUserQuestion；确认事件早于 approved 设计文档和 `meta/worktree.json` |
+| 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
 | 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`；原子发布、唯一 `phase.end`、render → `checklist.md` |
@@ -72,7 +72,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 规则 | 要点 |
 |------|------|
 | 产物路径 | 只写 `.harness/changes/<cn>/`；禁止 superpowers 输入 |
-| 设计审批包 | 一次 AskUserQuestion 含 worktree（读 `harness.json` `defaultWorktree`） |
+| 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
 | 阶段 8 | spec/plan/detail/scenarios/worktree.json 先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log，失败不得手工补终态 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
 | 知识查询 | 0.5 失败不得假装已读历史 |

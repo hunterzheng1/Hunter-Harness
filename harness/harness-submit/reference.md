@@ -4,7 +4,7 @@ description: harness-submit 的提交格式、固定交互模板和中文 commit
 
 # harness-submit 参考
 
-## 提交方式 AskUserQuestion 固定模板
+## 提交方式 blocking user confirmation 固定模板
 
 问题标题：`请选择提交方式`
 
@@ -14,7 +14,7 @@ description: harness-submit 的提交格式、固定交互模板和中文 commit
 2. `仅本地 commit，不 push`
 3. `取消提交`
 
-不得临场增加复杂对象或嵌套参数，避免 AskUserQuestion 参数错误。
+不得临场增加复杂对象或嵌套参数，避免 blocking user confirmation 参数错误。
 
 > **worktree 模式（meta/worktree.json requested=true）**：固定选项 2「仅本地 commit」，不展示「commit+push」；commit 成功后 skill **自动接续** worktree 合并流程（`/harness-merge` 为别名）。push 只在主分支完成，产出 `mergeFinalHash`。
 
@@ -148,5 +148,5 @@ powershell.exe -NoProfile -Command "git -C '<项目路径>' log HEAD..@{u} --one
 
 - 步骤 1（合并最新代码）：按无 upstream / 远端无新提交判定 N/A，在执行日志记录理由。
 - 步骤 5（commit-message.txt + `git commit -F`）N/A：无可暂存 diff，无新 commit 需生成。执行日志标注 `commit-message.txt / git commit -F: N/A（工作树 clean，无新 commit；N 个 wip 提交已存在，原样推送）`。
-- 步骤 4（提交方式选择）：固定三选项仍适用。但当 review 标了 RED 兼容性破坏等需人工确认项时，可在"commit + push"选项的描述中注明"并确认 <RED 项>"，**不得新增第四选项**、不得临场拼复杂 AskUserQuestion 参数。
+- 步骤 4（提交方式选择）：固定三选项仍适用。但当 review 标了 RED 兼容性破坏等需人工确认项时，可在"commit + push"选项的描述中注明"并确认 <RED 项>"，**不得新增第四选项**、不得临场拼复杂 blocking user confirmation 参数。
 - push 仍按步骤 6：fetch 检查远端 → `git push -u`（无 upstream 则新建远端分支）→ 记录 pre-pull hash + final pushed hash。

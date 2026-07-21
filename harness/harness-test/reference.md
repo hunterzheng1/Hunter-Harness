@@ -150,7 +150,7 @@ spring:
 powershell.exe -NoProfile -Command "mvn spring-boot:run -pl <module> -Dspring-boot.run.profiles=<profile> -Dspring-boot.run.jvmArguments='-Dspring.config.additional-location=file:C:/temp/harness-test-overlay/<change-name>/application-harness-test.yml'"
 ```
 
-不得默认使用 `.harness/changes/<change>/runtime/application-harness-test.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked 配置文件，先 AskUserQuestion，最终报告至少 🟡 WARN。
+不得默认使用 `.harness/changes/<change>/runtime/application-harness-test.yml` 相对路径作为 JVM `additional-location`。如必须修改 tracked 配置文件，先 blocking user confirmation，最终报告至少 🟡 WARN。
 
 ## 服务决策门（Service Decision Gate）与服务生命周期管理
 
@@ -361,11 +361,13 @@ async function cleanup(token) {
 
 // ===== 主流程 =====
 const token = await resolveCredential('admin');
+const batchStart = Date.now();
 await setup(token);
 for (const scenario of scenarios) {
   await runOne(scenario, token);
 }
 const cleanupResult = await cleanup(token);
+const batchDurationMs = Date.now() - batchStart;
 
 const summary = {
   runner: 'api-test-executor',
@@ -377,7 +379,11 @@ const summary = {
   setupErrors: setupState.errors,
   cleanupResult,
   credentialRefreshCount,
-  startedAt: '<ISO>', finishedAt: '<ISO>', durationMs: 0
+  // §5.22: 分层耗时 schema — batchDurationMs 是整个 runner wall-clock；
+  // 每个场景的 requestDurationMs 是单 HTTP 请求耗时。聚合合同套件场景
+  // 只记录 batch reference/coveredTests，不允许均摊生成伪请求耗时。
+  batchDurationMs,
+  startedAt: '<ISO>', finishedAt: '<ISO>'
 };
 writeFileSync(RESULTS_FILE, JSON.stringify({ results, summary }, null, 2));
 console.log(`\n结果已写入 ${RESULTS_FILE}`);
@@ -389,6 +395,7 @@ console.log(`\n结果已写入 ${RESULTS_FILE}`);
 > - 凭证从本地 cache 读 + 本地轻量接口验证，**完全不依赖浏览器当前页面 origin**
 > - 同一次执行内 `credentialRefreshCount` 不得 > 1
 > - payload 从数据契约/接口定义/真实样例生成，并在脚本注释中标注字段来源
+> - **§5.22 分层耗时**：`batchDurationMs` 是 runner wall-clock（整个批次耗时），`requestDurationMs` 是单 HTTP 请求耗时。聚合合同套件场景（如 API-C01~C04 共享同一 pytest 批次）只记录 `batchReference` + `coveredTests`，**禁止用 `batchDurationMs / N` 均摊生成伪 `requestDurationMs`**
 
 ### 执行器降级方案（PowerShell batch runner .ps1）
 
@@ -445,18 +452,20 @@ $results | ConvertTo-Json -Depth 4
 | 接口测试执行器（普通） | 30s | **60s** | 抛错继续报告，不再重试 |
 | 接口测试执行器（复杂场景） | 60s | **120s** | 同上 |
 | 凭证获取（认证服务） | 5–10s | **15s** | 计 1 次重取；超过 1 次 → 🟡 WARN |
-| 单个 HTTP GET | < 1s | **8s** | durationMs > 10s → 🟡 SLOW |
-| 单个 HTTP POST/PUT | < 2s | **10s** | durationMs > 10s → 🟡 SLOW |
+| 单个 HTTP GET | < 1s | **8s** | requestDurationMs > 10s → 🟡 SLOW |
+| 单个 HTTP POST/PUT | < 2s | **10s** | requestDurationMs > 10s → 🟡 SLOW |
 | health probe | < 1s | **3s** | 计入启动状态机 |
 | 构建工具编译（如 Maven compile） | 10–60s | **180s** | 输出最后 30 行日志后停 |
 | 测试命令（如 Maven test） | 60–180s | **300s** | 输出失败用例后停 |
 | service start | 30–60s | **120s** | 4.1 启动状态机收敛 |
 
-**反馈规则**：
+**§5.22 分层耗时与反馈规则**：
 - 等待 > 10s 必须输出一次状态行（启动等待、执行器、构建工具均适用）
 - 不得静默等待
-- `durationMs > 10000` → 🟡 SLOW
-- `durationMs > 30000` → ❌ TIMEOUT_RISK
+- **`requestDurationMs`**（单 HTTP 请求耗时）：`> 10000` → 🟡 SLOW；`> 30000` → ❌ TIMEOUT_RISK
+- **`batchDurationMs`**（runner wall-clock，整个批次耗时）：`> 180000`（3 分钟）→ 🟡 BATCH_SLOW；`> 300000`（5 分钟）→ ❌ BATCH_TIMEOUT_RISK
+- **聚合合同套件场景**（如 API-C01~C04 共享同一 pytest 批次）：只记录 `batchReference` + `coveredTests`，**禁止用 `batchDurationMs / N` 均摊生成伪 `requestDurationMs`**
+- 报告必须明确标注是哪一层越界（batch-level 还是 request-level），不得混用
 - 请求慢不得忽略，必须说明是服务、网络、认证还是工具调用开销
 
 ## 认证凭证缓存与复用
@@ -638,17 +647,23 @@ TEST_<change-name>_<timestamp>_<short-random>
 | cleanup | cleaned=X / leftover=Y | 接口 /<resource> 不支持删除，2 条遗留 |
 
 ### 接口测试
-| # | 场景 | 方法 | URL | 预期 | 实际 | durationMs | 状态 |
+| # | 场景 | 方法 | URL | 预期 | 实际 | requestDurationMs | 状态 |
 |:--:|------|:----:|-----|------|------|----------:|:--:|
 | API-001 | 创建资源 | POST | /api/xxx | 200, code=0 | 200, code=0 | 245 | ✅ PASS |
 | API-002 | 参数校验 | POST | /api/xxx | code=xxx | code=xxx | 180 | ✅ PASS |
 | API-003 | 查询子规则 | GET | /api/xxx/{id} | 200 | — | — | 🟡 BLOCKED（setup.createRule 失败） |
 
-### 请求耗时统计
-| 场景 | 方法 | URL | durationMs | 状态 |
-|------|:----:|-----|----------:|:----:|
-| API-001 | POST | /api/xxx | 245 | ✅ |
-| API-010 | GET | /api/yyy | 12450 | 🟡SLOW |
+### 请求耗时统计（§5.22 分层耗时）
+| 层级 | 场景/批次 | 方法 | URL | 耗时 | 状态 |
+|------|----------|:----:|-----|----:|:----:|
+| request | API-001 | POST | /api/xxx | 245ms | ✅ |
+| request | API-010 | GET | /api/yyy | 12450ms | 🟡SLOW |
+| batch | pytest-batch-1 | — | — | 158000ms | 🟡BATCH_SLOW |
+
+> **§5.22 分层耗时说明**：
+> - `request` 层级记录单 HTTP 请求耗时（`requestDurationMs`）
+> - `batch` 层级记录 runner wall-clock（`batchDurationMs`），整个 pytest 批次耗时
+> - 聚合合同套件场景（如 API-C01~C04 共享同一批次）只记录一行 `batch` 条目 + `coveredTests` 列表，**不得均摊为 4 个伪 `request` 条目**
 
 ### 数据兼容
 | # | 场景 | 预期 | 实际 | 结果 |

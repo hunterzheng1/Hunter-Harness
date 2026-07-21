@@ -8,7 +8,7 @@ description: harness-archive 的归档流程、manifest、summary-data、final-s
 
 - **Phase 0 读取上下文**：读 SKILL.md / 本文件 / 共用协议（`../protocols/archive-report-protocol.md`、`../protocols/report-pipeline-protocol.md`、`../protocols/state-layout-protocol.md`、`../protocols/powershell-protocol.md`、`../protocols/sensitive-info-protocol.md`、`../protocols/evidence-based-reporting-protocol.md`）/ 解析 `$ARGUMENTS`。
 - **Phase 1 确认归档对象**：Glob `.harness/changes/*/plans/*-plan.md`（排除 archive），展示概要；多变更让用户选择或终止。
-- **Phase 2 确认归档（强制阻断）**：AskUserQuestion 确认，拒绝即终止。
+- **Phase 2 确认归档（强制阻断）**：blocking user confirmation 确认，拒绝即终止。
 - **Phase 3 执行归档**：
   1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
   2. `meta/archive-meta.md` 由 finalize 生成（与 summary `finalStatus` 同源）；禁止手写。维护者结论写入 events 即可。finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。

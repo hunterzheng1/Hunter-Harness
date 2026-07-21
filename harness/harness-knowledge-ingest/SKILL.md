@@ -244,7 +244,7 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync 
 
 ## 交互白名单
 
-**仅当** `.harness/config/harness.json` 中 `knowledge.manualReview=true` 时，promote/demote 高价值条目需 AskUserQuestion；否则按 skill 默认策略 + `decision` 事件。
+**仅当** `.harness/config/harness.json` 中 `knowledge.manualReview=true` 时，promote/demote 高价值条目需 blocking user confirmation；否则按 skill 默认策略 + `decision` 事件。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`knowledge-ingest` · 默认控制台报告；变更上下文写 phase/decision/issue/artifact

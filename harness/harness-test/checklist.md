@@ -276,7 +276,7 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] **只有首选执行器不可执行才降级**：PowerShell batch (.ps1) → 多次 MCP `browser_evaluate` → curl
 - [ ] **如果执行器在 PowerShell 可用，禁止使用 Playwright MCP 逐条执行接口测试**
 - [ ] 执行器直连本地 baseURL，复用认证凭证，不依赖浏览器 origin
-- [ ] 记录每个请求的 durationMs、status、code、message、assertionResult
+- [ ] 记录每个请求的 requestDurationMs、status、code、message、assertionResult
 - [ ] 支持失败时继续执行后续非依赖场景
 - [ ] 报告区分四种执行器：**接口测试执行器 / PowerShell batch / Playwright MCP browser_evaluate / curl**（不得与"Playwright"混写）
 
@@ -287,11 +287,14 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] 测试结束后清理可清理的数据
 - [ ] 不能清理的记录遗留数据和原因
 
-### 请求耗时
+### 请求耗时（§5.22 分层耗时）
 
-- [ ] 每个请求记录 durationMs
-- [ ] durationMs > 10000 → 🟡SLOW，说明原因
-- [ ] durationMs > 30000 → ❌TIMEOUT_RISK，说明原因
+- [ ] 每个请求记录 requestDurationMs（单 HTTP 请求耗时）
+- [ ] 整个批次记录 batchDurationMs（runner wall-clock）
+- [ ] requestDurationMs > 10000 → 🟡SLOW，说明原因
+- [ ] requestDurationMs > 30000 → ❌TIMEOUT_RISK，说明原因
+- [ ] batchDurationMs > 180000 → 🟡BATCH_SLOW
+- [ ] 聚合合同套件场景只记录 batch reference + coveredTests，**禁止均摊生成伪 requestDurationMs**
 
 ### 覆盖标注诚实性（✅ 实测 vs 🟡 推断）
 

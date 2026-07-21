@@ -59,7 +59,7 @@
 | harness-knowledge-query | `[Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]` | 同上 |
 | harness-knowledge-ingest | `[Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]` | 同上 |
 
-> **AskUserQuestion 不预批准**：各 skill 需要向用户确认时通过普通权限提示调用 `AskUserQuestion`，不在 `allowed-tools` 中预批准（遵循 skill-optimizer 规则）。`harness-codebase-map` 额外预批准 `Agent` 用于派发并行 mapper。
+> **blocking user confirmation 不预批准**：各 skill 需要向用户确认时通过普通权限提示调用 `blocking user confirmation`（adapter 映射到 `AskUserQuestion`/`request_user_input`/普通对话），不在 `allowed-tools` 中预批准（遵循 skill-optimizer 规则）。`harness-codebase-map` 额外预批准 `Agent` 用于派发并行 mapper。
 
 > **codegraph 命令**：原 `Bash(codegraph *)` 改为 MCP 工具调用（`mcp__codegraph__codegraph_explore` 等），不再通过 Bash。
 >

@@ -1049,10 +1049,11 @@ class IntegrationTransaction:
                     heavy_removed.append(name)
                 except OSError as exc:
                     heavy_failures.append({"path": name, "error": str(exc)})
-        self.runner.run(
+        remove_result = self.runner.run(
             self.project_root, "worktree", "remove", "--force", str(resolved),
             check=False,
         )
+        remove_returncode = getattr(remove_result, "returncode", 0)
         listed = self.runner.text(self.project_root, "worktree", "list", "--porcelain")
         registered_after = {
             str(Path(line.removeprefix("worktree ")).resolve())
@@ -1061,7 +1062,8 @@ class IntegrationTransaction:
         }
         still_registered = str(resolved) in registered_after
         residual_paths: list[str] = []
-        if resolved.exists():
+        disk_path_present = resolved.exists()
+        if disk_path_present:
             if resolved.is_file():
                 residual_paths.append(resolved.name)
             else:
@@ -1075,6 +1077,27 @@ class IntegrationTransaction:
                             break
                     if len(residual_paths) >= 200:
                         break
+        # §5.30: Windows half-success — git worktree remove returned non-zero
+        # but registration is already deleted and disk path remains. Return a
+        # structured status distinct from generic CLEANUP_RESIDUAL so callers
+        # can apply the allowlisted residual cleaner.
+        if (
+            remove_returncode != 0
+            and not still_registered
+            and disk_path_present
+            and residual_paths
+            and not heavy_failures
+        ):
+            return {
+                "ok": False,
+                "code": "REGISTRATION_REMOVED_RESIDUAL_PRESENT",
+                "target": str(resolved),
+                "heavyRootsRemoved": heavy_removed,
+                "heavyRootFailures": heavy_failures,
+                "worktreeRegistered": False,
+                "diskPathPresent": True,
+                "residualPaths": residual_paths,
+            }
         ok = not heavy_failures and not still_registered and not residual_paths
         return {
             "ok": ok,
@@ -1083,6 +1106,7 @@ class IntegrationTransaction:
             "heavyRootsRemoved": heavy_removed,
             "heavyRootFailures": heavy_failures,
             "worktreeRegistered": still_registered,
+            "diskPathPresent": disk_path_present,
             "residualPaths": residual_paths,
         }
 

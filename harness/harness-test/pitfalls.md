@@ -191,7 +191,7 @@ $cred = $resp.data.accessToken
 **严重度**：🟡WARN
 **场景**：测试期间为了切换外部服务配置直接 Edit tracked 配置文件（如 `application-local-dev.yml`），测试后再还原，留下 diff 噪声
 **后果**：git diff --stat 出现意外文件、提交风险、误以为有业务变更
-**正确做法**：生成运行时配置叠加 `.harness/changes/<change>/runtime/application-harness-test.yml`（不提交），启动用 `-Dspring.config.additional-location=file:...` 叠加（按技术栈）；如必须改 tracked 配置，先 AskUserQuestion，最终报告至少 🟡 WARN
+**正确做法**：生成运行时配置叠加 `.harness/changes/<change>/runtime/application-harness-test.yml`（不提交），启动用 `-Dspring.config.additional-location=file:...` 叠加（按技术栈）；如必须改 tracked 配置，先 blocking user confirmation，最终报告至少 🟡 WARN
 
 ### 规则 22：唯一约束字段与本地预存数据冲突
 **严重度**：❌FAIL

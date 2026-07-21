@@ -132,11 +132,11 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 
 ### 六、服务启动 + 生命周期管理
 
-启动等待状态机：0–30s 每 2s 探测、30–120s 每 5s 探测、>120s 读日志判定；遇启动失败特征立即停。**Service Gate**：`harness_service.py ensure` 返回 `action=needs-user-decision`（用户自启服务占端口）时 **才** AskUserQuestion；AI 托管服务或端口空闲则自动继续，不询问。服务指纹（`moduleInputsHash`，来自 CLI `--files` ∪ `serviceStart.inputFiles`）+ `startCommandHash` + `profile` + `overlayPath` + 进程身份任一变化即 restart；**空输入被拒绝**，不生成可复用空指纹。测试结束默认清理 AI 启动的服务。详见 `reference.md`「服务决策门」。
+启动等待状态机：0–30s 每 2s 探测、30–120s 每 5s 探测、>120s 读日志判定；遇启动失败特征立即停。**Service Gate**：`harness_service.py ensure` 返回 `action=needs-user-decision`（用户自启服务占端口）时 **才** blocking user confirmation；AI 托管服务或端口空闲则自动继续，不询问。服务指纹（`moduleInputsHash`，来自 CLI `--files` ∪ `serviceStart.inputFiles`）+ `startCommandHash` + `profile` + `overlayPath` + 进程身份任一变化即 restart；**空输入被拒绝**，不生成可复用空指纹。测试结束默认清理 AI 启动的服务。详见 `reference.md`「服务决策门」。
 
 ### 七、运行时配置叠加（不动 tracked 配置）
 
-禁止默认 Edit tracked 应用配置文件。默认运行时配置叠加（ASCII 绝对路径）；改 tracked 配置 → 默认拒绝，记 `decision` 事件（不 AskUserQuestion，报告 🟡 WARN）。详见 `reference.md`。
+禁止默认 Edit tracked 应用配置文件。默认运行时配置叠加（ASCII 绝对路径）；改 tracked 配置 → 默认拒绝，记 `decision` 事件（不 blocking user confirmation，报告 🟡 WARN）。详见 `reference.md`。
 
 ### 八、Token 缓存与复用
 
@@ -168,7 +168,7 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 
 ## 交互白名单
 
-本 skill **仅允许**以下 AskUserQuestion；其余默认值 + `decision` 事件：
+本 skill **仅允许**以下 blocking user confirmation；其余默认值 + `decision` 事件：
 
 1. **Service Gate**：仅当 `harness_service.py ensure` 返回 `needs-user-decision`（用户进程占端口）时询问处理方式
 

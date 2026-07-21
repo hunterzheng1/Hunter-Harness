@@ -14,7 +14,7 @@
 - [ ] worktree 创建命令必须使用 PowerShell：`git worktree add ...`
 - [ ] 创建后验证 `.claude/worktrees/<change-name>/.git` 存在
 - [ ] 创建成功后更新 `worktree.json` 的 `created=true/createdAt/createdBy`
-- [ ] 创建失败 → 停止，或 AskUserQuestion 询问是否改为主目录执行
+- [ ] 创建失败 → 停止，或 blocking user confirmation 询问是否改为主目录执行
 - [ ] 禁止 `requested=true && worktree 不存在` 时直接主目录执行
 - [ ] 记录 `projectRoot / worktreeRoot / stateDir`
 
@@ -38,7 +38,7 @@
 
 ### 步骤 0.1：执行模式
 
-- [ ] 默认 Inline；`--subagent` → Subagent-Driven；**不 AskUserQuestion 选模式**
+- [ ] 默认 Inline；`--subagent` → Subagent-Driven；**不 blocking user confirmation 选模式**
 
 ## 步骤 0.5：测试基础设施探测（⚠️ 必须先于任何 TDD 降级结论）
 
@@ -56,7 +56,7 @@
 > 如果 run 开始前检测到已有未提交变更，必须执行此步骤。
 
 - [ ] 检查 git status 是否有 run 前的预存变更
-- [ ] 如果有预存变更 → 使用 AskUserQuestion 询问用户处理方式（保留/暂存/终止）
+- [ ] 如果有预存变更 → 使用 blocking user confirmation 询问用户处理方式（保留/暂存/终止）
 - [ ] 用户选择保留 → 创建 `.harness/changes/<change>/pre-existing-files.json`（文件列表 + diff hash + 用户选择）
 - [ ] 用户选择保留 → 创建 `.harness/changes/<change>/pre-existing-diff.patch`（完整 diff 备份）
 - [ ] 在执行日志中记录预存变更检测结果和用户选择
@@ -199,7 +199,7 @@
 - [ ] 确认当前 cwd 在 `.claude/worktrees/<change-name>/` 下
 - [ ] 生成变更摘要：`git diff --stat` + `git diff --stat --cached`
 - [ ] 构建 commit message：`wip(<scope>): <change-name> 编码完成 — N任务/M文件变更`
-- [ ] **⚠️ 强制阻断**：用 AskUserQuestion 展示变更列表 + commit message，等待用户确认
+- [ ] **⚠️ 强制阻断**：用 blocking user confirmation 展示变更列表 + commit message，等待用户确认
 - [ ] 用户确认 → 执行 `git add -A` + `git commit`（不用 --no-verify、--no-gpg-sign）
 - [ ] 用户拒绝 → 记录 `❌用户拒绝`，继续后续流程
 - [ ] 记录 checkpoint commit hash 到执行日志

@@ -95,7 +95,7 @@ disallowed-tools:
 
 ## 交互白名单
 
-**无** AskUserQuestion；参数/默认值 + `decision` 事件
+**无** blocking user confirmation；参数/默认值 + `decision` 事件
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`codebase-map`；默认写 reports，有未归档变更时另写 change events

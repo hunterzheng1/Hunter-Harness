@@ -142,7 +142,7 @@ powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py
 
 ## 交互白名单
 
-**无** AskUserQuestion；`stale`/`conflicted` 命中记 `issue`，不阻断 query。
+**无** blocking user confirmation；`stale`/`conflicted` 命中记 `issue`，不阻断 query。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`knowledge-query` · 独立运行时控制台报告；变更上下文写 decision/issue/artifact

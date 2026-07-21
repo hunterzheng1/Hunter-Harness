@@ -65,6 +65,9 @@ async function assertSupportFilesPresent(bundleDir) {
   // design §3.8 / cluster 7 point 4: every Skill's progressive-disclosure
   // "Read `xxx.md`" reference must resolve to a file present in the staged
   // bundle. A missing support file is a deploy failure (no runtime fallback).
+  // retro §5.17: also check [[shared/xxx.md|...]] wiki links and unexpanded
+  // <!-- @include shared/xxx.md --> placeholders; shared/ files must either
+  // be present in the bundle or already inlined (no dangling refs).
   const entries = await readdir(bundleDir, { withFileTypes: true });
   const skills = entries
     .filter((e) => e.isDirectory() && e.name.startsWith("harness-"))
@@ -72,6 +75,7 @@ async function assertSupportFilesPresent(bundleDir) {
   for (const skill of skills) {
     const skillMd = await readFile(join(bundleDir, skill, "SKILL.md"), "utf8");
     const refs = new Set();
+    // Existing: "Read `xxx.md`" progressive-disclosure references.
     for (const m of skillMd.matchAll(/Read\s+`?([a-zA-Z0-9_.-]+\.md)`?/g)) {
       refs.add(m[1]);
     }
@@ -85,8 +89,33 @@ async function assertSupportFilesPresent(bundleDir) {
         );
       }
     }
+    // §5.17: [[shared/xxx.md|...]] wiki links — shared file must exist at
+    // bundle root or be already inlined (no @include placeholder remains).
+    const sharedWikiRefs = new Set();
+    for (const m of skillMd.matchAll(/\[\[shared\/([^\]|]+)\|[^\]]*\]\]/g)) {
+      sharedWikiRefs.add(`shared/${m[1]}`);
+    }
+    // §5.17: unexpanded <!-- @include shared/xxx.md --> placeholders. After
+    // deploy these should have been expanded; any remaining is a dangling ref.
+    const sharedIncludeRefs = new Set();
+    for (const m of skillMd.matchAll(/<!--\s*@include\s+shared\/([^\s]+)\s*-->/g)) {
+      sharedIncludeRefs.add(`shared/${m[1]}`);
+    }
+    for (const ref of [...sharedWikiRefs, ...sharedIncludeRefs]) {
+      const parts = ref.split("/");
+      const sharedPath = join(bundleDir, ...parts);
+      try {
+        await access(sharedPath);
+      } catch {
+        throw new Error(
+          `DANGLING_SHARED_REF: ${skill} references ${ref} but it is absent from the staged bundle (retro §5.17)`
+        );
+      }
+    }
   }
 }
+
+export { assertSupportFilesPresent };
 
 export async function atomicSwapDir(stage, target) {
   // §3.8 要点1 / INT-005: atomically replace target with the validated staging

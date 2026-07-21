@@ -1,5 +1,5 @@
 ---
-description: harness-submit 的确定性提交协议。用于避免 AskUserQuestion 参数错误、中文 commit message 失败、Co-Authored-By 违规和先 commit 后 amend。
+description: harness-submit 的确定性提交协议。用于避免 blocking user confirmation 参数错误、中文 commit message 失败、Co-Authored-By 违规和先 commit 后 amend。
 ---
 
 # Submit Protocol

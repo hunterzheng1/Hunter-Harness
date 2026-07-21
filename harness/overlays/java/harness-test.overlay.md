@@ -13,4 +13,4 @@
 - **runtime overlay**：`-Dspring.config.additional-location=file:<ascii-abs-path>/application-harness-test.yml`；禁止默认 Edit tracked `application*.yml`
 - **known-good-test-profile**：profile 名、baseURL、healthUrl 写在 build-profile，非 skill 硬编码
 - **多租户请求头**：header 名/值来自 build-profile 的 `httpHeaders` 配置
-- **Service Gate**：`harness_service.py ensure` 返回 `needs-user-decision`（用户进程占端口）时**才** AskUserQuestion
+- **Service Gate**：`harness_service.py ensure` 返回 `needs-user-decision`（用户进程占端口）时**才** blocking user confirmation
