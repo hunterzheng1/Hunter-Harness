@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.15] — @hunter-harness/workflow-harness
+
+### Fixed (P1 — 2026-07-20 phase1b 复盘续)
+
+- **C1 custom agent 预检三字段**（§5.3）：`harness_preflight.py` check-agents 拆分 `definitionPresent`/`hostCallable`/`toolContractValid` 三字段；`reasonCode` 细化（`UNKNOWN`/`DEFINITION_NOT_FOUND_HOST_CAPABLE`）；`_read_host_capabilities` 从 `runtime.json` 读取宿主声明。
+- **C2 capability reclassify**（§5.4）：`harness_plan_finalize.py` finalize 发布前 reclassify design frontmatter capabilities；drift 时更新 `staging/meta/gate-policy.json`。
+- **C3 change rename/UUID**（§5.5）：`harness_change.py` 新增 `rename`/`ensure-identity` 子命令；`change-identity.json` 稳定 UUID4；`change.rename` 事件类型（`harness_events.py` 扩展 `append_event` 支持 `renamed_from`/`renamed_to`/`change_uuid`）。
+- **C4 状态快照三态语义**（§5.6）：`harness_state.py` capture 增加 `comparisonAvailable`/`baselineStatus`/`unresolvedReasons`；首次 capture 不再填充 `unresolvedSegments`。
+- **C6 worktree argv 模板修正**（§5.11）：`harness-run/reference.md` worktree argv 模板修正为 `git worktree add -b <branch> -- <path>`（`-b` 必须在 `--` 之前）。
+- **C10 端口 lease ID + 子集释放**（§5.16）：`harness_change.py` lease-port 返回 `leaseId`（UUID4）；release-port 增加 `--port`/`--lease-id` 子集释放；mismatch payload 列全部 conflicting owners。
+- **C13 remote probe typed error**（§5.28）：`harness_integration.py` `GitRunner.remote_probe` typed result（`exitCode`/`stdoutHash`/`redactedStderr`/`category`）；`RemoteProbeFailedError` 与 `TargetMovedError` 分离；`None` 不再进入 found head 字段；stderr 凭证 redact。
+- **C14 archive preflight 集成**（§5.31）：`harness_archive.py` check_status 集成 `artifact_preflight`；cmd_finalize 集成 `artifact_preflight` + `validate_report_adequacy`；blocking 项 fail closed。
+
+### Known Limitations (P1 deferred)
+
+- C5 CLI compact 输出、C7 profile 分层、C8 task ownerPhase、C9 scenario manifest、C11 reviewer 有界等待、C12 CodeGraph identity 校验 — 留作后续 change。
+
 ## [0.2.20] — hunter-harness / [0.2.14] — @hunter-harness/workflow-harness
 
 ### Fixed (P0 — 2026-07-20 phase1b 复盘)
