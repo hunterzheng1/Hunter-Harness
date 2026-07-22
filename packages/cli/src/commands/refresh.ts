@@ -212,6 +212,12 @@ export async function runRefresh(
     }
   }
 
+  // Wave-2 H-17: --force-managed must never be silent — require explicit --yes/--confirmed.
+  if (options.forceManaged === true && !dryRun && options.yes !== true && options.confirmed !== true) {
+    dependencies.stderr("FORCE_MANAGED_REQUIRES_CONFIRM: --force-managed requires --yes or --confirmed\n");
+    return 2;
+  }
+
   try {
     const result = await refreshProject({
       projectRoot: dependencies.cwd,

@@ -420,3 +420,9 @@ ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_ga
 - worktree: 已清理（迁根后）
 - 下一步: `/harness-archive`
 ```
+
+
+## Wave-2 — 验证复用与 merge 面（H-9）
+
+- [ ] 代码冻结后，同 identity 的 unitTestFull 须 can-reuse；禁止无 invalidationCode 整套重跑
+- [ ] integration verify 会合并 profile mergeVerification.requiredOnMerge（若配置）

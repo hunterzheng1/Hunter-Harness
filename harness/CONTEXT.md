@@ -48,6 +48,26 @@ _Avoid_: 每次重新探测, skill 内硬编码项目参数
 一项验证（compile/install/unitTest/apiTest）所依赖源文件集合的内容哈希。指纹一致且证据完整才允许 🔁REUSED；无法证明即保守重跑。
 _Avoid_: 仅凭 diffHash 复用, 无证据跳过
 
+**验证图（verification graph）**:
+`evidence/verification-graph.json` 按 canonical identity 持久化验证节点；`can-reuse` 返回 `invalidationCode`（如 `INPUT_CHANGED`）；profile `mergeVerification.requiredOnMerge` 进入 integration verify。详见 ledger / integration 脚本。
+_Avoid_: 冻结后无因重跑全量
+
+**Migration head 单源**:
+消费项目用 `.harness/config/migration-head.json` 声明 canonical head 与联动 sources；`harness_migration_head.py check` 做静态一致性门禁。
+_Avoid_: config/CI/manifest 多处手写 head
+
+**事件批处理**:
+同阶段多事件用 `harness_events.py batch-append`（单锁多行）；`phase.end` 仍走单次 append。
+_Avoid_: 机械事件逐条起进程
+
+**能力级模型路由**:
+任务用 `economy` / `balanced` / `frontier` 表述；禁止在通用 harness 规则硬编码供应商模型名。详见 `protocols/model-routing-protocol.md`。
+_Avoid_: skill 内写死 claude-/gpt- 模型 id
+
+**Overlay 所有权**:
+Bundle 安装目标由安装器管理；项目自有配置放 `.harness/project-overlay/`（或 project.yaml 侧）。`--force-managed` 必须配合 `--yes`/`--confirmed`，冲突 fail closed。
+_Avoid_: 静默 force-managed
+
 **服务会话**:
 `runtime/service-session.json` 记录的 AI 启动服务生命周期。指纹匹配静默复用、不匹配自动重启、归档收尾统一停止；只有用户自启服务占端口才询问。
 _Avoid_: 每轮测试后必杀服务

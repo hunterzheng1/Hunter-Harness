@@ -862,8 +862,42 @@ class IntegrationTransaction:
 
         return self._run_step("merge", action)
 
+    def _required_on_merge_commands(self) -> list[list[str]]:
+        """Load build-profile mergeVerification.requiredOnMerge (Wave-2 H-9)."""
+        import harness_profile
+
+        profile = harness_profile.load_profile(self.project_root)
+        if not isinstance(profile, dict):
+            return []
+        merge = profile.get("mergeVerification")
+        if not isinstance(merge, dict):
+            return []
+        required = merge.get("requiredOnMerge")
+        if not isinstance(required, list):
+            return []
+        commands: list[list[str]] = []
+        for index, item in enumerate(required):
+            if isinstance(item, str) and item.strip():
+                commands.append(shlex.split(item.strip()))
+                continue
+            if not isinstance(item, dict):
+                raise ValueError(f"requiredOnMerge[{index}] must be string or object")
+            raw = item.get("command")
+            if isinstance(raw, list) and raw and all(isinstance(x, str) and x for x in raw):
+                commands.append([str(x) for x in raw])
+            elif isinstance(raw, str) and raw.strip():
+                commands.append(shlex.split(raw.strip()))
+            else:
+                raise ValueError(f"requiredOnMerge[{index}].command missing")
+        return commands
+
     def verify(self, commands: Sequence[Sequence[str]] | None = None) -> dict[str, Any]:
         commands = list(commands or [])
+        # Wave-2 H-9: append profile mergeVerification.requiredOnMerge commands.
+        try:
+            commands.extend(self._required_on_merge_commands())
+        except Exception as exc:  # noqa: BLE001 — surface as verify plan error
+            raise VerifyPlanMissingError(f"mergeVerification load failed: {exc}") from exc
 
         def action(journal: dict[str, Any]) -> None:
             if not commands or any(

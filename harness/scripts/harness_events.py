@@ -24,7 +24,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -593,6 +593,132 @@ def append_event(
     with event_file_lock(lock_path):
         atomic_append_line(events_path_obj, json.dumps(event, ensure_ascii=False))
     return {"ok": True, "event": event, "events_path": str(events_path_obj), "rendered": False}
+
+
+def batch_append_events(
+    change_dir: Path,
+    events: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate then append many events under one lock (Wave-2 H-15).
+
+    Any invalid item aborts the whole batch before mutation. ``phase.end`` items
+    are rejected here — use single ``append`` so render semantics stay explicit.
+    """
+    if not isinstance(events, (list, tuple)) or not events:
+        return {
+            "ok": False,
+            "code": "BATCH_EMPTY",
+            "message": "batch-append requires a non-empty events array",
+        }
+    archived = archived_change_dir(change_dir)
+    if archived is not None:
+        return {
+            "ok": False,
+            "code": "ARCHIVED_CHANGE_IMMUTABLE",
+            "message": str(archived),
+        }
+
+    built: list[dict[str, Any]] = []
+    for index, raw in enumerate(events):
+        if not isinstance(raw, dict):
+            return {
+                "ok": False,
+                "code": "BATCH_ITEM_INVALID",
+                "message": f"events[{index}] must be an object",
+                "index": index,
+            }
+        type_ = str(raw.get("type") or "").strip()
+        phase = str(raw.get("phase") or "").strip()
+        if not type_ or type_ not in EVENT_TYPES:
+            return {
+                "ok": False,
+                "code": "EVENT_TYPE_INVALID",
+                "message": f"events[{index}]: unsupported type: {type_}",
+                "index": index,
+            }
+        if not phase:
+            return {
+                "ok": False,
+                "code": "EVENT_REQUIRED_FIELD",
+                "message": f"events[{index}]: phase required",
+                "index": index,
+            }
+        if type_ == "phase.end":
+            return {
+                "ok": False,
+                "code": "BATCH_PHASE_END_FORBIDDEN",
+                "message": f"events[{index}]: phase.end must use single append",
+                "index": index,
+            }
+        args = argparse.Namespace(
+            change_dir=str(change_dir),
+            phase=phase,
+            type=type_,
+            note=raw.get("note"),
+            kind=raw.get("kind"),
+            path=raw.get("path"),
+            run_id=raw.get("run_id"),
+            executor_tool=raw.get("executor_tool"),
+            command=raw.get("command"),
+            exit_code=raw.get("exit_code"),
+            duration_ms=raw.get("duration_ms"),
+            status=raw.get("status"),
+            name=raw.get("name"),
+            code=raw.get("code"),
+            severity=raw.get("severity"),
+            message=raw.get("message"),
+            decision=raw.get("decision"),
+            reason=raw.get("reason"),
+            issue_id=raw.get("issue_id"),
+            scope=raw.get("scope"),
+            target_event_id=raw.get("target_event_id"),
+            target_field=raw.get("target_field"),
+            old_value_hash=raw.get("old_value_hash"),
+            new_value_json=raw.get("new_value_json"),
+            renamed_from=raw.get("renamed_from"),
+            renamed_to=raw.get("renamed_to"),
+            change_uuid=raw.get("change_uuid"),
+            attempt=raw.get("attempt"),
+            executor_agent=raw.get("executor_agent"),
+            executor_model=raw.get("executor_model"),
+            handoff_from_tool=raw.get("handoff_from_tool"),
+            handoff_reason=raw.get("handoff_reason"),
+            trace_id=raw.get("trace_id"),
+            span_id=raw.get("span_id"),
+            parent_span_id=raw.get("parent_span_id"),
+            runner_ms=raw.get("runner_ms"),
+            orchestration_active_ms=raw.get("orchestration_active_ms"),
+            wall_clock_ms=raw.get("wall_clock_ms"),
+            user_wait_ms=raw.get("user_wait_ms"),
+            legacy_lenient=False,
+            json=True,
+        )
+        validation = validate_append_event(args)
+        if validation:
+            error_code, message = validation
+            return {
+                "ok": False,
+                "code": error_code,
+                "message": f"events[{index}]: {message}",
+                "index": index,
+            }
+        built.append(build_event(args, []))
+
+    events_path_obj = events_path(change_dir)
+    lock_path = events_path_obj.with_name(events_path_obj.name + ".lock")
+    with event_file_lock(lock_path):
+        for event in built:
+            atomic_append_line(
+                events_path_obj, json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+            )
+    return {
+        "ok": True,
+        "action": "batch-append",
+        "count": len(built),
+        "events": built,
+        "events_path": str(events_path_obj),
+        "rendered": False,
+    }
 
 
 def build_event(args: argparse.Namespace, existing: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1295,6 +1421,25 @@ def cmd_append(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch_append(args: argparse.Namespace) -> int:
+    as_json = bool(args.json)
+    change_dir = resolve_change_dir(args.change_dir)
+    batch_path = Path(str(args.file)).expanduser()
+    try:
+        raw = json.loads(batch_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return emit_error(f"batch-append failed to read --file: {exc}", as_json=as_json)
+    result = batch_append_events(change_dir, raw if isinstance(raw, list) else [])
+    if not result.get("ok"):
+        return emit_error(
+            str(result.get("message") or "batch-append failed"),
+            as_json=as_json,
+            error_code=str(result.get("code") or "BATCH_APPEND_FAILED"),
+        )
+    emit_json(result, as_json=as_json)
+    return 0
+
+
 def cmd_render(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     change_dir = resolve_change_dir(args.change_dir)
@@ -1394,6 +1539,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="accept legacy incomplete/type-mismatched events and mark them explicitly",
     )
     p_append.set_defaults(func=cmd_append)
+
+    p_batch = sub.add_parser(
+        "batch-append",
+        parents=[common],
+        help="validate and append many events under one lock (H-15)",
+    )
+    p_batch.add_argument("--change-dir", required=True)
+    p_batch.add_argument(
+        "--file",
+        required=True,
+        help="JSON file containing a non-empty array of event objects",
+    )
+    p_batch.set_defaults(func=cmd_batch_append)
 
     p_render = sub.add_parser(
         "render",
