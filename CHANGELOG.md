@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.23] — hunter-harness / [0.2.20] — @hunter-harness/workflow-harness
+
+### Fixed (Submit worktree friction)
+
+- **eslint**：`eslint.config.mjs` 忽略 `.worktrees/**`，避免 pre-push 对兄弟 worktree 双扫。
+- **ledger profile 分层**：`expand_profile_input_files` 经 `load_profile`/`common_root` 解析 `build-profile.json`；不可读时保留 `unreadable:` 诊断。
+- **submit checklist**：M5 push × eslint/worktree 硬门禁说明。
+
 ## [0.2.22] — hunter-harness / [0.2.19] — @hunter-harness/workflow-harness
 
 ### Fixed (Wave-1 — retro-20260721-harness-hardening-w1)
