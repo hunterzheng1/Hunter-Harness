@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.24] — hunter-harness / [0.2.21] — @hunter-harness/workflow-harness
+
+### Added (Wave-2 — retro-20260721-harness-hardening-w2)
+
+- **H-7 migration head**：harness_migration_head.py check + canonical .harness/config/migration-head.json；run checklist 联动。
+- **H-9 verification graph**：ledger record 后 upsert evidence/verification-graph.json；invalidationCode 别名；mergeVerification.requiredOnMerge 进入 integration verify；submit checklist 复用约定。
+- **H-15 batch events**：atch_append_events + CLI atch-append --file（全量校验后单锁写入）。
+- **H-16 model routing**：protocols/model-routing-protocol.md + CONTEXT glossary（economy/balanced/frontier）。
+- **H-17 force-managed**：
+efresh --force-managed 无 --yes/--confirmed 时 fail-closed（FORCE_MANAGED_REQUIRES_CONFIRM）。
+
+
 ## [0.2.23] — hunter-harness / [0.2.20] — @hunter-harness/workflow-harness
 
 ### Fixed (Submit worktree friction)
