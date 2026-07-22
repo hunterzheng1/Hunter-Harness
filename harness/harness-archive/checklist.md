@@ -20,6 +20,12 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 
 - [ ] 未在调用 finalize 前手工追加 archive 阶段边界
 - [ ] 只有一个未归档变更目录（多个时终止或让用户选择）
+- [ ] **最小必备集 blockers**（`harness_archive.py status`）：
+  - [ ] `plans/*-plan.md` 存在
+  - [ ] `events.ndjson` 存在且非空
+  - [ ] `evidence/verification-ledger.json` 存在
+  - [ ] 至少一个 test 或 review 报告/证据
+  - [ ] 若缺失：优先从 `.harness/cache/change-snapshots/<change>/` 恢复，禁止空壳归档
 - [ ] 变更目录下有 plans/ 子目录（至少有计划文件）
 - [ ] `events.ndjson` 存在；执行日志允许由 finalize 从事件流重新渲染（旧 archive 才兼容根目录 `execution-log.md`）
 - [ ] 准备生成 `archive-manifest-before.json`（path/size/sha256）

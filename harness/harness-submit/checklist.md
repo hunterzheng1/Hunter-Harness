@@ -386,11 +386,26 @@ python harness/scripts/harness_integration.py cleanup --change <change-name> --r
 - 失败保留 journal 与诊断证据，状态 🟡WARN，不得宣称清理完成
 - 若存在 test-tracking manifest，确认其路径已由合并后的目标分支跟踪（`git ls-files --error-unmatch -- <exact-path>`），缺失即停止
 
+**失败 txn 改走 abandon（勿强行 cleanup）**：
+
+```powershell
+python harness/scripts/harness_integration.py abandon --change <change-name> --run-id <run-id> --feature-branch harness/<change-name> --target-branch <主分支> --temp-root <task-temp>
+```
+
+仅当 push ≠ DONE 且 remote 不含 mergeCommit；清理 integration 产物后可换新 run-id 重开。push 成功 → `ABANDON_REFUSED`。
+
 更新 `meta/worktree.json`：`created=false` + `removedAt`/`removedBy`/`removalNote`。
+
+**删除 feature worktree 前（硬门槛）**：
+
+1. 若 Agent root / cwd 落在待删 worktree → 先 `move_agent_to_root(<projectRoot>)`；目标为主仓，feature 分支已删则切 `main`/`master`，禁止 fetch 已不存在分支
+2. 迁根失败 → **停止删除**
+3. `assert_cleanup_safe(cleanupRoot, [.harness/changes/<id>, .harness/state/...], [.harness/archive])`；`CLEANUP_TOPOLOGY_REFUSED` → 停止
+4. mergeFinalHash 已写后先 `snapshot_change_formal_layer`，再清 feature WT
 
 ### 步骤 M7：更新 ledger + 收尾
 
-ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_gate.py close --phase merge` 关闭（禁止手工 phase.end）。
+ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_gate.py close --phase merge` 关闭（禁止手工 phase.end）。正式层快照确认存在于 `.harness/cache/change-snapshots/<change-name>/`。
 
 ```markdown
 ## 合并完成 — <change-name>
@@ -399,6 +414,7 @@ ledger 顶层写入 `"mergeFinalHash": "<journal pushedHead>"`；经 `harness_ga
 - 主分支 push: ✅（<old>..<new> → origin/<主分支>）
 - mergeFinalHash: `<merge-final-hash>`
 - 验证策略: 🔁REUSED / 🔄已重跑
-- worktree: 已清理
+- snapshot: `.harness/cache/change-snapshots/<change-name>/`
+- worktree: 已清理（迁根后）
 - 下一步: `/harness-archive`
 ```

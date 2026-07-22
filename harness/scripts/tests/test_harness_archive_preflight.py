@@ -58,7 +58,8 @@ class ArtifactKindTests(unittest.TestCase):
         self.assertFalse(result.get("ok"))
         self.assertEqual(result.get("code"), "ARTIFACT_PATH_REQUIRED")
 
-    def test_informational_artifact_without_path_accepted(self) -> None:
+    def test_informational_artifact_without_path_rejected(self) -> None:
+        # H-8: artifact always requires path; use issue/decision for notes.
         result = he.append_event(
             self.change_dir,
             phase="run",
@@ -67,7 +68,8 @@ class ArtifactKindTests(unittest.TestCase):
             note="preview without materialized file",
             run_id="r1",
         )
-        self.assertTrue(result.get("ok"), result)
+        self.assertFalse(result.get("ok"), result)
+        self.assertEqual(result.get("code"), "ARTIFACT_PATH_REQUIRED")
 
     def test_file_backed_artifact_with_change_relative_path_accepted(self) -> None:
         _write(self.change_dir / "reports" / "test.md", "# report\n")
@@ -93,20 +95,32 @@ class ArchiveStatusPreflightTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_status_classifies_missing_path_preview_as_informational(self) -> None:
-        # An artifact event with no path (informational preview).
-        he.append_event(
-            self.change_dir,
-            phase="plan",
-            type_="artifact",
-            kind="informational",
-            note="design preview",
-            run_id="r1",
+    def test_status_classifies_missing_path_legacy_as_blocking(self) -> None:
+        # COM-003 / H-8: legacy pathless artifact rows (bypass append validation)
+        # must fail closed as blocking before finalize.
+        events = self.change_dir / "events.ndjson"
+        events.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "id": "evt-legacy-pathless",
+                    "timestamp": "2026-07-22T00:00:00.000+08:00",
+                    "phase": "plan",
+                    "type": "artifact",
+                    "kind": "informational",
+                    "note": "design preview",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
         )
         result = ha.artifact_preflight(self.change_dir)
-        self.assertTrue(result.get("ok"))
+        self.assertFalse(result.get("ok"))
         items = result.get("items", [])
-        self.assertTrue(any(i["category"] == "informational" for i in items))
+        blocking = [i for i in items if i["category"] == "blocking"]
+        self.assertTrue(blocking, f"expected blocking item: {items}")
+        self.assertEqual(blocking[0].get("eventId"), "evt-legacy-pathless")
 
     def test_status_classifies_repo_relative_path_as_canonicalizable(self) -> None:
         # A file-backed artifact with a repo-relative path that includes the

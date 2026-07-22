@@ -520,6 +520,41 @@ def check_status(
             }
         )
 
+    # --- H-4 formal-layer minimum set ---
+    plans_dir = change_dir / "plans"
+    plan_files = (
+        sorted(plans_dir.glob("*-plan.md")) if plans_dir.is_dir() else []
+    )
+    checks["plan_files"] = [str(p.relative_to(change_dir)) for p in plan_files]
+    if not plan_files:
+        blockers.append(
+            {
+                "code": "missing-plan",
+                "message": "plans/*-plan.md is required before archive",
+            }
+        )
+
+    events_path = change_dir / "events.ndjson"
+    events_present = events_path.is_file() and events_path.stat().st_size > 0
+    checks["events_ndjson"] = events_present
+    if not events_present:
+        blockers.append(
+            {
+                "code": "missing-events",
+                "message": "events.ndjson is required and must be non-empty",
+            }
+        )
+
+    ledger = load_ledger(change_dir)
+    checks["verification_ledger"] = ledger is not None
+    if ledger is None:
+        blockers.append(
+            {
+                "code": "missing-verification-ledger",
+                "message": "evidence/verification-ledger.json is required before archive",
+            }
+        )
+
     # --- commit pushed ---
     code, out, err = git_run(project, "rev-parse", "--is-inside-work-tree")
     if code != 0:
@@ -559,7 +594,8 @@ def check_status(
 
     expected_hash: str | None = None
     hash_source: str | None = None
-    ledger = load_ledger(change_dir)
+    if ledger is None:
+        ledger = load_ledger(change_dir)
     if worktree_requested(change_dir) and ledger:
         merge_hash = ledger.get("mergeFinalHash") or (
             ledger.get("merge") or {}
@@ -625,12 +661,24 @@ def check_status(
     # --- test / review reports ---
     test_reports = find_test_reports(change_dir)
     review_reports = find_review_reports(change_dir)
-    events_path = change_dir / "events.ndjson"
     events = he.load_events(events_path) if events_path.is_file() else []
     review_ran = review_evidence_present(change_dir, events)
 
     checks["test_reports"] = [str(p.relative_to(change_dir)) for p in test_reports]
     checks["review_reports"] = [str(p.relative_to(change_dir)) for p in review_reports]
+
+    # H-4 min blockers are plan/events/ledger only. Missing test/review evidence
+    # remains a warning so archive-before-review stays possible (advisory).
+    if not test_reports and not review_reports and not review_ran:
+        warnings.append(
+            {
+                "code": "missing-test-or-review-report",
+                "message": (
+                    "no test report or review evidence yet; prefer completing "
+                    "test/review before archive (not a hard blocker)"
+                ),
+            }
+        )
 
     if test_reports:
         checks["test_report_status"] = "present"
@@ -842,15 +890,18 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     elif str(unit.get("reused") or "").lower() in {"true", "1"} or "REUSED" in status:
         source = "committed"
 
-    if pass_rate is None and run > 0:
+    if pass_rate is None:
         passed = (
             passed_count
             if passed_count is not None
-            else max(run - failures - errors - skipped, 0)
+            else max(int(run or 0) - int(failures or 0) - int(errors or 0) - int(skipped or 0), 0)
         )
-        pass_rate = f"{passed / run:.0%}"
-    elif pass_rate is None:
-        pass_rate = NOT_AVAILABLE
+        # H-13: passRate denominator excludes skipped.
+        denom = int(passed) + int(failures or 0) + int(errors or 0)
+        if denom > 0:
+            pass_rate = f"{passed / denom:.0%}"
+        else:
+            pass_rate = NOT_AVAILABLE
 
     result = {
         "run": int(run or 0),
@@ -1332,7 +1383,19 @@ def _stage_status_from_sources(
         elif raw in {"SKIP", "SKIPPED"}:
             raw = "USER_SKIPPED"
         status[phase] = raw
-    # Issues in events can downgrade
+    # Issues in events can downgrade. H-14: informational / hygiene / agent-preflight
+    # notes must not downgrade an already-OK phase.end.
+    _informational_markers = (
+        "[archive-hygiene]",
+        "informational",
+        "custom_agents_unsupported",
+        "definition_not_found_host_capable",
+        "知识查询",
+        "knowledge query",
+        "harness-explorer",
+        "harness-evaluator",
+        "委派",
+    )
     for e in he.current_issues(events):
         sev = str(e.get("severity") or "").lower()
         issue_text = " ".join(str(e.get(key) or "") for key in ("message", "note", "code")).lower()
@@ -1341,6 +1404,10 @@ def _stage_status_from_sources(
                 sev = "error"
             elif any(token in issue_text for token in ("warn", "skip", "风险", "警告")):
                 sev = "warn"
+        if sev in {"warn", "warning"} and any(m in issue_text for m in _informational_markers):
+            continue
+        if sev in {"", "info", "note", "informational"}:
+            continue
         phase = str(e.get("phase") or "").lower()
         if phase in status and sev in {"error", "fail", "failed", "critical"}:
             status[phase] = "FAIL"
@@ -1651,6 +1718,51 @@ def _review_summary(
     return base
 
 
+def _resolve_base_commit(
+    ledger: dict[str, Any] | None,
+    change_dir: Path,
+    project: Path,
+    final: str | None,
+) -> str:
+    """Resolve baseCommit: ledger → latest phase-context → merge first parent → merge-base."""
+    if ledger:
+        base = str(ledger.get("baseCommit") or "").strip()
+        if base and base != NOT_AVAILABLE:
+            return base
+
+    ctx_dir = change_dir / "runtime" / "phase-context"
+    if ctx_dir.is_dir():
+        candidates = sorted(
+            (p for p in ctx_dir.glob("*.json") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in candidates:
+            try:
+                payload = read_json(path)
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            base = str(payload.get("baseCommit") or "").strip()
+            if base and base != NOT_AVAILABLE:
+                return base
+
+    final_commit = str(final or "").strip()
+    if final_commit and final_commit != NOT_AVAILABLE:
+        code, parents_line, _ = git_run(
+            project, "rev-list", "--parents", "-n", "1", final_commit
+        )
+        if code == 0 and parents_line:
+            parts = parents_line.split()
+            if len(parts) >= 2:
+                return parts[1]
+        code, merge_base, _ = git_run(project, "merge-base", final_commit, "HEAD")
+        if code == 0 and merge_base and merge_base != final_commit:
+            return merge_base
+    return ""
+
+
 def _final_commit_from_sources(
     ledger: dict[str, Any] | None,
     events: list[dict[str, Any]],
@@ -1864,12 +1976,21 @@ def collect_summary_data(
         data["finalCommit"] = final_commit or (NOT_AVAILABLE if for_replay else "")
 
     if not data.get("baseCommit") or str(data.get("baseCommit")).startswith("<"):
-        if ledger and ledger.get("baseCommit"):
-            data["baseCommit"] = ledger["baseCommit"]
-        elif existing and existing.get("baseCommit"):
+        if for_replay and existing and existing.get("baseCommit"):
             data["baseCommit"] = existing["baseCommit"]
         else:
-            data["baseCommit"] = NOT_AVAILABLE if for_replay else ""
+            resolved_base = _resolve_base_commit(
+                ledger,
+                change_dir,
+                project,
+                str(data.get("finalCommit") or "") or None,
+            )
+            if resolved_base:
+                data["baseCommit"] = resolved_base
+            elif existing and existing.get("baseCommit"):
+                data["baseCommit"] = existing["baseCommit"]
+            else:
+                data["baseCommit"] = NOT_AVAILABLE if for_replay else ""
 
     if not data.get("finalCommitBranch") or str(data.get("finalCommitBranch")).startswith("<"):
         code, branch, _ = git_run(project, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -2001,6 +2122,16 @@ def collect_summary_data(
                 "range": NOT_AVAILABLE if for_replay else "",
             }
             data["changedFiles"] = []
+
+    # H-11: surface identity + diff facts for adequacy (top-level + gitFacts).
+    diff_for_facts = data.get("diffStat") if isinstance(data.get("diffStat"), dict) else {}
+    data["gitFacts"] = {
+        "baseCommit": data.get("baseCommit") or "",
+        "finalCommit": data.get("finalCommit") or "",
+        "filesChanged": int(diff_for_facts.get("filesChanged") or 0),
+        "insertions": int(diff_for_facts.get("insertions") or 0),
+        "deletions": int(diff_for_facts.get("deletions") or 0),
+    }
 
     data.setdefault(
         "ownershipDiff",
@@ -2837,18 +2968,52 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
     """
     issues: list[dict[str, str]] = []
 
+    # H-12: prefer top-level baseCommit + diffStat; gitFacts is a mirror.
+    base = str(summary.get("baseCommit") or "").strip()
+    final = str(summary.get("finalCommit") or "").strip()
+    merge_final = str(summary.get("mergeFinalHash") or "").strip()
+    diff_stat = summary.get("diffStat") if isinstance(summary.get("diffStat"), dict) else {}
+    files_changed = int(diff_stat.get("filesChanged") or 0)
+
     git_facts = summary.get("gitFacts") or {}
     if isinstance(git_facts, dict):
-        base = str(git_facts.get("baseCommit") or "").strip()
-        final = str(git_facts.get("finalCommit") or "").strip()
-        files_changed = int(git_facts.get("filesChanged") or 0)
-        # base != final but diff=0 → factually incomplete.
-        if base and final and base != final and files_changed == 0:
-            issues.append({
-                "code": "DIFF_ZERO_WITH_NONEMPTY_COMMIT",
-                "severity": "error",
-                "message": f"final commit {final} differs from base {base} but filesChanged=0",
-            })
+        if not base or base == NOT_AVAILABLE:
+            base = str(git_facts.get("baseCommit") or "").strip() or base
+        if not final or final == NOT_AVAILABLE:
+            final = str(git_facts.get("finalCommit") or "").strip() or final
+        if "filesChanged" in git_facts and files_changed == 0:
+            try:
+                files_changed = int(git_facts.get("filesChanged") or 0)
+            except (TypeError, ValueError):
+                files_changed = 0
+
+    base_missing = not base or base == NOT_AVAILABLE
+    final_present = bool(
+        (final and final != NOT_AVAILABLE) or (merge_final and merge_final != NOT_AVAILABLE)
+    )
+    if final_present and base_missing:
+        issues.append({
+            "code": "IDENTITY_BASE_MISSING",
+            "severity": "error",
+            "message": (
+                "final/merge identity present but baseCommit is empty; "
+                "refuse CONDITIONAL_OK+ without a resolved base"
+            ),
+        })
+
+    if (
+        base
+        and final
+        and base != NOT_AVAILABLE
+        and final != NOT_AVAILABLE
+        and base != final
+        and files_changed == 0
+    ):
+        issues.append({
+            "code": "DIFF_ZERO_WITH_NONEMPTY_COMMIT",
+            "severity": "error",
+            "message": f"final commit {final} differs from base {base} but filesChanged=0",
+        })
 
     # Typed metrics missing despite test report artifacts present.
     verification = summary.get("verification") or {}
@@ -2886,11 +3051,11 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def artifact_preflight(change_dir: Path) -> dict[str, Any]:
-    """Classify artifact events before destructive finalize (retro §5.31).
+    """Classify artifact events before destructive finalize (retro §5.31 / H-8).
 
-    Returns per-artifact classification: informational (no path, OK),
-    canonicalizable (same-change repo-relative path, auto-normalize), or
-    blocking (cross-change/absolute/escaping path, fail closed).
+    Returns per-artifact classification: blocking (missing / escaping /
+    cross-change path), canonicalizable (same-change repo-relative path),
+    or file-backed (change-relative path). Pathless legacy rows fail closed.
     """
     change_dir = change_dir.resolve()
     events_p = change_dir / "events.ndjson"
@@ -2910,12 +3075,16 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
         kind = str(event.get("kind") or "").strip()
         event_id = str(event.get("id") or "")
         if not path:
-            items.append({
+            item = {
                 "eventId": event_id,
-                "category": "informational",
-                "kind": kind or "informational",
+                "category": "blocking",
+                "path": "",
+                "kind": kind or "",
+                "reason": "artifact path missing",
                 "note": str(event.get("note") or "")[:80],
-            })
+            }
+            items.append(item)
+            blocking.append(item)
             continue
         # Check for escaping/cross-change paths.
         parts = path.replace("\\", "/").split("/")

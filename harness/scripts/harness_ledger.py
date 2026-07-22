@@ -131,8 +131,19 @@ def emit_compact_or_verbose(
     emit_json(out, as_json=as_json)
 
 
-def emit_error(message: str, *, as_json: bool, code: int = 1) -> int:
-    payload = {"ok": False, "error": message}
+def emit_error(
+    message: str,
+    *,
+    as_json: bool,
+    code: int = 1,
+    error_code: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> int:
+    payload: dict[str, Any] = {"ok": False, "error": message}
+    if error_code:
+        payload["code"] = error_code
+    if extra:
+        payload.update(extra)
     if as_json:
         sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
     else:
@@ -1520,6 +1531,8 @@ def cmd_record(args: argparse.Namespace) -> int:
                 return emit_error(
                     "ledger identity incomplete: " + ", ".join(missing),
                     as_json=as_json,
+                    error_code="LEDGER_IDENTITY_INVALID",
+                    extra={"missing": missing},
                 )
         write_ledger(out_path, ledger)
     except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
