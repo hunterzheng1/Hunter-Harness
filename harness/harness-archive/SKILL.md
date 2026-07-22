@@ -50,6 +50,12 @@ disallowed-tools:
 - commit 已 push（`git log @{u}..HEAD` 输出为空）
 - **最终 hash 来源**：worktree 模式（`meta/worktree.json` requested=true）下读 ledger 的 `mergeFinalHash`（由 `/harness-submit` 合并段写入）；主目录模式读 submit 的 `final pushed hash`。当前 `git rev-parse HEAD` 须一致
 - test 报告存在或标记"跳过"；review 报告存在或标记"未运行 review"（review 不阻塞归档）
+- **最小必备集（H-4 / `harness_archive.py status` blockers）**：
+  - `plans/*-plan.md`
+  - 非空 `events.ndjson`
+  - `evidence/verification-ledger.json`
+  - 至少一个 test 或 review 报告/证据
+  - 缺失任一项 → `archivable=false`；可从 `.harness/cache/change-snapshots/<change>/` 恢复正式层后再重试
 
 ## Inputs
 

@@ -109,6 +109,10 @@ class CleanupResidualError(IntegrationError):
         )
 
 
+class AbandonRefusedError(IntegrationError):
+    code = "ABANDON_REFUSED"
+
+
 class JournalConflictError(IntegrationError):
     code = "JOURNAL_CONFLICT"
 
@@ -740,6 +744,8 @@ class IntegrationTransaction:
                 str(intg_root),
                 self.temp_branch,
             )
+            # H-5: LF-stable hashing in the integration worktree.
+            self.runner.run(intg_root, "config", "core.autocrlf", "false")
 
         return self._run_step("prepare", action)
 
@@ -1195,6 +1201,148 @@ class IntegrationTransaction:
         harness_change.integration_lock_release(self.project_root, run_id=self.run_id)
         return journal
 
+    # ------------------------------------------------------------ abandon
+
+    def _remote_contains_merge(self, journal: dict[str, Any]) -> bool:
+        merge_commit = str(journal.get("mergeCommit") or "")
+        if not merge_commit:
+            return False
+        remote_line = self.runner.text(
+            self.project_root, "ls-remote", "origin", self.target_branch
+        )
+        observed_remote = (
+            remote_line.split()[0] if remote_line and remote_line.split() else ""
+        )
+        return bool(observed_remote and observed_remote == merge_commit)
+
+    def _force_remove_integration_root(
+        self, journal: dict[str, Any], intg_root: Path
+    ) -> dict[str, Any]:
+        """Best-effort remove of the integration worktree for abandon only."""
+        allowed = Path(str(journal.get("allowedCleanupRoot") or "")).resolve()
+        resolved = harness_paths.assert_path_within(intg_root, self.temp_root)
+        if not allowed or resolved != allowed:
+            raise CleanupRefusedError(
+                f"refusing to abandon non-transaction path: {resolved}"
+            )
+        self.runner.run(
+            self.project_root,
+            "worktree",
+            "remove",
+            "--force",
+            str(resolved),
+            check=False,
+        )
+        residual: list[str] = []
+        if resolved.exists():
+            for name in HEAVY_WORKTREE_ROOTS:
+                heavy = resolved / name
+                if heavy.exists():
+                    harness_paths.assert_path_within(heavy, resolved)
+                    try:
+                        if heavy.is_dir() and not heavy.is_symlink():
+                            shutil.rmtree(heavy)
+                        else:
+                            heavy.unlink()
+                    except OSError:
+                        residual.append(name)
+            if resolved.exists():
+                try:
+                    shutil.rmtree(resolved)
+                except OSError:
+                    residual.append(str(resolved))
+        listed = self.runner.text(self.project_root, "worktree", "list", "--porcelain")
+        still_registered = str(resolved) in {
+            str(Path(line.removeprefix("worktree ")).resolve())
+            for line in (listed or "").splitlines()
+            if line.startswith("worktree ")
+        }
+        ok = not still_registered and not residual and not resolved.exists()
+        return {
+            "ok": ok,
+            "code": "CLEANUP_COMPLETE" if ok else "CLEANUP_RESIDUAL",
+            "target": str(resolved),
+            "worktreeRegistered": still_registered,
+            "diskPathPresent": resolved.exists(),
+            "residualPaths": residual,
+        }
+
+    def abandon(self) -> dict[str, Any]:
+        """Official recovery for a failed integration transaction (H-6).
+
+        Allowed only when push is not DONE and the remote does not already
+        contain ``mergeCommit``. Removes the integration worktree, temp branch,
+        protection refs, and integration lock. Never deletes the feature
+        worktree or feature branch.
+        """
+        try:
+            journal = self._load()
+        except FileNotFoundError as exc:
+            raise AbandonRefusedError(
+                f"no journal for transaction {self.transaction_id}"
+            ) from exc
+
+        push_status = str(self._step(journal, "push").get("status") or "")
+        push_intent = journal.get("pushIntent") or {}
+        push_confirmed = (
+            push_status == "DONE"
+            or (
+                isinstance(push_intent, dict)
+                and push_intent.get("status") == "REMOTE_CONFIRMED"
+            )
+            or bool(journal.get("pushedHead"))
+            or bool(journal.get("mergeFinalHash"))
+        )
+        remote_has_merge = self._remote_contains_merge(journal)
+        if push_confirmed or remote_has_merge:
+            raise AbandonRefusedError(
+                "refuse abandon: push succeeded or remote already contains "
+                "the merge commit; use cleanup instead"
+            )
+
+        intg_root = Path(str(journal.get("integrationRoot") or ""))
+        cleanup_result: dict[str, Any] = {
+            "ok": True,
+            "code": "ALREADY_ABSENT",
+            "target": str(intg_root) if intg_root else "",
+            "worktreeRegistered": False,
+            "diskPathPresent": False,
+            "residualPaths": [],
+        }
+        prepare_done = self._step(journal, "prepare").get("status") == "DONE"
+        if prepare_done and str(journal.get("integrationRoot") or "").strip():
+            try:
+                cleanup_result = self.cleanup_target(intg_root)
+            except CleanupRefusedError:
+                cleanup_result = self._force_remove_integration_root(journal, intg_root)
+
+        self.runner.run(
+            self.project_root, "branch", "-D", self.temp_branch, check=False
+        )
+        refs = journal.get("protectionRefs") or {}
+        if isinstance(refs, dict):
+            for ref in (refs.get("base"), refs.get("head")):
+                if ref:
+                    self.runner.run(
+                        self.project_root, "update-ref", "-d", str(ref), check=False
+                    )
+
+        harness_change.integration_lock_release(self.project_root, run_id=self.run_id)
+
+        journal = self._load()
+        journal["abandonedAt"] = now_iso()
+        journal["abandonResult"] = cleanup_result
+        self._save(journal)
+
+        return {
+            "ok": True,
+            "code": "ABANDON_COMPLETE",
+            "transactionId": self.transaction_id,
+            "cleanup": cleanup_result,
+            "featureBranchRetained": True,
+            "featureWorktreeRetained": True,
+        }
+
     # ------------------------------------------------------------ recover
 
     def recover(
@@ -1282,6 +1430,10 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
     return _emit(_txn_from_args(args).cleanup())
 
 
+def cmd_abandon(args: argparse.Namespace) -> int:
+    return _emit(_txn_from_args(args).abandon())
+
+
 def cmd_recover(args: argparse.Namespace) -> int:
     return _emit(_txn_from_args(args).recover())
 
@@ -1333,6 +1485,7 @@ def build_parser() -> argparse.ArgumentParser:
     add("merge", cmd_merge)
     add("push", cmd_push)
     add("cleanup", cmd_cleanup)
+    add("abandon", cmd_abandon)
     add("recover", cmd_recover)
     add("status", cmd_status)
 

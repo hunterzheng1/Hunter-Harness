@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -287,6 +287,175 @@ def assert_path_within(
     if not resolved.is_relative_to(root):
         raise ValueError(f"path escapes allowed root: {resolved} not within {root}")
     return resolved
+
+
+class CleanupTopologyError(ValueError):
+    """Raised when cleanup would delete or traverse into state/archive roots."""
+
+    code = "CLEANUP_TOPOLOGY_REFUSED"
+
+
+# Skip descending into these when scanning for junction/symlink escapes.
+# Matches integration HEAVY_WORKTREE_ROOTS plus .git (topology scan only).
+CLEANUP_WALK_SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "build",
+        "dist",
+        "target",
+        ".cache",
+        "__pycache__",
+        ".git",
+    }
+)
+
+
+def assert_cleanup_safe(
+    cleanup_root: Path,
+    state_roots: Sequence[Path] | None = None,
+    archive_roots: Sequence[Path] | None = None,
+) -> Path:
+    """Refuse cleanup when state/archive roots resolve inside the cleanup tree.
+
+    Also refuses when a junction/symlink under ``cleanup_root`` resolves into a
+    protected state/archive root (Windows junction / symlink escape).
+    """
+    cleanup = Path(cleanup_root).resolve()
+    protected: list[Path] = []
+    for raw in [*(state_roots or ()), *(archive_roots or ())]:
+        try:
+            protected.append(Path(raw).resolve())
+        except OSError as exc:
+            raise CleanupTopologyError(
+                f"CLEANUP_TOPOLOGY_REFUSED: cannot resolve protected path {raw}: {exc}"
+            ) from exc
+
+    for prot in protected:
+        if prot == cleanup or prot.is_relative_to(cleanup):
+            raise CleanupTopologyError(
+                "CLEANUP_TOPOLOGY_REFUSED: protected path "
+                f"{prot} is inside cleanup root {cleanup}"
+            )
+
+    if cleanup.is_dir():
+        for dirpath, dirnames, filenames in os.walk(cleanup, followlinks=False):
+            # Inspect this level (including heavy names) for link escapes, then
+            # prune descent so we do not walk install/cache trees.
+            entries = [*dirnames, *filenames]
+            dirnames[:] = [d for d in dirnames if d not in CLEANUP_WALK_SKIP_DIRS]
+            for name in entries:
+                child = Path(dirpath) / name
+                try:
+                    is_link = child.is_symlink()
+                except OSError:
+                    continue
+                # Junctions often report as directories; resolve and compare.
+                try:
+                    resolved_child = child.resolve()
+                except OSError:
+                    continue
+                escaped = not (
+                    resolved_child == cleanup or resolved_child.is_relative_to(cleanup)
+                )
+                if not (is_link or escaped):
+                    continue
+                for prot in protected:
+                    if (
+                        resolved_child == prot
+                        or resolved_child.is_relative_to(prot)
+                        or prot.is_relative_to(resolved_child)
+                    ):
+                        raise CleanupTopologyError(
+                            "CLEANUP_TOPOLOGY_REFUSED: cleanup path "
+                            f"{child} resolves to protected {resolved_child}"
+                        )
+    return cleanup
+
+
+_FORMAL_SNAPSHOT_DIRS = ("plans", "spec", "evidence", "reports", "meta")
+_FORMAL_SNAPSHOT_FILES = ("events.ndjson",)
+
+
+def snapshot_change_formal_layer(
+    project_root: Path,
+    change_id: str,
+    *,
+    change_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Copy change formal layer into ``.harness/cache/change-snapshots/<change>/``.
+
+    Destination is always under the main project / common harness root — never
+    under a feature worktree path alone.
+    """
+    import shutil
+
+    project = resolve_main_project_root(Path(project_root))
+    src = Path(change_dir).resolve() if change_dir is not None else (
+        project / ".harness" / "changes" / change_id
+    ).resolve()
+    if not src.is_dir():
+        raise FileNotFoundError(f"change dir not found for snapshot: {src}")
+
+    dest = (project / ".harness" / "cache" / "change-snapshots" / change_id).resolve()
+    # Hard guard: never write the snapshot inside the source tree itself.
+    if dest == src or dest.is_relative_to(src):
+        raise ValueError(
+            f"snapshot destination must not be inside change dir: {dest}"
+        )
+    dest.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    for name in _FORMAL_SNAPSHOT_DIRS:
+        source_dir = src / name
+        if not source_dir.is_dir():
+            continue
+        target_dir = dest / name
+        shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+        copied.append(name + "/")
+    for name in _FORMAL_SNAPSHOT_FILES:
+        source_file = src / name
+        if not source_file.is_file():
+            continue
+        shutil.copy2(source_file, dest / name)
+        copied.append(name)
+
+    file_hashes: dict[str, str] = {}
+    for path in sorted(dest.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(dest).as_posix()
+        if rel == "manifest.json":
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        file_hashes[rel] = "sha256:" + digest
+
+    manifest = {
+        "schemaVersion": 1,
+        "changeId": change_id,
+        "source": str(src),
+        "destination": str(dest),
+        "projectRoot": str(project),
+        "copied": copied,
+        "files": file_hashes,
+        "fileCount": len(file_hashes),
+    }
+    manifest_path = dest / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return {
+        "ok": True,
+        "code": "CHANGE_SNAPSHOT_WRITTEN",
+        "changeId": change_id,
+        "destination": str(dest),
+        "fileCount": len(file_hashes),
+        "copied": copied,
+        "manifestPath": str(manifest_path),
+    }
 
 
 def cmd_resolve_layout(args: argparse.Namespace) -> int:

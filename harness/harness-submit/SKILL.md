@@ -84,11 +84,16 @@ M3. **merge** — `--no-ff` 合并 feature 分支；merge diff 出现其他 Chan
 M4. **verify** — 在 integration worktree 内执行组合态验证；他人提交引入或 ledger 不可复用时必跑
 M5. **push** — 仅在验证身份与远端基线仍匹配时 push；远端漂移 → `TARGET_MOVED` 结构化失败，不继续
 M6. **cleanup** — `git worktree remove --force` 精确路径 + 临时分支 + （push 成功后）保护 ref；释放 integration lock；失败保留 journal 与诊断证据；更新 `worktree.json`（`created=false` + removedAt）
+M6.5. **formal snapshot** — mergeFinalHash 写入后调用 `harness_paths.snapshot_change_formal_layer(projectRoot, changeId)`，备份到主仓 `.harness/cache/change-snapshots/<change>/`（不得写在 feature worktree 内）
 M7. **ledger + 收尾** — 经 `harness_ledger.py record` 写入 `mergeFinalHash`（= journal `pushedHead`）；**`harness_gate.py close --phase merge`**（禁止手工 phase.end）；提示 `/harness-archive`
 
-> Ledger v3（v2 契约 / split-v1 布局起）：`record` 强制顶层身份（`schemaVersion=3/repositoryId/baseCommit/currentHead/diffHash/ownershipHash`，缺失非零退出、不写账本）与 typed metrics；legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
+> Ledger v3（v2 契约 / split-v1 布局起）：`record` 强制顶层身份（`schemaVersion=3/repositoryId/baseCommit/currentHead/diffHash/ownershipHash`，缺失非零退出、`LEDGER_IDENTITY_INVALID`，不写账本）与 typed metrics；legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
 
 正常路径**禁止创建、应用或删除仓库级 stash**。中断恢复：`harness_integration.py status` 读 journal，`recover` 从首个未完成步骤续跑；protection refs 只在 push 成功后的 cleanup 删除。
+
+**失败 txn 回收（abandon）**：verify/push 未成功且 remote 不含 mergeCommit 时，运行 `harness_integration.py abandon --change … --run-id …`：清理 integrationRoot / temp branch / protection refs / lock；**绝不删除 feature worktree**。push 已成功或 remote 已含 merge → `ABANDON_REFUSED`，改走 cleanup。
+
+**清 feature worktree 迁根硬门槛（H-1/H-2）**：删除 feature worktree 前，若 Agent root / cwd 落在待删路径内，必须先 `move_agent_to_root(projectRoot)`（目标为主仓已存在的 `main`/`master`；**禁止**为迁根去 fetch 已删除的 feature 分支）。迁根失败 → **拒绝删除**。清理前调用 `harness_paths.assert_cleanup_safe(cleanupRoot, stateRoots, archiveRoots)`；state/archive（含 junction/symlink 解析后）落在 cleanup 内 → `CLEANUP_TOPOLOGY_REFUSED`。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]
@@ -117,6 +122,10 @@ test-tracking manifest 是 ignored test 的唯一强制暂存授权：只允许 
 - **`git merge --no-ff` 固定**；禁止 fast-forward
 - **冲突不自动解** → 停下 → 用户手动解 → 确认后继续
 - **`mergeFinalHash`** = 主分支 push 后 HEAD；archive 优先读此字段
+- **迁根后再删 feature WT**：Agent 仍在待删 root 内则拒绝删除；目标分支已删时切主仓 `main`/`master`，禁止强行 fetch
+- **snapshot 后再清**：正式层已写入 `.harness/cache/change-snapshots/<change>/`
+- **拓扑安全**：`assert_cleanup_safe` 拒绝 state/archive ⊆ cleanup（含 junction）
+- **abandon ≠ cleanup**：仅失败 txn；永不删 feature worktree
 
 ### 五、Shell 安全 / 敏感信息 / 证据化
 

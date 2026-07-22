@@ -74,7 +74,9 @@ def _seed_change_dir(change_dir: Path) -> None:
         change_dir / "evidence" / "verification-ledger.json",
         {
             "changeName": change_dir.name,
-            "baseCommit": "aaaaaaaa",
+            # H-12: base!=final with filesChanged=0 is an adequacy error; empty
+            # product fixtures keep identity equal so finalize stays green.
+            "baseCommit": "bbbbbbbb",
             "finalCommit": "bbbbbbbb",
             "validations": {
                 "unitTest": {
@@ -1007,7 +1009,8 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(result["run"], 323)
         self.assertEqual(result["failures"], 0)
         self.assertEqual(result["skipped"], 2)
-        self.assertEqual(result["passRate"], "99%")
+        # H-13: skipped excluded from passRate denominator → 321/321.
+        self.assertEqual(result["passRate"], "100%")
 
     def test_arc_ut002_api_typed_metrics_infer_missing_total(self) -> None:
         ledger = {
@@ -1421,7 +1424,7 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
             self.change / "evidence" / "verification-ledger.json",
             {
                 "changeName": self.change.name,
-                "baseCommit": "aaaaaaaa",
+                "baseCommit": "bbbbbbbb",
                 "finalCommit": "bbbbbbbb",
                 "validations": {
                     "unitTest": {

@@ -679,29 +679,16 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
                 "CORRECTION_VALUE_INVALID_JSON",
                 f"CORRECTION_VALUE_INVALID_JSON: {exc}",
             )
-    # Retro §5.31: artifact events must distinguish file-backed from
-    # informational. file-backed requires a change-relative path; informational
-    # (preview/summary) must not masquerade as a file artifact. Legacy kind
-    # values (ledger, report, etc.) are treated as file-backed aliases.
+    # Retro 2026-07-21 H-8: artifact events always require a non-empty path.
+    # Knowledge/exploration notes must use issue/decision, not pathless artifacts.
     if event_type == "artifact":
-        kind = str(getattr(args, "kind", "") or "").strip()
         path = str(getattr(args, "path", "") or "").strip()
-        is_informational = kind == "informational"
-        if kind == "file-backed" and not path:
+        if not path:
             return (
                 "ARTIFACT_PATH_REQUIRED",
-                "ARTIFACT_PATH_REQUIRED: file-backed artifact requires --path",
+                "ARTIFACT_PATH_REQUIRED: artifact requires --path "
+                "(use issue/decision for informational notes)",
             )
-        # If kind is explicitly informational, path is optional. If kind is
-        # absent and path is absent, reject (can't infer file-backed without path).
-        if not kind and not path:
-            return (
-                "ARTIFACT_PATH_REQUIRED",
-                "ARTIFACT_PATH_REQUIRED: artifact without --kind or --path is ambiguous; "
-                "use --kind informational for previews or --path for file artifacts",
-            )
-        # If no kind is provided, infer from path presence: a path implies
-        # file-backed, absence implies informational (legacy compatibility).
     return None
 
 
