@@ -1055,6 +1055,7 @@ def decide_can_reuse(
     requested_toolchain_hash: str | None = None,
     requested_profile_hash: str | None = None,
     requested_environment_hash: str | None = None,
+    requested_db_schema_hash: str | None = None,
 ) -> dict[str, Any]:
     ledger, ledger_path = load_ledger(change_dir)
     if ledger is None:
@@ -1183,6 +1184,7 @@ def decide_can_reuse(
         ("toolchainHash", requested_toolchain_hash, "TOOLCHAIN_CHANGED"),
         ("profileHash", requested_profile_hash, "PROFILE_CHANGED"),
         ("environmentHash", requested_environment_hash, "ENVIRONMENT_CHANGED"),
+        ("dbSchemaHash", requested_db_schema_hash, "DB_SCHEMA_CHANGED"),
     ):
         stored = entry.get(field)
         if (
@@ -1249,6 +1251,7 @@ def decide_can_reuse(
         "reuse": True,
         "reason": "reuse",
         "code": "REUSED",
+        "invalidationCode": None,
         "verification": verification,
         "ledger_path": str(ledger_path) if ledger_path else None,
         "inputsHash": stored_hash,
@@ -1256,6 +1259,90 @@ def decide_can_reuse(
         "evidence_summary": evidence_summary(entry),
         "marker": "REUSED",
     }
+
+
+_INVALIDATION_ALIASES = {
+    "INPUTS_HASH_CHANGED": "INPUT_CHANGED",
+    "ENVIRONMENT_CHANGED": "ENV_CHANGED",
+    "MISSING_FIELDS": "MISSING_IDENTITY_FIELD",
+    "MISSING_V2_FIELDS": "MISSING_IDENTITY_FIELD",
+    "LEDGER_MISSING": "MISSING_IDENTITY_FIELD",
+    "VALIDATIONS_MISSING": "MISSING_IDENTITY_FIELD",
+    "VALIDATION_MISSING": "MISSING_IDENTITY_FIELD",
+}
+
+
+def _attach_invalidation_code(payload: dict[str, Any]) -> dict[str, Any]:
+    """Wave-2 H-9: expose stable invalidationCode alongside legacy code."""
+    if payload.get("reuse") is True:
+        payload.setdefault("invalidationCode", None)
+        return payload
+    code = str(payload.get("code") or "").strip()
+    if code:
+        payload["invalidationCode"] = _INVALIDATION_ALIASES.get(code, code)
+    return payload
+
+
+def verification_graph_path(change_dir: Path) -> Path:
+    return Path(change_dir) / "evidence" / "verification-graph.json"
+
+
+def upsert_verification_graph_node(
+    change_dir: Path,
+    *,
+    verification: str,
+    status: str,
+    inputs_hash: str,
+    command: str | None = None,
+    toolchain_hash: str | None = None,
+    environment_hash: str | None = None,
+    db_schema_hash: str | None = None,
+    diff_hash: str | None = None,
+) -> dict[str, Any]:
+    """Persist a verification graph node keyed by canonical identity (H-9)."""
+    path = verification_graph_path(change_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    graph: dict[str, Any]
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+            graph = loaded if isinstance(loaded, dict) else {"schemaVersion": 1, "nodes": []}
+        except (OSError, json.JSONDecodeError):
+            graph = {"schemaVersion": 1, "nodes": []}
+    else:
+        graph = {"schemaVersion": 1, "nodes": []}
+    nodes = graph.get("nodes")
+    if not isinstance(nodes, list):
+        nodes = []
+    identity = {
+        "verification": verification,
+        "inputsHash": inputs_hash,
+        "command": command,
+        "toolchainHash": toolchain_hash,
+        "environmentHash": environment_hash,
+        "dbSchemaHash": db_schema_hash,
+        "diffHash": diff_hash,
+    }
+    node = {
+        "identity": identity,
+        "status": status,
+        "recordedAt": dt.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+    }
+    replaced = False
+    for index, existing in enumerate(nodes):
+        if not isinstance(existing, dict):
+            continue
+        existing_id = existing.get("identity")
+        if isinstance(existing_id, dict) and existing_id == identity:
+            nodes[index] = node
+            replaced = True
+            break
+    if not replaced:
+        nodes.append(node)
+    graph["schemaVersion"] = 1
+    graph["nodes"] = nodes
+    write_ledger(path, graph)  # atomic json write helper already used for ledger
+    return {"ok": True, "path": str(path), "nodeCount": len(nodes), "replaced": replaced}
 
 
 def cmd_hash(args: argparse.Namespace) -> int:
@@ -1330,10 +1417,12 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             requested_toolchain_hash=getattr(args, "toolchain_hash", None),
             requested_profile_hash=getattr(args, "profile_hash", None),
             requested_environment_hash=getattr(args, "environment_hash", None),
+            requested_db_schema_hash=getattr(args, "db_schema_hash", None),
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
 
+    payload = _attach_invalidation_code(payload)
     emit_compact_or_verbose(
         payload, as_json=as_json, verbose=verbose,
         compact_fn=_compact_can_reuse_payload,
@@ -1470,6 +1559,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             ("toolchainHash", "toolchain_hash"),
             ("profileHash", "profile_hash"),
             ("environmentHash", "environment_hash"),
+            ("dbSchemaHash", "db_schema_hash"),
         ):
             val = getattr(args, attr, None)
             if _nonempty_str(val):
@@ -1548,6 +1638,37 @@ def cmd_record(args: argparse.Namespace) -> int:
                     extra={"missing": missing},
                 )
         write_ledger(out_path, ledger)
+        try:
+            upsert_verification_graph_node(
+                change_dir,
+                verification=verification,
+                status=str(status),
+                inputs_hash=str(inputs_hash),
+                command=str(entry.get("command") or "") or None,
+                toolchain_hash=(
+                    str(entry.get("toolchainHash")).strip()
+                    if _nonempty_str(entry.get("toolchainHash"))
+                    else None
+                ),
+                environment_hash=(
+                    str(entry.get("environmentHash")).strip()
+                    if _nonempty_str(entry.get("environmentHash"))
+                    else None
+                ),
+                db_schema_hash=(
+                    str(entry.get("dbSchemaHash")).strip()
+                    if _nonempty_str(entry.get("dbSchemaHash"))
+                    else None
+                ),
+                diff_hash=(
+                    str(ledger.get("diffHash")).strip()
+                    if _nonempty_str(ledger.get("diffHash"))
+                    else None
+                ),
+            )
+        except (OSError, ValueError, TypeError):
+            # Graph is advisory persistence; ledger write already succeeded.
+            pass
     except (OSError, ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
         return emit_error(f"record failed: {exc}", as_json=as_json)
 
@@ -1668,6 +1789,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional environment hash to compare against ledger entry (UT-017)",
     )
     p_reuse.add_argument(
+        "--db-schema-hash",
+        default=None,
+        help="optional DB schema hash to compare against ledger entry (H-9)",
+    )
+    p_reuse.add_argument(
         "--verbose",
         action="store_true",
         help="emit full payload (default: compact ok/reuse/code)",
@@ -1708,6 +1834,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--toolchain-hash", default=None)
     p_record.add_argument("--profile-hash", default=None)
     p_record.add_argument("--environment-hash", default=None)
+    p_record.add_argument("--db-schema-hash", default=None)
     p_record.add_argument("--deploy-artifact", default=None, help="package: built artifact path")
     p_record.add_argument("--artifact-hash", default=None, help="package: artifact sha256")
     p_record.add_argument(

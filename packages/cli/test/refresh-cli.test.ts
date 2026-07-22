@@ -78,6 +78,20 @@ describe("hunter-harness refresh CLI", () => {
     expect(await readFile(target)).toEqual(incoming);
   });
 
+  it("--force-managed without --yes is refused (H-17)", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-force-no-yes-"));
+    stdout = []; stderr = [];
+    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    const target = join(root, ".claude", "agents", "harness-reviewer.md");
+    await writeFile(target, "user modified\n");
+
+    stdout = []; stderr = [];
+    const code = await run(["refresh", "--non-interactive", "--force-managed", "--json"]);
+    expect(code).toBe(2);
+    expect(stderr.join("")).toMatch(/需要 --yes|FORCE_MANAGED_REQUIRES_CONFIRM/);
+    expect(await readFile(target, "utf8")).toBe("user modified\n");
+  });
+
   it("refuses to refresh an uninitialized project", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-absent-"));
     stdout = []; stderr = [];

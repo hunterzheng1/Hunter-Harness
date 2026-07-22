@@ -267,3 +267,9 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 如果新增筛选参数，设计中已明确非法值行为
 - [ ] 如果采用“忽略并不过滤”，必须有用户确认记录
 - [ ] 测试场景覆盖非法值
+
+
+## Wave-2 — Migration head（H-7）
+
+- [ ] 若变更触及 alembic/versions 或项目约定 migration 路径：列出 config / CI / env / manifest 联动文件
+- [ ] 消费项目存在 .harness/config/migration-head.json 时，跑 harness_migration_head.py check --project . --json
