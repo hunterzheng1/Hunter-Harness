@@ -7,7 +7,7 @@
   "schemaVersion": 2,
   "projectType": "java-maven",
   "excludedRoots": [
-    ".git", ".harness", ".claude/worktrees", ".cursor/worktrees",
+    ".git", ".harness", ".worktrees", ".claude/worktrees", ".cursor/worktrees",
     "target", "build", "dist", "node_modules", ".gradle",
     ".idea", ".vscode", "__pycache__", ".pytest_cache", ".cache"
   ],

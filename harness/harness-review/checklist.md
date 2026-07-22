@@ -8,7 +8,7 @@ description: harness-review 的6维度审查检查项详细列表。仅在执行
 
 用 Glob 搜索 `.harness/changes/*/plans/*-plan.md`（**排除 `.harness/archive/*/`**），读取 frontmatter 提取 `change-name`。默认最多一个未归档变更；如有多个，优先取最近修改的，或询问用户。后续所有路径基于此变更名。
 
-**读取 worktree 状态**：读 `.harness/changes/<change-name>/meta/worktree.json`。`requested=true` 且 worktree 已创建 → 后续 `git diff` 的 `<项目路径>` 用 worktree 路径（`.claude/worktrees/<change-name>`）；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-run`，不得静默回主目录。
+**读取 worktree 状态**：读 `.harness/changes/<change-name>/meta/worktree.json`。`requested=true` 且 worktree 已创建 → 后续 `git diff` 的 `<项目路径>` 用 worktree 路径（`.worktrees/<change-name>`）；`requested=true` 但 worktree 不存在 → 停止，提示先修复 `harness-run`，不得静默回主目录。
 
 ## 审查流程
 

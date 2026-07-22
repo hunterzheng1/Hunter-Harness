@@ -501,6 +501,7 @@ class ExcludedRootsTests(unittest.TestCase):
         for required in (
             ".git",
             ".harness",
+            ".worktrees",
             ".claude/worktrees",
             ".codex/worktrees",
             ".cursor/worktrees",
@@ -514,12 +515,14 @@ class ExcludedRootsTests(unittest.TestCase):
             self.assertIn(required, excluded, msg=f"missing excluded root {required}")
 
     def test_is_path_excluded(self) -> None:
-        excluded = (".git", ".harness", ".claude/worktrees", "target", "node_modules")
+        excluded = (".git", ".harness", ".worktrees", ".claude/worktrees", "target", "node_modules")
         self.assertTrue(hp.is_path_excluded("target/pom.xml", excluded))
+        self.assertTrue(hp.is_path_excluded(".worktrees/x/pom.xml", excluded))
         self.assertTrue(hp.is_path_excluded(".claude/worktrees/x/pom.xml", excluded))
         self.assertTrue(hp.is_path_excluded("node_modules/foo.js", excluded))
         self.assertFalse(hp.is_path_excluded("pom.xml", excluded))
         self.assertFalse(hp.is_path_excluded("src/main/App.java", excluded))
+        self.assertFalse(hp.is_path_excluded(".worktrees-other/x.py", excluded))
 
 
 def _make_node_project(tmp: Path, check_script: str | None = "npm run lint") -> None:

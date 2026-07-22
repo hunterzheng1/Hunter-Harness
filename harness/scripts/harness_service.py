@@ -164,6 +164,7 @@ def get_service_start(profile: dict[str, Any]) -> dict[str, Any]:
 # runtime resolve 把具体 overlay/profile 注入到 session，不写回持久 profile
 # （spec §3.1 持久 profile 只保存模板；§3.4 修复输入端陈旧 profile）。
 STALE_WORKTREE_MARKERS: tuple[str, ...] = (
+    ".worktrees/",
     ".claude/worktrees/",
     ".cursor/worktrees/",
     ".codeium/worktrees/",

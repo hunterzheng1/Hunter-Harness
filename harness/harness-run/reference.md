@@ -76,7 +76,7 @@ requested=true + path missing
 ```json
 {
   "projectRoot": ".../udp",
-  "worktreeRoot": ".../udp/<adapter-worktree-root>/<change-name>",
+  "worktreeRoot": ".../udp/.worktrees/<change-name>",
   "stateDir": ".../udp/.harness/changes/<change-name>"
 }
 ```

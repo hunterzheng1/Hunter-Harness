@@ -1026,6 +1026,24 @@ class ResolveServiceStartTests(unittest.TestCase):
                 profile, change_name="new-change", worktree_root=self.tmp
             )
 
+    def test_resolve_rejects_unified_worktree_path_in_command(self) -> None:
+        # §3.4：新统一路径 .worktrees/<change> 同样是陈旧持久值 → 拒绝
+        self._write_profile(command="java -jar .worktrees/old-change/app.jar")
+        profile = hs.load_build_profile(self.project)
+        with self.assertRaises(ValueError) as ctx:
+            hs.resolve_service_start(
+                profile, change_name="new-change", worktree_root=self.tmp
+            )
+        self.assertIn("stale", str(ctx.exception).lower())
+
+    def test_resolve_rejects_unified_worktree_path_in_overlay(self) -> None:
+        self._write_profile(overlay_path=".worktrees/old-change/overlay.yml")
+        profile = hs.load_build_profile(self.project)
+        with self.assertRaises(ValueError):
+            hs.resolve_service_start(
+                profile, change_name="new-change", worktree_root=self.tmp
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

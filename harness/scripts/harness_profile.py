@@ -48,6 +48,7 @@ PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
 DEFAULT_EXCLUDED_ROOTS: tuple[str, ...] = (
     ".git",
     ".harness",
+    ".worktrees",
     ".claude/worktrees",
     ".codex/worktrees",
     ".cursor/worktrees",

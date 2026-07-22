@@ -39,8 +39,8 @@ class RuntimeDoctorTests(unittest.TestCase):
             python = result["runtimes"]["python"]
             self.assertTrue(Path(python["executable"]).is_absolute())
             self.assertEqual(python["argvPrefix"], [python["executable"]])
-            self.assertEqual(result["adapter"]["worktreeRoot"], ".codex/worktrees")
-            self.assertEqual(result["adapter"]["branchPrefix"], "codex/")
+            self.assertEqual(result["adapter"]["worktreeRoot"], ".worktrees")
+            self.assertEqual(result["adapter"]["branchPrefix"], "harness/")
             capsule = json.loads(
                 (change_dir / "meta" / "runtime.json").read_text(encoding="utf-8")
             )
@@ -69,21 +69,30 @@ class RuntimeDoctorTests(unittest.TestCase):
         self.assertNotIn("Test-Json", " ".join(calls[0]))
         self.assertEqual(result["jsonCapability"], "convert-to-json")
 
-    def test_adapter_worktree_contract_is_agent_specific(self) -> None:
-        self.assertEqual(
-            runtime.adapter_worktree("codex", "runtime-plan"),
-            {
-                "agent": "codex",
-                "worktreeRoot": ".codex/worktrees",
-                "path": ".codex/worktrees/runtime-plan",
-                "branchPrefix": "codex/",
-                "branch": "codex/runtime-plan",
-            },
-        )
-        self.assertEqual(
-            runtime.adapter_worktree("claude-code", "runtime-plan")["path"],
-            ".claude/worktrees/runtime-plan",
-        )
+    def test_adapter_worktree_contract_is_unified_across_agents(self) -> None:
+        expected = {
+            "worktreeRoot": ".worktrees",
+            "path": ".worktrees/runtime-plan",
+            "branchPrefix": "harness/",
+            "branch": "harness/runtime-plan",
+        }
+        for agent in ("codex", "claude-code", "cursor", "codebuddy"):
+            result = runtime.adapter_worktree(agent, "runtime-plan")
+            self.assertEqual(result["agent"], agent)
+            for key, value in expected.items():
+                self.assertEqual(result[key], value, f"{agent}.{key}")
+
+    def test_adapter_worktree_all_agents_share_path_and_branch(self) -> None:
+        results = [
+            runtime.adapter_worktree(agent, "same-change")
+            for agent in ("codex", "claude-code", "cursor", "codebuddy")
+        ]
+        paths = {r["path"] for r in results}
+        branches = {r["branch"] for r in results}
+        self.assertEqual(paths, {".worktrees/same-change"})
+        self.assertEqual(branches, {"harness/same-change"})
+        agents = {r["agent"] for r in results}
+        self.assertEqual(agents, {"codex", "claude-code", "cursor", "codebuddy"})
 
     def test_adapter_rejects_path_like_change_id(self) -> None:
         with self.assertRaisesRegex(ValueError, "ADAPTER_CHANGE_ID_INVALID"):

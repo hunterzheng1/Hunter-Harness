@@ -17,7 +17,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] `requested=true` 且 worktree 存在 → 切换到 worktree 执行
 - [ ] `requested=true` 且 worktree 不存在 → 必须创建 worktree
 - [ ] worktree 创建命令必须使用 PowerShell：`git worktree add ...`
-- [ ] 创建后验证 `<adapter-worktree-root>/<change-name>/.git` 存在；Codex 必须是 `.codex/worktrees/<change-name>`
+- [ ] 创建后验证 `.worktrees/<change-name>/.git` 存在
 - [ ] 创建成功后更新 `meta/worktree.json` 的 `created=true/createdAt/createdBy`
 - [ ] 创建失败 → 停止，或 blocking user confirmation 询问是否改为主目录执行
 - [ ] 禁止 `requested=true && worktree 不存在` 时直接主目录执行

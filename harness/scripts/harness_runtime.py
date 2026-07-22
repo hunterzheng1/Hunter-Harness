@@ -23,10 +23,10 @@ if hasattr(sys.stderr, "reconfigure"):
 SCHEMA_VERSION = 1
 _CHANGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ADAPTERS = {
-    "claude-code": (".claude/worktrees", "claude/"),
-    "codex": (".codex/worktrees", "codex/"),
-    "cursor": (".cursor/worktrees", "cursor/"),
-    "codebuddy": (".codebuddy/worktrees", "codebuddy/"),
+    "claude-code": (".worktrees", "harness/"),
+    "codex": (".worktrees", "harness/"),
+    "cursor": (".worktrees", "harness/"),
+    "codebuddy": (".worktrees", "harness/"),
 }
 
 

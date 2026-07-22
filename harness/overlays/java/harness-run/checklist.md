@@ -12,7 +12,7 @@
 - [ ] `requested=true` 且 worktree 存在 → 切换到 worktree 执行
 - [ ] `requested=true` 且 worktree 不存在 → 必须创建 worktree
 - [ ] worktree 创建命令必须使用 PowerShell：`git worktree add ...`
-- [ ] 创建后验证 `.claude/worktrees/<change-name>/.git` 存在
+- [ ] 创建后验证 `.worktrees/<change-name>/.git` 存在
 - [ ] 创建成功后更新 `worktree.json` 的 `created=true/createdAt/createdBy`
 - [ ] 创建失败 → 停止，或 blocking user confirmation 询问是否改为主目录执行
 - [ ] 禁止 `requested=true && worktree 不存在` 时直接主目录执行
@@ -196,7 +196,7 @@
 
 > 仅在 worktree 中执行时触发此步骤。在主目录执行时跳过（标记 ⏭️主目录跳过）。
 
-- [ ] 确认当前 cwd 在 `.claude/worktrees/<change-name>/` 下
+- [ ] 确认当前 cwd 在 `.worktrees/<change-name>/` 下
 - [ ] 生成变更摘要：`git diff --stat` + `git diff --stat --cached`
 - [ ] 构建 commit message：`wip(<scope>): <change-name> 编码完成 — N任务/M文件变更`
 - [ ] **⚠️ 强制阻断**：用 blocking user confirmation 展示变更列表 + commit message，等待用户确认
