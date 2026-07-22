@@ -1627,5 +1627,138 @@ class ScenarioIdsTests(unittest.TestCase):
             self.assertNotIn("scenarioIds", entry)
 
 
+class ExpandProfileInputLayeredTests(unittest.TestCase):
+    """Submit friction: expand_profile_input_files must use load_profile/common_root."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="ledger-profile-layered-"))
+        self.common = self.tmp / "common"
+        self.execution = self.tmp / "execution"
+        self.common.mkdir()
+        self.execution.mkdir()
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_profile(self, root: Path, data: dict) -> None:
+        path = root / ".harness" / "config" / "build-profile.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def _seed_exec_sources(self) -> Path:
+        src = self.execution / "module" / "src" / "main" / "A.java"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("class A {}", encoding="utf-8")
+        (self.execution / "pom.xml").write_text("<project/>", encoding="utf-8")
+        return src
+
+    def test_expand_reads_common_profile_when_execution_missing(self) -> None:
+        # UT-001: common-only profile; --project=execution/WT
+        self._seed_exec_sources()
+        self._write_profile(
+            self.common,
+            {
+                "schemaVersion": 2,
+                "verificationInputs": {
+                    "unitTestFull": ["pom.xml", "module/src/main/*.java"]
+                },
+            },
+        )
+        with mock.patch.object(
+            harness_ledger.harness_paths,
+            "common_root",
+            return_value=self.common.resolve(),
+        ):
+            files, err = harness_ledger.expand_profile_input_files(
+                self.execution, "unitTestFull"
+            )
+        self.assertIsNone(err, msg=err)
+        self.assertGreaterEqual(len(files), 2)
+        self.assertTrue(any(f.endswith("pom.xml") for f in files))
+        self.assertTrue(any(f.endswith("A.java") for f in files))
+
+    def test_expand_missing_both_profiles(self) -> None:
+        # UT-002
+        with mock.patch.object(
+            harness_ledger.harness_paths,
+            "common_root",
+            return_value=self.common.resolve(),
+        ):
+            files, err = harness_ledger.expand_profile_input_files(
+                self.execution, "unitTestFull"
+            )
+        self.assertEqual(files, [])
+        self.assertIsNotNone(err)
+        self.assertIn("missing", err.lower())
+
+    def test_expand_local_profile_still_works(self) -> None:
+        # UT-003 regression: profile on execution root
+        self._seed_exec_sources()
+        self._write_profile(
+            self.execution,
+            {
+                "schemaVersion": 2,
+                "verificationInputs": {
+                    "unitTestFull": ["pom.xml", "module/src/main/*.java"]
+                },
+            },
+        )
+        with mock.patch.object(
+            harness_ledger.harness_paths,
+            "common_root",
+            return_value=self.common.resolve(),
+        ):
+            files, err = harness_ledger.expand_profile_input_files(
+                self.execution, "unitTestFull"
+            )
+        self.assertIsNone(err, msg=err)
+        self.assertGreaterEqual(len(files), 2)
+
+    def test_expand_missing_verification_key(self) -> None:
+        # UT-004
+        self._seed_exec_sources()
+        self._write_profile(
+            self.common,
+            {
+                "schemaVersion": 2,
+                "verificationInputs": {"unitTest": ["pom.xml"]},
+            },
+        )
+        with mock.patch.object(
+            harness_ledger.harness_paths,
+            "common_root",
+            return_value=self.common.resolve(),
+        ):
+            files, err = harness_ledger.expand_profile_input_files(
+                self.execution, "unitTestFull"
+            )
+        self.assertEqual(files, [])
+        self.assertIsNotNone(err)
+        self.assertIn("verificationInputs.unitTestFull", err)
+
+    def test_expand_unreadable_common_profile(self) -> None:
+        # review fixback YELLOW-1: corrupt JSON must stay "unreadable", not "missing"
+        path = self.common / ".harness" / "config" / "build-profile.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not-json", encoding="utf-8", newline="\n")
+        with mock.patch.object(
+            harness_ledger.harness_paths,
+            "common_root",
+            return_value=self.common.resolve(),
+        ):
+            files, err = harness_ledger.expand_profile_input_files(
+                self.execution, "unitTestFull"
+            )
+        self.assertEqual(files, [])
+        self.assertIsNotNone(err)
+        self.assertIn("unreadable", err.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
