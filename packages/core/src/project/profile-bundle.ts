@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import type { HarnessAgent } from "@hunter-harness/contracts";
 
@@ -92,11 +92,20 @@ function validateRelativeBundlePath(path: unknown): asserts path is string {
   }
 }
 
+// 模块级缓存：同进程内同键重复调用跳过 718 次 readFile + sha256 校验。
+// 返回浅拷贝 Map 防止外部突变污染缓存（718 个引用拷贝是微秒级，远小于磁盘读取）。
+const bundleCache = new Map<string, LoadedAgentBundle>();
+
 export async function loadAgentBundle(
   resourcesRoot: string,
   profile: HarnessProfile,
   agent: HarnessAgent
 ): Promise<LoadedAgentBundle> {
+  const cacheKey = `${resolve(resourcesRoot)}:${profile}:${agent}`;
+  const cached = bundleCache.get(cacheKey);
+  if (cached) {
+    return { manifest: cached.manifest, files: new Map(cached.files) };
+  }
   const manifestPath = join(resourcesRoot, "harness", "manifests", profile, `${agent}.json`);
   let manifestText: string;
   try {
@@ -166,7 +175,9 @@ export async function loadAgentBundle(
     }
     files.set(item.path, bytes);
   }
-  return { manifest: raw as AgentBundleManifestV2, files };
+  const result: LoadedAgentBundle = { manifest: raw as AgentBundleManifestV2, files };
+  bundleCache.set(cacheKey, result);
+  return { manifest: result.manifest, files: new Map(result.files) };
 }
 
 /** Temporary bridge: load Claude Code bundle for callers not yet migrated. */

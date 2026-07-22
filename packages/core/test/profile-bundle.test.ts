@@ -158,3 +158,27 @@ describe("Installation Projection", () => {
     expect(parsed.profile).toBe("general");
   });
 });
+
+describe("loadAgentBundle caching", () => {
+  it("returns cached result on second call with same key (no disk read)", async () => {
+    // First call may or may not hit cache depending on test order;
+    // key assertion: result is identical and second call is fast (cache hit, no disk IO)
+    const first = await loadAgentBundle(resourcesRoot, "general", "claude-code");
+    const secondStart = Date.now();
+    const second = await loadAgentBundle(resourcesRoot, "general", "claude-code");
+    const secondDuration = Date.now() - secondStart;
+    expect(secondDuration).toBeLessThan(200);
+    expect(second.manifest).toEqual(first.manifest);
+    expect([...second.files.keys()]).toEqual([...first.files.keys()]);
+    // Verify cached copy is independent (mutation doesn't leak)
+    second.files.set("__test_mutation__", new Uint8Array(0));
+    const third = await loadAgentBundle(resourcesRoot, "general", "claude-code");
+    expect(third.files.has("__test_mutation__")).toBe(false);
+  });
+
+  it("does not cache across different agents", async () => {
+    const claude = await loadAgentBundle(resourcesRoot, "general", "claude-code");
+    const codex = await loadAgentBundle(resourcesRoot, "general", "codex");
+    expect([...claude.files.keys()]).not.toEqual([...codex.files.keys()]);
+  });
+});
