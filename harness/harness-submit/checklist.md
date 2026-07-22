@@ -369,6 +369,8 @@ powershell.exe -Command "python harness/scripts/harness_check_gate.py --write"
 
 ### 步骤 M5：push
 
+**硬门槛（eslint × feature worktree）**：integration / 主仓 `pre-push` 跑 `npm run check` 时，eslint 不得把 sibling `.worktrees/<change>/` 当成第二工程根（双 `tsconfigRootDir`）。本仓以 `eslint.config.mjs` 的 `.worktrees/**` ignore 为准；若自定义 eslint 未 ignore，须先 `move_agent_to_root(<projectRoot>)` 再清 feature worktree，再 push。
+
 ```powershell
 python harness/scripts/harness_integration.py push --change <change-name> --run-id <run-id> --feature-branch harness/<change-name> --target-branch <主分支> --temp-root <task-temp>
 ```

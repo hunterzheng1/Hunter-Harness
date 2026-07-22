@@ -28,6 +28,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_paths  # noqa: E402
+import harness_profile  # noqa: E402
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -534,18 +535,30 @@ def expand_profile_input_files(
 ) -> tuple[list[str], str | None]:
     """Expand verificationInputs[profile_input] globs from build-profile.json.
 
-    Globs are relative to project; only files inside project are kept
-    (deduped, path-sorted). Returns (files, error); error is None on success.
+    Profile is loaded via ``harness_profile.load_profile`` (C7: common_root then
+    execution overlay) so linked worktrees without a local build-profile still
+    reuse the main checkout profile. Globs remain relative to the execution
+    ``project`` root (not common_root) so inputsHash tracks the tree under test.
+
+    Returns (files, error); error is None on success.
     profile 缺失 / key 缺失 / glob 无匹配 / 结果为空 → 返回 ([], "<reason>")，
     调用方据此返回 insufficient-evidence，执行全量测试但不允许缓存复用。
     """
-    profile_path = project / ".harness" / "config" / "build-profile.json"
-    if not profile_path.is_file():
+    profile = harness_profile.load_profile(Path(project))
+    if profile is None:
+        # load_profile swallows JSON errors; restore actionable unreadable diag
+        # when a profile file exists but cannot be parsed (review YELLOW-1).
+        project_root = Path(project).resolve()
+        common = harness_paths.common_root(project_root)
+        for root in (common, project_root):
+            candidate = root / ".harness" / "config" / "build-profile.json"
+            if not candidate.is_file():
+                continue
+            try:
+                json.loads(candidate.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return [], f"build-profile.json unreadable: {exc}"
         return [], "build-profile.json missing; run harness_preflight.py detect"
-    try:
-        profile = json.loads(profile_path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return [], f"build-profile.json unreadable: {exc}"
     if not isinstance(profile, dict):
         return [], "build-profile.json is not an object"
     inputs = profile.get("verificationInputs")
@@ -555,7 +568,7 @@ def expand_profile_input_files(
     if not isinstance(patterns, list) or not patterns:
         return [], f"verificationInputs.{profile_input} is empty or invalid"
 
-    base = project.resolve()
+    base = Path(project).resolve()
     seen: set[str] = set()
     for pat in patterns:
         if not isinstance(pat, str) or not pat.strip():

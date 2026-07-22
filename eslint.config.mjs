@@ -17,6 +17,8 @@ export default tseslint.config(
       ".harness/**",
       ".codegraph/**",
       ".codex-release/**",
+      // linked feature worktrees（与主仓同树副本）；lint 会双扫 tsconfigRootDir
+      ".worktrees/**",
       // canonical Harness 源（Python/Markdown 为主，辅助 .mjs 不受 TS lint 约束）
       "harness/**",
       // 生成 Bundle 与复制产物（harness_deploy.py 输出，字节一致，不应 lint）
