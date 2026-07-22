@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.22] — hunter-harness / [0.2.19] — @hunter-harness/workflow-harness
+
+### Fixed (Wave-1 — retro-20260721-harness-hardening-w1)
+
+- **H-8 artifact path**：`--type artifact` 必须带非空 `--path`；预览/说明改用 `issue`/`decision`，禁止 pathless `kind=informational`。
+- **H-11/H-12 report adequacy**：`summary-data` 同步顶层 `baseCommit`/`diffStat` 与 `gitFacts`；`base≠final` 且 `filesChanged=0` 记 `DIFF_ZERO_WITH_NONEMPTY_COMMIT` error。
+- **H-13 passRate**：单元测试 `passRate` 分母排除 `skipped`。
+- **H-4/H-14 archive**：最小 blocker 为 plan/events/ledger；缺 test/review 证据降为 warning；informational/hygiene issue 不把 OK stage 降为 WARN。
+- **paths / ledger / integration / submit**：配套 ownership、cleanup 与测试夹具对齐（含 archive preflight COM-003）。
+
 ## [0.2.17] — @hunter-harness/workflow-harness
 
 ### Fixed (P2 — 2026-07-20 phase1b 复盘续 3)
