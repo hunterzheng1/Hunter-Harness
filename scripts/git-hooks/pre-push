@@ -3,9 +3,9 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # Skip npm run check if harness-submit M5 just verified this exact index tree
-# within 10 min (triple check in harness_check_gate.py: marker ts + command + tree).
+# within 10 min (triple check in check-gate.mjs: marker ts + command + tree).
 # Any mismatch → fall through to the full check (safe default).
-if python harness/scripts/harness_check_gate.py 2>/dev/null; then
+if node scripts/check-gate.mjs 2>/dev/null; then
   exit 0
 fi
 echo "pre-push: running npm run check ..."

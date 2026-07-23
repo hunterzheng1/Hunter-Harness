@@ -65,6 +65,17 @@ class RootCheckScriptTests(unittest.TestCase):
         self.assertIn("npm_config_cache:", smoke)
         self.assertIn('join(rootDir, ".cache", "npm-smoke")', smoke)
 
+    def test_pre_push_check_receipt_does_not_depend_on_python_path(self) -> None:
+        hook = (
+            REPO_ROOT / "scripts" / "git-hooks" / "pre-push"
+        ).read_text(encoding="utf-8")
+        checklist = (
+            REPO_ROOT / "harness" / "harness-submit" / "checklist.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("node scripts/check-gate.mjs", hook)
+        self.assertIn("node scripts/check-gate.mjs --write", checklist)
+
 
 if __name__ == "__main__":
     unittest.main()

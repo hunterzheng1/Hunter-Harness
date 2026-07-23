@@ -7,6 +7,7 @@
 - **资源受控测试**：默认测试与 Next.js 静态构建并发限制为 2；构建链移除重复 TypeScript 编译；集成命令去重、统一 30 分钟超时并修复 Windows `.cmd` 解析与后台进程锁误回收。
 - **扫描与复用性能**：依赖、缓存、构建产物及嵌套 worktree 不再进入测试扫描；默认 profile 变更可自动判旧；ledger 输入哈希改为项目内稳定相对路径，提升跨 worktree 复用率。
 - **打包缓存隔离**：smoke pack 使用仓库级 npm cache，避免多个项目争用全局 cache 引发 EPERM，并复用已下载依赖加速后续打包。
+- **提交验证复用**：pre-push 改用随 Node.js 运行的 check marker 门禁，不再依赖系统 `python` PATH；同一提交树 10 分钟内的绿灯证据可直接复用，避免 `harness-submit` 推送时重复跑完整检查。
 - **测试规划成本契约**：Harness 生成测试场景时必须声明执行层级、预计时长、资源预算、超时和可复用证据，affected/module/candidate 分层执行。
 - **无 CI 项目候选证据**：新增 `local-reproducible` 本地候选凭据，绑定产品提交/树、命令、工具链、环境、依赖、日志与 ledger 哈希，复用既有完整验证而不重复跑全量测试。
 - **CI 证据迁移与防降级**：旧 `product-candidate-ci.json` 自动迁移为 `remote-claimed`；存在远端 CI 历史时禁止静默降级为本地凭据；`remote-attested` 必须提供证明摘要。

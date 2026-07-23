@@ -370,7 +370,7 @@ python harness/scripts/harness_integration.py verify --change <change-name> --ru
 **写 check-ok marker**（npm run check exit 0 后强制）：
 
 ```powershell
-powershell.exe -Command "python harness/scripts/harness_check_gate.py --write"
+node scripts/check-gate.mjs --write
 ```
 
 ### 步骤 M5：push
