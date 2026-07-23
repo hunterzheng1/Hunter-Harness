@@ -88,13 +88,17 @@ describe("ProjectSemanticPanels", () => {
     expect(within(listPane).queryByText("Knowledge item 25")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-    expect(await screen.findByText("第 2/3 页 · 52 条")).toBeInTheDocument();
-    expect(within(listPane).getByText("Knowledge item 25")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/第 2\/3 页 · 52 条/)).toBeInTheDocument();
+      expect(within(listPane).getByText("Knowledge item 25")).toBeInTheDocument();
+    });
     expect(within(listPane).queryByText("Knowledge item 00")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "candidate" }));
-    expect(await screen.findByText(/第 1\/1 页 · 13 条/)).toBeInTheDocument();
-    expect(within(listPane).getAllByRole("button")).toHaveLength(13);
+    await waitFor(() => {
+      expect(screen.getByText(/第 1\/1 页 · 13 条/)).toBeInTheDocument();
+      expect(within(listPane).getAllByRole("button")).toHaveLength(13);
+    });
 
     fireEvent.click(screen.getByRole("tab", { name: "项目规则" }));
     expect(screen.queryByRole("toolbar", { name: "按状态筛选" })).not.toBeInTheDocument();

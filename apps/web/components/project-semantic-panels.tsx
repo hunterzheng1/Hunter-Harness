@@ -1,7 +1,7 @@
 "use client";
 
 import type { SemanticDocument, SemanticEdge, SemanticOverview } from "@hunter-harness/contracts";
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { HunterApi, ProjectSemanticGraph } from "../lib/api";
 import { useI18n } from "../lib/i18n";
@@ -63,6 +63,10 @@ function DocumentBrowser({
 }) {
   const [page, setPage] = useState(0);
   const [statusFilter, setStatusFilter] = useState("all");
+  // Only auto-jump the pager when selection identity changes. Re-running on
+  // `filtered` identity churn (same selection, new array) races manual Next/Prev
+  // and was flaking Ubuntu CI after "下一页".
+  const lastJumpedSelectedId = useRef<string | null>(null);
 
   const statuses = useMemo(() => {
     if (!enableStatusFilter) return [] as string[];
@@ -98,9 +102,15 @@ function DocumentBrowser({
   }, [showStatusFilters, statusFilter]);
 
   useEffect(() => {
-    if (selectedId === null || filtered.length === 0) return;
+    if (selectedId === null) {
+      lastJumpedSelectedId.current = null;
+      return;
+    }
+    if (filtered.length === 0) return;
     const index = filtered.findIndex((item) => item.document_id === selectedId);
     if (index < 0) return;
+    if (lastJumpedSelectedId.current === selectedId) return;
+    lastJumpedSelectedId.current = selectedId;
     const nextPage = Math.floor(index / PAGE_SIZE);
     setPage((current) => (current === nextPage ? current : nextPage));
   }, [selectedId, filtered]);
