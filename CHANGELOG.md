@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.25] — hunter-harness / [0.2.22] — @hunter-harness/workflow-harness
+
+### Fixed (Wave-A — retro-20260723-cbm-ia-harness-hardening)
+
+- **产品 CI 门禁**：归档补齐 `productCommit`/`productTreeHash`/`archiveCommit`；产品候选 CI 未绿灯或漂移时 fail-closed / reopen。
+- **timing 完整化**：未闭合 attempt 记为 `INCOMPLETE`；`render-summary` 展示活动时长与 `reportCutoffAt`。
+- **Manifest 覆盖**：覆盖顺序与排除规则稳定化，避免虚假覆盖。
+- **环境租约**：新增 `environmentHash` fingerprint 与 change lease 获取/释放（`harness_environment.py`）。
+- **checklist / 测试**：同步 archive/submit/test checklist；补 Wave-A 单测（含 CI runUrl+commit、lease 过期、tree-hash 截断）。
+
+### Fixed (web — monorepo)
+
+- **DocumentBrowser 翻页 flake**：知识库分页仅在 selection-id 变化时自动跳页，避免过滤数组 identity churn 与手动翻页竞态（Ubuntu CI）。
+
+
 ## [0.2.24] — hunter-harness / [0.2.21] — @hunter-harness/workflow-harness
 
 ### Added (Wave-2 — retro-20260721-harness-hardening-w2)
