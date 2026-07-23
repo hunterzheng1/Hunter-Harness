@@ -78,6 +78,8 @@ def _seed_change_dir(change_dir: Path) -> None:
             # product fixtures keep identity equal so finalize stays green.
             "baseCommit": "bbbbbbbb",
             "finalCommit": "bbbbbbbb",
+            "productCommit": "bbbbbbbb",
+            "archiveCommit": "bbbbbbbb",
             "validations": {
                 "unitTest": {
                     "status": "OK",
@@ -99,6 +101,16 @@ def _seed_change_dir(change_dir: Path) -> None:
                     "passRate": "1/1",
                 },
             },
+        },
+    )
+    # IA-1: product candidate CI must be green before archive (fail closed).
+    _write_json(
+        change_dir / "evidence" / "product-candidate-ci.json",
+        {
+            "schemaVersion": 1,
+            "conclusion": "success",
+            "commit": "bbbbbbbb",
+            "runUrl": "https://ci.example/runs/seed",
         },
     )
     # Seed events via harness_events

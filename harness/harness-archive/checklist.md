@@ -14,6 +14,20 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - before/after checksum 不一致时，不得删除原目录。
 - 默认渲染器 `templates/render-summary.mjs`（finalize 内嵌调用）。
 
+### Wave-A 状态机与身份（IA-1 / IA-4）
+
+硬顺序：feature frozen → local gates → product candidate CI → **CI green** → merge → authoritative CI → archive product candidate → archive-only governance → release。
+
+- [ ] `evidence/product-candidate-ci.json`（或等价 ledger 字段）`conclusion=success`，含 `runUrl` + `commit`；否则 `PRODUCT_CI_NOT_GREEN` 阻断
+- [ ] summary/identity 含 `productCommit` / `productTreeHash` / `archiveCommit`；`productTreeHash` 排除 `.harness/**`
+- [ ] 产品输入在 archive 后变化 → `ARCHIVE_EVIDENCE_REOPEN_REQUIRED`，旧 archive 不可作发布证据
+- [ ] Manifest：coverage 字节在最终 snapshot 后不得静默漂移；后写报告必须 `exclusionReasons`，禁止假绿 `checksumStatus=OK`
+
+### Environment 合同（IA-3）
+
+- [ ] 使用可写环境栈前：`harness_environment.py fingerprint` → `acquire` lease → run → `release`
+- [ ] 租约落在主仓 `.harness/runtime/env-leases/`；跨 change 默认不得共享可写 volume
+
 ## 归档前检查（Phase 1）
 
 > ⚠️ **单一所有权**：finalize 内部负责且仅负责一次 `phase.start` / `phase.end`。归档前检查不得自行追加 archive 阶段边界。
