@@ -37,6 +37,30 @@ class InputsHashTests(unittest.TestCase):
             self.assertEqual(files1, files2)
             self.assertEqual(files1, sorted(files1))
 
+    def test_hash_is_stable_across_equivalent_worktree_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            roots = [base / "feature", base / "integration"]
+            hashes: list[str] = []
+            files: list[list[str]] = []
+            for root in roots:
+                source = root / "src" / "app.ts"
+                test = root / "tests" / "app.test.ts"
+                source.parent.mkdir(parents=True)
+                test.parent.mkdir(parents=True)
+                source.write_text("export const value = 1;\n", encoding="utf-8")
+                test.write_text("test('value', () => value);\n", encoding="utf-8")
+                digest, logical_files = harness_ledger.compute_inputs_hash(
+                    [str(source), str(test)],
+                    project_root=root,
+                )
+                hashes.append(digest)
+                files.append(logical_files)
+
+            self.assertEqual(hashes[0], hashes[1])
+            self.assertEqual(files[0], ["src/app.ts", "tests/app.test.ts"])
+            self.assertEqual(files[0], files[1])
+
     def test_hash_cli_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

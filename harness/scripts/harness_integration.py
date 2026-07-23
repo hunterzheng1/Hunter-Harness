@@ -43,6 +43,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 STEP_ORDER = ["preflight", "prepare", "merge", "verify", "push", "cleanup"]
+DEFAULT_VERIFY_TIMEOUT_SECONDS = 1800
 HEAVY_WORKTREE_ROOTS = (
     "node_modules", ".venv", "venv", "build", "dist", "target", ".cache", "__pycache__"
 )
@@ -54,6 +55,48 @@ _FOREIGN_PATTERNS = (
 
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _split_verify_command(raw: str, *, platform: str = sys.platform) -> list[str]:
+    # Harness profile/CLI commands use one portable quoting contract. Keep
+    # POSIX tokenization on Windows too; executable normalization happens later.
+    return shlex.split(raw, posix=True)
+
+
+def _dedupe_verify_commands(
+    commands: Sequence[Sequence[str]],
+) -> list[list[str]]:
+    """Preserve order while preventing explicit/profile duplicate execution."""
+    result: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for command in commands:
+        normalized = tuple(str(item) for item in command)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(list(normalized))
+    return result
+
+
+def _normalize_verify_command(
+    command: Sequence[str],
+    *,
+    platform: str = sys.platform,
+    resolver: Callable[[str], str | None] = shutil.which,
+) -> list[str]:
+    """Resolve Windows package-manager wrappers without enabling shell mode."""
+    result = [str(item) for item in command]
+    if not result or not platform.lower().startswith("win"):
+        return result
+    executable = Path(result[0]).name.lower()
+    if Path(executable).suffix:
+        return result
+    if executable not in {"npm", "npx", "pnpm", "yarn", "corepack"}:
+        return result
+    resolved = resolver(executable + ".cmd") or resolver(executable)
+    if resolved:
+        result[0] = resolved
+    return result
 
 
 class IntegrationError(Exception):
@@ -224,6 +267,11 @@ def load_journal(project_root: Path, transaction_id: str) -> dict[str, Any]:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    # On Windows, os.kill(pid, 0) can transiently report EINVAL for the
+    # current low-priority/background process. The current process is
+    # unambiguously alive, so avoid reclaiming its lock on that platform race.
+    if pid == os.getpid():
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -878,7 +926,7 @@ class IntegrationTransaction:
         commands: list[list[str]] = []
         for index, item in enumerate(required):
             if isinstance(item, str) and item.strip():
-                commands.append(shlex.split(item.strip()))
+                commands.append(_split_verify_command(item.strip()))
                 continue
             if not isinstance(item, dict):
                 raise ValueError(f"requiredOnMerge[{index}] must be string or object")
@@ -886,18 +934,26 @@ class IntegrationTransaction:
             if isinstance(raw, list) and raw and all(isinstance(x, str) and x for x in raw):
                 commands.append([str(x) for x in raw])
             elif isinstance(raw, str) and raw.strip():
-                commands.append(shlex.split(raw.strip()))
+                commands.append(_split_verify_command(raw.strip()))
             else:
                 raise ValueError(f"requiredOnMerge[{index}].command missing")
         return commands
 
-    def verify(self, commands: Sequence[Sequence[str]] | None = None) -> dict[str, Any]:
+    def verify(
+        self,
+        commands: Sequence[Sequence[str]] | None = None,
+        *,
+        timeout_seconds: float = DEFAULT_VERIFY_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
         commands = list(commands or [])
         # Wave-2 H-9: append profile mergeVerification.requiredOnMerge commands.
         try:
             commands.extend(self._required_on_merge_commands())
         except Exception as exc:  # noqa: BLE001 — surface as verify plan error
             raise VerifyPlanMissingError(f"mergeVerification load failed: {exc}") from exc
+        commands = _dedupe_verify_commands(commands)
+        if timeout_seconds <= 0:
+            raise VerifyPlanMissingError("verification timeout must be greater than zero")
 
         def action(journal: dict[str, Any]) -> None:
             if not commands or any(
@@ -910,21 +966,67 @@ class IntegrationTransaction:
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
             for command in commands:
+                executable_command = _normalize_verify_command(command)
                 started = dt.datetime.now().astimezone()
-                proc = subprocess.run(
-                    list(command),
-                    cwd=str(intg_root),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=False,
-                )
+                try:
+                    proc = subprocess.run(
+                        executable_command,
+                        cwd=str(intg_root),
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        check=False,
+                        timeout=timeout_seconds,
+                    )
+                except subprocess.TimeoutExpired:
+                    finished = dt.datetime.now().astimezone()
+                    results.append(
+                        {
+                            "command": list(command),
+                            "resolvedCommand": executable_command,
+                            "exitCode": None,
+                            "timedOut": True,
+                            "timeoutSeconds": timeout_seconds,
+                            "startedAt": started.isoformat(timespec="milliseconds"),
+                            "finishedAt": finished.isoformat(timespec="milliseconds"),
+                            "durationMs": int(
+                                (finished - started).total_seconds() * 1000
+                            ),
+                        }
+                    )
+                    journal["verifyResults"] = results
+                    self._save(journal)
+                    raise VerificationFailedError(
+                        f"command timed out after {timeout_seconds}s: {' '.join(command)}"
+                    )
+                except FileNotFoundError as exc:
+                    finished = dt.datetime.now().astimezone()
+                    results.append(
+                        {
+                            "command": list(command),
+                            "resolvedCommand": executable_command,
+                            "exitCode": None,
+                            "error": str(exc),
+                            "startedAt": started.isoformat(timespec="milliseconds"),
+                            "finishedAt": finished.isoformat(timespec="milliseconds"),
+                            "durationMs": int(
+                                (finished - started).total_seconds() * 1000
+                            ),
+                        }
+                    )
+                    journal["verifyResults"] = results
+                    self._save(journal)
+                    raise VerifyPlanMissingError(
+                        f"verification executable not found: {executable_command[0]}"
+                    ) from exc
                 finished = dt.datetime.now().astimezone()
                 results.append(
                     {
                         "command": list(command),
+                        "resolvedCommand": executable_command,
                         "exitCode": proc.returncode,
+                        "timedOut": False,
                         "startedAt": started.isoformat(timespec="milliseconds"),
                         "finishedAt": finished.isoformat(timespec="milliseconds"),
                         "durationMs": int(
@@ -1449,11 +1551,16 @@ def _parse_verify_commands(values: Sequence[str] | None) -> list[list[str]]:
     POSIX shlex semantics: single/double quotes group tokens, backslash
     escapes the next character (quote Windows paths).
     """
-    return [shlex.split(value) for value in (values or [])]
+    return [_split_verify_command(value) for value in (values or [])]
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    return _emit(_txn_from_args(args).verify(commands=_parse_verify_commands(args.command)))
+    return _emit(
+        _txn_from_args(args).verify(
+            commands=_parse_verify_commands(args.command),
+            timeout_seconds=float(args.timeout_seconds),
+        )
+    )
 
 
 def cmd_push(args: argparse.Namespace) -> int:
@@ -1543,6 +1650,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--feature-branch", required=True)
     p_verify.add_argument("--temp-root", required=True)
     p_verify.add_argument("--command", action="append")
+    p_verify.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=DEFAULT_VERIFY_TIMEOUT_SECONDS,
+    )
     p_verify.set_defaults(func=cmd_verify)
 
     return parser

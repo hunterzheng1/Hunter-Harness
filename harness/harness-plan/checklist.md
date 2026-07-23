@@ -198,6 +198,7 @@ source: harness-plan
 □ 已生成基础任务列表，并用 artifact 事件 note 记录任务拆分摘要
 □ 已叠加项目层序依赖（数据/契约→业务层→接口层）
 □ 已生成 4 维度场景表（单元/接口/数据兼容/集成）
+□ 每个自动化场景均标注执行层级、预计时长、资源预算、超时、可复用证据；快速反馈不默认扫描全仓库
 □ 已确定变更名（kebab-case）
 □ 产物已写入 .harness/changes/<change-name>/plans/：
   - <change-name>-plan.md（简洁任务表）

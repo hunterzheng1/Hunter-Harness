@@ -3,6 +3,17 @@
   "changeName": "<change-name>",
   "businessGoal": "本次变更为了做什么",
   "finalStatus": "OK | WARN | CONDITIONAL_OK | FAIL",
+  "archiveIntent": "release-candidate | record-only",
+  "archiveIntegrity": {
+    "ok": true
+  },
+  "candidateVerification": {
+    "ok": false,
+    "code": "PRODUCT_CANDIDATE_VERIFIED | PRODUCT_CANDIDATE_NOT_VERIFIED | PRODUCT_CI_GREEN | PRODUCT_CI_NOT_GREEN",
+    "assurance": "local-reproducible | remote-claimed | remote-attested",
+    "message": ""
+  },
+  "releaseEligible": false,
   "finalCommit": "<commit-hash>",
   "finalCommitBranch": "<origin/branch>",
   "baseCommit": "<base-commit-hash>",

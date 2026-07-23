@@ -79,6 +79,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 歧义优先检查 | 否定、对比、动作对象或范围存在多种合理解释时，最小取证后先给推荐理解并一次一问；确认前不深挖错误方向 |
 | 简单修复探索预算 | 预计不超过 2 个代码文件、且不涉及认证/安全/迁移/并发/API 契约重设时，最多 1 次合并 CodeGraph 查询 + 1 次定向补查、1 个用户澄清问题；无关发现只记非阻断说明 |
 | 精简产物 | 简单修复只保留实现所需的设计、任务、边界和测试；禁止在 spec/plan/detail/scenarios 中重复同一背景和结论 |
+| 测试执行成本 | 场景表必须设计快速反馈层级、预计时长、资源预算、超时和可复用证据；默认先跑受影响测试，再跑模块门禁，候选验证只复用身份一致的全量证据 |
 | state snapshot | 读取 `state-snapshot.json`（`harness_state.py` / state-layout-protocol §state-snapshot.json）了解 project/worktree root、HEAD/base、profile/rules/map/knowledge 指纹；失效由脚本刷新，**不得仅凭缓存跳过代码探索或验证门禁**（design §3.6） |
 | 协议 | sensitive-info / evidence-based-reporting / state-layout |
 

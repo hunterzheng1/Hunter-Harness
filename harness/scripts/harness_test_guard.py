@@ -32,6 +32,24 @@ MODE = "force-track-touched"
 MANIFEST_REL = Path("evidence") / "test-tracking.json"
 SNAPSHOT_REL = Path("evidence") / "test-guard-snapshot.json"
 PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
+MANDATORY_EXCLUDED_ROOTS = (
+    ".git",
+    ".harness",
+    ".worktrees",
+    ".claude/worktrees",
+    ".codex/worktrees",
+    ".cursor/worktrees",
+    ".codebuddy/worktrees",
+    ".codeium/worktrees",
+    "target",
+    "build",
+    "dist",
+    "node_modules",
+    ".gradle",
+    "__pycache__",
+    ".pytest_cache",
+    ".cache",
+)
 REASONS = ("tdd-created", "stale-test-repair", "test-updated")
 
 
@@ -213,10 +231,13 @@ def _profile_config(project: Path) -> tuple[list[str], list[str]] | None:
     if not isinstance(paths, list):
         return [], []
     excluded = profile.get("excludedRoots") if isinstance(profile, dict) else None
-    excluded_roots = (
+    configured_roots = (
         [item.replace("\\", "/").strip("/") for item in excluded if isinstance(item, str) and item]
         if isinstance(excluded, list)
         else []
+    )
+    excluded_roots = list(
+        dict.fromkeys([*configured_roots, *MANDATORY_EXCLUDED_ROOTS])
     )
     patterns = [
         item.replace("\\", "/") for item in paths if isinstance(item, str) and item
@@ -254,11 +275,8 @@ def _allowed_test_path(project: Path, rel: str) -> bool:
     if config is None:
         return _standard_test_path(rel)
     patterns, excluded_roots = config
-    rel_parts = tuple(os.path.normcase(part) for part in rel.split("/"))
-    for excluded in excluded_roots:
-        excluded_parts = tuple(os.path.normcase(part) for part in excluded.split("/"))
-        if rel_parts[: len(excluded_parts)] == excluded_parts:
-            return False
+    if _path_is_excluded(rel, excluded_roots):
+        return False
     return any(_matches_pattern(rel, pattern) for pattern in patterns)
 
 
@@ -820,8 +838,12 @@ def _path_is_excluded(rel: str, excluded_roots: list[str]) -> bool:
         excluded_parts = tuple(
             os.path.normcase(part) for part in excluded.split("/") if part
         )
-        if excluded_parts and rel_parts[: len(excluded_parts)] == excluded_parts:
-            return True
+        if not excluded_parts:
+            continue
+        width = len(excluded_parts)
+        for index in range(len(rel_parts) - width + 1):
+            if rel_parts[index : index + width] == excluded_parts:
+                return True
     return False
 
 

@@ -123,6 +123,233 @@ class ProductCiGateTests(unittest.TestCase):
         self.assertFalse(gate_commit.get("ok"))
         self.assertEqual(gate_commit.get("code"), "PRODUCT_CI_NOT_GREEN")
 
+    def test_local_reproducible_candidate_evidence_passes_without_ci(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        _write_json(
+            self.change / "evidence" / "product-candidate-verification.json",
+            {
+                "schemaVersion": 2,
+                "provider": "local-harness",
+                "conclusion": "success",
+                "assurance": "local-reproducible",
+                "subject": {
+                    "productCommit": "bbbbbbbb",
+                    "productTreeHash": "sha256:" + "a" * 64,
+                },
+                "verification": {
+                    "commandSetHash": "sha256:" + "b" * 64,
+                    "ledgerHash": "sha256:" + "c" * 64,
+                    "toolchainHashes": ["sha256:" + "d" * 64],
+                    "environmentHashes": ["sha256:" + "e" * 64],
+                    "dependencyHashes": ["sha256:" + "f" * 64],
+                    "logHashes": ["sha256:" + "1" * 64],
+                },
+            },
+        )
+
+        gate = ha.evaluate_product_ci_gate(self.change)
+
+        self.assertTrue(gate.get("ok"), gate)
+        self.assertEqual(gate.get("code"), "PRODUCT_CANDIDATE_VERIFIED")
+        self.assertEqual(gate.get("assurance"), "local-reproducible")
+
+    def test_policy_can_require_remote_attestation(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        _write_json(
+            self.change / "evidence" / "product-candidate-verification.json",
+            {
+                "schemaVersion": 2,
+                "provider": "local-harness",
+                "conclusion": "success",
+                "assurance": "local-reproducible",
+                "subject": {
+                    "productCommit": "bbbbbbbb",
+                    "productTreeHash": "sha256:" + "a" * 64,
+                },
+                "verification": {
+                    "commandSetHash": "sha256:" + "b" * 64,
+                    "ledgerHash": "sha256:" + "c" * 64,
+                    "toolchainHashes": ["sha256:" + "d" * 64],
+                    "environmentHashes": ["sha256:" + "e" * 64],
+                    "dependencyHashes": ["sha256:" + "f" * 64],
+                    "logHashes": ["sha256:" + "1" * 64],
+                },
+            },
+        )
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "standard",
+                "candidateVerification": {
+                    "minimumAssurance": "remote-attested",
+                },
+            },
+        )
+
+        gate = ha.evaluate_product_ci_gate(self.change)
+
+        self.assertFalse(gate.get("ok"))
+        self.assertEqual(gate.get("code"), "PRODUCT_CANDIDATE_NOT_VERIFIED")
+        self.assertIn("remote-attested", gate.get("message", ""))
+
+    def test_remote_attested_receipt_requires_attestation_digest(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        receipt = {
+            "schemaVersion": 2,
+            "provider": "remote-ci",
+            "conclusion": "success",
+            "assurance": "remote-attested",
+            "subject": {
+                "productCommit": "bbbbbbbb",
+                "productTreeHash": "sha256:" + "a" * 64,
+            },
+            "attestation": {"url": "https://ci.example/runs/attested"},
+            "verification": {"ledgerHash": "sha256:" + "c" * 64},
+        }
+        receipt_path = (
+            self.change / "evidence" / "product-candidate-verification.json"
+        )
+        _write_json(receipt_path, receipt)
+
+        missing_digest = ha.evaluate_product_ci_gate(self.change)
+        self.assertFalse(missing_digest["ok"])
+        self.assertIn("attestationDigest", missing_digest["message"])
+
+        receipt["verification"]["attestationDigest"] = "sha256:" + "d" * 64
+        _write_json(receipt_path, receipt)
+        self.assertTrue(ha.evaluate_product_ci_gate(self.change)["ok"])
+
+    def test_record_only_archive_does_not_claim_release_eligibility(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+
+        status = ha.check_status(self.change, archive_intent="record-only")
+
+        codes = {b.get("code") for b in status.get("blockers") or []}
+        warning_codes = {w.get("code") for w in status.get("warnings") or []}
+        self.assertNotIn("PRODUCT_CI_NOT_GREEN", codes)
+        self.assertNotIn("PRODUCT_CANDIDATE_NOT_VERIFIED", codes)
+        self.assertIn("PRODUCT_CANDIDATE_NOT_VERIFIED", warning_codes)
+        self.assertFalse(status.get("releaseEligible"))
+
+    def test_certify_local_reuses_full_ledger_evidence_without_rerunning(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"]["unitTestFull"] = {
+            "status": "OK",
+            "command": "python -m unittest discover",
+            "evidence": {"run": 12, "failures": 0, "errors": 0},
+            "inputsHash": "sha256:" + "e" * 64,
+            "inputsFiles": ["src/app.py", "tests/test_app.py"],
+            "toolchainHash": "sha256:" + "a" * 64,
+            "environmentHash": "sha256:" + "b" * 64,
+        }
+        _write_json(ledger_path, ledger)
+
+        receipt = ha.certify_local_candidate(self.change, project=self.project)
+
+        self.assertEqual(receipt["provider"], "local-harness")
+        self.assertEqual(receipt["assurance"], "local-reproducible")
+        self.assertEqual(
+            receipt["verification"]["reusedValidations"], ["unitTestFull"]
+        )
+        self.assertEqual(
+            receipt["verification"]["toolchainHashes"],
+            ["sha256:" + "a" * 64],
+        )
+        self.assertEqual(
+            receipt["verification"]["environmentHashes"],
+            ["sha256:" + "b" * 64],
+        )
+        self.assertEqual(
+            receipt["verification"]["dependencyHashes"],
+            ["sha256:" + "e" * 64],
+        )
+        self.assertEqual(len(receipt["verification"]["logHashes"]), 1)
+        self.assertTrue(
+            (self.change / "evidence" / "product-candidate-verification.json").is_file()
+        )
+        self.assertTrue(ha.evaluate_product_ci_gate(self.change)["ok"])
+
+    def test_certify_local_rejects_missing_environment_identity(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"]["unitTestFull"] = {
+            "status": "OK",
+            "command": "python -m unittest discover",
+            "evidence": "tests.log",
+            "inputsHash": "sha256:" + "e" * 64,
+            "inputsFiles": ["src/app.py"],
+            "toolchainHash": "sha256:" + "a" * 64,
+        }
+        _write_json(ledger_path, ledger)
+
+        with self.assertRaisesRegex(ValueError, "environmentHash"):
+            ha.certify_local_candidate(self.change, project=self.project)
+
+    def test_certify_local_rejects_stale_product_tree_identity(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productTreeHash"] = "sha256:" + "0" * 64
+        ledger["validations"]["unitTestFull"] = {
+            "status": "OK",
+            "command": "python -m unittest discover",
+            "evidence": "tests.log",
+            "inputsHash": "sha256:" + "e" * 64,
+            "inputsFiles": ["src/app.py"],
+            "toolchainHash": "sha256:" + "a" * 64,
+            "environmentHash": "sha256:" + "b" * 64,
+        }
+        _write_json(ledger_path, ledger)
+
+        with self.assertRaisesRegex(ValueError, "product tree"):
+            ha.certify_local_candidate(self.change, project=self.project)
+
+    def test_remote_ci_history_cannot_silently_downgrade_to_local(self) -> None:
+        _write_json(
+            self.change / "evidence" / "product-candidate-verification.json",
+            {
+                "schemaVersion": 2,
+                "provider": "local-harness",
+                "conclusion": "success",
+                "assurance": "local-reproducible",
+                "subject": {
+                    "productCommit": "bbbbbbbb",
+                    "productTreeHash": "sha256:" + "a" * 64,
+                },
+                "verification": {
+                    "commandSetHash": "sha256:" + "b" * 64,
+                    "ledgerHash": "sha256:" + "c" * 64,
+                    "toolchainHashes": ["sha256:" + "d" * 64],
+                    "environmentHashes": ["sha256:" + "e" * 64],
+                    "dependencyHashes": ["sha256:" + "f" * 64],
+                    "logHashes": ["sha256:" + "1" * 64],
+                },
+            },
+        )
+
+        gate = ha.evaluate_product_ci_gate(self.change)
+
+        self.assertFalse(gate["ok"])
+        self.assertEqual(gate["code"], "REMOTE_CI_DOWNGRADE_REFUSED")
+
+    def test_legacy_ci_can_be_migrated_to_remote_claimed_receipt(self) -> None:
+        receipt = ha.migrate_legacy_candidate_evidence(
+            self.change, project=self.project
+        )
+
+        self.assertEqual(receipt["schemaVersion"], 2)
+        self.assertEqual(receipt["provider"], "remote-ci")
+        self.assertEqual(receipt["assurance"], "remote-claimed")
+        self.assertIn("legacyEvidenceHash", receipt["verification"])
+        self.assertTrue(
+            (self.change / "evidence" / "product-candidate-verification.json").is_file()
+        )
+        self.assertTrue(ha.evaluate_product_ci_gate(self.change)["ok"])
+
 
 class ProductIdentityTests(unittest.TestCase):
     """UT-003 / UT-004 — productTreeHash relation + reopen."""

@@ -60,6 +60,9 @@ def init_repo(root: Path, remote: Path | None = None) -> None:
     git(root, "config", "user.email", "test@example.com")
     git(root, "config", "user.name", "Test")
     git(root, "config", "commit.gpgsign", "false")
+    # Isolate fixtures from machine-global CRLF policy. Without this, a newly
+    # staged LF file can flip from A to AM after later Git refreshes on Windows.
+    git(root, "config", "core.autocrlf", "false")
     (root / "README.md").write_text("demo\n", encoding="utf-8")
     git(root, "add", "README.md")
     git(root, "commit", "-m", "init")
@@ -836,6 +839,20 @@ class VerifyInIntegrationWorktreeTests(TransactionFixture):
             Path(journal["integrationRoot"]).resolve(),
         )
 
+    def test_verify_times_out_and_records_actionable_result(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        with self.assertRaises(integration.VerificationFailedError):
+            txn.verify(
+                commands=[[sys.executable, "-c", "import time; time.sleep(1)"]],
+                timeout_seconds=0.05,
+            )
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertTrue(journal["verifyResults"][0]["timedOut"])
+        self.assertEqual(journal["verifyResults"][0]["timeoutSeconds"], 0.05)
+
 
 class VerifyCommandParsingTests(unittest.TestCase):
     def test_quoted_arguments_survive_parsing(self) -> None:
@@ -851,6 +868,23 @@ class VerifyCommandParsingTests(unittest.TestCase):
         commands = integration._parse_verify_commands(["npm run check:all"])
         self.assertEqual(commands, [["npm", "run", "check:all"]])
         self.assertEqual(integration._parse_verify_commands(None), [])
+
+    def test_windows_command_wrapper_is_resolved(self) -> None:
+        command = integration._normalize_verify_command(
+            ["npm", "run", "check"],
+            platform="win32",
+            resolver=lambda name: "C:/tools/npm.cmd" if name == "npm.cmd" else None,
+        )
+        self.assertEqual(command, ["C:/tools/npm.cmd", "run", "check"])
+
+    def test_duplicate_commands_are_executed_once(self) -> None:
+        commands = integration._dedupe_verify_commands(
+            [["npm", "run", "check"], ["npm", "run", "check"], ["npm", "test"]]
+        )
+        self.assertEqual(
+            commands,
+            [["npm", "run", "check"], ["npm", "test"]],
+        )
 
 
 class RemoteProbeTests(unittest.TestCase):

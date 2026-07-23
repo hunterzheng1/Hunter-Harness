@@ -23,6 +23,10 @@ function run(command, args, options = {}) {
     timeout: options.timeout ?? 0,
     env: {
       ...process.env,
+      // Never contend with or depend on the user's global npm cache. A
+      // repository-local cache avoids cross-project EPERM/lock failures while
+      // retaining downloaded dependencies for faster later smoke runs.
+      npm_config_cache: join(rootDir, ".cache", "npm-smoke"),
       npm_config_prefer_offline: "true",
       npm_config_fetch_retries: "2",
       npm_config_fetch_timeout: "60000",

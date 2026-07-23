@@ -292,6 +292,30 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(r["stale"])
         self.assertEqual(r["status"], "stale")
 
+    def test_check_stale_when_profile_defaults_are_outdated(self) -> None:
+        _make_java_project(self.tmp)
+        hp.detect(self.tmp)
+        profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
+        profile = _read_json(profile_path)
+        profile.pop("defaultsFingerprint", None)
+        profile["excludedRoots"] = [
+            item for item in profile["excludedRoots"] if item != ".worktrees"
+        ]
+        _write(profile_path, json.dumps(profile, ensure_ascii=False, indent=2) + "\n")
+
+        result = hp.check(self.tmp)
+
+        self.assertTrue(result["stale"])
+        self.assertEqual(result["status"], "stale")
+        self.assertTrue(
+            any("defaultsFingerprint" in issue for issue in result["issues"]),
+            result,
+        )
+        self.assertTrue(
+            any(".worktrees" in issue for issue in result["issues"]),
+            result,
+        )
+
     def test_check_cli_exit_code_matches_readiness(self) -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(hp.main(["check", "--project", str(self.tmp), "--json"]), 1)

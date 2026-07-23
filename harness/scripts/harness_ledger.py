@@ -219,14 +219,30 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def compute_inputs_hash(file_paths: list[str]) -> tuple[str, list[str]]:
+def compute_inputs_hash(
+    file_paths: list[str], *, project_root: Path | str | None = None
+) -> tuple[str, list[str]]:
     """Per-file content sha256 → sort digests → hash again (order-independent)."""
+    root = (
+        Path(project_root).expanduser().resolve()
+        if project_root is not None
+        else None
+    )
     by_path: dict[str, str] = {}
     for raw in file_paths:
         path = resolve_path(raw)
         if not path.is_file():
             raise FileNotFoundError(f"file not found: {raw}")
-        by_path[path.as_posix()] = sha256_file(path)
+        if root is not None:
+            try:
+                logical_path = path.relative_to(root).as_posix()
+            except ValueError as exc:
+                raise ValueError(
+                    f"INPUT_OUTSIDE_PROJECT: {path} is outside {root}"
+                ) from exc
+        else:
+            logical_path = path.as_posix()
+        by_path[logical_path] = sha256_file(path)
 
     # Stable file list for callers; bind every resolved path to its digest.
     # Hashing only the content multiset let a path swap incorrectly reuse a
@@ -1056,6 +1072,7 @@ def decide_can_reuse(
     requested_profile_hash: str | None = None,
     requested_environment_hash: str | None = None,
     requested_db_schema_hash: str | None = None,
+    project_root: Path | str | None = None,
 ) -> dict[str, Any]:
     ledger, ledger_path = load_ledger(change_dir)
     if ledger is None:
@@ -1220,8 +1237,10 @@ def decide_can_reuse(
         }
 
     try:
-        current_hash, current_files = compute_inputs_hash(files)
-    except FileNotFoundError as exc:
+        current_hash, current_files = compute_inputs_hash(
+            files, project_root=project_root
+        )
+    except (FileNotFoundError, ValueError) as exc:
         return {
             "ok": True,
             "reuse": False,
@@ -1351,7 +1370,9 @@ def cmd_hash(args: argparse.Namespace) -> int:
         files, project_root = input_files_from_args(args)
         if not files:
             return emit_error("hash requires --files or --files-from", as_json=as_json)
-        inputs_hash, inputs_files = compute_inputs_hash(files)
+        inputs_hash, inputs_files = compute_inputs_hash(
+            files, project_root=project_root
+        )
     except (OSError, FileNotFoundError) as exc:
         return emit_error(str(exc), as_json=as_json)
 
@@ -1418,6 +1439,7 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             requested_profile_hash=getattr(args, "profile_hash", None),
             requested_environment_hash=getattr(args, "environment_hash", None),
             requested_db_schema_hash=getattr(args, "db_schema_hash", None),
+            project_root=project_root,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
@@ -1470,7 +1492,9 @@ def cmd_record(args: argparse.Namespace) -> int:
 
     try:
         status = normalize_status(args.status)
-        inputs_hash, inputs_files = compute_inputs_hash(files)
+        inputs_hash, inputs_files = compute_inputs_hash(
+            files, project_root=project_root
+        )
         ledger, _existing_path = load_ledger(change_dir)
         if ledger is None:
             ledger = {

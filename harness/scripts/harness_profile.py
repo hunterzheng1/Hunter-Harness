@@ -66,6 +66,16 @@ DEFAULT_EXCLUDED_ROOTS: tuple[str, ...] = (
     ".cache",
 )
 
+
+def profile_defaults_fingerprint() -> str:
+    """Fingerprint generated defaults so old profiles are refreshed safely."""
+    payload = {
+        "schemaVersion": SCHEMA_VERSION,
+        "excludedRoots": list(DEFAULT_EXCLUDED_ROOTS),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
 # 覆盖层级（spec §3.2）：unitTest ⊂ unitTestFull；package 独立；submit 复用 unitTestFull。
 VERIFICATION_KEYS: tuple[str, ...] = (
     "compile",
@@ -330,6 +340,7 @@ def _node_commands(project: Path) -> dict[str, Any]:
 def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
+        "defaultsFingerprint": profile_defaults_fingerprint(),
         "detectedAt": "",
         "projectType": "unknown",
         "toolPaths": {"node": "", "mvn": ""},
@@ -595,6 +606,28 @@ def check(project: Path) -> dict[str, Any]:
 
     issues: list[str] = []
     stale = False
+
+    expected_defaults_fingerprint = profile_defaults_fingerprint()
+    if profile.get("defaultsFingerprint") != expected_defaults_fingerprint:
+        stale = True
+        issues.append(
+            "defaultsFingerprint is missing or outdated; run detect to refresh generated defaults"
+        )
+
+    excluded_roots = {
+        str(item).replace("\\", "/").strip("/")
+        for item in (profile.get("excludedRoots") or [])
+        if isinstance(item, str) and item.strip("/")
+    }
+    missing_excluded_roots = [
+        item for item in DEFAULT_EXCLUDED_ROOTS if item not in excluded_roots
+    ]
+    if missing_excluded_roots:
+        stale = True
+        issues.append(
+            "excludedRoots missing generated defaults: "
+            + ", ".join(missing_excluded_roots)
+        )
 
     fp = profile.get("fingerprint") or {}
     stored_pom = fp.get("pomHash") or "" if isinstance(fp, dict) else ""

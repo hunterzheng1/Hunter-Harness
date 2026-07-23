@@ -258,6 +258,31 @@ class TestGuardTests(unittest.TestCase):
         self.assertIn(included.resolve(), hashed)
         self.assertNotIn(excluded.resolve(), hashed)
 
+    def test_begin_prunes_worktrees_and_nested_dependency_segments(self) -> None:
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps(
+                {
+                    "excludedRoots": ["node_modules", ".git", ".harness"],
+                    "testTracking": {"paths": ["**/*.test.js"]},
+                }
+            ),
+        )
+        included = self.project / "src" / "included.test.js"
+        sibling_worktree = (
+            self.project / ".worktrees" / "feature" / "src" / "leak.test.js"
+        )
+        nested_dependency = (
+            self.project / "vendor" / "node_modules" / "pkg" / "leak.test.js"
+        )
+        for path in (included, sibling_worktree, nested_dependency):
+            self._write(path)
+
+        result = guard.begin(self.project, self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["files"], ["src/included.test.js"])
+
     @unittest.skipUnless(os.name == "nt", "Windows path comparison regression")
     def test_profile_excluded_root_rejects_case_variant_on_windows(self) -> None:
         self._write(

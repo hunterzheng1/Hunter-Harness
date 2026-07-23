@@ -331,12 +331,41 @@ def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None
     return None, None
 
 
-def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
-    """Load structured product-candidate CI evidence (IA-1). Fail closed if absent."""
+def _legacy_candidate_path(change_dir: Path) -> Path | None:
     for relative in (
         "evidence/product-candidate-ci.json",
         "meta/product-candidate-ci.json",
         "runtime/product-candidate-ci.json",
+    ):
+        path = change_dir / relative
+        if path.is_file():
+            return path
+    return None
+
+
+def _remote_ci_history_present(change_dir: Path) -> bool:
+    if _legacy_candidate_path(change_dir) is not None:
+        return True
+    ledger = load_ledger(change_dir) or {}
+    if any(key in ledger for key in ("productCandidateCi", "product_candidate_ci")):
+        return True
+    validations = (
+        ledger.get("validations")
+        if isinstance(ledger.get("validations"), dict)
+        else {}
+    )
+    return any(
+        key in validations
+        for key in ("productCandidateCi", "product_candidate_ci", "candidateCi")
+    )
+
+
+def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
+    """Load platform-neutral candidate evidence, then legacy CI evidence."""
+    for relative in (
+        "evidence/product-candidate-verification.json",
+        "meta/product-candidate-verification.json",
+        "runtime/product-candidate-verification.json",
     ):
         path = change_dir / relative
         if not path.is_file():
@@ -345,6 +374,17 @@ def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
             data = read_json(path)
         except (OSError, json.JSONDecodeError):
             continue
+        if isinstance(data, dict) and data.get("schemaVersion") == 2:
+            return data
+
+    # Legacy schema remains readable so existing projects do not need an
+    # immediate migration. It represents a remote claim, not an attestation.
+    legacy_path = _legacy_candidate_path(change_dir)
+    if legacy_path is not None:
+        try:
+            data = read_json(legacy_path)
+        except (OSError, json.JSONDecodeError):
+            data = None
         if isinstance(data, dict) and data.get("schemaVersion") == 1:
             return data
     ledger = load_ledger(change_dir) or {}
@@ -361,7 +401,7 @@ def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
 
 
 def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
-    """Hard gate: product candidate CI must be success with run URL + commit."""
+    """Evaluate product-candidate evidence independently of CI availability."""
     evidence = load_product_candidate_ci(change_dir)
     if evidence is None:
         return {
@@ -374,6 +414,133 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
             ),
             "evidence": None,
         }
+
+    if evidence.get("schemaVersion") == 2:
+        conclusion = str(evidence.get("conclusion") or "").strip().lower()
+        provider = str(evidence.get("provider") or "").strip()
+        assurance = str(evidence.get("assurance") or "").strip()
+        subject = evidence.get("subject")
+        verification = evidence.get("verification")
+        subject = subject if isinstance(subject, dict) else {}
+        verification = verification if isinstance(verification, dict) else {}
+        product_commit = str(subject.get("productCommit") or "").strip()
+        product_tree_hash = str(subject.get("productTreeHash") or "").strip()
+        command_set_hash = str(verification.get("commandSetHash") or "").strip()
+        ledger_hash = str(verification.get("ledgerHash") or "").strip()
+        common_required_fields = {
+            "provider": provider,
+            "assurance": assurance,
+            "subject.productCommit": product_commit,
+            "subject.productTreeHash": product_tree_hash,
+        }
+        allowed_assurance = {
+            "local-reproducible": 1,
+            "remote-claimed": 2,
+            "remote-attested": 3,
+        }
+        policy = load_gate_policy(change_dir) or {}
+        candidate_policy = policy.get("candidateVerification")
+        candidate_policy = (
+            candidate_policy if isinstance(candidate_policy, dict) else {}
+        )
+        minimum_assurance = str(
+            candidate_policy.get("minimumAssurance") or "local-reproducible"
+        ).strip()
+        if minimum_assurance not in allowed_assurance:
+            minimum_assurance = "local-reproducible"
+        if (
+            provider == "local-harness"
+            and _remote_ci_history_present(change_dir)
+            and not bool(candidate_policy.get("allowLocalFallback"))
+        ):
+            return {
+                "ok": False,
+                "code": "REMOTE_CI_DOWNGRADE_REFUSED",
+                "message": (
+                    "remote CI history exists; local-harness evidence requires "
+                    "candidateVerification.allowLocalFallback=true"
+                ),
+                "assurance": assurance,
+                "evidence": evidence,
+            }
+        if provider == "local-harness":
+            local_required = {
+                "verification.commandSetHash": command_set_hash,
+                "verification.ledgerHash": ledger_hash,
+                "verification.toolchainHashes": verification.get("toolchainHashes"),
+                "verification.environmentHashes": verification.get("environmentHashes"),
+                "verification.dependencyHashes": verification.get("dependencyHashes"),
+                "verification.logHashes": verification.get("logHashes"),
+            }
+            required_fields = {**common_required_fields, **local_required}
+        elif provider == "remote-ci":
+            attestation = evidence.get("attestation")
+            attestation = attestation if isinstance(attestation, dict) else {}
+            if assurance == "remote-attested":
+                remote_identity_name = "verification.attestationDigest"
+                remote_identity = verification.get("attestationDigest")
+            else:
+                remote_identity_name = "verification.remoteIdentity"
+                remote_identity = (
+                    verification.get("legacyEvidenceHash") or ledger_hash
+                )
+            required_fields = {
+                **common_required_fields,
+                "attestation.url": attestation.get("url"),
+                remote_identity_name: remote_identity,
+            }
+        else:
+            required_fields = common_required_fields
+        missing = [name for name, value in required_fields.items() if not value]
+        if conclusion not in {
+            "success",
+            "successful",
+            "passed",
+            "pass",
+            "green",
+            "ok",
+        }:
+            return {
+                "ok": False,
+                "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                "message": (
+                    f"product candidate conclusion={conclusion or 'unknown'} "
+                    f"provider={provider or 'unknown'}"
+                ),
+                "assurance": assurance,
+                "evidence": evidence,
+            }
+        if missing or assurance not in allowed_assurance:
+            detail = ", ".join(missing) if missing else f"assurance={assurance}"
+            return {
+                "ok": False,
+                "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                "message": f"candidate evidence missing or invalid: {detail}",
+                "assurance": assurance,
+                "evidence": evidence,
+            }
+        if allowed_assurance[assurance] < allowed_assurance[minimum_assurance]:
+            return {
+                "ok": False,
+                "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                "message": (
+                    f"candidate assurance={assurance} is below required "
+                    f"minimumAssurance={minimum_assurance}"
+                ),
+                "assurance": assurance,
+                "evidence": evidence,
+            }
+        return {
+            "ok": True,
+            "code": "PRODUCT_CANDIDATE_VERIFIED",
+            "message": (
+                f"product candidate verified provider={provider} "
+                f"assurance={assurance} commit={product_commit}"
+            ),
+            "assurance": assurance,
+            "evidence": evidence,
+        }
+
     conclusion = str(
         evidence.get("conclusion") or evidence.get("status") or ""
     ).strip().lower()
@@ -406,6 +573,247 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
         ),
         "evidence": evidence,
     }
+
+
+def _candidate_value_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _candidate_evidence_hash(change_dir: Path, value: Any) -> str:
+    if isinstance(value, str) and value.strip():
+        raw = Path(value.strip())
+        candidate = raw if raw.is_absolute() else change_dir / raw
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(change_dir.resolve())
+        except (OSError, ValueError):
+            resolved = None
+        if resolved is not None and resolved.is_file():
+            return f"sha256:{sha256_file(resolved)}"
+    return _candidate_value_hash(value)
+
+
+def migrate_legacy_candidate_evidence(
+    change_dir: Path,
+    *,
+    project: Path | None = None,
+) -> dict[str, Any]:
+    """Convert legacy CI JSON into an explicit remote-claimed v2 receipt."""
+    change_dir = change_dir.resolve()
+    legacy_path = _legacy_candidate_path(change_dir)
+    if legacy_path is None:
+        raise ValueError("legacy product-candidate-ci.json missing")
+    legacy = read_json(legacy_path)
+    if not isinstance(legacy, dict) or legacy.get("schemaVersion") != 1:
+        raise ValueError("legacy product-candidate-ci.json is invalid")
+    conclusion = str(
+        legacy.get("conclusion") or legacy.get("status") or ""
+    ).strip().lower()
+    commit = str(legacy.get("commit") or legacy.get("headSha") or "").strip()
+    run_url = str(legacy.get("runUrl") or legacy.get("url") or "").strip()
+    if conclusion not in {
+        "success",
+        "successful",
+        "passed",
+        "pass",
+        "green",
+        "ok",
+    }:
+        raise ValueError(f"legacy CI conclusion is not successful: {conclusion}")
+    if not commit or not run_url:
+        raise ValueError("legacy CI evidence requires commit and runUrl")
+    project_root = (project or find_project_root(change_dir)).resolve()
+    tree_detail = compute_product_tree_hash_detail(project_root)
+    if tree_detail.get("truncated"):
+        raise ValueError("product tree hash truncated during legacy migration")
+    receipt = {
+        "schemaVersion": 2,
+        "provider": "remote-ci",
+        "conclusion": "success",
+        "assurance": "remote-claimed",
+        "recordedAt": now_iso(),
+        "subject": {
+            "productCommit": commit,
+            "productTreeHash": f"sha256:{tree_detail['hash']}",
+        },
+        "attestation": {
+            "url": run_url,
+            "source": "legacy-product-candidate-ci",
+        },
+        "verification": {
+            "legacyEvidenceHash": f"sha256:{sha256_file(legacy_path)}",
+        },
+        "migration": {
+            "fromSchemaVersion": 1,
+            "sourcePath": legacy_path.relative_to(change_dir).as_posix(),
+        },
+    }
+    write_json(
+        change_dir / "evidence" / "product-candidate-verification.json",
+        receipt,
+    )
+    return receipt
+
+
+def certify_local_candidate(
+    change_dir: Path,
+    *,
+    project: Path | None = None,
+) -> dict[str, Any]:
+    """Create a reproducible local receipt from existing ledger evidence.
+
+    This function never executes verification commands. It deliberately reuses
+    only complete, successful ledger entries so submit/archive do not rerun an
+    identical full suite merely to produce candidate evidence.
+    """
+    change_dir = change_dir.resolve()
+    project_root = (project or find_project_root(change_dir)).resolve()
+    ledger = load_ledger(change_dir)
+    if not isinstance(ledger, dict):
+        raise ValueError("verification ledger missing")
+    validations = ledger.get("validations")
+    if not isinstance(validations, dict):
+        raise ValueError("verification ledger validations missing")
+
+    policy = load_gate_policy(change_dir) or {}
+    candidate_policy = policy.get("candidateVerification")
+    candidate_policy = (
+        candidate_policy if isinstance(candidate_policy, dict) else {}
+    )
+    if (
+        _remote_ci_history_present(change_dir)
+        and not bool(candidate_policy.get("allowLocalFallback"))
+    ):
+        raise ValueError(
+            "remote CI history exists; refusing silent local fallback "
+            "(set candidateVerification.allowLocalFallback=true explicitly)"
+        )
+    required = candidate_policy.get("requiredValidations")
+    if not isinstance(required, list) or not required:
+        required = ["unitTestFull"]
+    required = [str(item).strip() for item in required if str(item).strip()]
+
+    selected: list[dict[str, Any]] = []
+    for name in required:
+        entry = validations.get(name)
+        if not isinstance(entry, dict):
+            raise ValueError(f"required validation missing: {name}")
+        missing: list[str] = []
+        if str(entry.get("status") or "").upper() != "OK":
+            missing.append("status=OK")
+        for field in (
+            "command",
+            "evidence",
+            "inputsHash",
+            "toolchainHash",
+            "environmentHash",
+        ):
+            if entry.get(field) in (None, "", [], {}):
+                missing.append(field)
+        if missing:
+            raise ValueError(
+                f"required validation {name} is incomplete: {', '.join(missing)}"
+            )
+        selected.append(
+            {
+                "name": name,
+                "command": entry.get("command"),
+                "inputsHash": entry.get("inputsHash"),
+                "toolchainHash": entry.get("toolchainHash"),
+                "environmentHash": entry.get("environmentHash"),
+                "logHash": _candidate_evidence_hash(
+                    change_dir, entry.get("evidence")
+                ),
+            }
+        )
+
+    ledger_path = next(
+        (
+            change_dir / relative
+            for relative in (
+                "evidence/verification-ledger.json",
+                "verification-ledger.json",
+            )
+            if (change_dir / relative).is_file()
+        ),
+        None,
+    )
+    if ledger_path is None:
+        raise ValueError("verification ledger path missing")
+
+    product_commit = str(
+        ledger.get("productCommit")
+        or ledger.get("currentHead")
+        or ledger.get("finalCommit")
+        or ""
+    ).strip()
+    rc, current_head, _stderr = git_run(project_root, "rev-parse", "HEAD")
+    if rc == 0 and current_head:
+        if product_commit and not (
+            current_head.startswith(product_commit)
+            or product_commit.startswith(current_head)
+        ):
+            raise ValueError(
+                "product commit is stale: "
+                f"ledger={product_commit} current={current_head}"
+            )
+        product_commit = current_head
+    if not product_commit:
+        raise ValueError("product commit unavailable")
+
+    detail = compute_product_tree_hash_detail(project_root)
+    if detail.get("truncated"):
+        raise ValueError(
+            "product tree hash truncated; narrow the project or raise the explicit limit"
+        )
+    current_tree_hash = f"sha256:{detail['hash']}"
+    recorded_tree_hash = str(ledger.get("productTreeHash") or "").strip()
+    if recorded_tree_hash and recorded_tree_hash.removeprefix(
+        "sha256:"
+    ) != current_tree_hash.removeprefix("sha256:"):
+        raise ValueError(
+            "product tree is stale: "
+            f"ledger={recorded_tree_hash} current={current_tree_hash}"
+        )
+    product_tree_hash = current_tree_hash
+
+    receipt = {
+        "schemaVersion": 2,
+        "provider": "local-harness",
+        "conclusion": "success",
+        "assurance": "local-reproducible",
+        "recordedAt": now_iso(),
+        "subject": {
+            "productCommit": product_commit,
+            "productTreeHash": product_tree_hash,
+        },
+        "verification": {
+            "requiredValidations": required,
+            "reusedValidations": [item["name"] for item in selected],
+            "commandSetHash": _candidate_value_hash(
+                [item["command"] for item in selected]
+            ),
+            "ledgerHash": f"sha256:{sha256_file(ledger_path)}",
+            "toolchainHashes": sorted(
+                {str(item["toolchainHash"]) for item in selected}
+            ),
+            "environmentHashes": sorted(
+                {str(item["environmentHash"]) for item in selected}
+            ),
+            "dependencyHashes": sorted(
+                {str(item["inputsHash"]) for item in selected}
+            ),
+            "logHashes": sorted({str(item["logHash"]) for item in selected}),
+        },
+    }
+    write_json(
+        change_dir / "evidence" / "product-candidate-verification.json",
+        receipt,
+    )
+    return receipt
 
 
 PRODUCT_TREE_HASH_FILE_LIMIT = 20_000
@@ -481,9 +889,13 @@ def resolve_product_archive_identity(
     project_root = (project or find_project_root(change_dir)).resolve()
     ledger = load_ledger(change_dir) or {}
     ci = load_product_candidate_ci(change_dir) or {}
+    candidate_subject = (
+        ci.get("subject") if isinstance(ci.get("subject"), dict) else {}
+    )
     product = (
         product_commit
         or ledger.get("productCommit")
+        or candidate_subject.get("productCommit")
         or ci.get("commit")
         or ledger.get("finalCommit")
         or ""
@@ -884,8 +1296,13 @@ def check_status(
     change_dir: Path,
     *,
     allow_missing_review: bool = False,
+    archive_intent: str = "release-candidate",
 ) -> dict[str, Any]:
     """Read-only archive preconditions. Never mutates."""
+    if archive_intent not in {"release-candidate", "record-only"}:
+        raise ValueError(
+            "archive_intent must be release-candidate or record-only"
+        )
     blockers: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     checks: dict[str, Any] = {}
@@ -894,6 +1311,7 @@ def check_status(
         return {
             "ok": False,
             "archivable": False,
+            "releaseEligible": False,
             "change_dir": str(change_dir),
             "blockers": [{"code": "missing-change-dir", "message": f"not found: {change_dir}"}],
             "warnings": [],
@@ -1124,7 +1542,9 @@ def check_status(
             else:
                 blockers.append(tier_issue)
 
-    # --- IA-1 product candidate CI hard gate ---
+    # Candidate verification is a release gate, not an archive-integrity fact.
+    # A record-only archive may persist incomplete work but can never claim
+    # release eligibility.
     ci_gate = evaluate_product_ci_gate(change_dir)
     checks["product_candidate_ci"] = {
         "ok": bool(ci_gate.get("ok")),
@@ -1132,12 +1552,20 @@ def check_status(
         "evidence": ci_gate.get("evidence"),
     }
     if not ci_gate.get("ok"):
-        blockers.append(
-            {
-                "code": "PRODUCT_CI_NOT_GREEN",
-                "message": str(ci_gate.get("message") or "product candidate CI not green"),
-            }
-        )
+        candidate_issue = {
+            "code": (
+                "PRODUCT_CANDIDATE_NOT_VERIFIED"
+                if archive_intent == "record-only"
+                else str(ci_gate.get("code") or "PRODUCT_CANDIDATE_NOT_VERIFIED")
+            ),
+            "message": str(
+                ci_gate.get("message") or "product candidate not verified"
+            ),
+        }
+        if archive_intent == "record-only":
+            warnings.append(candidate_issue)
+        else:
+            blockers.append(candidate_issue)
 
     # --- artifact preflight (retro §5.31) ---
     # Classify artifact events before destructive finalize: informational (OK),
@@ -1168,9 +1596,20 @@ def check_status(
             })
 
     archivable = len(blockers) == 0
+    candidate_codes = {
+        "PRODUCT_CI_NOT_GREEN",
+        "PRODUCT_CANDIDATE_NOT_VERIFIED",
+    }
+    archive_integrity_ok = not any(
+        item.get("code") not in candidate_codes for item in blockers
+    )
     return {
         "ok": True,
         "archivable": archivable,
+        "archiveIntent": archive_intent,
+        "archiveIntegrity": {"ok": archive_integrity_ok},
+        "candidateVerification": ci_gate,
+        "releaseEligible": bool(ci_gate.get("ok")) and archivable,
         "change_dir": str(change_dir),
         "change_name": infer_change_name(change_dir),
         "blockers": blockers,
@@ -2368,6 +2807,10 @@ def collect_summary_data(
             "maintenanceNotes",
             "knownRisks",
             "manualActions",
+            "archiveIntent",
+            "archiveIntegrity",
+            "candidateVerification",
+            "releaseEligible",
         ):
             if key in existing:
                 data[key] = _deepcopy_json(existing[key])
@@ -2467,6 +2910,22 @@ def collect_summary_data(
 
     gate_policy = load_gate_policy(change_dir)
     data["riskTier"] = str((gate_policy or {}).get("tier") or "unknown")
+    intent_path = change_dir / "meta" / "archive-intent.json"
+    intent_data: dict[str, Any] = {}
+    if intent_path.is_file():
+        try:
+            loaded_intent = read_json(intent_path)
+            intent_data = loaded_intent if isinstance(loaded_intent, dict) else {}
+            sources.append("meta/archive-intent.json")
+        except (OSError, json.JSONDecodeError):
+            intent_data = {}
+    candidate_gate = evaluate_product_ci_gate(change_dir)
+    data["archiveIntent"] = str(
+        intent_data.get("intent") or "release-candidate"
+    )
+    data["archiveIntegrity"] = {"ok": True}
+    data["candidateVerification"] = candidate_gate
+    data["releaseEligible"] = bool(candidate_gate.get("ok"))
 
     # durations / skillCalls
     if events:
@@ -3729,8 +4188,15 @@ def cmd_finalize(
     *,
     skip_ingest: bool = False,
     allow_missing_review: bool = False,
+    archive_intent: str = "release-candidate",
 ) -> tuple[int, dict[str, Any]]:
     """Execute the 9-step finalize pipeline. Returns (exit_code, payload)."""
+    if archive_intent not in {"release-candidate", "record-only"}:
+        return 1, {
+            "ok": False,
+            "action": "finalize",
+            "error": "archive_intent must be release-candidate or record-only",
+        }
     warnings: list[str] = []
     original_change_dir = change_dir.resolve()
     change_name = original_change_dir.name
@@ -3796,6 +4262,8 @@ def cmd_finalize(
         "operationId": operation_id,
         "operationTempDir": str(operation_temp_dir),
         "operationRecord": str(operation_record),
+        "archiveIntent": archive_intent,
+        "releaseEligible": False,
         "warnings": warnings,
         "steps": {},
     }
@@ -3947,14 +4415,37 @@ def cmd_finalize(
         payload["ok"] = False
         return 1, payload
 
-    # --- 2d. product candidate CI hard gate (IA-1) ---
+    # --- 2d. product candidate verification / release eligibility ---
+    if (
+        not (
+            work_dir / "evidence" / "product-candidate-verification.json"
+        ).is_file()
+        and _legacy_candidate_path(work_dir) is not None
+    ):
+        try:
+            migrated = migrate_legacy_candidate_evidence(
+                work_dir, project=project_root
+            )
+            payload["steps"]["candidate_evidence_migration"] = {
+                "ok": True,
+                "provider": migrated.get("provider"),
+                "assurance": migrated.get("assurance"),
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            payload["steps"]["candidate_evidence_migration"] = {
+                "ok": False,
+                "error": str(exc),
+            }
+            warnings.append(f"legacy candidate evidence migration failed: {exc}")
     ci_gate = evaluate_product_ci_gate(work_dir)
     payload["steps"]["product_candidate_ci"] = {
         "ok": bool(ci_gate.get("ok")),
         "code": ci_gate.get("code"),
         "message": ci_gate.get("message"),
     }
-    if not ci_gate.get("ok"):
+    payload["candidateVerification"] = ci_gate
+    payload["releaseEligible"] = bool(ci_gate.get("ok"))
+    if not ci_gate.get("ok") and archive_intent == "release-candidate":
         payload["error"] = str(ci_gate.get("message") or "PRODUCT_CI_NOT_GREEN")
         payload["issues"] = [
             {
@@ -3967,6 +4458,21 @@ def cmd_finalize(
         payload["warnings"] = warnings
         payload["ok"] = False
         return 1, payload
+    if not ci_gate.get("ok"):
+        warnings.append(
+            "record-only archive is not release eligible: "
+            + str(ci_gate.get("message") or "product candidate not verified")
+        )
+    write_json(
+        work_dir / "meta" / "archive-intent.json",
+        {
+            "schemaVersion": 1,
+            "intent": archive_intent,
+            "candidateVerificationCode": ci_gate.get("code"),
+            "releaseEligible": bool(ci_gate.get("ok")),
+            "recordedAt": now_iso(),
+        },
+    )
 
     # --- 3. candidate phase.end + freeze cutoff (RET-19 freeze-first) ---
     # This terminal exists only inside the isolated operation staging tree. It
@@ -4428,10 +4934,44 @@ def cmd_status_cli(args: argparse.Namespace) -> int:
     result = check_status(
         change_dir,
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
+        archive_intent=str(getattr(args, "intent", "release-candidate")),
     )
     emit_json(result)
     # Checks completed → exit 0; archivable flag conveys the gate result.
     return 0 if result.get("ok") else 1
+
+
+def cmd_certify_local_cli(args: argparse.Namespace) -> int:
+    change_dir = resolve_path(args.change_dir)
+    project = (
+        resolve_path(args.project)
+        if getattr(args, "project", None)
+        else None
+    )
+    try:
+        receipt = certify_local_candidate(change_dir, project=project)
+    except (OSError, ValueError) as exc:
+        emit_json(
+            {
+                "ok": False,
+                "action": "certify-local",
+                "error": str(exc),
+            }
+        )
+        return 1
+    emit_json(
+        {
+            "ok": True,
+            "action": "certify-local",
+            "evidence": receipt,
+            "path": str(
+                change_dir
+                / "evidence"
+                / "product-candidate-verification.json"
+            ),
+        }
+    )
+    return 0
 
 
 def cmd_finalize_cli(args: argparse.Namespace) -> int:
@@ -4442,6 +4982,7 @@ def cmd_finalize_cli(args: argparse.Namespace) -> int:
         archive_root,
         skip_ingest=bool(args.skip_ingest),
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
+        archive_intent=str(getattr(args, "intent", "release-candidate")),
     )
     emit_json(payload)
     return code
@@ -4631,7 +5172,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="downgrade full-tier missing review from blocker to warning",
     )
+    p_status.add_argument(
+        "--intent",
+        choices=("release-candidate", "record-only"),
+        default="release-candidate",
+        help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
+    )
     p_status.set_defaults(func=cmd_status_cli)
+
+    p_cert = sub.add_parser(
+        "certify-local",
+        help="create candidate receipt from existing full ledger evidence without rerunning tests",
+    )
+    p_cert.add_argument("--change-dir", required=True)
+    p_cert.add_argument("--project", default=None)
+    p_cert.add_argument("--json", action="store_true", default=True)
+    p_cert.set_defaults(func=cmd_certify_local_cli)
 
     p_fin = sub.add_parser("finalize", help="single-process archive finalize")
     p_fin.add_argument("--change-dir", required=True)
@@ -4641,6 +5197,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-missing-review",
         action="store_true",
         help="record override when full-tier review evidence is missing",
+    )
+    p_fin.add_argument(
+        "--intent",
+        choices=("release-candidate", "record-only"),
+        default="release-candidate",
+        help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
     )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)

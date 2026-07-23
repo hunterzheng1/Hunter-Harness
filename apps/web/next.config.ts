@@ -6,6 +6,11 @@ const config: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   poweredByHeader: false,
   reactStrictMode: true,
+  experimental: {
+    // Keep local submit/check builds responsive on high-core developer machines.
+    cpus: 2,
+    staticGenerationMaxConcurrency: 2
+  },
 
   async rewrites() {
     const internalApi = process.env.HUNTER_HARNESS_INTERNAL_API_URL;

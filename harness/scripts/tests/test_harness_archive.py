@@ -60,7 +60,16 @@ def _run(argv: list[str]) -> tuple[int, dict]:
 
 def _seed_change_dir(change_dir: Path) -> None:
     """Minimal change fixture with events + ledger + plan."""
-    _write(change_dir.parents[2] / ".gitattributes", ".harness/archive/** -text\n")
+    if (
+        change_dir.parent.name == "changes"
+        and change_dir.parent.parent.name == ".harness"
+    ):
+        project_root = change_dir.parents[2]
+    else:
+        # Compact unit fixtures use <tmp>/<change>; never escape the fixture
+        # root and write into the OS temp directory's parent.
+        project_root = change_dir.parent
+    _write(project_root / ".gitattributes", ".harness/archive/** -text\n")
     _write(change_dir / "plans" / "demo-plan.md", "# plan\n\ngoal: demo archive\n")
     _write(
         change_dir / "tests" / "test-report-20260710.md",
@@ -725,7 +734,7 @@ class ConditionalOkTests(unittest.TestCase):
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
     """API-013: archive finalize 是唯一归档路径。harness_archive.py CLI 只暴露
-    status/finalize/replay/repair；不存在 collect/validate 子命令（已废弃的旧编排路径，
+    status/certify-local/finalize/replay/repair；不存在 collect/validate 子命令（已废弃的旧编排路径，
     report-pipeline-protocol §标准命令 仅保留 finalize/replay，模型不得手写等价
     summary-data.json）。repair 为 RET-40 新增显式修复子命令（不改写原归档）。"""
 
@@ -738,8 +747,8 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
         choices = set(getattr(sub_action, "choices", {}).keys())
         self.assertEqual(
             choices,
-            {"status", "finalize", "replay", "repair"},
-            f"archive CLI must expose only status/finalize/replay/repair, got {choices}",
+            {"status", "certify-local", "finalize", "replay", "repair"},
+            f"archive CLI commands changed unexpectedly: {choices}",
         )
         # 废弃的 collect/validate 不得作为子命令存在（旧编排路径已删）
         self.assertNotIn("collect", choices, "collect subcommand must not exist")
