@@ -76,6 +76,26 @@ class RootCheckScriptTests(unittest.TestCase):
         self.assertIn("node scripts/check-gate.mjs", hook)
         self.assertIn("node scripts/check-gate.mjs --write", checklist)
 
+    def test_pre_push_uses_bounded_static_gate_and_ci_owns_full_check(self) -> None:
+        package = json.loads(
+            (REPO_ROOT / "package.json").read_text(encoding="utf-8")
+        )
+        hook = (
+            REPO_ROOT / "scripts" / "git-hooks" / "pre-push"
+        ).read_text(encoding="utf-8")
+        checklist = (
+            REPO_ROOT / "harness" / "harness-submit" / "checklist.md"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            package["scripts"]["check:push"],
+            "npm run lint && npm run typecheck",
+        )
+        self.assertIn("npm run check:push", hook)
+        self.assertNotIn('echo "pre-push: running npm run check ..."', hook)
+        self.assertIn("项目存在远端 CI", checklist)
+        self.assertIn("项目没有远端 CI", checklist)
+
 
 if __name__ == "__main__":
     unittest.main()

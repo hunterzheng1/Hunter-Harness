@@ -24,6 +24,7 @@
     "lint": "node node_modules/eslint/bin/eslint.js .",
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "sync:harness": "node scripts/sync-harness.mjs",
+    "check:push": "npm run lint && npm run typecheck",
     "check": "npm run lint && npm run typecheck && npm test && npm run build:artifacts",
     "check:all": "npm run check && npm run smoke:pack",
     "setup:git-hooks": "git config core.hooksPath scripts/git-hooks",

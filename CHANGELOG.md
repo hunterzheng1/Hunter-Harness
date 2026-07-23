@@ -9,6 +9,7 @@
 - **能力状态统一**：预检新增 `executionMode=inline|delegated|unavailable` 与 `fallbackPolicy=inline-no-retry`；缺少宿主能力清单返回 `INLINE_BY_ADAPTER`，真实定义/工具契约损坏才报告不可用。
 - **防止重复执行**：spawn 失败、空返回、0 tool uses、仅 Done/元数据时立即由主会话接管，不 retry、不重复整轮探索或审查。
 - **Windows 原子交换重试**：bundle staging 遭遇短暂目录锁时进行有界毫秒级重试，持久锁仍明确失败，避免整轮 8-bundle 同步因 `WinError 5` 返工。
+- **有界 pre-push**：默认仅执行 lint + typecheck，完整候选测试交给远端 CI；无 CI 项目继续使用绑定 tree hash 的本地完整 check 收据，避免提交阶段重复全量测试拖垮机器。
 
 ## [0.2.26] — hunter-harness / [0.2.23] — @hunter-harness/workflow-harness
 

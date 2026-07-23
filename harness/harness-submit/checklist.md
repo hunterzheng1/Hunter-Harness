@@ -367,7 +367,13 @@ python harness/scripts/harness_integration.py verify --change <change-name> --ru
 
 任一命令非零退出 → step FAILED，不进入 push。
 
-**写 check-ok marker**（npm run check exit 0 后强制）：
+**产品候选证据门槛**：
+
+- 项目存在远端 CI：本地 push 只运行有界静态门槛，push 后必须取得当前候选 commit 的 CI 绿灯，才能归档或发布。
+- 项目没有远端 CI：在候选 commit 对应的同一棵 tree 上完整执行 resolved check；成功后写本地候选收据。收据必须同时匹配时间、命令和 tree hash，不接受口头声明或旧提交结果。
+- 不得在 pre-push 中无条件重复全量测试；失败后不自动重跑，先报告失败阶段与残留进程。
+
+**写 check-ok marker**（`npm run check` exit 0 后强制；无 CI 项目以此作为产品候选绿灯证据）：
 
 ```powershell
 node scripts/check-gate.mjs --write
@@ -375,7 +381,7 @@ node scripts/check-gate.mjs --write
 
 ### 步骤 M5：push
 
-**硬门槛（eslint × feature worktree）**：integration / 主仓 `pre-push` 跑 `npm run check` 时，eslint 不得把 sibling `.worktrees/<change>/` 当成第二工程根（双 `tsconfigRootDir`）。本仓以 `eslint.config.mjs` 的 `.worktrees/**` ignore 为准；若自定义 eslint 未 ignore，须先 `move_agent_to_root(<projectRoot>)` 再清 feature worktree，再 push。
+**硬门槛（eslint × feature worktree）**：integration / 主仓 `pre-push` 跑有界 `check:push` 时，eslint 不得把 sibling `.worktrees/<change>/` 当成第二工程根（双 `tsconfigRootDir`）。本仓以 `eslint.config.mjs` 的 `.worktrees/**` ignore 为准；若自定义 eslint 未 ignore，须先 `move_agent_to_root(<projectRoot>)` 再清 feature worktree，再 push。
 
 ```powershell
 python harness/scripts/harness_integration.py push --change <change-name> --run-id <run-id> --feature-branch harness/<change-name> --target-branch <主分支> --temp-root <task-temp>
