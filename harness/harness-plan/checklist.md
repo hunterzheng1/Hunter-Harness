@@ -37,21 +37,16 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 阶段 3 执行完成后，确认以下事项：
 
 ```
-□ 是通过 Agent 工具委派 subagent 执行的（不是主会话直接调用 codegraph）
-□ subagent 返回了结构化设计概要（涉及模块、接口变更、关键决策）
-□ 委派前已运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`
-□ `usable=false` 或未返回有效输出 → 主会话探索，**不 retry 委派**
-□ 主会话未被代码探索的中间结果污染
-□ 在执行日志中记录了 Agent 调用状态：
-  - 是否成功调用
-  - 使用的 agent 名称
-  - 是否只读
-  - 子代理实际 tool uses 计数
-  - 返回的核心结论
+□ 已按复杂度选择 `executionMode=inline|delegated`；默认 inline
+□ inline 时主会话直接使用 CodeGraph/Read，并返回结构化设计概要
+□ 仅高复杂度且准备委派固定 agent 时，才运行一次 `check-agents --agent harness-explorer`
+□ 只有预检 `executionMode=delegated` 才委派；`inline` 静默继续，不显示不可用告警
+□ spawn 失败、空返回、0 tool uses、仅 "Done"/元数据 → 主会话探索，**不 retry 委派**
+□ 执行日志记录 executionMode、委派原因（如有）、只读约束和核心结论
 ```
 
-> 如果 Agent 工具不可用，或子代理被委派但未返回有效输出（0 tool uses / 空返回 / 仅 "Done"），必须显式降级并记录：
-> - 追加 `issue` 事件并在 note 写明降级原因：Agent 不可用 / 子代理未返回有效输出，改为主会话只读探索
+> 正常 inline 只记 `decision`，不是降级或故障。如果已尝试委派但未返回有效输出（0 tool uses / 空返回 / 仅 "Done"），必须：
+> - 追加一次 `issue` 事件并在 note 写明：子代理未返回有效输出，改为主会话只读探索
 > - 主会话直接使用 codegraph MCP 工具（`mcp__codegraph__codegraph_explore`）和 Read 探索代码（只读，不执行写操作）
 > - 不得在主会话中执行任何写操作
 > - CodeGraph 如通过 MCP 调用，必须优先用 MCP 工具，不允许通过普通 Bash 调 codegraph 命令
@@ -156,10 +151,10 @@ source: harness-plan
 ```
 □ 已用 **设计审批包** 一次 blocking user confirmation（设计 + 场景表摘要 + worktree + change-name）
 □ **未**单独询问 worktree 或对抗评审（对抗评审仅 `--adversarial`）
-□ 用户同意后，已用 Agent 工具委派 harness-evaluator（haiku, context:fork, plan 模式只读, maxTurns:8）
-□ 已用 context:fork 隔离上下文（evaluator 未参与规划，破除确认偏误）
-□ 已校验子代理 tool uses > 0（0/空/Done 视为未返回有效输出，已降级为主会话自审并记录）
-□ evaluator 返回了 VERDICT(APPROVED/REVISE) + 结构化问题清单（RED/YELLOW）
+□ 已按宿主能力选择隔离 evaluator 或主会话对抗自审；正常 inline 不记故障
+□ 若委派，已使用隔离上下文且校验 tool uses > 0
+□ 若委派返回 0/空/Done/元数据，已立即 inline 自审且未 retry
+□ 已产出 VERDICT(APPROVED/REVISE) + 结构化问题清单（RED/YELLOW）
 □ 评审报告已写入 .harness/changes/<change-name>/reports/plan-review/plan-review-YYYYMMDD-HHmm.md
 □ VERDICT 和问题清单已展示给用户（不得仅记"已评审"）
 □ REVISE 时已询问用户是否修订；修订后可选再审

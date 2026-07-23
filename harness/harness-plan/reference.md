@@ -345,25 +345,13 @@ status: approved
 - 最终输出只提示产出物路径和下一步 `/harness-run`
 - `docs/superpowers/` 不得作为最终产物路径出现在输出中
 
-## C2 升级口：Codex 跨 provider 评审（可选，未实现）
+## C2 升级口：跨 provider 评审（显式、非默认）
 
-阶段 7.5 的 harness-evaluator 是同 provider（Claude）评审，基于"上下文隔离 + 档位差异"。如需真正跨 provider 对抗（高风险构建：auth/支付/数据迁移/并发），可在 evaluator 返回 REVISE 后，可选调 Codex CLI 做二次确认。
+阶段 7.5 默认只做主会话对抗自审或宿主原生隔离任务，不自动启动第二个 CLI/provider。高风险构建确需跨 provider 二次确认时，由用户显式要求并提供可用宿主能力；该升级不属于正常 harness-plan 路径，也不得因外部工具不可用而 retry。
 
-### 前置
-- Codex CLI ≥ 0.130：`npm install -g @openai/codex@latest`（现 0.142.3）
-- Codex 已登录：`codex login`（ChatGPT 账号即可）
-- Windows + bridge 环境未实测，TODO(review)
+### 安全线
 
-### 执行（示例）
-```powershell
-powershell.exe -NoProfile -Command "codex exec -s read-only '$(Get-Content .harness/changes/<cn>/spec/<cn>-design.md -Raw)'"
-```
-
-### 安全线 ⚠️
-- 首次 `codex exec -s read-only` 强制只读沙箱
-- resume 必须加 `-c sandbox_mode="read-only"`（`resume` 不接受 `-s`，漏写会继承 config 默认，可能 `danger-full-access`）——这是最关键安全线
-- Codex 全程只读，从不写文件
-- 不 pin `-m` 模型（ChatGPT 账号鉴权会拒 `gpt-5.x-codex` 变体并 400 报错）
-
-### 状态
-本节为**升级口**，当前 harness-plan 阶段 7.5 默认走 harness-evaluator（C1），不自动触发 Codex。需手动启用，且建议先验证 Codex CLI 在当前环境可用。详见 grill-me 文档的 grill-me-codex Act 2（技术知识库/02-Skills与扩展/Skills合集/grill-me.md）。
+- 外部评审必须只读，输入只包含已脱敏的设计/计划/场景表
+- 不继承未确认的生产凭证、写权限或危险沙箱设置
+- 一次失败即返回主会话，不自动安装 CLI、不自动登录、不循环 resume
+- 报告必须标注 provider、执行模式和证据边界

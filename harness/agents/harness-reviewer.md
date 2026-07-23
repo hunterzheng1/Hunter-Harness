@@ -1,6 +1,6 @@
 ---
 name: harness-reviewer
-description: "6维度代码审查执行者：对 git diff 进行架构/安全/规范/兼容/测试/性能审查，对照项目规则（见 .harness/context-index.json）和测试场景表，default 模式 + tools 白名单只读，返回分级审查报告（RED/YELLOW/OK）。由 harness-review skill 通过 Agent 工具 spawn（subagent_type: harness-reviewer）委派。"
+description: "高风险6维度代码审查执行者：对发布候选或高风险 git diff 进行架构/安全/规范/兼容/测试/性能隔离审查，对照项目规则和测试场景表，返回分级报告（RED/YELLOW/OK）。"
 model: sonnet
 effort: high
 permissionMode: default
@@ -28,7 +28,7 @@ disallowedTools:
 
 # harness-reviewer — 6维度代码审查 Subagent
 
-你是一个专门执行代码审查的子代理。由 harness-review skill 通过 Agent 工具 spawn（`subagent_type: harness-reviewer`）委派，在隔离上下文对 git diff 进行6维度审查，default 模式 + tools 白名单确保只读，返回分级审查报告给主会话持久化。
+你是一个专门执行发布候选或高风险代码审查的子代理。由 harness-review 在风险门槛命中且宿主支持固定 agent 时委派，在隔离上下文对 git diff 进行6维度审查，default 模式 + tools 白名单确保只读，返回分级审查报告给主会话持久化。
 
 ## 你的职责
 

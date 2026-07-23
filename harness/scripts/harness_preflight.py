@@ -374,12 +374,14 @@ def _resolve_agents_root(skills_root: Path, agents_root: Path | None) -> tuple[P
     return (skills_root / "agents").resolve(), None
 
 
-def _read_host_capabilities(skills_root: Path) -> set[str]:
+def _read_host_capabilities(skills_root: Path) -> tuple[set[str], bool]:
     """Read agent capabilities declared by the host adapter (retro §5.3).
 
     Adapter installs may declare available agent roles in
     `meta/runtime.json` under `agentCapabilities` (list of role names).
-    Returns an empty set if the file or field is absent.
+    Returns ``(capabilities, manifest_present)``. ``manifest_present`` is true
+    only when a readable capability list exists; an unrelated runtime.json
+    must not turn an unknown host into a hard "agent missing" failure.
     """
     # runtime.json lives in the change's meta/ dir, but agent capabilities are
     # project-level. Check the adapter's runtime.json at the project root.
@@ -398,8 +400,8 @@ def _read_host_capabilities(skills_root: Path) -> set[str]:
             continue
         caps = data.get("agentCapabilities")
         if isinstance(caps, list):
-            return {str(c) for c in caps if isinstance(c, str)}
-    return set()
+            return {str(c) for c in caps if isinstance(c, str)}, True
+    return set(), False
 
 
 def cmd_check_agents(
@@ -420,7 +422,7 @@ def cmd_check_agents(
         }
 
     resolved_agents_root, _ = _resolve_agents_root(skills_root, agents_root)
-    host_capabilities = _read_host_capabilities(skills_root)
+    host_capabilities, capability_manifest_present = _read_host_capabilities(skills_root)
     host_callable = agent_name in host_capabilities
 
     # Three independent fields (retro §5.3):
@@ -437,32 +439,37 @@ def cmd_check_agents(
         agent_path = resolved_agents_root / filename
         definition_present = agent_path.is_file()
 
-    # If no local definition and host doesn't declare the role, we can't
-    # determine usability. Distinguish "host says no" from "unknown".
+    # Codex/Cursor bundles intentionally do not install fixed harness-* agent
+    # definitions. Missing host capabilities therefore select the normal
+    # inline path instead of reporting UNKNOWN/"subagent unavailable".
     if not definition_present and not host_callable:
-        # Check if this adapter is known to not support custom agents
         adapter_name = skills_root.parent.name
         if adapter_name in (".agents", ".cursor"):
-            # Codex/Cursor: may support via host manifest. If runtime.json
-            # has agentCapabilities but this role isn't listed, it's a
-            # genuine "not available". If no agentCapabilities field at all,
-            # we can't know — return UNKNOWN.
-            runtime_path = skills_root.parent / "runtime.json"
-            if not runtime_path.is_file():
-                return {
-                    "ok": True,
-                    "action": "check-agents",
-                    "agent": agent_name,
-                    "usable": False,
-                    "definitionPresent": False,
-                    "hostCallable": False,
-                    "toolContractValid": False,
-                    "reasonCode": "UNKNOWN",
-                    "reason": (
-                        "no local agent definition and no host capability manifest; "
-                        "cannot determine agent availability"
-                    ),
-                }
+            reason_code = (
+                "HOST_CAPABILITY_NOT_DECLARED"
+                if capability_manifest_present
+                else "INLINE_BY_ADAPTER"
+            )
+            return {
+                "ok": True,
+                "action": "check-agents",
+                "agent": agent_name,
+                "usable": False,
+                "executionMode": "inline",
+                "fallbackPolicy": "inline-no-retry",
+                "definitionPresent": False,
+                "hostCallable": False,
+                "toolContractValid": False,
+                "capabilityManifestPresent": capability_manifest_present,
+                "reasonCode": reason_code,
+                "reason": (
+                    "host capability manifest does not declare this fixed agent; "
+                    "use the normal inline path"
+                    if capability_manifest_present
+                    else "adapter uses inline execution unless the host explicitly "
+                    "declares a callable agent capability"
+                ),
+            }
         return {
             "ok": False,
             "action": "check-agents",
@@ -470,9 +477,12 @@ def cmd_check_agents(
             "path": str(agent_path) if agent_path else None,
             "agentsRoot": str(resolved_agents_root) if resolved_agents_root else None,
             "usable": False,
+            "executionMode": "unavailable",
+            "fallbackPolicy": "inline-no-retry",
             "definitionPresent": False,
             "hostCallable": False,
             "toolContractValid": False,
+            "capabilityManifestPresent": capability_manifest_present,
             "reasonCode": "AGENT_DEFINITION_NOT_FOUND",
             "reason": f"agent file not found and host does not declare role: {agent_name}",
         }
@@ -488,9 +498,13 @@ def cmd_check_agents(
                 "agent": agent_name,
                 "path": str(agent_path),
                 "usable": False,
+                "executionMode": "unavailable",
+                "fallbackPolicy": "inline-no-retry",
                 "definitionPresent": True,
                 "hostCallable": host_callable,
                 "toolContractValid": False,
+                "capabilityManifestPresent": capability_manifest_present,
+                "reasonCode": "AGENT_DEFINITION_UNREADABLE",
                 "reason": f"cannot read agent file: {exc}",
             }
 
@@ -502,9 +516,13 @@ def cmd_check_agents(
                 "agent": agent_name,
                 "path": str(agent_path),
                 "usable": False,
+                "executionMode": "unavailable",
+                "fallbackPolicy": "inline-no-retry",
                 "definitionPresent": True,
                 "hostCallable": host_callable,
                 "toolContractValid": False,
+                "capabilityManifestPresent": capability_manifest_present,
+                "reasonCode": "AGENT_DEFINITION_INVALID",
                 "reason": f"frontmatter parse failed: {err or 'unknown'}",
             }
 
@@ -525,7 +543,7 @@ def cmd_check_agents(
     name_field = meta.get("name") if meta else None
     tools_field = meta.get("tools") if meta else None
 
-    reason_code = "READY" if usable else "AGENT_DEFINITION_NOT_FOUND"
+    reason_code = "READY" if usable else "TOOL_CONTRACT_INVALID"
     if not definition_present and host_callable:
         reason_code = "DEFINITION_NOT_FOUND_HOST_CAPABLE"
 
@@ -536,9 +554,12 @@ def cmd_check_agents(
         "path": str(agent_path) if agent_path else None,
         "agentsRoot": str(resolved_agents_root) if resolved_agents_root else None,
         "usable": usable,
+        "executionMode": "delegated" if usable else "unavailable",
+        "fallbackPolicy": "inline-no-retry",
         "definitionPresent": definition_present,
         "hostCallable": host_callable,
         "toolContractValid": tool_contract_valid,
+        "capabilityManifestPresent": capability_manifest_present,
         "reasonCode": reason_code,
         "reason": (
             "agent available; "

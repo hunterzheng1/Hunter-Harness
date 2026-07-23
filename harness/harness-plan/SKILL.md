@@ -43,10 +43,13 @@ disallowed-tools:
 
 内化为 `protocols.md`：`clarification-protocol`、`decision-grilling-protocol`、`implementation-planning-protocol`。不运行时调用 Superpowers/grill-me。
 
-## Subagent 委派
+<!-- @section-id plan.delegate -->
+## 执行路由（inline 优先）
 
-- **阶段 3 探索**：先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`；可用则委派，否则主会话探索且不 retry。`reasonCode=CUSTOM_AGENTS_UNSUPPORTED` 表示当前工具本身没有自定义 agent 能力，是正常的 inline 路径，控制台不得显示“harness-explorer subagent 不可用”类告警。
-- **阶段 7.5**：仅 `--adversarial`；先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-evaluator --json`；可用才委派到 `reports/plan-review/`
+- **阶段 3 探索默认 inline**：主会话直接使用 CodeGraph/Read，简单修复和常规跨文件变更不得为“隔离上下文”额外启动 agent。
+- **仅高复杂度探索考虑委派**：涉及多个独立模块、陌生大型代码库或可并行的独立调查时，才执行一次 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`。只有 `executionMode=delegated` 才委派；`executionMode=inline` 是正常路径，静默继续；`unavailable` 只记录安装问题后 inline。
+- **阶段 7.5 evaluator**：仅 `--adversarial` 或 auth/支付/迁移/并发等高风险规划启用；需要固定 agent 时才预检。无论预检 inline、spawn 失败、空返回或只有元数据，都立即由主会话完成同一对抗检查，`fallbackPolicy=inline-no-retry`。
+- 日志记录 `executionMode=inline|delegated`；只有真实定义损坏或 spawn 失败才记 issue。正常 inline 不得显示“subagent 不可用”告警。
 
 ## Workflow 概要
 

@@ -392,13 +392,15 @@ class CheckAgentsTests(unittest.TestCase):
         self.assertTrue(result["usable"], msg=result.get("reason"))
         self.assertEqual(Path(result["agentsRoot"]), agents.resolve())
 
-    def test_non_agent_runtime_reports_capability_not_missing_file(self) -> None:
+    def test_codex_without_capability_manifest_selects_inline(self) -> None:
         skills = self.tmp / ".agents" / "skills"
         result = hp.cmd_check_agents(skills, "harness-explorer")
         self.assertFalse(result["usable"])
-        # C1 (retro §5.3): unknown state returns UNKNOWN, not CUSTOM_AGENTS_UNSUPPORTED
-        self.assertEqual(result["reasonCode"], "UNKNOWN")
-        self.assertIn("cannot determine", result["reason"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["executionMode"], "inline")
+        self.assertEqual(result["fallbackPolicy"], "inline-no-retry")
+        self.assertEqual(result["reasonCode"], "INLINE_BY_ADAPTER")
+        self.assertNotIn("unavailable", result["reason"])
 
     def test_host_callable_without_definition(self) -> None:
         """C1 (retro §5.3): host declares agent role via runtime.json
@@ -414,16 +416,40 @@ class CheckAgentsTests(unittest.TestCase):
         self.assertTrue(result["hostCallable"])
         self.assertFalse(result["definitionPresent"])
         self.assertTrue(result["usable"])
+        self.assertEqual(result["executionMode"], "delegated")
         self.assertEqual(result["reasonCode"], "DEFINITION_NOT_FOUND_HOST_CAPABLE")
 
-    def test_unknown_state_returns_unknown(self) -> None:
-        """C1: no local definition and no host capability manifest → UNKNOWN."""
-        skills = self.tmp / ".agents" / "skills"
+    def test_cursor_without_capability_manifest_selects_inline(self) -> None:
+        skills = self.tmp / ".cursor" / "skills"
         skills.mkdir(parents=True)
-        # No runtime.json, no agents/ dir
         result = hp.cmd_check_agents(skills, "harness-explorer")
         self.assertFalse(result["usable"])
-        self.assertEqual(result["reasonCode"], "UNKNOWN")
+        self.assertEqual(result["executionMode"], "inline")
+        self.assertEqual(result["reasonCode"], "INLINE_BY_ADAPTER")
+
+    def test_manifest_without_role_selects_inline_without_retry(self) -> None:
+        skills = self.tmp / ".agents" / "skills"
+        skills.mkdir(parents=True)
+        _write(
+            self.tmp / ".agents" / "runtime.json",
+            json.dumps({"agentCapabilities": ["other-agent"]}) + "\n",
+        )
+        result = hp.cmd_check_agents(skills, "harness-reviewer")
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["executionMode"], "inline")
+        self.assertTrue(result["capabilityManifestPresent"])
+        self.assertEqual(result["reasonCode"], "HOST_CAPABILITY_NOT_DECLARED")
+        self.assertEqual(result["fallbackPolicy"], "inline-no-retry")
+
+    def test_invalid_tool_contract_is_unavailable_not_missing(self) -> None:
+        _write(
+            self.agents / "no-tools.md",
+            "---\nname: no-tools\ndescription: x\n---\n# body\n",
+        )
+        result = hp.cmd_check_agents(self.tmp, "no-tools")
+        self.assertFalse(result["usable"])
+        self.assertEqual(result["executionMode"], "unavailable")
+        self.assertEqual(result["reasonCode"], "TOOL_CONTRACT_INVALID")
 
     def test_three_fields_present_in_output(self) -> None:
         """C1: check-agents output must include definitionPresent/hostCallable/toolContractValid."""

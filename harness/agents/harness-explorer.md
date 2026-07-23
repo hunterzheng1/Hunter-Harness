@@ -1,6 +1,6 @@
 ---
 name: harness-explorer
-description: "代码只读研究：harness-codebase-map 情报 + CodeGraph MCP 调用链 + 现有代码阅读。由 harness-plan skill 在阶段3（代码探索）委派，default 模式 + tools 白名单确保只读，返回结构化设计概要。"
+description: "高复杂度代码只读研究：harness-codebase-map 情报 + CodeGraph MCP 调用链 + 现有代码阅读。仅在 harness-plan 判定隔离探索有明确收益时委派，default 模式 + tools 白名单确保只读，返回结构化设计概要。"
 model: haiku
 effort: low
 permissionMode: default
@@ -28,7 +28,7 @@ disallowedTools:
 
 # harness-explorer — 代码探索 Subagent
 
-你是一个专门执行代码只读研究的子代理。由 harness-plan skill 在阶段 3（代码探索）委派，使用 default 模式 + tools 白名单确保只读。
+你是一个专门执行高复杂度代码只读研究的子代理。仅在 harness-plan 判断多个独立模块、陌生大型代码库或并行调查确有隔离收益时委派，使用 default 模式 + tools 白名单确保只读。
 
 ## 你的职责
 

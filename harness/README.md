@@ -260,7 +260,7 @@ harness-skills/
 | 阶段 | 强制检查 |
 |------|---------|
 | **plan 阶段 0** | 检查工作区是否有未提交业务代码变更，已有则询问用户处理方式（继续/暂存/回滚/取消），不得假装"编码前规划" |
-| **plan 阶段 3** | 委派前 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer --json`；`usable=false` 或无效返回 → 主会话只读探索，不 retry |
+| **plan 阶段 3** | 默认主会话 CodeGraph/Read inline 探索；仅高复杂度且准备委派固定 agent 时单次预检，失败或无效返回立即 inline，不 retry |
 | **plan 阶段 4/6** | 原生规划协议必须记录风险/复用/替代方案/推荐方案/关键决策，以及任务拆分摘要 |
 | **plan 阶段 5** | 设计文档自审结果必须展示给用户；测试场景表未覆盖维度必须标记为 ⚠️ 缺口，不得全部 ✅ |
 | **run 步骤 0** | 任何代码修改前必须先向 `events.ndjson` 追加 `phase.start`；执行日志由阶段结束事件自动渲染 |
@@ -401,7 +401,7 @@ powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-*' -Destination
 powershell.exe -Command "Copy-Item -Path 'harness-skills/harness-test' -Destination '<目标项目>/.claude/skills/' -Recurse -Force"
 ```
 
-同时复制 agents 到目标项目的 `.claude/agents/`（共 3 个：`harness-explorer` 由 harness-plan 预检后委派；`harness-evaluator` 仅 `--adversarial` 时 opt-in；`harness-reviewer` 由 harness-review 预检后委派）：
+Claude Code/CodeBuddy 可选复制 3 个隔离角色：`harness-explorer` 仅高复杂度探索、`harness-evaluator` 仅 `--adversarial`/高风险规划、`harness-reviewer` 仅发布候选/高风险审查。Codex/Cursor 默认使用主会话或宿主临时隔离任务，不安装固定角色，也不执行固定 agent 预检：
 
 ```powershell
 powershell.exe -Command "Copy-Item -Path 'harness-skills/agents/*.md' -Destination '<目标项目>/.claude/agents/' -Recurse -Force"

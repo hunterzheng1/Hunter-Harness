@@ -74,7 +74,7 @@ describe("embedded Harness Bundles", () => {
     }
   });
 
-  it("keeps plan logging, ordering, and preflight contracts unambiguous", async () => {
+  it("keeps plan logging, ordering, and conditional delegation contracts unambiguous", async () => {
     const planSkill = await readFile(join(harnessSource, "harness-plan", "SKILL.md"), "utf8");
     const planProtocols = await readFile(join(harnessSource, "harness-plan", "protocols.md"), "utf8");
     const planChecklist = await readFile(join(harnessSource, "harness-plan", "checklist.md"), "utf8");
@@ -85,7 +85,10 @@ describe("embedded Harness Bundles", () => {
     expect(planSkill).toContain("先初始化 change-name + `phase.start`");
     expect(planSkill).toContain("歧义优先检查");
     expect(planSkill).toContain("简单修复探索预算");
-    expect(planSkill).toContain("check-agents --skills-root <skills-root> --agent harness-explorer --json");
+    expect(planSkill).toContain("阶段 3 探索默认 inline");
+    expect(planSkill).toContain("仅高复杂度探索考虑委派");
+    expect(planSkill).toContain("executionMode=delegated");
+    expect(planSkill).toContain("fallbackPolicy=inline-no-retry");
     expect(planSkill.indexOf("先初始化 change-name + `phase.start`")).toBeLessThan(
       planSkill.indexOf("`harness-knowledge-query` 单次 query")
     );
@@ -102,6 +105,40 @@ describe("embedded Harness Bundles", () => {
       expect(text).not.toContain("阶段5已审核设计文档");
     }
   });
+
+  it.each(PROFILES)(
+    "routes fixed subagents only on supported %s adapters",
+    async (profile) => {
+      for (const agent of ["codex", "cursor"] as const) {
+        const bundleRoot = join(resources, "bundles", profile, agent);
+        const planSkill = await readFile(join(bundleRoot, "harness-plan", "SKILL.md"), "utf8");
+        const reviewSkill = await readFile(join(bundleRoot, "harness-review", "SKILL.md"), "utf8");
+        expect(planSkill).toContain("无固定 agent 预检");
+        expect(planSkill).toContain("不运行 `check-agents --agent harness-explorer`");
+        expect(reviewSkill).toContain("不运行固定 `harness-reviewer` 预检");
+        expect(planSkill).not.toContain(
+          "harness_preflight.py check-agents --skills-root <skills-root> --agent harness-explorer"
+        );
+        expect(reviewSkill).not.toContain(
+          "harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer"
+        );
+      }
+
+      for (const agent of ["claude-code", "codebuddy"] as const) {
+        const bundleRoot = join(resources, "bundles", profile, agent);
+        const planSkill = await readFile(join(bundleRoot, "harness-plan", "SKILL.md"), "utf8");
+        const reviewSkill = await readFile(join(bundleRoot, "harness-review", "SKILL.md"), "utf8");
+        expect(planSkill).toContain(
+          "check-agents --skills-root <skills-root> --agent harness-explorer"
+        );
+        expect(reviewSkill).toContain(
+          "check-agents --skills-root <skills-root> --agent harness-reviewer"
+        );
+        expect(planSkill).toContain("仅高复杂度探索考虑委派");
+        expect(reviewSkill).toContain("审查执行（风险分级、inline 优先）");
+      }
+    }
+  );
 
   it("documents knowledge query as one ensure-current invocation", async () => {
     const querySkill = await readFile(

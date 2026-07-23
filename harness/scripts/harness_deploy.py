@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterable
@@ -38,6 +39,7 @@ HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
 FRAGMENT_HINT_RE = re.compile(r"^>\s*片段：\[\[shared/[^\]]+\]\]\s*.*$")
 
 BUILD_MARKER = ".harness-build.json"
+_REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.1, 0.2, 0.4, 0.8)
 # Install-side managed manifests record which files a prior install owned, so a
 # later conservative install can delete removed managed files while preserving
 # user-owned files (design §3.8 要点4). Skills manifest lives in the skills
@@ -74,6 +76,23 @@ AGENTS_WITH_CUSTOM_AGENTS = frozenset({"claude-code", "codebuddy"})
 
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def replace_with_retry(source: Path, target: Path) -> None:
+    """Bounded retry for transient directory locks during atomic swaps.
+
+    Windows indexers and antivirus scanners may briefly hold a newly generated
+    bundle directory. Retrying only ``PermissionError`` keeps real path and
+    contract failures fail-fast while avoiding an expensive full bundle rerun.
+    """
+    for attempt in range(len(_REPLACE_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt >= len(_REPLACE_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_REPLACE_RETRY_DELAYS_SECONDS[attempt])
 
 
 def emit_json(payload: dict[str, Any], *, ok: bool = True) -> int:
@@ -596,15 +615,15 @@ def cmd_build(
     if out_dir.exists():
         if (out_dir / BUILD_MARKER).is_file():
             old_backup = out_dir.parent / f".{out_dir.name}.old-{uuid.uuid4().hex[:8]}"
-            os.replace(out_dir, old_backup)
+            replace_with_retry(out_dir, old_backup)
         else:
             shutil.rmtree(staging, ignore_errors=True)
             raise ValueError(f"refusing to overwrite unmarked out_dir: {out_dir}")
     try:
-        os.replace(staging, out_dir)
+        replace_with_retry(staging, out_dir)
     except OSError:
         if old_backup is not None and old_backup.exists():
-            os.replace(old_backup, out_dir)
+            replace_with_retry(old_backup, out_dir)
         raise
     if old_backup is not None:
         shutil.rmtree(old_backup, ignore_errors=True)

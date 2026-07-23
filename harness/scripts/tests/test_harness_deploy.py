@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -239,6 +240,49 @@ class DeploySafetyReproTests(unittest.TestCase):
 
         new_hashes = hd.collect_files(out)
         self.assertEqual(new_hashes, old_hashes, "failed build must preserve previous output")
+
+    def test_atomic_replace_retries_transient_permission_error(self) -> None:
+        source = self.tmp / "source"
+        target = self.tmp / "target"
+        source.mkdir()
+        _write(source / "marker.txt", "new\n")
+        real_replace = os.replace
+        attempts = 0
+
+        def flaky_replace(src: object, dst: object) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("transient scanner lock")
+            real_replace(src, dst)
+
+        with (
+            mock.patch.object(hd.os, "replace", side_effect=flaky_replace),
+            mock.patch.object(hd.time, "sleep") as sleep,
+        ):
+            hd.replace_with_retry(source, target)
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual((target / "marker.txt").read_text(encoding="utf-8"), "new\n")
+
+    def test_atomic_replace_stops_after_bounded_retries(self) -> None:
+        source = self.tmp / "source"
+        target = self.tmp / "target"
+        source.mkdir()
+        with (
+            mock.patch.object(
+                hd.os, "replace", side_effect=PermissionError("persistent lock")
+            ) as replace,
+            mock.patch.object(hd.time, "sleep") as sleep,
+        ):
+            with self.assertRaises(PermissionError):
+                hd.replace_with_retry(source, target)
+
+        self.assertEqual(
+            replace.call_count, len(hd._REPLACE_RETRY_DELAYS_SECONDS) + 1
+        )
+        self.assertEqual(sleep.call_count, len(hd._REPLACE_RETRY_DELAYS_SECONDS))
 
     def test_two_builds_are_byte_identical(self) -> None:
         root = _fixture_root(self.tmp)

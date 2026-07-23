@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.27] — hunter-harness / [0.2.24] — @hunter-harness/workflow-harness
+
+### Fixed（子 agent 路由与 Windows 发布稳定性）
+
+- **Inline 优先路由**：代码探索默认由主会话执行；evaluator 仅显式 adversarial/高风险启用；reviewer 仅发布候选或高风险变更考虑隔离委派。
+- **Codex/Cursor 静默降级**：不再执行固定 `harness-explorer` / `harness-reviewer` 预检；使用宿主原生临时隔离能力或主会话，不再把正常 inline 显示成“subagent 不可用”。
+- **能力状态统一**：预检新增 `executionMode=inline|delegated|unavailable` 与 `fallbackPolicy=inline-no-retry`；缺少宿主能力清单返回 `INLINE_BY_ADAPTER`，真实定义/工具契约损坏才报告不可用。
+- **防止重复执行**：spawn 失败、空返回、0 tool uses、仅 Done/元数据时立即由主会话接管，不 retry、不重复整轮探索或审查。
+- **Windows 原子交换重试**：bundle staging 遭遇短暂目录锁时进行有界毫秒级重试，持久锁仍明确失败，避免整轮 8-bundle 同步因 `WinError 5` 返工。
+
 ## [0.2.26] — hunter-harness / [0.2.23] — @hunter-harness/workflow-harness
 
 ### Fixed（测试性能与候选发布证据）

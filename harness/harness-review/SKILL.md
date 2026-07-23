@@ -57,9 +57,9 @@ disallowed-tools:
 0. **启动准备** — 确定变更名（Glob `.harness/changes/*/plans/*-plan.md`，排除 `.harness/archive/*/`，读 frontmatter 提取 change-name）；**append `phase.start` 事件**（不得等审查完成才补）
 1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-run`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更
 <!-- @section-id review.delegate -->
-### 2. 委派 harness-reviewer
+### 2. 审查执行（风险分级、inline 优先）
 
-先运行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。`usable=false` → **直接主会话审查**，记 `decision` 事件，**不委派**。`reasonCode=CUSTOM_AGENTS_UNSUPPORTED` 是当前工具没有自定义 agent 能力的正常 inline 路径，不显示缺失告警。`usable=true` 时用 Agent spawn `harness-reviewer`（只读, 6 维度）。返回空 / 无报告正文 → **不 retry**，降级主会话审查。
+默认由主会话按同一 6 维度检查清单审查。仅发布候选，或变更命中权限/安全、支付、数据迁移、并发幂等、公共契约、跨模块核心路径时，才考虑隔离 reviewer；需要固定 `harness-reviewer` 时执行一次 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`。只有 `executionMode=delegated` 才委派；`executionMode=inline` 静默由主会话审查，不显示缺失告警。定义损坏、spawn 失败、空返回或只有元数据 → 记录一次 issue 后直接主会话审查，`fallbackPolicy=inline-no-retry`。
 
 3. **持久化报告与事实 sidecar（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`，并把同一批发现写成临时 JSON 后调用 `python <skills-root>/scripts/harness_review.py write-findings --change-dir <change-dir> --input <findings.json>`。权威计数来自 `reports/review/review-findings.json`，不是 Markdown。任一写入缺失 → 🟡WARN，不得宣称 review 完成。
 4. **生成修复反馈（原生协议）** — 若报告存在 RED/YELLOW 问题，执行 `protocols.md` 的 `review-fixback-protocol`，将问题转化为结构化 fixback 清单并落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`；随后把 disposition 临时 JSON 交给 `python <skills-root>/scripts/harness_review.py write-dispositions --change-dir <change-dir> --input <dispositions.json>`，权威状态写入 `reports/review/fixback-dispositions.json`。若无 RED/YELLOW，也必须写空 findings sidecar，并记录 `review-fixback-protocol: skipped(no findings)`。不调用 Superpowers `receiving-code-review`，也不记录外部 skill 降级。
