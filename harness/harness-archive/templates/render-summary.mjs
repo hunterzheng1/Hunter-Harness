@@ -42,6 +42,16 @@ const duration = (minutes) => {
   if (value < 60) return `${Math.round(value * 10) / 10} 分钟`;
   return `${Math.floor(value / 60)} 小时 ${Math.round(value % 60)} 分钟`;
 };
+const durationMs = (ms) => {
+  const value = number(ms);
+  if (value <= 0) return "0 秒";
+  if (value < 1000) return `${value}ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${Math.round(seconds * 10) / 10} 秒`;
+  const minutes = seconds / 60;
+  if (minutes < 60) return `${Math.round(minutes * 10) / 10} 分钟`;
+  return `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`;
+};
 
 const stages = Object.entries(record(data.stageStatus));
 const verification = record(data.verification);
@@ -49,6 +59,17 @@ const unit = record(verification.unitTests);
 const api = record(verification.apiTests);
 const durations = record(data.durations);
 const durationStages = list(durations.stages);
+const timing = record(data.timing);
+const wallLabel = timing.workflowWallClockMs != null
+  ? durationMs(timing.workflowWallClockMs)
+  : (durations.totalLabel || duration(durations.totalMinutes));
+const timingColumnsHtml = `
+<article class="card" id="timingColumns"><h2>时长（三列）</h2>
+<div class="row"><div><strong>活动执行</strong><small>stageActiveExecution</small></div><span>${esc(durationMs(timing.stageActiveExecutionMs))}</span></div>
+<div class="row"><div><strong>阶段墙钟</strong><small>stageWallClockSpan</small></div><span>${esc(durationMs(timing.stageWallClockSpanMs))}</span></div>
+<div class="row"><div><strong>全流程墙钟</strong><small>workflowWallClock</small></div><span>${esc(durationMs(timing.workflowWallClockMs))}</span></div>
+<p><small>reportCutoffAt=<code id="reportCutoffAt">${esc(timing.reportCutoffAt || "N/A")}</code> · durations.totalMinutes 仅为活动执行，不冒充墙钟</small></p>
+</article>`;
 const maxMinutes = Math.max(1, ...durationStages.map((item) => number(item.minutes)));
 const diff = record(data.diffStat);
 const risks = list(data.knownRisks);
@@ -86,12 +107,12 @@ const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><met
 @media(max-width:800px){.metrics{grid-template-columns:1fr 1fr}.grid,.risk{grid-template-columns:1fr}}@media(max-width:480px){main{width:calc(100% - 18px);margin-top:9px}.metrics{grid-template-columns:1fr}.hero{padding:19px}h1{font-size:23px}dl{grid-template-columns:1fr}}
 </style></head><body><main>
 <section class="hero"><div class="eyebrow">HARNESS EXECUTION REPORT</div><h1>${esc(data.changeName || "未命名变更")}</h1><p class="goal">${esc(data.businessGoal || "未记录业务目标")}</p><div class="status">${pill(data.finalStatus)}<span>基于事件、验证账本与 Git 证据生成${data.riskTier ? ` · riskTier=${esc(data.riskTier)}` : ""}</span></div>${reasonHtml ? `<div class="status">${reasonHtml}</div>` : ""}</section>
-<section class="metrics"><article class="metric"><small>任务提交</small><strong><code title="${esc(data.finalCommit)}">${esc(shortHash(data.finalCommit))}</code></strong><small>${esc(data.finalCommitBranch || "未记录分支")}</small></article><article class="metric"><small>代码范围</small><strong>${number(diff.filesChanged)} 个文件</strong><small><span class="plus">+${number(diff.insertions)}</span> · <span class="minus">-${number(diff.deletions)}</span></small></article><article class="metric"><small>总耗时</small><strong>${esc(durations.totalLabel || duration(durations.totalMinutes))}</strong><small>${durationStages.length} 个阶段</small></article><article class="metric"><small>归档完整性</small><strong>${esc(record(data.archiveManifest).checksumStatus || "UNKNOWN")}</strong><small>${number(record(data.archiveManifest).totalArchiveFiles)} 个归档文件</small></article></section>
-<section class="grid"><div><article class="card"><h2>验证结论</h2>${verificationHtml}</article><article class="card"><h2>阶段耗时</h2>${durationHtml}</article></div><div><article class="card"><h2>阶段状态</h2>${stageHtml}</article><article class="card"><h2>风险与后续</h2><div class="risk"><div><h3>已知风险</h3><ul>${riskHtml}</ul></div><div><h3>人工动作</h3><ul>${actionHtml}</ul></div></div></article></div></section>
+<section class="metrics"><article class="metric"><small>产品提交</small><strong><code title="${esc(data.productCommit || data.finalCommit)}">${esc(shortHash(data.productCommit || data.finalCommit))}</code></strong><small>archive=${esc(shortHash(data.archiveCommit || data.finalCommit))}</small></article><article class="metric"><small>代码范围</small><strong>${number(diff.filesChanged)} 个文件</strong><small><span class="plus">+${number(diff.insertions)}</span> · <span class="minus">-${number(diff.deletions)}</span></small></article><article class="metric"><small>全流程墙钟</small><strong>${esc(wallLabel)}</strong><small>活动=${esc(durationMs(timing.stageActiveExecutionMs))} · ${durationStages.length} 阶段</small></article><article class="metric"><small>归档完整性</small><strong>${esc(record(data.archiveManifest).checksumStatus || "UNKNOWN")}</strong><small>${number(record(data.archiveManifest).totalArchiveFiles)} 个归档文件</small></article></section>
+<section class="grid"><div><article class="card"><h2>验证结论</h2>${verificationHtml}</article><article class="card"><h2>阶段耗时（活动）</h2>${durationHtml}</article>${timingColumnsHtml}</div><div><article class="card"><h2>阶段状态</h2>${stageHtml}</article><article class="card"><h2>风险与后续</h2><div class="risk"><div><h3>已知风险</h3><ul>${riskHtml}</ul></div><div><h3>人工动作</h3><ul>${actionHtml}</ul></div></div></article></div></section>
 <details><summary>变更文件（${files.length}）</summary><div><table><thead><tr><th>文件</th><th>新增</th><th>删除</th></tr></thead><tbody>${fileRows}</tbody></table></div></details>
 <details><summary>执行时间线与工具交接（${timeline.length}）</summary><div><table><thead><tr><th>阶段</th><th>尝试</th><th>状态</th><th>来源 / 摘要</th></tr></thead><tbody>${timelineRows}</tbody></table></div></details>
 <details><summary>命令证据（${commands.length}）</summary><div><table><thead><tr><th>阶段</th><th>命令</th><th>结果</th></tr></thead><tbody>${commandRows}</tbody></table></div></details>
-<details><summary>技术元数据</summary><div><dl><dt>完整提交</dt><dd><code>${esc(data.finalCommit || "N/A")}</code></dd><dt>基线提交</dt><dd><code>${esc(data.baseCommit || "N/A")}</code></dd><dt>Git 范围</dt><dd><code>${esc(diff.range || "N/A")}</code></dd><dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd><dt>事实来源</dt><dd>${esc(list(record(data.reportPipeline).sources).join(" · ") || "N/A")}</dd></dl></div></details>
+<details><summary>技术元数据</summary><div><dl><dt>产品提交</dt><dd><code>${esc(data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>产品树哈希</dt><dd><code>${esc(data.productTreeHash || "N/A")}</code></dd><dt>归档提交</dt><dd><code>${esc(data.archiveCommit || data.finalCommit || "N/A")}</code></dd><dt>基线提交</dt><dd><code>${esc(data.baseCommit || "N/A")}</code></dd><dt>Git 范围</dt><dd><code>${esc(diff.range || "N/A")}</code></dd><dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd><dt>事实来源</dt><dd>${esc(list(record(data.reportPipeline).sources).join(" · ") || "N/A")}</dd></dl></div></details>
 </main></body></html>`;
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });

@@ -331,6 +331,399 @@ def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None
     return None, None
 
 
+def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
+    """Load structured product-candidate CI evidence (IA-1). Fail closed if absent."""
+    for relative in (
+        "evidence/product-candidate-ci.json",
+        "meta/product-candidate-ci.json",
+        "runtime/product-candidate-ci.json",
+    ):
+        path = change_dir / relative
+        if not path.is_file():
+            continue
+        try:
+            data = read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict) and data.get("schemaVersion") == 1:
+            return data
+    ledger = load_ledger(change_dir) or {}
+    for key in ("productCandidateCi", "product_candidate_ci"):
+        value = ledger.get(key)
+        if isinstance(value, dict):
+            return {"schemaVersion": 1, **value}
+    validations = ledger.get("validations") if isinstance(ledger.get("validations"), dict) else {}
+    for key in ("productCandidateCi", "product_candidate_ci", "candidateCi"):
+        value = validations.get(key) if isinstance(validations, dict) else None
+        if isinstance(value, dict):
+            return {"schemaVersion": 1, **value}
+    return None
+
+
+def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
+    """Hard gate: product candidate CI must be success with run URL + commit."""
+    evidence = load_product_candidate_ci(change_dir)
+    if evidence is None:
+        return {
+            "ok": False,
+            "code": "PRODUCT_CI_NOT_GREEN",
+            "message": (
+                "missing product-candidate CI evidence "
+                "(need evidence/product-candidate-ci.json with conclusion=success, "
+                "runUrl, commit)"
+            ),
+            "evidence": None,
+        }
+    conclusion = str(
+        evidence.get("conclusion") or evidence.get("status") or ""
+    ).strip().lower()
+    run_url = str(evidence.get("runUrl") or evidence.get("url") or "").strip()
+    commit = str(evidence.get("commit") or evidence.get("headSha") or "").strip()
+    if conclusion in {"success", "successful", "passed", "pass", "green", "ok"}:
+        # Review Y1: success alone is insufficient — runUrl + commit are required.
+        if not run_url or not commit:
+            return {
+                "ok": False,
+                "code": "PRODUCT_CI_NOT_GREEN",
+                "message": (
+                    "product candidate CI conclusion is success but missing "
+                    f"runUrl={run_url or 'empty'} commit={commit or 'empty'}"
+                ),
+                "evidence": evidence,
+            }
+        return {
+            "ok": True,
+            "code": "PRODUCT_CI_GREEN",
+            "message": f"product candidate CI green commit={commit} url={run_url}",
+            "evidence": evidence,
+        }
+    return {
+        "ok": False,
+        "code": "PRODUCT_CI_NOT_GREEN",
+        "message": (
+            f"product candidate CI conclusion={conclusion or 'unknown'} "
+            f"commit={commit or 'unknown'} runUrl={run_url or 'unknown'}"
+        ),
+        "evidence": evidence,
+    }
+
+
+PRODUCT_TREE_HASH_FILE_LIMIT = 20_000
+
+
+def compute_product_tree_hash_detail(
+    project: Path,
+    *,
+    file_limit: int = PRODUCT_TREE_HASH_FILE_LIMIT,
+) -> dict[str, Any]:
+    """Hash product tree excluding .harness/**; report truncation metadata (Y3)."""
+    project = project.resolve()
+    skip_dirs = {
+        ".harness",
+        ".git",
+        ".worktrees",
+        "node_modules",
+        ".next",
+        "dist",
+        "coverage",
+        "__pycache__",
+        ".venv",
+        "venv",
+    }
+    limit = max(1, int(file_limit))
+    lines: list[str] = []
+    truncated = False
+    for root, dirs, files in os.walk(project, onerror=lambda _exc: None):
+        dirs[:] = [name for name in dirs if name not in skip_dirs]
+        for name in sorted(files):
+            path = Path(root) / name
+            try:
+                rel = path.relative_to(project).as_posix()
+            except ValueError:
+                continue
+            try:
+                digest = sha256_file(path)
+            except OSError:
+                continue
+            lines.append(f"{rel}:{digest}")
+            if len(lines) >= limit:
+                truncated = True
+                break
+        if truncated:
+            break
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    return {
+        "hash": digest,
+        "truncated": truncated,
+        "fileCount": len(lines),
+        "limit": limit,
+    }
+
+
+def compute_product_tree_hash(
+    project: Path,
+    *,
+    file_limit: int = PRODUCT_TREE_HASH_FILE_LIMIT,
+) -> str:
+    """Hash product tree excluding .harness/** governance paths."""
+    return str(compute_product_tree_hash_detail(project, file_limit=file_limit)["hash"])
+
+
+def resolve_product_archive_identity(
+    change_dir: Path,
+    *,
+    project: Path | None = None,
+    product_commit: str | None = None,
+    archive_commit: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the three-way archive identity fields for summary/meta."""
+    change_dir = change_dir.resolve()
+    project_root = (project or find_project_root(change_dir)).resolve()
+    ledger = load_ledger(change_dir) or {}
+    ci = load_product_candidate_ci(change_dir) or {}
+    product = (
+        product_commit
+        or ledger.get("productCommit")
+        or ci.get("commit")
+        or ledger.get("finalCommit")
+        or ""
+    )
+    archive = (
+        archive_commit
+        or ledger.get("archiveCommit")
+        or ledger.get("finalCommit")
+        or product
+    )
+    tree = str(ledger.get("productTreeHash") or "")
+    under_harness = False
+    try:
+        change_dir.relative_to(project_root / ".harness")
+        under_harness = True
+    except ValueError:
+        under_harness = False
+    tree_meta: dict[str, Any] = {
+        "truncated": False,
+        "fileCount": 0,
+        "limit": PRODUCT_TREE_HASH_FILE_LIMIT,
+    }
+    if not tree:
+        if under_harness:
+            try:
+                tree_meta = compute_product_tree_hash_detail(project_root)
+                tree = str(tree_meta["hash"])
+            except OSError:
+                tree = hashlib.sha256(b"").hexdigest()
+        else:
+            # Bare temp fixtures are not real project roots — avoid scanning up-tree.
+            tree = hashlib.sha256(b"fixture-no-product-tree").hexdigest()
+    identity = {
+        "productCommit": str(product),
+        "productTreeHash": str(tree),
+        "archiveCommit": str(archive),
+        "productTreeHashTruncated": bool(tree_meta.get("truncated")),
+        "productTreeHashFileCount": int(tree_meta.get("fileCount") or 0),
+    }
+    expected_tree = tree
+    if under_harness:
+        try:
+            expected_meta = compute_product_tree_hash_detail(project_root)
+            expected_tree = str(expected_meta["hash"])
+            identity["productTreeHashTruncated"] = bool(expected_meta.get("truncated"))
+            identity["productTreeHashFileCount"] = int(expected_meta.get("fileCount") or 0)
+        except OSError:
+            expected_tree = tree
+    identity["validation"] = validate_product_identity(
+        product_commit=identity["productCommit"],
+        product_tree_hash=identity["productTreeHash"],
+        archive_commit=identity["archiveCommit"] or "unknown",
+        project=project_root if under_harness else None,
+        expected_tree_hash=expected_tree if under_harness else tree,
+    )
+    return identity
+
+
+def validate_product_identity(
+    *,
+    product_commit: str,
+    product_tree_hash: str,
+    archive_commit: str,
+    project: Path | None = None,
+    expected_tree_hash: str | None = None,
+) -> dict[str, Any]:
+    """Validate productCommit/productTreeHash/archiveCommit relationship."""
+    if not product_commit or not product_tree_hash or not archive_commit:
+        return {
+            "ok": False,
+            "code": "PRODUCT_IDENTITY_INCOMPLETE",
+            "message": "productCommit, productTreeHash, and archiveCommit are required",
+        }
+    expected = expected_tree_hash
+    if expected is None and project is not None:
+        expected = compute_product_tree_hash(project)
+    if expected is not None and str(product_tree_hash) != str(expected):
+        return {
+            "ok": False,
+            "code": "PRODUCT_TREE_HASH_MISMATCH",
+            "message": (
+                f"productTreeHash={product_tree_hash} does not match "
+                f"product tree={expected} for productCommit={product_commit}"
+            ),
+            "expected": expected,
+            "actual": product_tree_hash,
+        }
+    return {
+        "ok": True,
+        "code": "PRODUCT_IDENTITY_OK",
+        "productCommit": product_commit,
+        "productTreeHash": product_tree_hash,
+        "archiveCommit": archive_commit,
+    }
+
+
+def evaluate_release_evidence(
+    archived_identity: dict[str, Any],
+    *,
+    current_product_tree_hash: str,
+) -> dict[str, Any]:
+    """Old archive cannot remain release evidence after product inputs change."""
+    archived_tree = str(archived_identity.get("productTreeHash") or "")
+    if not archived_tree:
+        return {
+            "ok": False,
+            "code": "ARCHIVE_EVIDENCE_REOPEN_REQUIRED",
+            "message": "archived productTreeHash missing; reopen required",
+        }
+    if archived_tree != str(current_product_tree_hash):
+        return {
+            "ok": False,
+            "code": "ARCHIVE_EVIDENCE_REOPEN_REQUIRED",
+            "message": (
+                "product inputs changed since archive; "
+                f"archivedTree={archived_tree} currentTree={current_product_tree_hash}"
+            ),
+            "archivedProductTreeHash": archived_tree,
+            "currentProductTreeHash": current_product_tree_hash,
+        }
+    return {
+        "ok": True,
+        "code": "ARCHIVE_EVIDENCE_CURRENT",
+        "productTreeHash": archived_tree,
+    }
+
+
+def build_workflow_timing(
+    events: list[dict[str, Any]],
+    *,
+    report_cutoff_at: str | None = None,
+) -> dict[str, Any]:
+    """Formal multi-semantic timing object (IA-2 / IA-6)."""
+    stamps = [e.get("timestamp") for e in events if e.get("timestamp")]
+    started = str(stamps[0]) if stamps else None
+    cutoff = report_cutoff_at or (str(stamps[-1]) if stamps else None)
+    stage_active = 0
+    stage_wall = 0
+    unclosed = 0
+    for _phase, phase_events in he.group_events_by_phase(events):
+        timing = he.canonical_phase_timing(phase_events, cutoff_ts=cutoff)
+        stage_active += int(timing.get("activeExecutionMs") or 0)
+        stage_wall += int(timing.get("wallClockSpanMs") or 0)
+        unclosed += int(timing.get("unclosedAttemptCount") or 0)
+    workflow_wall = he.duration_ms_between(started, cutoff) if started and cutoff else 0
+    external = 0
+    for event in events:
+        etype = str(event.get("type") or "").lower()
+        if etype in {"external.wait", "ci.wait", "environment.wait", "env.wait"}:
+            dur = event.get("duration_ms") or event.get("durationMs")
+            if isinstance(dur, int):
+                external += max(0, dur)
+            elif event.get("timestamp") and event.get("endedAt"):
+                gap = he.duration_ms_between(event.get("timestamp"), event.get("endedAt"))
+                if gap:
+                    external += gap
+    unattributed = max(0, int(workflow_wall or 0) - stage_active - external)
+    post_archive_excluded = 0
+    if cutoff:
+        for event in events:
+            if str(event.get("phase") or "").lower() != "archive":
+                continue
+            ts = event.get("timestamp")
+            if ts and he.duration_ms_between(cutoff, ts) and he.duration_ms_between(cutoff, ts) > 0:
+                # timestamp after cutoff
+                start_dt = he.parse_timestamp(cutoff)
+                end_dt = he.parse_timestamp(ts)
+                if start_dt and end_dt and end_dt > start_dt:
+                    post_archive_excluded += 1
+    return {
+        "workflowStartedAt": started or NOT_AVAILABLE,
+        "reportCutoffAt": cutoff or NOT_AVAILABLE,
+        "workflowWallClockMs": int(workflow_wall or 0),
+        "stageActiveExecutionMs": int(stage_active),
+        "stageWallClockSpanMs": int(stage_wall),
+        "externalWaitMs": int(external),
+        "agentOrToolUnattributedMs": int(unattributed),
+        "unclosedAttemptCount": int(unclosed),
+        "postArchiveEventsExcluded": int(post_archive_excluded),
+        "totalMinutesSemantics": "active-only",
+    }
+
+
+def verify_manifest_byte_coverage(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    exclude_paths: list[str] | None = None,
+    exclusion_reasons: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Verify every covered manifest entry still matches on-disk bytes (IA-7)."""
+    root = root.resolve()
+    excluded = {
+        p.replace("\\", "/") for p in (exclude_paths or [])
+    }
+    reasons = {
+        k.replace("\\", "/"): v for k, v in (exclusion_reasons or {}).items()
+    }
+    mismatches: list[dict[str, str]] = []
+    checked = 0
+    for item in manifest.get("files") or []:
+        if not isinstance(item, dict):
+            continue
+        rel = str(item.get("path") or "").replace("\\", "/")
+        if not rel or _manifest_path_excluded(rel):
+            continue
+        if rel in excluded:
+            reasons.setdefault(rel, "excluded from checksum coverage")
+            continue
+        path = root / rel
+        if not path.is_file():
+            mismatches.append({"path": rel, "reason": "missing"})
+            continue
+        actual = sha256_file(path)
+        expected = str(item.get("sha256") or "")
+        checked += 1
+        if actual != expected:
+            mismatches.append(
+                {
+                    "path": rel,
+                    "reason": "hash-mismatch",
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    ok = not mismatches
+    if ok and reasons:
+        checksum_status = "OK_WITH_EXCLUSIONS"
+    elif ok:
+        checksum_status = "OK"
+    else:
+        checksum_status = "FAIL"
+    return {
+        "ok": ok,
+        "checksumStatus": checksum_status,
+        "checked": checked,
+        "mismatched": mismatches,
+        "exclusionReasons": reasons,
+    }
+
 def load_execution_log(change_dir: Path) -> str:
     for rel in ("logs/execution-log.md", "execution-log.md"):
         path = change_dir / rel
@@ -730,6 +1123,21 @@ def check_status(
                 warnings.append(tier_issue)
             else:
                 blockers.append(tier_issue)
+
+    # --- IA-1 product candidate CI hard gate ---
+    ci_gate = evaluate_product_ci_gate(change_dir)
+    checks["product_candidate_ci"] = {
+        "ok": bool(ci_gate.get("ok")),
+        "code": ci_gate.get("code"),
+        "evidence": ci_gate.get("evidence"),
+    }
+    if not ci_gate.get("ok"):
+        blockers.append(
+            {
+                "code": "PRODUCT_CI_NOT_GREEN",
+                "message": str(ci_gate.get("message") or "product candidate CI not green"),
+            }
+        )
 
     # --- artifact preflight (retro §5.31) ---
     # Classify artifact events before destructive finalize: informational (OK),
@@ -1315,10 +1723,17 @@ def _durations_from_event_phases(
     events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     # Canonical per-phase timing (UT-008/RET-20): one reducer feeds every view.
+    # totalMinutes remains active-only (IA-2); use top-level timing for wall clock.
+    cutoff = None
+    if events:
+        stamps = [e.get("timestamp") for e in events if e.get("timestamp")]
+        cutoff = str(stamps[-1]) if stamps else None
     canonical: dict[str, dict[str, Any]] = {}
     if events:
         for phase_name, phase_events in he.group_events_by_phase(events):
-            canonical[phase_name] = he.canonical_phase_timing(phase_events)
+            canonical[phase_name] = he.canonical_phase_timing(
+                phase_events, cutoff_ts=cutoff
+            )
     stages: list[dict[str, Any]] = []
     total_ms = 0
     for name, info in (event_summary.get("phases") or {}).items():
@@ -1338,6 +1753,7 @@ def _durations_from_event_phases(
             "startedAt": info.get("started_at") or NOT_AVAILABLE,
             "endedAt": info.get("ended_at") or NOT_AVAILABLE,
             "minutes": minutes,
+            "minutesSemantics": "active-only",
             "result": result,
             "attempts": attempts,
         }
@@ -1346,11 +1762,13 @@ def _durations_from_event_phases(
             stage["activeExecutionMs"] = timing.get("activeExecutionMs")
             stage["wallClockSpanMs"] = timing.get("wallClockSpanMs")
             stage["lateEventCount"] = timing.get("lateEventCount")
+            stage["unclosedAttemptCount"] = timing.get("unclosedAttemptCount")
         stages.append(stage)
     total_min = round(total_ms / 60000, 2)
     return {
-        "totalLabel": f"约 {int(round(total_min))} 分",
+        "totalLabel": f"约 {int(round(total_min))} 分（活动执行）",
         "totalMinutes": total_min,
+        "totalMinutesSemantics": "active-only",
         "stages": stages,
     }
 
@@ -2054,16 +2472,60 @@ def collect_summary_data(
     if events:
         data["durations"] = _durations_from_event_phases(event_summary, events)
         data["skillCalls"] = _skill_calls_from_stages(data["durations"].get("stages") or [])
+        stamps = [e.get("timestamp") for e in projected_events if e.get("timestamp")]
+        cutoff = str(stamps[-1]) if stamps else None
+        data["timing"] = build_workflow_timing(projected_events, report_cutoff_at=cutoff)
     elif log_text and (not for_replay or not data.get("durations")):
         data["durations"] = _parse_durations_from_log(log_text)
         data["skillCalls"] = _skill_calls_from_stages(data["durations"].get("stages") or [])
+        data.setdefault(
+            "timing",
+            {
+                "workflowStartedAt": NOT_AVAILABLE,
+                "reportCutoffAt": NOT_AVAILABLE,
+                "workflowWallClockMs": 0,
+                "stageActiveExecutionMs": int(
+                    round(float(data["durations"].get("totalMinutes") or 0) * 60000)
+                ),
+                "stageWallClockSpanMs": 0,
+                "externalWaitMs": 0,
+                "agentOrToolUnattributedMs": 0,
+                "unclosedAttemptCount": 0,
+                "postArchiveEventsExcluded": 0,
+                "totalMinutesSemantics": "active-only",
+            },
+        )
     elif not data.get("durations"):
         data["durations"] = {
             "totalLabel": NOT_AVAILABLE,
             "totalMinutes": 0,
+            "totalMinutesSemantics": "active-only",
             "stages": [],
         }
         data["skillCalls"] = []
+        data.setdefault(
+            "timing",
+            {
+                "workflowStartedAt": NOT_AVAILABLE,
+                "reportCutoffAt": NOT_AVAILABLE,
+                "workflowWallClockMs": 0,
+                "stageActiveExecutionMs": 0,
+                "stageWallClockSpanMs": 0,
+                "externalWaitMs": 0,
+                "agentOrToolUnattributedMs": 0,
+                "unclosedAttemptCount": 0,
+                "postArchiveEventsExcluded": 0,
+                "totalMinutesSemantics": "active-only",
+            },
+        )
+
+    # IA-1/4 identity (product vs archive)
+    if not for_replay:
+        identity = resolve_product_archive_identity(change_dir, project=project)
+        data["productCommit"] = identity.get("productCommit") or data.get("finalCommit")
+        data["productTreeHash"] = identity.get("productTreeHash")
+        data["archiveCommit"] = identity.get("archiveCommit") or data.get("finalCommit")
+        data["changeIdentity"] = identity
 
     # diffStat / changedFiles
     if not for_replay or not data.get("changedFiles"):
@@ -2304,6 +2766,33 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
     parts.append("</ul></div>")
     if summary.get("riskTier"):
         parts.append(f"<p><strong>riskTier</strong>: {esc(summary.get('riskTier'))}</p>")
+
+    timing = summary.get("timing") if isinstance(summary.get("timing"), dict) else {}
+    if timing:
+        parts.append("<h3>Timing</h3>")
+        parts.append(
+            "<p id=\"timingColumns\">"
+            f"stageActiveExecution={esc(timing.get('stageActiveExecutionMs'))} · "
+            f"stageWallClockSpan={esc(timing.get('stageWallClockSpanMs'))} · "
+            f"workflowWallClock={esc(timing.get('workflowWallClockMs'))}"
+            "</p>"
+        )
+        parts.append(
+            f"<p><strong>reportCutoffAt</strong>: "
+            f"<span id=\"reportCutoffAt\">{esc(timing.get('reportCutoffAt'))}</span></p>"
+        )
+        parts.append(
+            "<p><small>durations.totalMinutes is active-only; "
+            "do not treat it as workflow wall clock.</small></p>"
+        )
+
+    if summary.get("productCommit") or summary.get("productTreeHash"):
+        parts.append("<h3>Identity</h3>")
+        parts.append(
+            f"<p>productCommit={esc(summary.get('productCommit'))} "
+            f"productTreeHash={esc(summary.get('productTreeHash'))} "
+            f"archiveCommit={esc(summary.get('archiveCommit'))}</p>"
+        )
 
     pipeline = summary.get("reportPipeline") or {}
     cmds = pipeline.get("commands") or []
@@ -3458,6 +3947,27 @@ def cmd_finalize(
         payload["ok"] = False
         return 1, payload
 
+    # --- 2d. product candidate CI hard gate (IA-1) ---
+    ci_gate = evaluate_product_ci_gate(work_dir)
+    payload["steps"]["product_candidate_ci"] = {
+        "ok": bool(ci_gate.get("ok")),
+        "code": ci_gate.get("code"),
+        "message": ci_gate.get("message"),
+    }
+    if not ci_gate.get("ok"):
+        payload["error"] = str(ci_gate.get("message") or "PRODUCT_CI_NOT_GREEN")
+        payload["issues"] = [
+            {
+                "code": "PRODUCT_CI_NOT_GREEN",
+                "severity": "error",
+                "message": str(ci_gate.get("message") or "product candidate CI not green"),
+            }
+        ]
+        _restore_finalize_failure()
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        return 1, payload
+
     # --- 3. candidate phase.end + freeze cutoff (RET-19 freeze-first) ---
     # This terminal exists only inside the isolated operation staging tree. It
     # becomes authoritative atomically at publish; validation failure discards
@@ -3589,33 +4099,16 @@ def cmd_finalize(
         warnings.append(f"archive-meta write failed: {exc}")
         payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
 
-    # --- 9. after-manifest + compare ---
-    after_path = work_dir / "evidence" / "archive-manifest-after.json"
-    try:
-        after_manifest = generate_manifest(work_dir, after_path)
-        before_in_archive = work_dir / "evidence" / "archive-manifest-before.json"
-        if before_in_archive.is_file():
-            before_manifest = read_json(before_in_archive)
-        compare_result = compare_manifests(before_manifest, after_manifest)
-        payload["steps"]["after_manifest"] = {
-            "ok": True,
-            "path": str(after_path),
-            "compare": compare_result,
-        }
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        payload["error"] = f"after-manifest failed: {exc}"
-        payload["steps"]["after_manifest"] = {"ok": False, "error": str(exc)}
-        _restore_finalize_failure()
-        return 1, payload
-
-    # --- 10. final summary update + final render/validate (no more events) ---
+    # --- 9/10. final summary stats + render, then LAST manifest (IA-7) ---
+    # Post-manifest rewrites of covered bytes are forbidden. We update summary /
+    # HTML first, regenerate after-manifest last, then verify on-disk hashes.
+    # If summary/html must still change after that, they are excluded with reasons.
     summary = read_json(summary_path)
     summary["archiveManifest"] = {
-        "movedFiles": compare_result.get("movedFiles", 0),
-        "generatedFiles": compare_result.get("generatedFiles", 0),
-        "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
-        "checksumStatus": compare_result.get("checksumStatus", "FAIL"),
-        **_manifest_self_stats(work_dir, after_manifest, after_path),
+        "movedFiles": 0,
+        "generatedFiles": 0,
+        "totalArchiveFiles": 0,
+        "checksumStatus": "PENDING",
     }
     write_json(summary_path, summary)
     render_result = render_final_summary(work_dir, summary_path)
@@ -3626,24 +4119,109 @@ def cmd_finalize(
     summary = read_json(summary_path)
     validate_result = validate_summary(summary, html_path if html_path.is_file() else None)
     payload["steps"]["validate"] = validate_result
-    summary.setdefault("reportPipeline", {})["validationIssues"] = validate_result.get("issues") or []
+    summary.setdefault("reportPipeline", {})["validationIssues"] = validate_result.get(
+        "issues"
+    ) or []
     write_json(summary_path, summary)
+
+    after_path = work_dir / "evidence" / "archive-manifest-after.json"
+    try:
+        after_manifest = generate_manifest(work_dir, after_path)
+        before_in_archive = work_dir / "evidence" / "archive-manifest-before.json"
+        if before_in_archive.is_file():
+            before_manifest = read_json(before_in_archive)
+        compare_result = compare_manifests(before_manifest, after_manifest)
+        coverage = verify_manifest_byte_coverage(work_dir, after_manifest)
+        # Embed compare stats into summary AFTER manifest → must exclude those paths.
+        summary = read_json(summary_path)
+        summary["archiveManifest"] = {
+            "movedFiles": compare_result.get("movedFiles", 0),
+            "generatedFiles": compare_result.get("generatedFiles", 0),
+            "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
+            "checksumStatus": coverage.get("checksumStatus", "FAIL"),
+            "exclusionReasons": {
+                "reports/final/summary-data.json": (
+                    "archiveManifest stats written after coverage snapshot"
+                ),
+                "reports/final/final-summary.html": (
+                    "re-rendered after coverage snapshot to display manifest stats"
+                ),
+            },
+            **_manifest_self_stats(work_dir, after_manifest, after_path),
+        }
+        write_json(summary_path, summary)
+        render_result = render_final_summary(work_dir, summary_path)
+        if not render_result.get("ok"):
+            payload["error"] = (
+                f"post-manifest summary render failed: {render_result.get('error')}"
+            )
+            _restore_finalize_failure()
+            return 1, payload
+        coverage = verify_manifest_byte_coverage(
+            work_dir,
+            after_manifest,
+            exclude_paths=[
+                "reports/final/summary-data.json",
+                "reports/final/final-summary.html",
+            ],
+            exclusion_reasons=summary["archiveManifest"]["exclusionReasons"],
+        )
+        summary["archiveManifest"]["checksumStatus"] = coverage.get(
+            "checksumStatus", "FAIL"
+        )
+        summary["archiveManifest"]["exclusionReasons"] = coverage.get(
+            "exclusionReasons"
+        ) or summary["archiveManifest"]["exclusionReasons"]
+        summary["archiveManifest"]["coverageChecked"] = coverage.get("checked")
+        write_json(summary_path, summary)
+        # Re-render once more for checksumStatus display; remain excluded.
+        render_final_summary(work_dir, summary_path)
+        summary = read_json(summary_path)
+        validate_result = validate_summary(
+            summary, html_path if html_path.is_file() else None
+        )
+        payload["steps"]["validate"] = validate_result
+        summary.setdefault("reportPipeline", {})["validationIssues"] = (
+            validate_result.get("issues") or []
+        )
+        write_json(summary_path, summary)
+        payload["steps"]["after_manifest"] = {
+            "ok": bool(coverage.get("ok")) and bool(compare_result.get("ok")),
+            "path": str(after_path),
+            "compare": compare_result,
+            "coverage": coverage,
+        }
+        compare_result = {
+            **compare_result,
+            "ok": bool(compare_result.get("ok")) and bool(coverage.get("ok")),
+            "checksumStatus": coverage.get("checksumStatus"),
+            "exclusionReasons": coverage.get("exclusionReasons"),
+        }
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        payload["error"] = f"after-manifest failed: {exc}"
+        payload["steps"]["after_manifest"] = {"ok": False, "error": str(exc)}
+        _restore_finalize_failure()
+        return 1, payload
 
     # --- 11. closure: only when both validators and manifest pass ---
     validate_ok = bool(validate_result.get("ok"))
     manifest_ok = bool(compare_result.get("ok"))
-    can_close = validate_ok and manifest_ok
+    # Honest checksum: FAIL blocks; OK and OK_WITH_EXCLUSIONS (with reasons) pass.
+    checksum = str(compare_result.get("checksumStatus") or "")
+    checksum_ok = checksum in {"OK", "OK_WITH_EXCLUSIONS"}
+    can_close = validate_ok and manifest_ok and checksum_ok
 
     if not can_close:
         issues_out = list(validate_result.get("issues") or [])
-        if not manifest_ok:
+        if not manifest_ok or not checksum_ok:
             issues_out.append(
                 {
                     "code": "manifest-mismatch",
                     "severity": "error",
                     "message": (
                         f"missing={compare_result.get('missing')} "
-                        f"mismatched={compare_result.get('mismatched')}"
+                        f"mismatched={compare_result.get('mismatched')} "
+                        f"checksumStatus={checksum}"
                     ),
                 }
             )

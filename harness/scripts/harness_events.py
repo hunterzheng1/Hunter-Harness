@@ -968,28 +968,89 @@ def late_event_stats(phase_events: list[dict[str, Any]]) -> dict[str, int]:
     return {"lateEventCount": len(late_stamps), "lateEventSpanMs": span}
 
 
-def attempt_invocations(phase_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-attempt invocation view: attempt, status, durationMs (RET-22)."""
+def _seal_timestamp_for_attempt(
+    events_in: list[dict[str, Any]],
+    *,
+    cutoff_ts: str | None,
+    next_attempt_start: Any = None,
+) -> tuple[Any, str | None]:
+    """Pick INCOMPLETE seal time: next start, recovery, or report cutoff."""
+    recovery_ts = None
+    for event in events_in:
+        if str(event.get("type") or "").lower() in {
+            "recovery",
+            "phase.recovery",
+            "attempt.recovery",
+        }:
+            recovery_ts = event.get("timestamp") or recovery_ts
+    if next_attempt_start:
+        return next_attempt_start, "INCOMPLETE"
+    if recovery_ts:
+        return recovery_ts, "INCOMPLETE"
+    if cutoff_ts:
+        return cutoff_ts, "INCOMPLETE"
+    # Fall back to last event timestamp so wall clock is not silently dropped.
+    for event in reversed(events_in):
+        if event.get("timestamp"):
+            return event.get("timestamp"), "INCOMPLETE"
+    return None, "INCOMPLETE"
+
+
+def attempt_invocations(
+    phase_events: list[dict[str, Any]],
+    *,
+    cutoff_ts: str | None = None,
+) -> list[dict[str, Any]]:
+    """Per-attempt invocation view: attempt, status, durationMs (RET-22 / IA-2).
+
+    Closed attempts keep phase.end status. Unclosed attempts are sealed as
+    INCOMPLETE at the next attempt start, an explicit recovery event, or cutoff.
+    """
+    attempts = split_phase_attempts(phase_events)
     invocations: list[dict[str, Any]] = []
-    for attempt in split_phase_attempts(phase_events):
+    for index, attempt in enumerate(attempts):
         events_in = attempt.get("events") or []
         start_ts = None
         end_ts = None
         status = None
+        closed_by_end = False
         for event in events_in:
             if event.get("type") == "phase.start" and start_ts is None:
                 start_ts = event.get("timestamp")
             elif event.get("type") == "phase.end":
                 end_ts = event.get("timestamp")
-                status = event.get("status", status)
+                if "status" in event:
+                    status = event.get("status")
+                closed_by_end = True
+        sealed_incomplete = False
+        if not closed_by_end:
+            next_start = None
+            if index + 1 < len(attempts):
+                for event in attempts[index + 1].get("events") or []:
+                    if event.get("type") == "phase.start" and event.get("timestamp"):
+                        next_start = event.get("timestamp")
+                        break
+            seal_ts, seal_status = _seal_timestamp_for_attempt(
+                events_in,
+                cutoff_ts=cutoff_ts,
+                next_attempt_start=next_start,
+            )
+            if seal_ts is not None:
+                end_ts = seal_ts
+                status = seal_status
+                sealed_incomplete = True
         duration = None
         if start_ts and end_ts:
             duration = duration_ms_between(start_ts, end_ts)
+        # Active execution counts phase.end-closed attempts only (INCOMPLETE seals excluded).
+        active_eligible = closed_by_end and not sealed_incomplete
         invocations.append(
             {
                 "attempt": attempt.get("attempt"),
                 "status": status,
                 "durationMs": duration,
+                "activeEligible": active_eligible,
+                "sealedIncomplete": sealed_incomplete,
             }
         )
     return invocations
@@ -1005,30 +1066,48 @@ def phase_final_state(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
         "attempt": latest.get("attempt"),
         "status": latest.get("status"),
         "durationMs": latest.get("durationMs"),
-        "closed": latest.get("status") is not None,
+        "closed": latest.get("status") is not None and latest.get("status") != "INCOMPLETE",
     }
 
 
-def canonical_phase_timing(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
-    """Single reducer for every duration view (RET-20).
+def canonical_phase_timing(
+    phase_events: list[dict[str, Any]],
+    *,
+    cutoff_ts: str | None = None,
+) -> dict[str, Any]:
+    """Single reducer for every duration view (RET-20 / IA-2).
 
-    activeExecutionMs: phase.start → matching phase.end (closed contract).
-    wallClockSpanMs: first → last timestamp in the bucket, late events included.
+    activeExecutionMs: sum of closed attempt start→end only (INCOMPLETE excluded).
+    wallClockSpanMs: first → last/cutoff timestamp; unclosed attempts retain span.
     """
+    invocations = attempt_invocations(phase_events, cutoff_ts=cutoff_ts)
     stamps = [e.get("timestamp") for e in phase_events if e.get("timestamp")]
-    invocation_durations = [
+    # Cutoff seals INCOMPLETE attempts but must not inflate stage wall by itself.
+    # Include cutoff in the wall span only when it sealed an otherwise-open attempt.
+    if cutoff_ts and any(inv.get("sealedIncomplete") for inv in invocations):
+        stamps = list(stamps) + [cutoff_ts]
+    closed_durations = [
         invocation["durationMs"]
-        for invocation in attempt_invocations(phase_events)
-        if invocation.get("durationMs") is not None
+        for invocation in invocations
+        if invocation.get("activeEligible") and invocation.get("durationMs") is not None
     ]
-    active = sum(invocation_durations) if invocation_durations else None
+    active = sum(closed_durations) if closed_durations else (0 if invocations else None)
     late = late_event_stats(phase_events)
-    wall = duration_ms_between(stamps[0], stamps[-1]) if len(stamps) >= 2 else active
+    if len(stamps) >= 2:
+        wall = duration_ms_between(stamps[0], stamps[-1])
+    else:
+        wall = active
+    unclosed = sum(
+        1
+        for invocation in invocations
+        if invocation.get("sealedIncomplete") or invocation.get("status") == "INCOMPLETE"
+    )
     return {
         "activeExecutionMs": active,
         "wallClockSpanMs": wall,
         "lateEventCount": late["lateEventCount"],
         "lateEventSpanMs": late["lateEventSpanMs"],
+        "unclosedAttemptCount": unclosed,
     }
 
 
