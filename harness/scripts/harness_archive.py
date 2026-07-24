@@ -900,10 +900,22 @@ def resolve_product_archive_identity(
         or ledger.get("finalCommit")
         or ""
     )
+    feature_merge = str(
+        ledger.get("featureMergeHash")
+        or ledger.get("mergeFinalHash")
+        or product
+    ).strip()
+    code, current_head, _ = git_run(project_root, "rev-parse", "HEAD")
+    release_tip = str(
+        ledger.get("releaseTipHash")
+        or (current_head if code == 0 else "")
+        or ledger.get("archiveCommit")
+        or product
+    ).strip()
     archive = (
         archive_commit
         or ledger.get("archiveCommit")
-        or ledger.get("finalCommit")
+        or release_tip
         or product
     )
     tree = str(ledger.get("productTreeHash") or "")
@@ -930,6 +942,8 @@ def resolve_product_archive_identity(
             tree = hashlib.sha256(b"fixture-no-product-tree").hexdigest()
     identity = {
         "productCommit": str(product),
+        "featureMergeHash": feature_merge,
+        "releaseTipHash": release_tip,
         "productTreeHash": str(tree),
         "archiveCommit": str(archive),
         "productTreeHashTruncated": bool(tree_meta.get("truncated")),
@@ -1659,6 +1673,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
 
     run = failures = errors = skipped = 0
     passed_count: int | None = None
+    deselected = 0
     pass_rate: Any = None
     source = "committed"
     counted = False
@@ -1675,6 +1690,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
             "failures",
             "errors",
             "skipped",
+            "deselected",
         )
     ):
         if "total" in metrics:
@@ -1690,6 +1706,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         failures = int(metrics.get("failed", metrics.get("failures", 0)) or 0)
         errors = int(metrics.get("errors", 0) or 0)
         skipped = int(metrics.get("skipped", 0) or 0)
+        deselected = int(metrics.get("deselected", 0) or 0)
         if "passed" in metrics:
             passed_count = int(metrics.get("passed", 0) or 0)
         pass_rate = metrics.get("passRate")
@@ -1708,6 +1725,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         failures = int(evidence.get("failures", unit.get("failures", 0)) or 0)
         errors = int(evidence.get("errors", unit.get("errors", 0)) or 0)
         skipped = int(evidence.get("skipped", unit.get("skipped", 0)) or 0)
+        deselected = int(evidence.get("deselected", unit.get("deselected", 0)) or 0)
         pass_rate = evidence.get("passRate") or unit.get("passRate")
         source = "committed"
         counted = run > 0 or failures > 0 or errors > 0 or skipped > 0
@@ -1729,6 +1747,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         failures = int(unit.get("failures", 0) or 0)
         errors = int(unit.get("errors", 0) or 0)
         skipped = int(unit.get("skipped", 0) or 0)
+        deselected = int(unit.get("deselected", 0) or 0)
         pass_rate = unit.get("passRate")
         source = "committed"
 
@@ -1755,6 +1774,7 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         "failures": int(failures or 0),
         "errors": int(errors or 0),
         "skipped": int(skipped or 0),
+        "deselected": int(deselected or 0),
         "passRate": pass_rate if pass_rate is not None else NOT_AVAILABLE,
         "source": source,
     }
@@ -1771,10 +1791,12 @@ def _ledger_api_tests(
     empty = {
         "status": "NOT_RUN",
         "total": 0,
+        "executed": 0,
         "passed": 0,
         "failed": 0,
         "blocked": 0,
         "passRate": NOT_AVAILABLE,
+        "executionRate": NOT_AVAILABLE,
         "source": "not-run",
     }
     if not ledger:
@@ -1853,18 +1875,19 @@ def _ledger_api_tests(
         pass_rate = api.get("passRate")
         source = "committed"
 
-    if pass_rate is None and total > 0:
-        pass_rate = f"{passed / total:.0%}"
-    elif pass_rate is None:
-        pass_rate = NOT_AVAILABLE
+    executed = passed + failed
+    pass_rate = f"{passed / executed:.0%}" if executed > 0 else NOT_AVAILABLE
+    execution_rate = f"{executed / total:.0%}" if total > 0 else NOT_AVAILABLE
 
     return {
         "status": status,
         "total": int(total or 0),
+        "executed": int(executed or 0),
         "passed": int(passed or 0),
         "failed": int(failed or 0),
         "blocked": int(blocked or 0),
-        "passRate": pass_rate if pass_rate is not None else NOT_AVAILABLE,
+        "passRate": pass_rate,
+        "executionRate": execution_rate,
         "source": source,
     }
 
@@ -1937,13 +1960,16 @@ def _typed_test_metrics(entry: dict[str, Any], *, total_key: str) -> dict[str, A
     total = int(metrics.get(total_key, 0) or 0)
     passed = int(metrics.get("passed", 0) or 0)
     failed = int(metrics.get("failed", 0) or 0)
+    executed = passed + failed
     status = str(entry.get("status") or "").upper() or "NOT_RUN"
     out: dict[str, Any] = {
         "status": status,
         "total": total,
+        "executed": executed,
         "passed": passed,
         "failed": failed,
-        "passRate": f"{passed / total:.0%}" if total > 0 else NOT_AVAILABLE,
+        "passRate": f"{passed / executed:.0%}" if executed > 0 else NOT_AVAILABLE,
+        "executionRate": f"{executed / total:.0%}" if total > 0 else NOT_AVAILABLE,
         "source": "committed" if total > 0 else "not-run",
     }
     if "blocked" in metrics:
@@ -1980,6 +2006,17 @@ def build_verification_projection(
     browser_e2e = validations.get("browserE2E")
     if isinstance(browser_e2e, dict):
         projection["browserE2E"] = _typed_test_metrics(browser_e2e, total_key="total")
+    performance = validations.get("performance")
+    if isinstance(performance, dict):
+        projection["performance"] = {
+            "status": str(performance.get("status") or "NOT_RUN").upper(),
+            "metrics": _deepcopy_json(
+                performance.get("metrics")
+                if isinstance(performance.get("metrics"), dict)
+                else {}
+            ),
+            "source": "committed",
+        }
     return projection
 
 
@@ -2142,14 +2179,25 @@ def _verification_checks_from_events(
     return checks
 
 
-def _artifacts_from_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _artifacts_from_events(
+    events: list[dict[str, Any]],
+    *,
+    change_dir: Path | None = None,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for e in events:
         if e.get("type") != "artifact":
             continue
+        raw_path = str(e.get("path") or "")
+        archived_path = raw_path
+        if change_dir is not None and raw_path:
+            product_copy = change_dir / "artifacts" / "product" / raw_path
+            if not (change_dir / raw_path).is_file() and product_copy.is_file():
+                archived_path = product_copy.relative_to(change_dir).as_posix()
         out.append(
             {
-                "path": e.get("path") or "",
+                "path": archived_path,
+                **({"sourcePath": raw_path} if archived_path != raw_path else {}),
                 "kind": e.get("kind") or "",
                 "phase": e.get("phase") or "",
             }
@@ -2882,7 +2930,7 @@ def collect_summary_data(
             "dbCompatibility": db,
             "coverageDisplay": coverage,
         }
-        for typed_key in ("apiContract", "browserE2E"):
+        for typed_key in ("apiContract", "browserE2E", "performance"):
             if typed_key in projection:
                 data["verification"][typed_key] = projection[typed_key]
         if ci_metrics is not None:
@@ -2982,6 +3030,8 @@ def collect_summary_data(
     if not for_replay:
         identity = resolve_product_archive_identity(change_dir, project=project)
         data["productCommit"] = identity.get("productCommit") or data.get("finalCommit")
+        data["featureMergeHash"] = identity.get("featureMergeHash") or data.get("finalCommit")
+        data["releaseTipHash"] = identity.get("releaseTipHash") or data.get("archiveCommit")
         data["productTreeHash"] = identity.get("productTreeHash")
         data["archiveCommit"] = identity.get("archiveCommit") or data.get("finalCommit")
         data["changeIdentity"] = identity
@@ -3049,6 +3099,8 @@ def collect_summary_data(
     data["gitFacts"] = {
         "baseCommit": data.get("baseCommit") or "",
         "finalCommit": data.get("finalCommit") or "",
+        "featureMergeHash": data.get("featureMergeHash") or "",
+        "releaseTipHash": data.get("releaseTipHash") or "",
         "filesChanged": int(diff_for_facts.get("filesChanged") or 0),
         "insertions": int(diff_for_facts.get("insertions") or 0),
         "deletions": int(diff_for_facts.get("deletions") or 0),
@@ -3069,7 +3121,9 @@ def collect_summary_data(
     if not isinstance(data.get("artifacts"), list):
         data["artifacts"] = []
     if not for_replay:
-        data["artifacts"] = _artifacts_from_events(projected_events)
+        data["artifacts"] = _artifacts_from_events(
+            projected_events, change_dir=change_dir
+        )
 
     data["reviewSummary"] = _review_summary(
         change_dir,
@@ -3151,7 +3205,9 @@ def collect_summary_data(
         # Cannot invent commands
         pass
     verification_checks = _verification_checks_from_events(projected_events, ledger)
-    pipeline_artifacts = _artifacts_from_events(projected_events)
+    pipeline_artifacts = _artifacts_from_events(
+        projected_events, change_dir=change_dir
+    )
     if not sources:
         sources = [NOT_AVAILABLE]
 
@@ -4012,6 +4068,7 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
     if not events_p.is_file():
         return {"ok": True, "items": [], "blocking": []}
     change_id = change_dir.name
+    project_root = find_project_root(change_dir)
     for line in events_p.read_text(encoding="utf-8").splitlines():
         try:
             event = json.loads(line)
@@ -4058,14 +4115,54 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
                 "correction": f"append correction --target-event-id {event_id} --target-field path --new-value-json \"{canonical}\"",
             })
             continue
-        # Change-relative path: OK.
-        items.append({
+        change_file = change_dir / path
+        if change_file.is_file():
+            items.append({
+                "eventId": event_id,
+                "category": "file-backed",
+                "path": path,
+                "exists": True,
+            })
+            continue
+        repository_file = project_root / path
+        if repository_file.is_file():
+            items.append({
+                "eventId": event_id,
+                "category": "repository-file",
+                "path": path,
+                "archivePath": f"artifacts/product/{path}",
+                "exists": True,
+            })
+            continue
+        item = {
             "eventId": event_id,
-            "category": "file-backed",
+            "category": "blocking",
             "path": path,
-            "exists": (change_dir / path).is_file(),
-        })
+            "kind": kind,
+            "reason": "artifact file not found in change or project root",
+        }
+        items.append(item)
+        blocking.append(item)
     return {"ok": not blocking, "items": items, "blocking": blocking}
+
+
+def materialize_repository_artifacts(change_dir: Path) -> dict[str, Any]:
+    """Copy project-root business artifacts into the immutable archive namespace."""
+    change_dir = change_dir.resolve()
+    project_root = find_project_root(change_dir)
+    preflight = artifact_preflight(change_dir)
+    copied: list[str] = []
+    for item in preflight.get("items") or []:
+        if item.get("category") != "repository-file":
+            continue
+        source = (project_root / str(item["path"])).resolve()
+        target = (change_dir / str(item["archivePath"])).resolve()
+        if not source.is_relative_to(project_root) or not target.is_relative_to(change_dir):
+            raise ValueError(f"artifact materialization escaped boundary: {item['path']}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied.append(target.relative_to(change_dir).as_posix())
+    return {"ok": True, "copied": sorted(copied)}
 
 
 def run_knowledge_poststeps(project_root: Path) -> dict[str, Any]:
@@ -4342,6 +4439,16 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"cleanup failed: {exc}")
         payload["steps"]["cleanup"] = {"ok": False, "error": str(exc)}
+
+    # Product/business artifacts may live at repository-relative paths. Freeze
+    # byte-for-byte copies inside the staged archive before either manifest.
+    try:
+        materialized = materialize_repository_artifacts(work_dir)
+        payload["steps"]["artifact_materialization"] = materialized
+    except (OSError, ValueError) as exc:
+        payload["error"] = f"artifact materialization failed: {exc}"
+        _restore_finalize_failure()
+        return 1, payload
 
     # --- 1. before-manifest ---
     before_path = work_dir / "evidence" / "archive-manifest-before.json"

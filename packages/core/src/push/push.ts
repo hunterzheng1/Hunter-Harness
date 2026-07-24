@@ -126,7 +126,8 @@ interface PushWorkflowState {
 
 const SHARED_MANAGED_ROOTS = [
   ".harness/knowledge",
-  ".harness/codebase"
+  ".harness/codebase",
+  ".harness/rules"
 ];
 const SHARED_MANAGED_FILES = [
   "AGENTS.md",
@@ -246,7 +247,7 @@ async function managedFiles(
   await walkArchiveSummaries(root, paths);
   for (const adapter of adapters) {
     if (adapter.rulesRoot !== null) {
-      await walkFiles(root, join(root, adapter.rulesRoot), paths);
+      await walkHarnessEntries(root, join(root, adapter.rulesRoot), paths);
     }
     await walkHarnessEntries(root, join(root, adapter.skillsRoot), paths);
     if (adapter.agentsRoot !== null) {

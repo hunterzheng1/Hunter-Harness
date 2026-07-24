@@ -12,6 +12,8 @@ const PRIVATE_KEY_BLOCK = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i;
 
 export interface CodeBuddySetupPlan {
   claudeRules: string[];
+  currentClaudeRules: string[];
+  conflictingClaudeRules: string[];
   hasCodeGraphIndex: boolean;
   codeGraphConfigured: boolean;
 }
@@ -45,11 +47,14 @@ async function readJsonObject(path: string): Promise<Record<string, unknown> | n
   }
 }
 
-export async function inspectCodeBuddySetup(projectRoot: string): Promise<CodeBuddySetupPlan> {
+export async function inspectCodeBuddySetup(
+  projectRoot: string,
+  surface: CodeBuddySurface = "both"
+): Promise<CodeBuddySetupPlan> {
   const rulesRoot = join(projectRoot, ".claude", "rules");
-  let claudeRules: string[] = [];
+  let ruleNames: string[] = [];
   try {
-    claudeRules = (await readdir(rulesRoot, { withFileTypes: true }))
+    ruleNames = (await readdir(rulesRoot, { withFileTypes: true }))
       .filter((entry) => entry.isFile() && [".md", ".mdc"].includes(extname(entry.name).toLowerCase()))
       .map((entry) => entry.name)
       .filter((name) => !MANAGED_RULE_NAMES.has(name))
@@ -57,12 +62,36 @@ export async function inspectCodeBuddySetup(projectRoot: string): Promise<CodeBu
   } catch (error) {
     if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
   }
+  const claudeRules: string[] = [];
+  const currentClaudeRules: string[] = [];
+  const conflictingClaudeRules: string[] = [];
+  for (const name of ruleNames) {
+    const sourceContent = await readFile(join(rulesRoot, name), "utf8");
+    const targetContents = await Promise.all(
+      destinationTargets(projectRoot, surface, name).map(async (target) => {
+        try {
+          return await readFile(target, "utf8");
+        } catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+          throw error;
+        }
+      })
+    );
+    if (targetContents.some((content) => content === null)) claudeRules.push(name);
+    if (targetContents.some((content) => content !== null && content !== sourceContent)) {
+      conflictingClaudeRules.push(name);
+    } else if (targetContents.length > 0 && targetContents.every((content) => content === sourceContent)) {
+      currentClaudeRules.push(name);
+    }
+  }
   const mcp = await readJsonObject(join(projectRoot, ".mcp.json"));
   const servers = mcp?.mcpServers;
   const configured = servers !== null && typeof servers === "object" && !Array.isArray(servers) &&
     Object.prototype.hasOwnProperty.call(servers, "codegraph");
   return {
     claudeRules,
+    currentClaudeRules,
+    conflictingClaudeRules,
     hasCodeGraphIndex: await exists(join(projectRoot, ".codegraph")),
     codeGraphConfigured: configured
   };
@@ -86,7 +115,7 @@ export async function applyCodeBuddySetup(options: {
     copied: [], preserved: [], skippedSensitive: [], mcpUpdated: false, warnings: []
   };
   if (options.syncClaudeRules) {
-    const plan = await inspectCodeBuddySetup(options.projectRoot);
+    const plan = await inspectCodeBuddySetup(options.projectRoot, options.surface);
     for (const name of plan.claudeRules) {
       const source = join(options.projectRoot, ".claude", "rules", name);
       const content = await readFile(source, "utf8");

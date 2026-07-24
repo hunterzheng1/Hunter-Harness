@@ -80,11 +80,12 @@ export function classifyManagedFile(input: string): WebFilePolicy {
   if (under(path, ".claude/rules/") || under(path, ".claude/skills/harness-")) return userDiff;
   if (under(path, ".harness/knowledge/project-local/")) return projectLocal;
   if (under(path, ".harness/knowledge/")) return userDiff;
+  if (under(path, ".harness/rules/")) return userDiff;
   if (under(path, ".harness/codebase/map/") ||
       path === ".harness/codebase/map-summary.md" ||
       path === ".harness/codebase/map-manifest.json") return generatedReviewable;
   if (path === ".harness/context-index.json") return contextIndex;
-  if (under(path, ".harness/state/") || under(path, ".harness/rules/")) return internalState;
+  if (under(path, ".harness/state/")) return internalState;
   if (under(path, ".harness/generated/") || under(path, ".harness/cache/") ||
       under(path, ".harness/reports/")) return generatedCache;
   if (path === ".harness/project.yaml") return userDiff;

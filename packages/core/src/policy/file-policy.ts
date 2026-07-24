@@ -113,6 +113,9 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/knowledge/")) {
     return USER_DIFF;
   }
+  if (under(path, ".harness/rules/")) {
+    return USER_DIFF;
+  }
   if (/^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u.test(path)) {
     // Machine-generated archive evidence for server semantic "变更总结";
     // other files under .harness/archive/ remain external_unmanaged.
@@ -131,7 +134,7 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/reports/")) {
     return REPORT_CACHE;
   }
-  if (under(path, ".harness/state/") || under(path, ".harness/rules/")) {
+  if (under(path, ".harness/state/")) {
     return INTERNAL_STATE;
   }
   if (under(path, ".harness/generated/") || under(path, ".harness/cache/")) {

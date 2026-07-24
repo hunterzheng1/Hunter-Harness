@@ -361,7 +361,7 @@ describe("hunter-harness push", () => {
 
   it("returns sensitive-blocked without contacting the server", async () => {
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer unsafe-secret-token-1234567890\n"
     );
     const fetch = vi.fn();
@@ -385,7 +385,7 @@ describe("hunter-harness push", () => {
 
   it("passes sensitive_scan_skip to finalize when --skip-sensitive-scan --yes", async () => {
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer unsafe-secret-token-1234567890\n"
     );
     let finalizeBody: Record<string, unknown> | null = null;
@@ -461,7 +461,7 @@ describe("hunter-harness push", () => {
 
   it("INT-002: interactively confirms sensitive scan skip and sends reason to finalize", async () => {
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer unsafe-secret-token-1234567890\n"
     );
     let finalizeBody: Record<string, unknown> | null = null;

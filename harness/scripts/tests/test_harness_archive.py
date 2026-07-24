@@ -1049,6 +1049,99 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(result["passed"], 1)
         self.assertEqual(result["passRate"], "100%")
 
+    def test_api_pass_rate_excludes_blocked_and_reports_execution_rate(self) -> None:
+        result = ha._ledger_api_tests({
+            "validations": {
+                "apiTest": {
+                    "status": "BLOCKED",
+                    "metrics": {
+                        "total": 21,
+                        "passed": 9,
+                        "failed": 0,
+                        "blocked": 12,
+                    },
+                }
+            }
+        })
+
+        self.assertEqual(result["passed"], 9)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 12)
+        self.assertEqual(result["executed"], 9)
+        self.assertEqual(result["passRate"], "100%")
+        self.assertEqual(result["executionRate"], "43%")
+
+    def test_unit_metrics_expose_deselected_and_performance_projection(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTestFull": {
+                    "status": "OK",
+                    "metrics": {
+                        "total": 12,
+                        "passed": 10,
+                        "failed": 0,
+                        "skipped": 2,
+                        "deselected": 7,
+                    },
+                },
+                "performance": {
+                    "status": "OK",
+                    "metrics": {"p95Ms": 81, "budgetMs": 100},
+                },
+            }
+        }
+
+        projection = ha.build_verification_projection(ledger)
+
+        self.assertEqual(projection["unitTests"]["deselected"], 7)
+        self.assertEqual(projection["performance"]["status"], "OK")
+        self.assertEqual(projection["performance"]["metrics"]["p95Ms"], 81)
+
+
+class ProductIdentityTests(unittest.TestCase):
+    def test_feature_merge_and_release_tip_are_distinct(self) -> None:
+        import os
+        import subprocess
+
+        root = Path(tempfile.mkdtemp(prefix="harness-identity-"))
+        try:
+            change = root / ".harness" / "changes" / "identity-demo"
+            change.mkdir(parents=True)
+            _seed_change_dir(change)
+            subprocess.run(["git", "init", "-q"], cwd=str(root), check=True)
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@t",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@t",
+            }
+            _write(root / "product.txt", "feature\n")
+            subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "feature"], cwd=str(root), env=env, check=True)
+            feature = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True, check=True
+            ).stdout.strip()
+            _write(root / "later.txt", "release\n")
+            subprocess.run(["git", "add", "-A"], cwd=str(root), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "later"], cwd=str(root), env=env, check=True)
+            release = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=str(root), capture_output=True, text=True, check=True
+            ).stdout.strip()
+            ledger_path = change / "evidence" / "verification-ledger.json"
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            ledger["mergeFinalHash"] = feature
+            ledger["productCommit"] = feature
+            _write_json(ledger_path, ledger)
+
+            identity = ha.resolve_product_archive_identity(change, project=root)
+
+            self.assertEqual(identity["featureMergeHash"], feature)
+            self.assertEqual(identity["releaseTipHash"], release)
+            self.assertNotEqual(identity["featureMergeHash"], identity["releaseTipHash"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 class FinalStatusReasonsTests(unittest.TestCase):
     """UT-110..111: finalStatusReasons."""
@@ -1823,6 +1916,28 @@ class ArtifactPreflightIntegrationTests(unittest.TestCase):
         warnings = payload.get("warnings") or []
         codes = [w.get("code") for w in warnings]
         self.assertIn("artifact-path-canonicalizable", codes)
+
+    def test_repository_product_artifact_is_copied_into_archive_namespace(self) -> None:
+        product = self.tmp / "build" / "contract.json"
+        _write(product, '{"ok":true}\n')
+        he.append_event(
+            self.change,
+            phase="run",
+            type_="artifact",
+            path="build/contract.json",
+            kind="product",
+        )
+
+        preflight = ha.artifact_preflight(self.change)
+        materialized = ha.materialize_repository_artifacts(self.change)
+        events = he.apply_event_corrections(he.load_events(self.change / "events.ndjson"))
+        artifacts = ha._artifacts_from_events(events, change_dir=self.change)
+
+        self.assertTrue(preflight["ok"])
+        self.assertEqual(preflight["items"][-1]["category"], "repository-file")
+        self.assertEqual(materialized["copied"], ["artifacts/product/build/contract.json"])
+        self.assertEqual(artifacts[-1]["path"], "artifacts/product/build/contract.json")
+        self.assertTrue((self.change / artifacts[-1]["path"]).is_file())
 
 
 if __name__ == "__main__":

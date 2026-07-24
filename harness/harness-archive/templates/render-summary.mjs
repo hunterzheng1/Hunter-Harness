@@ -57,6 +57,7 @@ const stages = Object.entries(record(data.stageStatus));
 const verification = record(data.verification);
 const unit = record(verification.unitTests);
 const api = record(verification.apiTests);
+const performance = record(verification.performance);
 const durations = record(data.durations);
 const durationStages = list(durations.stages);
 const timing = record(data.timing);
@@ -84,9 +85,10 @@ const reasonHtml = statusReasons.length
 
 const stageHtml = stages.map(([name, status]) => `<div class="row"><span>${esc(name)}</span>${pill(status)}</div>`).join("") || '<p class="empty">没有阶段状态记录</p>';
 const verificationHtml = [
-  ["单元测试", unit.status || ((number(unit.failures) + number(unit.errors)) > 0 ? "FAIL" : (number(unit.run) > 0 ? "OK" : "NOT_RUN")), `${number(unit.run)} 个 · ${number(unit.failures)} 失败 · ${number(unit.errors)} 错误`],
-  ["API 测试", api.status || "NOT_RUN", `${number(api.passed)}/${number(api.total)} 通过 · ${number(api.blocked)} 阻塞`],
-  ["数据库兼容", verification.dbCompatibility || "NOT_RUN", verification.coverageDisplay || "未记录覆盖率"]
+  ["单元测试", unit.status || ((number(unit.failures) + number(unit.errors)) > 0 ? "FAIL" : (number(unit.run) > 0 ? "OK" : "NOT_RUN")), `${number(unit.run)} 个 · ${number(unit.failures)} 失败 · ${number(unit.errors)} 错误 · ${number(unit.skipped)} 跳过 · ${number(unit.deselected)} 未选择`],
+  ["API 测试", api.status || "NOT_RUN", `${number(api.executed)}/${number(api.total)} 已执行 · ${number(api.passed)} 通过 · ${number(api.failed)} 失败 · ${number(api.blocked)} 阻塞 · 通过率 ${api.passRate || "N/A"} · 执行率 ${api.executionRate || "N/A"}`],
+  ["数据库兼容", verification.dbCompatibility || "NOT_RUN", verification.coverageDisplay || "未记录覆盖率"],
+  ["性能验证", performance.status || "NOT_RUN", Object.keys(record(performance.metrics)).length ? JSON.stringify(performance.metrics) : "未记录性能指标"]
 ].map(([name, status, note]) => `<div class="row"><div><strong>${esc(name)}</strong><small>${esc(note)}</small></div>${pill(status)}</div>`).join("");
 const durationHtml = durationStages.map((item) => {
   const width = Math.max(2, Math.round(number(item.minutes) / maxMinutes * 100));
@@ -112,7 +114,7 @@ const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><met
 <details><summary>变更文件（${files.length}）</summary><div><table><thead><tr><th>文件</th><th>新增</th><th>删除</th></tr></thead><tbody>${fileRows}</tbody></table></div></details>
 <details><summary>执行时间线与工具交接（${timeline.length}）</summary><div><table><thead><tr><th>阶段</th><th>尝试</th><th>状态</th><th>来源 / 摘要</th></tr></thead><tbody>${timelineRows}</tbody></table></div></details>
 <details><summary>命令证据（${commands.length}）</summary><div><table><thead><tr><th>阶段</th><th>命令</th><th>结果</th></tr></thead><tbody>${commandRows}</tbody></table></div></details>
-<details><summary>技术元数据</summary><div><dl><dt>产品提交</dt><dd><code>${esc(data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>产品树哈希</dt><dd><code>${esc(data.productTreeHash || "N/A")}</code></dd><dt>归档提交</dt><dd><code>${esc(data.archiveCommit || data.finalCommit || "N/A")}</code></dd><dt>基线提交</dt><dd><code>${esc(data.baseCommit || "N/A")}</code></dd><dt>Git 范围</dt><dd><code>${esc(diff.range || "N/A")}</code></dd><dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd><dt>事实来源</dt><dd>${esc(list(record(data.reportPipeline).sources).join(" · ") || "N/A")}</dd></dl></div></details>
+<details><summary>技术元数据</summary><div><dl><dt>功能合并提交</dt><dd><code>${esc(data.featureMergeHash || data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>发布线尖端</dt><dd><code>${esc(data.releaseTipHash || data.archiveCommit || "N/A")}</code></dd><dt>产品提交</dt><dd><code>${esc(data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>产品树哈希</dt><dd><code>${esc(data.productTreeHash || "N/A")}</code></dd><dt>归档提交</dt><dd><code>${esc(data.archiveCommit || data.finalCommit || "N/A")}</code></dd><dt>基线提交</dt><dd><code>${esc(data.baseCommit || "N/A")}</code></dd><dt>Git 范围</dt><dd><code>${esc(diff.range || "N/A")}</code></dd><dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd><dt>事实来源</dt><dd>${esc(list(record(data.reportPipeline).sources).join(" · ") || "N/A")}</dd></dl></div></details>
 </main></body></html>`;
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });

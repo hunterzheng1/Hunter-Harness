@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.28] — hunter-harness / [0.2.25] — @hunter-harness/workflow-harness
+
+### Fixed（公共规则、集成证据与归档事实）
+
+- **公共项目规则**：新增 `.harness/rules/` 唯一规则源；首次安装迁移 Claude 自定义规则，init/refresh/update 幂等生成 Claude、Cursor、CodeBuddy 与 Codex 投影，并用本地 receipt 保护 agent 目录中的人工修改。push 只上传公共源，语义索引同步识别。
+- **CodeBuddy 幂等同步**：已一致规则不再重复询问；缺失目标才提示，内容冲突保留目标并给出明确警告。
+- **集成验证证据**：每条 merge verification 命令持久化 stdout/stderr、退出码、时长和 journal `logPath`，失败与超时同样可追溯。
+- **归档身份与产物**：显式区分 `featureMergeHash` 与 `releaseTipHash`；仓库相对业务产物复制到 `artifacts/product/` 后再归档，缺失文件前置阻断。
+- **报告指标**：API 通过率排除 blocked，并新增执行率；单测展示 deselected；性能验证进入结构化 summary 与 HTML。
+
 ## [0.2.27] — hunter-harness / [0.2.24] — @hunter-harness/workflow-harness
 
 ### Fixed（子 agent 路由与 Windows 发布稳定性）

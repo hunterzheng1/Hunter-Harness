@@ -34,9 +34,12 @@ function isKnowledgeMarkdownPath(path: string): boolean {
 }
 
 function isRulePath(path: string): boolean {
-  return path.startsWith(".claude/rules/") ||
+  return path.startsWith(".harness/rules/") ||
+    path.startsWith(".claude/rules/") ||
     path.startsWith(".cursor/rules/") ||
-    path.startsWith(".agents/rules/");
+    path.startsWith(".agents/rules/") ||
+    path.startsWith(".codebuddy/.rules/") ||
+    path.startsWith(".codebuddy/rules/");
 }
 
 function isArchiveSummaryPath(path: string): boolean {

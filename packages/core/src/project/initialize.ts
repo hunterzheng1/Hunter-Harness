@@ -33,6 +33,7 @@ import {
   CODEBUDDY_BLOCK_ID,
   CODEBUDDY_MANAGED_BLOCK_CONTENT
 } from "./managed-content.js";
+import { synchronizeProjectRules } from "./project-rules.js";
 import {
   loadAgentBundle,
   type HarnessProfile,
@@ -445,6 +446,7 @@ export async function initializeProject(
     // adapter and enrich context-index so it carries per-file proof, not
     // just the aggregate bundle hash.
     await enrichContextIndexWithVerification(root, enabledAgents, profile, options.resourcesRoot, adapterContext);
+    await synchronizeProjectRules(root, enabledAgents, surface);
   }
   return {
     projectConfig,

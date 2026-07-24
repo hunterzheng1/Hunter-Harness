@@ -64,4 +64,35 @@ describe("CodeBuddy setup", () => {
     expect(result.warnings).toHaveLength(1);
     expect(await readFile(join(root, ".mcp.json"), "utf8")).toBe("{ malformed");
   });
+
+  it("does not propose Claude rules that are already synchronized", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codebuddy-current-rules-"));
+    const content = "# Team\nUse remote staging hosts.\n";
+    await mkdir(join(root, ".claude", "rules"), { recursive: true });
+    await mkdir(join(root, ".codebuddy", ".rules"), { recursive: true });
+    await mkdir(join(root, ".codebuddy", "rules"), { recursive: true });
+    await writeFile(join(root, ".claude", "rules", "team.md"), content);
+    await writeFile(join(root, ".codebuddy", ".rules", "team.mdc"), content);
+    await writeFile(join(root, ".codebuddy", "rules", "team.md"), content);
+
+    const plan = await inspectCodeBuddySetup(root, "both");
+
+    expect(plan.claudeRules).toEqual([]);
+    expect(plan.currentClaudeRules).toEqual(["team.md"]);
+    expect(plan.conflictingClaudeRules).toEqual([]);
+  });
+
+  it("classifies divergent CodeBuddy targets as conflicts instead of current", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codebuddy-conflicting-rules-"));
+    await mkdir(join(root, ".claude", "rules"), { recursive: true });
+    await mkdir(join(root, ".codebuddy", "rules"), { recursive: true });
+    await writeFile(join(root, ".claude", "rules", "team.md"), "# Team\nnew\n");
+    await writeFile(join(root, ".codebuddy", "rules", "team.md"), "# Team\nlocal edit\n");
+
+    const plan = await inspectCodeBuddySetup(root, "cli");
+
+    expect(plan.claudeRules).toEqual([]);
+    expect(plan.currentClaudeRules).toEqual([]);
+    expect(plan.conflictingClaudeRules).toEqual(["team.md"]);
+  });
 });

@@ -39,6 +39,7 @@ import {
   TargetCollisionError,
   type InstalledBundleStateV4
 } from "./initialize.js";
+import { synchronizeProjectRules } from "./project-rules.js";
 
 // Conservative Refresh：本地安全协调，不触碰 server-backed update 语义（design §2/§3）。
 // 分类依据 design §4.3：absent→add；current==incoming→unchanged；current==trusted→干净替换；
@@ -728,6 +729,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
 
   if (!options.dryRun) {
     await runTransaction(root, ops, { kind: "refresh" });
+    await synchronizeProjectRules(root, agents, codebuddySurface);
     await pruneEmptyParentDirs(
       root,
       removed.map((item) => item.target_path),

@@ -853,6 +853,30 @@ class VerifyInIntegrationWorktreeTests(TransactionFixture):
         self.assertTrue(journal["verifyResults"][0]["timedOut"])
         self.assertEqual(journal["verifyResults"][0]["timeoutSeconds"], 0.05)
 
+    def test_verify_failure_persists_stdout_stderr_log_and_journal_path(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        with self.assertRaises(integration.VerificationFailedError):
+            txn.verify(
+                commands=[[
+                    sys.executable,
+                    "-c",
+                    "import sys; print('verify-out'); print('verify-err', file=sys.stderr); sys.exit(3)",
+                ]]
+            )
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        result = journal["verifyResults"][0]
+        self.assertEqual(result["exitCode"], 3)
+        self.assertIn("logPath", result)
+        log_path = self.primary / result["logPath"]
+        self.assertTrue(log_path.is_file())
+        content = log_path.read_text(encoding="utf-8")
+        self.assertIn("verify-out", content)
+        self.assertIn("verify-err", content)
+        self.assertIn("exitCode: 3", content)
+
 
 class VerifyCommandParsingTests(unittest.TestCase):
     def test_quoted_arguments_survive_parsing(self) -> None:

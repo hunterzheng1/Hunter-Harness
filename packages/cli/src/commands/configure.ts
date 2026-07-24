@@ -72,7 +72,12 @@ async function configureCodeBuddyExtras(
   dependencies: CommandDependencies
 ): Promise<void> {
   if (!agents.includes("codebuddy")) return;
-  const plan = await inspectCodeBuddySetup(dependencies.cwd);
+  const plan = await inspectCodeBuddySetup(dependencies.cwd, surface);
+  if (plan.conflictingClaudeRules.length > 0) {
+    dependencies.stderr(
+      `以下 CodeBuddy 规则与 Claude 源规则内容不同，已保留目标文件：${plan.conflictingClaudeRules.join(", ")}\n`
+    );
+  }
   let syncClaudeRules = false;
   let configureCodeGraph = false;
   if (plan.claudeRules.length > 0) {

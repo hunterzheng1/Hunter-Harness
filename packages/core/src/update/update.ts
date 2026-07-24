@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  harnessAgentSchema,
   projectConfigSchema,
   type FileOperation
 } from "@hunter-harness/contracts";
@@ -19,6 +20,7 @@ import {
   type PerPathResolveStrategy
 } from "../sync/synchronize.js";
 import { uuidV7 } from "../project/uuid-v7.js";
+import { synchronizeProjectRules } from "../project/project-rules.js";
 
 export class UpdateWorkflowError extends Error {
   readonly exitCode: 3 | 4 | 5 | 7 | 8;
@@ -139,6 +141,17 @@ export async function updateProject(
         ? {}
         : { transactionOptions: options.transactionOptions })
     }, baseline);
+    if (!options.dryRun) {
+      const agents = project.adapters.enabled.flatMap((agent) => {
+        const parsed = harnessAgentSchema.safeParse(agent);
+        return parsed.success ? [parsed.data] : [];
+      });
+      await synchronizeProjectRules(
+        root,
+        agents,
+        project.adapter_options?.codebuddy?.surface ?? "both"
+      );
+    }
     return result;
   } catch (error) {
     if (error instanceof UpdateWorkflowError) {

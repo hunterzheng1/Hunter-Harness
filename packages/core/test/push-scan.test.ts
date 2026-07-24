@@ -25,7 +25,7 @@ describe("pushProject sensitive scan UX", () => {
   it("throws SENSITIVE_CONTENT_BLOCKED with findings details when blocked", async () => {
     const root = await initRoot();
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
     await expect(pushProject({
@@ -39,7 +39,7 @@ describe("pushProject sensitive scan UX", () => {
         finding_count: expect.any(Number),
         findings: expect.arrayContaining([
           expect.objectContaining({
-            path: ".claude/rules/unsafe.md",
+            path: ".harness/rules/unsafe.md",
             rule_id: "HH_AUTHORIZATION_BEARER"
           })
         ])
@@ -50,7 +50,7 @@ describe("pushProject sensitive scan UX", () => {
   it("allows blocked preview when sensitiveScanSkip is true", async () => {
     const root = await initRoot();
     await writeFile(
-      join(root, ".claude", "rules", "unsafe.md"),
+      join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
     const result = await pushProject({

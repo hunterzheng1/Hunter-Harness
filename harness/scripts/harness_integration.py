@@ -257,6 +257,42 @@ def journal_path(project_root: Path, transaction_id: str) -> Path:
     return journal_dir(project_root, transaction_id) / "journal.json"
 
 
+def _write_verify_log(
+    project_root: Path,
+    transaction_id: str,
+    index: int,
+    *,
+    command: Sequence[str],
+    resolved_command: Sequence[str],
+    started: dt.datetime,
+    finished: dt.datetime,
+    exit_code: int | None,
+    stdout: str | bytes | None = None,
+    stderr: str | bytes | None = None,
+    error: str | None = None,
+) -> str:
+    def as_text(value: str | bytes | None) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value or ""
+
+    path = journal_dir(project_root, transaction_id) / "logs" / f"verify-{index + 1}.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"command: {json.dumps(list(command), ensure_ascii=False)}",
+        f"resolvedCommand: {json.dumps(list(resolved_command), ensure_ascii=False)}",
+        f"startedAt: {started.isoformat(timespec='milliseconds')}",
+        f"finishedAt: {finished.isoformat(timespec='milliseconds')}",
+        f"durationMs: {int((finished - started).total_seconds() * 1000)}",
+        f"exitCode: {exit_code if exit_code is not None else 'null'}",
+    ]
+    if error:
+        lines.append(f"error: {error}")
+    lines.extend(["--- stdout ---", as_text(stdout), "--- stderr ---", as_text(stderr)])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return path.relative_to(project_root).as_posix()
+
+
 def load_journal(project_root: Path, transaction_id: str) -> dict[str, Any]:
     path = journal_path(project_root, transaction_id)
     if not path.is_file():
@@ -965,7 +1001,7 @@ class IntegrationTransaction:
                 )
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
-            for command in commands:
+            for index, command in enumerate(commands):
                 executable_command = _normalize_verify_command(command)
                 started = dt.datetime.now().astimezone()
                 try:
@@ -979,8 +1015,21 @@ class IntegrationTransaction:
                         check=False,
                         timeout=timeout_seconds,
                     )
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
                     finished = dt.datetime.now().astimezone()
+                    log_path = _write_verify_log(
+                        self.project_root,
+                        self.transaction_id,
+                        index,
+                        command=command,
+                        resolved_command=executable_command,
+                        started=started,
+                        finished=finished,
+                        exit_code=None,
+                        stdout=exc.stdout,
+                        stderr=exc.stderr,
+                        error=f"timed out after {timeout_seconds}s",
+                    )
                     results.append(
                         {
                             "command": list(command),
@@ -993,6 +1042,7 @@ class IntegrationTransaction:
                             "durationMs": int(
                                 (finished - started).total_seconds() * 1000
                             ),
+                            "logPath": log_path,
                         }
                     )
                     journal["verifyResults"] = results
@@ -1002,6 +1052,17 @@ class IntegrationTransaction:
                     )
                 except FileNotFoundError as exc:
                     finished = dt.datetime.now().astimezone()
+                    log_path = _write_verify_log(
+                        self.project_root,
+                        self.transaction_id,
+                        index,
+                        command=command,
+                        resolved_command=executable_command,
+                        started=started,
+                        finished=finished,
+                        exit_code=None,
+                        error=str(exc),
+                    )
                     results.append(
                         {
                             "command": list(command),
@@ -1013,6 +1074,7 @@ class IntegrationTransaction:
                             "durationMs": int(
                                 (finished - started).total_seconds() * 1000
                             ),
+                            "logPath": log_path,
                         }
                     )
                     journal["verifyResults"] = results
@@ -1021,6 +1083,18 @@ class IntegrationTransaction:
                         f"verification executable not found: {executable_command[0]}"
                     ) from exc
                 finished = dt.datetime.now().astimezone()
+                log_path = _write_verify_log(
+                    self.project_root,
+                    self.transaction_id,
+                    index,
+                    command=command,
+                    resolved_command=executable_command,
+                    started=started,
+                    finished=finished,
+                    exit_code=proc.returncode,
+                    stdout=proc.stdout,
+                    stderr=proc.stderr,
+                )
                 results.append(
                     {
                         "command": list(command),
@@ -1032,6 +1106,7 @@ class IntegrationTransaction:
                         "durationMs": int(
                             (finished - started).total_seconds() * 1000
                         ),
+                        "logPath": log_path,
                     }
                 )
                 if proc.returncode != 0:
