@@ -64,6 +64,15 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 
 检查 `AGENTS.md` 是否包含项目概述和规则索引。Claude Code adapter 启用时，检查 `CLAUDE.md` 引用 `AGENTS.md`（canonical managed block 使用 `@AGENTS.md`），让共享约束保持单一来源；不得要求 `AGENTS.md` 反向引用 `CLAUDE.md`，否则会形成循环，且会破坏未启用 Claude Code 的项目。
 
+### 5.5 公共规则收敛与历史候选
+
+运行 `npx hunter-harness rules-sync --json`。该命令执行两条相互隔离的链路：
+
+- 扫描 Claude、Cursor、CodeBuddy 的用户规则；相同且全局适用的内容归一到 `.harness/rules/*.md`，再按启用 Agent 生成受管投影。receipt 已确认的投影不作为导入源；手工修改或同名异义规则返回冲突且不覆盖；带 glob/path 范围的规则保留为 Agent 专属。
+- 增量比对结构化 review findings、test failure 与 archive summary，只有跨两个独立归档重复出现，或单次高严重度且证据充分的问题才进入 `.harness/knowledge/rule-candidates.json`。候选包含来源和置信度，但不会自动写入 `.harness/rules/`。
+
+`exit_code=5` 表示存在需要人工取舍的规则分歧，应在状态表中列出路径；不得用 `--force-managed` 绕过。第二次运行无输入变化时必须无新增迁移、无重复提示、候选文件保持不变。
+
 ### 6. .harness/ 完整性
 
 检查 `.harness/` 目录结构和配置文件。结构以产品 file-policy（`requirements/.../22-FILE-POLICY-MATRIX`）为准，init 实际产出的核心路径如下：
@@ -86,11 +95,11 @@ powershell.exe -Command "git -C '<项目路径>' diff --stat HEAD~5 2>$null"
 > 4. **恢复**：逐个比对 `harness-*/SKILL.md` 与备份；被覆盖的从备份恢复，新增 skill（如 `harness-knowledge-ingest`、`harness-skill-optimizer`）保留。
 > 5. **验证**：`.harness/project.yaml`、`context-index.json` 就位；`CLAUDE.md`/`AGENTS.md` 的 managed block 为增量插入（原内容保留）。
 >
-> file-policy 备注：`.harness/changes/**`（user_editable，push/update=never，本地工作材料）、`.harness/rules/**`（internal_state，本地默认不创建）都不作为完整性判断标志；旧文本的 `.harness/config/harness-test-config.md` 路径在产品中不存在，勿作检查项。
+> file-policy 备注：`.harness/changes/**`（user_editable，push/update=never，本地工作材料）不作为完整性判断标志；`.harness/rules/**` 是可推送的公共规则唯一真源，由 rules-sync 管理投影。旧文本的 `.harness/config/harness-test-config.md` 路径在产品中不存在，勿作检查项。
 
-### 7. 项目规则（见 .harness/context-index.json）/ 完整性
+### 7. `.harness/rules/` 完整性
 
-用 Glob 搜索 `项目规则（见 .harness/context-index.json）/*.md`，检查是否覆盖 5 个必要主题：
+用 Glob 搜索 `.harness/rules/*.md`，检查是否覆盖 5 个必要主题：
 
 | 必要主题 | 检测方式 | 缺失影响 |
 |----------|----------|----------|

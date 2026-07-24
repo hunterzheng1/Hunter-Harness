@@ -38,19 +38,21 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 
 ## 项目级 CLI
 
-项目级公开命令保持不变：
+项目级公开命令：
 
 ```bash
 npx hunter-harness
+npx hunter-harness rules-sync --json
 npx hunter-harness push
 npx hunter-harness update
 ```
 
 - `npx hunter-harness`：离线初始化、配置与事务恢复菜单。
+- `rules-sync`：把各 Agent 的全局规则收敛到 `.harness/rules/` 并刷新受管投影，同时从结构化 review/test/archive 证据生成待审规则候选；分歧和 Agent 专属规则不会被覆盖。
 - `push`：预览、敏感信息扫描、首次项目绑定并上传 proposal；不推进 baseline。
 - `update`：仅拉取已批准 artifact，校验 SHA-256 后事务化写入。
 
-初始化默认创建 `AGENTS.md`，`CLAUDE.md` 保持为极简路由文件；默认不创建 `.harness/rules/`。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
+初始化默认创建 `AGENTS.md`，`CLAUDE.md` 保持为极简路由文件；`.harness/rules/` 是公共项目规则唯一真源。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
 
 ## 独立 Skill CLI
 
@@ -71,7 +73,7 @@ npx @hunter-harness/skill-cli upload <directory-or-zip> --agent claude-code
 ```text
 packages/contracts  wire/schema 合同
 packages/core       文件策略、Skill IR、扫描、事务、push/update
-packages/cli        项目级三命令 CLI
+packages/cli        项目级 Harness CLI
 packages/skill-cli  独立 Skill install/upload CLI
 apps/server         Fastify API、PostgreSQL repository、artifact storage
 apps/web            Next.js 治理控制台
@@ -121,6 +123,7 @@ npm run check
 
 ```powershell
 npm run hh -- --help
+npm run hh -- rules-sync --json
 npx hunter-harness --help
 ```
 

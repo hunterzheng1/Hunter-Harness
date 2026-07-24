@@ -62,6 +62,60 @@ describe("project rule projections", () => {
     expect(await readFile(join(root, ".cursor", "rules", "team.mdc"), "utf8")).toBe("shared\n");
   });
 
+  it("converges identical custom rules from every agent into one canonical rule", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
+    for (const relative of [
+      ".claude/rules/team.md",
+      ".cursor/rules/team.mdc",
+      ".codebuddy/.rules/team.mdc",
+      ".codebuddy/rules/team.md"
+    ]) {
+      await mkdir(join(root, relative, ".."), { recursive: true });
+      await writeFile(join(root, relative), "shared\r\n", "utf8");
+    }
+
+    const result = await synchronizeProjectRules(
+      root, ["claude-code", "cursor", "codebuddy"], "both"
+    );
+
+    expect(result.migrated).toEqual([".harness/rules/team.md"]);
+    expect(result.conflicts).toEqual([]);
+    expect(await readFile(join(root, ".harness", "rules", "team.md"), "utf8")).toBe("shared\n");
+  });
+
+  it("reports divergent agent rules without choosing a winner", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
+    await mkdir(join(root, ".claude", "rules"), { recursive: true });
+    await mkdir(join(root, ".cursor", "rules"), { recursive: true });
+    await writeFile(join(root, ".claude", "rules", "team.md"), "claude\n", "utf8");
+    await writeFile(join(root, ".cursor", "rules", "team.mdc"), "cursor\n", "utf8");
+
+    const result = await synchronizeProjectRules(root, ["claude-code", "cursor"], "both");
+
+    expect(result.migrated).toEqual([]);
+    expect(result.conflicts).toEqual([
+      ".claude/rules/team.md",
+      ".cursor/rules/team.mdc"
+    ]);
+    await expect(readFile(join(root, ".harness", "rules", "team.md"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps path-scoped MDC rules agent-specific", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
+    await mkdir(join(root, ".cursor", "rules"), { recursive: true });
+    await writeFile(
+      join(root, ".cursor", "rules", "frontend.mdc"),
+      "---\ndescription: frontend\nglobs: src/**/*.tsx\n---\nUse components.\n",
+      "utf8"
+    );
+
+    const result = await synchronizeProjectRules(root, ["cursor"], "both");
+
+    expect(result.agent_specific).toEqual([".cursor/rules/frontend.mdc"]);
+    expect(result.migrated).toEqual([]);
+  });
+
   it("removes only the Codex projection block when Codex is deselected", async () => {
     const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
     await mkdir(join(root, ".harness", "rules"), { recursive: true });

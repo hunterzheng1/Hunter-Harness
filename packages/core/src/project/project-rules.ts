@@ -27,11 +27,25 @@ interface ProjectionReceipt {
 
 export interface ProjectRuleSyncResult {
   migrated: string[];
+  agent_specific: string[];
   written: string[];
   removed: string[];
   unchanged: string[];
   conflicts: string[];
 }
+
+interface RuleImportCandidate {
+  source: string;
+  destination: string;
+  content: string;
+}
+
+const AGENT_RULE_ROOTS = [
+  ".claude/rules",
+  ".cursor/rules",
+  ".codebuddy/.rules",
+  ".codebuddy/rules"
+] as const;
 
 function sha256(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -66,6 +80,91 @@ async function markdownFiles(root: string): Promise<string[]> {
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
     throw error;
+  }
+}
+
+function portable(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
+function normalizeRuleContent(content: string): string {
+  return content.replace(/\r\n/g, "\n").trimEnd() + "\n";
+}
+
+/**
+ * Cursor/CodeBuddy scoped frontmatter cannot be represented faithfully by all
+ * agents. Only globally applicable rules are eligible for the shared source.
+ */
+function canonicalImportContent(content: string): string | null {
+  const normalized = content.replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return normalizeRuleContent(normalized);
+  const closing = normalized.indexOf("\n---\n", 4);
+  if (closing < 0) return null;
+  const frontmatter = normalized.slice(4, closing);
+  if (/^\s*(?:globs?|paths?)\s*:/im.test(frontmatter) ||
+      /^\s*alwaysApply\s*:\s*false\s*$/im.test(frontmatter)) {
+    return null;
+  }
+  return normalizeRuleContent(normalized.slice(closing + 5));
+}
+
+async function collectImportCandidates(
+  root: string,
+  previous: ProjectionReceipt,
+  result: ProjectRuleSyncResult
+): Promise<RuleImportCandidate[]> {
+  const candidates: RuleImportCandidate[] = [];
+  for (const ruleRoot of AGENT_RULE_ROOTS) {
+    for (const name of await markdownFiles(join(root, ...ruleRoot.split("/")))) {
+      const source = portable(`${ruleRoot}/${name}`);
+      const content = await readFile(join(root, ...source.split("/")), "utf8");
+      if (previous.targets[source] === sha256(content)) continue;
+      const canonical = canonicalImportContent(content);
+      if (canonical === null) {
+        result.agent_specific.push(source);
+        continue;
+      }
+      candidates.push({
+        source,
+        destination: `${RULES_ROOT}/${basename(name, extname(name))}.md`,
+        content: canonical
+      });
+    }
+  }
+  return candidates;
+}
+
+async function importAgentRules(
+  root: string,
+  canonicalRoot: string,
+  previous: ProjectionReceipt,
+  result: ProjectRuleSyncResult
+): Promise<void> {
+  const grouped = new Map<string, RuleImportCandidate[]>();
+  for (const candidate of await collectImportCandidates(root, previous, result)) {
+    const values = grouped.get(candidate.destination) ?? [];
+    values.push(candidate);
+    grouped.set(candidate.destination, values);
+  }
+  for (const [destination, candidates] of [...grouped].sort(([a], [b]) =>
+    a.localeCompare(b)
+  )) {
+    const destinationPath = join(canonicalRoot, basename(destination));
+    const current = await optionalText(destinationPath);
+    const distinct = new Set(candidates.map((candidate) => candidate.content));
+    const representative = candidates.at(0);
+    if (representative === undefined) continue;
+    if (current === null && distinct.size === 1) {
+      await atomicWrite(destinationPath, representative.content);
+      result.migrated.push(destination);
+      continue;
+    }
+    if (current !== null &&
+        distinct.size === 1 &&
+        normalizeRuleContent(current) === representative.content) {
+      continue;
+    }
+    result.conflicts.push(...candidates.map((candidate) => candidate.source));
   }
 }
 
@@ -109,21 +208,12 @@ export async function synchronizeProjectRules(
   const root = resolve(projectRoot);
   const canonicalRoot = join(root, RULES_ROOT);
   const result: ProjectRuleSyncResult = {
-    migrated: [], written: [], removed: [], unchanged: [], conflicts: []
+    migrated: [], agent_specific: [], written: [], removed: [], unchanged: [], conflicts: []
   };
   await mkdir(canonicalRoot, { recursive: true });
 
-  if ((await markdownFiles(canonicalRoot)).length === 0) {
-    for (const name of await markdownFiles(join(root, ".claude", "rules"))) {
-      const destination = join(canonicalRoot, `${basename(name, extname(name))}.md`);
-      if (await optionalText(destination) !== null) continue;
-      const content = await readFile(join(root, ".claude", "rules", name), "utf8");
-      await atomicWrite(destination, content);
-      result.migrated.push(`${RULES_ROOT}/${basename(destination)}`);
-    }
-  }
-
   const previous = await readReceipt(root);
+  await importAgentRules(root, canonicalRoot, previous, result);
   const next: ProjectionReceipt = { schema_version: 1, source_hashes: {}, targets: {} };
   const desired = new Map<string, string>();
   for (const name of await markdownFiles(canonicalRoot)) {
@@ -137,9 +227,10 @@ export async function synchronizeProjectRules(
     const path = join(root, target);
     const current = await optionalText(path);
     const incomingHash = sha256(content);
-    if (current === content) {
+    const canonicalCurrent = current === null ? null : canonicalImportContent(current);
+    if (current === content || canonicalCurrent === content) {
       result.unchanged.push(target);
-      next.targets[target] = incomingHash;
+      next.targets[target] = current === null ? incomingHash : sha256(current);
     } else if (current === null || previous.targets[target] === sha256(current)) {
       await atomicWrite(path, content);
       result.written.push(target);
@@ -201,6 +292,7 @@ export async function synchronizeProjectRules(
 
   await atomicWrite(join(root, RECEIPT_PATH), JSON.stringify(next, null, 2) + "\n");
   result.migrated.sort();
+  result.agent_specific.sort();
   result.written.sort();
   result.removed.sort();
   result.unchanged.sort();

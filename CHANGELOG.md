@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.29] — hunter-harness / [0.2.26] — @hunter-harness/workflow-harness
+
+### Added（规则收敛与经验学习）
+
+- **多 Agent 规则收敛**：新增 `rules-sync` 命令，扫描 Claude、Cursor 与 CodeBuddy 用户规则；全局一致内容归一到 `.harness/rules/`，同名异义只报告不覆盖，带路径范围的规则保留为 Agent 专属。
+- **幂等受管投影**：复用 rule projection receipt，已生成且未修改的投影不再作为导入源；手工修改进入明确冲突，重复同步不产生迁移或询问。
+- **历史规则候选**：从结构化 review findings、测试失败与 archive summary 提炼 `.harness/knowledge/rule-candidates.json`；仅重复问题或高严重度证据进入候选，疑似提示注入和敏感内容被拒绝，候选不会自动激活。
+- **harness-sync 集成**：同步流程调用 `rules-sync`，统一报告迁移、Agent 专属规则、分歧与候选数量。
+
 ## [0.2.28] — hunter-harness / [0.2.25] — @hunter-harness/workflow-harness
 
 ### Fixed（公共规则、集成证据与归档事实）

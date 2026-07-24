@@ -15,6 +15,7 @@ import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import { runRefresh, type RefreshCommandOptions } from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
+import { runRulesSync, type RulesSyncCommandOptions } from "./commands/rules-sync.js";
 import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
 import {
   resolveWorkflowResourcesRoot,
@@ -187,6 +188,18 @@ export async function runCli(
     .action(async (options: CleanupCommandOptions) => {
       exitCode = await runCleanup(
         { ...program.opts<CleanupCommandOptions>(), ...options },
+        dependencies
+      );
+    });
+  program.command("rules-sync")
+    .description("收敛公共规则、刷新 Agent 投影并提炼历史规则候选")
+    .option("--agents <csv>")
+    .option("--codebuddy-surface <surface>")
+    .option("--no-learn", "只同步规则，不读取历史 review/test 证据")
+    .option("--json")
+    .action(async (options: RulesSyncCommandOptions) => {
+      exitCode = await runRulesSync(
+        { ...program.opts<RulesSyncCommandOptions>(), ...options },
         dependencies
       );
     });

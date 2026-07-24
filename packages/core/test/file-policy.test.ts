@@ -14,6 +14,7 @@ describe("file policy matrix", () => {
     [".harness/knowledge/business/rule.md", "user_editable", "diff-proposal"],
     [".harness/knowledge/entries/active/sample.json", "user_editable", "diff-proposal"],
     [".harness/knowledge/index.json", "user_editable", "diff-proposal"],
+    [".harness/knowledge/rule-candidates.json", "user_editable", "diff-proposal"],
     [".harness/knowledge/index.sqlite", "generated_cache", "never"],
     [".harness/knowledge/cache/archive-entries/sample.json", "generated_cache", "never"],
     [".harness/knowledge/views/knowledge-dashboard.md", "generated_cache", "never"],
