@@ -20,7 +20,10 @@ import {
   type PerPathResolveStrategy
 } from "../sync/synchronize.js";
 import { uuidV7 } from "../project/uuid-v7.js";
-import { synchronizeProjectRules } from "../project/project-rules.js";
+import {
+  readManagedProjectRuleProjectionPaths,
+  synchronizeProjectRules
+} from "../project/project-rules.js";
 
 export class UpdateWorkflowError extends Error {
   readonly exitCode: 3 | 4 | 5 | 7 | 8;
@@ -107,6 +110,7 @@ export async function updateProject(
   }
   const requestId = uuidV7();
   const baseline = await readBaseline(root);
+  const protocolOnlyPaths = await readManagedProjectRuleProjectionPaths(root);
   let parsedServerUrl: URL;
   try {
     parsedServerUrl = new URL(serverUrl);
@@ -128,6 +132,7 @@ export async function updateProject(
       client,
       requestId,
       dryRun: options.dryRun,
+      protocolOnlyPaths,
       ...(options.conflictStrategy === undefined
         ? {}
         : { conflictStrategy: options.conflictStrategy }),
@@ -146,11 +151,17 @@ export async function updateProject(
         const parsed = harnessAgentSchema.safeParse(agent);
         return parsed.success ? [parsed.data] : [];
       });
-      await synchronizeProjectRules(
+      const projections = await synchronizeProjectRules(
         root,
         agents,
         project.adapter_options?.codebuddy?.surface ?? "both"
       );
+      for (const path of projections.conflicts) {
+        result.conflicts.push({ path, operation: "modify", reason: "local-dirty" });
+        if (!result.skipped.some((item) => item.path === path)) {
+          result.skipped.push({ path, operation: "modify", reason: "local-dirty" });
+        }
+      }
     }
     return result;
   } catch (error) {

@@ -50,6 +50,7 @@ export interface SynchronizeOptions {
   ) => Promise<ConflictStrategy | false>;
   transactionOptions?: Omit<TransactionOptions, "id">;
   stopAfterArtifactId?: string | null;
+  protocolOnlyPaths?: ReadonlySet<string>;
 }
 
 export interface SynchronizeResult {
@@ -231,7 +232,8 @@ async function planSingleArtifact(
   requestId: string,
   dryRun: boolean,
   conflictStrategy: ConflictStrategy,
-  resolveOverrides?: ReadonlyMap<string, PerPathResolveStrategy>
+  resolveOverrides?: ReadonlyMap<string, PerPathResolveStrategy>,
+  protocolOnlyPaths?: ReadonlySet<string>
 ): Promise<ArtifactRebasePlan> {
   if (manifest.project_version === null) {
     throw new Error("artifact manifest missing project_version");
@@ -242,7 +244,8 @@ async function planSingleArtifact(
     projectVersion: manifest.project_version,
     contexts,
     conflictStrategy,
-    ...(resolveOverrides === undefined ? {} : { resolveOverrides })
+    ...(resolveOverrides === undefined ? {} : { resolveOverrides }),
+    ...(protocolOnlyPaths === undefined ? {} : { protocolOnlyPaths })
   });
 }
 
@@ -336,7 +339,8 @@ export async function synchronizeArtifacts(
       options.requestId,
       options.dryRun,
       conflictStrategy,
-      options.resolveOverrides
+      options.resolveOverrides,
+      options.protocolOnlyPaths
     );
 
     if (plan.conflicts.length > 0 && options.confirmConflictStrategy !== undefined) {
@@ -360,7 +364,8 @@ export async function synchronizeArtifacts(
         options.requestId,
         options.dryRun,
         confirmed,
-        options.resolveOverrides
+        options.resolveOverrides,
+        options.protocolOnlyPaths
       );
     }
 

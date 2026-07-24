@@ -70,6 +70,17 @@ async function readReceipt(root: string): Promise<ProjectionReceipt> {
   return { schema_version: 1, source_hashes: {}, targets: {} };
 }
 
+export async function readManagedProjectRuleProjectionPaths(
+  projectRoot: string
+): Promise<ReadonlySet<string>> {
+  const receipt = await readReceipt(resolve(projectRoot));
+  return new Set(
+    Object.keys(receipt.targets).filter((target) =>
+      AGENT_RULE_ROOTS.some((ruleRoot) => target.startsWith(`${ruleRoot}/`))
+    )
+  );
+}
+
 async function markdownFiles(root: string): Promise<string[]> {
   try {
     return (await readdir(root, { withFileTypes: true }))

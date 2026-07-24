@@ -68,6 +68,7 @@ export interface PlanArtifactRebaseInput {
   contexts: readonly OperationContext[];
   conflictStrategy: ConflictStrategy;
   resolveOverrides?: ReadonlyMap<string, PerPathResolveStrategy>;
+  protocolOnlyPaths?: ReadonlySet<string>;
 }
 
 function expectedBase(operation: FileOperation): string | null {
@@ -297,7 +298,11 @@ export function planArtifactRebase(input: PlanArtifactRebaseInput): ArtifactReba
       continue;
     }
 
-    const staticDecision = decideUpdate(policy, false);
+    const projectionManaged = input.protocolOnlyPaths?.has(source) === true ||
+      input.protocolOnlyPaths?.has(target) === true;
+    const staticDecision = projectionManaged
+      ? { apply: false, reason: "protocol-only" as const }
+      : decideUpdate(policy, false);
     if (!staticDecision.apply) {
       const acknowledgeReason = staticDecision.reason === "protocol-only"
         ? "protocol-only" as const

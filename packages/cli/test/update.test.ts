@@ -7,6 +7,7 @@ import {
   extractManagedBlock,
   readBaseline,
   sha256Bytes,
+  synchronizeProjectRules,
   updateProject,
   writeBaseline
 } from "@hunter-harness/core";
@@ -263,6 +264,113 @@ describe("hunter-harness update", () => {
     expect(baseline.complete_project_version).toBe("pv_0");
     expect(baseline.files[rulePath]?.baseline_hash).toBe(sha256Bytes(originalRule));
     expect(baseline.files[skillPath]?.baseline_hash).toBe(sha256Bytes(serverSkill));
+  });
+
+  it("acknowledges remote deletes for managed rule projections and refreshes them locally", async () => {
+    const canonicalPath = ".harness/rules/team.md";
+    const projectionPath = ".claude/rules/team.md";
+    const original = "shared v1\n";
+    const updated = "shared v2\n";
+    await mkdir(join(root, ".harness", "rules"), { recursive: true });
+    await writeFile(join(root, canonicalPath), original, "utf8");
+    await synchronizeProjectRules(root, ["claude-code"]);
+    await seedBaseline({
+      [canonicalPath]: original,
+      [projectionPath]: original
+    });
+    const manifest = artifact([
+      {
+        operation: "modify",
+        path: canonicalPath,
+        file_kind: "user_editable",
+        base_content_sha256: sha256Bytes(original),
+        content_sha256: sha256Bytes(updated),
+        size_bytes: Buffer.byteLength(updated)
+      },
+      {
+        operation: "delete",
+        path: projectionPath,
+        file_kind: "user_editable",
+        base_content_sha256: sha256Bytes(original),
+        tombstone: {
+          deleted_at: "2026-07-24T00:00:00Z",
+          reason: "projection omitted from canonical artifact",
+          previous_sha256: sha256Bytes(original)
+        }
+      }
+    ]);
+
+    const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest, {
+        [sha256Bytes(updated)]: updated
+      }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(0);
+    expect(await readFile(join(root, canonicalPath), "utf8")).toBe(updated);
+    expect(await readFile(join(root, projectionPath), "utf8")).toBe(updated);
+    const payload = JSON.parse(stdout.join("")) as {
+      items: Array<{ path: string; operation: string; status: string; reason: string | null }>;
+    };
+    expect(payload.items).toContainEqual(expect.objectContaining({
+      path: projectionPath,
+      operation: "delete",
+      status: "acknowledged",
+      reason: "protocol-only"
+    }));
+    expect((await readBaseline(root)).complete_project_version).toBe("pv_1");
+  });
+
+  it("preserves and reports locally modified managed rule projections", async () => {
+    const canonicalPath = ".harness/rules/team.md";
+    const projectionPath = ".claude/rules/team.md";
+    const original = "shared v1\n";
+    const updated = "shared v2\n";
+    const local = "local customization\n";
+    await mkdir(join(root, ".harness", "rules"), { recursive: true });
+    await writeFile(join(root, canonicalPath), original, "utf8");
+    await synchronizeProjectRules(root, ["claude-code"]);
+    await seedBaseline({
+      [canonicalPath]: original,
+      [projectionPath]: original
+    });
+    await writeFile(join(root, projectionPath), local, "utf8");
+    const manifest = artifact([{
+      operation: "modify",
+      path: canonicalPath,
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(original),
+      content_sha256: sha256Bytes(updated),
+      size_bytes: Buffer.byteLength(updated)
+    }]);
+
+    const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetchFor(manifest, {
+        [sha256Bytes(updated)]: updated
+      }),
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(5);
+    expect(await readFile(join(root, canonicalPath), "utf8")).toBe(updated);
+    expect(await readFile(join(root, projectionPath), "utf8")).toBe(local);
+    const payload = JSON.parse(stdout.join("")) as {
+      warnings: Array<{ path: string; operation: string; reason: string }>;
+    };
+    expect(payload.warnings).toContainEqual({
+      path: projectionPath,
+      operation: "modify",
+      reason: "local-dirty"
+    });
   });
 
   it("updates only the managed block and preserves user-authored guidance", async () => {
