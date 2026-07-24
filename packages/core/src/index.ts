@@ -16,6 +16,7 @@ export * from "./project/agent-adapters.js";
 export * from "./project/managed-content.js";
 export * from "./project/profile-bundle.js";
 export * from "./project/rule-candidates.js";
+export * from "./project/rule-review.js";
 export * from "./project/project-rules.js";
 export * from "./project/refresh.js";
 export * from "./project/uuid-v7.js";

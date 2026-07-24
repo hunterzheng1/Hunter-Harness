@@ -57,7 +57,8 @@ python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-
 | 3.6 | 单次运行 `harness_knowledge.py maintain --project . --drain --json`，有界推进全部 `.harness/knowledge/maintenance-outbox/{pending,failed}`；不得为每个条目重复启动 Python/重建索引（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/pending-judge） |
 | 4 | CLAUDE.md 完整性/行数 → 超限 blocking user confirmation 瘦身 |
 | 5 | AGENTS.md 与各 Agent 指令入口一致；Claude Code 启用时验证 CLAUDE.md 引用 AGENTS.md，禁止反向循环引用 |
-| 5.5 | 运行 `npx hunter-harness rules-sync --json`：扫描各 Agent 用户规则并收敛到 `.harness/rules/`，刷新受管投影；读取结构化 review/test/archive 证据生成 `.harness/knowledge/rule-candidates.json`。分歧只报告不覆盖，候选只生成不激活 |
+| 5.5 | 运行 `npx hunter-harness rules-sync --json`：扫描各 Agent 用户规则并收敛到 `.harness/rules/`，刷新受管投影；读取结构化 review/test/archive 证据生成 `.harness/knowledge/rule-candidates.json`。表现差异按 Agent 适配器语义归一，真实分歧只报告不覆盖 |
+| 5.6 | 读取 `rule_review_pending`。用户主动交互式 sync 且存在新增候选时，运行 `npx hunter-harness rules-review --json`，由 Agent 将候选推荐为公共规则/项目知识/回归测试/CI 任务/Harness issue/暂缓/拒绝，展示证据与规则 diff 并询问用户；批准或修改后用带 candidate revision + target hash 的 decision JSON 执行 `rules-review --apply`。非交互 sync 只报告待评审数，不阻塞、不激活 |
 | 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；已装 skill 新鲜度只经 `hunter-harness refresh --dry-run --json` 的 post-adaptation freshness 判断，禁止 raw build 字节比较 |
 | 7–9 | `项目规则（见 .harness/context-index.json）/`、构建配置、测试目录 — **只提示不自动修复** |
 
@@ -68,7 +69,7 @@ python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-
 
 ## 关键规则
 
-变更量先行 · CodeGraph 依赖编译产物 · map 与 Repomix 互斥 · CLAUDE 瘦身须用户确认 · 公共规则自动收敛但分歧不覆盖 · 历史规则只生成候选 · Phase 7–9 只提示 · knowledge sync 失败记 WARN/FAIL
+变更量先行 · CodeGraph 依赖编译产物 · map 与 Repomix 互斥 · CLAUDE 瘦身须用户确认 · 公共规则自动收敛但真实分歧不覆盖 · 历史证据先生成候选再由 Agent 推荐、用户批准 · Phase 7–9 只提示 · knowledge sync 失败记 WARN/FAIL
 
 ## Output Format
 
@@ -80,7 +81,10 @@ python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-
 
 ## 交互白名单
 
-**仅** CLAUDE.md/AGENTS.md 瘦身拆分确认
+- CLAUDE.md/AGENTS.md 瘦身拆分确认
+- 新增、修改、弱化、删除公共规则前的候选处置与最终 diff 确认
+
+非交互、定时或 CI sync 禁止等待输入；只输出 `rule_review_pending` 和后续 `rules-review` 命令。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`sync`；有未归档变更时写入其 change-dir events

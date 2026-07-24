@@ -243,6 +243,26 @@ def _sanitize(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "txn"
 
 
+def _compact_transaction_id(change_id: str, run_id: str, *, limit: int = 48) -> str:
+    readable = f"{_sanitize(change_id)}-{_sanitize(run_id)}"
+    if len(readable) <= limit:
+        return readable
+    digest = hashlib.sha256(readable.encode("utf-8")).hexdigest()[:12]
+    prefix = _sanitize(change_id)[: max(8, limit - len(digest) - 1)]
+    return f"{prefix}-{digest}"
+
+
+def default_temp_root(project_root: Path) -> Path:
+    """Use a deliberately short Windows worktree root to protect MAX_PATH."""
+    configured = os.environ.get("HUNTER_HARNESS_INTEGRATION_ROOT")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    resolved = Path(project_root).resolve()
+    if os.name == "nt" and resolved.drive:
+        return Path(resolved.drive + os.sep) / "hh-int"
+    return resolved / ".harness" / "runtime" / "i"
+
+
 def journal_dir(project_root: Path, transaction_id: str) -> Path:
     return (
         Path(project_root)
@@ -419,7 +439,7 @@ class IntegrationTransaction:
         self.feature_branch = feature_branch
         self.temp_root = Path(temp_root).resolve()
         self.runner = runner or GitRunner()
-        self.transaction_id = f"{_sanitize(change_id)}-{_sanitize(run_id)}"
+        self.transaction_id = _compact_transaction_id(change_id, run_id)
         self.temp_branch = f"harness/integration/{self.transaction_id}"
 
     # ------------------------------------------------------------- journal
@@ -1592,13 +1612,18 @@ class IntegrationTransaction:
 
 
 def _txn_from_args(args: argparse.Namespace) -> IntegrationTransaction:
+    project_root = Path.cwd()
     return IntegrationTransaction(
-        project_root=Path.cwd(),
+        project_root=project_root,
         change_id=args.change,
         run_id=args.run_id,
         target_branch=args.target_branch,
         feature_branch=args.feature_branch,
-        temp_root=Path(args.temp_root),
+        temp_root=(
+            Path(args.temp_root)
+            if getattr(args, "temp_root", None)
+            else default_temp_root(project_root)
+        ),
     )
 
 
@@ -1693,7 +1718,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--run-id", required=True)
         p.add_argument("--target-branch", default="main")
         p.add_argument("--feature-branch", required=True)
-        p.add_argument("--temp-root", required=True)
+        p.add_argument("--temp-root")
         p.set_defaults(func=func)
 
     add("preflight", cmd_preflight)
@@ -1710,7 +1735,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_journal.add_argument("--run-id", required=True)
     p_journal.add_argument("--target-branch", default="main")
     p_journal.add_argument("--feature-branch", required=True)
-    p_journal.add_argument("--temp-root", required=True)
+    p_journal.add_argument("--temp-root")
     p_journal.add_argument(
         "--verbose",
         action="store_true",
@@ -1723,7 +1748,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--run-id", required=True)
     p_verify.add_argument("--target-branch", default="main")
     p_verify.add_argument("--feature-branch", required=True)
-    p_verify.add_argument("--temp-root", required=True)
+    p_verify.add_argument("--temp-root")
     p_verify.add_argument("--command", action="append")
     p_verify.add_argument(
         "--timeout-seconds",

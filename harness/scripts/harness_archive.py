@@ -1047,13 +1047,30 @@ def build_workflow_timing(
     started = str(stamps[0]) if stamps else None
     cutoff = report_cutoff_at or (str(stamps[-1]) if stamps else None)
     stage_active = 0
-    stage_wall = 0
+    stage_intervals: list[tuple[Any, Any]] = []
     unclosed = 0
     for _phase, phase_events in he.group_events_by_phase(events):
         timing = he.canonical_phase_timing(phase_events, cutoff_ts=cutoff)
         stage_active += int(timing.get("activeExecutionMs") or 0)
-        stage_wall += int(timing.get("wallClockSpanMs") or 0)
         unclosed += int(timing.get("unclosedAttemptCount") or 0)
+        phase_stamps = [
+            he.parse_timestamp(event.get("timestamp"))
+            for event in phase_events
+            if event.get("timestamp")
+        ]
+        phase_stamps = [stamp for stamp in phase_stamps if stamp is not None]
+        if phase_stamps:
+            stage_intervals.append((min(phase_stamps), max(phase_stamps)))
+    merged_intervals: list[list[Any]] = []
+    for interval_start, interval_end in sorted(stage_intervals):
+        if not merged_intervals or interval_start > merged_intervals[-1][1]:
+            merged_intervals.append([interval_start, interval_end])
+        else:
+            merged_intervals[-1][1] = max(merged_intervals[-1][1], interval_end)
+    stage_wall = sum(
+        max(0, int((interval_end - interval_start).total_seconds() * 1000))
+        for interval_start, interval_end in merged_intervals
+    )
     workflow_wall = he.duration_ms_between(started, cutoff) if started and cutoff else 0
     external = 0
     for event in events:
@@ -1817,14 +1834,26 @@ def _ledger_api_tests(
     counted = False
 
     metrics = api.get("metrics")
-    if isinstance(metrics, dict) and any(
-        k in metrics for k in ("total", "passed", "failed", "blocked")
+    normalized_metrics = (
+        {str(key).lower(): value for key, value in metrics.items()}
+        if isinstance(metrics, dict)
+        else {}
+    )
+    if any(
+        k in normalized_metrics
+        for k in ("total", "passed", "pass", "failed", "fail", "blocked")
     ):
-        passed = int(metrics.get("passed", 0) or 0)
-        failed = int(metrics.get("failed", 0) or 0)
-        blocked = int(metrics.get("blocked", 0) or 0)
-        total = int(metrics.get("total", passed + failed + blocked) or 0)
-        pass_rate = metrics.get("passRate")
+        passed = int(
+            normalized_metrics.get("passed", normalized_metrics.get("pass", 0)) or 0
+        )
+        failed = int(
+            normalized_metrics.get("failed", normalized_metrics.get("fail", 0)) or 0
+        )
+        blocked = int(normalized_metrics.get("blocked", 0) or 0)
+        total = int(
+            normalized_metrics.get("total", passed + failed + blocked) or 0
+        )
+        pass_rate = normalized_metrics.get("passrate")
         source = "committed"
         counted = total > 0 or passed > 0 or failed > 0 or blocked > 0
 
@@ -2191,8 +2220,12 @@ def _artifacts_from_events(
         raw_path = str(e.get("path") or "")
         archived_path = raw_path
         if change_dir is not None and raw_path:
+            normalized = raw_path.replace("\\", "/")
+            same_change_prefix = f".harness/changes/{change_dir.name}/"
+            if normalized.startswith(same_change_prefix):
+                archived_path = normalized[len(same_change_prefix):]
             product_copy = change_dir / "artifacts" / "product" / raw_path
-            if not (change_dir / raw_path).is_file() and product_copy.is_file():
+            if archived_path == raw_path and not (change_dir / raw_path).is_file() and product_copy.is_file():
                 archived_path = product_copy.relative_to(change_dir).as_posix()
         out.append(
             {
@@ -2618,6 +2651,37 @@ def _review_summary(
         merged = dict(base)
         merged.update(existing["reviewSummary"])
         return merged
+    reports = find_review_reports(change_dir)
+    if reports:
+        labels: set[tuple[str, str]] = set()
+        pattern = re.compile(
+            r"(?im)^\s{0,3}(?:#{1,6}\s*)?(?:[-*]\s*)?(?:\*\*)?"
+            r"(RED|YELLOW)[-_\s]?(\d+)\b"
+        )
+        for report in reports:
+            try:
+                text = report.read_text(encoding="utf-8-sig")
+            except OSError:
+                continue
+            labels.update(
+                (match.group(1).upper(), match.group(2))
+                for match in pattern.finditer(text)
+            )
+        red = sum(1 for severity, _ in labels if severity == "RED")
+        yellow = sum(1 for severity, _ in labels if severity == "YELLOW")
+        base.update(
+            {
+                "status": "ADVISORY_UNSTRUCTURED",
+                "red": red,
+                "yellow": yellow,
+                "redConfirmed": red,
+                "summary": (
+                    "structured review findings missing; counts inferred from "
+                    f"{len(reports)} markdown report(s)"
+                ),
+            }
+        )
+        return base
     if not review_evidence_present(change_dir, events):
         base["status"] = "ADVISORY_NOT_RUN"
     return base
@@ -4317,9 +4381,9 @@ def cmd_finalize(
         if resolved_state_dir.resolve() != original_change_dir.resolve()
         else None
     )
-    operation_id = f"archive-{uuid.uuid4().hex}"
+    operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
-    operation_temp_dir = operation_root / "staging" / operation_id / change_name
+    operation_temp_dir = operation_root / "staging" / operation_id / "c"
     operation_record = operation_root / f"{operation_id}.json"
 
     def _restore_finalize_failure() -> None:
@@ -4378,12 +4442,32 @@ def cmd_finalize(
     if not exact_byte["ok"]:
         warnings.append(str(exact_byte["remediation"]))
 
+    payload["steps"]["service_stop_before_staging"] = run_service_stop(
+        original_change_dir
+    )
+    transient_names = {
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".cache",
+        "integration-temp",
+    }
+
+    def _ignore_archive_transients(_directory: str, names: list[str]) -> set[str]:
+        return {
+            name
+            for name in names
+            if name in transient_names or name.endswith(".lock")
+        }
+
     try:
         operation_temp_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(
             original_change_dir,
             operation_temp_dir,
             copy_function=shutil.copy2,
+            ignore=_ignore_archive_transients,
         )
         write_json(
             operation_record,

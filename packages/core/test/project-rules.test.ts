@@ -116,6 +116,71 @@ describe("project rule projections", () => {
     expect(result.migrated).toEqual([]);
   });
 
+  it("treats global Cursor frontmatter as adapter metadata instead of a rule conflict", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
+    await mkdir(join(root, ".harness", "rules"), { recursive: true });
+    await mkdir(join(root, ".cursor", "rules"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "rules", "team.md"),
+      "# Team\n\nUse focused tests.\n",
+      "utf8"
+    );
+    const cursorRule = [
+      "---",
+      "description: Team development policy",
+      "alwaysApply: true",
+      "---",
+      "",
+      "# Team",
+      "",
+      "Use focused tests.",
+      ""
+    ].join("\n");
+    await writeFile(join(root, ".cursor", "rules", "team.mdc"), cursorRule, "utf8");
+
+    const result = await synchronizeProjectRules(root, ["cursor"], "both");
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.unchanged).toContain(".cursor/rules/team.mdc");
+    expect(await readFile(join(root, ".cursor", "rules", "team.mdc"), "utf8"))
+      .toBe(cursorRule);
+  });
+
+  it("updates a clean Cursor projection body without deleting its global frontmatter", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
+    await mkdir(join(root, ".harness", "rules"), { recursive: true });
+    const canonical = join(root, ".harness", "rules", "team.md");
+    await writeFile(canonical, "# Team\n\nUse focused tests.\n", "utf8");
+    await synchronizeProjectRules(root, ["cursor"], "both");
+    const projected = join(root, ".cursor", "rules", "team.mdc");
+    await writeFile(
+      projected,
+      [
+        "---",
+        "description: Team development policy",
+        "alwaysApply: true",
+        "---",
+        "",
+        "# Team",
+        "",
+        "Use focused tests.",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await synchronizeProjectRules(root, ["cursor"], "both");
+    await writeFile(canonical, "# Team\n\nUse focused regression tests.\n", "utf8");
+
+    const result = await synchronizeProjectRules(root, ["cursor"], "both");
+    const updated = await readFile(projected, "utf8");
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.written).toContain(".cursor/rules/team.mdc");
+    expect(updated).toContain("description: Team development policy");
+    expect(updated).toContain("alwaysApply: true");
+    expect(updated).toContain("Use focused regression tests.");
+  });
+
   it("removes only the Codex projection block when Codex is deselected", async () => {
     const root = await mkdtemp(join(tmpdir(), "harness-rules-"));
     await mkdir(join(root, ".harness", "rules"), { recursive: true });

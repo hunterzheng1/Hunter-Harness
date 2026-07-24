@@ -232,8 +232,13 @@ def read_concurrency_mode(project_root: Path) -> str:
     ``isolated-multi-active`` (allows multiple active Changes but all
     Change-scoped commands require ``--change``).
     """
-    cfg = project_root / ".harness" / "config.json"
-    if cfg.is_file():
+    configs = [
+        project_root / ".harness" / "config" / "harness.json",
+        project_root / ".harness" / "config.json",
+    ]
+    for cfg in configs:
+        if not cfg.is_file():
+            continue
         try:
             data = json.loads(cfg.read_text(encoding="utf-8"))
             if isinstance(data, dict):
@@ -244,7 +249,7 @@ def read_concurrency_mode(project_root: Path) -> str:
                 }:
                     return mode
         except (OSError, json.JSONDecodeError):
-            pass
+            continue
     return "single-active"
 
 

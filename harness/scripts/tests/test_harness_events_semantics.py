@@ -78,6 +78,19 @@ class ClosedPhaseDurationTests(unittest.TestCase):
 
 
 class AttemptInvocationTests(unittest.TestCase):
+    def test_decision_before_first_start_is_metadata_not_orphan_attempt(self) -> None:
+        bucket = [
+            ev("2026-07-18T09:59:00.000+08:00", "decision"),
+            ev("2026-07-18T10:00:00.000+08:00", "phase.start"),
+            ev("2026-07-18T10:02:00.000+08:00", "phase.end", status="OK"),
+        ]
+
+        attempts = events.split_phase_attempts(bucket)
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]["warnings"], [])
+        self.assertEqual(attempts[0]["events"][0]["type"], "phase.start")
+
     def test_two_attempts_both_preserved_ret22(self) -> None:
         bucket = [
             ev("2026-07-18T10:00:00.000+08:00", "phase.start"),

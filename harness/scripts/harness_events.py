@@ -883,6 +883,15 @@ def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, A
     attempts: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     next_attempt = 1
+    pre_start_metadata_types = {
+        "correction",
+        "decision",
+        "environment.wait",
+        "env.wait",
+        "external.wait",
+        "issue",
+        "ci.wait",
+    }
     for event in phase_events:
         if event.get("type") == "phase.start":
             if current is not None:
@@ -899,6 +908,11 @@ def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, A
                 attempts[-1]["events"].append(event)
                 if prior_type == "phase.end":
                     attempts[-1]["warnings"].append("event recorded after phase.end")
+                continue
+            if event.get("type") in pre_start_metadata_types:
+                # Decisions and diagnostics may be emitted while selecting or
+                # recovering a phase. They describe workflow context, not an
+                # execution attempt, so they must not manufacture an orphan.
                 continue
             raw_attempt = event.get("attempt")
             attempt = raw_attempt if isinstance(raw_attempt, int) and raw_attempt > 0 else next_attempt

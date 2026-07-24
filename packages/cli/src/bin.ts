@@ -16,6 +16,10 @@ import { runPush, type PushOptions } from "./commands/push.js";
 import { runRefresh, type RefreshCommandOptions } from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
 import { runRulesSync, type RulesSyncCommandOptions } from "./commands/rules-sync.js";
+import {
+  runRulesReview,
+  type RulesReviewCommandOptions
+} from "./commands/rules-review.js";
 import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
 import {
   resolveWorkflowResourcesRoot,
@@ -200,6 +204,16 @@ export async function runCli(
     .action(async (options: RulesSyncCommandOptions) => {
       exitCode = await runRulesSync(
         { ...program.opts<RulesSyncCommandOptions>(), ...options },
+        dependencies
+      );
+    });
+  program.command("rules-review")
+    .description("导出待评审公共规则候选，或应用经用户确认的规则决策")
+    .option("--apply <file>", "应用包含候选 revision 和目标 hash 的决策 JSON")
+    .option("--json")
+    .action(async (options: RulesReviewCommandOptions) => {
+      exitCode = await runRulesReview(
+        { ...program.opts<RulesReviewCommandOptions>(), ...options },
         dependencies
       );
     });

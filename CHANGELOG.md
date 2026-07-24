@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.31] — hunter-harness / [0.2.27] — @hunter-harness/workflow-harness
+
+### Fixed（规则审阅、运行闭合与 Windows 归档）
+
+- **交互式规则审阅**：新增 `rules-review`，Agent 可把归档候选推荐为公共规则、项目知识、回归测试、CI 任务或 Harness 缺陷；用户确认、修改或拒绝后持久化决策，并以 candidate revision 与目标 SHA 防止覆盖新版本。
+- **规则语义同步**：Cursor frontmatter 与规则正文分离比较，正文一致不再误报冲突；公共正文更新时保留 Agent 元数据。`harness-sync` 在交互模式展示候选与差异，非交互模式只报告待审数量。
+- **事件与时间闭合**：并发拒绝记录完整 `BLOCKED` attempt；阶段前 decision 不再制造孤儿 attempt；并行阶段墙钟按区间并集统计，保留 active-only 与 workflow wall-clock 的明确区分。
+- **审查与 API 证据**：无结构化 sidecar 的 review 不再误报零 RED，而是以 `ADVISORY_UNSTRUCTURED` 投影可见计数；API 汇总兼容大小写指标键。
+- **Windows 集成与归档**：integration 自动使用短 transaction id 和短临时根；archive staging 使用短目录、复制前停止 Harness 服务，并排除 `node_modules`、虚拟环境、缓存与锁文件。
+- **Artifact 路径**：同一 change 的 `.harness/changes/<id>/...` 仓库路径在最终报告中自动规范为 change-relative 路径。
+
 ## [0.2.29] — hunter-harness / [0.2.26] — @hunter-harness/workflow-harness
 
 ### Added（规则收敛与经验学习）

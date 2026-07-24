@@ -408,6 +408,19 @@ class ProductIdentityTests(unittest.TestCase):
 class TimingSealTests(unittest.TestCase):
     """UT-010 / UT-011 / UT-012 — unclosed attempt + timing object."""
 
+    def test_overlapping_stage_spans_are_counted_as_interval_union(self) -> None:
+        rows = [
+            {"type": "phase.start", "phase": "run", "timestamp": "2026-07-23T09:00:00+00:00"},
+            {"type": "phase.start", "phase": "test", "timestamp": "2026-07-23T09:30:00+00:00"},
+            {"type": "phase.end", "phase": "run", "timestamp": "2026-07-23T10:00:00+00:00"},
+            {"type": "phase.end", "phase": "test", "timestamp": "2026-07-23T10:30:00+00:00"},
+        ]
+
+        timing = ha.build_workflow_timing(rows)
+
+        self.assertEqual(timing["workflowWallClockMs"], 90 * 60 * 1000)
+        self.assertEqual(timing["stageWallClockSpanMs"], 90 * 60 * 1000)
+
     def test_ut010_unclosed_attempt_sealed_at_recovery_keeps_wall_clock(self) -> None:
         events = [
             {

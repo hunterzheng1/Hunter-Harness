@@ -1140,6 +1140,7 @@ def append_phase_event(
     executor_tool: str | None = None,
     executor_agent: str | None = None,
     executor_model: str | None = None,
+    code: str | None = None,
 ) -> dict[str, Any]:
     events_file = he.events_path(change_dir)
     existing = he.load_events(events_file)
@@ -1154,7 +1155,7 @@ def append_phase_event(
         name=None,
         path=None,
         kind=None,
-        code=None,
+        code=code,
         severity=None,
         message=None,
         decision=None,
@@ -1190,6 +1191,34 @@ def append_phase_event(
         "rendered": rendered,
         "executionLogPath": str(log_path) if log_path else None,
     }
+
+
+def record_blocked_attempt(
+    change_dir: Path,
+    *,
+    phase: str,
+    code: str,
+    message: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a rejected begin as a complete, zero-work attempt."""
+    blocked_run_id = run_id or "blocked-" + uuid.uuid4().hex[:12]
+    append_phase_event(
+        change_dir,
+        phase=phase,
+        type_="phase.start",
+        note=f"begin rejected: {code}",
+        run_id=blocked_run_id,
+    )
+    return append_phase_event(
+        change_dir,
+        phase=phase,
+        type_="phase.end",
+        status="BLOCKED",
+        note=message,
+        run_id=blocked_run_id,
+        code=code,
+    )
 
 
 def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -> bool:
@@ -1279,6 +1308,15 @@ def cmd_begin(args: argparse.Namespace) -> int:
     change_dir = Path(resolved["changeDir"])
     concurrency_block = hc.check_concurrency_block(project, resolved["changeId"])
     if concurrency_block is not None:
+        record_blocked_attempt(
+            change_dir,
+            phase=args.phase,
+            code=str(concurrency_block.get("code", "CONCURRENCY_BLOCKED")),
+            message=str(
+                concurrency_block.get("message", "concurrency mode blocked begin")
+            ),
+            run_id=args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID"),
+        )
         return emit_error(
             str(concurrency_block.get("code", "CONCURRENCY_BLOCKED")),
             str(concurrency_block.get("message", "concurrency mode blocked begin")),

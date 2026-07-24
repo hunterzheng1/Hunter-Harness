@@ -44,7 +44,12 @@ describe("hunter-harness rules-sync CLI", () => {
     const code = await run(["rules-sync", "--json"]);
     const output = JSON.parse(stdout.join("")) as {
       command: string;
-      summary: { migrated: number; conflicts: number; rule_candidates: number };
+      summary: {
+        migrated: number;
+        conflicts: number;
+        rule_candidates: number;
+        rule_review_pending: number;
+      };
     };
 
     expect(code).toBe(0);
@@ -52,7 +57,8 @@ describe("hunter-harness rules-sync CLI", () => {
     expect(output.summary).toMatchObject({
       migrated: 1,
       conflicts: 0,
-      rule_candidates: 1
+      rule_candidates: 1,
+      rule_review_pending: 1
     });
     expect(await readFile(
       join(root, ".harness", "rules", "team-custom.md"),

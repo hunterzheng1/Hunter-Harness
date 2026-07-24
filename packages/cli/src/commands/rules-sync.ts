@@ -6,6 +6,7 @@ import {
   type ProjectConfig
 } from "@hunter-harness/contracts";
 import {
+  exportRuleReviewQueue,
   synchronizeProjectRules,
   synchronizeRuleCandidates,
   uuidV7
@@ -62,6 +63,9 @@ export async function runRulesSync(
     const learning = options.learn === false
       ? null
       : await synchronizeRuleCandidates(dependencies.cwd);
+    const ruleReview = learning === null
+      ? null
+      : await exportRuleReviewQueue(dependencies.cwd);
     const exitCode = projections.conflicts.length > 0 ? 5 : 0;
     const payload: CliResult = {
       schema_version: 1 as const,
@@ -78,7 +82,8 @@ export async function runRulesSync(
         unchanged: projections.unchanged.length,
         conflicts: projections.conflicts.length,
         agent_specific: projections.agent_specific.length,
-        rule_candidates: learning?.candidates ?? 0
+        rule_candidates: learning?.candidates ?? 0,
+        rule_review_pending: ruleReview?.pending.length ?? 0
       },
       items: [
         ...projections.migrated.map((path) => ({ path, status: "migrated" })),
@@ -89,6 +94,12 @@ export async function runRulesSync(
           status: learning.changed ? "updated" : "unchanged",
           candidates: learning.candidates,
           scanned: learning.scanned
+        }]),
+        ...(ruleReview === null ? [] : [{
+          path: ".harness/knowledge/rule-decisions.json",
+          status: ruleReview.pending.length > 0 ? "pending-review" : "current",
+          pending: ruleReview.pending.length,
+          decided: ruleReview.decided
         }])
       ],
       warnings: [

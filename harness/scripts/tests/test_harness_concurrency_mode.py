@@ -84,6 +84,39 @@ class ConcurrencyModeTests(unittest.TestCase):
         r2 = hc.check_concurrency_block(self.project, "change-b")
         self.assertIsNone(r2)
 
+    def test_structured_config_takes_precedence_over_legacy_config(self) -> None:
+        _write_config(self.project, "single-active")
+        _write(
+            self.project / ".harness" / "config" / "harness.json",
+            json.dumps({"concurrencyMode": "isolated-multi-active"}),
+        )
+
+        self.assertEqual(
+            hc.read_concurrency_mode(self.project), "isolated-multi-active"
+        )
+
+    def test_blocked_begin_is_recorded_as_closed_attempt(self) -> None:
+        change_dir = _bootstrap_change(self.project, "change-b")
+
+        result = hg.record_blocked_attempt(
+            change_dir,
+            phase="test",
+            code="SINGLE_ACTIVE_BLOCKED",
+            message="another change is active",
+            run_id="blocked-test-1",
+        )
+
+        self.assertTrue(result["ok"])
+        rows = [
+            json.loads(line)
+            for line in (change_dir / "events.ndjson").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        self.assertEqual([row["type"] for row in rows], ["phase.start", "phase.end"])
+        self.assertEqual(rows[-1]["status"], "BLOCKED")
+        self.assertEqual(rows[-1]["code"], "SINGLE_ACTIVE_BLOCKED")
+
     def test_resolve_requires_change_when_multi_active(self) -> None:
         _write_config(self.project, "isolated-multi-active")
         _bootstrap_change(self.project, "change-a")

@@ -913,6 +913,30 @@ class ReviewDetectionTests(unittest.TestCase):
         self.assertTrue(ha.review_phase_completed(events))
         self.assertTrue(ha.review_evidence_present(self.change_dir, events))
 
+    def test_unstructured_review_report_keeps_finding_counts_visible(self) -> None:
+        _write(
+            self.change_dir / "reports" / "review" / "review-report-20260724.md",
+            "\n".join(
+                [
+                    "# Review",
+                    "### RED-1 History visibility",
+                    "### RED-2 Missing audit",
+                    "### RED-3 API baseline",
+                    "### RED-4 Correlation N+1",
+                    "### YELLOW-1 Improve naming",
+                    "### YELLOW-2 Add documentation",
+                ]
+            ),
+        )
+
+        summary = ha._review_summary(self.change_dir, None, [])
+
+        self.assertEqual(summary["status"], "ADVISORY_UNSTRUCTURED")
+        self.assertEqual(summary["red"], 4)
+        self.assertEqual(summary["yellow"], 2)
+        self.assertEqual(summary["redConfirmed"], 4)
+        self.assertIn("structured", summary["summary"].lower())
+
 
 class LedgerCountFallbackTests(unittest.TestCase):
     """UT-104..109: metrics → evidence dict → text regex → api-test-results."""
@@ -1048,6 +1072,24 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["passed"], 1)
         self.assertEqual(result["passRate"], "100%")
+
+    def test_api_typed_metrics_accept_uppercase_result_keys(self) -> None:
+        ledger = {
+            "validations": {
+                "apiTest": {
+                    "status": "OK",
+                    "metrics": {"PASS": 20, "FAIL": 0, "BLOCKED": 0},
+                }
+            }
+        }
+
+        result = ha._ledger_api_tests(ledger)
+
+        self.assertEqual(result["total"], 20)
+        self.assertEqual(result["executed"], 20)
+        self.assertEqual(result["passed"], 20)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(result["blocked"], 0)
 
     def test_api_pass_rate_excludes_blocked_and_reports_execution_rate(self) -> None:
         result = ha._ledger_api_tests({

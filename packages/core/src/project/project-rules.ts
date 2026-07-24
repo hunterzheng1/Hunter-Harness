@@ -102,21 +102,48 @@ function normalizeRuleContent(content: string): string {
   return content.replace(/\r\n/g, "\n").trimEnd() + "\n";
 }
 
+interface ParsedAgentRule {
+  canonical: string | null;
+  globalFrontmatterPrefix: string | null;
+}
+
 /**
  * Cursor/CodeBuddy scoped frontmatter cannot be represented faithfully by all
  * agents. Only globally applicable rules are eligible for the shared source.
  */
-function canonicalImportContent(content: string): string | null {
+function parseAgentRule(content: string): ParsedAgentRule {
   const normalized = content.replace(/\r\n/g, "\n");
-  if (!normalized.startsWith("---\n")) return normalizeRuleContent(normalized);
+  if (!normalized.startsWith("---\n")) {
+    return {
+      canonical: normalizeRuleContent(normalized),
+      globalFrontmatterPrefix: null
+    };
+  }
   const closing = normalized.indexOf("\n---\n", 4);
-  if (closing < 0) return null;
+  if (closing < 0) {
+    return { canonical: null, globalFrontmatterPrefix: null };
+  }
   const frontmatter = normalized.slice(4, closing);
   if (/^\s*(?:globs?|paths?)\s*:/im.test(frontmatter) ||
       /^\s*alwaysApply\s*:\s*false\s*$/im.test(frontmatter)) {
-    return null;
+    return { canonical: null, globalFrontmatterPrefix: null };
   }
-  return normalizeRuleContent(normalized.slice(closing + 5));
+  const bodyStart = closing + 5;
+  return {
+    canonical: normalizeRuleContent(normalized.slice(bodyStart).replace(/^\n+/, "")),
+    globalFrontmatterPrefix: normalized.slice(0, bodyStart)
+  };
+}
+
+function canonicalImportContent(content: string): string | null {
+  return parseAgentRule(content).canonical;
+}
+
+function projectionContent(target: string, current: string | null, canonical: string): string {
+  if (current === null || !target.toLowerCase().endsWith(".mdc")) return canonical;
+  const parsed = parseAgentRule(current);
+  if (parsed.globalFrontmatterPrefix === null) return canonical;
+  return `${parsed.globalFrontmatterPrefix}\n${canonical}`;
 }
 
 async function collectImportCandidates(
@@ -243,9 +270,10 @@ export async function synchronizeProjectRules(
       result.unchanged.push(target);
       next.targets[target] = current === null ? incomingHash : sha256(current);
     } else if (current === null || previous.targets[target] === sha256(current)) {
-      await atomicWrite(path, content);
+      const projected = projectionContent(target, current, content);
+      await atomicWrite(path, projected);
       result.written.push(target);
-      next.targets[target] = incomingHash;
+      next.targets[target] = sha256(projected);
     } else {
       result.conflicts.push(target);
       next.targets[target] = previous.targets[target] ?? sha256(current);
