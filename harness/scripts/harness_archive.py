@@ -4383,7 +4383,7 @@ def cmd_finalize(
     )
     operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
-    operation_temp_dir = operation_root / "staging" / operation_id / "c"
+    operation_temp_dir = operation_root / "staging" / operation_id / change_dir.name
     operation_record = operation_root / f"{operation_id}.json"
 
     def _restore_finalize_failure() -> None:

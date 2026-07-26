@@ -78,6 +78,25 @@ class _FinalizeFixture(unittest.TestCase):
 class FreezeFirstTests(_FinalizeFixture):
     """INT-006 / RET-19: freeze-first finalize."""
 
+    def test_atomic_staging_preserves_change_identity_for_replay(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        html = (
+            archive_dir / "reports" / "final" / "final-summary.html"
+        ).read_text(encoding="utf-8")
+        replay_code, replay = ha.cmd_replay(archive_dir)
+
+        self.assertEqual(summary["changeName"], "demo-change")
+        self.assertIn("demo-change", html)
+        self.assertEqual(replay_code, 0, replay)
+        self.assertTrue(replay["ok"], replay)
+
     def test_event_count_equals_cutoff_total(self) -> None:
         code, payload, archive_dir = self._finalize()
         self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
