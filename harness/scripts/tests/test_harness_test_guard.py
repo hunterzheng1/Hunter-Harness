@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
@@ -119,6 +120,367 @@ class TestGuardTests(unittest.TestCase):
             self.assertEqual(result["code"], "SNAPSHOT_CAPTURED")
         finally:
             self._git("worktree", "remove", "--force", str(worktree))
+
+    def test_confirmed_blocker_begin_uses_common_profile_in_linked_worktree(
+        self,
+    ) -> None:
+        profile = self.project / ".harness" / "config" / "build-profile.json"
+        self._write(
+            profile,
+            json.dumps({"testTracking": {"paths": ["qa/python/**"]}}),
+        )
+        custom_test = self.project / "qa" / "python" / "test_custom_case.py"
+        self._write(custom_test, "def test_custom_case():\n    assert True\n")
+        self._git("add", profile.relative_to(self.project), custom_test.relative_to(self.project))
+        self._git("commit", "-m", "custom python test profile")
+
+        worktree = self.outside / "common-profile-worktree"
+        self._git("worktree", "add", "-b", "feature-common-profile", str(worktree))
+        try:
+            (worktree / ".harness" / "config" / "build-profile.json").unlink()
+
+            result = guard.begin(worktree, self.change)
+
+            self.assertTrue(result["ok"], result)
+            self.assertIn("qa/python/test_custom_case.py", result["files"])
+            snapshot = json.loads(Path(result["snapshotPath"]).read_text("utf-8"))
+            self.assertIn(
+                "qa/python/test_custom_case.py",
+                {item["path"] for item in snapshot["files"]},
+            )
+        finally:
+            self._git("worktree", "remove", "--force", str(worktree))
+
+    def test_confirmed_blocker_close_reconciles_incomplete_snapshot_and_v2_ownership(
+        self,
+    ) -> None:
+        paths = {
+            name: self.project / "src" / "test" / "java" / f"{name}Test.java"
+            for name in (
+                "Baseline",
+                "Modified",
+                "UnchangedCurrent",
+                "UnchangedShared",
+            )
+        }
+        for name, path in paths.items():
+            self._write(path, f"class {name}Test {{}}\n")
+        self._git(
+            "add",
+            "-f",
+            *(path.relative_to(self.project) for path in paths.values()),
+        )
+        self._git("commit", "-m", "tracked test baseline")
+        self._write(
+            self.change / "meta" / "change-context.json",
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "lifecycle": {"status": "active"},
+                }
+            ),
+        )
+
+        recorded = guard.record(
+            self.project,
+            self.change,
+            [
+                str(paths["UnchangedCurrent"]),
+                str(paths["UnchangedShared"]),
+            ],
+            "test-updated",
+        )
+        self.assertTrue(recorded["ok"], recorded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        shared = next(
+            item
+            for item in manifest["files"]
+            if item["path"].endswith("UnchangedSharedTest.java")
+        )
+        shared["introducedBy"] = "other-change"
+        shared["touchedBy"] = ["other-change", "demo"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        baseline_rel = paths["Baseline"].relative_to(self.project).as_posix()
+        baseline_digest = (
+            "sha256:" + hashlib.sha256(paths["Baseline"].read_bytes()).hexdigest()
+        )
+        baseline_commit = self._git("rev-parse", "HEAD").stdout.strip()
+        snapshot_path = self.change / "evidence" / "test-guard-snapshot.json"
+        self._write(
+            snapshot_path,
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "mode": "force-track-touched",
+                    "projectRoot": str(self.project.resolve()),
+                    "repositoryId": guard.harness_paths.repository_identity(
+                        self.project
+                    ),
+                    "headCommit": baseline_commit,
+                    "files": [
+                        {
+                            "path": baseline_rel,
+                            "sha256": baseline_digest,
+                            "ignored": True,
+                        }
+                    ],
+                }
+            ),
+        )
+        self._write(paths["Modified"], "class ModifiedTest { int changed; }\n")
+        created = self.project / "src" / "test" / "java" / "CreatedTest.java"
+        self._write(created, "class CreatedTest {}\n")
+
+        close = guard.close(self.project, self.change)
+
+        self.assertTrue(close["ok"], close)
+        modified_rel = paths["Modified"].relative_to(self.project).as_posix()
+        created_rel = created.relative_to(self.project).as_posix()
+        self.assertEqual(set(close["files"]), {modified_rel, created_rel})
+        self.assertEqual(close["recordedCount"], 2)
+
+        reconciled = json.loads(manifest_path.read_text("utf-8"))
+        by_path = {item["path"]: item for item in reconciled["files"]}
+        self.assertEqual(by_path[modified_rel]["reason"], "test-updated")
+        self.assertEqual(by_path[created_rel]["reason"], "tdd-created")
+        current_only_rel = paths["UnchangedCurrent"].relative_to(
+            self.project
+        ).as_posix()
+        self.assertNotIn(current_only_rel, by_path)
+        shared_rel = paths["UnchangedShared"].relative_to(self.project).as_posix()
+        self.assertEqual(by_path[shared_rel]["introducedBy"], "other-change")
+        self.assertEqual(by_path[shared_rel]["touchedBy"], ["other-change"])
+        self.assertEqual(by_path[shared_rel]["commitScope"], "foreign-change")
+
+    def test_review_fixback_begin_rejects_invalid_local_profile_in_linked_worktree(
+        self,
+    ) -> None:
+        tracked_test = self.project / "src" / "test" / "java" / "ProfileTest.java"
+        self._write(tracked_test, "class ProfileTest {}\n")
+        self._git("add", "-f", tracked_test.relative_to(self.project))
+        self._git("commit", "-m", "tracked profile test")
+
+        worktree = self.outside / "invalid-local-profile-worktree"
+        self._git("worktree", "add", "-b", "feature-invalid-profile", str(worktree))
+        invalid_profiles = {
+            "malformed-json": "{",
+            "invalid-structure": json.dumps(
+                {"testTracking": {"paths": "src/test/**"}}
+            ),
+        }
+        try:
+            local_profile = (
+                worktree / ".harness" / "config" / "build-profile.json"
+            )
+            for label, payload in invalid_profiles.items():
+                with self.subTest(profile=label):
+                    change = (
+                        self.project
+                        / ".harness"
+                        / "changes"
+                        / f"invalid-profile-{label}"
+                    )
+                    change.mkdir(parents=True)
+                    self._write(local_profile, payload)
+
+                    result = guard.begin(worktree, change)
+
+                    self.assertFalse(result["ok"], result)
+                    self.assertEqual(result["code"], "PROFILE_INVALID")
+                    self.assertFalse(
+                        (change / "evidence" / "test-guard-snapshot.json").exists()
+                    )
+        finally:
+            self._git("worktree", "remove", "--force", str(worktree))
+
+    def test_review_fixback_close_rejects_profile_change_without_manifest_drift(
+        self,
+    ) -> None:
+        test_file = self.project / "src" / "test" / "java" / "ChangedTest.java"
+        self._write(test_file, "class ChangedTest {}\n")
+        self._git("add", "-f", test_file.relative_to(self.project))
+        self._git("commit", "-m", "tracked test baseline")
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        self._write(test_file, "class ChangedTest { int changed; }\n")
+        recorded = self._record(test_file, reason="test-updated")
+        self.assertTrue(recorded["ok"], recorded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        manifest_before = manifest_path.read_bytes()
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps({"testTracking": {"paths": ["qa/**"]}}),
+        )
+
+        close = guard.close(self.project, self.change)
+
+        self.assertFalse(close["ok"], close)
+        self.assertEqual(close["code"], "PROFILE_CHANGED")
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+
+    def test_review_fixback_close_cleans_restored_current_change_provenance(
+        self,
+    ) -> None:
+        test_file = self.project / "src" / "test" / "java" / "RestoredTest.java"
+        baseline = "class RestoredTest {}\n"
+        self._write(test_file, baseline)
+        self._git("add", "-f", test_file.relative_to(self.project))
+        self._git("commit", "-m", "tracked test baseline")
+        self._write(
+            self.change / "meta" / "change-context.json",
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "lifecycle": {"status": "active"},
+                }
+            ),
+        )
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        self._write(test_file, "class RestoredTest { int changed; }\n")
+        recorded = self._record(test_file, reason="test-updated")
+        self.assertTrue(recorded["ok"], recorded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        recorded_manifest = json.loads(manifest_path.read_text("utf-8"))
+        self.assertEqual(recorded_manifest["files"][0]["touchedBy"], ["demo"])
+        self.assertEqual(
+            recorded_manifest["files"][0]["commitScope"],
+            "current-change",
+        )
+
+        self._write(test_file, baseline)
+        close = guard.close(self.project, self.change)
+
+        self.assertTrue(close["ok"], close)
+        self.assertEqual(close["code"], "CLOSED")
+        self.assertEqual(close["recordedCount"], 0)
+        self.assertEqual(
+            close["manifestReconciliation"]["removedCurrentTouches"],
+            1,
+        )
+        self.assertEqual(close["manifestReconciliation"]["deletedEntries"], 1)
+        self.assertFalse(manifest_path.exists())
+
+    def test_review_yellow_1_close_rehashes_restored_foreign_entry(
+        self,
+    ) -> None:
+        test_file = self.project / "src" / "test" / "java" / "SharedTest.java"
+        baseline = "class SharedTest {}\n"
+        self._write(test_file, baseline)
+        self._git("add", "-f", test_file.relative_to(self.project))
+        self._git("commit", "-m", "tracked shared test baseline")
+        self._write(
+            self.change / "meta" / "change-context.json",
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "lifecycle": {"status": "active"},
+                }
+            ),
+        )
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        seeded = self._record(test_file, reason="test-updated")
+        self.assertTrue(seeded["ok"], seeded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        foreign_manifest = json.loads(manifest_path.read_text("utf-8"))
+        foreign_entry = foreign_manifest["files"][0]
+        foreign_entry["introducedBy"] = "other-change"
+        foreign_entry["touchedBy"] = ["other-change"]
+        foreign_entry["commitScope"] = "foreign-change"
+        guard._write_json(manifest_path, foreign_manifest)
+
+        self._write(test_file, "class SharedTest { int changed; }\n")
+        recorded = self._record(test_file, reason="test-updated")
+        self.assertTrue(recorded["ok"], recorded)
+        shared_manifest = json.loads(manifest_path.read_text("utf-8"))
+        shared_entry = shared_manifest["files"][0]
+        self.assertEqual(shared_entry["introducedBy"], "other-change")
+        self.assertEqual(shared_entry["touchedBy"], ["other-change", "demo"])
+        self.assertEqual(shared_entry["commitScope"], "current-change")
+        modified_hash = shared_entry["logicalHash"]
+
+        self._write(test_file, baseline)
+        rel = test_file.relative_to(self.project).as_posix()
+        baseline_hash = guard.logical_file_hash(self.project, rel)
+        self.assertNotEqual(modified_hash, baseline_hash)
+        close = guard.close(self.project, self.change)
+
+        self.assertTrue(close["ok"], close)
+        self.assertEqual(close["code"], "CLOSED")
+        self.assertEqual(close["recordedCount"], 0)
+        self.assertEqual(
+            close["manifestReconciliation"]["removedCurrentTouches"],
+            1,
+        )
+        self.assertEqual(
+            close["manifestReconciliation"]["preservedForeignEntries"],
+            1,
+        )
+        manifest_after = json.loads(manifest_path.read_text("utf-8"))
+        self.assertEqual(len(manifest_after["files"]), 1)
+        entry_after = manifest_after["files"][0]
+        self.assertEqual(entry_after["introducedBy"], "other-change")
+        self.assertEqual(entry_after["touchedBy"], ["other-change"])
+        self.assertEqual(entry_after["commitScope"], "foreign-change")
+        self.assertEqual(entry_after["logicalHash"], baseline_hash)
+        self.assertEqual(
+            entry_after["binaryHash"],
+            None if baseline_hash.startswith("gitblob:") else baseline_hash,
+        )
+        validation_error, validated = guard._validate_existing_manifest_v2(
+            self.project,
+            manifest_after,
+            require_files=False,
+        )
+        self.assertIsNone(validation_error)
+        self.assertIn(rel, validated)
+
+    def test_review_fixback_close_preserves_foreign_only_v2_manifest(
+        self,
+    ) -> None:
+        test_file = self.project / "src" / "test" / "java" / "ForeignTest.java"
+        self._write(test_file, "class ForeignTest {}\n")
+        self._git("add", "-f", test_file.relative_to(self.project))
+        self._git("commit", "-m", "tracked test baseline")
+        self._write(
+            self.change / "meta" / "change-context.json",
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "lifecycle": {"status": "active"},
+                }
+            ),
+        )
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        recorded = self._record(test_file, reason="test-updated")
+        self.assertTrue(recorded["ok"], recorded)
+        manifest_path = self.change / "evidence" / "test-tracking.json"
+        manifest_before = json.loads(manifest_path.read_text("utf-8"))
+        foreign_entry = manifest_before["files"][0]
+        foreign_entry["introducedBy"] = "other-change"
+        foreign_entry["touchedBy"] = ["other-change"]
+        foreign_entry["commitScope"] = "foreign-change"
+        guard._write_json(manifest_path, manifest_before)
+
+        close = guard.close(self.project, self.change)
+
+        self.assertTrue(close["ok"], close)
+        self.assertEqual(close["code"], "CLOSED")
+        self.assertEqual(close["recordedCount"], 0)
+        manifest_after = json.loads(manifest_path.read_text("utf-8"))
+        self.assertEqual(manifest_after, manifest_before)
 
     def test_record_empty_files_does_not_write_manifest(self) -> None:
         result = self._record()
