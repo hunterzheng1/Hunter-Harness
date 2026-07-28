@@ -49,7 +49,7 @@ disallowed-tools:
 
 ## Workflow 概要
 
-0. 加载上下文：先 `harness_change.py resolve [--change] --json`（多 active 缺参 → `CHANGE_SELECTION_REQUIRED`，禁止按 mtime 猜测）；读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（内部 claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）
+0. 加载上下文：先 `harness_change.py resolve [--change] --json`（多 active 缺参 → `CHANGE_SELECTION_REQUIRED`，禁止按 mtime 猜测）；读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（先 fail-closed 校验 Plan 收据/哈希/完整生命周期/全部任务/非空场景清单，再 claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）
 0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5；进入 TDD 前执行 `harness_test_guard.py begin --project . --change-dir ".harness/changes/<cn>" --json`
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
 2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c

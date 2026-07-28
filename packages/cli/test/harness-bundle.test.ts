@@ -82,7 +82,10 @@ describe("embedded Harness Bundles", () => {
     const runProtocols = await readFile(join(harnessSource, "harness-run", "protocols.md"), "utf8");
 
     expect(planSkill).toContain("effort: medium");
-    expect(planSkill).toContain("先初始化 change-name + `phase.start`");
+    expect(planSkill).toContain(
+      "先初始化 change-name、plan-run-id 与 attempt（首次为 1）",
+    );
+    expect(planSkill).toContain("用同一身份追加 `phase.start`");
     expect(planSkill).toContain("歧义优先检查");
     expect(planSkill).toContain("简单修复探索预算");
     expect(planSkill).toContain("阶段 3 探索默认 inline");

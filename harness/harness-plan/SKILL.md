@@ -56,14 +56,14 @@ disallowed-tools:
 | 阶段 | 动作 |
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
-| 0.5 | 先初始化 change-name + `phase.start`，从第一条知识查询起保留事件证据 |
+| 0.5 | 先初始化 change-name、plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
 | 1 | `harness-knowledge-query` 单次 query（内部 ensure-current；失败记 `issue`） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`；原子发布、唯一 `phase.end`、render → `checklist.md` |
+| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 
@@ -76,7 +76,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 |------|------|
 | 产物路径 | 只写 `.harness/changes/<cn>/`；禁止 superpowers 输入 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
-| 阶段 8 | spec/plan/detail/scenarios/worktree.json 先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log，失败不得手工补终态 |
+| 阶段 8 | spec/plan/detail/scenarios/gate-policy/worktree 六项标准产物先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log；随后 `verify` 必须确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致，失败不得手工补终态 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
 | 知识查询 | 0.5 失败不得假装已读历史 |
 | 歧义优先检查 | 否定、对比、动作对象或范围存在多种合理解释时，最小取证后先给推荐理解并一次一问；确认前不深挖错误方向 |

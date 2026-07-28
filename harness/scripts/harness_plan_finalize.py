@@ -11,9 +11,10 @@ import json
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -45,10 +46,39 @@ PRIORITY_EVIDENCE_KIND = {
     "P1": "ledger",
     "P2": "advisory",
 }
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
 def _result_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "error": message}
+
+
+class PlanParseError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _normalize_header(value: str) -> str:
+    return re.sub(r"[\s_-]+", "", value).lower()
+
+
+def _column_index(
+    headers: list[str],
+    *aliases: str,
+) -> int | None:
+    normalized = {
+        _normalize_header(header): index for index, header in enumerate(headers)
+    }
+    for alias in aliases:
+        index = normalized.get(_normalize_header(alias))
+        if index is not None:
+            return index
+    return None
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
 def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
@@ -60,42 +90,110 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
     text = Path(scenarios_path).read_text(encoding="utf-8-sig")
     lines = text.splitlines()
     scenarios: list[dict[str, str]] = []
-    # Find all tables whose header includes "ID" and "优先级" (or "priority").
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        if line.startswith("|") and "ID" in line and ("优先级" in line or "priority" in line):
-            header_line = line
-            headers = [h.strip() for h in header_line.strip("|").split("|")]
-            col_map: dict[str, int] = {}
-            for idx, name in enumerate(headers):
-                key = name.lower()
-                col_map[key] = idx
-            # Skip separator row
-            i += 2
-            while i < len(lines):
-                row = lines[i].strip()
+        if line.startswith("|"):
+            headers = _table_cells(line)
+            id_index = _column_index(headers, "ID", "#", "编号", "场景 ID")
+            scenario_index = _column_index(
+                headers,
+                "场景",
+                "场景描述",
+                "scenario",
+                "description",
+            )
+            if id_index is None or scenario_index is None:
+                i += 1
+                continue
+            priority_index = _column_index(headers, "优先级", "priority")
+            category_index = _column_index(headers, "分类", "category")
+            verification_index = _column_index(
+                headers,
+                "验证方式",
+                "verification",
+                "可复用证据",
+            )
+            owner_phase_index = _column_index(
+                headers,
+                "owner phase",
+                "ownerPhase",
+                "负责阶段",
+            )
+            execution_tier_index = _column_index(
+                headers,
+                "执行层级",
+                "execution tier",
+                "tier",
+            )
+            expected_index = _column_index(headers, "预期", "expected")
+
+            row_index = i + 2
+            while row_index < len(lines):
+                row = lines[row_index].strip()
                 if not row.startswith("|"):
                     break
-                cells = [c.strip() for c in row.strip("|").split("|")]
-                if len(cells) < len(headers):
-                    i += 1
-                    continue
-                scenario: dict[str, str] = {}
-                for cn, en in (
-                    ("ID", "id"),
-                    ("优先级", "priority"),
-                    ("场景", "scenario"),
-                    ("验证方式", "verification"),
-                    ("owner phase", "ownerPhase"),
+                cells = _table_cells(row)
+                if max(id_index, scenario_index) >= len(cells):
+                    raise PlanParseError(
+                        "PLAN_SCENARIO_ROW_INVALID",
+                        f"{scenarios_path.name}: line {row_index + 1} is missing scenario ID or description",
+                    )
+                complete_row = len(cells) == len(headers)
+                scenario_id = cells[id_index].strip()
+                if not scenario_id or set(scenario_id) <= {"-", ":"}:
+                    raise PlanParseError(
+                        "PLAN_SCENARIO_ROW_INVALID",
+                        f"{scenarios_path.name}: line {row_index + 1} has an empty scenario ID",
+                    )
+                scenario_text = cells[scenario_index].strip()
+                if not scenario_text or set(scenario_text) <= {"-", ":"}:
+                    raise PlanParseError(
+                        "PLAN_SCENARIO_ROW_INVALID",
+                        f"{scenarios_path.name}: line {row_index + 1} has an empty scenario description",
+                    )
+                priority = (
+                    cells[priority_index].strip().upper()
+                    if priority_index is not None
+                    and priority_index < len(cells)
+                    and cells[priority_index].strip()
+                    else "P1"
+                )
+                scenario = {
+                    "id": scenario_id,
+                    "priority": priority,
+                    "scenario": scenario_text,
+                    "ownerPhase": (
+                        cells[owner_phase_index].strip()
+                        if owner_phase_index is not None
+                        and complete_row
+                        and owner_phase_index < len(cells)
+                        and cells[owner_phase_index].strip()
+                        else "test"
+                    ),
+                    "requiredEvidenceKind": PRIORITY_EVIDENCE_KIND.get(
+                        priority,
+                        "advisory",
+                    ),
+                }
+                if category_index is not None and category_index < len(cells):
+                    if cells[category_index].strip():
+                        scenario["category"] = cells[category_index].strip()
+                for key, index in (
+                    ("verification", verification_index),
+                    ("executionTier", execution_tier_index),
+                    ("expected", expected_index),
                 ):
-                    if cn.lower() in col_map:
-                        scenario[en] = cells[col_map[cn.lower()]]
-                # Derive requiredEvidenceKind from priority
-                priority = scenario.get("priority", "")
-                scenario["requiredEvidenceKind"] = PRIORITY_EVIDENCE_KIND.get(priority, "advisory")
+                    if (
+                        complete_row
+                        and index is not None
+                        and index < len(cells)
+                        and cells[index].strip()
+                    ):
+                        scenario[key] = cells[index].strip()
                 scenarios.append(scenario)
-                i += 1
+                row_index += 1
+            i = row_index
             continue
         i += 1
     return scenarios
@@ -110,40 +208,67 @@ def parse_plan_tasks(plan_path: Path) -> list[dict[str, str]]:
     """
     text = Path(plan_path).read_text(encoding="utf-8-sig")
     lines = text.splitlines()
-    # Find the task table: a header row starting with "| #" followed by a separator row.
-    header_idx = -1
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("|") and "#" in stripped and "任务" in stripped:
-            header_idx = i
-            break
-    if header_idx < 0:
-        return []
-    header_line = lines[header_idx]
-    headers = [h.strip() for h in header_line.strip().strip("|").split("|")]
-    # Map header names to column indices (case-insensitive, English keys).
-    col_map: dict[str, int] = {}
-    for idx, name in enumerate(headers):
-        key = name.lower()
-        col_map[key] = idx
     tasks: list[dict[str, str]] = []
-    for line in lines[header_idx + 2 :]:  # skip header + separator
-        stripped = line.strip()
-        if not stripped.startswith("|"):
-            break  # end of table
-        cells = [c.strip() for c in stripped.strip("|").split("|")]
-        if len(cells) < len(headers):
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line.startswith("|"):
+            i += 1
             continue
-        task: dict[str, str] = {}
-        # Chinese headers
-        for cn, en in (("#", "num"), ("簇", "cluster"), ("任务", "task")):
-            if cn in col_map:
-                task[en] = cells[col_map[cn]]
-        # English optional columns
-        for en in ("ownerPhase", "implementationDoneWhen", "verificationPhase", "requiresExplicitAuthority"):
-            if en.lower() in col_map:
-                task[en] = cells[col_map[en.lower()]]
-        tasks.append(task)
+        headers = _table_cells(line)
+        number_index = _column_index(headers, "#", "任务编号", "task ID")
+        task_index = _column_index(headers, "任务", "task")
+        if number_index is None or task_index is None:
+            i += 1
+            continue
+        cluster_index = _column_index(headers, "簇", "cluster")
+        optional_indices = {
+            name: _column_index(headers, name)
+            for name in (
+                "ownerPhase",
+                "implementationDoneWhen",
+                "verificationPhase",
+                "requiresExplicitAuthority",
+            )
+        }
+        row_index = i + 2
+        while row_index < len(lines):
+            row = lines[row_index].strip()
+            if not row.startswith("|"):
+                break
+            cells = _table_cells(row)
+            if max(number_index, task_index) >= len(cells):
+                raise PlanParseError(
+                    "PLAN_TASK_ROW_INVALID",
+                    f"{plan_path.name}: line {row_index + 1} is missing task ID or description",
+                )
+            complete_row = len(cells) == len(headers)
+            number = cells[number_index].strip()
+            task_text = cells[task_index].strip()
+            if (
+                not number
+                or not task_text
+                or set(number) <= {"-", ":"}
+                or set(task_text) <= {"-", ":"}
+            ):
+                raise PlanParseError(
+                    "PLAN_TASK_ROW_INVALID",
+                    f"{plan_path.name}: line {row_index + 1} has an empty task ID or description",
+                )
+            task: dict[str, str] = {"num": number, "task": task_text}
+            if cluster_index is not None and cells[cluster_index].strip():
+                task["cluster"] = cells[cluster_index].strip()
+            for name, index in optional_indices.items():
+                if (
+                    complete_row
+                    and index is not None
+                    and index < len(cells)
+                    and cells[index].strip()
+                ):
+                    task[name] = cells[index].strip()
+            tasks.append(task)
+            row_index += 1
+        i = row_index
     return tasks
 
 
@@ -177,6 +302,28 @@ def _frontmatter(text: str) -> dict[str, str] | None:
         key, value = line.split(":", 1)
         data[key.strip()] = value.strip()
     return None
+
+
+def _required_artifact_names(change_name: str) -> set[str]:
+    return {
+        f"spec/{change_name}-design.md",
+        f"plans/{change_name}-plan.md",
+        f"plans/{change_name}-implementation-detail.md",
+        f"plans/{change_name}-test-scenarios.md",
+        "meta/gate-policy.json",
+        "meta/worktree.json",
+    }
+
+
+def _is_link_or_reparse(path: Path) -> bool:
+    """Detect symlinks and Windows reparse points on every supported Python."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def lint_slice_plan(plan_path: Path) -> dict[str, Any]:
@@ -246,7 +393,7 @@ def lint_slice_plan(plan_path: Path) -> dict[str, Any]:
 def _artifact_files(staging: Path) -> list[Path]:
     files: list[Path] = []
     for path in staging.rglob("*"):
-        if path.is_symlink():
+        if _is_link_or_reparse(path):
             raise ValueError(f"PLAN_ARTIFACT_SYMLINK: {path}")
         if path.is_file():
             files.append(path)
@@ -255,14 +402,7 @@ def _artifact_files(staging: Path) -> list[Path]:
 
 def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
     staging = staging.resolve()
-    required = {
-        Path("spec") / f"{change_name}-design.md",
-        Path("plans") / f"{change_name}-plan.md",
-        Path("plans") / f"{change_name}-implementation-detail.md",
-        Path("plans") / f"{change_name}-test-scenarios.md",
-        Path("meta") / "gate-policy.json",
-        Path("meta") / "worktree.json",
-    }
+    required = {Path(name) for name in _required_artifact_names(change_name)}
     try:
         files = _artifact_files(staging)
     except ValueError as exc:
@@ -324,7 +464,24 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
 
     # C8: validate ownerPhase values in plan.md task table.
     plan_path = staging / "plans" / f"{change_name}-plan.md"
-    tasks = parse_plan_tasks(plan_path)
+    try:
+        tasks = parse_plan_tasks(plan_path)
+    except PlanParseError as exc:
+        return _result_error(exc.code, str(exc))
+    if not tasks:
+        return _result_error(
+            "PLAN_TASKS_EMPTY",
+            f"{plan_path.relative_to(staging).as_posix()}: no task rows were parsed",
+        )
+    task_ids = [str(task.get("num") or "").strip() for task in tasks]
+    duplicate_task_ids = sorted(
+        {task_id for task_id in task_ids if task_ids.count(task_id) > 1}
+    )
+    if duplicate_task_ids:
+        return _result_error(
+            "PLAN_TASK_ID_DUPLICATE",
+            "duplicate task IDs: " + ", ".join(duplicate_task_ids),
+        )
     for task in tasks:
         owner = task.get("ownerPhase")
         if owner is not None and owner != "" and owner not in VALID_OWNER_PHASES:
@@ -338,7 +495,41 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
 
     # C9: parse test-scenarios.md for scenario manifest.
     scenarios_path = staging / "plans" / f"{change_name}-test-scenarios.md"
-    scenarios = parse_test_scenarios(scenarios_path)
+    try:
+        scenarios = parse_test_scenarios(scenarios_path)
+    except PlanParseError as exc:
+        return _result_error(exc.code, str(exc))
+    if not scenarios:
+        return _result_error(
+            "PLAN_SCENARIOS_EMPTY",
+            f"{scenarios_path.relative_to(staging).as_posix()}: no scenario rows were parsed",
+        )
+    scenario_ids = [str(item.get("id") or "").strip() for item in scenarios]
+    duplicate_scenario_ids = sorted(
+        {
+            scenario_id
+            for scenario_id in scenario_ids
+            if scenario_ids.count(scenario_id) > 1
+        }
+    )
+    if duplicate_scenario_ids:
+        return _result_error(
+            "PLAN_SCENARIO_ID_DUPLICATE",
+            "duplicate scenario IDs: " + ", ".join(duplicate_scenario_ids),
+        )
+    for scenario in scenarios:
+        priority = str(scenario.get("priority") or "").upper()
+        if priority not in PRIORITY_EVIDENCE_KIND:
+            return _result_error(
+                "PLAN_SCENARIO_PRIORITY_INVALID",
+                f"scenario {scenario.get('id', '?')}: unsupported priority '{priority}'",
+            )
+        owner = str(scenario.get("ownerPhase") or "")
+        if owner not in VALID_OWNER_PHASES:
+            return _result_error(
+                "PLAN_SCENARIO_OWNER_PHASE_INVALID",
+                f"scenario {scenario.get('id', '?')}: unsupported ownerPhase '{owner}'",
+            )
 
     digest = hashlib.sha256()
     artifact_names: list[str] = []
@@ -374,6 +565,95 @@ def _terminal_exists(change_dir: Path, run_id: str, attempt: int) -> bool:
     )
 
 
+def _validate_plan_start(
+    change_dir: Path,
+    run_id: str,
+    attempt: int,
+) -> dict[str, Any]:
+    events_path = harness_events.events_path(change_dir)
+    try:
+        events = harness_events.load_events(events_path)
+    except (OSError, ValueError) as exc:
+        return _result_error("EVENTS_PARSE_ERROR", str(exc))
+    matching = [
+        event
+        for event in events
+        if event.get("phase") == "plan"
+        and event.get("type") == "phase.start"
+        and event.get("run_id") == run_id
+        and event.get("attempt") == attempt
+    ]
+    if not matching:
+        return _result_error(
+            "PHASE_START_MISSING",
+            "no matching plan phase.start event found for finalizer runId/attempt",
+        )
+    if len(matching) > 1:
+        return _result_error(
+            "PHASE_START_DUPLICATE",
+            f"found {len(matching)} matching plan phase.start events",
+        )
+    return {"ok": True, "phaseStartCount": 1}
+
+
+def _receipt_artifact_targets(
+    change_dir: Path,
+    files_list: list[Any],
+) -> tuple[list[tuple[str, Path]] | None, dict[str, Any] | None]:
+    targets: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for index, value in enumerate(files_list):
+        if not isinstance(value, str):
+            return None, _result_error(
+                "RECEIPT_FILE_PATH_INVALID",
+                f"receipt files[{index}] must be a string",
+            )
+        raw = value
+        segments = raw.split("/")
+        rel = PurePosixPath(raw)
+        invalid = (
+            not raw
+            or raw != raw.strip()
+            or "\\" in raw
+            or ":" in raw
+            or rel.is_absolute()
+            or any(segment in {"", ".", ".."} for segment in segments)
+            or any(segment.endswith((".", " ")) for segment in segments)
+            or not rel.parts
+            or rel.parts[0] not in {"spec", "plans", "meta"}
+        )
+        if invalid:
+            return None, _result_error(
+                "RECEIPT_FILE_PATH_INVALID",
+                f"receipt files[{index}] is not a safe artifact-relative path: {raw!r}",
+            )
+        normalized = rel.as_posix()
+        if normalized in seen:
+            return None, _result_error(
+                "RECEIPT_FILE_PATH_INVALID",
+                f"receipt contains duplicate artifact path: {normalized}",
+            )
+        seen.add(normalized)
+        target = change_dir.joinpath(*rel.parts)
+        cursor = change_dir
+        for part in rel.parts:
+            cursor = cursor / part
+            if _is_link_or_reparse(cursor):
+                return None, _result_error(
+                    "RECEIPT_FILE_PATH_INVALID",
+                    f"receipt artifact path traverses a link: {normalized}",
+                )
+        try:
+            target.resolve(strict=False).relative_to(change_dir)
+        except (OSError, RuntimeError, ValueError):
+            return None, _result_error(
+                "RECEIPT_FILE_PATH_INVALID",
+                f"receipt artifact path resolves outside the change directory: {normalized}",
+            )
+        targets.append((normalized, target))
+    return targets, None
+
+
 def verify_plan(change_dir: Path) -> dict[str, Any]:
     """Read-only verification of a finalized plan (retro §5.8).
 
@@ -397,6 +677,11 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
     change_name = str(receipt.get("changeName") or "").strip()
     if not change_name:
         return _result_error("RECEIPT_INVALID", "receipt missing changeName")
+    if change_name != change_dir.name:
+        return _result_error(
+            "RECEIPT_CHANGE_NAME_INVALID",
+            f"receipt changeName {change_name!r} does not match {change_dir.name!r}",
+        )
 
     expected_hash = str(receipt.get("artifactsHash") or "").strip()
     if not expected_hash.startswith("sha256:"):
@@ -405,13 +690,36 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
     files_list = receipt.get("files")
     if not isinstance(files_list, list) or not files_list:
         return _result_error("RECEIPT_INVALID", "receipt files list missing or empty")
+    artifact_targets, path_error = _receipt_artifact_targets(change_dir, files_list)
+    if path_error is not None:
+        return path_error
+    assert artifact_targets is not None
+    artifact_name_set = {rel for rel, _ in artifact_targets}
+    missing_required = sorted(
+        _required_artifact_names(change_name) - artifact_name_set
+    )
+    if missing_required:
+        return _result_error(
+            "RECEIPT_FILES_INCOMPLETE",
+            "receipt omits required artifacts: " + ", ".join(missing_required),
+        )
+    if receipt.get("status") != "finalized":
+        return _result_error(
+            "RECEIPT_NOT_FINALIZED",
+            f"receipt status is {receipt.get('status')!r}, expected 'finalized'",
+        )
+    receipt_run_id = str(receipt.get("runId") or "").strip()
+    receipt_attempt = receipt.get("attempt")
+    if not receipt_run_id or not isinstance(receipt_attempt, int):
+        return _result_error(
+            "RECEIPT_INVALID",
+            "receipt runId/attempt identity is missing or malformed",
+        )
 
     # Recompute artifacts hash from published files.
     digest = hashlib.sha256()
     artifact_names: list[str] = []
-    for rel_text in files_list:
-        rel = rel_text.as_posix() if hasattr(rel_text, "as_posix") else str(rel_text)
-        target = change_dir / rel
+    for rel, target in artifact_targets:
         if not target.is_file():
             return _result_error(
                 "ARTIFACT_MISSING", f"published artifact missing: {rel}"
@@ -453,19 +761,98 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
             "status": fm.get("status"),
         }
 
+    plan_path = change_dir / "plans" / f"{change_name}-plan.md"
+    try:
+        expected_tasks = parse_plan_tasks(plan_path)
+    except PlanParseError as exc:
+        return _result_error(exc.code, str(exc))
+    if not expected_tasks:
+        return _result_error(
+            "PLAN_TASKS_EMPTY",
+            f"no task rows parsed from {plan_path.relative_to(change_dir).as_posix()}",
+        )
+    checkpoints_path = change_dir / "meta" / "implementation-checkpoints.json"
+    if not checkpoints_path.is_file():
+        return _result_error(
+            "IMPLEMENTATION_CHECKPOINTS_MISSING",
+            f"derived task metadata missing: {checkpoints_path}",
+        )
+    try:
+        checkpoints = json.loads(
+            checkpoints_path.read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("IMPLEMENTATION_CHECKPOINTS_INVALID", str(exc))
+    expected_checkpoints = {
+        "schemaVersion": 1,
+        "changeName": change_name,
+        "tasks": expected_tasks,
+        "foundationGate": "approved",
+    }
+    if checkpoints != expected_checkpoints:
+        return _result_error(
+            "IMPLEMENTATION_CHECKPOINTS_DRIFT",
+            "derived implementation checkpoints do not match the finalized plan",
+        )
+
+    scenarios_path = (
+        change_dir / "plans" / f"{change_name}-test-scenarios.md"
+    )
+    try:
+        expected_scenarios = parse_test_scenarios(scenarios_path)
+    except PlanParseError as exc:
+        return _result_error(exc.code, str(exc))
+    if not expected_scenarios:
+        return _result_error(
+            "PLAN_SCENARIOS_EMPTY",
+            f"no scenario rows parsed from {scenarios_path.relative_to(change_dir).as_posix()}",
+        )
+    scenario_manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    if not scenario_manifest_path.is_file():
+        return _result_error(
+            "SCENARIO_MANIFEST_MISSING",
+            f"derived scenario metadata missing: {scenario_manifest_path}",
+        )
+    try:
+        manifest = json.loads(
+            scenario_manifest_path.read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("SCENARIO_MANIFEST_INVALID", str(exc))
+    actual_scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(actual_scenarios, list) or not actual_scenarios:
+        return _result_error(
+            "SCENARIO_MANIFEST_EMPTY",
+            "scenario-manifest.json must contain at least one scenario",
+        )
+
+    expected_manifest = {
+        "schemaVersion": 1,
+        "changeName": change_name,
+        "scenarios": expected_scenarios,
+    }
+    if manifest != expected_manifest:
+        return _result_error(
+            "SCENARIO_MANIFEST_DRIFT",
+            "derived scenario manifest does not match the finalized scenario table",
+        )
+
     # Validate gate-policy.json is parseable JSON.
     gate_policy_path = change_dir / "meta" / "gate-policy.json"
+    if not gate_policy_path.is_file():
+        return _result_error(
+            "GATE_POLICY_MISSING",
+            f"gate policy missing: {gate_policy_path}",
+        )
+    try:
+        json.loads(gate_policy_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("GATE_POLICY_INVALID", str(exc))
     gate_policy_consistent = True
-    if gate_policy_path.is_file():
-        try:
-            json.loads(gate_policy_path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
-            gate_policy_consistent = False
-    else:
-        gate_policy_consistent = False
 
-    # Validate events.ndjson: count phase.end, check for parse errors.
-    events_path = change_dir / "events.ndjson"
+    # Validate events.ndjson: require one matching start/end lifecycle.
+    events_path = harness_events.events_path(change_dir)
+    phase_start_count = 0
     phase_end_count = 0
     phase_end_status: str | None = None
     events_parse_errors: list[str] = []
@@ -481,10 +868,16 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
             if not isinstance(event, dict):
                 events_parse_errors.append(f"line {line_no}: not an object")
                 continue
+            if event.get("phase") != "plan":
+                continue
             if (
-                event.get("phase") == "plan"
-                and event.get("type") == "phase.end"
+                str(event.get("run_id") or "") != receipt_run_id
+                or event.get("attempt") != receipt_attempt
             ):
+                continue
+            if event.get("type") == "phase.start":
+                phase_start_count += 1
+            elif event.get("type") == "phase.end":
                 phase_end_count += 1
                 phase_end_status = str(event.get("status") or "").upper()
     else:
@@ -495,15 +888,27 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
             "EVENTS_PARSE_ERROR", "; ".join(events_parse_errors[:5])
         )
 
+    if phase_start_count == 0:
+        return _result_error(
+            "PHASE_START_MISSING",
+            "no matching plan phase.start event found",
+        )
+    if phase_start_count > 1:
+        return _result_error(
+            "PHASE_START_DUPLICATE",
+            f"found {phase_start_count} matching plan phase.start events",
+        )
     if phase_end_count == 0:
         return _result_error("PHASE_END_MISSING", "no plan phase.end event found")
     if phase_end_count > 1:
         return _result_error(
             "PHASE_END_DUPLICATE", f"found {phase_end_count} phase.end events"
         )
-
-    # Receipt consistency: status should be finalized.
-    receipt_consistent = receipt.get("status") == "finalized"
+    if phase_end_status != "OK":
+        return _result_error(
+            "PHASE_END_NOT_OK",
+            f"plan phase.end status is {phase_end_status!r}, expected 'OK'",
+        )
 
     return {
         "ok": True,
@@ -511,11 +916,14 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
         "changeDir": str(change_dir),
         "changeName": change_name,
         "artifactsHash": actual_hash,
+        "phaseStartCount": phase_start_count,
         "phaseEndCount": phase_end_count,
         "phaseEndStatus": phase_end_status,
         "frontmatter": frontmatter_results,
         "gatePolicyConsistent": gate_policy_consistent,
-        "receiptConsistent": receipt_consistent,
+        "receiptConsistent": True,
+        "taskCount": len(expected_tasks),
+        "scenarioCount": len(expected_scenarios),
         "files": artifact_names,
     }
 
@@ -645,6 +1053,9 @@ def finalize_plan(
     validation = validate_staging(staging, change_name)
     if not validation["ok"]:
         return validation
+    start_validation = _validate_plan_start(change_dir, run_id, attempt)
+    if not start_validation["ok"]:
+        return start_validation
 
     receipt_path = change_dir / "meta" / "plan-finalization.json"
     lock_path = change_dir / "meta" / "plan-finalize.lock"

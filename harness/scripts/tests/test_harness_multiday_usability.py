@@ -43,7 +43,10 @@ def _seed_staging(root: Path, plan_extra: str = "") -> None:
     _write(root / "spec" / "demo-design.md", _markdown("demo", "Design"))
     _write(
         root / "plans" / "demo-plan.md",
-        _markdown("demo", "Plan", plan_extra),
+        _markdown("demo", "Plan", plan_extra)
+        + "\n| # | 任务 |\n"
+        "|---|---|\n"
+        "| 1 | validate the slice contract |\n",
     )
     _write(
         root / "plans" / "demo-implementation-detail.md",
@@ -51,7 +54,10 @@ def _seed_staging(root: Path, plan_extra: str = "") -> None:
     )
     _write(
         root / "plans" / "demo-test-scenarios.md",
-        _markdown("demo", "Scenarios"),
+        _markdown("demo", "Scenarios")
+        + "\n| ID | 优先级 | 场景 |\n"
+        "|---|---|---|\n"
+        "| SLICE-001 | P1 | slice contract is complete |\n",
     )
     _write(root / "meta" / "gate-policy.json", '{"schemaVersion": 1}\n')
     _write(
@@ -191,7 +197,10 @@ class MultiDayUsabilityTests(unittest.TestCase):
                 "aggregate-parent: integration-demo\n"
                 "evidence-reuse: aggregate-candidate\n"
                 "artifact-budget-bytes: 1048576\n",
-            ),
+            )
+            + "\n| # | 任务 |\n"
+            "|---|---|\n"
+            "| 1 | validate the slice contract |\n",
         )
         valid = hpf.validate_staging(staging, "demo")
         self.assertTrue(valid["ok"], valid)

@@ -228,35 +228,35 @@ status: approved
 
 #### 1.1 <类名.方法名>
 
-| # | 分类 | 场景描述 | 输入 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:----:|----------|------|------|----------|----------|----------|------|------------|
-| UT-001 | 正常 | ... | ... | ... | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
-| UT-002 | 异常 | ... | ... | 抛 xxxException | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
-| UT-003 | 边界 | ... | ... | ... | module | ≤60s | ≤50% CPU / ≤1GB | 120s | ledger identity |
+| ID | 优先级 | 分类 | 场景描述 | 输入 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
+|:--:|:------:|:----:|----------|------|------|----------|----------|----------|------|------------|
+| UT-001 | P0 | 正常 | ... | ... | ... | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
+| UT-002 | P0 | 异常 | ... | ... | 抛 xxxException | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
+| UT-003 | P1 | 边界 | ... | ... | ... | module | ≤60s | ≤50% CPU / ≤1GB | 120s | ledger identity |
 
 ### 二、接口测试场景
 
 #### 2.1 POST /xxx
 
-| # | 分类 | 场景描述 | 关键字段 | HTTP | code | message | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:----:|----------|----------|:----:|:----:|--------|----------|----------|----------|------|------------|
-| API-001 | 正常 | ... | ... | 200 | 0 | 成功 | module | ≤60s | 1 service / ≤1GB | 120s | environmentHash + ledger |
-| API-002 | 校验 | ... | ... | 200 | xxx | ... | affected | ≤20s | 1 service / ≤1GB | 60s | environmentHash + ledger |
+| ID | 优先级 | 分类 | 场景描述 | 关键字段 | HTTP | code | message | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
+|:--:|:------:|:----:|----------|----------|:----:|:----:|--------|----------|----------|----------|------|------------|
+| API-001 | P0 | 正常 | ... | ... | 200 | 0 | 成功 | module | ≤60s | 1 service / ≤1GB | 120s | environmentHash + ledger |
+| API-002 | P1 | 校验 | ... | ... | 200 | xxx | ... | affected | ≤20s | 1 service / ≤1GB | 60s | environmentHash + ledger |
 
 ### 三、数据兼容场景
 
-| # | 分类 | 场景描述 | 操作 | 数据特征 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:----:|----------|:----:|----------|------|----------|----------|----------|------|------------|
-| COM-001 | 旧数据 | ... | ... | ... | ... | module | ≤60s | isolated DB / ≤1GB | 120s | dbSchemaHash + ledger |
+| ID | 优先级 | 分类 | 场景描述 | 操作 | 数据特征 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
+|:--:|:------:|:----:|----------|:----:|----------|------|----------|----------|----------|------|------------|
+| COM-001 | P1 | 旧数据 | ... | ... | ... | ... | module | ≤60s | isolated DB / ≤1GB | 120s | dbSchemaHash + ledger |
 
 ### 四、集成场景
 
-| # | 分类 | 场景描述 | 前置条件 | 步骤 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:----:|----------|----------|------|------|----------|----------|----------|------|------------|
-| INT-001 | 端到端 | ... | ... | N 步操作 | ... | candidate | ≤10m | ≤50% CPU / ≤2GB | 15m | verification identity |
+| ID | 优先级 | 分类 | 场景描述 | 前置条件 | 步骤 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
+|:--:|:------:|:----:|----------|----------|------|------|----------|----------|----------|------|------------|
+| INT-001 | P0 | 端到端 | ... | ... | N 步操作 | ... | candidate | ≤10m | ≤50% CPU / ≤2GB | 15m | verification identity |
 ```
 
-执行层级固定为 `affected`（快速反馈）、`module`（变更模块门禁）、`candidate`（产品候选）。禁止所有场景默认跑全仓库；无法给出预算或超时时必须说明原因，并拆分或隔离高成本场景。只有 command、inputs/toolchain/environment 身份一致的成功 ledger 证据可以复用。
+新计划必须显式使用 `ID` 和 `优先级` 列；`P0/P1` 都要求 ledger 证据，`P2` 才是 advisory。解析器兼容旧的 `#`、`分类`、`场景描述` 表头，旧表缺优先级时保守按 `P1` 处理。执行层级固定为 `affected`（快速反馈）、`module`（变更模块门禁）、`candidate`（产品候选）。禁止所有场景默认跑全仓库；无法给出预算或超时时必须说明原因，并拆分或隔离高成本场景。只有 command、inputs/toolchain/environment 身份一致的成功 ledger 证据可以复用。
 
 ## 产物保存规则（跨阶段：阶段0.5/4/6/8）
 
@@ -299,7 +299,7 @@ status: approved
 
    > 如果 frontmatter 缺失，后续 run/test/review/submit/archive 不得依赖模型猜测 change-name。
 
-4. **初始化结构化事件**：确定 change-name 后，立即运行 `harness_events.py append --type phase.start`。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
+4. **初始化结构化事件**：确定 change-name 后，立即生成稳定的 `<plan-run-id>`（同一次 plan 尝试内不得改变；首次 `<attempt>` 为 `1`），运行 `harness_events.py append --change-dir ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>`。finalizer 必须复用完全相同的 `--run-id` / `--attempt`，否则 verify 会按生命周期身份 fail-closed。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
 5. **保存计划文件**：计划文件包含 YAML frontmatter（含 change-name），保存到：
    - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
@@ -335,9 +335,15 @@ status: approved
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅ |
 | `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ |
 | `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅ |
 | `.harness/changes/<change>/meta/worktree.json` | ✅ |
+| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ |
+| `.harness/changes/<change>/meta/scenario-manifest.json` | ✅ |
+| `.harness/changes/<change>/meta/plan-finalization.json` | ✅ |
 | `.harness/changes/<change>/logs/execution-log.md` | ✅ |
 | `.harness/changes/<change>/events.ndjson` | ✅ |
+
+`plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
 
 ### Plan 结束行为规则
 

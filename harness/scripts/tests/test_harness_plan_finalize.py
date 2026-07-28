@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -42,19 +46,52 @@ def valid_markdown(change: str, title: str) -> str:
 
 def seed_staging(root: Path, change: str = "demo") -> None:
     write(root / "spec" / f"{change}-design.md", valid_markdown(change, "Design"))
-    write(root / "plans" / f"{change}-plan.md", valid_markdown(change, "Plan"))
+    write(
+        root / "plans" / f"{change}-plan.md",
+        valid_markdown(change, "Plan")
+        + "\n| # | 任务 |\n"
+        "|---|---|\n"
+        "| 1 | implement the approved change |\n",
+    )
     write(
         root / "plans" / f"{change}-implementation-detail.md",
         valid_markdown(change, "Implementation"),
     )
     write(
         root / "plans" / f"{change}-test-scenarios.md",
-        valid_markdown(change, "Scenarios"),
+        valid_markdown(change, "Scenarios")
+        + "\n| ID | 优先级 | 场景 | 验证方式 | owner phase |\n"
+        "|---|---|---|---|---|\n"
+        "| UT-001 | P0 | approved behavior | unit test | test |\n",
     )
     write(root / "meta" / "gate-policy.json", json.dumps({"schemaVersion": 1}))
     write(
         root / "meta" / "worktree.json",
         json.dumps({"requested": False, "agent": "codex"}),
+    )
+
+
+def seed_plan_start(
+    change_dir: Path,
+    *,
+    run_id: str = "plan-run",
+    attempt: int = 1,
+) -> None:
+    write(
+        change_dir / "events.ndjson",
+        json.dumps(
+            {
+                "schema_version": 3,
+                "id": "evt-plan-start",
+                "timestamp": "2026-07-28T20:00:00+08:00",
+                "phase": "plan",
+                "type": "phase.start",
+                "run_id": run_id,
+                "attempt": attempt,
+                "note": "",
+            }
+        )
+        + "\n",
     )
 
 
@@ -85,6 +122,7 @@ class PlanFinalizeTests(unittest.TestCase):
                 staging / "meta" / "gate-policy.json",
                 json.dumps({"schemaVersion": 1}),
             )
+            seed_plan_start(change_dir)
             recovered = finalizer.finalize_plan(
                 change_dir,
                 staging,
@@ -101,6 +139,7 @@ class PlanFinalizeTests(unittest.TestCase):
             staging = root / "staging"
             change_dir = root / ".harness" / "changes" / "demo"
             seed_staging(staging)
+            seed_plan_start(change_dir)
 
             first = finalizer.finalize_plan(
                 change_dir,
@@ -140,6 +179,7 @@ class PlanFinalizeTests(unittest.TestCase):
             staging = root / "staging"
             change_dir = root / ".harness" / "changes" / "demo"
             seed_staging(staging)
+            seed_plan_start(change_dir)
             target = change_dir / "spec" / "demo-design.md"
             write(target, "user-owned\n")
             before = target.read_bytes()
@@ -155,7 +195,14 @@ class PlanFinalizeTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "PLAN_TARGET_CONFLICT")
             self.assertEqual(target.read_bytes(), before)
-            self.assertFalse((change_dir / "events.ndjson").exists())
+            events = [
+                json.loads(line)
+                for line in (change_dir / "events.ndjson").read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            self.assertEqual([event["type"] for event in events], ["phase.start"])
 
     def test_final_receipt_failure_preserves_recoverable_terminal_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -163,15 +210,14 @@ class PlanFinalizeTests(unittest.TestCase):
             staging = root / "staging"
             change_dir = root / ".harness" / "changes" / "demo"
             seed_staging(staging)
+            seed_plan_start(change_dir)
             real_write = finalizer._atomic_write_json
-            writes = 0
 
             def fail_final_receipt(path: Path, payload: dict[str, object]) -> None:
-                nonlocal writes
-                writes += 1
-                # Write order: scenario-manifest (1), receipt "publishing" (2),
-                # receipt "finalized" (3). Fail on the final receipt write.
-                if writes == 3:
+                if (
+                    path.name == "plan-finalization.json"
+                    and payload.get("status") == "finalized"
+                ):
                     raise OSError("injected finalized receipt failure")
                 real_write(path, payload)
 
@@ -217,6 +263,54 @@ class PlanFinalizeTests(unittest.TestCase):
                 1,
             )
 
+    def test_finalize_requires_matching_phase_start_before_publishing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            seed_plan_start(change_dir, run_id="other-run", attempt=1)
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PHASE_START_MISSING")
+            self.assertFalse((change_dir / "spec").exists())
+            self.assertFalse(
+                (change_dir / "meta" / "plan-finalization.json").exists()
+            )
+
+    def test_finalize_rejects_duplicate_matching_phase_starts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            seed_plan_start(change_dir)
+            events_path = change_dir / "events.ndjson"
+            first = json.loads(events_path.read_text(encoding="utf-8"))
+            first["id"] = "evt-plan-start-duplicate"
+            with events_path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(first) + "\n")
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PHASE_START_DUPLICATE")
+            self.assertFalse((change_dir / "spec").exists())
+
 
 class CapabilityReclassifyTests(unittest.TestCase):
     """C2 (retro §5.4): approved design capability → reclassify gate policy."""
@@ -228,6 +322,7 @@ class CapabilityReclassifyTests(unittest.TestCase):
             staging = root / "staging"
             change_dir = root / ".harness" / "changes" / "demo"
             seed_staging(staging)
+            seed_plan_start(change_dir)
             # Write design with capabilities
             write(
                 staging / "spec" / "demo-design.md",
@@ -268,6 +363,7 @@ class CapabilityReclassifyTests(unittest.TestCase):
             staging = root / "staging"
             change_dir = root / ".harness" / "changes" / "demo"
             seed_staging(staging)
+            seed_plan_start(change_dir)
             # design has no capabilities
             # gate-policy has empty capabilities
             write(
@@ -352,6 +448,58 @@ class OwnerPhaseParseTests(unittest.TestCase):
             self.assertEqual(len(tasks), 1)
             self.assertNotIn("ownerPhase", tasks[0])
 
+    def test_parse_plan_collects_all_task_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = Path(tmp) / "multi-table-plan.md"
+            write(
+                plan,
+                "---\n"
+                "change-name: multi-table\n"
+                "status: approved\n"
+                "---\n\n"
+                "# Plan\n\n"
+                "## Batch 0\n\n"
+                "| # | 任务 | 依赖 |\n"
+                "|---|---|---|\n"
+                "| 1 | trust cleanup | - |\n"
+                "| 2 | navigation | 1 |\n\n"
+                "## Batch 1\n\n"
+                "| # | 任务 | 依赖 |\n"
+                "|---|---|---|\n"
+                "| 3 | lazy routes | 2 |\n"
+                "| 4 | query keys | 2 |\n\n"
+                "## Conditional\n\n"
+                "| # | 任务 | 进入条件 |\n"
+                "|---|---|---|\n"
+                "| C1 | virtualization | measured bottleneck |\n",
+            )
+
+            tasks = finalizer.parse_plan_tasks(plan)
+
+            self.assertEqual(
+                [task["num"] for task in tasks],
+                ["1", "2", "3", "4", "C1"],
+            )
+            self.assertEqual(tasks[-1]["task"], "virtualization")
+
+    def test_validate_rejects_blank_task_row_in_mixed_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            seed_staging(staging)
+            write(
+                staging / "plans" / "demo-plan.md",
+                valid_markdown("demo", "Plan")
+                + "\n| # | 任务 |\n"
+                "|---|---|\n"
+                "| 1 | valid task |\n"
+                "| 2 | |\n",
+            )
+
+            result = finalizer.validate_staging(staging, "demo")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PLAN_TASK_ROW_INVALID")
+
     def test_finalize_validates_owner_phase_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -383,6 +531,7 @@ class OwnerPhaseParseTests(unittest.TestCase):
             change_dir = root / ".harness" / "changes" / "demo-ok"
             change = "demo-ok"
             seed_staging(staging, change)
+            seed_plan_start(change_dir)
             write(
                 staging / "plans" / f"{change}-plan.md",
                 self._plan_with_owner_phase(change, [
@@ -437,6 +586,7 @@ class ScenarioManifestTests(unittest.TestCase):
             change_dir = root / ".harness" / "changes" / "demo-manifest"
             change = "demo-manifest"
             seed_staging(staging, change)
+            seed_plan_start(change_dir)
             write(
                 staging / "plans" / f"{change}-test-scenarios.md",
                 self._scenarios_md(change),
@@ -464,7 +614,56 @@ class ScenarioManifestTests(unittest.TestCase):
             # P0 scenario has requiredEvidenceKind
             self.assertIn("requiredEvidenceKind", s1)
 
-    def test_finalize_compatible_with_no_scenarios_table(self) -> None:
+    def test_parse_supports_hash_category_and_description_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scenarios_path = Path(tmp) / "cbm-style-scenarios.md"
+            write(
+                scenarios_path,
+                "---\n"
+                "change-name: cbm-style\n"
+                "status: approved\n"
+                "---\n\n"
+                "# Test Scenarios\n\n"
+                "| # | 分类 | 场景描述 | 输入 | 预期 | 执行层级 | 可复用证据 |\n"
+                "|---|---|---|---|---|---|---|\n"
+                "| UT-001 | 正常 | no placeholder metrics | render page | dashes | affected | ledger identity |\n"
+                "| INT-001 | 端到端 | lazy login flow | browser | page loads | candidate | verification identity |\n"
+                "| COM-001 | 兼容 | short legacy row | old value | expected value | module |\n",
+            )
+
+            scenarios = finalizer.parse_test_scenarios(scenarios_path)
+
+            self.assertEqual(
+                [item["id"] for item in scenarios],
+                ["UT-001", "INT-001", "COM-001"],
+            )
+            self.assertEqual(scenarios[0]["category"], "正常")
+            self.assertEqual(scenarios[0]["scenario"], "no placeholder metrics")
+            self.assertEqual(scenarios[0]["priority"], "P1")
+            self.assertEqual(scenarios[0]["requiredEvidenceKind"], "ledger")
+            self.assertEqual(scenarios[0]["ownerPhase"], "test")
+            self.assertEqual(scenarios[0]["executionTier"], "affected")
+            self.assertNotIn("executionTier", scenarios[2])
+
+    def test_validate_rejects_empty_scenario_description_in_mixed_table(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = Path(tmp) / "staging"
+            seed_staging(staging)
+            write(
+                staging / "plans" / "demo-test-scenarios.md",
+                valid_markdown("demo", "Scenarios")
+                + "\n| ID | 优先级 | 场景 |\n"
+                "|---|---|---|\n"
+                "| UT-001 | P0 | valid scenario |\n"
+                "| UT-002 | P1 | |\n",
+            )
+
+            result = finalizer.validate_staging(staging, "demo")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PLAN_SCENARIO_ROW_INVALID")
+
+    def test_finalize_rejects_no_scenarios_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             staging = root / "staging"
@@ -489,11 +688,36 @@ class ScenarioManifestTests(unittest.TestCase):
                 run_id="plan-run",
                 attempt=1,
             )
-            self.assertTrue(result["ok"], msg=result)
-            manifest_path = change_dir / "meta" / "scenario-manifest.json"
-            self.assertTrue(manifest_path.is_file())
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(data["scenarios"], [])
+            self.assertFalse(result["ok"], msg=result)
+            self.assertEqual(result["code"], "PLAN_SCENARIOS_EMPTY")
+            self.assertFalse((change_dir / "meta" / "scenario-manifest.json").exists())
+
+    def test_finalize_rejects_duplicate_scenario_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change = "demo-duplicate-scenarios"
+            change_dir = root / ".harness" / "changes" / change
+            seed_staging(staging, change)
+            write(
+                staging / "plans" / f"{change}-test-scenarios.md",
+                valid_markdown(change, "Scenarios")
+                + "\n| ID | 优先级 | 场景 |\n"
+                "|---|---|---|\n"
+                "| UT-001 | P0 | first |\n"
+                "| UT-001 | P0 | duplicate |\n",
+            )
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name=change,
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"], msg=result)
+            self.assertEqual(result["code"], "PLAN_SCENARIO_ID_DUPLICATE")
 
 
 class PlanVerifyTests(unittest.TestCase):
@@ -507,6 +731,7 @@ class PlanVerifyTests(unittest.TestCase):
         staging = root / "staging"
         change_dir = root / ".harness" / "changes" / change
         seed_staging(staging, change)
+        seed_plan_start(change_dir)
         finalize_result = finalizer.finalize_plan(
             change_dir,
             staging,
@@ -517,6 +742,23 @@ class PlanVerifyTests(unittest.TestCase):
         assert finalize_result["ok"], finalize_result
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
         return change_dir, finalize_result
+
+    def _rewrite_receipt_files(
+        self,
+        change_dir: Path,
+        files: list[str],
+    ) -> None:
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256()
+        for rel in files:
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update((change_dir / rel).read_bytes())
+            digest.update(b"\0")
+        receipt["files"] = files
+        receipt["artifactsHash"] = "sha256:" + digest.hexdigest()
+        receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
 
     def test_verify_succeeds_after_finalize(self) -> None:
         change_dir, finalize_result = self._finalize_and_verify()
@@ -551,6 +793,50 @@ class PlanVerifyTests(unittest.TestCase):
         self.assertTrue(result["ok"], msg=result)
         self.assertEqual(result["phaseEndCount"], 1)
 
+    def test_verify_uses_routed_events_path(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="plan-verify-routed-"))
+        staging = root / "staging"
+        change = "verify-routed"
+        change_dir = root / ".harness" / "changes" / change
+        routed_events = root / ".harness" / "state" / "changes" / change / "events.ndjson"
+        seed_staging(staging, change)
+        write(
+            routed_events,
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "id": "evt-plan-start",
+                    "timestamp": "2026-07-28T20:00:00+08:00",
+                    "phase": "plan",
+                    "type": "phase.start",
+                    "run_id": "plan-run",
+                    "attempt": 1,
+                    "note": "",
+                }
+            )
+            + "\n",
+        )
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+
+        with mock.patch.object(
+            finalizer.harness_events,
+            "events_path",
+            return_value=routed_events,
+        ):
+            finalized = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name=change,
+                run_id="plan-run",
+                attempt=1,
+            )
+            self.assertTrue(finalized["ok"], finalized)
+            result = finalizer.verify_plan(change_dir)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["phaseStartCount"], 1)
+        self.assertEqual(result["phaseEndCount"], 1)
+
     def test_verify_fails_when_phase_end_missing(self) -> None:
         change_dir, _ = self._finalize_and_verify("verify-no-end")
         # Remove the phase.end event by rewriting events.ndjson with only phase.start
@@ -581,6 +867,154 @@ class PlanVerifyTests(unittest.TestCase):
         result = finalizer.verify_plan(change_dir)
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "ARTIFACT_HASH_DRIFT")
+
+    def test_verify_rejects_receipt_path_outside_change_root(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-unsafe-receipt")
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["files"] = ["../../outside.txt"]
+        receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_FILE_PATH_INVALID")
+
+    def test_verify_rejects_receipt_that_omits_required_artifact(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-incomplete-receipt")
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        files = [
+            rel
+            for rel in receipt["files"]
+            if rel != "spec/verify-incomplete-receipt-design.md"
+        ]
+        self._rewrite_receipt_files(change_dir, files)
+        (change_dir / "spec" / "verify-incomplete-receipt-design.md").unlink()
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_FILES_INCOMPLETE")
+
+    def test_verify_returns_structured_error_when_plan_is_omitted_and_missing(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-missing-plan")
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        plan_rel = "plans/verify-missing-plan-plan.md"
+        files = [rel for rel in receipt["files"] if rel != plan_rel]
+        self._rewrite_receipt_files(change_dir, files)
+        (change_dir / plan_rel).unlink()
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_FILES_INCOMPLETE")
+
+    def test_link_detector_recognizes_windows_reparse_points_without_is_junction(
+        self,
+    ) -> None:
+        fake_stat = mock.Mock(st_file_attributes=0x400)
+        with (
+            mock.patch.object(Path, "is_symlink", return_value=False),
+            mock.patch.object(finalizer.os, "lstat", return_value=fake_stat),
+        ):
+            self.assertTrue(finalizer._is_link_or_reparse(Path("junction")))
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction regression")
+    def test_verify_rejects_windows_junction_escape(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-junction")
+        outside_spec = change_dir.parent / "outside-spec"
+        shutil.move(str(change_dir / "spec"), str(outside_spec))
+        junction = change_dir / "spec"
+        created = subprocess.run(
+            ["cmd.exe", "/c", "mklink", "/J", str(junction), str(outside_spec)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode != 0:
+            self.skipTest(f"junction unavailable: {created.stderr or created.stdout}")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_FILE_PATH_INVALID")
+
+    def test_verify_rejects_receipt_change_name_mismatch(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-name-mismatch")
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["changeName"] = "../other"
+        receipt_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_CHANGE_NAME_INVALID")
+
+    def test_verify_fails_when_phase_start_missing(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-no-start")
+        events_path = change_dir / "events.ndjson"
+        kept = [
+            line
+            for line in events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and json.loads(line).get("type") != "phase.start"
+        ]
+        events_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PHASE_START_MISSING")
+
+    def test_verify_fails_when_scenario_manifest_is_empty(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-empty-scenarios")
+        manifest_path = change_dir / "meta" / "scenario-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["scenarios"] = []
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_EMPTY")
+
+    def test_verify_fails_when_implementation_checkpoints_drop_tasks(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-task-drift")
+        checkpoints_path = change_dir / "meta" / "implementation-checkpoints.json"
+        checkpoints = json.loads(checkpoints_path.read_text(encoding="utf-8"))
+        checkpoints["tasks"] = []
+        checkpoints_path.write_text(json.dumps(checkpoints) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "IMPLEMENTATION_CHECKPOINTS_DRIFT")
+
+    def test_verify_fails_when_checkpoint_task_content_drifts(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-task-content-drift")
+        checkpoints_path = change_dir / "meta" / "implementation-checkpoints.json"
+        checkpoints = json.loads(checkpoints_path.read_text(encoding="utf-8"))
+        checkpoints["tasks"][0]["task"] = "tampered task"
+        checkpoints_path.write_text(json.dumps(checkpoints) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "IMPLEMENTATION_CHECKPOINTS_DRIFT")
+
+    def test_verify_fails_when_scenario_content_drifts(self) -> None:
+        change_dir, _ = self._finalize_and_verify("verify-scenario-content-drift")
+        manifest_path = change_dir / "meta" / "scenario-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["scenarios"][0]["scenario"] = "tampered scenario"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        result = finalizer.verify_plan(change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_DRIFT")
 
 
 if __name__ == "__main__":

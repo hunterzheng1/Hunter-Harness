@@ -555,6 +555,58 @@ class HarnessGateTests(unittest.TestCase):
             ])
             self.assertEqual(gate.cmd_begin(args), 0)
 
+    def test_plan_handoff_rejects_modern_plan_without_receipt(self) -> None:
+        plan = self.change_dir / "plans" / "demo-plan.md"
+        plan.parent.mkdir(parents=True, exist_ok=True)
+        plan.write_text(
+            "---\nchange-name: demo\nstatus: approved\n---\n\n# Plan\n",
+            encoding="utf-8",
+        )
+
+        result = gate.validate_plan_handoff(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_MISSING")
+
+    def test_plan_handoff_skips_synthetic_change_without_plan_artifacts(self) -> None:
+        result = gate.validate_plan_handoff(self.change_dir)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["code"], "PLAN_HANDOFF_NOT_APPLICABLE")
+
+    def test_run_begin_stops_before_lease_when_plan_handoff_is_invalid(self) -> None:
+        args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo", "--task", "1",
+            "--skills-root", str(self.project / ".agents" / "skills"), "--json",
+        ])
+        invalid = {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_EMPTY",
+            "error": "scenario manifest is empty",
+        }
+        with mock.patch.object(
+            gate.hc, "resolve_main_project_root", return_value=self.project
+        ), mock.patch.object(
+            gate.hc,
+            "resolve_change",
+            return_value={
+                "ok": True,
+                "changeId": "demo",
+                "changeDir": str(self.change_dir),
+            },
+        ), mock.patch.object(
+            gate, "validate_plan_handoff", return_value=invalid
+        ), mock.patch.object(
+            gate, "record_blocked_attempt"
+        ) as record_blocked, mock.patch.object(
+            gate.hc, "claim_lease"
+        ) as claim_lease, mock.patch("sys.stderr"):
+            code = gate.cmd_begin(args)
+
+        self.assertEqual(code, 1)
+        record_blocked.assert_not_called()
+        claim_lease.assert_not_called()
+
     def test_phase_capsule_persists_and_reuses_execution_root(self) -> None:
         self._write_checkpoints("approved")
         execution = self.project.parent / f"{self.project.name}-feature"
@@ -1215,6 +1267,82 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch("sys.stdout"):
             code = gate.cmd_close(args)
         self.assertEqual(code, 0)
+
+    def test_empty_scenario_manifest_fails_closed(self) -> None:
+        self._write_manifest([])
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_EMPTY")
+
+    def test_p1_ledger_scenario_must_be_covered(self) -> None:
+        self._write_manifest([
+            {
+                "id": "UT-001",
+                "priority": "P1",
+                "ownerPhase": "test",
+                "requiredEvidenceKind": "ledger",
+            }
+        ])
+        self._write_ledger([])
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing"], ["UT-001"])
+
+    def test_p1_cannot_downgrade_required_evidence_to_advisory(self) -> None:
+        self._write_manifest([
+            {
+                "id": "UT-ADVISORY",
+                "priority": "P1",
+                "ownerPhase": "test",
+                "requiredEvidenceKind": "advisory",
+            }
+        ])
+        self._write_ledger([])
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing"], ["UT-ADVISORY"])
+
+    def test_scenario_coverage_uses_routed_ledger_loader(self) -> None:
+        self._write_manifest([
+            {
+                "id": "UT-ROUTED",
+                "priority": "P1",
+                "ownerPhase": "test",
+                "requiredEvidenceKind": "ledger",
+            }
+        ])
+        routed_ledger = {
+            "validations": {
+                "unitTest": {
+                    "scenarioIds": ["UT-ROUTED"],
+                }
+            }
+        }
+
+        with mock.patch.object(
+            gate.hl,
+            "load_ledger",
+            return_value=(
+                routed_ledger,
+                self.project
+                / ".harness"
+                / "state"
+                / "changes"
+                / "demo"
+                / "evidence"
+                / "verification-ledger.json",
+            ),
+        ) as load_ledger:
+            result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        load_ledger.assert_called_once_with(self.change_dir)
 
     def test_close_skips_coverage_when_manifest_missing(self) -> None:
         # No scenario-manifest.json — skip coverage check (backward compat)

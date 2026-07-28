@@ -39,7 +39,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] 检查构建配置完整性（worktree 中确认构建配置文件存在，如 Java 的 `.mvn/maven.config`、`settings.xml`，前端的 `package.json`/lockfile 等）
 - [ ] 依赖模块预安装（worktree 中检查上游依赖是否已安装，如 Java 的 `mvn install`、前端的 `npm install`/lockfile 等）
 - [ ] 代码探索优先用 `codegraph_explore`，仅在返回不完整时补充 Read
-- [ ] append `phase.start` 事件（`harness_events.py append`；`note` 含 `测试基础设施: CHECKING`，不得先写降级结论）
+- [ ] `harness_gate.py begin --phase run` 已返回 Plan handoff 校验通过并自动 append `phase.start`；不得手工写事件绕过
 
 ### 步骤 0.1：执行模式（无询问）
 
@@ -231,7 +231,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 
 ## 步骤 6：计划状态持久化
 
-- [ ] 每个任务状态更新到 plan 文件或新增 `evidence/run-task-status.md`
+- [ ] 每个任务状态只更新到 `evidence/run-task-status.md`；不得修改 finalized plan 文件
 - [ ] 状态区分：✅ DONE_AUTOMATED_TESTED / 🟡 DONE_STATIC_ONLY / 🟡 DONE_NEEDS_INTERFACE_TEST / 🟡 NEEDS_DB_VALIDATION / ❌ FAILED
 - [ ] 确保后续 harness-test / harness-review 可读取待验证场景
 

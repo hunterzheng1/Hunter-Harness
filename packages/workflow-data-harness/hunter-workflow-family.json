@@ -6,9 +6,9 @@
     "general",
     "java"
   ],
-  "bundle_version": "0.2.22",
-  "content_sha256": "sha256:832004fb51768868e157c7538e21abbe2a5d62f346be7959c361e299793f1234",
-  "minimumCliVersion": "0.2.32",
+  "bundle_version": "0.2.25",
+  "content_sha256": "sha256:4a6cd7cdb0d1a6ef495d667fd880504a0422506ed593e4b59a9febe5b62e5403",
+  "minimumCliVersion": "0.2.35",
   "capabilities": [
     "sync@1",
     "rules-sync@1",
@@ -16,7 +16,7 @@
     "knowledge-sync@2"
   ],
   "requires": {
-    "minimumCliVersion": "0.2.32",
+    "minimumCliVersion": "0.2.35",
     "capabilities": [
       "sync@1",
       "rules-sync@1",

@@ -33,6 +33,7 @@ import harness_change as hc  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
+import harness_plan_finalize as hpf  # noqa: E402
 import harness_workflow_policy as hwp  # noqa: E402
 import harness_test_guard as htg  # noqa: E402
 
@@ -1588,10 +1589,11 @@ def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -
 
 
 def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
-    """C9: validate all P0 scenarios have a ledger entry with scenarioIds covering them.
+    """C9: validate all ledger-required scenarios are covered by ledger entries.
 
     Reads meta/scenario-manifest.json and evidence/verification-ledger.json.
-    Returns ok=True when manifest missing (backward compat) or all P0 scenarios covered.
+    Returns ok=True when a legacy manifest is missing or all required scenarios
+    are covered. A present but empty manifest is always invalid.
     """
     manifest_path = change_dir / "meta" / "scenario-manifest.json"
     if not manifest_path.is_file():
@@ -1604,33 +1606,57 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
             "code": "SCENARIO_MANIFEST_INVALID",
             "message": f"scenario-manifest.json unreadable: {exc}",
         }
-    scenarios = manifest.get("scenarios") or []
-    p0_ids = {
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list):
+        return {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_INVALID",
+            "message": "scenario-manifest.json scenarios must be a list",
+        }
+    if not scenarios:
+        return {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_EMPTY",
+            "message": "scenario-manifest.json must contain at least one scenario",
+        }
+    invalid_items = [
+        index
+        for index, scenario in enumerate(scenarios)
+        if not isinstance(scenario, dict) or not str(scenario.get("id") or "").strip()
+    ]
+    if invalid_items:
+        return {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_INVALID",
+            "message": f"scenario entries missing IDs at indexes: {invalid_items}",
+        }
+    required_ids = {
         str(s.get("id"))
         for s in scenarios
         if isinstance(s, dict)
-        and str(s.get("priority", "")).upper() == "P0"
-        and s.get("requiredEvidenceKind") == "ledger"
+        and (
+            str(s.get("priority", "")).upper() in {"P0", "P1"}
+            or s.get("requiredEvidenceKind") == "ledger"
+        )
     }
-    if not p0_ids:
-        return {"ok": True, "code": "NO_P0_SCENARIOS"}
+    if not required_ids:
+        return {"ok": True, "code": "NO_LEDGER_REQUIRED_SCENARIOS"}
 
-    ledger_path = change_dir / "evidence" / "verification-ledger.json"
-    if not ledger_path.is_file():
-        return {
-            "ok": False,
-            "code": "SCENARIO_COVERAGE_FAILED",
-            "message": "ledger missing; cannot verify P0 scenario coverage",
-            "missing": sorted(p0_ids),
-        }
     try:
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
+        ledger, ledger_path = hl.load_ledger(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {
             "ok": False,
             "code": "SCENARIO_COVERAGE_FAILED",
             "message": f"ledger unreadable: {exc}",
-            "missing": sorted(p0_ids),
+            "missing": sorted(required_ids),
+        }
+    if ledger is None or ledger_path is None:
+        return {
+            "ok": False,
+            "code": "SCENARIO_COVERAGE_FAILED",
+            "message": "ledger missing; cannot verify required scenario coverage",
+            "missing": sorted(required_ids),
         }
     covered: set[str] = set()
     validations = ledger.get("validations") or {}
@@ -1640,15 +1666,38 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
                 ids = entry.get("scenarioIds")
                 if isinstance(ids, list):
                     covered.update(str(i) for i in ids)
-    missing = sorted(p0_ids - covered)
+    missing = sorted(required_ids - covered)
     if missing:
         return {
             "ok": False,
             "code": "SCENARIO_COVERAGE_FAILED",
-            "message": f"P0 scenarios without ledger entry: {', '.join(missing)}",
+            "message": (
+                "ledger-required scenarios without ledger entry: "
+                + ", ".join(missing)
+            ),
             "missing": missing,
         }
-    return {"ok": True, "code": "SCENARIO_COVERAGE_OK", "covered": sorted(covered & p0_ids)}
+    return {
+        "ok": True,
+        "code": "SCENARIO_COVERAGE_OK",
+        "covered": sorted(covered & required_ids),
+    }
+
+
+def validate_plan_handoff(change_dir: Path) -> dict[str, Any]:
+    """Verify a finalized modern plan before the first run-side effect."""
+    receipt_path = change_dir / "meta" / "plan-finalization.json"
+    plans_root = change_dir / "plans"
+    has_plan_artifacts = plans_root.is_dir() and any(
+        plans_root.glob("*-plan.md")
+    )
+    if not receipt_path.is_file() and not has_plan_artifacts:
+        return {
+            "ok": True,
+            "code": "PLAN_HANDOFF_NOT_APPLICABLE",
+            "skipped": True,
+        }
+    return hpf.verify_plan(change_dir)
 
 
 def cmd_begin(args: argparse.Namespace) -> int:
@@ -1663,6 +1712,28 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
         )
     change_dir = Path(resolved["changeDir"])
+    plan_verification: dict[str, Any] | None = None
+    if args.phase == "run":
+        plan_verification = validate_plan_handoff(change_dir)
+        if not plan_verification.get("ok"):
+            code = str(
+                plan_verification.get("code") or "PLAN_HANDOFF_INVALID"
+            )
+            message = str(
+                plan_verification.get("error")
+                or plan_verification.get("message")
+                or "finalized plan verification failed"
+            )
+            return emit_error(
+                code,
+                message,
+                as_json=as_json,
+                extra={
+                    key: value
+                    for key, value in plan_verification.items()
+                    if key not in {"ok", "code", "error", "message"}
+                },
+            )
     concurrency_block = hc.check_concurrency_block(project, resolved["changeId"])
     if concurrency_block is not None:
         record_blocked_attempt(
@@ -1847,6 +1918,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "event": event_result,
         "testGuard": guard_result,
         "policySchemaVersion": policy.get("schemaVersion"),
+        "planVerification": plan_verification,
         "projection": projection,
         "executionRootSource": execution_hint["source"],
     }

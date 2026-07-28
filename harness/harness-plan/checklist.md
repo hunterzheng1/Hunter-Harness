@@ -14,7 +14,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 ## 阶段 0.5：事件初始化与知识查询
 
-- [ ] 先确定 change-name，并立即用 `harness_events.py append` 追加 `phase.start`
+- [ ] 先确定 change-name、稳定的 plan-run-id 与 attempt（首次为 1），立即用 `harness_events.py append ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>` 追加开始事件
 - [ ] 再执行一次 knowledge `query`；由 query 内部 ensure-current，不另跑前置 sync
 - [ ] 查询失败追加 `issue`，不得重跑“sync + query”循环或假装已读取历史
 
@@ -210,8 +210,12 @@ source: harness-plan
 > **缺任一文件 → ❌FAIL，不得宣称 plan 完成。**
 
 - [ ] 所有待发布产物先写入 staging，不直接覆盖正式 change 目录
-- [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id ... --attempt ... --json`
+- [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id <plan-run-id> --attempt <attempt> --json`；身份必须与本次 `phase.start` 完全相同
 - [ ] finalizer 返回 `ok=true` 与 `artifactsHash`；重复执行返回 `idempotent=true`
+- [ ] 紧接着执行 `harness_plan_finalize.py verify --change-dir ... --json`
+- [ ] verify 返回 `phaseStartCount=1`、`phaseEndCount=1`、`phaseEndStatus=OK`、`receiptConsistent=true`
+- [ ] 收据 `files` 完整包含 design / plan / implementation-detail / test-scenarios / gate-policy / worktree 六项标准产物；不得省略、重复或经 symlink/junction/reparse point 引用
+- [ ] verify 的 `taskCount` 等于全部任务表行数，`scenarioCount` 等于 Markdown 中全部唯一场景 ID 数；任一为 0 或不一致即 ❌FAIL
 - [ ] finalizer 失败时正式目录无半发布产物、无成功 `phase.end`、无伪造 execution log
 - [ ] 禁止在 finalizer 之前手工追加成功 `phase.end`
 
@@ -221,7 +225,11 @@ source: harness-plan
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅ | □ |
 | `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ | □ |
 | `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ | □ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | □ |
 | `.harness/changes/<change>/meta/worktree.json` | ✅ | □ |
+| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | □ |
+| `.harness/changes/<change>/meta/scenario-manifest.json`（非空且计数一致） | ✅ | □ |
+| `.harness/changes/<change>/meta/plan-finalization.json`（finalized） | ✅ | □ |
 | `.harness/changes/<change>/logs/execution-log.md` | ✅ | □ |
 | `.harness/changes/<change>/events.ndjson` | ✅ | □ |
 
@@ -244,7 +252,7 @@ source: harness-plan
 
 ## 关键原则
 
-- **产物路径唯一性**：`.harness/changes/<change-name>/` 是唯一真相源，plan 产物必须直接写入此目录
+- **产物路径唯一性**：正式 `.harness/changes/<change-name>/` 是唯一真相源；plan 只写 staging，由 finalizer 原子发布，禁止先写正式目录再补 staging
 - **原生规划协议**：阶段 4/6 使用 clarification、decision-grilling、implementation-planning 三段内置协议，不运行时依赖 Superpowers/grill-me/writing-plans
 - **阶段 4 是强制阻断检查点**——展示设计审批包后必须停下来问用户，收到回复后才能写 approved 设计文档。不要跳过
 - 代码探索只读不写——这个阶段的目标是理解，不是修改
@@ -255,7 +263,7 @@ source: harness-plan
 
 ## 事件记录（前置规则）
 
-- [ ] 确定 change-name 后立即 append `phase.start` 事件；各阶段用 `harness_events.py append` 写入 `decision` / `issue` / `artifact`
+- [ ] 确定 change-name 后立即用稳定且可复用的 `--run-id` / `--attempt` append `phase.start` 事件；各阶段用 `harness_events.py append` 写入 `decision` / `issue` / `artifact`
 - [ ] 阶段 0 在 change-name 确定前可不写事件；阶段 0.5 确定 change-name 后必须开始记录
 
 ## 需求范围缩减后的 change-name 检查 ⚠️

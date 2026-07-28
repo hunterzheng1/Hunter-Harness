@@ -83,7 +83,7 @@ requested=true + path missing
 
 
 
-> ⚠️ **phase.start 前置**：步骤 0 第一件事是 `harness_events.py append --type phase.start`（见 SKILL.md `## 执行日志`）。**任何代码修改前必须先记录**，不能等代码改完才补。
+> ⚠️ **Plan handoff / phase.start 前置**：步骤 0 第一件事是执行 `harness_gate.py begin --phase run`。它先校验 Plan 收据、哈希、生命周期、全部任务和非空场景清单，再自动追加 `phase.start`。**任何代码修改前必须成功**，不得手工补事件绕过。
 > ⚠️ **测试基础设施探测前置**：步骤 0 中必须首先执行"步骤 0.5 测试基础设施探测"，探测完成前不得写任何 TDD 降级结论。
 
 1. **确定变更名**：用 Glob 搜索 `.harness/changes/*/plans/*-plan.md`（**排除 `.harness/archive/*/`**），读取找到的 plan.md 的 YAML frontmatter，提取 `change-name`。默认最多一个未归档变更；如有多个，优先取最近修改的，或询问用户选择。
@@ -711,17 +711,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 
 ### 持久化方式
 
-**方式一（推荐）**：更新 plan.md 中的任务状态
-
-在 plan.md 的任务列表中，为每个任务追加状态标记：
-
-```markdown
-### Task 1: 修复分页查询缺项目类型 Bug
-- **状态**: ✅ DONE_AUTOMATED_TESTED
-- **测试**: UT-001~005 已通过
-```
-
-**方式二**：新增 `evidence/run-task-status.md`
+只能新增或更新 `evidence/run-task-status.md`。finalized 的 spec/plan/detail/scenarios/gate-policy 属于 Plan 收据哈希覆盖的不可变输入，Run 不得追加状态、改勾选框或重排表格。
 
 在 `.harness/changes/<change-name>/evidence/run-task-status.md` 中记录：
 
@@ -750,6 +740,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 ### 规则
 
 - 不允许只在对话里说"任务完成"但不写入任何持久化文件
+- 不允许修改 finalized plan Markdown 来记录状态；恢复信息只写 `evidence/run-task-status.md`
 - 后续 harness-test 和 harness-review 必须能从持久化状态识别哪些场景仍待验证
 
 ## 输出示例
