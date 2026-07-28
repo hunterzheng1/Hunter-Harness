@@ -319,7 +319,7 @@ class IdentityEnforcementTests(LedgerV3Fixture):
         )
         self.assertEqual(
             payload["inputsFiles"],
-            [(self.project / "src" / "app.py").resolve().as_posix()],
+            ["src/app.py"],
         )
 
     def test_record_supports_utf8_files_and_metrics_files(self) -> None:

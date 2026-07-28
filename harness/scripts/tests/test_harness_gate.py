@@ -767,6 +767,71 @@ class HarnessGateTests(unittest.TestCase):
         self.assertTrue(updated["closeTransaction"]["phaseEndRecorded"])
         self.assertTrue(updated["closeTransaction"]["retryable"])
 
+    def test_close_root_mismatch_persists_retryable_failure_capsule(self) -> None:
+        self._write_checkpoints("approved")
+        alternate_root = self.project / "alternate-worktree"
+        alternate_root.mkdir()
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        capsule = {
+            "schemaVersion": 1,
+            "changeId": "demo",
+            "phase": "submit",
+            "runId": "root-mismatch",
+            "projectRoot": str(self.project.resolve()),
+            "stateRoot": str(self.change_dir.resolve()),
+            "executionRoot": str(self.project.resolve()),
+            "skillsRoot": str((self.project / ".agents" / "skills").resolve()),
+            "repositoryId": gate.hp.repository_identity(self.project),
+            "baseCommit": head,
+            "currentHead": head,
+            "createdAt": gate.he.now_iso(),
+        }
+        gate.write_phase_capsule(
+            self.change_dir, "submit", "root-mismatch", capsule
+        )
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "submit", "--change", "demo",
+            "--run-id", "root-mismatch", "--status", "OK",
+            "--project", str(alternate_root), "--json",
+        ])
+        resolved = {
+            "ok": True,
+            "changeId": "demo",
+            "changeDir": str(self.change_dir),
+        }
+
+        def resolve_root(_project: Path, raw: str | None) -> Path:
+            if raw == str(alternate_root):
+                return alternate_root.resolve()
+            return self.project.resolve()
+
+        with mock.patch.object(
+            gate.hc, "resolve_main_project_root", return_value=self.project
+        ), mock.patch.object(
+            gate.hc, "resolve_change", return_value=resolved
+        ), mock.patch.object(
+            gate.hc,
+            "inspect_lease",
+            return_value={"runId": "root-mismatch", "phase": "submit"},
+        ), mock.patch.object(
+            gate, "resolve_execution_root", side_effect=resolve_root
+        ), mock.patch("sys.stderr"):
+            self.assertEqual(gate.cmd_close(args), 1)
+
+        updated = gate.load_phase_capsule(
+            self.change_dir, "submit", "root-mismatch"
+        )
+        self.assertEqual(
+            updated["closeTransaction"]["status"],
+            "ROOT_VALIDATION_FAILED",
+        )
+        self.assertTrue(updated["closeTransaction"]["retryable"])
+        self.assertNotIn("closeStatus", updated)
+        self.assertNotIn("closedAt", updated)
+
     # --- UT-306..309 classify persistence / override ---
 
     def test_classify_persists_gate_policy_ut306(self) -> None:

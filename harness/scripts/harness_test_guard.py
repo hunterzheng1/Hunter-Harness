@@ -811,6 +811,217 @@ def rehome(
     )
 
 
+def rebind_snapshot(
+    from_project: Path | str,
+    to_project: Path | str,
+    change_dir: Path | str,
+    expected_base: str,
+) -> dict[str, Any]:
+    """Rebind an unchanged pre-change snapshot to a descendant worktree.
+
+    This is the pre-merge counterpart to ``rehome``.  It is intentionally
+    narrow: the source root must still be exactly at ``expected_base``, every
+    snapshotted file must still match its captured byte hash there, and the
+    target HEAD must descend from that base.  A target-owned manifest, when
+    present, is validated but never rewritten.
+    """
+
+    action = "rebind-snapshot"
+    from_root = Path(from_project).resolve()
+    to_root = Path(to_project).resolve()
+    if not from_root.is_dir() or not to_root.is_dir():
+        return _result(False, action, "PROJECT_ROOT_MISSING", [])
+    if harness_paths.repository_identity(from_root) != harness_paths.repository_identity(to_root):
+        return _result(False, action, "REPOSITORY_MISMATCH", [])
+
+    from_head_result = _git(from_root, "rev-parse", "--verify", "HEAD")
+    from_head = from_head_result.stdout.strip() if from_head_result.returncode == 0 else ""
+    if not expected_base or from_head != expected_base:
+        return _result(
+            False,
+            action,
+            "EXPECTED_BASE_MISMATCH",
+            [],
+            expectedBase=expected_base,
+            actualBase=from_head,
+        )
+
+    to_head_result = _git(to_root, "rev-parse", "--verify", "HEAD")
+    to_head = to_head_result.stdout.strip() if to_head_result.returncode == 0 else ""
+    descendant = _git(
+        to_root,
+        "merge-base",
+        "--is-ancestor",
+        expected_base,
+        to_head,
+    )
+    if not to_head or descendant.returncode != 0:
+        return _result(
+            False,
+            action,
+            "TARGET_NOT_DESCENDANT",
+            [],
+            expectedBase=expected_base,
+            targetHead=to_head,
+        )
+
+    change_root = _change_dir(from_root, change_dir)
+    if change_root is None:
+        return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
+    snapshot_path = _state_root(change_root) / SNAPSHOT_REL
+    if not _manifest_target_inside(change_root, snapshot_path):
+        return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is None:
+        return _result(False, action, "MANIFEST_PATH_OUTSIDE_PROJECT", [])
+
+    lock_path = snapshot_path.with_name(snapshot_path.name + ".lock")
+    try:
+        with _exclusive_lock(lock_path, wait_seconds=5.0):
+            try:
+                snapshot = _read_json(snapshot_path)
+            except FileNotFoundError:
+                return _result(False, action, "SNAPSHOT_MISSING", [])
+            except (OSError, json.JSONDecodeError) as exc:
+                return _result(False, action, "SNAPSHOT_INVALID", [], error=str(exc))
+
+            entries = snapshot.get("files") if isinstance(snapshot, dict) else None
+            snapshot_root = snapshot.get("projectRoot") if isinstance(snapshot, dict) else None
+            if (
+                not isinstance(snapshot, dict)
+                or snapshot.get("schemaVersion") != SCHEMA_VERSION
+                or snapshot.get("mode") != MODE
+                or snapshot_root not in {str(from_root), str(to_root)}
+                or not isinstance(entries, list)
+            ):
+                return _result(False, action, "SNAPSHOT_INVALID", [])
+
+            validated_paths: list[str] = []
+            for item in entries:
+                if (
+                    not isinstance(item, dict)
+                    or not isinstance(item.get("path"), str)
+                    or not isinstance(item.get("sha256"), str)
+                ):
+                    return _result(False, action, "SNAPSHOT_INVALID", [])
+                rel = item["path"]
+                source, normalized, error = _validate_file(from_root, rel)
+                if error or normalized != rel or source is None:
+                    return _result(False, action, error or "SNAPSHOT_INVALID", [rel])
+                if item["sha256"] != _sha256(source):
+                    return _result(False, action, "SOURCE_SNAPSHOT_DRIFT", [rel])
+                item["logicalHash"] = logical_file_hash(from_root, rel)
+                validated_paths.append(rel)
+
+            manifest = None
+            if manifest_path.is_file():
+                try:
+                    manifest = _read_json(manifest_path)
+                except (OSError, json.JSONDecodeError) as exc:
+                    return _result(False, action, "MANIFEST_INVALID", [], error=str(exc))
+                validator = (
+                    _validate_existing_manifest_v2
+                    if isinstance(manifest, dict) and manifest.get("schemaVersion") == 2
+                    else _validate_existing_manifest
+                )
+                error, _ = validator(to_root, manifest, require_files=False)
+                if error:
+                    return _result(False, action, error, [])
+
+            before_hash = _sha256(snapshot_path)
+            rebound_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            rebind_id = "rebind-" + hashlib.sha256(
+                f"{from_root}\0{to_root}\0{expected_base}\0{to_head}".encode("utf-8")
+            ).hexdigest()[:20]
+            updated = json.loads(json.dumps(snapshot))
+            updated["files"] = entries
+            rebinds = updated.get("rebinds")
+            if rebinds is None:
+                rebinds = []
+            if not isinstance(rebinds, list):
+                return _result(False, action, "SNAPSHOT_INVALID", [])
+            record = {
+                "id": rebind_id,
+                "fromRoot": str(from_root),
+                "toRoot": str(to_root),
+                "expectedBase": expected_base,
+                "targetHead": to_head,
+                "at": rebound_at,
+                "snapshotHashBefore": before_hash,
+            }
+            if not any(
+                isinstance(item, dict) and item.get("id") == rebind_id
+                for item in rebinds
+            ):
+                rebinds.append(record)
+            updated["projectRoot"] = str(to_root)
+            updated["rebinds"] = rebinds
+            _write_json(snapshot_path, updated)
+            after_hash = _sha256(snapshot_path)
+
+            removed_manifest_paths: list[str] = []
+            if isinstance(manifest, dict):
+                manifest_entries = manifest.get("files")
+                if not isinstance(manifest_entries, list):
+                    return _result(False, action, "MANIFEST_INVALID", [])
+                baseline = {
+                    item["path"]: item["logicalHash"]
+                    for item in entries
+                    if isinstance(item, dict)
+                    and isinstance(item.get("path"), str)
+                    and isinstance(item.get("logicalHash"), str)
+                }
+                kept_entries: list[dict[str, Any]] = []
+                for item in manifest_entries:
+                    rel = item.get("path") if isinstance(item, dict) else None
+                    if (
+                        isinstance(rel, str)
+                        and rel in baseline
+                        and item.get("reason") in REASONS
+                        and logical_file_hash(to_root, rel) == baseline[rel]
+                    ):
+                        removed_manifest_paths.append(rel)
+                        continue
+                    kept_entries.append(item)
+                if removed_manifest_paths:
+                    cleaned = json.loads(json.dumps(manifest))
+                    cleaned["files"] = kept_entries
+                    cleanups = cleaned.get("reconciliations")
+                    if cleanups is None:
+                        cleanups = []
+                    if not isinstance(cleanups, list):
+                        return _result(False, action, "MANIFEST_INVALID", [])
+                    cleanups.append(
+                        {
+                            "rebindId": rebind_id,
+                            "at": rebound_at,
+                            "reason": "logical-baseline-match",
+                            "removedPaths": sorted(removed_manifest_paths),
+                        }
+                    )
+                    cleaned["reconciliations"] = cleanups
+                    _write_json(manifest_path, cleaned)
+    except LockUnavailable:
+        return _result(False, action, "SNAPSHOT_LOCKED", [])
+
+    return _result(
+        True,
+        action,
+        "SNAPSHOT_REBOUND",
+        sorted(validated_paths),
+        fromRoot=str(from_root),
+        toRoot=str(to_root),
+        expectedBase=expected_base,
+        targetHead=to_head,
+        rebindId=rebind_id,
+        snapshotHashBefore=before_hash,
+        snapshotHashAfter=after_hash,
+        manifestEntriesRemoved=len(removed_manifest_paths),
+        removedManifestPaths=sorted(removed_manifest_paths),
+        snapshotPath=str(snapshot_path),
+    )
+
+
 def _stage_locked(
     project_root: Path, change_root: Path, manifest_path: Path, index_path: Path
 ) -> dict[str, Any]:
@@ -1445,7 +1656,13 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             if reason is not None:
                 touched.append((rel, reason))
             continue
-        if before[rel]["sha256"] != digest:
+        before_digest = before[rel].get("logicalHash") or before[rel]["sha256"]
+        current_digest = (
+            logical_file_hash(project_root, rel)
+            if before[rel].get("logicalHash")
+            else digest
+        )
+        if before_digest != current_digest:
             touched.append((rel, "test-updated"))
 
     for reason in ("tdd-created", "test-updated"):
@@ -1599,6 +1816,12 @@ def main(argv: list[str] | None = None) -> int:
     rehome_parser.add_argument("--change-dir", required=True)
     rehome_parser.add_argument("--expected-head", required=True)
     rehome_parser.add_argument("--json", action="store_true")
+    rebind_parser = sub.add_parser("rebind-snapshot")
+    rebind_parser.add_argument("--from", dest="from_project", required=True)
+    rebind_parser.add_argument("--to", dest="to_project", required=True)
+    rebind_parser.add_argument("--change-dir", required=True)
+    rebind_parser.add_argument("--expected-base", required=True)
+    rebind_parser.add_argument("--json", action="store_true")
     mark_parser = sub.add_parser("mark")
     mark_parser.add_argument("--project", required=True)
     mark_parser.add_argument("--change-dir", required=True)
@@ -1618,6 +1841,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.action == "rehome":
         result = rehome(
             args.from_project, args.to_project, args.change_dir, args.expected_head
+        )
+    elif args.action == "rebind-snapshot":
+        result = rebind_snapshot(
+            args.from_project, args.to_project, args.change_dir, args.expected_base
         )
     else:
         result = stage(args.project, args.change_dir)

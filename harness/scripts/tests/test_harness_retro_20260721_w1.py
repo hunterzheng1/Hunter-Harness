@@ -293,7 +293,7 @@ class CheckStatusMinSetTest(unittest.TestCase):
             self.assertFalse(result["archivable"])
 
     def test_ut013b_missing_test_report_is_warning_not_blocker(self) -> None:
-        """H-4 min set only: plan/events/ledger; test/review absence is advisory."""
+        """Record-only H-4 min set: plan/events/ledger; reports stay advisory."""
         with tempfile.TemporaryDirectory() as tmp:
             change_dir = self._bare_change(Path(tmp))
             (change_dir / "plans").mkdir()
@@ -307,12 +307,13 @@ class CheckStatusMinSetTest(unittest.TestCase):
                 "{}", encoding="utf-8"
             )
             with mock.patch.object(ha, "git_run", return_value=(1, "", "nogit")):
-                result = ha.check_status(change_dir)
+                result = ha.check_status(change_dir, archive_intent="record-only")
             codes = {b["code"] for b in result["blockers"]}
             warn_codes = {w["code"] for w in result["warnings"]}
             self.assertNotIn("missing-test-or-review-report", codes)
             self.assertIn("missing-test-or-review-report", warn_codes)
             self.assertTrue(result["archivable"])
+            self.assertFalse(result["releaseEligible"])
 
 
 class IntegrationAbandonAndAutocrlfTest(unittest.TestCase):

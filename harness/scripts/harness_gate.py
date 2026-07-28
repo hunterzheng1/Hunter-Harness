@@ -160,6 +160,118 @@ def _git_is_ancestor(cwd: Path, ancestor: str, descendant: str) -> bool:
     return proc.returncode == 0
 
 
+def evaluate_projection_gate(
+    project: Path,
+    phase: str,
+) -> dict[str, Any]:
+    """Validate three-stage projection identity and apply phase fallback policy."""
+    project = project.resolve()
+    path = project / ".harness" / "config" / "projection-receipt.json"
+    release_phase = phase in {"submit", "archive", "release", "deploy"}
+    if not path.is_file():
+        return {
+            "ok": True,
+            "code": "PROJECTION_RECEIPT_NOT_CONFIGURED",
+            "status": "legacy",
+            "mode": "legacy",
+            "receiptPath": str(path),
+            "releasePhase": release_phase,
+        }
+    try:
+        receipt = _read_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        receipt = {}
+        parse_error = str(exc)
+    else:
+        parse_error = None
+    source = receipt.get("source")
+    transform = receipt.get("transform")
+    target = receipt.get("target")
+    source = source if isinstance(source, dict) else {}
+    transform = transform if isinstance(transform, dict) else {}
+    target = target if isinstance(target, dict) else {}
+    digest_pattern = re.compile(r"sha256:[0-9a-fA-F]{64}")
+    issues = []
+    if receipt.get("schemaVersion") != 1:
+        issues.append("schemaVersion")
+    for label, value in (
+        ("source.hash", source.get("hash")),
+        ("transform.hash", transform.get("hash")),
+        ("target.hash", target.get("hash")),
+    ):
+        if not isinstance(value, str) or not digest_pattern.fullmatch(value):
+            issues.append(label)
+    if not str(transform.get("version") or "").strip():
+        issues.append("transform.version")
+    if not isinstance(receipt.get("projectOwnedExclusions"), list):
+        issues.append("projectOwnedExclusions")
+    if not str(receipt.get("generatedAt") or "").strip():
+        issues.append("generatedAt")
+    status = str(receipt.get("status") or "").strip().lower()
+    if status not in {"verified", "degraded"}:
+        issues.append("status")
+        status = "degraded"
+    if parse_error:
+        issues.append("parse")
+    receipt_hash = "sha256:" + hashlib.sha256(
+        json.dumps(
+            receipt,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    degraded = status == "degraded" or bool(issues)
+    if degraded and release_phase:
+        return {
+            "ok": False,
+            "code": "PROJECTION_DEGRADED_BLOCKED",
+            "message": (
+                "adapter/config projection is degraded; refresh the projection "
+                "receipt before submit/archive/release"
+            ),
+            "status": "degraded",
+            "mode": "blocked",
+            "issues": issues,
+            "receipt": receipt,
+            "receiptHash": receipt_hash,
+            "receiptPath": str(path),
+            "releasePhase": True,
+            "remediation": (
+                "regenerate .harness/config/projection-receipt.json from the "
+                "project truth source"
+            ),
+        }
+    return {
+        "ok": True,
+        "code": (
+            "PROJECTION_VERIFIED"
+            if not degraded
+            else "PROJECTION_DEGRADED_FALLBACK"
+        ),
+        "message": (
+            "projection receipt verified"
+            if not degraded
+            else "degraded projection allowed only in explicit fallback mode"
+        ),
+        "status": "verified" if not degraded else "degraded",
+        "mode": "normal" if not degraded else "fallback",
+        "issues": issues,
+        "receipt": receipt,
+        "receiptHash": receipt_hash,
+        "receiptPath": str(path),
+        "releasePhase": release_phase,
+        "remediation": (
+            None
+            if not degraded
+            else (
+                "regenerate .harness/config/projection-receipt.json from the "
+                "project truth source before any release phase"
+            )
+        ),
+    }
+
+
 def resolve_execution_root(main_project: Path, raw: str | None) -> Path:
     candidate = Path(raw).expanduser().resolve() if raw else main_project.resolve()
     if not candidate.is_dir():
@@ -171,6 +283,46 @@ def resolve_execution_root(main_project: Path, raw: str | None) -> Path:
     if hp.repository_identity(root) != hp.repository_identity(main_project):
         raise ValueError("execution root belongs to a different repository")
     return root
+
+
+def resolve_begin_execution_hint(
+    main_project: Path,
+    *,
+    requested: str | None,
+    capsule: dict[str, Any] | None,
+    cwd: Path | None = None,
+) -> dict[str, str]:
+    """Choose an execution root explicitly, from the capsule, or from Git cwd."""
+    if requested:
+        return {
+            "executionRoot": str(Path(requested).expanduser().resolve()),
+            "source": "explicit",
+        }
+    if isinstance(capsule, dict) and str(capsule.get("executionRoot") or "").strip():
+        return {
+            "executionRoot": str(capsule["executionRoot"]),
+            "source": "phase-capsule",
+        }
+    current = (cwd or Path.cwd()).resolve()
+    try:
+        top = _git_text(current, "rev-parse", "--show-toplevel")
+        detected = Path(top).resolve() if top else None
+        if (
+            detected is not None
+            and detected.is_dir()
+            and hp.repository_identity(detected)
+            == hp.repository_identity(main_project)
+        ):
+            return {
+                "executionRoot": str(detected),
+                "source": "cwd-git-root",
+            }
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return {
+        "executionRoot": str(main_project.resolve()),
+        "source": "main-project-default",
+    }
 
 
 def _phase_capsule_path(change_dir: Path, phase: str, run_id: str) -> Path:
@@ -204,6 +356,37 @@ def write_phase_capsule(
     path = _phase_capsule_path(change_dir, phase, run_id)
     _write_json(path, capsule)
     return path
+
+
+def persist_close_failure(
+    change_dir: Path,
+    phase: str,
+    run_id: str,
+    capsule: dict[str, Any] | None,
+    *,
+    status: str,
+    error: dict[str, Any],
+) -> None:
+    """Journal a retryable close failure before returning to the caller."""
+    if capsule is None:
+        return
+    transaction = capsule.get("closeTransaction")
+    transaction = dict(transaction) if isinstance(transaction, dict) else {}
+    transaction.update(
+        {
+            "status": status,
+            "retryable": True,
+            "guardClosed": bool(transaction.get("guardClosed")),
+            "phaseEndRecorded": bool(transaction.get("phaseEndRecorded")),
+            "leaseReleased": False,
+            "lastError": error,
+            "updatedAt": he.now_iso(),
+        }
+    )
+    capsule["closeTransaction"] = transaction
+    capsule.pop("closeStatus", None)
+    capsule.pop("closedAt", None)
+    write_phase_capsule(change_dir, phase, run_id, capsule)
 
 
 def validate_phase_capsule(
@@ -770,6 +953,145 @@ def _ordered_unique(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
 
 
+FINAL_SEQUENCE_CANONICAL_ORDER = (
+    "complete-review",
+    "code-freeze",
+    "unit-test-full",
+    "delta-review",
+    "submit-reuse",
+    "remote-candidate-ci",
+    "archive",
+)
+
+
+def _sequence_slug(value: str) -> str:
+    expanded = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "-", value.strip())
+    return re.sub(r"[^a-z0-9]+", "-", expanded.lower()).strip("-")
+
+
+def compile_final_sequence_dag(
+    base_dag: dict[str, Any],
+    sequence: list[Any],
+) -> dict[str, Any]:
+    """Compile a declared release sequence into an executable, versioned DAG."""
+    raw_nodes = base_dag.get("nodes")
+    raw_edges = base_dag.get("edges")
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        raise ValueError("base requiredGateDag must contain nodes and edges arrays")
+    if not sequence:
+        raise ValueError("finalSequence must not be empty")
+
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(sequence):
+        if isinstance(raw, str):
+            name = raw
+            metadata: dict[str, Any] = {}
+        elif isinstance(raw, dict):
+            name = str(raw.get("id") or raw.get("name") or raw.get("step") or "")
+            metadata = {
+                key: value
+                for key, value in raw.items()
+                if key not in {"id", "name", "step", "dependsOn", "kind"}
+            }
+        else:
+            raise ValueError(f"finalSequence[{index}] must be a string or object")
+        slug = _sequence_slug(name)
+        if not slug:
+            raise ValueError(f"finalSequence[{index}] requires a non-empty name")
+        if slug in seen:
+            raise ValueError(f"duplicate finalSequence step: {slug}")
+        seen.add(slug)
+        entries.append({"slug": slug, "metadata": metadata})
+
+    positions = {entry["slug"]: index for index, entry in enumerate(entries)}
+    present_order = [
+        name for name in FINAL_SEQUENCE_CANONICAL_ORDER if name in positions
+    ]
+    for left, right in zip(present_order, present_order[1:]):
+        if positions[left] > positions[right]:
+            raise ValueError(
+                f"finalSequence must place {left} before {right}; "
+                "code-freeze must precede unit-test-full"
+            )
+    if "archive" in positions and positions["archive"] != len(entries) - 1:
+        raise ValueError("finalSequence archive step must be last")
+
+    nodes = [dict(node) for node in raw_nodes if isinstance(node, dict)]
+    edges = [dict(edge) for edge in raw_edges if isinstance(edge, dict)]
+    base_ids = {
+        str(node.get("id") or "")
+        for node in nodes
+        if str(node.get("id") or "")
+    }
+    depended_on = {
+        str(dependency)
+        for node in nodes
+        for dependency in (node.get("dependsOn") or [])
+        if isinstance(dependency, str)
+    }
+    base_terminals = sorted(base_ids - depended_on)
+
+    sequence_ids: list[str] = []
+    predecessor_ids = base_terminals
+    freeze_id = "sequence:code-freeze"
+    for index, entry in enumerate(entries):
+        node_id = f"sequence:{entry['slug']}"
+        sequence_ids.append(node_id)
+        node = {
+            "id": node_id,
+            "kind": "sequence",
+            "phase": "archive",
+            "sequenceIndex": index,
+            "dependsOn": list(predecessor_ids),
+            "subjectBound": True,
+            "invalidatedByProductChange": (
+                freeze_id in sequence_ids or node_id == freeze_id
+            ),
+            **entry["metadata"],
+        }
+        nodes.append(node)
+        edges.extend(
+            {"from": dependency, "to": node_id}
+            for dependency in predecessor_ids
+        )
+        predecessor_ids = [node_id]
+
+    return {
+        "schemaVersion": 2,
+        "nodes": nodes,
+        "edges": edges,
+        "finalSequence": {
+            "schemaVersion": 1,
+            "nodeIds": sequence_ids,
+            "freezeNodeId": (
+                freeze_id if freeze_id in sequence_ids else None
+            ),
+            "terminalNodeId": sequence_ids[-1],
+        },
+    }
+
+
+def _load_configured_final_sequence(
+    project: Path,
+    change_dir: Path,
+) -> list[Any] | None:
+    candidates = (
+        change_dir / "meta" / "final-sequence.json",
+        project / ".harness" / "config" / "final-sequence.json",
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        raw = _read_json(path)
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict) and isinstance(raw.get("finalSequence"), list):
+            return raw["finalSequence"]
+        raise ValueError(f"final sequence configuration is invalid: {path}")
+    return None
+
+
 def _apply_required_gate_contract(
     payload: dict[str, Any],
     workflow: dict[str, Any],
@@ -949,7 +1271,15 @@ def classify_risk(
     }
     if stage == "post-run":
         _write_json(change_dir / "meta" / "risk-classification.json", payload)
-    return _apply_required_gate_contract(payload, workflow, capabilities)
+    result = _apply_required_gate_contract(payload, workflow, capabilities)
+    configured_sequence = _load_configured_final_sequence(main_project, change_dir)
+    if configured_sequence is not None:
+        result["requiredGateDag"] = compile_final_sequence_dag(
+            result["requiredGateDag"],
+            configured_sequence,
+        )
+        result["finalSequence"] = result["requiredGateDag"]["finalSequence"]
+    return result
 
 
 def _stage_decisions_for_tier(
@@ -993,14 +1323,35 @@ def apply_tier_override(
     payload["conditionalStages"] = list(tier_policy["conditionalStages"])
     payload["stageDecisions"] = _stage_decisions_for_tier(workflow, tier, signals)
     payload["tierOverride"] = {"tier": tier, "by": override_by, "at": now}
-    return _apply_required_gate_contract(
+    result = _apply_required_gate_contract(
         payload, workflow, list(payload.get("capabilities") or [])
     )
+    final_sequence = payload.get("finalSequence")
+    node_ids = (
+        final_sequence.get("nodeIds")
+        if isinstance(final_sequence, dict)
+        else None
+    )
+    if isinstance(node_ids, list) and node_ids:
+        sequence = [
+            str(node_id).removeprefix("sequence:")
+            for node_id in node_ids
+            if str(node_id).startswith("sequence:")
+        ]
+        if sequence:
+            result["requiredGateDag"] = compile_final_sequence_dag(
+                result["requiredGateDag"],
+                sequence,
+            )
+            result["finalSequence"] = result["requiredGateDag"][
+                "finalSequence"
+            ]
+    return result
 
 
 def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
     """Cross-change contract: meta/gate-policy.json (schemaVersion=1)."""
-    return {
+    document = {
         "schemaVersion": 1,
         "tier": payload["tier"],
         "source": payload["source"],
@@ -1016,6 +1367,12 @@ def gate_policy_document(payload: dict[str, Any]) -> dict[str, Any]:
         "classifiedAt": payload.get("classifiedAt") or hc.now_iso(),
         "tierOverride": payload.get("tierOverride"),
     }
+    if isinstance(payload.get("finalSequence"), dict):
+        document["finalSequence"] = dict(payload["finalSequence"])
+    for optional in ("candidateVerification", "releasePolicy"):
+        if isinstance(payload.get(optional), dict):
+            document[optional] = dict(payload[optional])
+    return document
 
 
 def classify_defaults(
@@ -1352,6 +1709,18 @@ def cmd_begin(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return emit_error("BUNDLE_IDENTITY_INVALID", str(exc), as_json=as_json)
     executor_tool = executor_tool or str(identity.get("adapter") or "") or None
+    projection = evaluate_projection_gate(project, args.phase)
+    if not projection.get("ok"):
+        return emit_error(
+            str(projection.get("code") or "PROJECTION_BLOCKED"),
+            str(projection.get("message") or "projection gate blocked phase"),
+            as_json=as_json,
+            extra={
+                key: value
+                for key, value in projection.items()
+                if key not in {"ok", "code", "message"}
+            },
+        )
     explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
     current_lease = hc.inspect_lease(project, resolved["changeId"])
     run_id = explicit_run_id or (
@@ -1363,11 +1732,16 @@ def cmd_begin(args: argparse.Namespace) -> int:
         capsule = load_phase_capsule(change_dir, args.phase, run_id)
     except ValueError as exc:
         return emit_error("PHASE_CAPSULE_INVALID", str(exc), as_json=as_json)
-    execution_hint = args.project
-    if not execution_hint and capsule is not None:
-        execution_hint = str(capsule.get("executionRoot") or "")
+    execution_hint = resolve_begin_execution_hint(
+        project,
+        requested=args.project,
+        capsule=capsule,
+    )
     try:
-        execution_root = resolve_execution_root(project, execution_hint)
+        execution_root = resolve_execution_root(
+            project,
+            execution_hint["executionRoot"],
+        )
     except ValueError as exc:
         return emit_error("EXECUTION_ROOT_INVALID", str(exc), as_json=as_json)
     if capsule is not None:
@@ -1436,6 +1810,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 "baseCommit": base_commit or current_head,
                 "currentHead": current_head,
                 "createdAt": he.now_iso(),
+                "projectionReceipt": projection,
             }
             write_phase_capsule(change_dir, args.phase, run_id, capsule)
         event_result = {"ok": True, "skipped": True, "reason": "already-recorded"} \
@@ -1472,6 +1847,8 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "event": event_result,
         "testGuard": guard_result,
         "policySchemaVersion": policy.get("schemaVersion"),
+        "projection": projection,
+        "executionRootSource": execution_hint["source"],
     }
     emit(payload, as_json=as_json)
     return 0
@@ -1529,6 +1906,18 @@ def cmd_close(args: argparse.Namespace) -> int:
             if args.project:
                 requested_root = resolve_execution_root(project, args.project)
                 if requested_root != execution_root:
+                    persist_close_failure(
+                        change_dir,
+                        args.phase,
+                        run_id,
+                        capsule,
+                        status="ROOT_VALIDATION_FAILED",
+                        error={
+                            "code": "EXECUTION_ROOT_MISMATCH",
+                            "storedExecutionRoot": str(execution_root),
+                            "requestedExecutionRoot": str(requested_root),
+                        },
+                    )
                     return emit_error(
                         "EXECUTION_ROOT_MISMATCH",
                         "close must use the execution root captured at begin",
@@ -1536,9 +1925,24 @@ def cmd_close(args: argparse.Namespace) -> int:
                         extra={
                             "storedExecutionRoot": str(execution_root),
                             "requestedExecutionRoot": str(requested_root),
+                            "recoveryAction": (
+                                "retry close from the stored execution root or "
+                                "pass --project with storedExecutionRoot"
+                            ),
                         },
                     )
         except ValueError as exc:
+            persist_close_failure(
+                change_dir,
+                args.phase,
+                run_id,
+                capsule,
+                status="ROOT_VALIDATION_FAILED",
+                error={
+                    "code": "EXECUTION_ROOT_INVALID",
+                    "message": str(exc),
+                },
+            )
             return emit_error("EXECUTION_ROOT_INVALID", str(exc), as_json=as_json)
     else:
         try:
@@ -1558,13 +1962,85 @@ def cmd_close(args: argparse.Namespace) -> int:
                 allow_head_advance=args.phase in {"run", "submit", "merge"},
             )
         except ValueError as exc:
+            persist_close_failure(
+                change_dir,
+                args.phase,
+                run_id,
+                capsule,
+                status="CAPSULE_VALIDATION_FAILED",
+                error={
+                    "code": "PHASE_CAPSULE_MISMATCH",
+                    "message": str(exc),
+                },
+            )
             return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
+
+    projection = evaluate_projection_gate(project, args.phase)
+    if not projection.get("ok"):
+        persist_close_failure(
+            change_dir,
+            args.phase,
+            run_id,
+            capsule,
+            status="PROJECTION_VALIDATION_FAILED",
+            error=projection,
+        )
+        return emit_error(
+            str(projection.get("code") or "PROJECTION_BLOCKED"),
+            str(projection.get("message") or "projection gate blocked close"),
+            as_json=as_json,
+            extra={
+                key: value
+                for key, value in projection.items()
+                if key not in {"ok", "code", "message"}
+            },
+        )
+    captured_projection = (
+        capsule.get("projectionReceipt")
+        if isinstance(capsule, dict)
+        else None
+    )
+    if (
+        isinstance(captured_projection, dict)
+        and captured_projection.get("receiptHash")
+        and captured_projection.get("receiptHash")
+        != projection.get("receiptHash")
+        and args.phase in {"submit", "archive", "release", "deploy"}
+    ):
+        mismatch = {
+            "code": "PROJECTION_CHANGED_DURING_PHASE",
+            "message": "projection receipt changed after phase begin",
+            "capturedReceiptHash": captured_projection.get("receiptHash"),
+            "currentReceiptHash": projection.get("receiptHash"),
+        }
+        persist_close_failure(
+            change_dir,
+            args.phase,
+            run_id,
+            capsule,
+            status="PROJECTION_VALIDATION_FAILED",
+            error=mismatch,
+        )
+        return emit_error(
+            mismatch["code"],
+            mismatch["message"],
+            as_json=as_json,
+            extra=mismatch,
+        )
 
     ledger_result = validate_ledger_for_phase_close(
         change_dir, args.phase, policy, execution_root=execution_root,
         phase_status=args.status,
     )
     if not ledger_result.get("ok") and args.phase in {"run", "test", "package"}:
+        persist_close_failure(
+            change_dir,
+            args.phase,
+            run_id,
+            capsule,
+            status="LEDGER_VALIDATION_FAILED",
+            error=ledger_result,
+        )
         return emit_error(
             str(ledger_result.get("code", "LEDGER_INVALID")),
             str(ledger_result.get("message", "ledger validation failed")),
@@ -1576,6 +2052,14 @@ def cmd_close(args: argparse.Namespace) -> int:
     if args.phase in {"run", "test"}:
         coverage = _validate_scenario_coverage(change_dir)
         if not coverage.get("ok"):
+            persist_close_failure(
+                change_dir,
+                args.phase,
+                run_id,
+                capsule,
+                status="SCENARIO_VALIDATION_FAILED",
+                error=coverage,
+            )
             return emit_error(
                 str(coverage.get("code", "SCENARIO_COVERAGE_FAILED")),
                 str(coverage.get("message", "scenario coverage validation failed")),

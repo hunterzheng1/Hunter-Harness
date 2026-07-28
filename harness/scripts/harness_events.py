@@ -988,26 +988,40 @@ def _seal_timestamp_for_attempt(
     cutoff_ts: str | None,
     next_attempt_start: Any = None,
 ) -> tuple[Any, str | None]:
-    """Pick INCOMPLETE seal time: next start, recovery, or report cutoff."""
+    """Pick a typed terminal and seal time for an unclosed attempt."""
     recovery_ts = None
+    explicit_terminal: tuple[Any, str] | None = None
     for event in events_in:
-        if str(event.get("type") or "").lower() in {
+        event_type = str(event.get("type") or "").lower()
+        if event_type in {
             "recovery",
             "phase.recovery",
             "attempt.recovery",
         }:
             recovery_ts = event.get("timestamp") or recovery_ts
+        terminal = {
+            "attempt.abandoned": "ABANDONED",
+            "phase.abandoned": "ABANDONED",
+            "attempt.interrupted": "INTERRUPTED",
+            "phase.interrupted": "INTERRUPTED",
+            "attempt.orphaned": "ORPHANED",
+            "phase.orphaned": "ORPHANED",
+        }.get(event_type)
+        if terminal and event.get("timestamp"):
+            explicit_terminal = (event.get("timestamp"), terminal)
+    if explicit_terminal is not None:
+        return explicit_terminal
     if next_attempt_start:
-        return next_attempt_start, "INCOMPLETE"
+        return next_attempt_start, "RECOVERED"
     if recovery_ts:
-        return recovery_ts, "INCOMPLETE"
+        return recovery_ts, "RECOVERED"
     if cutoff_ts:
-        return cutoff_ts, "INCOMPLETE"
+        return cutoff_ts, "INCOMPLETE_AT_CUTOFF"
     # Fall back to last event timestamp so wall clock is not silently dropped.
     for event in reversed(events_in):
         if event.get("timestamp"):
-            return event.get("timestamp"), "INCOMPLETE"
-    return None, "INCOMPLETE"
+            return event.get("timestamp"), "INTERRUPTED"
+    return None, "ORPHANED"
 
 
 def attempt_invocations(
@@ -1027,6 +1041,7 @@ def attempt_invocations(
         start_ts = None
         end_ts = None
         status = None
+        terminal_status = None
         closed_by_end = False
         for event in events_in:
             if event.get("type") == "phase.start" and start_ts is None:
@@ -1035,7 +1050,9 @@ def attempt_invocations(
                 end_ts = event.get("timestamp")
                 if "status" in event:
                     status = event.get("status")
+                    terminal_status = str(event.get("status") or "").upper() or None
                 closed_by_end = True
+        missing_start = start_ts is None
         sealed_incomplete = False
         if not closed_by_end:
             next_start = None
@@ -1052,7 +1069,12 @@ def attempt_invocations(
             if seal_ts is not None:
                 end_ts = seal_ts
                 status = seal_status
+                terminal_status = seal_status
                 sealed_incomplete = True
+        elif missing_start:
+            terminal_status = "ORPHANED"
+            status = "ORPHANED"
+            sealed_incomplete = True
         duration = None
         if start_ts and end_ts:
             duration = duration_ms_between(start_ts, end_ts)
@@ -1062,9 +1084,13 @@ def attempt_invocations(
             {
                 "attempt": attempt.get("attempt"),
                 "status": status,
+                "terminalStatus": terminal_status,
+                "startedAt": start_ts,
+                "endedAt": end_ts,
                 "durationMs": duration,
                 "activeEligible": active_eligible,
                 "sealedIncomplete": sealed_incomplete,
+                "warnings": list(attempt.get("warnings") or []),
             }
         )
     return invocations
@@ -1080,7 +1106,13 @@ def phase_final_state(phase_events: list[dict[str, Any]]) -> dict[str, Any]:
         "attempt": latest.get("attempt"),
         "status": latest.get("status"),
         "durationMs": latest.get("durationMs"),
-        "closed": latest.get("status") is not None and latest.get("status") != "INCOMPLETE",
+        "closed": latest.get("terminalStatus") not in {
+            None,
+            "INCOMPLETE",
+            "INCOMPLETE_AT_CUTOFF",
+            "ORPHANED",
+            "INTERRUPTED",
+        },
     }
 
 
@@ -1114,7 +1146,8 @@ def canonical_phase_timing(
     unclosed = sum(
         1
         for invocation in invocations
-        if invocation.get("sealedIncomplete") or invocation.get("status") == "INCOMPLETE"
+        if invocation.get("terminalStatus")
+        in {"INCOMPLETE", "INCOMPLETE_AT_CUTOFF", "ORPHANED", "INTERRUPTED"}
     )
     return {
         "activeExecutionMs": active,
@@ -1122,6 +1155,7 @@ def canonical_phase_timing(
         "lateEventCount": late["lateEventCount"],
         "lateEventSpanMs": late["lateEventSpanMs"],
         "unclosedAttemptCount": unclosed,
+        "attempts": invocations,
     }
 
 

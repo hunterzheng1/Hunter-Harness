@@ -13,7 +13,14 @@
     "assurance": "local-reproducible | remote-claimed | remote-attested",
     "message": ""
   },
+  "releaseDecision": {
+    "releaseEligible": false,
+    "code": "RELEASE_NOT_EVALUATED",
+    "checks": {},
+    "issues": []
+  },
   "releaseEligible": false,
+  "projection": {},
   "finalCommit": "<commit-hash>",
   "finalCommitBranch": "<origin/branch>",
   "baseCommit": "<base-commit-hash>",
@@ -45,6 +52,16 @@
       }
     ]
   },
+  "timing": {
+    "workflowWallClockMs": 0,
+    "attributedStageUnionMs": 0,
+    "externalWaitMs": 0,
+    "pausedMs": 0,
+    "agentOrToolUnattributedMs": 0,
+    "conservationDeltaMs": 0,
+    "attempts": [],
+    "sessions": []
+  },
   "skillCalls": [
     { "skill": "harness-plan", "count": 1, "result": "OK" }
   ],
@@ -73,6 +90,33 @@
     { "path": "src/...", "summary": "说明", "insertions": 0, "deletions": 0 }
   ],
   "artifacts": [],
+  "artifactStorage": {
+    "schemaVersion": 1,
+    "artifactCount": 0,
+    "bytesAdded": 0,
+    "bytesReused": 0,
+    "bytesPruned": 0,
+    "largestItems": []
+  },
+  "retention": {
+    "schemaVersion": 1,
+    "mode": "audit-only",
+    "expiredCount": 0,
+    "bytesPrunable": 0,
+    "items": []
+  },
+  "remoteCost": {
+    "schemaVersion": 1,
+    "available": false,
+    "candidates": [],
+    "totals": {
+      "runCount": 0,
+      "runnerMinutes": 0,
+      "queueWaitMs": 0,
+      "artifactBytes": 0,
+      "duplicateRunCount": 0
+    }
+  },
   "reviewSummary": {
     "status": "ADVISORY",
     "red": 0,

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -46,6 +47,110 @@ def _events_in(change_dir: Path) -> list[dict]:
     return he.load_events(path)
 
 
+def _authorize_release_fixture(change_dir: Path, project: Path) -> None:
+    """Bind release-candidate fixtures to a real immutable Git subject."""
+    subprocess.run(
+        ["git", "init"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.invalid"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Harness Tests"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    _write(project / "README.md", "release fixture\n")
+    subprocess.run(
+        ["git", "add", ".gitattributes", "README.md"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "release fixture"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree_hash = (
+        "sha256:"
+        + ha.compute_product_tree_hash_for_commit(project, commit)["hash"]
+    )
+
+    ledger_path = change_dir / "evidence" / "verification-ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger.update(
+        {
+            "baseCommit": commit,
+            "finalCommit": commit,
+            "productCommit": commit,
+            "productTreeHash": tree_hash,
+            "archiveCommit": commit,
+        }
+    )
+    _write_json(ledger_path, ledger)
+    _write_json(
+        change_dir / "evidence" / "product-candidate-verification.json",
+        {
+            "schemaVersion": 2,
+            "provider": "remote-ci",
+            "conclusion": "success",
+            "assurance": "remote-attested",
+            "subject": {
+                "productCommit": commit,
+                "productTreeHash": tree_hash,
+                "environmentHash": "sha256:" + "e" * 64,
+            },
+            "attestation": {
+                "url": "https://ci.example/runs/seed",
+                "providerRunDigest": "sha256:" + "r" * 64,
+            },
+            "verification": {
+                "attestationDigest": "sha256:" + "a" * 64,
+            },
+        },
+    )
+    _write_json(
+        change_dir / "meta" / "gate-policy.json",
+        {
+            "schemaVersion": 1,
+            "tier": "standard",
+            "candidateVerification": {
+                "remoteRequired": True,
+                "minimumAssurance": "remote-attested",
+            },
+            # These projection-focused fixtures intentionally omit database
+            # execution, so their truthful terminal result is conditional.
+            "releasePolicy": {
+                "allowedFinalStatuses": ["OK", "CONDITIONAL_OK"],
+            },
+        },
+    )
+    legacy_path = change_dir / "evidence" / "product-candidate-ci.json"
+    legacy_path.unlink(missing_ok=True)
+    log_path = change_dir / "logs" / "execution-log.md"
+    log_path.write_text(
+        log_path.read_text(encoding="utf-8").replace("bbbbbbbb", commit),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 class _FinalizeFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-archiveC-"))
@@ -55,6 +160,7 @@ class _FinalizeFixture(unittest.TestCase):
         self.change.mkdir(parents=True)
         self.archive_root.mkdir(parents=True)
         _seed_change_dir(self.change)
+        _authorize_release_fixture(self.change, self.project)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -77,6 +183,25 @@ class _FinalizeFixture(unittest.TestCase):
 
 class FreezeFirstTests(_FinalizeFixture):
     """INT-006 / RET-19: freeze-first finalize."""
+
+    def test_atomic_staging_preserves_change_identity_for_replay(self) -> None:
+        code, payload, archive_dir = self._finalize()
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        html = (
+            archive_dir / "reports" / "final" / "final-summary.html"
+        ).read_text(encoding="utf-8")
+        replay_code, replay = ha.cmd_replay(archive_dir)
+
+        self.assertEqual(summary["changeName"], "demo-change")
+        self.assertIn("demo-change", html)
+        self.assertEqual(replay_code, 0, replay)
+        self.assertTrue(replay["ok"], replay)
 
     def test_event_count_equals_cutoff_total(self) -> None:
         code, payload, archive_dir = self._finalize()
@@ -844,6 +969,7 @@ class RepairTests(unittest.TestCase):
         self.change.mkdir(parents=True)
         self.archive_root.mkdir(parents=True)
         _seed_change_dir(self.change)
+        _authorize_release_fixture(self.change, self.project)
         code, payload = _run(
             [
                 "finalize",

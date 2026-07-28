@@ -16,12 +16,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import uuid
 from pathlib import Path
@@ -68,8 +70,10 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events as he  # noqa: E402
+import harness_gate as hgate  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
+import harness_phase as hphase  # noqa: E402
 import harness_review as hr  # noqa: E402
 
 
@@ -331,6 +335,80 @@ def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None
     return None, None
 
 
+def build_remote_cost_summary(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    """Aggregate typed remote runner/storage costs by candidate identity."""
+    value = metrics if isinstance(metrics, dict) else {}
+    raw_runs = value.get("runs")
+    if isinstance(raw_runs, list):
+        runs = [item for item in raw_runs if isinstance(item, dict)]
+    elif any(
+        field in value
+        for field in (
+            "runnerMinutes",
+            "queueWaitMs",
+            "artifactBytes",
+            "duplicateRunReason",
+        )
+    ):
+        runs = [value]
+    else:
+        runs = []
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        subject = run.get("subject")
+        subject = subject if isinstance(subject, dict) else {}
+        candidate_id = str(
+            run.get("candidateId")
+            or subject.get("candidateId")
+            or subject.get("productCommit")
+            or "unattributed"
+        ).strip()
+        row = candidates.setdefault(
+            candidate_id,
+            {
+                "candidateId": candidate_id,
+                "runCount": 0,
+                "runnerMinutes": 0.0,
+                "queueWaitMs": 0,
+                "artifactBytes": 0,
+                "duplicateRunCount": 0,
+                "duplicateRunReasons": [],
+            },
+        )
+        row["runCount"] += 1
+        row["runnerMinutes"] += max(0.0, float(run.get("runnerMinutes") or 0))
+        row["queueWaitMs"] += max(0, int(run.get("queueWaitMs") or 0))
+        row["artifactBytes"] += max(0, int(run.get("artifactBytes") or 0))
+        reason = str(run.get("duplicateRunReason") or "").strip()
+        if reason:
+            row["duplicateRunCount"] += 1
+            if reason not in row["duplicateRunReasons"]:
+                row["duplicateRunReasons"].append(reason)
+
+    items = sorted(candidates.values(), key=lambda item: item["candidateId"])
+    for item in items:
+        item["runnerMinutes"] = round(float(item["runnerMinutes"]), 3)
+    totals = {
+        "runCount": sum(int(item["runCount"]) for item in items),
+        "runnerMinutes": round(
+            sum(float(item["runnerMinutes"]) for item in items),
+            3,
+        ),
+        "queueWaitMs": sum(int(item["queueWaitMs"]) for item in items),
+        "artifactBytes": sum(int(item["artifactBytes"]) for item in items),
+        "duplicateRunCount": sum(
+            int(item["duplicateRunCount"]) for item in items
+        ),
+    }
+    return {
+        "schemaVersion": 1,
+        "available": bool(runs),
+        "candidates": items,
+        "totals": totals,
+    }
+
+
 def _legacy_candidate_path(change_dir: Path) -> Path | None:
     for relative in (
         "evidence/product-candidate-ci.json",
@@ -401,7 +479,14 @@ def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
 
 
 def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
-    """Evaluate product-candidate evidence independently of CI availability."""
+    """Evaluate whether candidate evidence is release-capable.
+
+    Evidence validity and release authority are deliberately separate. A
+    ``remote-claimed`` receipt remains useful for audit/migration, but can
+    never authorize release. Local evidence requires an explicit project
+    opt-in; remote-required projects require a subject/environment-bound,
+    provider-verified immutable run.
+    """
     evidence = load_product_candidate_ci(change_dir)
     if evidence is None:
         return {
@@ -412,6 +497,8 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                 "(need evidence/product-candidate-ci.json with conclusion=success, "
                 "runUrl, commit)"
             ),
+            "releaseCapable": False,
+            "evidenceValid": False,
             "evidence": None,
         }
 
@@ -425,6 +512,7 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
         verification = verification if isinstance(verification, dict) else {}
         product_commit = str(subject.get("productCommit") or "").strip()
         product_tree_hash = str(subject.get("productTreeHash") or "").strip()
+        environment_hash = str(subject.get("environmentHash") or "").strip()
         command_set_hash = str(verification.get("commandSetHash") or "").strip()
         ledger_hash = str(verification.get("ledgerHash") or "").strip()
         common_required_fields = {
@@ -432,11 +520,6 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
             "assurance": assurance,
             "subject.productCommit": product_commit,
             "subject.productTreeHash": product_tree_hash,
-        }
-        allowed_assurance = {
-            "local-reproducible": 1,
-            "remote-claimed": 2,
-            "remote-attested": 3,
         }
         policy = load_gate_policy(change_dir) or {}
         candidate_policy = policy.get("candidateVerification")
@@ -446,8 +529,16 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
         minimum_assurance = str(
             candidate_policy.get("minimumAssurance") or "local-reproducible"
         ).strip()
-        if minimum_assurance not in allowed_assurance:
-            minimum_assurance = "local-reproducible"
+        remote_required = bool(candidate_policy.get("remoteRequired")) or (
+            minimum_assurance == "remote-attested"
+        )
+        allow_local_release = bool(candidate_policy.get("allowLocalRelease"))
+        declared_capabilities = {
+            str(item).strip()
+            for item in (evidence.get("capabilities") or [])
+            if isinstance(item, str) and item.strip()
+        }
+        capabilities = set(declared_capabilities)
         if (
             provider == "local-harness"
             and _remote_ci_history_present(change_dir)
@@ -461,37 +552,11 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                     "candidateVerification.allowLocalFallback=true"
                 ),
                 "assurance": assurance,
+                "releaseCapable": False,
+                "evidenceValid": False,
                 "evidence": evidence,
             }
-        if provider == "local-harness":
-            local_required = {
-                "verification.commandSetHash": command_set_hash,
-                "verification.ledgerHash": ledger_hash,
-                "verification.toolchainHashes": verification.get("toolchainHashes"),
-                "verification.environmentHashes": verification.get("environmentHashes"),
-                "verification.dependencyHashes": verification.get("dependencyHashes"),
-                "verification.logHashes": verification.get("logHashes"),
-            }
-            required_fields = {**common_required_fields, **local_required}
-        elif provider == "remote-ci":
-            attestation = evidence.get("attestation")
-            attestation = attestation if isinstance(attestation, dict) else {}
-            if assurance == "remote-attested":
-                remote_identity_name = "verification.attestationDigest"
-                remote_identity = verification.get("attestationDigest")
-            else:
-                remote_identity_name = "verification.remoteIdentity"
-                remote_identity = (
-                    verification.get("legacyEvidenceHash") or ledger_hash
-                )
-            required_fields = {
-                **common_required_fields,
-                "attestation.url": attestation.get("url"),
-                remote_identity_name: remote_identity,
-            }
-        else:
-            required_fields = common_required_fields
-        missing = [name for name, value in required_fields.items() if not value]
+
         if conclusion not in {
             "success",
             "successful",
@@ -508,36 +573,225 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                     f"provider={provider or 'unknown'}"
                 ),
                 "assurance": assurance,
+                "releaseCapable": False,
+                "evidenceValid": False,
                 "evidence": evidence,
             }
-        if missing or assurance not in allowed_assurance:
-            detail = ", ".join(missing) if missing else f"assurance={assurance}"
-            return {
-                "ok": False,
-                "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
-                "message": f"candidate evidence missing or invalid: {detail}",
-                "assurance": assurance,
-                "evidence": evidence,
+
+        if assurance == "remote-claimed":
+            attestation = evidence.get("attestation")
+            attestation = attestation if isinstance(attestation, dict) else {}
+            required_fields = {
+                **common_required_fields,
+                "attestation.url": attestation.get("url"),
+                "verification.legacyEvidenceHash": (
+                    verification.get("legacyEvidenceHash") or ledger_hash
+                ),
             }
-        if allowed_assurance[assurance] < allowed_assurance[minimum_assurance]:
+            missing = [
+                name for name, value in required_fields.items() if not value
+            ]
+            if missing:
+                return {
+                    "ok": False,
+                    "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                    "message": (
+                        "remote claim is incomplete: " + ", ".join(missing)
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": False,
+                    "capabilities": sorted(capabilities),
+                    "evidence": evidence,
+                }
             return {
                 "ok": False,
-                "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                "code": "PRODUCT_CANDIDATE_RECORD_ONLY",
                 "message": (
-                    f"candidate assurance={assurance} is below required "
-                    f"minimumAssurance={minimum_assurance}"
+                    "remote-claimed evidence is audit-only and cannot authorize release"
                 ),
                 "assurance": assurance,
+                "releaseCapable": False,
+                "evidenceValid": True,
+                "recordOnly": True,
+                "capabilities": sorted(capabilities),
                 "evidence": evidence,
             }
+
+        if assurance == "local-reproducible" and provider == "local-harness":
+            local_required = {
+                "verification.commandSetHash": command_set_hash,
+                "verification.ledgerHash": ledger_hash,
+                "verification.toolchainHashes": verification.get("toolchainHashes"),
+                "verification.environmentHashes": verification.get("environmentHashes"),
+                "verification.dependencyHashes": verification.get("dependencyHashes"),
+                "verification.logHashes": verification.get("logHashes"),
+            }
+            required_fields = {**common_required_fields, **local_required}
+            missing = [
+                name for name, value in required_fields.items() if not value
+            ]
+            if missing:
+                return {
+                    "ok": False,
+                    "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                    "message": (
+                        "candidate evidence missing or invalid: "
+                        + ", ".join(missing)
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": False,
+                    "evidence": evidence,
+                }
+            capabilities.update(
+                {
+                    "subject-bound",
+                    "locally-reproducible",
+                    "environment-bound",
+                }
+            )
+            if remote_required:
+                return {
+                    "ok": False,
+                    "code": "PROJECT_RELEASE_POLICY_BLOCKED",
+                    "message": (
+                        "project requires remote-attested candidate evidence"
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": True,
+                    "capabilities": sorted(capabilities),
+                    "evidence": evidence,
+                }
+            if not allow_local_release:
+                return {
+                    "ok": False,
+                    "code": "PROJECT_RELEASE_POLICY_BLOCKED",
+                    "message": (
+                        "local-reproducible evidence requires explicit "
+                        "candidateVerification.allowLocalRelease=true"
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": True,
+                    "capabilities": sorted(capabilities),
+                    "evidence": evidence,
+                }
+            return {
+                "ok": True,
+                "code": "PRODUCT_CANDIDATE_VERIFIED",
+                "message": (
+                    "local reproducible candidate explicitly authorized by project policy "
+                    f"commit={product_commit}"
+                ),
+                "assurance": assurance,
+                "releaseCapable": True,
+                "evidenceValid": True,
+                "capabilities": sorted(capabilities),
+                "evidence": evidence,
+            }
+
+        if assurance == "remote-attested" and provider == "remote-ci":
+            attestation = evidence.get("attestation")
+            attestation = attestation if isinstance(attestation, dict) else {}
+            required_fields = {
+                **common_required_fields,
+                "subject.environmentHash": environment_hash,
+                "attestation.url": attestation.get("url"),
+                "attestation.providerRunDigest": attestation.get(
+                    "providerRunDigest"
+                ),
+                "verification.attestationDigest": verification.get(
+                    "attestationDigest"
+                ),
+            }
+            missing = [
+                name for name, value in required_fields.items() if not value
+            ]
+            if missing:
+                return {
+                    "ok": False,
+                    "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                    "message": (
+                        "candidate evidence missing or invalid: "
+                        + ", ".join(missing)
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": False,
+                    "capabilities": sorted(capabilities),
+                    "evidence": evidence,
+                }
+            capabilities.update(
+                {
+                    "subject-bound",
+                    "provider-verified",
+                    "immutable-run",
+                    "environment-bound",
+                }
+            )
+            required_capabilities = candidate_policy.get(
+                "requiredCapabilities"
+            )
+            if not isinstance(required_capabilities, list):
+                required_capabilities = (
+                    [
+                        "subject-bound",
+                        "provider-verified",
+                        "immutable-run",
+                        "environment-bound",
+                    ]
+                    if remote_required
+                    else []
+                )
+            missing_capabilities = sorted(
+                {
+                    str(item).strip()
+                    for item in required_capabilities
+                    if isinstance(item, str) and item.strip()
+                }
+                - capabilities
+            )
+            if missing_capabilities:
+                return {
+                    "ok": False,
+                    "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
+                    "message": (
+                        "candidate capabilities missing: "
+                        + ", ".join(missing_capabilities)
+                    ),
+                    "assurance": assurance,
+                    "releaseCapable": False,
+                    "evidenceValid": False,
+                    "capabilities": sorted(capabilities),
+                    "evidence": evidence,
+                }
+            return {
+                "ok": True,
+                "code": "PRODUCT_CANDIDATE_VERIFIED",
+                "message": (
+                    "remote candidate attested "
+                    f"provider={provider} commit={product_commit}"
+                ),
+                "assurance": assurance,
+                "releaseCapable": True,
+                "evidenceValid": True,
+                "capabilities": sorted(capabilities),
+                "evidence": evidence,
+            }
+
         return {
-            "ok": True,
-            "code": "PRODUCT_CANDIDATE_VERIFIED",
+            "ok": False,
+            "code": "PRODUCT_CANDIDATE_NOT_VERIFIED",
             "message": (
-                f"product candidate verified provider={provider} "
-                f"assurance={assurance} commit={product_commit}"
+                "candidate provider/assurance combination is invalid: "
+                f"provider={provider or 'unknown'} assurance={assurance or 'unknown'}"
             ),
             "assurance": assurance,
+            "releaseCapable": False,
+            "evidenceValid": False,
+            "capabilities": sorted(capabilities),
             "evidence": evidence,
         }
 
@@ -556,12 +810,21 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
                     "product candidate CI conclusion is success but missing "
                     f"runUrl={run_url or 'empty'} commit={commit or 'empty'}"
                 ),
+                "releaseCapable": False,
+                "evidenceValid": False,
                 "evidence": evidence,
             }
         return {
-            "ok": True,
-            "code": "PRODUCT_CI_GREEN",
-            "message": f"product candidate CI green commit={commit} url={run_url}",
+            "ok": False,
+            "code": "PRODUCT_CANDIDATE_RECORD_ONLY",
+            "message": (
+                "legacy CI success is a remote claim only; migrate/attest before release "
+                f"commit={commit} url={run_url}"
+            ),
+            "releaseCapable": False,
+            "evidenceValid": True,
+            "recordOnly": True,
+            "assurance": "remote-claimed",
             "evidence": evidence,
         }
     return {
@@ -571,6 +834,8 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
             f"product candidate CI conclusion={conclusion or 'unknown'} "
             f"commit={commit or 'unknown'} runUrl={run_url or 'unknown'}"
         ),
+        "releaseCapable": False,
+        "evidenceValid": False,
         "evidence": evidence,
     }
 
@@ -764,7 +1029,9 @@ def certify_local_candidate(
     if not product_commit:
         raise ValueError("product commit unavailable")
 
-    detail = compute_product_tree_hash_detail(project_root)
+    detail = compute_product_tree_hash_for_commit(
+        project_root, product_commit
+    )
     if detail.get("truncated"):
         raise ValueError(
             "product tree hash truncated; narrow the project or raise the explicit limit"
@@ -817,16 +1084,8 @@ def certify_local_candidate(
 
 
 PRODUCT_TREE_HASH_FILE_LIMIT = 20_000
-
-
-def compute_product_tree_hash_detail(
-    project: Path,
-    *,
-    file_limit: int = PRODUCT_TREE_HASH_FILE_LIMIT,
-) -> dict[str, Any]:
-    """Hash product tree excluding .harness/**; report truncation metadata (Y3)."""
-    project = project.resolve()
-    skip_dirs = {
+PRODUCT_TREE_EXCLUDED_PARTS = frozenset(
+    {
         ".harness",
         ".git",
         ".worktrees",
@@ -838,16 +1097,35 @@ def compute_product_tree_hash_detail(
         ".venv",
         "venv",
     }
+)
+
+
+def _product_path_included(relative_path: str) -> bool:
+    parts = {part for part in relative_path.replace("\\", "/").split("/") if part}
+    return not bool(parts & PRODUCT_TREE_EXCLUDED_PARTS)
+
+
+def compute_product_tree_hash_detail(
+    project: Path,
+    *,
+    file_limit: int = PRODUCT_TREE_HASH_FILE_LIMIT,
+) -> dict[str, Any]:
+    """Hash product tree excluding .harness/**; report truncation metadata (Y3)."""
+    project = project.resolve()
     limit = max(1, int(file_limit))
     lines: list[str] = []
     truncated = False
     for root, dirs, files in os.walk(project, onerror=lambda _exc: None):
-        dirs[:] = [name for name in dirs if name not in skip_dirs]
+        dirs[:] = sorted(
+            name for name in dirs if name not in PRODUCT_TREE_EXCLUDED_PARTS
+        )
         for name in sorted(files):
             path = Path(root) / name
             try:
                 rel = path.relative_to(project).as_posix()
             except ValueError:
+                continue
+            if not _product_path_included(rel):
                 continue
             try:
                 digest = sha256_file(path)
@@ -859,12 +1137,15 @@ def compute_product_tree_hash_detail(
                 break
         if truncated:
             break
+    lines.sort()
     digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
     return {
         "hash": digest,
         "truncated": truncated,
         "fileCount": len(lines),
         "limit": limit,
+        "source": "working-tree",
+        "algorithm": "sha256-path-content-v1",
     }
 
 
@@ -875,6 +1156,82 @@ def compute_product_tree_hash(
 ) -> str:
     """Hash product tree excluding .harness/** governance paths."""
     return str(compute_product_tree_hash_detail(project, file_limit=file_limit)["hash"])
+
+
+def compute_product_tree_hash_for_commit(
+    project: Path,
+    product_commit: str,
+    *,
+    file_limit: int = PRODUCT_TREE_HASH_FILE_LIMIT,
+) -> dict[str, Any]:
+    """Hash immutable Git commit contents using the product exclusion rules."""
+    project = project.resolve()
+    commit = str(product_commit or "").strip()
+    if not commit:
+        raise ValueError("product commit is required")
+    exists, resolved_commit, error = git_run(
+        project, "rev-parse", "--verify", f"{commit}^{{commit}}"
+    )
+    if exists != 0 or not resolved_commit:
+        raise ValueError(
+            f"product commit not found: {commit} ({error or 'git rev-parse failed'})"
+        )
+    try:
+        archive = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(project),
+                "archive",
+                "--format=tar",
+                resolved_commit,
+            ],
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"could not read product commit tree: {exc}") from exc
+    if archive.returncode != 0:
+        detail = archive.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(
+            f"could not read product commit tree {resolved_commit}: {detail}"
+        )
+
+    limit = max(1, int(file_limit))
+    lines: list[str] = []
+    truncated = False
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as stream:
+        members = sorted(stream.getmembers(), key=lambda item: item.name)
+        for member in members:
+            relative = member.name.rstrip("/")
+            if not relative or not _product_path_included(relative):
+                continue
+            if member.isfile():
+                extracted = stream.extractfile(member)
+                if extracted is None:
+                    continue
+                content = extracted.read()
+            elif member.issym() or member.islnk():
+                content = member.linkname.encode("utf-8")
+            else:
+                continue
+            lines.append(
+                f"{relative}:{hashlib.sha256(content).hexdigest()}"
+            )
+            if len(lines) >= limit:
+                truncated = True
+                break
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    return {
+        "hash": digest,
+        "truncated": truncated,
+        "fileCount": len(lines),
+        "limit": limit,
+        "source": "git-commit-tree",
+        "algorithm": "sha256-path-content-v1",
+        "productCommit": resolved_commit,
+    }
 
 
 def resolve_product_archive_identity(
@@ -918,7 +1275,16 @@ def resolve_product_archive_identity(
         or release_tip
         or product
     )
-    tree = str(ledger.get("productTreeHash") or "")
+    tree = str(
+        ledger.get("productTreeHash")
+        or candidate_subject.get("productTreeHash")
+        or ""
+    )
+    environment_hash = str(
+        candidate_subject.get("environmentHash")
+        or ledger.get("environmentHash")
+        or ""
+    ).strip()
     under_harness = False
     try:
         change_dir.relative_to(project_root / ".harness")
@@ -933,9 +1299,11 @@ def resolve_product_archive_identity(
     if not tree:
         if under_harness:
             try:
-                tree_meta = compute_product_tree_hash_detail(project_root)
-                tree = str(tree_meta["hash"])
-            except OSError:
+                tree_meta = compute_product_tree_hash_for_commit(
+                    project_root, str(product)
+                )
+                tree = f"sha256:{tree_meta['hash']}"
+            except (OSError, ValueError):
                 tree = hashlib.sha256(b"").hexdigest()
         else:
             # Bare temp fixtures are not real project roots — avoid scanning up-tree.
@@ -946,24 +1314,16 @@ def resolve_product_archive_identity(
         "releaseTipHash": release_tip,
         "productTreeHash": str(tree),
         "archiveCommit": str(archive),
+        "environmentHash": environment_hash,
         "productTreeHashTruncated": bool(tree_meta.get("truncated")),
         "productTreeHashFileCount": int(tree_meta.get("fileCount") or 0),
     }
-    expected_tree = tree
-    if under_harness:
-        try:
-            expected_meta = compute_product_tree_hash_detail(project_root)
-            expected_tree = str(expected_meta["hash"])
-            identity["productTreeHashTruncated"] = bool(expected_meta.get("truncated"))
-            identity["productTreeHashFileCount"] = int(expected_meta.get("fileCount") or 0)
-        except OSError:
-            expected_tree = tree
     identity["validation"] = validate_product_identity(
         product_commit=identity["productCommit"],
         product_tree_hash=identity["productTreeHash"],
         archive_commit=identity["archiveCommit"] or "unknown",
         project=project_root if under_harness else None,
-        expected_tree_hash=expected_tree if under_harness else tree,
+        expected_tree_hash=tree if not under_harness else None,
     )
     return identity
 
@@ -984,9 +1344,50 @@ def validate_product_identity(
             "message": "productCommit, productTreeHash, and archiveCommit are required",
         }
     expected = expected_tree_hash
-    if expected is None and project is not None:
-        expected = compute_product_tree_hash(project)
-    if expected is not None and str(product_tree_hash) != str(expected):
+    source = "provided-expected"
+    resolved_product_commit = product_commit
+    if project is not None and expected_tree_hash is None:
+        code, resolved, error = git_run(
+            project, "rev-parse", "--verify", f"{product_commit}^{{commit}}"
+        )
+        if code != 0 or not resolved:
+            return {
+                "ok": False,
+                "code": "PRODUCT_COMMIT_NOT_FOUND",
+                "message": (
+                    f"productCommit={product_commit} is not a reachable Git commit: "
+                    f"{error or 'not found'}"
+                ),
+                "productCommit": product_commit,
+            }
+        resolved_product_commit = resolved
+        try:
+            detail = compute_product_tree_hash_for_commit(
+                project, resolved_product_commit
+            )
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "code": "PRODUCT_TREE_UNAVAILABLE",
+                "message": str(exc),
+                "productCommit": resolved_product_commit,
+            }
+        if detail.get("truncated"):
+            return {
+                "ok": False,
+                "code": "PRODUCT_TREE_HASH_TRUNCATED",
+                "message": (
+                    f"product tree exceeds limit={detail.get('limit')} "
+                    f"for productCommit={resolved_product_commit}"
+                ),
+            }
+        expected = f"sha256:{detail['hash']}"
+        source = "git-commit-tree"
+
+    normalize_hash = lambda value: str(value or "").strip().removeprefix("sha256:")
+    if expected is not None and normalize_hash(product_tree_hash) != normalize_hash(
+        expected
+    ):
         return {
             "ok": False,
             "code": "PRODUCT_TREE_HASH_MISMATCH",
@@ -997,12 +1398,48 @@ def validate_product_identity(
             "expected": expected,
             "actual": product_tree_hash,
         }
+
+    if project is not None:
+        code, resolved_archive, error = git_run(
+            project, "rev-parse", "--verify", f"{archive_commit}^{{commit}}"
+        )
+        if code != 0 or not resolved_archive:
+            return {
+                "ok": False,
+                "code": "ARCHIVE_COMMIT_NOT_FOUND",
+                "message": (
+                    f"archiveCommit={archive_commit} is not a Git commit: "
+                    f"{error or 'not found'}"
+                ),
+                "archiveCommit": archive_commit,
+            }
+        ancestor, _out, ancestry_error = git_run(
+            project,
+            "merge-base",
+            "--is-ancestor",
+            resolved_product_commit,
+            resolved_archive,
+        )
+        if ancestor != 0:
+            return {
+                "ok": False,
+                "code": "ARCHIVE_COMMIT_UNRELATED",
+                "message": (
+                    f"archiveCommit={resolved_archive} does not descend from "
+                    f"productCommit={resolved_product_commit}: "
+                    f"{ancestry_error or 'unrelated history'}"
+                ),
+                "productCommit": resolved_product_commit,
+                "archiveCommit": resolved_archive,
+            }
+        archive_commit = resolved_archive
     return {
         "ok": True,
         "code": "PRODUCT_IDENTITY_OK",
-        "productCommit": product_commit,
+        "productCommit": resolved_product_commit,
         "productTreeHash": product_tree_hash,
         "archiveCommit": archive_commit,
+        "source": source,
     }
 
 
@@ -1042,48 +1479,204 @@ def build_workflow_timing(
     *,
     report_cutoff_at: str | None = None,
 ) -> dict[str, Any]:
-    """Formal multi-semantic timing object (IA-2 / IA-6)."""
-    stamps = [e.get("timestamp") for e in events if e.get("timestamp")]
-    started = str(stamps[0]) if stamps else None
-    cutoff = report_cutoff_at or (str(stamps[-1]) if stamps else None)
+    """Build typed attempts, sessions, and a wall-clock-conserving breakdown."""
+    parsed_stamps = [
+        he.parse_timestamp(event.get("timestamp"))
+        for event in events
+        if event.get("timestamp")
+    ]
+    parsed_stamps = [stamp for stamp in parsed_stamps if stamp is not None]
+    started_dt = min(parsed_stamps) if parsed_stamps else None
+    cutoff_text = report_cutoff_at or (
+        max(parsed_stamps).isoformat() if parsed_stamps else None
+    )
+    cutoff_dt = he.parse_timestamp(cutoff_text) if cutoff_text else None
+    started = started_dt.isoformat() if started_dt else None
+    cutoff = cutoff_dt.isoformat() if cutoff_dt else cutoff_text
+
+    def clipped_interval(
+        start_value: Any,
+        end_value: Any,
+    ) -> tuple[Any, Any] | None:
+        start = (
+            start_value
+            if hasattr(start_value, "tzinfo")
+            else he.parse_timestamp(start_value)
+        )
+        end = (
+            end_value
+            if hasattr(end_value, "tzinfo")
+            else he.parse_timestamp(end_value)
+        )
+        if start is None or end is None or end <= start:
+            return None
+        if started_dt is not None:
+            start = max(start, started_dt)
+        if cutoff_dt is not None:
+            end = min(end, cutoff_dt)
+        return (start, end) if end > start else None
+
+    def union_ms(intervals: list[tuple[Any, Any]]) -> int:
+        merged: list[list[Any]] = []
+        for interval_start, interval_end in sorted(intervals):
+            if not merged or interval_start > merged[-1][1]:
+                merged.append([interval_start, interval_end])
+            else:
+                merged[-1][1] = max(merged[-1][1], interval_end)
+        return sum(
+            max(
+                0,
+                int((interval_end - interval_start).total_seconds() * 1000),
+            )
+            for interval_start, interval_end in merged
+        )
+
+    active_intervals: list[tuple[Any, Any]] = []
+    attempts: list[dict[str, Any]] = []
     stage_active = 0
-    stage_intervals: list[tuple[Any, Any]] = []
     unclosed = 0
-    for _phase, phase_events in he.group_events_by_phase(events):
+    for phase, phase_events in he.group_events_by_phase(events):
+        if not any(
+            event.get("type") in {"phase.start", "phase.end"}
+            for event in phase_events
+        ):
+            continue
         timing = he.canonical_phase_timing(phase_events, cutoff_ts=cutoff)
         stage_active += int(timing.get("activeExecutionMs") or 0)
         unclosed += int(timing.get("unclosedAttemptCount") or 0)
-        phase_stamps = [
-            he.parse_timestamp(event.get("timestamp"))
-            for event in phase_events
-            if event.get("timestamp")
-        ]
-        phase_stamps = [stamp for stamp in phase_stamps if stamp is not None]
-        if phase_stamps:
-            stage_intervals.append((min(phase_stamps), max(phase_stamps)))
-    merged_intervals: list[list[Any]] = []
-    for interval_start, interval_end in sorted(stage_intervals):
-        if not merged_intervals or interval_start > merged_intervals[-1][1]:
-            merged_intervals.append([interval_start, interval_end])
-        else:
-            merged_intervals[-1][1] = max(merged_intervals[-1][1], interval_end)
-    stage_wall = sum(
-        max(0, int((interval_end - interval_start).total_seconds() * 1000))
-        for interval_start, interval_end in merged_intervals
+        for invocation in timing.get("attempts") or []:
+            item = {"phase": phase, **invocation}
+            attempts.append(item)
+            if invocation.get("activeEligible"):
+                interval = clipped_interval(
+                    invocation.get("startedAt"),
+                    invocation.get("endedAt"),
+                )
+                if interval is not None:
+                    active_intervals.append(interval)
+
+    external_intervals: list[tuple[Any, Any]] = []
+    pause_intervals: list[tuple[Any, Any]] = []
+    pause_start = None
+    for event in sorted(
+        events,
+        key=lambda item: str(item.get("timestamp") or ""),
+    ):
+        event_type = str(event.get("type") or "").lower()
+        timestamp = he.parse_timestamp(event.get("timestamp"))
+        if event_type in {
+            "external.wait",
+            "ci.wait",
+            "environment.wait",
+            "env.wait",
+        }:
+            ended = he.parse_timestamp(event.get("endedAt"))
+            duration = event.get("duration_ms", event.get("durationMs"))
+            if ended is None and timestamp is not None and isinstance(duration, int):
+                ended = timestamp + dt.timedelta(milliseconds=max(0, duration))
+            interval = clipped_interval(timestamp, ended)
+            if interval is not None:
+                external_intervals.append(interval)
+        if event_type in {"workflow.pause", "session.pause", "pause"}:
+            pause_start = timestamp or pause_start
+        elif event_type in {
+            "workflow.resume",
+            "session.resume",
+            "resume",
+        } and pause_start is not None:
+            interval = clipped_interval(pause_start, timestamp)
+            if interval is not None:
+                pause_intervals.append(interval)
+            pause_start = None
+    if pause_start is not None and cutoff_dt is not None:
+        interval = clipped_interval(pause_start, cutoff_dt)
+        if interval is not None:
+            pause_intervals.append(interval)
+
+    boundaries = sorted(
+        {
+            point
+            for interval in (
+                active_intervals + external_intervals + pause_intervals
+            )
+            for point in interval
+        }
+        | (
+            {started_dt, cutoff_dt}
+            if started_dt is not None and cutoff_dt is not None
+            else set()
+        )
     )
-    workflow_wall = he.duration_ms_between(started, cutoff) if started and cutoff else 0
-    external = 0
-    for event in events:
-        etype = str(event.get("type") or "").lower()
-        if etype in {"external.wait", "ci.wait", "environment.wait", "env.wait"}:
-            dur = event.get("duration_ms") or event.get("durationMs")
-            if isinstance(dur, int):
-                external += max(0, dur)
-            elif event.get("timestamp") and event.get("endedAt"):
-                gap = he.duration_ms_between(event.get("timestamp"), event.get("endedAt"))
-                if gap:
-                    external += gap
-    unattributed = max(0, int(workflow_wall or 0) - stage_active - external)
+    categories = {
+        "attributed": 0,
+        "external": 0,
+        "paused": 0,
+        "unattributed": 0,
+    }
+
+    def covered(
+        interval_start: Any,
+        interval_end: Any,
+        intervals: list[tuple[Any, Any]],
+    ) -> bool:
+        return any(
+            start <= interval_start and end >= interval_end
+            for start, end in intervals
+        )
+
+    for segment_start, segment_end in zip(boundaries, boundaries[1:]):
+        milliseconds = max(
+            0,
+            int((segment_end - segment_start).total_seconds() * 1000),
+        )
+        if covered(segment_start, segment_end, active_intervals):
+            categories["attributed"] += milliseconds
+        elif covered(segment_start, segment_end, external_intervals):
+            categories["external"] += milliseconds
+        elif covered(segment_start, segment_end, pause_intervals):
+            categories["paused"] += milliseconds
+        else:
+            categories["unattributed"] += milliseconds
+
+    workflow_wall = (
+        max(0, int((cutoff_dt - started_dt).total_seconds() * 1000))
+        if started_dt is not None and cutoff_dt is not None
+        else 0
+    )
+    stage_wall = union_ms(active_intervals)
+    sessions: list[dict[str, Any]] = []
+    session_start = started_dt
+    for pause_start_dt, pause_end_dt in sorted(pause_intervals):
+        if session_start is not None and pause_start_dt > session_start:
+            sessions.append(
+                {
+                    "session": len(sessions) + 1,
+                    "startedAt": session_start.isoformat(),
+                    "endedAt": pause_start_dt.isoformat(),
+                    "wallClockMs": int(
+                        (pause_start_dt - session_start).total_seconds() * 1000
+                    ),
+                    "terminalStatus": "PAUSED",
+                }
+            )
+        session_start = pause_end_dt
+    if (
+        session_start is not None
+        and cutoff_dt is not None
+        and cutoff_dt > session_start
+    ):
+        sessions.append(
+            {
+                "session": len(sessions) + 1,
+                "startedAt": session_start.isoformat(),
+                "endedAt": cutoff_dt.isoformat(),
+                "wallClockMs": int(
+                    (cutoff_dt - session_start).total_seconds() * 1000
+                ),
+                "terminalStatus": "CUTOFF",
+            }
+        )
+    conservation_total = sum(categories.values())
     post_archive_excluded = 0
     if cutoff:
         for event in events:
@@ -1102,11 +1695,19 @@ def build_workflow_timing(
         "workflowWallClockMs": int(workflow_wall or 0),
         "stageActiveExecutionMs": int(stage_active),
         "stageWallClockSpanMs": int(stage_wall),
-        "externalWaitMs": int(external),
-        "agentOrToolUnattributedMs": int(unattributed),
+        "attributedStageUnionMs": int(categories["attributed"]),
+        "externalWaitMs": int(categories["external"]),
+        "pausedMs": int(categories["paused"]),
+        "agentOrToolUnattributedMs": int(categories["unattributed"]),
+        "conservationDeltaMs": int(workflow_wall - conservation_total),
         "unclosedAttemptCount": int(unclosed),
+        "attempts": attempts,
+        "sessions": sessions,
+        "sessionWallClockMs": sum(
+            int(item["wallClockMs"]) for item in sessions
+        ),
         "postArchiveEventsExcluded": int(post_archive_excluded),
-        "totalMinutesSemantics": "active-only",
+        "totalMinutesSemantics": "workflow-wall-primary; active-is-separate",
     }
 
 
@@ -1630,17 +2231,60 @@ def check_status(
     candidate_codes = {
         "PRODUCT_CI_NOT_GREEN",
         "PRODUCT_CANDIDATE_NOT_VERIFIED",
+        "PRODUCT_CANDIDATE_RECORD_ONLY",
+        "PROJECT_RELEASE_POLICY_BLOCKED",
+        "REMOTE_CI_DOWNGRADE_REFUSED",
     }
     archive_integrity_ok = not any(
         item.get("code") not in candidate_codes for item in blockers
     )
+    archive_integrity = {
+        "ok": archive_integrity_ok,
+        "code": (
+            "ARCHIVE_INTEGRITY_OK"
+            if archive_integrity_ok
+            else "ARCHIVE_INTEGRITY_FAILED"
+        ),
+        "message": (
+            "archive preconditions are complete"
+            if archive_integrity_ok
+            else "archive preconditions contain non-candidate blockers"
+        ),
+    }
+    try:
+        release_summary = collect_summary_data(
+            change_dir, write=False, for_replay=False
+        )
+        release_summary["archiveIntent"] = archive_intent
+        report_adequacy = validate_report_adequacy(release_summary)
+        release_decision = evaluate_release_eligibility(
+            change_dir,
+            release_summary,
+            archive_integrity=archive_integrity,
+            report_adequacy=report_adequacy,
+        )
+    except Exception as exc:  # noqa: BLE001 — status must remain read-only
+        release_decision = compose_release_decision(
+            {
+                "archiveIntegrity": archive_integrity,
+                "reportAdequacy": {
+                    "ok": False,
+                    "code": "REPORT_ADEQUACY_UNAVAILABLE",
+                    "message": str(exc),
+                },
+                "candidateVerification": ci_gate,
+            }
+        )
     return {
         "ok": True,
         "archivable": archivable,
         "archiveIntent": archive_intent,
-        "archiveIntegrity": {"ok": archive_integrity_ok},
-        "candidateVerification": ci_gate,
-        "releaseEligible": bool(ci_gate.get("ok")) and archivable,
+        "archiveIntegrity": archive_integrity,
+        "candidateVerification": release_decision["checks"][
+            "candidateVerification"
+        ],
+        "releaseDecision": release_decision,
+        "releaseEligible": release_decision["releaseEligible"],
         "change_dir": str(change_dir),
         "change_name": infer_change_name(change_dir),
         "blockers": blockers,
@@ -2888,6 +3532,7 @@ def collect_summary_data(
     ci_metrics, ci_metrics_source = load_ci_metrics(change_dir)
     if ci_metrics_source:
         sources.append(ci_metrics_source)
+    remote_cost = build_remote_cost_summary(ci_metrics)
 
     log_text = load_execution_log(change_dir)
     if log_text:
@@ -2908,6 +3553,7 @@ def collect_summary_data(
             "diffStat",
             "stageStatus",
             "durations",
+            "timing",
             "skillCalls",
             "verification",
             "timeline",
@@ -2922,10 +3568,24 @@ def collect_summary_data(
             "archiveIntent",
             "archiveIntegrity",
             "candidateVerification",
+            "releaseDecision",
             "releaseEligible",
+            "productCommit",
+            "featureMergeHash",
+            "releaseTipHash",
+            "productTreeHash",
+            "archiveCommit",
+            "environmentHash",
+            "changeIdentity",
+            "artifactStorage",
+            "retention",
+            "remoteCost",
+            "projection",
         ):
             if key in existing:
                 data[key] = _deepcopy_json(existing[key])
+    if not for_replay or not isinstance(data.get("remoteCost"), dict):
+        data["remoteCost"] = remote_cost
 
     event_summary = he.build_summary(change_dir, events) if events else {
         "ok": True,
@@ -3037,7 +3697,6 @@ def collect_summary_data(
     )
     data["archiveIntegrity"] = {"ok": True}
     data["candidateVerification"] = candidate_gate
-    data["releaseEligible"] = bool(candidate_gate.get("ok"))
 
     # durations / skillCalls
     if events:
@@ -3098,6 +3757,7 @@ def collect_summary_data(
         data["releaseTipHash"] = identity.get("releaseTipHash") or data.get("archiveCommit")
         data["productTreeHash"] = identity.get("productTreeHash")
         data["archiveCommit"] = identity.get("archiveCommit") or data.get("finalCommit")
+        data["environmentHash"] = identity.get("environmentHash") or NOT_AVAILABLE
         data["changeIdentity"] = identity
 
     # diffStat / changedFiles
@@ -3188,6 +3848,37 @@ def collect_summary_data(
         data["artifacts"] = _artifacts_from_events(
             projected_events, change_dir=change_dir
         )
+        storage_path = change_dir / "evidence" / "artifact-storage.json"
+        if storage_path.is_file():
+            storage = read_json(storage_path)
+            data["artifactStorage"] = (
+                storage if isinstance(storage, dict) else {}
+            )
+            sources.append("evidence/artifact-storage.json")
+        else:
+            data["artifactStorage"] = {
+                "schemaVersion": 1,
+                "artifactCount": 0,
+                "bytesAdded": 0,
+                "bytesReused": 0,
+                "bytesPruned": 0,
+                "largestItems": [],
+            }
+        retention = build_retention_audit(change_dir)
+        data["retention"] = retention
+        if write:
+            write_json(
+                change_dir / "evidence" / "retention-audit.json",
+                retention,
+            )
+        data["projection"] = hgate.evaluate_projection_gate(
+            project,
+            "archive",
+        )
+    else:
+        data.setdefault("artifactStorage", {})
+        data.setdefault("retention", {})
+        data.setdefault("projection", {})
 
     data["reviewSummary"] = _review_summary(
         change_dir,
@@ -3287,6 +3978,35 @@ def collect_summary_data(
         "validationIssues": [],
     }
 
+    report_adequacy = validate_report_adequacy(data)
+    checksum_status = str(
+        (data.get("archiveManifest") or {}).get("checksumStatus") or ""
+    )
+    archive_integrity = {
+        "ok": checksum_status in {"OK", "OK_WITH_EXCLUSIONS"},
+        "code": (
+            "ARCHIVE_INTEGRITY_OK"
+            if checksum_status in {"OK", "OK_WITH_EXCLUSIONS"}
+            else "ARCHIVE_INTEGRITY_FAILED"
+        ),
+        "message": f"checksumStatus={checksum_status or 'missing'}",
+        "checksumStatus": checksum_status,
+    }
+    release_decision = evaluate_release_eligibility(
+        change_dir,
+        data,
+        archive_integrity=archive_integrity,
+        report_adequacy=report_adequacy,
+    )
+    data["archiveIntegrity"] = archive_integrity
+    data["candidateVerification"] = release_decision["checks"][
+        "candidateVerification"
+    ]
+    data["releaseDecision"] = release_decision
+    data["releaseEligible"] = release_decision["releaseEligible"]
+    data["reportPipeline"]["reportAdequacy"] = report_adequacy
+    data["reportPipeline"]["releaseDecision"] = release_decision
+
     # Fill any remaining template placeholders that look like instructions
     for key in list(data.keys()):
         val = data[key]
@@ -3345,6 +4065,54 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
     parts.append("</ul></div>")
     if summary.get("riskTier"):
         parts.append(f"<p><strong>riskTier</strong>: {esc(summary.get('riskTier'))}</p>")
+    parts.append("<h3>Current Outcome</h3>")
+    parts.append(
+        f"<p>finalStatus={esc(summary.get('finalStatus'))}</p>"
+    )
+
+    candidate = (
+        summary.get("candidateVerification")
+        if isinstance(summary.get("candidateVerification"), dict)
+        else {}
+    )
+    parts.append("<h3>Candidate Claim / Attestation</h3>")
+    parts.append(
+        f"<p>assurance={esc(candidate.get('assurance'))} "
+        f"code={esc(candidate.get('code'))} "
+        f"provider={esc(candidate.get('provider'))}</p>"
+    )
+
+    integrity = (
+        summary.get("archiveIntegrity")
+        if isinstance(summary.get("archiveIntegrity"), dict)
+        else {}
+    )
+    parts.append("<h3>Archive Integrity</h3>")
+    parts.append(
+        f"<p>ok={esc(integrity.get('ok'))} "
+        f"code={esc(integrity.get('code'))} "
+        f"checksumStatus={esc(integrity.get('checksumStatus'))}</p>"
+    )
+
+    decision = (
+        summary.get("releaseDecision")
+        if isinstance(summary.get("releaseDecision"), dict)
+        else {}
+    )
+    parts.append("<h3>Release Eligibility</h3>")
+    parts.append(
+        f"<p>releaseEligible={esc(decision.get('releaseEligible'))} "
+        f"code={esc(decision.get('code'))}</p><ul>"
+    )
+    checks = decision.get("checks")
+    checks = checks if isinstance(checks, dict) else {}
+    for name, check in checks.items():
+        check = check if isinstance(check, dict) else {}
+        parts.append(
+            f"<li>{esc(name)}: ok={esc(check.get('ok'))} "
+            f"code={esc(check.get('code'))}</li>"
+        )
+    parts.append("</ul>")
 
     timing = summary.get("timing") if isinstance(summary.get("timing"), dict) else {}
     if timing:
@@ -3357,6 +4125,16 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
             "</p>"
         )
         parts.append(
+            "<p id=\"timingConservation\">"
+            f"attributedStageUnionMs={esc(timing.get('attributedStageUnionMs'))} · "
+            f"externalWaitMs={esc(timing.get('externalWaitMs'))} · "
+            f"pausedMs={esc(timing.get('pausedMs'))} · "
+            "agentOrToolUnattributedMs="
+            f"{esc(timing.get('agentOrToolUnattributedMs'))} · "
+            f"conservationDeltaMs={esc(timing.get('conservationDeltaMs'))}"
+            "</p>"
+        )
+        parts.append(
             f"<p><strong>reportCutoffAt</strong>: "
             f"<span id=\"reportCutoffAt\">{esc(timing.get('reportCutoffAt'))}</span></p>"
         )
@@ -3364,6 +4142,59 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
             "<p><small>durations.totalMinutes is active-only; "
             "do not treat it as workflow wall clock.</small></p>"
         )
+    parts.append("<h3>History Quality</h3><ul>")
+    attempts = timing.get("attempts")
+    attempts = attempts if isinstance(attempts, list) else []
+    for attempt in attempts:
+        attempt = attempt if isinstance(attempt, dict) else {}
+        parts.append(
+            f"<li>{esc(attempt.get('phase'))}: "
+            f"{esc(attempt.get('terminalStatus') or attempt.get('status'))} "
+            f"durationMs={esc(attempt.get('durationMs'))}</li>"
+        )
+    if not attempts:
+        parts.append("<li>no typed attempts recorded</li>")
+    parts.append("</ul>")
+
+    remote_cost = (
+        summary.get("remoteCost")
+        if isinstance(summary.get("remoteCost"), dict)
+        else {}
+    )
+    remote_totals = remote_cost.get("totals")
+    remote_totals = remote_totals if isinstance(remote_totals, dict) else {}
+    parts.append("<h3>Remote Cost</h3>")
+    parts.append(
+        f"<p>runnerMinutes={esc(remote_totals.get('runnerMinutes'))} "
+        f"queueWaitMs={esc(remote_totals.get('queueWaitMs'))} "
+        f"artifactBytes={esc(remote_totals.get('artifactBytes'))} "
+        f"duplicateRunCount={esc(remote_totals.get('duplicateRunCount'))}</p>"
+    )
+
+    storage = (
+        summary.get("artifactStorage")
+        if isinstance(summary.get("artifactStorage"), dict)
+        else {}
+    )
+    parts.append("<h3>Artifact Storage</h3>")
+    parts.append(
+        f"<p>artifactCount={esc(storage.get('artifactCount'))} "
+        f"bytesAdded={esc(storage.get('bytesAdded'))} "
+        f"bytesReused={esc(storage.get('bytesReused'))} "
+        f"bytesPruned={esc(storage.get('bytesPruned'))}</p>"
+    )
+
+    projection = (
+        summary.get("projection")
+        if isinstance(summary.get("projection"), dict)
+        else {}
+    )
+    parts.append("<h3>Projection / Fallback</h3>")
+    parts.append(
+        f"<p>mode={esc(projection.get('mode'))} "
+        f"code={esc(projection.get('code'))} "
+        f"remediation={esc(projection.get('remediation'))}</p>"
+    )
 
     if summary.get("productCommit") or summary.get("productTreeHash"):
         parts.append("<h3>Identity</h3>")
@@ -3611,7 +4442,7 @@ def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
 
 def validate_artifact_immutability(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Same artifact path with two different hashes -> conflict (UT-003/RET-07)."""
-    issues: list[dict[str, str]] = []
+    issues: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
     for item in entries:
         if not isinstance(item, dict):
@@ -4115,7 +4946,680 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
                     "message": f"stageStatus.{phase}={status} but event reducer says {event_status}",
                 })
 
+    # Candidate receipt and summary must describe the same immutable subject.
+    candidate_gate = summary.get("candidateVerification")
+    candidate_gate = candidate_gate if isinstance(candidate_gate, dict) else {}
+    candidate = candidate_gate.get("evidence")
+    candidate = candidate if isinstance(candidate, dict) else {}
+    subject = candidate.get("subject")
+    subject = subject if isinstance(subject, dict) else {}
+
+    summary_commit = str(summary.get("productCommit") or "").strip()
+    candidate_commit = str(subject.get("productCommit") or "").strip()
+    if (
+        summary_commit
+        and candidate_commit
+        and summary_commit != candidate_commit
+    ):
+        issues.append(
+            {
+                "code": "CANDIDATE_SUMMARY_COMMIT_MISMATCH",
+                "severity": "error",
+                "message": (
+                    "candidate productCommit does not match summary productCommit"
+                ),
+                "expected": summary_commit,
+                "actual": candidate_commit,
+            }
+        )
+
+    normalize_hash = lambda value: str(value or "").strip().removeprefix("sha256:")
+    summary_tree = str(summary.get("productTreeHash") or "").strip()
+    candidate_tree = str(subject.get("productTreeHash") or "").strip()
+    if (
+        summary_tree
+        and candidate_tree
+        and normalize_hash(summary_tree) != normalize_hash(candidate_tree)
+    ):
+        issues.append(
+            {
+                "code": "CANDIDATE_SUMMARY_TREE_MISMATCH",
+                "severity": "error",
+                "message": (
+                    "candidate productTreeHash does not match summary productTreeHash"
+                ),
+                "expected": summary_tree,
+                "actual": candidate_tree,
+            }
+        )
+
+    summary_environment = str(summary.get("environmentHash") or "").strip()
+    candidate_environment = str(subject.get("environmentHash") or "").strip()
+    if (
+        summary_environment
+        and summary_environment != NOT_AVAILABLE
+        and candidate_environment
+        and normalize_hash(summary_environment)
+        != normalize_hash(candidate_environment)
+    ):
+        issues.append(
+            {
+                "code": "CANDIDATE_SUMMARY_ENVIRONMENT_MISMATCH",
+                "severity": "error",
+                "message": (
+                    "candidate environmentHash does not match summary environmentHash"
+                ),
+                "expected": summary_environment,
+                "actual": candidate_environment,
+            }
+        )
+
     return {"ok": not issues, "issues": issues}
+
+
+RELEASE_CHECKS = (
+    "archiveIntegrity",
+    "reportAdequacy",
+    "candidateVerification",
+    "candidateIdentity",
+    "projectReleasePolicy",
+    "terminalAttempts",
+    "finalStatus",
+)
+
+
+def validate_parallel_isolation_contract(
+    child_change_ids: list[str],
+    isolation: Any,
+) -> dict[str, Any]:
+    """Require unique worktree, port, DB, temp root, and writer lease per child."""
+    required = (
+        "worktreeRoot",
+        "port",
+        "database",
+        "tempRoot",
+        "writerLease",
+    )
+    mapping = isolation if isinstance(isolation, dict) else {}
+    issues: list[dict[str, Any]] = []
+    expected = set(child_change_ids)
+    actual = {str(key) for key in mapping}
+    if expected != actual:
+        issues.append(
+            {
+                "code": "PARALLEL_ISOLATION_MEMBERSHIP_MISMATCH",
+                "message": "childIsolation must describe every covered child exactly once",
+                "missing": sorted(expected - actual),
+                "unexpected": sorted(actual - expected),
+            }
+        )
+
+    def _identity(field: str, value: Any) -> str:
+        text = str(value).strip()
+        if field in {"worktreeRoot", "tempRoot"}:
+            return text.replace("\\", "/").rstrip("/").casefold()
+        return text.casefold()
+
+    for field in required:
+        owners: dict[str, list[str]] = {}
+        for child_id in sorted(expected):
+            row = mapping.get(child_id)
+            row = row if isinstance(row, dict) else {}
+            value = row.get(field)
+            identity = _identity(field, value)
+            if not identity:
+                issues.append(
+                    {
+                        "code": "PARALLEL_ISOLATION_FIELD_MISSING",
+                        "message": f"{child_id} is missing isolation field {field}",
+                        "childChangeId": child_id,
+                        "field": field,
+                    }
+                )
+                continue
+            owners.setdefault(identity, []).append(child_id)
+        for value, children in owners.items():
+            if len(children) > 1:
+                issues.append(
+                    {
+                        "code": "PARALLEL_ISOLATION_COLLISION",
+                        "message": (
+                            f"parallel children share {field}; cross-write risk detected"
+                        ),
+                        "field": field,
+                        "value": value,
+                        "children": children,
+                    }
+                )
+    return {
+        "ok": not issues,
+        "code": (
+            "PARALLEL_ISOLATION_OK"
+            if not issues
+            else "PARALLEL_ISOLATION_INVALID"
+        ),
+        "issues": issues,
+        "children": sorted(expected),
+    }
+
+
+def validate_aggregate_candidate_contract(
+    contract: dict[str, Any],
+    *,
+    child_change_id: str | None = None,
+    candidate_subject: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate aggregate/child/integration membership as one identity contract."""
+    issues: list[dict[str, Any]] = []
+    if contract.get("schemaVersion") != 1:
+        issues.append(
+            {
+                "code": "AGGREGATE_SCHEMA_INVALID",
+                "message": "aggregate candidate schemaVersion must be 1",
+            }
+        )
+    if contract.get("candidateScope") != "aggregate":
+        issues.append(
+            {
+                "code": "AGGREGATE_SCOPE_INVALID",
+                "message": "candidateScope must be aggregate",
+            }
+        )
+    aggregate_change_id = str(contract.get("aggregateChangeId") or "").strip()
+    if not aggregate_change_id:
+        issues.append(
+            {
+                "code": "AGGREGATE_CHANGE_ID_MISSING",
+                "message": "aggregateChangeId is required",
+            }
+        )
+
+    raw_children = contract.get("coveredChildChanges")
+    children = (
+        [str(item).strip() for item in raw_children]
+        if isinstance(raw_children, list)
+        else []
+    )
+    if (
+        not children
+        or any(not item for item in children)
+        or len(set(children)) != len(children)
+    ):
+        issues.append(
+            {
+                "code": "AGGREGATE_CHILDREN_INVALID",
+                "message": "coveredChildChanges must be non-empty and unique",
+            }
+        )
+    commits = contract.get("childProductCommits")
+    commits = commits if isinstance(commits, dict) else {}
+    child_set = set(children)
+    commit_set = {str(key) for key in commits}
+    if child_set != commit_set or any(
+        not isinstance(value, str) or not value.strip()
+        for value in commits.values()
+    ):
+        issues.append(
+            {
+                "code": "AGGREGATE_CHILD_MEMBERSHIP_MISMATCH",
+                "message": (
+                    "childProductCommits must map every covered child exactly once"
+                ),
+                "missing": sorted(child_set - commit_set),
+                "unexpected": sorted(commit_set - child_set),
+            }
+        )
+    if child_change_id is not None and child_change_id not in child_set:
+        issues.append(
+            {
+                "code": "AGGREGATE_CHILD_NOT_COVERED",
+                "message": f"child change is not covered: {child_change_id}",
+            }
+        )
+
+    integration_commit = str(
+        contract.get("integrationProductCommit") or ""
+    ).strip()
+    subject_commit = str(
+        (candidate_subject or {}).get("productCommit") or ""
+    ).strip()
+    if not integration_commit:
+        issues.append(
+            {
+                "code": "AGGREGATE_INTEGRATION_COMMIT_MISSING",
+                "message": "integrationProductCommit is required",
+            }
+        )
+    elif subject_commit and integration_commit != subject_commit:
+        issues.append(
+            {
+                "code": "AGGREGATE_INTEGRATION_COMMIT_MISMATCH",
+                "message": (
+                    "integrationProductCommit does not match candidate subject"
+                ),
+                "expected": subject_commit,
+                "actual": integration_commit,
+            }
+        )
+
+    coverage = contract.get("coverageProof")
+    coverage = coverage if isinstance(coverage, dict) else {}
+    digest = str(coverage.get("digest") or "")
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        issues.append(
+            {
+                "code": "AGGREGATE_COVERAGE_PROOF_INVALID",
+                "message": "coverageProof.digest must be a sha256 digest",
+            }
+        )
+    if not str(coverage.get("source") or "").strip():
+        issues.append(
+            {
+                "code": "AGGREGATE_COVERAGE_SOURCE_MISSING",
+                "message": "coverageProof.source is required",
+            }
+        )
+    parallel_isolation = None
+    if (
+        contract.get("concurrencyMode") == "isolated-multi-active"
+        or "childIsolation" in contract
+    ):
+        parallel_isolation = validate_parallel_isolation_contract(
+            children,
+            contract.get("childIsolation"),
+        )
+        issues.extend(parallel_isolation.get("issues") or [])
+
+    primary_code = (
+        "AGGREGATE_CANDIDATE_OK"
+        if not issues
+        else (
+            "AGGREGATE_CHILD_MEMBERSHIP_MISMATCH"
+            if any(
+                issue["code"] == "AGGREGATE_CHILD_MEMBERSHIP_MISMATCH"
+                for issue in issues
+            )
+            else "AGGREGATE_CANDIDATE_INVALID"
+        )
+    )
+    return {
+        "ok": not issues,
+        "code": primary_code,
+        "message": (
+            "aggregate candidate covers every child and matches integration identity"
+            if not issues
+            else f"aggregate candidate has {len(issues)} issue(s)"
+        ),
+        "aggregateChangeId": aggregate_change_id,
+        "coveredChildChanges": children,
+        "parallelIsolation": parallel_isolation,
+        "issues": issues,
+    }
+
+
+def compose_release_decision(
+    checks: dict[str, Any],
+) -> dict[str, Any]:
+    """Compose the only release-eligibility formula used by the archive."""
+    normalized: dict[str, dict[str, Any]] = {}
+    issues: list[dict[str, Any]] = []
+    for name in RELEASE_CHECKS:
+        value = checks.get(name)
+        item = dict(value) if isinstance(value, dict) else {
+            "ok": False,
+            "code": "RELEASE_CHECK_MISSING",
+            "message": f"required release check missing: {name}",
+        }
+        item["ok"] = bool(item.get("ok"))
+        normalized[name] = item
+        if not item["ok"]:
+            issues.append(
+                {
+                    "check": name,
+                    "code": str(
+                        item.get("code")
+                        or f"{name.upper()}_BLOCKED"
+                    ),
+                    "message": str(
+                        item.get("message")
+                        or f"release check failed: {name}"
+                    ),
+                }
+            )
+    eligible = all(normalized[name]["ok"] for name in RELEASE_CHECKS)
+    return {
+        "ok": eligible,
+        "releaseEligible": eligible,
+        "code": (
+            "RELEASE_ELIGIBLE"
+            if eligible
+            else "RELEASE_NOT_ELIGIBLE"
+        ),
+        "checks": normalized,
+        "issues": issues,
+    }
+
+
+def _candidate_identity_gate(
+    change_dir: Path,
+    summary: dict[str, Any],
+    candidate_gate: dict[str, Any],
+) -> dict[str, Any]:
+    evidence = candidate_gate.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    subject = evidence.get("subject")
+    subject = subject if isinstance(subject, dict) else {}
+    issues: list[dict[str, Any]] = []
+
+    pairs = (
+        (
+            "productCommit",
+            str(summary.get("productCommit") or "").strip(),
+            str(subject.get("productCommit") or "").strip(),
+            False,
+        ),
+        (
+            "productTreeHash",
+            str(summary.get("productTreeHash") or "").strip(),
+            str(subject.get("productTreeHash") or "").strip(),
+            True,
+        ),
+        (
+            "environmentHash",
+            str(summary.get("environmentHash") or "").strip(),
+            str(subject.get("environmentHash") or "").strip(),
+            True,
+        ),
+    )
+    for field, expected, actual, is_hash in pairs:
+        if not expected or expected == NOT_AVAILABLE or not actual:
+            issues.append(
+                {
+                    "code": f"CANDIDATE_{field.upper()}_MISSING",
+                    "message": (
+                        f"candidate/summary identity field missing: {field}"
+                    ),
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+            continue
+        left = expected.removeprefix("sha256:") if is_hash else expected
+        right = actual.removeprefix("sha256:") if is_hash else actual
+        if left != right:
+            issues.append(
+                {
+                    "code": f"CANDIDATE_{field.upper()}_MISMATCH",
+                    "message": (
+                        f"candidate {field} does not match summary {field}"
+                    ),
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+
+    product_identity = validate_product_identity(
+        product_commit=str(summary.get("productCommit") or ""),
+        product_tree_hash=str(summary.get("productTreeHash") or ""),
+        archive_commit=str(summary.get("archiveCommit") or ""),
+        project=find_project_root(change_dir),
+    )
+    if not product_identity.get("ok"):
+        issues.append(
+            {
+                "code": str(
+                    product_identity.get("code")
+                    or "PRODUCT_IDENTITY_INVALID"
+                ),
+                "message": str(
+                    product_identity.get("message")
+                    or "product/archive Git identity is invalid"
+                ),
+                "detail": product_identity,
+            }
+        )
+    aggregate_contract = evidence.get("aggregateCandidate")
+    if not isinstance(aggregate_contract, dict):
+        aggregate_contract = evidence.get("aggregate")
+    if not isinstance(aggregate_contract, dict) and (
+        evidence.get("candidateScope") == "aggregate"
+    ):
+        aggregate_contract = evidence
+    aggregate_identity = None
+    if isinstance(aggregate_contract, dict):
+        aggregate_identity = validate_aggregate_candidate_contract(
+            aggregate_contract,
+            candidate_subject=subject,
+        )
+        if not aggregate_identity.get("ok"):
+            issues.append(
+                {
+                    "code": str(
+                        aggregate_identity.get("code")
+                        or "AGGREGATE_CANDIDATE_INVALID"
+                    ),
+                    "message": str(
+                        aggregate_identity.get("message")
+                        or "aggregate candidate identity is invalid"
+                    ),
+                    "detail": aggregate_identity,
+                }
+            )
+    return {
+        "ok": not issues,
+        "code": (
+            "CANDIDATE_IDENTITY_OK"
+            if not issues
+            else "CANDIDATE_IDENTITY_INVALID"
+        ),
+        "message": (
+            "candidate, summary, environment, and Git identities agree"
+            if not issues
+            else f"candidate identity has {len(issues)} issue(s)"
+        ),
+        "issues": issues,
+        "productIdentity": product_identity,
+        "aggregateIdentity": aggregate_identity,
+    }
+
+
+def _project_release_policy_gate(
+    change_dir: Path,
+    summary: dict[str, Any],
+    candidate_gate: dict[str, Any],
+) -> dict[str, Any]:
+    policy = load_gate_policy(change_dir) or {}
+    candidate_policy = policy.get("candidateVerification")
+    candidate_policy = (
+        candidate_policy if isinstance(candidate_policy, dict) else {}
+    )
+    release_policy = policy.get("releasePolicy")
+    release_policy = (
+        release_policy if isinstance(release_policy, dict) else {}
+    )
+    projection = hgate.evaluate_projection_gate(
+        find_project_root(change_dir),
+        "archive",
+    )
+    if not projection.get("ok"):
+        return {
+            "ok": False,
+            "code": str(
+                projection.get("code") or "PROJECTION_DEGRADED_BLOCKED"
+            ),
+            "message": str(
+                projection.get("message")
+                or "projection receipt blocks release"
+            ),
+            "projection": projection,
+        }
+    if str(summary.get("archiveIntent") or "") == "record-only":
+        return {
+            "ok": False,
+            "code": "RECORD_ONLY_ARCHIVE",
+            "message": "record-only archive cannot authorize release",
+            "remoteRequired": bool(candidate_policy.get("remoteRequired")),
+        }
+    minimum = str(
+        candidate_policy.get("minimumAssurance")
+        or "local-reproducible"
+    ).strip()
+    remote_required = bool(candidate_policy.get("remoteRequired")) or (
+        minimum == "remote-attested"
+    )
+    assurance = str(candidate_gate.get("assurance") or "").strip()
+    if remote_required and assurance != "remote-attested":
+        return {
+            "ok": False,
+            "code": "REMOTE_ATTESTATION_REQUIRED",
+            "message": (
+                f"project requires remote-attested evidence; got {assurance or 'none'}"
+            ),
+            "remoteRequired": True,
+        }
+    if assurance == "local-reproducible" and not bool(
+        candidate_policy.get("allowLocalRelease")
+    ):
+        return {
+            "ok": False,
+            "code": "LOCAL_RELEASE_NOT_AUTHORIZED",
+            "message": (
+                "local release requires "
+                "candidateVerification.allowLocalRelease=true"
+            ),
+            "remoteRequired": remote_required,
+        }
+    evidence = candidate_gate.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    subject = evidence.get("subject")
+    subject = subject if isinstance(subject, dict) else {}
+    final_sequence = hphase.evaluate_final_sequence(
+        change_dir,
+        {
+            "productCommit": str(subject.get("productCommit") or ""),
+            "productTreeHash": str(subject.get("productTreeHash") or ""),
+            "environmentHash": str(subject.get("environmentHash") or ""),
+        },
+        exclude_nodes={"sequence:archive"},
+    )
+    if not final_sequence.get("ok"):
+        return {
+            "ok": False,
+            "code": "FINAL_SEQUENCE_INCOMPLETE",
+            "message": str(
+                final_sequence.get("message")
+                or "required final sequence is incomplete"
+            ),
+            "remoteRequired": remote_required,
+            "finalSequence": final_sequence,
+        }
+    return {
+        "ok": True,
+        "code": "PROJECT_RELEASE_POLICY_OK",
+        "message": "candidate evidence satisfies project release policy",
+        "remoteRequired": remote_required,
+        "minimumAssurance": minimum,
+        "allowedFinalStatuses": release_policy.get(
+            "allowedFinalStatuses", ["OK"]
+        ),
+        "finalSequence": final_sequence,
+        "projection": projection,
+    }
+
+
+def _terminal_attempts_gate(summary: dict[str, Any]) -> dict[str, Any]:
+    timing = summary.get("timing")
+    timing = timing if isinstance(timing, dict) else {}
+    unclosed = int(timing.get("unclosedAttemptCount") or 0)
+    attempts = timing.get("attempts")
+    attempts = attempts if isinstance(attempts, list) else []
+    blocking_statuses = {
+        "INCOMPLETE",
+        "INCOMPLETE_AT_CUTOFF",
+        "ORPHANED",
+        "INTERRUPTED",
+    }
+    blocking = [
+        item
+        for item in attempts
+        if isinstance(item, dict)
+        and str(item.get("terminalStatus") or item.get("status") or "").upper()
+        in blocking_statuses
+    ]
+    ok = unclosed == 0 and not blocking
+    return {
+        "ok": ok,
+        "code": (
+            "TERMINAL_ATTEMPTS_OK"
+            if ok
+            else "TERMINAL_ATTEMPTS_INCOMPLETE"
+        ),
+        "message": (
+            "all release-critical attempts are terminal"
+            if ok
+            else (
+                f"unclosedAttemptCount={unclosed} "
+                f"blockingAttempts={len(blocking)}"
+            )
+        ),
+        "unclosedAttemptCount": unclosed,
+        "blockingAttempts": blocking,
+    }
+
+
+def evaluate_release_eligibility(
+    change_dir: Path,
+    summary: dict[str, Any],
+    *,
+    archive_integrity: dict[str, Any],
+    report_adequacy: dict[str, Any],
+) -> dict[str, Any]:
+    """Evaluate the complete fail-closed release decision."""
+    change_dir = change_dir.resolve()
+    candidate_gate = evaluate_product_ci_gate(change_dir)
+    candidate_identity = _candidate_identity_gate(
+        change_dir, summary, candidate_gate
+    )
+    project_policy = _project_release_policy_gate(
+        change_dir, summary, candidate_gate
+    )
+    gate_policy = load_gate_policy(change_dir) or {}
+    release_policy = gate_policy.get("releasePolicy")
+    release_policy = (
+        release_policy if isinstance(release_policy, dict) else {}
+    )
+    allowed_statuses = release_policy.get("allowedFinalStatuses")
+    if not isinstance(allowed_statuses, list) or not allowed_statuses:
+        allowed_statuses = ["OK"]
+    allowed_statuses = [
+        str(item).upper() for item in allowed_statuses if str(item).strip()
+    ]
+    final_status = str(summary.get("finalStatus") or "").upper()
+    final_status_gate = {
+        "ok": final_status in allowed_statuses,
+        "code": (
+            "FINAL_STATUS_ALLOWED"
+            if final_status in allowed_statuses
+            else "FINAL_STATUS_BLOCKED"
+        ),
+        "message": (
+            f"finalStatus={final_status or 'missing'} "
+            f"allowed={allowed_statuses}"
+        ),
+        "actual": final_status,
+        "allowed": allowed_statuses,
+    }
+    return compose_release_decision(
+        {
+            "archiveIntegrity": archive_integrity,
+            "reportAdequacy": report_adequacy,
+            "candidateVerification": candidate_gate,
+            "candidateIdentity": candidate_identity,
+            "projectReleasePolicy": project_policy,
+            "terminalAttempts": _terminal_attempts_gate(summary),
+            "finalStatus": final_status_gate,
+        }
+    )
 
 
 def artifact_preflight(change_dir: Path) -> dict[str, Any]:
@@ -4210,12 +5714,202 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
     return {"ok": not blocking, "items": items, "blocking": blocking}
 
 
+def _artifact_policy(project_root: Path) -> dict[str, Any]:
+    path = (
+        project_root
+        / ".harness"
+        / "config"
+        / "artifact-policy.json"
+    )
+    defaults = {
+        "schemaVersion": 1,
+        "maxTotalBytes": 512 * 1024 * 1024,
+        "maxFileBytes": 128 * 1024 * 1024,
+        "contentAddressedMinBytes": 0,
+        "runtimeTtlDays": 7,
+        "stagingTtlDays": 2,
+    }
+    if not path.is_file():
+        return {**defaults, "source": "defaults", "path": str(path)}
+    value = read_json(path)
+    if value.get("schemaVersion") != 1:
+        raise ValueError("artifact policy schemaVersion must be 1")
+    result = {**defaults, **value, "source": "project", "path": str(path)}
+    for field in (
+        "maxTotalBytes",
+        "maxFileBytes",
+        "contentAddressedMinBytes",
+        "runtimeTtlDays",
+        "stagingTtlDays",
+    ):
+        if not isinstance(result.get(field), int) or int(result[field]) < 0:
+            raise ValueError(f"artifact policy {field} must be non-negative")
+    return result
+
+
+def build_retention_audit(change_dir: Path) -> dict[str, Any]:
+    """Inventory expirable runtime/staging trees without deleting user data."""
+    change_dir = change_dir.resolve()
+    project_root = find_project_root(change_dir)
+    policy = _artifact_policy(project_root)
+    now = dt.datetime.now(dt.timezone.utc)
+    roots = (
+        (
+            "runtime",
+            change_dir / "runtime",
+            int(policy["runtimeTtlDays"]),
+        ),
+        (
+            "archive-operation-staging",
+            project_root / ".harness" / "archive-operations" / "staging",
+            int(policy["stagingTtlDays"]),
+        ),
+    )
+    items: list[dict[str, Any]] = []
+    for category, root, ttl_days in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir(), key=lambda item: item.name):
+            try:
+                modified = dt.datetime.fromtimestamp(
+                    path.stat().st_mtime,
+                    tz=dt.timezone.utc,
+                )
+                bytes_on_disk = sum(
+                    item.stat().st_size
+                    for item in ([path] if path.is_file() else path.rglob("*"))
+                    if item.is_file()
+                )
+            except OSError:
+                continue
+            age_seconds = max(0.0, (now - modified).total_seconds())
+            expired = age_seconds >= ttl_days * 24 * 60 * 60
+            try:
+                relative = path.relative_to(project_root).as_posix()
+            except ValueError:
+                relative = str(path)
+            items.append(
+                {
+                    "category": category,
+                    "path": relative,
+                    "modifiedAt": modified.isoformat().replace("+00:00", "Z"),
+                    "ageDays": round(age_seconds / (24 * 60 * 60), 3),
+                    "ttlDays": ttl_days,
+                    "bytes": bytes_on_disk,
+                    "status": "EXPIRED" if expired else "RETAINED",
+                }
+            )
+    expired_items = [item for item in items if item["status"] == "EXPIRED"]
+    return {
+        "schemaVersion": 1,
+        "generatedAt": now.isoformat().replace("+00:00", "Z"),
+        "mode": "audit-only",
+        "policy": {
+            "runtimeTtlDays": int(policy["runtimeTtlDays"]),
+            "stagingTtlDays": int(policy["stagingTtlDays"]),
+            "source": policy["source"],
+        },
+        "items": items,
+        "expiredCount": len(expired_items),
+        "bytesPrunable": sum(int(item["bytes"]) for item in expired_items),
+        "remediation": (
+            "remove only expired entries after confirming no active capsule, "
+            "lease, worktree, or archive operation references them"
+        ),
+    }
+
+
+def evaluate_artifact_budget(change_dir: Path) -> dict[str, Any]:
+    """Fail closed on archive size before the staging copy is created."""
+    change_dir = change_dir.resolve()
+    project_root = find_project_root(change_dir)
+    try:
+        policy = _artifact_policy(project_root)
+        preflight = artifact_preflight(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "ARTIFACT_POLICY_INVALID",
+            "message": str(exc),
+        }
+    excluded_parts = {
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".cache",
+        "integration-temp",
+    }
+    files: dict[str, Path] = {}
+    for path in sorted(change_dir.rglob("*")):
+        if (
+            not path.is_file()
+            or any(part in excluded_parts for part in path.parts)
+            or path.name.endswith(".lock")
+        ):
+            continue
+        files[path.relative_to(change_dir).as_posix()] = path
+    for item in preflight.get("items") or []:
+        if item.get("category") != "repository-file":
+            continue
+        source = (project_root / str(item["path"])).resolve()
+        if source.is_file() and source.is_relative_to(project_root):
+            files[f"artifacts/product/{item['path']}"] = source
+    entries = [
+        {
+            "path": relative,
+            "bytes": path.stat().st_size,
+        }
+        for relative, path in files.items()
+    ]
+    entries.sort(key=lambda item: (-int(item["bytes"]), str(item["path"])))
+    total = sum(int(item["bytes"]) for item in entries)
+    max_total = int(policy["maxTotalBytes"])
+    max_file = int(policy["maxFileBytes"])
+    oversized = [
+        item for item in entries if int(item["bytes"]) > max_file
+    ]
+    ok = total <= max_total and not oversized and bool(preflight.get("ok"))
+    return {
+        "ok": ok,
+        "code": (
+            "ARTIFACT_BUDGET_OK"
+            if ok
+            else "ARTIFACT_BUDGET_EXCEEDED"
+        ),
+        "message": (
+            "archive artifacts fit the configured budget"
+            if ok
+            else "archive artifact budget exceeded before staging"
+        ),
+        "artifactCount": len(entries),
+        "totalBytes": total,
+        "maxTotalBytes": max_total,
+        "maxFileBytes": max_file,
+        "oversized": oversized,
+        "largestItems": entries[:10],
+        "policy": policy,
+        "preflightBlocking": preflight.get("blocking") or [],
+    }
+
+
 def materialize_repository_artifacts(change_dir: Path) -> dict[str, Any]:
-    """Copy project-root business artifacts into the immutable archive namespace."""
+    """Materialize repository artifacts through a content-addressed object store."""
     change_dir = change_dir.resolve()
     project_root = find_project_root(change_dir)
     preflight = artifact_preflight(change_dir)
     copied: list[str] = []
+    objects: list[dict[str, Any]] = []
+    bytes_added = 0
+    bytes_reused = 0
+    object_root = (
+        project_root
+        / ".harness"
+        / "cache"
+        / "artifacts"
+        / "objects"
+        / "sha256"
+    )
     for item in preflight.get("items") or []:
         if item.get("category") != "repository-file":
             continue
@@ -4223,10 +5917,72 @@ def materialize_repository_artifacts(change_dir: Path) -> dict[str, Any]:
         target = (change_dir / str(item["archivePath"])).resolve()
         if not source.is_relative_to(project_root) or not target.is_relative_to(change_dir):
             raise ValueError(f"artifact materialization escaped boundary: {item['path']}")
+        digest = sha256_file(source)
+        size = source.stat().st_size
+        blob = object_root / digest[:2] / digest
+        reused = blob.is_file()
+        if reused:
+            if blob.stat().st_size != size or sha256_file(blob) != digest:
+                raise ValueError(f"content-addressed blob corrupted: {blob}")
+            bytes_reused += size
+        else:
+            blob.parent.mkdir(parents=True, exist_ok=True)
+            temporary = blob.with_name(
+                f".{blob.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                shutil.copy2(source, temporary)
+                if sha256_file(temporary) != digest:
+                    raise ValueError(
+                        f"content-addressed copy hash mismatch: {source}"
+                    )
+                os.replace(temporary, blob)
+            finally:
+                temporary.unlink(missing_ok=True)
+            bytes_added += size
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        target_preexisting = target.exists()
+        materialization = "existing"
+        if target_preexisting:
+            if target.stat().st_size != size or sha256_file(target) != digest:
+                raise ValueError(f"artifact target conflicts: {target}")
+        else:
+            try:
+                os.link(blob, target)
+                materialization = "hardlink"
+            except OSError:
+                shutil.copy2(blob, target)
+                materialization = "copy"
         copied.append(target.relative_to(change_dir).as_posix())
-    return {"ok": True, "copied": sorted(copied)}
+        objects.append(
+            {
+                "path": target.relative_to(change_dir).as_posix(),
+                "sha256": "sha256:" + digest,
+                "bytes": size,
+                "blob": blob.relative_to(project_root).as_posix(),
+                "reused": reused,
+                "materialization": materialization,
+            }
+        )
+    result = {
+        "ok": True,
+        "artifactCount": len(objects),
+        "bytesAdded": bytes_added,
+        "bytesReused": bytes_reused,
+        "bytesPruned": 0,
+        "largestItems": sorted(
+            objects,
+            key=lambda entry: (-int(entry["bytes"]), str(entry["path"])),
+        )[:10],
+        "objects": objects,
+        "copied": sorted(copied),
+    }
+    if objects:
+        write_json(
+            change_dir / "evidence" / "artifact-storage.json",
+            {"schemaVersion": 1, **result, "recordedAt": now_iso()},
+        )
+    return result
 
 
 def run_knowledge_poststeps(project_root: Path) -> dict[str, Any]:
@@ -4383,7 +6139,7 @@ def cmd_finalize(
     )
     operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
-    operation_temp_dir = operation_root / "staging" / operation_id / "c"
+    operation_temp_dir = operation_root / "staging" / operation_id / change_dir.name
     operation_record = operation_root / f"{operation_id}.json"
 
     def _restore_finalize_failure() -> None:
@@ -4441,6 +6197,34 @@ def cmd_finalize(
     payload["steps"]["archive_exact_byte"] = exact_byte
     if not exact_byte["ok"]:
         warnings.append(str(exact_byte["remediation"]))
+
+    artifact_budget = evaluate_artifact_budget(original_change_dir)
+    payload["steps"]["artifact_budget"] = artifact_budget
+    if not artifact_budget.get("ok"):
+        payload["error"] = "artifact budget exceeded before staging"
+        payload["issues"] = [
+            {
+                "code": str(
+                    artifact_budget.get("code")
+                    or "ARTIFACT_BUDGET_EXCEEDED"
+                ),
+                "severity": "error",
+                "message": str(
+                    artifact_budget.get("message")
+                    or "artifact budget exceeded"
+                ),
+            }
+        ]
+        payload["original_preserved"] = original_change_dir.is_dir()
+        payload["finalStatus"] = "FAIL"
+        _append_finalize_failure_terminal(
+            split_state_dir
+            if split_state_dir is not None and split_state_dir.is_dir()
+            else original_change_dir,
+            payload["error"],
+            operation_id=operation_id,
+        )
+        return 1, payload
 
     payload["steps"]["service_stop_before_staging"] = run_service_stop(
         original_change_dir
@@ -4635,7 +6419,7 @@ def cmd_finalize(
         "message": ci_gate.get("message"),
     }
     payload["candidateVerification"] = ci_gate
-    payload["releaseEligible"] = bool(ci_gate.get("ok"))
+    payload["releaseEligible"] = False
     if not ci_gate.get("ok") and archive_intent == "release-candidate":
         payload["error"] = str(ci_gate.get("message") or "PRODUCT_CI_NOT_GREEN")
         payload["issues"] = [
@@ -4660,7 +6444,8 @@ def cmd_finalize(
             "schemaVersion": 1,
             "intent": archive_intent,
             "candidateVerificationCode": ci_gate.get("code"),
-            "releaseEligible": bool(ci_gate.get("ok")),
+            "releaseEligible": False,
+            "releaseDecisionCode": "PENDING_IDENTITY_AND_REPORT_GATES",
             "recordedAt": now_iso(),
         },
     )
@@ -4741,9 +6526,42 @@ def cmd_finalize(
         write_json(summary_path, summary)
     except OSError as exc:
         warnings.append(f"could not write reportAdequacy: {exc}")
+    release_decision = evaluate_release_eligibility(
+        work_dir,
+        summary,
+        archive_integrity={
+            "ok": True,
+            "code": "ARCHIVE_INTEGRITY_PENDING_MANIFEST",
+            "message": "pre-copy archive checks passed; checksum pending",
+        },
+        report_adequacy=adequacy_result,
+    )
+    summary["releaseDecision"] = release_decision
+    summary["candidateVerification"] = release_decision["checks"][
+        "candidateVerification"
+    ]
+    summary["releaseEligible"] = release_decision["releaseEligible"]
+    payload["releaseDecision"] = release_decision
+    payload["candidateVerification"] = summary["candidateVerification"]
+    payload["releaseEligible"] = summary["releaseEligible"]
+    try:
+        write_json(summary_path, summary)
+    except OSError as exc:
+        warnings.append(f"could not write releaseDecision: {exc}")
     if not adequacy_result.get("ok"):
         payload["issues"] = adequacy_result.get("issues") or []
         payload["error"] = "report adequacy failed; staged operation discarded"
+        _restore_finalize_failure()
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        return 1, payload
+    if archive_intent == "release-candidate" and not release_decision[
+        "releaseEligible"
+    ]:
+        payload["issues"] = release_decision.get("issues") or []
+        payload["error"] = (
+            "release eligibility failed; staged operation discarded"
+        )
         _restore_finalize_failure()
         payload["warnings"] = warnings
         payload["ok"] = False
@@ -4870,6 +6688,50 @@ def cmd_finalize(
             "exclusionReasons"
         ) or summary["archiveManifest"]["exclusionReasons"]
         summary["archiveManifest"]["coverageChecked"] = coverage.get("checked")
+        final_archive_integrity = {
+            "ok": bool(coverage.get("ok"))
+            and str(coverage.get("checksumStatus") or "")
+            in {"OK", "OK_WITH_EXCLUSIONS"},
+            "code": (
+                "ARCHIVE_INTEGRITY_OK"
+                if bool(coverage.get("ok"))
+                and str(coverage.get("checksumStatus") or "")
+                in {"OK", "OK_WITH_EXCLUSIONS"}
+                else "ARCHIVE_INTEGRITY_FAILED"
+            ),
+            "message": (
+                "final archive manifest byte coverage verified"
+                if bool(coverage.get("ok"))
+                else "final archive manifest byte coverage failed"
+            ),
+            "checksumStatus": coverage.get("checksumStatus"),
+        }
+        final_adequacy = validate_report_adequacy(summary)
+        final_release_decision = evaluate_release_eligibility(
+            work_dir,
+            summary,
+            archive_integrity=final_archive_integrity,
+            report_adequacy=final_adequacy,
+        )
+        summary["archiveIntegrity"] = final_archive_integrity
+        summary["candidateVerification"] = final_release_decision["checks"][
+            "candidateVerification"
+        ]
+        summary["releaseDecision"] = final_release_decision
+        summary["releaseEligible"] = final_release_decision[
+            "releaseEligible"
+        ]
+        summary.setdefault("reportPipeline", {})[
+            "reportAdequacy"
+        ] = final_adequacy
+        summary["reportPipeline"][
+            "releaseDecision"
+        ] = final_release_decision
+        payload["releaseDecision"] = final_release_decision
+        payload["candidateVerification"] = summary[
+            "candidateVerification"
+        ]
+        payload["releaseEligible"] = summary["releaseEligible"]
         write_json(summary_path, summary)
         # Re-render once more for checksumStatus display; remain excluded.
         render_final_summary(work_dir, summary_path)
@@ -4906,7 +6768,15 @@ def cmd_finalize(
     # Honest checksum: FAIL blocks; OK and OK_WITH_EXCLUSIONS (with reasons) pass.
     checksum = str(compare_result.get("checksumStatus") or "")
     checksum_ok = checksum in {"OK", "OK_WITH_EXCLUSIONS"}
-    can_close = validate_ok and manifest_ok and checksum_ok
+    release_ok = bool(
+        (payload.get("releaseDecision") or {}).get("releaseEligible")
+    )
+    can_close = (
+        validate_ok
+        and manifest_ok
+        and checksum_ok
+        and (archive_intent == "record-only" or release_ok)
+    )
 
     if not can_close:
         issues_out = list(validate_result.get("issues") or [])
@@ -4921,6 +6791,10 @@ def cmd_finalize(
                         f"checksumStatus={checksum}"
                     ),
                 }
+            )
+        if archive_intent == "release-candidate" and not release_ok:
+            issues_out.extend(
+                (payload.get("releaseDecision") or {}).get("issues") or []
             )
         payload["issues"] = issues_out
         payload["error"] = "validate or manifest check failed; staged operation discarded"

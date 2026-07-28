@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,39 @@ class ProductCiGateTests(unittest.TestCase):
         self.change = self.project / ".harness" / "changes" / "demo-change"
         self.change.mkdir(parents=True)
         _seed_change_dir(self.change)
+        subprocess.run(["git", "init"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "tests@example.invalid"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Harness Tests"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        _write(self.project / "src" / "app.py", "print('candidate')\n")
+        subprocess.run(
+            ["git", "add", "src/app.py"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "candidate"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
+        self.product_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -66,7 +100,7 @@ class ProductCiGateTests(unittest.TestCase):
         self.assertIn("https://ci.example/runs/1", blocker.get("message", ""))
         self.assertIn("bbbbbbbb", blocker.get("message", ""))
 
-    def test_ut002_ci_success_with_identity_archivable_when_other_gates_ok(self) -> None:
+    def test_ut002_legacy_ci_success_is_record_only(self) -> None:
         _write_product_ci(self.change, conclusion="success", commit="bbbbbbbb")
         identity = ha.resolve_product_archive_identity(
             self.change,
@@ -79,7 +113,8 @@ class ProductCiGateTests(unittest.TestCase):
         self.assertEqual(identity.get("archiveCommit"), "cccccccc")
         status = ha.check_status(self.change)
         codes = {b.get("code") for b in status.get("blockers") or []}
-        self.assertNotIn("PRODUCT_CI_NOT_GREEN", codes)
+        self.assertIn("PRODUCT_CANDIDATE_RECORD_ONLY", codes)
+        self.assertFalse(status["releaseEligible"])
 
     def test_y1_ci_success_without_run_url_or_commit_not_green(self) -> None:
         """Review Y1: conclusion=success alone must not pass the CI gate."""
@@ -125,6 +160,17 @@ class ProductCiGateTests(unittest.TestCase):
 
     def test_local_reproducible_candidate_evidence_passes_without_ci(self) -> None:
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "standard",
+                "candidateVerification": {
+                    "minimumAssurance": "local-reproducible",
+                    "allowLocalRelease": True,
+                },
+            },
+        )
         _write_json(
             self.change / "evidence" / "product-candidate-verification.json",
             {
@@ -190,7 +236,7 @@ class ProductCiGateTests(unittest.TestCase):
         gate = ha.evaluate_product_ci_gate(self.change)
 
         self.assertFalse(gate.get("ok"))
-        self.assertEqual(gate.get("code"), "PRODUCT_CANDIDATE_NOT_VERIFIED")
+        self.assertEqual(gate.get("code"), "PROJECT_RELEASE_POLICY_BLOCKED")
         self.assertIn("remote-attested", gate.get("message", ""))
 
     def test_remote_attested_receipt_requires_attestation_digest(self) -> None:
@@ -203,8 +249,12 @@ class ProductCiGateTests(unittest.TestCase):
             "subject": {
                 "productCommit": "bbbbbbbb",
                 "productTreeHash": "sha256:" + "a" * 64,
+                "environmentHash": "sha256:" + "e" * 64,
             },
-            "attestation": {"url": "https://ci.example/runs/attested"},
+            "attestation": {
+                "url": "https://ci.example/runs/attested",
+                "providerRunDigest": "sha256:" + "f" * 64,
+            },
             "verification": {"ledgerHash": "sha256:" + "c" * 64},
         }
         receipt_path = (
@@ -234,8 +284,20 @@ class ProductCiGateTests(unittest.TestCase):
 
     def test_certify_local_reuses_full_ledger_evidence_without_rerunning(self) -> None:
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "standard",
+                "candidateVerification": {
+                    "minimumAssurance": "local-reproducible",
+                    "allowLocalRelease": True,
+                },
+            },
+        )
         ledger_path = self.change / "evidence" / "verification-ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
         ledger["validations"]["unitTestFull"] = {
             "status": "OK",
             "command": "python -m unittest discover",
@@ -276,6 +338,7 @@ class ProductCiGateTests(unittest.TestCase):
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
         ledger_path = self.change / "evidence" / "verification-ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
         ledger["validations"]["unitTestFull"] = {
             "status": "OK",
             "command": "python -m unittest discover",
@@ -293,6 +356,7 @@ class ProductCiGateTests(unittest.TestCase):
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
         ledger_path = self.change / "evidence" / "verification-ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
         ledger["productTreeHash"] = "sha256:" + "0" * 64
         ledger["validations"]["unitTestFull"] = {
             "status": "OK",
@@ -348,7 +412,10 @@ class ProductCiGateTests(unittest.TestCase):
         self.assertTrue(
             (self.change / "evidence" / "product-candidate-verification.json").is_file()
         )
-        self.assertTrue(ha.evaluate_product_ci_gate(self.change)["ok"])
+        gate = ha.evaluate_product_ci_gate(self.change)
+        self.assertFalse(gate["ok"])
+        self.assertEqual(gate["code"], "PRODUCT_CANDIDATE_RECORD_ONLY")
+        self.assertFalse(gate["releaseCapable"])
 
 
 class ProductIdentityTests(unittest.TestCase):
@@ -445,13 +512,13 @@ class TimingSealTests(unittest.TestCase):
         ]
         invocations = he.attempt_invocations(events, cutoff_ts="2026-07-23T13:00:00+00:00")
         self.assertEqual(len(invocations), 1)
-        self.assertEqual(invocations[0]["status"], "INCOMPLETE")
+        self.assertEqual(invocations[0]["status"], "RECOVERED")
         self.assertEqual(invocations[0]["durationMs"], 3 * 60 * 60 * 1000)
         timing = he.canonical_phase_timing(
             events, cutoff_ts="2026-07-23T13:00:00+00:00"
         )
         self.assertEqual(timing["wallClockSpanMs"], 3 * 60 * 60 * 1000)
-        self.assertGreaterEqual(timing.get("unclosedAttemptCount") or 0, 1)
+        self.assertEqual(timing.get("unclosedAttemptCount") or 0, 0)
 
     def test_ut011_workflow_timing_fields_and_conservation(self) -> None:
         events = [

@@ -32,6 +32,12 @@ _LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
 # C8: valid ownerPhase values (lifecycle phases that can own tasks).
 VALID_OWNER_PHASES = {"plan", "run", "test", "review", "submit"}
+SLICE_CANDIDATE_TYPES = {
+    "independent-release-candidate",
+    "child-of-aggregate",
+    "fixback-of",
+    "evidence-only",
+}
 
 # C9: map scenario priority to required evidence kind.
 PRIORITY_EVIDENCE_KIND = {
@@ -173,6 +179,70 @@ def _frontmatter(text: str) -> dict[str, str] | None:
     return None
 
 
+def lint_slice_plan(plan_path: Path) -> dict[str, Any]:
+    """Validate the identity, reuse, and storage contract for a slice plan."""
+    text = Path(plan_path).read_text(encoding="utf-8-sig")
+    frontmatter = _frontmatter(text)
+    if frontmatter is None:
+        return _result_error(
+            "SLICE_PLAN_CONTRACT_INVALID",
+            f"{plan_path.name}: frontmatter is required",
+        )
+    enabled = (
+        str(frontmatter.get("slice-plan") or "").strip().lower()
+        in {"true", "yes", "1"}
+        or "candidate-type" in frontmatter
+    )
+    if not enabled:
+        return {
+            "ok": True,
+            "configured": False,
+            "code": "SLICE_PLAN_NOT_CONFIGURED",
+        }
+
+    issues: list[str] = []
+    candidate_type = str(frontmatter.get("candidate-type") or "").strip()
+    aggregate_parent = str(frontmatter.get("aggregate-parent") or "").strip()
+    evidence_reuse = str(frontmatter.get("evidence-reuse") or "").strip()
+    raw_budget = str(frontmatter.get("artifact-budget-bytes") or "").strip()
+    if candidate_type not in SLICE_CANDIDATE_TYPES:
+        issues.append(
+            "candidate-type must be one of "
+            + ", ".join(sorted(SLICE_CANDIDATE_TYPES))
+        )
+    if not aggregate_parent:
+        issues.append(
+            "aggregate-parent is required (use 'none' for an independent candidate)"
+        )
+    if not evidence_reuse:
+        issues.append(
+            "evidence-reuse is required (use 'none' when no evidence is reused)"
+        )
+    try:
+        artifact_budget = int(raw_budget)
+        if artifact_budget <= 0:
+            raise ValueError
+    except ValueError:
+        artifact_budget = 0
+        issues.append("artifact-budget-bytes must be a positive integer")
+    if issues:
+        return {
+            "ok": False,
+            "code": "SLICE_PLAN_CONTRACT_INVALID",
+            "error": f"{plan_path.name}: " + "; ".join(issues),
+            "issues": issues,
+        }
+    return {
+        "ok": True,
+        "configured": True,
+        "code": "SLICE_PLAN_CONTRACT_OK",
+        "candidateType": candidate_type,
+        "aggregateParent": aggregate_parent,
+        "evidenceReuse": evidence_reuse,
+        "artifactBudgetBytes": artifact_budget,
+    }
+
+
 def _artifact_files(staging: Path) -> list[Path]:
     files: list[Path] = []
     for path in staging.rglob("*"):
@@ -262,6 +332,9 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
                 "PLAN_OWNER_PHASE_INVALID",
                 f"task {task.get('num', '?')}: ownerPhase '{owner}' not in {sorted(VALID_OWNER_PHASES)}",
             )
+    slice_plan = lint_slice_plan(plan_path)
+    if not slice_plan.get("ok"):
+        return slice_plan
 
     # C9: parse test-scenarios.md for scenario manifest.
     scenarios_path = staging / "plans" / f"{change_name}-test-scenarios.md"
@@ -282,6 +355,7 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
         "artifactsHash": "sha256:" + digest.hexdigest(),
         "tasks": tasks,
         "scenarios": scenarios,
+        "slicePlan": slice_plan,
     }
 
 

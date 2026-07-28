@@ -858,6 +858,108 @@ class TestGuardTests(unittest.TestCase):
         self.assertEqual(result["code"], "EXPECTED_HEAD_MISMATCH")
         self.assertEqual(manifest_path.read_bytes(), before)
 
+    def test_rebind_snapshot_moves_unchanged_baseline_to_descendant_worktree(self) -> None:
+        baseline_test = self.project / "src" / "test" / "java" / "BaselineTest.java"
+        self._write(baseline_test, "class BaselineTest {}\n")
+        self._git("add", "-f", "src/test/java/BaselineTest.java")
+        self._git("commit", "-m", "add baseline test")
+        expected_base = self._git("rev-parse", "HEAD").stdout.strip()
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+
+        feature = self.outside / "feature-rebind"
+        self._git("worktree", "add", "-b", "feature/rebind", str(feature))
+        try:
+            new_test = feature / "src" / "test" / "java" / "NewTest.java"
+            self._write(new_test, "class NewTest {}\n")
+            subprocess.run(
+                ["git", "-C", str(feature), "add", "-f", "src/test/java/NewTest.java"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(feature), "commit", "-m", "add new test"],
+                check=True,
+                capture_output=True,
+            )
+            recorded = guard.record(feature, self.change, [str(new_test)], "tdd-created")
+            self.assertTrue(recorded["ok"], recorded)
+
+            rebound = guard.rebind_snapshot(
+                self.project, feature, self.change, expected_base
+            )
+
+            self.assertTrue(rebound["ok"], rebound)
+            self.assertEqual(rebound["code"], "SNAPSHOT_REBOUND")
+            snapshot = json.loads(
+                (self.change / "evidence" / "test-guard-snapshot.json").read_text("utf-8")
+            )
+            self.assertEqual(snapshot["projectRoot"], str(feature.resolve()))
+            self.assertEqual(snapshot["rebinds"][-1]["expectedBase"], expected_base)
+            close = guard.close(feature, self.change)
+            self.assertTrue(close["ok"], close)
+            self.assertEqual(close["files"], ["src/test/java/NewTest.java"])
+        finally:
+            self._git("worktree", "remove", "--force", str(feature))
+
+    def test_rebind_snapshot_rejects_source_drift_without_mutation(self) -> None:
+        baseline_test = self.project / "src" / "test" / "java" / "BaselineTest.java"
+        self._write(baseline_test, "before\n")
+        self._git("add", "-f", "src/test/java/BaselineTest.java")
+        self._git("commit", "-m", "add baseline test")
+        expected_base = self._git("rev-parse", "HEAD").stdout.strip()
+        begin = guard.begin(self.project, self.change)
+        self.assertTrue(begin["ok"], begin)
+        snapshot_path = self.change / "evidence" / "test-guard-snapshot.json"
+        before = snapshot_path.read_bytes()
+
+        feature = self.outside / "feature-rebind-drift"
+        self._git("worktree", "add", "-b", "feature/rebind-drift", str(feature))
+        try:
+            self._write(baseline_test, "after\n")
+            result = guard.rebind_snapshot(
+                self.project, feature, self.change, expected_base
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "SOURCE_SNAPSHOT_DRIFT")
+            self.assertEqual(snapshot_path.read_bytes(), before)
+        finally:
+            self._git("worktree", "remove", "--force", str(feature))
+
+    def test_rebind_snapshot_reconciles_line_ending_only_manifest_entry(self) -> None:
+        self._write(self.project / ".gitattributes", "*.java text eol=lf\n")
+        baseline_test = self.project / "src" / "test" / "java" / "LineEndingTest.java"
+        self._write(baseline_test, "line one\nline two\n")
+        self._git("add", ".gitattributes")
+        self._git("add", "-f", "src/test/java/LineEndingTest.java")
+        self._git("commit", "-m", "add normalized baseline test")
+        expected_base = self._git("rev-parse", "HEAD").stdout.strip()
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+
+        feature = self.outside / "feature-rebind-line-endings"
+        self._git("worktree", "add", "-b", "feature/rebind-line-endings", str(feature))
+        try:
+            target = feature / "src" / "test" / "java" / "LineEndingTest.java"
+            target.write_bytes(b"line one\r\nline two\r\n")
+            recorded = guard.record(feature, self.change, [str(target)], "test-updated")
+            self.assertTrue(recorded["ok"], recorded)
+
+            rebound = guard.rebind_snapshot(
+                self.project, feature, self.change, expected_base
+            )
+
+            self.assertTrue(rebound["ok"], rebound)
+            self.assertEqual(rebound["manifestEntriesRemoved"], 1)
+            manifest = json.loads(
+                (self.change / "evidence" / "test-tracking.json").read_text("utf-8")
+            )
+            self.assertEqual(manifest["files"], [])
+            close = guard.close(feature, self.change)
+            self.assertTrue(close["ok"], close)
+            self.assertEqual(close["recordedCount"], 0)
+        finally:
+            self._git("worktree", "remove", "--force", str(feature))
+
     def test_begin_close_auto_tracks_modified_ignored_test_ut028(self) -> None:
         target = self.project / "src" / "test" / "java" / "MutableTest.java"
         self._write(target, "before\n")

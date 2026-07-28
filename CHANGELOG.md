@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.28] — @hunter-harness/workflow-harness
+
+### Fixed（多日执行发布真实性、状态机与成本治理）
+
+- **发布资格唯一化**：`remote-claimed` 仅允许 record-only；发布必须同时满足归档完整性、报告充分性、候选证明、Git/环境身份、项目策略、终态 attempt 和最终状态。
+- **最终顺序状态机**：项目 `finalSequence` 编译为可执行 DAG；review、freeze、assertion-bearing Full、delta review、submit、远端候选与 archive 严格按同一冻结身份推进。
+- **失败闭合与根目录**：phase close 失败持久化为可恢复事务，不再产生虚假 `CLOSED/OK`；begin 可从 capsule 或当前 linked worktree 自动恢复 execution root。
+- **时间与环境执行**：attempt/session 使用 typed terminal；active、wait、pause、unattributed 与 workflow wall clock 守恒；环境准备失败不再冒充 Full。
+- **并行与生命周期**：aggregate candidate 验证 child membership/coverage；`isolated-multi-active` 强制隔离 worktree、port、DB、temp root 和 writer lease；Windows worktree 清理统一检查 capsule、Agent root、junction 和 registration。
+- **投影、重试与制品**：degraded projection 阻断发布阶段；同候选无新信息重试返回 `NO_NEW_INFORMATION`；归档在复制前执行预算检查，并提供内容寻址复用与 runtime/staging TTL 审计。
+- **报告可观测性**：Current Outcome、claim/attestation、Archive Integrity、Release Eligibility、History Quality 分栏；新增时间守恒、远端 runner/queue/artifact 成本及本地新增/复用/清理字节。
+- **切片计划门禁**：slice plan 必须声明 candidate type、aggregate parent、证据复用策略与 artifact budget。
+
 ## [0.2.31] — hunter-harness / [0.2.27] — @hunter-harness/workflow-harness
 
 ### Fixed（规则审阅、运行闭合与 Windows 归档）

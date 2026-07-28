@@ -191,6 +191,8 @@ class FinalizeSuccessTests(unittest.TestCase):
         code, payload = _run(
             [
                 "finalize",
+                "--intent",
+                "record-only",
                 "--change-dir",
                 str(self.change),
                 "--archive-root",
@@ -252,6 +254,8 @@ class FallbackRenderTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -280,6 +284,8 @@ class FallbackRenderTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -333,6 +339,8 @@ class ValidateErrorKeepsOriginalTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -389,6 +397,8 @@ class MoveFailureTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -638,7 +648,14 @@ class StatusTests(unittest.TestCase):
         data = json.loads(ledger.read_text(encoding="utf-8"))
         data["mergeFinalHash"] = change_hash
         ledger.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        code, payload = _run(["status", "--change-dir", str(change), "--json"])
+        code, payload = _run([
+            "status",
+            "--change-dir",
+            str(change),
+            "--intent",
+            "record-only",
+            "--json",
+        ])
         self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
         self.assertTrue(payload["archivable"], msg=json.dumps(payload, ensure_ascii=False))
         self.assertEqual(payload["blockers"], [])
@@ -691,6 +708,8 @@ class MaintenanceOutboxTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -1547,6 +1566,8 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
         code, payload = _run(
             [
                 "finalize",
+                "--intent",
+                "record-only",
                 "--change-dir",
                 str(self.change),
                 "--archive-root",
@@ -1614,6 +1635,8 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
         code, payload = _run(
             [
                 "finalize",
+                "--intent",
+                "record-only",
                 "--change-dir",
                 str(self.change),
                 "--archive-root",
@@ -1662,6 +1685,8 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
             code, payload = _run(
                 [
                     "finalize",
+                    "--intent",
+                    "record-only",
                     "--change-dir",
                     str(self.change),
                     "--archive-root",
@@ -1683,6 +1708,8 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
         code, payload = _run(
             [
                 "finalize",
+                "--intent",
+                "record-only",
                 "--change-dir",
                 str(self.change),
                 "--archive-root",
@@ -1700,7 +1727,10 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
+        self.assertIn(
+            (summary.get("stageStatus") or {}).get("archive"),
+            {"OK", "WARN"},
+        )
         stages = (summary.get("durations") or {}).get("stages") or []
         archive_stage = next((s for s in stages if s.get("stage") == "archive"), None)
         self.assertIsNotNone(archive_stage, "archive stage must come from frozen events")

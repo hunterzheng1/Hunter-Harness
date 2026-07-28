@@ -51,10 +51,225 @@ _FOREIGN_PATTERNS = (
     re.compile(r"^\.harness/changes/([^/]+)(/|$)"),
     re.compile(r"^\.harness/state/changes/([^/]+)(/|$)"),
 )
+WORKTREE_LIFECYCLE_STATES = (
+    "REGISTERED",
+    "MATERIALIZED",
+    "AGENT_ATTACHED",
+    "ACTIVE",
+    "QUIESCING",
+    "AGENT_DETACHED",
+    "STATE_FINALIZED",
+    "REGISTRATION_REMOVED",
+    "RESIDUAL_CLEANED",
+    "RETIRED",
+)
 
 
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _worktree_registrations(project_root: Path) -> dict[str, dict[str, Any]]:
+    proc = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=str(project_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    registrations: dict[str, dict[str, Any]] = {}
+    current: dict[str, Any] | None = None
+    for line in proc.stdout.splitlines() if proc.returncode == 0 else []:
+        if line.startswith("worktree "):
+            path = str(Path(line.removeprefix("worktree ")).resolve())
+            current = {"path": path, "branch": None, "head": None}
+            registrations[path] = current
+        elif current is not None and line.startswith("branch "):
+            current["branch"] = line.removeprefix("branch ")
+        elif current is not None and line.startswith("HEAD "):
+            current["head"] = line.removeprefix("HEAD ")
+    return registrations
+
+
+def _active_capsules_for_root(
+    project_root: Path,
+    target_root: Path,
+    change_dir: Path | None,
+) -> list[dict[str, Any]]:
+    candidates: list[Path] = []
+    change_dirs = [change_dir.resolve()] if change_dir is not None else []
+    if not change_dirs:
+        for root in (
+            project_root / ".harness" / "changes",
+            project_root / ".harness" / "state" / "changes",
+        ):
+            if root.is_dir():
+                change_dirs.extend(path for path in root.iterdir() if path.is_dir())
+    for root in change_dirs:
+        for capsule_root in (
+            root / "runtime" / "phase-context",
+            root / "phase-context",
+        ):
+            if capsule_root.is_dir():
+                candidates.extend(sorted(capsule_root.glob("*.json")))
+    active: list[dict[str, Any]] = []
+    for path in candidates:
+        try:
+            capsule = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(capsule, dict):
+            continue
+        raw_root = str(capsule.get("executionRoot") or "").strip()
+        if not raw_root:
+            continue
+        try:
+            same_root = Path(raw_root).resolve() == target_root
+        except OSError:
+            same_root = False
+        transaction = capsule.get("closeTransaction")
+        transaction_status = (
+            str(transaction.get("status") or "").upper()
+            if isinstance(transaction, dict)
+            else ""
+        )
+        closed = transaction_status == "CLOSED" or bool(
+            capsule.get("closedAt") and capsule.get("closeStatus")
+        )
+        if same_root and not closed:
+            active.append(
+                {
+                    "path": str(path),
+                    "phase": capsule.get("phase"),
+                    "runId": capsule.get("runId"),
+                    "transactionStatus": transaction_status or "OPEN",
+                }
+            )
+    return active
+
+
+def evaluate_worktree_retirement(
+    project_root: Path,
+    target_root: Path,
+    *,
+    change_dir: Path | None = None,
+    agent_root: Path | None = None,
+    junction_dependencies: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Journal a unified, read-only preflight for safe worktree retirement."""
+    project_root = project_root.resolve()
+    target_root = target_root.resolve()
+    registrations = _worktree_registrations(project_root)
+    registration = registrations.get(str(target_root))
+    active_capsules = _active_capsules_for_root(
+        project_root,
+        target_root,
+        change_dir,
+    )
+    if junction_dependencies is None:
+        junction_path = (
+            project_root
+            / ".harness"
+            / "config"
+            / "junction-dependencies.json"
+        )
+        try:
+            loaded = json.loads(junction_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            loaded = []
+        junction_dependencies = loaded if isinstance(loaded, list) else []
+    matching_junctions = []
+    for item in junction_dependencies:
+        if not isinstance(item, dict):
+            continue
+        try:
+            matches = Path(str(item.get("target") or "")).resolve() == target_root
+        except OSError:
+            matches = False
+        if matches:
+            matching_junctions.append(item)
+    attached = False
+    if agent_root is not None:
+        try:
+            resolved_agent = agent_root.resolve()
+            attached = (
+                resolved_agent == target_root
+                or target_root in resolved_agent.parents
+            )
+        except OSError:
+            attached = True
+    blockers: list[dict[str, Any]] = []
+    if active_capsules:
+        blockers.append(
+            {
+                "code": "ACTIVE_PHASE_CAPSULE",
+                "message": "phase capsules still reference the worktree",
+                "capsules": active_capsules,
+            }
+        )
+    if attached:
+        blockers.append(
+            {
+                "code": "AGENT_STILL_ATTACHED",
+                "message": "Agent root/cwd still points into the worktree",
+                "agentRoot": str(agent_root.resolve()) if agent_root else None,
+            }
+        )
+    if matching_junctions:
+        blockers.append(
+            {
+                "code": "JUNCTION_DEPENDENCY_ACTIVE",
+                "message": "junction dependencies must be removed or migrated",
+                "junctions": matching_junctions,
+            }
+        )
+    receipt = {
+        "schemaVersion": 1,
+        "lifecycleId": hashlib.sha256(
+            str(target_root).encode("utf-8")
+        ).hexdigest()[:20],
+        "projectRoot": str(project_root),
+        "targetRoot": str(target_root),
+        "state": "ACTIVE" if blockers else "QUIESCING",
+        "allowedStates": list(WORKTREE_LIFECYCLE_STATES),
+        "registration": registration,
+        "diskPathPresent": target_root.exists(),
+        "agentAttached": attached,
+        "activeCapsules": active_capsules,
+        "junctionDependencies": matching_junctions,
+        "blockers": blockers,
+        "ok": not blockers,
+        "code": (
+            "WORKTREE_RETIREMENT_READY"
+            if not blockers
+            else "WORKTREE_RETIREMENT_BLOCKED"
+        ),
+        "updatedAt": now_iso(),
+    }
+    receipt_path = (
+        project_root
+        / ".harness"
+        / "runtime"
+        / "worktree-lifecycle"
+        / f"{receipt['lifecycleId']}.json"
+    )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = receipt_path.with_name(
+        f".{receipt_path.name}.{os.getpid()}.tmp"
+    )
+    try:
+        temporary.write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, receipt_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    receipt["receiptPath"] = str(receipt_path)
+    return receipt
 
 
 def _split_verify_command(raw: str, *, platform: str = sys.platform) -> list[str]:
@@ -1268,6 +1483,23 @@ class IntegrationTransaction:
         if resolved.exists() and str(resolved) not in registered_before:
             raise CleanupRefusedError(
                 f"refusing to clean unregistered worktree path: {resolved}"
+            )
+        lifecycle = evaluate_worktree_retirement(
+            self.project_root,
+            resolved,
+            agent_root=(
+                Path(os.environ["HUNTER_HARNESS_AGENT_ROOT"])
+                if os.environ.get("HUNTER_HARNESS_AGENT_ROOT")
+                else None
+            ),
+        )
+        if not lifecycle.get("ok"):
+            codes = ", ".join(
+                str(item.get("code") or "UNKNOWN")
+                for item in lifecycle.get("blockers") or []
+            )
+            raise CleanupRefusedError(
+                f"worktree lifecycle blocks cleanup: {codes}"
             )
 
         heavy_removed: list[str] = []

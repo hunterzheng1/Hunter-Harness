@@ -42,6 +42,12 @@ VALIDATION_PHASES = {
     "dbCompatibility": "test",
     "package": "package",
 }
+FINAL_SEQUENCE_RECEIPTS_REL = (
+    Path("evidence") / "final-sequence-receipts.json"
+)
+ENVIRONMENT_EXECUTIONS_REL = (
+    Path("evidence") / "environment-executions.json"
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -64,6 +70,621 @@ def _write_json(path: Path, value: Any) -> None:
     except BaseException:
         temp.unlink(missing_ok=True)
         raise
+
+
+def _final_sequence_contract(change_dir: Path) -> dict[str, Any] | None:
+    policy_path = change_dir / "meta" / "gate-policy.json"
+    if not policy_path.is_file():
+        return None
+    policy = _read_json(policy_path)
+    declared = policy.get("finalSequence")
+    if isinstance(declared, dict) and isinstance(declared.get("nodeIds"), list):
+        return declared
+    dag = policy.get("requiredGateDag")
+    if not isinstance(dag, dict):
+        return None
+    sequence_nodes = [
+        node
+        for node in (dag.get("nodes") or [])
+        if isinstance(node, dict) and node.get("kind") == "sequence"
+    ]
+    if not sequence_nodes:
+        return None
+    sequence_nodes.sort(key=lambda node: int(node.get("sequenceIndex") or 0))
+    node_ids = [str(node.get("id") or "") for node in sequence_nodes]
+    return {
+        "schemaVersion": 1,
+        "nodeIds": node_ids,
+        "freezeNodeId": (
+            "sequence:code-freeze"
+            if "sequence:code-freeze" in node_ids
+            else None
+        ),
+        "terminalNodeId": node_ids[-1],
+    }
+
+
+def _load_sequence_receipts(change_dir: Path) -> dict[str, Any]:
+    path = change_dir / FINAL_SEQUENCE_RECEIPTS_REL
+    if not path.is_file():
+        return {
+            "schemaVersion": 1,
+            "changeId": change_dir.name,
+            "receipts": {},
+            "attempts": [],
+        }
+    value = _read_json(path)
+    if value.get("schemaVersion") != 1:
+        raise ValueError("unsupported final-sequence receipt schema")
+    receipts = value.get("receipts")
+    if not isinstance(receipts, dict):
+        raise ValueError("final-sequence receipts must be an object")
+    attempts = value.get("attempts")
+    if attempts is not None and not isinstance(attempts, list):
+        raise ValueError("final-sequence attempts must be an array")
+    value.setdefault("attempts", [])
+    return value
+
+
+def _validated_sequence_subject(subject: dict[str, Any]) -> dict[str, str]:
+    required = ("productCommit", "productTreeHash", "environmentHash")
+    missing = [
+        field
+        for field in required
+        if not isinstance(subject.get(field), str)
+        or not str(subject[field]).strip()
+    ]
+    if missing:
+        raise ValueError(
+            "final-sequence subject missing: " + ", ".join(missing)
+        )
+    return {field: str(subject[field]).strip() for field in required}
+
+
+def _record_sequence_attempt(
+    change_dir: Path,
+    journal: dict[str, Any],
+    *,
+    node_id: str,
+    ok: bool,
+    code: str,
+    subject: dict[str, str],
+) -> None:
+    attempts = journal.setdefault("attempts", [])
+    attempts.append(
+        {
+            "nodeId": node_id,
+            "ok": ok,
+            "code": code,
+            "subject": subject,
+            "recordedAt": he.now_iso(),
+        }
+    )
+    _write_json(change_dir / FINAL_SEQUENCE_RECEIPTS_REL, journal)
+
+
+def record_sequence_receipt(
+    change_dir: Path,
+    node_id: str,
+    subject: dict[str, Any],
+    *,
+    status: str = "OK",
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record one final-sequence transition after validating its predecessor."""
+    change_dir = change_dir.resolve()
+    contract = _final_sequence_contract(change_dir)
+    if contract is None:
+        return {
+            "ok": False,
+            "code": "FINAL_SEQUENCE_NOT_CONFIGURED",
+            "message": "gate policy does not declare finalSequence",
+        }
+    node_ids = [
+        str(item)
+        for item in contract.get("nodeIds") or []
+        if isinstance(item, str)
+    ]
+    if node_id not in node_ids:
+        return {
+            "ok": False,
+            "code": "SEQUENCE_NODE_UNKNOWN",
+            "message": f"node is not in finalSequence: {node_id}",
+        }
+    try:
+        normalized_subject = _validated_sequence_subject(subject)
+        journal = _load_sequence_receipts(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "SEQUENCE_RECEIPT_INVALID",
+            "message": str(exc),
+        }
+    receipts = journal["receipts"]
+    index = node_ids.index(node_id)
+    predecessor_id = node_ids[index - 1] if index else None
+    if predecessor_id is not None:
+        predecessor = receipts.get(predecessor_id)
+        if (
+            not isinstance(predecessor, dict)
+            or str(predecessor.get("status") or "").upper() != "OK"
+        ):
+            code = "SEQUENCE_PREDECESSOR_MISSING"
+            _record_sequence_attempt(
+                change_dir,
+                journal,
+                node_id=node_id,
+                ok=False,
+                code=code,
+                subject=normalized_subject,
+            )
+            return {
+                "ok": False,
+                "code": code,
+                "message": f"required predecessor is not complete: {predecessor_id}",
+                "predecessor": predecessor_id,
+            }
+        if predecessor.get("subject") != normalized_subject:
+            code = "SEQUENCE_SUBJECT_CHANGED"
+            _record_sequence_attempt(
+                change_dir,
+                journal,
+                node_id=node_id,
+                ok=False,
+                code=code,
+                subject=normalized_subject,
+            )
+            return {
+                "ok": False,
+                "code": code,
+                "message": "candidate subject differs from predecessor receipt",
+                "expected": predecessor.get("subject"),
+                "actual": normalized_subject,
+            }
+
+    freeze_node_id = str(contract.get("freezeNodeId") or "")
+    freeze_receipt = receipts.get(freeze_node_id)
+    if (
+        freeze_node_id
+        and isinstance(freeze_receipt, dict)
+        and freeze_receipt.get("subject") != normalized_subject
+    ):
+        code = "SEQUENCE_SUBJECT_CHANGED"
+        _record_sequence_attempt(
+            change_dir,
+            journal,
+            node_id=node_id,
+            ok=False,
+            code=code,
+            subject=normalized_subject,
+        )
+        return {
+            "ok": False,
+            "code": code,
+            "message": "candidate subject changed after code-freeze",
+            "expected": freeze_receipt.get("subject"),
+            "actual": normalized_subject,
+        }
+
+    normalized_status = status.strip().upper()
+    if normalized_status not in {"OK", "WARN", "FAIL"}:
+        return {
+            "ok": False,
+            "code": "SEQUENCE_STATUS_INVALID",
+            "message": f"unsupported final-sequence status: {status}",
+        }
+    normalized_evidence = evidence if isinstance(evidence, dict) else {}
+    if node_id == "sequence:unit-test-full":
+        full_execution_id = str(
+            normalized_evidence.get("fullExecutionId") or ""
+        ).strip()
+        try:
+            environment_journal = load_environment_execution_journal(
+                change_dir
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            environment_journal = {"fullExecutions": []}
+            environment_error = str(exc)
+        else:
+            environment_error = ""
+        full_execution = next(
+            (
+                item
+                for item in environment_journal.get("fullExecutions") or []
+                if isinstance(item, dict)
+                and item.get("fullExecutionId") == full_execution_id
+            ),
+            None,
+        )
+        if (
+            not full_execution_id
+            or not isinstance(full_execution, dict)
+            or full_execution.get("subject") != normalized_subject
+            or full_execution.get("status") != "OK"
+            or full_execution.get("assertionBearing") is not True
+        ):
+            code = "FULL_EXECUTION_EVIDENCE_REQUIRED"
+            _record_sequence_attempt(
+                change_dir,
+                journal,
+                node_id=node_id,
+                ok=False,
+                code=code,
+                subject=normalized_subject,
+            )
+            return {
+                "ok": False,
+                "code": code,
+                "message": (
+                    "unit-test-full requires a successful assertion-bearing "
+                    "Full execution bound to the frozen subject"
+                ),
+                "fullExecutionId": full_execution_id or None,
+                "journalError": environment_error or None,
+            }
+    receipt = {
+        "schemaVersion": 1,
+        "nodeId": node_id,
+        "status": normalized_status,
+        "subject": normalized_subject,
+        "evidence": normalized_evidence,
+        "recordedAt": he.now_iso(),
+    }
+    existing = receipts.get(node_id)
+    reused = (
+        isinstance(existing, dict)
+        and existing.get("status") == normalized_status
+        and existing.get("subject") == normalized_subject
+        and existing.get("evidence") == receipt["evidence"]
+    )
+    if not reused:
+        receipts[node_id] = receipt
+    _record_sequence_attempt(
+        change_dir,
+        journal,
+        node_id=node_id,
+        ok=normalized_status == "OK",
+        code=(
+            "SEQUENCE_RECEIPT_REUSED"
+            if reused
+            else (
+                "SEQUENCE_STEP_RECORDED"
+                if normalized_status == "OK"
+                else "SEQUENCE_STEP_FAILED"
+            )
+        ),
+        subject=normalized_subject,
+    )
+    ok = normalized_status == "OK"
+    return {
+        "ok": ok,
+        "code": (
+            "SEQUENCE_RECEIPT_REUSED"
+            if reused
+            else ("SEQUENCE_STEP_RECORDED" if ok else "SEQUENCE_STEP_FAILED")
+        ),
+        "nodeId": node_id,
+        "receipt": receipts.get(node_id),
+        "reused": reused,
+    }
+
+
+def evaluate_final_sequence(
+    change_dir: Path,
+    subject: dict[str, Any],
+    *,
+    exclude_nodes: set[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate all required sequence receipts against one candidate subject."""
+    change_dir = change_dir.resolve()
+    try:
+        contract = _final_sequence_contract(change_dir)
+        if contract is None:
+            return {
+                "ok": True,
+                "code": "FINAL_SEQUENCE_NOT_CONFIGURED",
+                "skipped": True,
+                "missing": [],
+                "invalid": [],
+            }
+        normalized_subject = _validated_sequence_subject(subject)
+        journal = _load_sequence_receipts(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "FINAL_SEQUENCE_INVALID",
+            "message": str(exc),
+        }
+    excluded = exclude_nodes or set()
+    required = [
+        str(item)
+        for item in contract.get("nodeIds") or []
+        if isinstance(item, str) and item not in excluded
+    ]
+    receipts = journal["receipts"]
+    missing = [node_id for node_id in required if node_id not in receipts]
+    invalid = []
+    for node_id in required:
+        receipt = receipts.get(node_id)
+        if not isinstance(receipt, dict):
+            continue
+        if (
+            str(receipt.get("status") or "").upper() != "OK"
+            or receipt.get("subject") != normalized_subject
+        ):
+            invalid.append(
+                {
+                    "nodeId": node_id,
+                    "status": receipt.get("status"),
+                    "subject": receipt.get("subject"),
+                }
+            )
+    ok = not missing and not invalid
+    return {
+        "ok": ok,
+        "code": (
+            "FINAL_SEQUENCE_COMPLETE"
+            if ok
+            else "FINAL_SEQUENCE_INCOMPLETE"
+        ),
+        "message": (
+            "all required final-sequence receipts match the candidate"
+            if ok
+            else f"missing={len(missing)} invalid={len(invalid)}"
+        ),
+        "subject": normalized_subject,
+        "required": required,
+        "missing": missing,
+        "invalid": invalid,
+        "receiptsPath": str(change_dir / FINAL_SEQUENCE_RECEIPTS_REL),
+    }
+
+
+def load_environment_execution_journal(
+    change_dir: Path,
+) -> dict[str, Any]:
+    path = change_dir.resolve() / ENVIRONMENT_EXECUTIONS_REL
+    if not path.is_file():
+        return {
+            "schemaVersion": 1,
+            "changeId": change_dir.name,
+            "environmentAttempts": [],
+            "fullExecutions": [],
+        }
+    journal = _read_json(path)
+    if journal.get("schemaVersion") != 1:
+        raise ValueError("unsupported environment execution journal schema")
+    for field in ("environmentAttempts", "fullExecutions"):
+        if not isinstance(journal.get(field), list):
+            raise ValueError(f"environment journal {field} must be an array")
+    return journal
+
+
+def record_environment_attempt(
+    change_dir: Path,
+    subject: dict[str, Any],
+    *,
+    stage: str,
+    status: str,
+    duration_ms: int,
+    failure_signature: str | None = None,
+) -> dict[str, Any]:
+    """Record environment lifecycle work without manufacturing Full results."""
+    change_dir = change_dir.resolve()
+    if stage not in {"prepare", "verify", "release"}:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_STAGE_INVALID",
+            "message": f"unsupported environment stage: {stage}",
+        }
+    normalized_status = status.strip().upper()
+    if normalized_status not in {
+        "OK",
+        "ENVIRONMENT_ERROR",
+        "INTERRUPTED",
+        "FAIL",
+    }:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_STATUS_INVALID",
+            "message": f"unsupported environment status: {status}",
+        }
+    if not isinstance(duration_ms, int) or duration_ms < 0:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_DURATION_INVALID",
+            "message": "duration_ms must be a non-negative integer",
+        }
+    try:
+        normalized_subject = _validated_sequence_subject(subject)
+        journal = load_environment_execution_journal(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_JOURNAL_INVALID",
+            "message": str(exc),
+        }
+    attempt = {
+        "attemptId": "env-" + uuid.uuid4().hex,
+        "stage": stage,
+        "status": normalized_status,
+        "subject": normalized_subject,
+        "durationMs": duration_ms,
+        "failureSignature": failure_signature,
+        "recordedAt": he.now_iso(),
+    }
+    journal["environmentAttempts"].append(attempt)
+    _write_json(change_dir / ENVIRONMENT_EXECUTIONS_REL, journal)
+    ok = normalized_status == "OK"
+    return {
+        "ok": ok,
+        "code": (
+            "ENVIRONMENT_STAGE_RECORDED"
+            if ok
+            else "ENVIRONMENT_ERROR_RECORDED"
+        ),
+        "attempt": attempt,
+        "fullExecutionCreated": False,
+    }
+
+
+def record_full_test_execution(
+    change_dir: Path,
+    subject: dict[str, Any],
+    *,
+    status: str,
+    prepare_ms: int,
+    test_ms: int,
+    cleanup_ms: int,
+    result_digest: str,
+    supersedes: str | None = None,
+) -> dict[str, Any]:
+    """Record one assertion-bearing Full execution after environment success."""
+    change_dir = change_dir.resolve()
+    normalized_status = status.strip().upper()
+    if normalized_status not in {"OK", "FAIL"}:
+        return {
+            "ok": False,
+            "code": "FULL_STATUS_INVALID",
+            "message": "Full status must be OK or FAIL",
+        }
+    durations = (prepare_ms, test_ms, cleanup_ms)
+    if any(not isinstance(value, int) or value < 0 for value in durations):
+        return {
+            "ok": False,
+            "code": "FULL_DURATION_INVALID",
+            "message": "prepare/test/cleanup durations must be non-negative",
+        }
+    if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", result_digest):
+        return {
+            "ok": False,
+            "code": "FULL_RESULT_DIGEST_INVALID",
+            "message": "result_digest must be a sha256 digest",
+        }
+    try:
+        normalized_subject = _validated_sequence_subject(subject)
+        journal = load_environment_execution_journal(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_JOURNAL_INVALID",
+            "message": str(exc),
+        }
+    successful_environment = {
+        str(item.get("stage") or ""): item
+        for item in journal["environmentAttempts"]
+        if isinstance(item, dict)
+        and item.get("subject") == normalized_subject
+        and str(item.get("status") or "").upper() == "OK"
+    }
+    missing = [
+        stage
+        for stage in ("prepare", "verify")
+        if stage not in successful_environment
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_NOT_READY",
+            "message": (
+                "Full execution requires successful environment stages: "
+                + ", ".join(missing)
+            ),
+            "missing": missing,
+        }
+    prior_success = next(
+        (
+            item
+            for item in reversed(journal["fullExecutions"])
+            if isinstance(item, dict)
+            and item.get("subject") == normalized_subject
+            and item.get("status") == "OK"
+        ),
+        None,
+    )
+    if prior_success is not None:
+        if prior_success.get("resultDigest") == result_digest:
+            sequence_receipt = record_sequence_receipt(
+                change_dir,
+                "sequence:unit-test-full",
+                normalized_subject,
+                evidence={
+                    "fullExecutionId": prior_success.get("fullExecutionId"),
+                    "resultDigest": result_digest,
+                    "assertionBearing": True,
+                },
+            )
+            return {
+                "ok": True,
+                "code": "FULL_EXECUTION_REUSED",
+                "execution": prior_success,
+                "reused": True,
+                "sequenceReceipt": sequence_receipt,
+            }
+        return {
+            "ok": False,
+            "code": "FULL_ALREADY_COMPLETED",
+            "message": (
+                "a successful assertion-bearing Full already exists for this identity"
+            ),
+            "existingExecutionId": prior_success.get("fullExecutionId"),
+        }
+    prior_failed_ids = {
+        str(item.get("fullExecutionId") or "")
+        for item in journal["fullExecutions"]
+        if isinstance(item, dict)
+        and item.get("subject") == normalized_subject
+        and item.get("status") == "FAIL"
+    }
+    if prior_failed_ids and supersedes not in prior_failed_ids:
+        return {
+            "ok": False,
+            "code": "FULL_SUPERSESSION_REQUIRED",
+            "message": "Full rerun after assertion failure must name supersedes",
+            "priorFailedExecutionIds": sorted(prior_failed_ids),
+        }
+    execution = {
+        "fullExecutionId": "full-" + uuid.uuid4().hex,
+        "status": normalized_status,
+        "subject": normalized_subject,
+        "environmentAttemptIds": [
+            successful_environment[stage]["attemptId"]
+            for stage in ("prepare", "verify")
+        ],
+        "prepareMs": prepare_ms,
+        "testExecutionMs": test_ms,
+        "cleanupMs": cleanup_ms,
+        "totalMs": prepare_ms + test_ms + cleanup_ms,
+        "resultDigest": result_digest,
+        "supersedes": supersedes,
+        "assertionBearing": True,
+        "recordedAt": he.now_iso(),
+    }
+    journal["fullExecutions"].append(execution)
+    _write_json(change_dir / ENVIRONMENT_EXECUTIONS_REL, journal)
+    sequence_receipt = None
+    if normalized_status == "OK":
+        sequence_receipt = record_sequence_receipt(
+            change_dir,
+            "sequence:unit-test-full",
+            normalized_subject,
+            evidence={
+                "fullExecutionId": execution["fullExecutionId"],
+                "resultDigest": result_digest,
+                "assertionBearing": True,
+            },
+        )
+    return {
+        "ok": normalized_status == "OK",
+        "code": (
+            "FULL_EXECUTION_RECORDED"
+            if normalized_status == "OK"
+            else "FULL_ASSERTIONS_FAILED"
+        ),
+        "execution": execution,
+        "reused": False,
+        "sequenceReceipt": sequence_receipt,
+    }
 
 
 def _stable_hex(*parts: Any, length: int) -> str:
@@ -667,9 +1288,26 @@ def collect_node_evidence(
 ) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     validations = (ledger or {}).get("validations") or {}
+    sequence_receipts = _load_sequence_receipts(change_dir).get("receipts") or {}
     for node in dag.get("nodes") or []:
         node_id = str(node.get("id") or "")
-        if node.get("kind") == "validation" or node_id.startswith("validation:"):
+        if node.get("kind") == "sequence" or node_id.startswith("sequence:"):
+            receipt = (
+                sequence_receipts.get(node_id)
+                if isinstance(sequence_receipts, dict)
+                else None
+            )
+            status = (
+                str(receipt.get("status") or "").upper()
+                if isinstance(receipt, dict)
+                else ""
+            )
+            result[node_id] = {
+                "reusable": status == "OK",
+                "reason": f"sequence-status:{status or 'missing'}",
+                "receipt": receipt,
+            }
+        elif node.get("kind") == "validation" or node_id.startswith("validation:"):
             verification = node_id.split(":", 1)[1]
             entry = validations.get(verification) if isinstance(validations, dict) else None
             if not isinstance(entry, dict):
@@ -895,6 +1533,78 @@ def _cmd_metrics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_record_sequence(args: argparse.Namespace) -> int:
+    result = record_sequence_receipt(
+        Path(args.change_dir),
+        args.node,
+        {
+            "productCommit": args.product_commit,
+            "productTreeHash": args.product_tree_hash,
+            "environmentHash": args.environment_hash,
+        },
+        status=args.status,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 2
+
+
+def _cmd_sequence_status(args: argparse.Namespace) -> int:
+    result = evaluate_final_sequence(
+        Path(args.change_dir),
+        {
+            "productCommit": args.product_commit,
+            "productTreeHash": args.product_tree_hash,
+            "environmentHash": args.environment_hash,
+        },
+        exclude_nodes={"sequence:archive"} if args.pre_archive else set(),
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 2
+
+
+def _subject_from_args(args: argparse.Namespace) -> dict[str, str]:
+    return {
+        "productCommit": args.product_commit,
+        "productTreeHash": args.product_tree_hash,
+        "environmentHash": args.environment_hash,
+    }
+
+
+def _cmd_record_environment(args: argparse.Namespace) -> int:
+    result = record_environment_attempt(
+        Path(args.change_dir),
+        _subject_from_args(args),
+        stage=args.stage,
+        status=args.status,
+        duration_ms=args.duration_ms,
+        failure_signature=args.failure_signature,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 2
+
+
+def _cmd_record_full(args: argparse.Namespace) -> int:
+    result = record_full_test_execution(
+        Path(args.change_dir),
+        _subject_from_args(args),
+        status=args.status,
+        prepare_ms=args.prepare_ms,
+        test_ms=args.test_ms,
+        cleanup_ms=args.cleanup_ms,
+        result_digest=args.result_digest,
+        supersedes=args.supersedes,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 2
+
+
+def _add_subject_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--change-dir", required=True)
+    parser.add_argument("--product-commit", required=True)
+    parser.add_argument("--product-tree-hash", required=True)
+    parser.add_argument("--environment-hash", required=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_phase.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -914,6 +1624,53 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_parser.add_argument("--head-sha")
     metrics_parser.add_argument("--output")
     metrics_parser.set_defaults(func=_cmd_metrics)
+
+    record_parser = sub.add_parser("record-sequence")
+    record_parser.add_argument("--change-dir", required=True)
+    record_parser.add_argument("--node", required=True)
+    record_parser.add_argument("--product-commit", required=True)
+    record_parser.add_argument("--product-tree-hash", required=True)
+    record_parser.add_argument("--environment-hash", required=True)
+    record_parser.add_argument(
+        "--status",
+        choices=("OK", "WARN", "FAIL"),
+        default="OK",
+    )
+    record_parser.set_defaults(func=_cmd_record_sequence)
+
+    sequence_parser = sub.add_parser("sequence-status")
+    sequence_parser.add_argument("--change-dir", required=True)
+    sequence_parser.add_argument("--product-commit", required=True)
+    sequence_parser.add_argument("--product-tree-hash", required=True)
+    sequence_parser.add_argument("--environment-hash", required=True)
+    sequence_parser.add_argument("--pre-archive", action="store_true")
+    sequence_parser.set_defaults(func=_cmd_sequence_status)
+
+    environment_parser = sub.add_parser("record-environment")
+    _add_subject_arguments(environment_parser)
+    environment_parser.add_argument(
+        "--stage",
+        choices=("prepare", "verify", "release"),
+        required=True,
+    )
+    environment_parser.add_argument(
+        "--status",
+        choices=("OK", "ENVIRONMENT_ERROR", "INTERRUPTED", "FAIL"),
+        required=True,
+    )
+    environment_parser.add_argument("--duration-ms", type=int, required=True)
+    environment_parser.add_argument("--failure-signature")
+    environment_parser.set_defaults(func=_cmd_record_environment)
+
+    full_parser = sub.add_parser("record-full")
+    _add_subject_arguments(full_parser)
+    full_parser.add_argument("--status", choices=("OK", "FAIL"), required=True)
+    full_parser.add_argument("--prepare-ms", type=int, required=True)
+    full_parser.add_argument("--test-ms", type=int, required=True)
+    full_parser.add_argument("--cleanup-ms", type=int, required=True)
+    full_parser.add_argument("--result-digest", required=True)
+    full_parser.add_argument("--supersedes")
+    full_parser.set_defaults(func=_cmd_record_full)
     return parser
 
 
