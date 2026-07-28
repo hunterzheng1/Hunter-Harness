@@ -56,6 +56,11 @@ REASONS = ("tdd-created", "stale-test-repair", "test-updated")
 class LockUnavailable(RuntimeError):
     """A compatible lock file is already held by another process."""
 
+
+class ProfileConfigInvalid(ValueError):
+    """The selected project-owned test-tracking profile is malformed."""
+
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -218,30 +223,69 @@ def _manifest_target_inside(change_root: Path, manifest: Path) -> bool:
     )
 
 
-def _profile_config(project: Path) -> tuple[list[str], list[str]] | None:
-    profile_path = project / PROFILE_REL
-    if not profile_path.is_file():
-        return None
+def _profile_config(
+    project: Path,
+    *,
+    strict: bool = False,
+) -> tuple[list[str], list[str]] | None:
+    def invalid(message: str) -> tuple[list[str], list[str]]:
+        if strict:
+            raise ProfileConfigInvalid(message)
+        return [], []
+
+    local_profile = project / PROFILE_REL
+    if os.path.lexists(local_profile):
+        profile_path = local_profile
+        if not profile_path.is_file():
+            return invalid(f"{PROFILE_REL.as_posix()} is not a regular file")
+    else:
+        state_project = _state_project_root(project)
+        common_root = harness_paths.common_root(project)
+        common_profile = state_project / PROFILE_REL
+        if (
+            state_project == project
+            or state_project != common_root
+            or not os.path.lexists(common_profile)
+        ):
+            return None
+        if not common_profile.is_file():
+            return invalid(
+                f"common {PROFILE_REL.as_posix()} is not a regular file"
+            )
+        profile_path = common_profile
     try:
         profile = _read_json(profile_path)
-    except (OSError, json.JSONDecodeError):
-        return [], []
-    tracking = profile.get("testTracking") if isinstance(profile, dict) else None
+    except (OSError, json.JSONDecodeError) as exc:
+        return invalid(f"cannot read {profile_path}: {exc}")
+    if not isinstance(profile, dict):
+        return invalid(f"{profile_path} must contain a JSON object")
+    tracking = profile.get("testTracking")
+    if not isinstance(tracking, dict):
+        return invalid(f"{profile_path} testTracking must be an object")
     paths = tracking.get("paths") if isinstance(tracking, dict) else None
-    if not isinstance(paths, list):
-        return [], []
-    excluded = profile.get("excludedRoots") if isinstance(profile, dict) else None
+    if (
+        not isinstance(paths, list)
+        or not paths
+        or any(not isinstance(item, str) or not item.strip() for item in paths)
+    ):
+        return invalid(
+            f"{profile_path} testTracking.paths must be a non-empty string list"
+        )
+    excluded = profile.get("excludedRoots")
+    if excluded is not None and (
+        not isinstance(excluded, list)
+        or any(not isinstance(item, str) or not item.strip() for item in excluded)
+    ):
+        return invalid(f"{profile_path} excludedRoots must be a string list")
     configured_roots = (
-        [item.replace("\\", "/").strip("/") for item in excluded if isinstance(item, str) and item]
+        [item.replace("\\", "/").strip("/") for item in excluded]
         if isinstance(excluded, list)
         else []
     )
     excluded_roots = list(
         dict.fromkeys([*configured_roots, *MANDATORY_EXCLUDED_ROOTS])
     )
-    patterns = [
-        item.replace("\\", "/") for item in paths if isinstance(item, str) and item
-    ]
+    patterns = [item.replace("\\", "/") for item in paths]
     return patterns, excluded_roots
 
 
@@ -295,6 +339,29 @@ def _validate_file(project: Path, raw: str) -> tuple[Path | None, str | None, st
     if not _allowed_test_path(project, rel):
         return None, rel, "TEST_PATH_NOT_ALLOWED"
     return resolved, rel, None
+
+
+def _validate_snapshot_file(
+    project: Path,
+    raw: str,
+) -> tuple[Path | None, str | None, str | None]:
+    """Validate a path captured under the begin-time profile.
+
+    The active profile may legitimately change before close. Snapshot paths
+    remain constrained to the repository but are not reclassified against the
+    newer allowlist.
+    """
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = project / candidate
+    resolved = candidate.resolve()
+    if not _inside(resolved, project):
+        return None, None, "PATH_OUTSIDE_PROJECT"
+    if not resolved.exists():
+        return None, None, "FILE_NOT_FOUND"
+    if not resolved.is_file():
+        return None, None, "NOT_REGULAR_FILE"
+    return resolved, resolved.relative_to(project).as_posix(), None
 
 
 def _contract_is_v2(change_root: Path) -> bool:
@@ -870,10 +937,14 @@ def _walk_matching_files(
     return matches
 
 
-def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
+def _enumerate_allowed_test_files(
+    project_root: Path,
+    *,
+    strict_profile: bool = False,
+) -> dict[str, str]:
     """Map repo-relative test path -> sha256 for all allowed existing files."""
     found: dict[str, str] = {}
-    config = _profile_config(project_root)
+    config = _profile_config(project_root, strict=strict_profile)
     if config is None:
         patterns = ["test/**", "tests/**", "src/test/**"]
         excluded_roots = [
@@ -888,11 +959,283 @@ def _enumerate_allowed_test_files(project_root: Path) -> dict[str, str]:
         if not _inside(resolved, base):
             continue
         rel = resolved.relative_to(base).as_posix()
-        if rel in seen or not _allowed_test_path(project_root, rel):
+        if (
+            rel in seen
+            or _path_is_excluded(rel, excluded_roots)
+            or not any(_matches_pattern(rel, pattern) for pattern in patterns)
+        ):
             continue
         seen.add(rel)
         found[rel] = _sha256(resolved)
     return found
+
+
+def _current_head(project_root: Path) -> str | None:
+    result = _git(project_root, "rev-parse", "--verify", "HEAD")
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return value if re.fullmatch(r"[0-9a-fA-F]{40,64}", value) else None
+
+
+def _snapshot_baseline_commit(
+    project_root: Path,
+    change_root: Path,
+    snapshot: dict[str, Any],
+) -> str | None:
+    candidates: list[Any] = [snapshot.get("headCommit")]
+    for state_snapshot_path in dict.fromkeys(
+        [
+            change_root / "meta" / "state-snapshot.json",
+            _state_root(change_root) / "meta" / "state-snapshot.json",
+        ]
+    ):
+        if not state_snapshot_path.is_file():
+            continue
+        try:
+            state_snapshot = _read_json(state_snapshot_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(state_snapshot, dict):
+            git_state = state_snapshot.get("git")
+            if isinstance(git_state, dict):
+                candidates.extend([git_state.get("base"), git_state.get("head")])
+    for candidate in candidates:
+        if not isinstance(candidate, str) or re.fullmatch(
+            r"[0-9a-fA-F]{40,64}", candidate
+        ) is None:
+            continue
+        exists = _git(project_root, "cat-file", "-e", f"{candidate}^{{commit}}")
+        if exists.returncode == 0:
+            return candidate
+    return None
+
+
+def _classify_against_baseline(
+    project_root: Path,
+    rel: str,
+    baseline_commit: str | None,
+) -> tuple[str | None, str | None]:
+    """Return touched reason (or None when unchanged) and an optional error."""
+    if baseline_commit is None:
+        return None, "BASELINE_COMMIT_MISSING"
+    listed = _git(
+        project_root,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        "-z",
+        baseline_commit,
+        "--",
+        rel,
+    )
+    if listed.returncode != 0:
+        return None, "BASELINE_LOOKUP_FAILED"
+    tracked_at_baseline = rel in {
+        item for item in listed.stdout.split("\0") if item
+    }
+    if not tracked_at_baseline:
+        return "tdd-created", None
+    changed = _git(
+        project_root,
+        "diff",
+        "--quiet",
+        baseline_commit,
+        "--",
+        rel,
+    )
+    if changed.returncode == 0:
+        return None, None
+    if changed.returncode == 1:
+        return "test-updated", None
+    return None, "BASELINE_DIFF_FAILED"
+
+
+def _profile_fingerprint(
+    project_root: Path,
+    *,
+    strict_profile: bool = False,
+) -> str:
+    config = _profile_config(project_root, strict=strict_profile)
+    payload = json.dumps(
+        {"mode": "fallback"} if config is None else {"mode": "profile", "value": config},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _reconcile_close_manifest(
+    project_root: Path,
+    change_root: Path,
+    recorded: set[str],
+    baseline_commit: str | None,
+) -> dict[str, Any]:
+    manifest_path = _manifest_path(change_root)
+    if manifest_path is None:
+        return {"ok": False, "code": "MANIFEST_PATH_OUTSIDE_PROJECT"}
+    if not manifest_path.is_file():
+        return {
+            "ok": True,
+            "code": "NO_MANIFEST",
+            "removedCurrentTouches": 0,
+            "deletedEntries": 0,
+            "preservedForeignEntries": 0,
+        }
+
+    lock_path = manifest_path.with_name(manifest_path.name + ".lock")
+    try:
+        with _exclusive_lock(lock_path, wait_seconds=5.0):
+            try:
+                manifest = _read_json(manifest_path)
+            except (OSError, json.JSONDecodeError) as exc:
+                return {"ok": False, "code": "MANIFEST_INVALID", "error": str(exc)}
+            is_v2 = isinstance(manifest, dict) and manifest.get("schemaVersion") == 2
+            validator = (
+                _validate_existing_manifest_v2
+                if is_v2
+                else _validate_existing_manifest
+            )
+            head_before = _current_head(project_root)
+            if head_before is None:
+                return {"ok": False, "code": "HEAD_MISSING"}
+            allow_hash_drift: set[str] = set()
+            raw_entries = (
+                manifest.get("files")
+                if isinstance(manifest, dict)
+                else None
+            )
+            if isinstance(raw_entries, list):
+                for raw_item in raw_entries:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    rel = raw_item.get("path")
+                    if (
+                        not isinstance(rel, str)
+                        or not rel
+                        or rel in recorded
+                        or raw_item.get("reason") == "stale-test-repair"
+                    ):
+                        continue
+                    touched_reason, classify_error = _classify_against_baseline(
+                        project_root,
+                        rel,
+                        baseline_commit,
+                    )
+                    if classify_error:
+                        return {
+                            "ok": False,
+                            "code": classify_error,
+                            "files": [rel],
+                        }
+                    if touched_reason is None:
+                        allow_hash_drift.add(rel)
+            error, validated = validator(
+                project_root,
+                manifest,
+                allow_hash_drift=allow_hash_drift,
+                require_files=False,
+            )
+            if error:
+                return {"ok": False, "code": error}
+
+            before_hash = _sha256(manifest_path)
+            change_id = change_root.name
+            reconciled: list[dict[str, Any]] = []
+            removed_paths: list[str] = []
+            removed_current_touches = 0
+            deleted_entries = 0
+            preserved_foreign_entries = 0
+
+            for rel in sorted(validated):
+                item = dict(validated[rel])
+                if rel in recorded or item.get("reason") == "stale-test-repair":
+                    reconciled.append(item)
+                    continue
+                touched_reason, classify_error = _classify_against_baseline(
+                    project_root,
+                    rel,
+                    baseline_commit,
+                )
+                if classify_error:
+                    return {"ok": False, "code": classify_error, "files": [rel]}
+                if touched_reason is not None:
+                    reconciled.append(item)
+                    continue
+
+                if not is_v2:
+                    removed_paths.append(rel)
+                    deleted_entries += 1
+                    continue
+
+                touched_by = list(item.get("touchedBy") or [])
+                if change_id not in touched_by:
+                    reconciled.append(item)
+                    preserved_foreign_entries += 1
+                    continue
+                remaining = [owner for owner in touched_by if owner != change_id]
+                removed_current_touches += 1
+                if item.get("introducedBy") == change_id:
+                    if remaining:
+                        return {
+                            "ok": False,
+                            "code": "FOREIGN_PROVENANCE_CONFLICT",
+                            "files": [rel],
+                        }
+                    removed_paths.append(rel)
+                    deleted_entries += 1
+                    continue
+                item["touchedBy"] = remaining
+                item["commitScope"] = "foreign-change"
+                current_hash = logical_file_hash(project_root, rel)
+                item["logicalHash"] = current_hash
+                item["binaryHash"] = (
+                    None if current_hash.startswith("gitblob:") else current_hash
+                )
+                reconciled.append(item)
+                preserved_foreign_entries += 1
+
+            for rel in removed_paths:
+                touched_reason, classify_error = _classify_against_baseline(
+                    project_root,
+                    rel,
+                    baseline_commit,
+                )
+                if classify_error or touched_reason is not None:
+                    return {
+                        "ok": False,
+                        "code": classify_error or "FILE_CHANGED_DURING_RECONCILE",
+                        "files": [rel],
+                    }
+            if _current_head(project_root) != head_before:
+                return {"ok": False, "code": "HEAD_MOVED"}
+
+            updated = json.loads(json.dumps(manifest))
+            updated["files"] = reconciled
+            if reconciled:
+                recheck_error, _ = validator(
+                    project_root,
+                    updated,
+                    require_files=False,
+                )
+                if recheck_error:
+                    return {"ok": False, "code": recheck_error}
+                _write_json(manifest_path, updated)
+                after_hash: str | None = _sha256(manifest_path)
+            else:
+                manifest_path.unlink()
+                after_hash = None
+    except LockUnavailable:
+        return {"ok": False, "code": "MANIFEST_LOCKED"}
+
+    return {
+        "ok": True,
+        "code": "RECONCILED",
+        "manifestHashBefore": before_hash,
+        "manifestHashAfter": after_hash,
+        "removedCurrentTouches": removed_current_touches,
+        "deletedEntries": deleted_entries,
+        "preservedForeignEntries": preserved_foreign_entries,
+    }
 
 
 def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
@@ -907,6 +1250,19 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     snapshot_path = _state_root(change_root) / SNAPSHOT_REL
     if not _manifest_target_inside(change_root, snapshot_path):
         return _result(False, action, "SNAPSHOT_PATH_OUTSIDE_PROJECT", [])
+    try:
+        current_profile_fingerprint = _profile_fingerprint(
+            project_root,
+            strict_profile=True,
+        )
+    except ProfileConfigInvalid as exc:
+        return _result(
+            False,
+            action,
+            "PROFILE_INVALID",
+            [],
+            error=str(exc),
+        )
 
     if snapshot_path.is_file():
         try:
@@ -924,6 +1280,11 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
                    for item in entries)
         ):
             return _result(False, action, "SNAPSHOT_INVALID", [])
+        if (
+            isinstance(snapshot.get("profileFingerprint"), str)
+            and snapshot["profileFingerprint"] != current_profile_fingerprint
+        ):
+            return _result(False, action, "PROFILE_CHANGED", [])
         return _result(
             True,
             action,
@@ -933,11 +1294,26 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             fileCount=len(entries),
         )
 
-    files = _enumerate_allowed_test_files(project_root)
+    try:
+        files = _enumerate_allowed_test_files(
+            project_root,
+            strict_profile=True,
+        )
+    except ProfileConfigInvalid as exc:
+        return _result(
+            False,
+            action,
+            "PROFILE_INVALID",
+            [],
+            error=str(exc),
+        )
     snapshot = {
         "schemaVersion": SCHEMA_VERSION,
         "mode": MODE,
         "projectRoot": str(project_root),
+        "repositoryId": harness_paths.repository_identity(project_root),
+        "headCommit": _current_head(project_root),
+        "profileFingerprint": current_profile_fingerprint,
         "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "files": [
             {"path": rel, "sha256": digest, "ignored": _is_ignored(project_root, rel)}
@@ -987,6 +1363,36 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             expectedRoot=snapshot_root,
             actualRoot=str(project_root),
         )
+    snapshot_repository = snapshot.get("repositoryId")
+    if (
+        snapshot_repository is not None
+        and snapshot_repository != harness_paths.repository_identity(project_root)
+    ):
+        return _result(False, action, "REPOSITORY_MISMATCH", [])
+    try:
+        current_profile_fingerprint = _profile_fingerprint(
+            project_root,
+            strict_profile=True,
+        )
+    except ProfileConfigInvalid as exc:
+        return _result(
+            False,
+            action,
+            "PROFILE_INVALID",
+            [],
+            error=str(exc),
+        )
+    if (
+        isinstance(snapshot.get("profileFingerprint"), str)
+        and snapshot["profileFingerprint"] != current_profile_fingerprint
+    ):
+        return _result(False, action, "PROFILE_CHANGED", [])
+    baseline_commit = _snapshot_baseline_commit(
+        project_root,
+        change_root,
+        snapshot,
+    )
+    profile_changed = False
 
     before_entries = snapshot.get("files")
     if not isinstance(before_entries, list):
@@ -999,14 +1405,26 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
         digest = item.get("sha256")
         if not isinstance(rel, str) or not rel or not isinstance(digest, str):
             return _result(False, action, "SNAPSHOT_INVALID", [])
-        path, normalized, error = _validate_file(project_root, rel)
+        path, normalized, error = _validate_snapshot_file(project_root, rel)
         if error:
             return _result(False, action, error, [rel])
         if normalized != rel or path is None:
             return _result(False, action, "PATH_ESCAPE", [rel])
         before[rel] = item
 
-    current = _enumerate_allowed_test_files(project_root)
+    try:
+        current = _enumerate_allowed_test_files(
+            project_root,
+            strict_profile=True,
+        )
+    except ProfileConfigInvalid as exc:
+        return _result(
+            False,
+            action,
+            "PROFILE_INVALID",
+            [],
+            error=str(exc),
+        )
     for rel in current:
         path, normalized, error = _validate_file(project_root, rel)
         if error:
@@ -1017,7 +1435,15 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     touched: list[tuple[str, str]] = []
     for rel, digest in current.items():
         if rel not in before:
-            touched.append((rel, "tdd-created"))
+            reason, classify_error = _classify_against_baseline(
+                project_root,
+                rel,
+                baseline_commit,
+            )
+            if classify_error:
+                return _result(False, action, classify_error, [rel])
+            if reason is not None:
+                touched.append((rel, reason))
             continue
         if before[rel]["sha256"] != digest:
             touched.append((rel, "test-updated"))
@@ -1039,6 +1465,19 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             return result
 
     recorded = [rel for rel, _ in touched]
+    reconciliation = _reconcile_close_manifest(
+        project_root,
+        change_root,
+        set(recorded),
+        baseline_commit,
+    )
+    if not reconciliation.get("ok"):
+        return _result(
+            False,
+            action,
+            str(reconciliation.get("code") or "MANIFEST_RECONCILE_FAILED"),
+            list(reconciliation.get("files") or []),
+        )
 
     # Cross-check (retro §5.10): if the manifest has active entries for this
     # change but close computed recordedCount=0, the snapshot/manifest/diff
@@ -1052,10 +1491,17 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
         if isinstance(manifest, dict):
             manifest_files = manifest.get("files")
             if isinstance(manifest_files, list):
+                is_v2 = manifest.get("schemaVersion") == 2
+                change_id = change_root.name
                 active_entries = [
                     f for f in manifest_files
                     if isinstance(f, dict)
                     and f.get("reason") in ("tdd-created", "test-updated", "stale-test-repair")
+                    and (
+                        not is_v2
+                        or f.get("introducedBy") == change_id
+                        or change_id in (f.get("touchedBy") or [])
+                    )
                 ]
                 if active_entries and not recorded:
                     return _result(
@@ -1075,6 +1521,13 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
         recorded,
         recordedCount=len(recorded),
         unchangedPreexisting=len(before) - sum(1 for rel, _ in touched if rel in before),
+        baselineCommit=baseline_commit,
+        profileChanged=profile_changed,
+        manifestReconciliation={
+            key: value
+            for key, value in reconciliation.items()
+            if key != "ok"
+        },
     )
 
 

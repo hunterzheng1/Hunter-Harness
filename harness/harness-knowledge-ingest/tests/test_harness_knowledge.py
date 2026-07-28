@@ -19,6 +19,13 @@ MCP_SCRIPT = ROOT / "scripts" / "harness_knowledge_mcp.py"
 MCP_CONFIG = ROOT / "mcp-config.example.json"
 EVALUATION_XML = ROOT / "evaluations" / "harness_knowledge_evaluation.xml"
 FIXTURE_PROJECT = ROOT / "tests" / "fixtures" / "mcp-eval-project"
+REPAIR_ARCHIVE_ID = "2026-07-28-authoritative-repair"
+REPAIR_ORIGINAL_REL = (
+    f".harness/archive/{REPAIR_ARCHIVE_ID}/reports/final/summary-data.json"
+)
+REPAIR_DERIVED_REL = (
+    f".harness/archive/{REPAIR_ARCHIVE_ID}/derived/v1/summary-data.json"
+)
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -229,6 +236,319 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def make_authoritative_repair_project(
+        self,
+        root: Path,
+        *,
+        name: str = "authoritative-repair-project",
+    ) -> tuple[Path, Path, Path]:
+        project = root / name
+        archive_dir = (
+            project
+            / ".harness"
+            / "archive"
+            / REPAIR_ARCHIVE_ID
+        )
+        original_path = (
+            archive_dir / "reports" / "final" / "summary-data.json"
+        )
+        write_json(
+            original_path,
+            {
+                "schemaVersion": "2.1",
+                "reportPipeline": VERIFIED_REPORT_PIPELINE,
+                "changeName": "original-change",
+                "businessGoal": "原版归档内容不应覆盖有效 authoritative repair。",
+                "finalStatus": "OK",
+                "changedFiles": [],
+                "maintenanceNotes": [],
+                "knownRisks": [],
+                "manualActions": [],
+            },
+        )
+        return project, archive_dir, original_path
+
+    def write_valid_authoritative_repair(
+        self,
+        archive_dir: Path,
+        *,
+        change_name: str = "authoritative-repaired-change",
+        version: str = "v1",
+        business_goal: str = "修复后的 authoritative 内容必须进入知识索引。",
+        final_commit: str = "",
+        changed_files: list[dict] | None = None,
+    ) -> tuple[Path, str]:
+        derived_path = archive_dir / "derived" / version / "summary-data.json"
+        summary = {
+            "schemaVersion": "2.3",
+            "reportPipeline": VERIFIED_REPORT_PIPELINE,
+            "changeName": change_name,
+            "businessGoal": business_goal,
+            "finalStatus": "OK",
+            "changedFiles": changed_files or [],
+            "maintenanceNotes": [],
+            "knownRisks": [],
+            "manualActions": [],
+        }
+        if final_commit:
+            summary["finalCommit"] = final_commit
+        write_json(derived_path, summary)
+        derived_hash = hashlib.sha256(derived_path.read_bytes()).hexdigest()
+        authoritative_hash = "sha256:" + derived_hash
+        write_json(
+            derived_path.parent / "repair-record.json",
+            {
+                "version": version,
+                "summarySha256": authoritative_hash,
+            },
+        )
+        write_json(
+            archive_dir / "derived" / "authoritative.json",
+            {
+                "version": version,
+                "summarySha256": authoritative_hash,
+            },
+        )
+        return derived_path, derived_hash
+
+    def ingest_payload(
+        self,
+        project: Path,
+        *,
+        no_incremental: bool = False,
+    ) -> dict:
+        args = ["ingest", "--project", str(project)]
+        if no_incremental:
+            args.append("--no-incremental")
+        result = self.run_cli(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def knowledge_index(self, project: Path) -> dict:
+        return json.loads(
+            (
+                project / ".harness" / "knowledge" / "index.json"
+            ).read_text(encoding="utf-8")
+        )
+
+    def knowledge_entries(self, project: Path) -> list[dict]:
+        entries_dir = project / ".harness" / "knowledge" / "entries"
+        return [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(entries_dir.rglob("*.json"))
+        ]
+
+    def assert_archive_record(
+        self,
+        project: Path,
+        summary_rel: str,
+        summary_hash: str,
+    ) -> dict:
+        archive_item = self.knowledge_index(project)["archives"]["items"][0]
+        self.assertEqual(archive_item["summaryData"], summary_rel)
+        self.assertEqual(archive_item["summarySha256"], summary_hash)
+        return archive_item
+
+    def assert_single_entry_provenance(
+        self,
+        project: Path,
+        summary_rel: str,
+        summary_hash: str,
+        change_name: str,
+    ) -> dict:
+        entries = self.knowledge_entries(project)
+        self.assertEqual(len(entries), 1)
+        entry = entries[0]
+        self.assertEqual(entry["source"]["summaryData"], summary_rel)
+        self.assertEqual(entry["source"]["summarySha256"], summary_hash)
+        self.assertEqual(entry["source"]["changeName"], change_name)
+        return entry
+
+    def break_valid_authoritative_repair(
+        self,
+        archive_dir: Path,
+        case: str,
+    ) -> str:
+        pointer_path = archive_dir / "derived" / "authoritative.json"
+        record_path = archive_dir / "derived" / "v1" / "repair-record.json"
+        if case == "record-version":
+            path, key, value = record_path, "version", "v2"
+            reason = "repair record version mismatch"
+        elif case == "pointer-hash":
+            path, key, value = (
+                pointer_path,
+                "summarySha256",
+                "sha256:" + ("1" * 64),
+            )
+            reason = "authoritative pointer hash mismatch"
+        else:
+            path, key, value = (
+                record_path,
+                "summarySha256",
+                "sha256:" + ("2" * 64),
+            )
+            reason = "repair record summary hash mismatch"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[key] = value
+        write_json(path, payload)
+        return reason
+
+    def assert_archive_quarantined(
+        self,
+        project: Path,
+        reason: str,
+        *,
+        required_id: str | None = None,
+    ) -> list[dict]:
+        entries = self.knowledge_entries(project)
+        self.assertTrue(entries)
+        self.assertFalse(
+            any(entry["status"] == "active" for entry in entries),
+            entries,
+        )
+        self.assertTrue(
+            all(
+                reason in (entry["lifecycle"].get("publishBlocked") or [])
+                for entry in entries
+            ),
+            entries,
+        )
+        if required_id is not None:
+            self.assertIn(required_id, {entry["id"] for entry in entries})
+        return entries
+
+    def promote_only_knowledge_entry(self, project: Path) -> str:
+        entries = self.knowledge_entries(project)
+        self.assertEqual(len(entries), 1)
+        entry_id = entries[0]["id"]
+        result = self.run_cli(
+            "promote",
+            "--project",
+            str(project),
+            "--id",
+            entry_id,
+            "--note",
+            "authoritative repair transition fixture",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return entry_id
+
+    def promote_entry_with_provenance(
+        self,
+        project: Path,
+        summary_rel: str,
+        summary_hash: str,
+    ) -> str:
+        matches = [
+            entry
+            for entry in self.knowledge_entries(project)
+            if entry["source"]["summaryData"] == summary_rel
+            and entry["source"]["summarySha256"] == summary_hash
+        ]
+        self.assertEqual(len(matches), 1, matches)
+        entry_id = matches[0]["id"]
+        result = self.run_cli(
+            "promote",
+            "--project",
+            str(project),
+            "--id",
+            entry_id,
+            "--note",
+            "current authoritative provenance fixture",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return entry_id
+
+    def assert_only_provenance_is_active(
+        self,
+        project: Path,
+        summary_rel: str,
+        summary_hash: str,
+    ) -> list[dict]:
+        entries = self.knowledge_entries(project)
+        active = [entry for entry in entries if entry["status"] == "active"]
+        self.assertTrue(active, entries)
+        self.assertEqual(
+            {
+                (
+                    entry["source"]["summaryData"],
+                    entry["source"]["summarySha256"],
+                )
+                for entry in active
+            },
+            {(summary_rel, summary_hash)},
+            entries,
+        )
+        return active
+
+    def assert_single_id_consistent_across_indexes(
+        self,
+        project: Path,
+        entry_id: str,
+        *,
+        status: str,
+        summary_rel: str,
+        summary_hash: str,
+    ) -> dict:
+        knowledge = project / ".harness" / "knowledge"
+        matching_paths = [
+            path
+            for path in (knowledge / "entries").rglob("*.json")
+            if json.loads(path.read_text(encoding="utf-8")).get("id")
+            == entry_id
+        ]
+        self.assertEqual(len(matching_paths), 1, matching_paths)
+        entry_path = matching_paths[0]
+        entry = json.loads(entry_path.read_text(encoding="utf-8"))
+        self.assertEqual(entry_path.parent.name, status)
+        self.assertEqual(entry["status"], status)
+        self.assertEqual(entry["source"]["summaryData"], summary_rel)
+        self.assertEqual(entry["source"]["summarySha256"], summary_hash)
+
+        index = self.knowledge_index(project)
+        index_matches = [
+            item for item in index["entries"] if item["id"] == entry_id
+        ]
+        self.assertEqual(len(index_matches), 1, index_matches)
+        index_entry = index_matches[0]
+        self.assertEqual(index_entry["status"], entry["status"])
+        self.assertEqual(
+            index_entry["sourceArchive"],
+            entry["source"]["archive"],
+        )
+        self.assertEqual(
+            index_entry["sourceCommit"],
+            entry["source"]["sourceCommit"],
+        )
+        self.assertEqual(
+            index["archives"]["items"][0]["summaryData"],
+            summary_rel,
+        )
+        self.assertEqual(
+            index["archives"]["items"][0]["summarySha256"],
+            summary_hash,
+        )
+
+        con = sqlite3.connect(knowledge / "index.sqlite")
+        try:
+            rows = con.execute(
+                """
+                select status, source_archive, source_commit, entry_json
+                from entries where id=?
+                """,
+                (entry_id,),
+            ).fetchall()
+        finally:
+            con.close()
+        self.assertEqual(len(rows), 1, rows)
+        sqlite_entry = json.loads(rows[0][3])
+        self.assertEqual(rows[0][0], entry["status"])
+        self.assertEqual(rows[0][1], entry["source"]["archive"])
+        self.assertEqual(rows[0][2] or "", entry["source"]["sourceCommit"])
+        self.assertEqual(sqlite_entry["status"], entry["status"])
+        self.assertEqual(sqlite_entry["source"], entry["source"])
+        return entry
 
     def test_later_failed_verification_marks_older_test_evidence_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -506,6 +826,782 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertEqual(count, index["stats"]["candidate"])
             self.assertGreaterEqual(file_count, count)
             self.assertGreaterEqual(by_file, 1)
+
+    def test_no_incremental_ingest_uses_hash_valid_authoritative_repair_for_index_and_entries(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, _ = self.make_authoritative_repair_project(
+                Path(tmp)
+            )
+            _, derived_hash = self.write_valid_authoritative_repair(archive_dir)
+            self.ingest_payload(project, no_incremental=True)
+            index = self.knowledge_index(project)
+            self.assertEqual(len(index["archives"]["items"]), 1)
+            entries = self.knowledge_entries(project)
+            self.assertEqual(len(entries), 1)
+            entry = entries[0]
+
+            archive_item = index["archives"]["items"][0]
+            self.assertEqual(
+                archive_item["summaryData"],
+                REPAIR_DERIVED_REL,
+                "index archives.items.summaryData must select the authoritative repair",
+            )
+            self.assertEqual(
+                archive_item["summarySha256"],
+                derived_hash,
+                "index archives.items.summarySha256 must hash the authoritative repair",
+            )
+            self.assertEqual(
+                entry["source"]["summaryData"],
+                REPAIR_DERIVED_REL,
+                "entry source.summaryData must select the authoritative repair",
+            )
+            self.assertEqual(
+                entry["source"]["summarySha256"],
+                derived_hash,
+                "entry source.summarySha256 must hash the authoritative repair",
+            )
+            self.assertEqual(
+                entry["source"]["changeName"],
+                "authoritative-repaired-change",
+                "entry source.changeName must be extracted from the authoritative repair",
+            )
+
+    def test_missing_authoritative_repair_pointer_preserves_original_summary_compatibility(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            self.ingest_payload(project, no_incremental=True)
+
+            original_hash = hashlib.sha256(original_path.read_bytes()).hexdigest()
+            self.assert_archive_record(project, REPAIR_ORIGINAL_REL, original_hash)
+            entry = self.assert_single_entry_provenance(
+                project,
+                REPAIR_ORIGINAL_REL,
+                original_hash,
+                "original-change",
+            )
+            self.assertFalse(
+                entry["lifecycle"].get("publishBlocked"),
+                "missing repair pointer must preserve publication compatibility",
+            )
+
+    def test_invalid_authoritative_repair_metadata_falls_back_and_blocks_publication(
+        self,
+    ) -> None:
+        for case in ("record-version", "pointer-hash", "record-hash"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                project, archive_dir, original_path = (
+                    self.make_authoritative_repair_project(Path(tmp))
+                )
+                self.write_valid_authoritative_repair(archive_dir)
+                expected_reason = self.break_valid_authoritative_repair(
+                    archive_dir, case
+                )
+
+                self.ingest_payload(project, no_incremental=True)
+                original_hash = hashlib.sha256(
+                    original_path.read_bytes()
+                ).hexdigest()
+                self.assert_archive_record(
+                    project, REPAIR_ORIGINAL_REL, original_hash
+                )
+                entry = self.assert_single_entry_provenance(
+                    project,
+                    REPAIR_ORIGINAL_REL,
+                    original_hash,
+                    "original-change",
+                )
+                self.assert_archive_quarantined(project, expected_reason)
+
+                promote = self.run_cli(
+                    "promote",
+                    "--project",
+                    str(project),
+                    "--id",
+                    entry["id"],
+                    "--note",
+                    "must stay quarantined",
+                )
+                self.assertNotEqual(promote.returncode, 0)
+                self.assertIn("publication blocked", promote.stderr.lower())
+
+    def test_authoritative_repair_path_escape_falls_back_and_blocks_publication(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(root)
+            )
+            outside_version = root / "outside-authoritative-v1"
+            outside_summary = outside_version / "summary-data.json"
+            write_json(
+                outside_summary,
+                {
+                    "schemaVersion": "2.3",
+                    "reportPipeline": VERIFIED_REPORT_PIPELINE,
+                    "changeName": "escaped-authoritative-change",
+                    "businessGoal": "归档外摘要绝不能成为知识来源。",
+                    "finalStatus": "OK",
+                    "changedFiles": [],
+                    "maintenanceNotes": [],
+                    "knownRisks": [],
+                    "manualActions": [],
+                },
+            )
+            derived_hash = hashlib.sha256(
+                outside_summary.read_bytes()
+            ).hexdigest()
+            authoritative_hash = "sha256:" + derived_hash
+            write_json(
+                outside_version / "repair-record.json",
+                {
+                    "version": "v1",
+                    "summarySha256": authoritative_hash,
+                },
+            )
+            derived_root = archive_dir / "derived"
+            derived_root.mkdir(parents=True)
+            version_link = derived_root / "v1"
+            try:
+                version_link.symlink_to(outside_version, target_is_directory=True)
+            except (NotImplementedError, OSError):
+                if not sys.platform.startswith("win"):
+                    self.skipTest("directory symlink is unavailable")
+                junction = subprocess.run(
+                    [
+                        "cmd.exe",
+                        "/c",
+                        "mklink",
+                        "/J",
+                        str(version_link),
+                        str(outside_version),
+                    ],
+                    text=True,
+                    encoding="utf-8",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                if junction.returncode != 0:
+                    self.skipTest(
+                        "directory link unavailable: "
+                        + (junction.stderr or junction.stdout).strip()
+                    )
+            write_json(
+                derived_root / "authoritative.json",
+                {
+                    "version": "v1",
+                    "summarySha256": authoritative_hash,
+                },
+            )
+
+            self.ingest_payload(project, no_incremental=True)
+            original_hash = hashlib.sha256(
+                original_path.read_bytes()
+            ).hexdigest()
+            self.assert_archive_record(
+                project,
+                REPAIR_ORIGINAL_REL,
+                original_hash,
+            )
+            entry = self.assert_single_entry_provenance(
+                project,
+                REPAIR_ORIGINAL_REL,
+                original_hash,
+                "original-change",
+            )
+            self.assertNotEqual(entry["status"], "active")
+            self.assert_archive_quarantined(
+                project,
+                "authoritative version escapes derived root",
+            )
+
+    def test_original_path_escape_is_never_discovered_recorded_or_extracted(
+        self,
+    ) -> None:
+        from unittest import mock
+
+        module = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project, _, original_path = self.make_authoritative_repair_project(
+                Path(tmp)
+            )
+            outside_path = project / "outside-archive" / "summary-data.json"
+            escaped_resolution = {
+                "summaryPath": outside_path,
+                "status": "degraded",
+                "allowed": False,
+                "version": None,
+                "reasons": ["summary-data.json escapes archive root"],
+                "fingerprint": {
+                    "resolverVersion": 1,
+                    "status": "degraded",
+                    "allowed": False,
+                    "version": None,
+                    "reasons": ["summary-data.json escapes archive root"],
+                    "original": {"state": "path-escape", "sha256": None},
+                    "pointer": {"state": "missing", "sha256": None},
+                    "record": {"state": "not-applicable", "sha256": None},
+                    "summary": {"state": "not-applicable", "sha256": None},
+                },
+            }
+            path_type = type(outside_path)
+            real_stat = path_type.stat
+            stat_paths: list[Path] = []
+            hash_paths: list[Path] = []
+            extract_paths: list[Path] = []
+
+            def tracking_stat(path: Path, *args, **kwargs):
+                if path == outside_path:
+                    stat_paths.append(path)
+                    return mock.Mock(st_mtime=0)
+                return real_stat(path, *args, **kwargs)
+
+            def tracking_hash(path: Path) -> str:
+                hash_paths.append(Path(path))
+                return "0" * 64
+
+            def tracking_extract(
+                _project: Path,
+                _project_name: str,
+                summary_path: Path,
+            ) -> list[dict]:
+                extract_paths.append(Path(summary_path))
+                return []
+
+            with (
+                mock.patch.object(
+                    module,
+                    "resolve_archive_summary",
+                    return_value=escaped_resolution,
+                ),
+                mock.patch.object(path_type, "stat", new=tracking_stat),
+                mock.patch.object(
+                    module,
+                    "sha256_file",
+                    side_effect=tracking_hash,
+                ),
+                mock.patch.object(
+                    module,
+                    "extract_entries",
+                    side_effect=tracking_extract,
+                ),
+            ):
+                discovered = module.discover_archive_summary_paths(project)
+                records = module.archive_summary_records(
+                    project,
+                    [original_path],
+                )
+                module.build_index(project, incremental=False)
+
+            self.assertEqual(discovered, [])
+            self.assertEqual(records, [])
+            self.assertNotIn(outside_path, stat_paths)
+            self.assertNotIn(outside_path, hash_paths)
+            self.assertNotIn(outside_path, extract_paths)
+
+    def test_repair_record_missing_null_or_empty_version_falls_back_and_blocks(
+        self,
+    ) -> None:
+        cases = (("missing", ...), ("null", None), ("empty", ""))
+        for case, value in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                project, archive_dir, original_path = (
+                    self.make_authoritative_repair_project(Path(tmp))
+                )
+                derived_path, _ = self.write_valid_authoritative_repair(
+                    archive_dir
+                )
+                record_path = derived_path.parent / "repair-record.json"
+                record = json.loads(record_path.read_text(encoding="utf-8"))
+                if value is ...:
+                    record.pop("version")
+                else:
+                    record["version"] = value
+                write_json(record_path, record)
+
+                self.ingest_payload(project, no_incremental=True)
+
+                original_hash = hashlib.sha256(
+                    original_path.read_bytes()
+                ).hexdigest()
+                self.assert_archive_record(
+                    project,
+                    REPAIR_ORIGINAL_REL,
+                    original_hash,
+                )
+                entry = self.assert_single_entry_provenance(
+                    project,
+                    REPAIR_ORIGINAL_REL,
+                    original_hash,
+                    "original-change",
+                )
+                self.assertNotEqual(entry["status"], "active")
+                self.assertIn(
+                    "repair record version mismatch",
+                    entry["lifecycle"].get("publishBlocked") or [],
+                )
+
+    def test_incremental_original_to_valid_authoritative_repair_then_no_op(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, _ = self.make_authoritative_repair_project(
+                Path(tmp)
+            )
+            original = self.ingest_payload(project)
+            _, derived_hash = self.write_valid_authoritative_repair(archive_dir)
+
+            repaired = self.ingest_payload(project)
+            unchanged = self.ingest_payload(project)
+
+            self.assertNotEqual(
+                original["ingestMode"]["inputsHash"],
+                repaired["ingestMode"]["inputsHash"],
+            )
+            self.assertNotEqual(repaired["ingestMode"]["mode"], "no-op")
+            self.assertEqual(repaired["ingestMode"]["archivesExtracted"], 1)
+            self.assertEqual(repaired["ingestMode"]["archivesReused"], 0)
+            self.assertEqual(unchanged["ingestMode"]["mode"], "no-op")
+            self.assertEqual(unchanged["ingestMode"]["archivesExtracted"], 0)
+            self.assertEqual(unchanged["ingestMode"]["archivesReused"], 1)
+            self.assertEqual(
+                repaired["ingestMode"]["inputsHash"],
+                unchanged["ingestMode"]["inputsHash"],
+            )
+            archive_item = self.knowledge_index(project)["archives"]["items"][0]
+            self.assertEqual(archive_item["summaryData"], REPAIR_DERIVED_REL)
+            self.assertEqual(archive_item["summarySha256"], derived_hash)
+            entries = self.knowledge_entries(project)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(
+                entries[0]["source"]["changeName"],
+                "authoritative-repaired-change",
+            )
+
+    def test_same_id_v1_auto_promote_replaces_original_active_source(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            original = json.loads(original_path.read_text(encoding="utf-8"))
+            self.ingest_payload(project)
+            entry_id = self.promote_only_knowledge_entry(project)
+            knowledge = project / ".harness" / "knowledge"
+            write_json(
+                knowledge / "config.json",
+                {
+                    "autoPromote": {
+                        "enabled": True,
+                        "minConfidence": 0.82,
+                        "allowedTypes": ["requirement"],
+                        "maxPerRun": 10,
+                    }
+                },
+            )
+
+            _, v1_hash = self.write_valid_authoritative_repair(
+                archive_dir,
+                change_name=original["changeName"],
+                business_goal=original["businessGoal"],
+            )
+            result = self.ingest_payload(project)
+
+            self.assertGreaterEqual(
+                result["ingestMode"]["candidateAutoPromoted"],
+                1,
+            )
+            entry = self.assert_single_id_consistent_across_indexes(
+                project,
+                entry_id,
+                status="active",
+                summary_rel=REPAIR_DERIVED_REL,
+                summary_hash=v1_hash,
+            )
+            self.assertEqual(entry["id"], entry_id)
+
+    def test_same_id_stale_v1_replaces_original_active_source(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            original = json.loads(original_path.read_text(encoding="utf-8"))
+            self.assertEqual(self.run_git(project, "init").returncode, 0)
+            self.ingest_payload(project)
+            entry_id = self.promote_only_knowledge_entry(project)
+            missing_commit = "deadbeef" * 5
+
+            _, v1_hash = self.write_valid_authoritative_repair(
+                archive_dir,
+                change_name=original["changeName"],
+                business_goal=original["businessGoal"],
+                final_commit=missing_commit,
+                changed_files=[
+                    {
+                        "path": "apps/server/src/repaired-source.ts",
+                        "summary": "同 ID repair source provenance",
+                    }
+                ],
+            )
+            self.ingest_payload(project)
+
+            entry = self.assert_single_id_consistent_across_indexes(
+                project,
+                entry_id,
+                status="stale",
+                summary_rel=REPAIR_DERIVED_REL,
+                summary_hash=v1_hash,
+            )
+            self.assertEqual(entry["source"]["sourceCommit"], missing_commit)
+            self.assertIn(
+                "source commit missing from local git history",
+                "\n".join(entry["lifecycle"].get("staleReasons") or []),
+            )
+
+    def test_active_original_loses_eligibility_when_valid_v1_is_selected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            self.ingest_payload(project)
+            original_id = self.promote_only_knowledge_entry(project)
+            original_hash = hashlib.sha256(
+                original_path.read_bytes()
+            ).hexdigest()
+
+            _, v1_hash = self.write_valid_authoritative_repair(
+                archive_dir,
+                change_name="original-change",
+                business_goal=(
+                    "原版归档内容不应覆盖有效 authoritative repair。"
+                ),
+            )
+            self.ingest_payload(project)
+            v1_id = self.promote_entry_with_provenance(
+                project,
+                REPAIR_DERIVED_REL,
+                v1_hash,
+            )
+
+            active = self.assert_only_provenance_is_active(
+                project,
+                REPAIR_DERIVED_REL,
+                v1_hash,
+            )
+            self.assertIn(v1_id, {entry["id"] for entry in active})
+            if original_id != v1_id:
+                self.assertNotIn(original_id, {entry["id"] for entry in active})
+            self.assertFalse(
+                any(
+                    entry["status"] == "active"
+                    and entry["source"]["summaryData"] == REPAIR_ORIGINAL_REL
+                    and entry["source"]["summarySha256"] == original_hash
+                    for entry in self.knowledge_entries(project)
+                )
+            )
+
+    def test_active_v1_loses_eligibility_when_valid_v2_is_selected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, _ = self.make_authoritative_repair_project(
+                Path(tmp)
+            )
+            _, v1_hash = self.write_valid_authoritative_repair(archive_dir)
+            self.ingest_payload(project)
+            v1_id = self.promote_only_knowledge_entry(project)
+
+            _, v2_hash = self.write_valid_authoritative_repair(
+                archive_dir,
+                version="v2",
+                change_name="authoritative-repaired-v2",
+                business_goal="v2 authoritative 内容替代 v1 进入知识索引。",
+            )
+            v2_rel = (
+                f".harness/archive/{REPAIR_ARCHIVE_ID}"
+                "/derived/v2/summary-data.json"
+            )
+            self.ingest_payload(project)
+            v2_id = self.promote_entry_with_provenance(
+                project,
+                v2_rel,
+                v2_hash,
+            )
+
+            active = self.assert_only_provenance_is_active(
+                project,
+                v2_rel,
+                v2_hash,
+            )
+            self.assertIn(v2_id, {entry["id"] for entry in active})
+            self.assertNotIn(v1_id, {entry["id"] for entry in active})
+            self.assertFalse(
+                any(
+                    entry["status"] == "active"
+                    and entry["source"]["summaryData"] == REPAIR_DERIVED_REL
+                    and entry["source"]["summarySha256"] == v1_hash
+                    for entry in self.knowledge_entries(project)
+                )
+            )
+
+    def test_auto_demoted_original_does_not_restore_after_valid_v1_repair(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            self.ingest_payload(project)
+            original_id = self.promote_only_knowledge_entry(project)
+            original_hash = hashlib.sha256(
+                original_path.read_bytes()
+            ).hexdigest()
+
+            write_json(
+                archive_dir / "derived" / "authoritative.json",
+                {
+                    "version": "v1",
+                    "summarySha256": "sha256:" + ("7" * 64),
+                },
+            )
+            self.ingest_payload(project)
+            self.assert_archive_quarantined(
+                project,
+                "authoritative version missing",
+                required_id=original_id,
+            )
+
+            _, v1_hash = self.write_valid_authoritative_repair(archive_dir)
+            self.ingest_payload(project)
+            v1_id = self.promote_entry_with_provenance(
+                project,
+                REPAIR_DERIVED_REL,
+                v1_hash,
+            )
+
+            active = self.assert_only_provenance_is_active(
+                project,
+                REPAIR_DERIVED_REL,
+                v1_hash,
+            )
+            self.assertIn(v1_id, {entry["id"] for entry in active})
+            self.assertNotIn(original_id, {entry["id"] for entry in active})
+            self.assertFalse(
+                any(
+                    entry["status"] == "active"
+                    and entry["source"]["summaryData"] == REPAIR_ORIGINAL_REL
+                    and entry["source"]["summarySha256"] == original_hash
+                    for entry in self.knowledge_entries(project)
+                )
+            )
+
+    def test_incremental_repair_becoming_invalid_quarantines_active_entries(
+        self,
+    ) -> None:
+        cases = (
+            ("valid", "authoritative pointer hash mismatch"),
+            ("missing-pointer", "authoritative version missing"),
+        )
+        for initial_state, reason in cases:
+            with self.subTest(initial_state=initial_state), tempfile.TemporaryDirectory() as tmp:
+                project, archive_dir, _ = self.make_authoritative_repair_project(
+                    Path(tmp)
+                )
+                if initial_state == "valid":
+                    self.write_valid_authoritative_repair(archive_dir)
+                self.ingest_payload(project)
+                promoted_id = self.promote_only_knowledge_entry(project)
+                valid_active_hash = self.knowledge_index(project)["inputsHash"]
+
+                if initial_state == "valid":
+                    self.break_valid_authoritative_repair(
+                        archive_dir, "pointer-hash"
+                    )
+                else:
+                    write_json(
+                        archive_dir / "derived" / "authoritative.json",
+                        {
+                            "version": "v1",
+                            "summarySha256": "sha256:" + ("4" * 64),
+                        },
+                    )
+                invalid = self.ingest_payload(project)
+
+                self.assertNotEqual(invalid["ingestMode"]["mode"], "no-op")
+                self.assertNotEqual(
+                    valid_active_hash,
+                    invalid["ingestMode"]["inputsHash"],
+                )
+                entries = self.assert_archive_quarantined(
+                    project,
+                    reason,
+                    required_id=promoted_id,
+                )
+                self.assertTrue(
+                    any(
+                        entry["source"]["summaryData"] == REPAIR_ORIGINAL_REL
+                        for entry in entries
+                    ),
+                    entries,
+                )
+
+    def test_incremental_invalid_authoritative_repair_reason_change_breaks_no_op(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, _ = self.make_authoritative_repair_project(
+                Path(tmp)
+            )
+            original = self.ingest_payload(project)
+            write_json(
+                archive_dir / "derived" / "authoritative.json",
+                {
+                    "version": "v1",
+                    "summarySha256": "sha256:" + ("5" * 64),
+                },
+            )
+            invalid_a = self.ingest_payload(project)
+            reasons_a = self.knowledge_entries(project)[0]["lifecycle"].get(
+                "publishBlocked"
+            ) or []
+
+            derived_path, _ = self.write_valid_authoritative_repair(archive_dir)
+            record_path = derived_path.parent / "repair-record.json"
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["summarySha256"] = "sha256:" + ("6" * 64)
+            write_json(record_path, record)
+            invalid_b = self.ingest_payload(project)
+            reasons_b = self.knowledge_entries(project)[0]["lifecycle"].get(
+                "publishBlocked"
+            ) or []
+
+            self.assertNotEqual(invalid_a["ingestMode"]["mode"], "no-op")
+            self.assertNotEqual(invalid_b["ingestMode"]["mode"], "no-op")
+            self.assertNotEqual(
+                original["ingestMode"]["inputsHash"],
+                invalid_a["ingestMode"]["inputsHash"],
+            )
+            self.assertNotEqual(
+                invalid_a["ingestMode"]["inputsHash"],
+                invalid_b["ingestMode"]["inputsHash"],
+            )
+            self.assertIn("authoritative version missing", reasons_a)
+            self.assertIn("repair record summary hash mismatch", reasons_b)
+            self.assertNotEqual(reasons_a, reasons_b)
+
+    def test_sync_and_verify_refresh_keep_authoritative_repair_provenance(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project, archive_dir, original_path = (
+                self.make_authoritative_repair_project(Path(tmp))
+            )
+            _, derived_hash = self.write_valid_authoritative_repair(archive_dir)
+            self.ingest_payload(project, no_incremental=True)
+            original = json.loads(original_path.read_text(encoding="utf-8"))
+            original["changeName"] = "mutated-non-authoritative-original"
+            write_json(original_path, original)
+
+            sync = self.run_cli("sync", "--project", str(project))
+            self.assertEqual(sync.returncode, 0, sync.stderr)
+            sync_payload = json.loads(sync.stdout)
+            self.assertTrue(sync_payload["upToDate"], sync_payload["reasons"])
+
+            refresh = self.run_cli("verify", "--project", str(project))
+            self.assertEqual(refresh.returncode, 0, refresh.stderr)
+            archive_item = self.knowledge_index(project)["archives"]["items"][0]
+            self.assertEqual(archive_item["summaryData"], REPAIR_DERIVED_REL)
+            self.assertEqual(archive_item["summarySha256"], derived_hash)
+            entries = self.knowledge_entries(project)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(
+                entries[0]["source"]["changeName"],
+                "authoritative-repaired-change",
+            )
+
+    def test_verify_quarantines_active_repair_after_pointer_or_record_damage(
+        self,
+    ) -> None:
+        for case in ("pointer-hash", "record-hash"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                project, archive_dir, _ = self.make_authoritative_repair_project(
+                    Path(tmp)
+                )
+                self.write_valid_authoritative_repair(archive_dir)
+                self.ingest_payload(project, no_incremental=True)
+                entry_id = self.promote_only_knowledge_entry(project)
+                reason = self.break_valid_authoritative_repair(
+                    archive_dir,
+                    case,
+                )
+
+                verified = self.run_cli(
+                    "verify",
+                    "--project",
+                    str(project),
+                )
+
+                self.assertEqual(verified.returncode, 0, verified.stderr)
+                knowledge = project / ".harness" / "knowledge"
+                entry_paths = list((knowledge / "entries").rglob("*.json"))
+                matching_paths = [
+                    path
+                    for path in entry_paths
+                    if json.loads(path.read_text(encoding="utf-8")).get("id")
+                    == entry_id
+                ]
+                self.assertEqual(len(matching_paths), 1)
+                entry_path = matching_paths[0]
+                entry = json.loads(entry_path.read_text(encoding="utf-8"))
+                self.assertEqual(entry["status"], "candidate")
+                self.assertEqual(entry_path.parent.name, entry["status"])
+                self.assertIn(
+                    reason,
+                    entry["lifecycle"].get("publishBlocked") or [],
+                )
+                self.assertFalse(
+                    list((knowledge / "entries" / "active").glob("*.json"))
+                )
+
+                index = self.knowledge_index(project)
+                index_entry = next(
+                    item for item in index["entries"] if item["id"] == entry_id
+                )
+                self.assertEqual(index_entry["status"], entry["status"])
+                self.assertEqual(index["stats"]["active"], 0)
+                self.assertEqual(
+                    index["archives"]["items"][0]["summaryData"],
+                    REPAIR_ORIGINAL_REL,
+                )
+
+                con = sqlite3.connect(knowledge / "index.sqlite")
+                try:
+                    row = con.execute(
+                        "select status, entry_json from entries where id=?",
+                        (entry_id,),
+                    ).fetchone()
+                finally:
+                    con.close()
+                self.assertIsNotNone(row)
+                sqlite_entry = json.loads(row[1])
+                self.assertEqual(row[0], entry["status"])
+                self.assertEqual(sqlite_entry["status"], entry["status"])
+                self.assertIn(
+                    reason,
+                    sqlite_entry["lifecycle"].get("publishBlocked") or [],
+                )
 
     def test_query_generates_context_pack_with_relevant_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

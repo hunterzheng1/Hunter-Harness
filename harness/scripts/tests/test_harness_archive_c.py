@@ -1035,7 +1035,10 @@ class KnowledgeGateTests(unittest.TestCase):
         summary_path = version_dir / "summary-data.json"
         summary_path.write_text(json.dumps(repaired), encoding="utf-8")
         digest = "sha256:" + hashlib.sha256(summary_path.read_bytes()).hexdigest()
-        _write_json(version_dir / "repair-record.json", {"summarySha256": digest})
+        _write_json(
+            version_dir / "repair-record.json",
+            {"version": "v1", "summarySha256": digest},
+        )
         _write_json(
             self.archive_dir / "derived" / "authoritative.json",
             {"version": "v1", "summarySha256": digest},
@@ -1053,7 +1056,10 @@ class KnowledgeGateTests(unittest.TestCase):
         summary_bytes = b"[]"
         digest = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
         (version_dir / "summary-data.json").write_bytes(summary_bytes)
-        _write_json(version_dir / "repair-record.json", {"summarySha256": digest})
+        _write_json(
+            version_dir / "repair-record.json",
+            {"version": "v1", "summarySha256": digest},
+        )
         _write_json(
             self.archive_dir / "derived" / "authoritative.json",
             {"version": "v1", "summarySha256": digest},

@@ -353,64 +353,266 @@ def changed_file_paths(summary: dict[str, Any]) -> list[str]:
     return files
 
 
-def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any]:
-    """Knowledge publication gate for one archive (API-006/RET-40).
+AUTHORITATIVE_RESOLVER_VERSION = 1
 
-    Blocks judge/apply/promote when: source consistency never ran or failed,
-    the authoritative version is missing or hash-mismatched, or the archive
-    is DEGRADED/UNVERIFIED. Ordinary ingest may still build quarantined
-    candidates, but nothing from a blocked archive becomes active.
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _authority_file_state(path: Path, root: Path) -> dict[str, Any]:
+    """Describe one repair-control file without reading outside its allowed root."""
+    if not os.path.lexists(path):
+        return {"state": "missing", "sha256": None}
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return {"state": "unreadable", "sha256": None}
+    if not _path_is_within(resolved, root):
+        target_hash = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()
+        return {"state": "path-escape", "sha256": None, "targetHash": target_hash}
+    if not resolved.is_file():
+        return {"state": "not-regular", "sha256": None}
+    try:
+        return {"state": "file", "sha256": sha256_file(resolved)}
+    except OSError:
+        return {"state": "unreadable", "sha256": None}
+
+
+def resolve_archive_summary(summary_path: Path) -> dict[str, Any]:
+    """Resolve an archive's original or hash-valid authoritative summary.
+
+    Invalid repair metadata never becomes authoritative. The original path is
+    retained as a quarantined extraction fallback so one broken repair cannot
+    remove an archive from the knowledge index.
     """
+    archive_dir = archive_dir_from_summary(Path(summary_path))
+    archive_root = archive_dir.resolve()
+    original_path = archive_dir / "reports" / "final" / "summary-data.json"
+    fingerprint: dict[str, Any] = {
+        "resolverVersion": AUTHORITATIVE_RESOLVER_VERSION,
+        "status": "original",
+        "allowed": True,
+        "version": None,
+        "reasons": [],
+        "original": {"state": "unknown", "sha256": None},
+        "pointer": {"state": "missing", "sha256": None},
+        "record": {"state": "not-applicable", "sha256": None},
+        "summary": {"state": "not-applicable", "sha256": None},
+    }
+    result: dict[str, Any] = {
+        "summaryPath": original_path,
+        "summarySha256": None,
+        "status": "original",
+        "allowed": True,
+        "version": None,
+        "reasons": [],
+        "fingerprint": fingerprint,
+    }
+
+    def degraded(reason: str) -> dict[str, Any]:
+        result["status"] = "degraded"
+        result["allowed"] = False
+        result["reasons"] = [reason]
+        fingerprint["status"] = "degraded"
+        fingerprint["allowed"] = False
+        fingerprint["reasons"] = [reason]
+        return result
+
+    original_state = _authority_file_state(original_path, archive_root)
+    fingerprint["original"] = {
+        **original_state,
+        "sha256": None,
+    }
+    if original_state["state"] == "path-escape":
+        return degraded("summary-data.json escapes archive root")
+    if original_state["state"] == "missing":
+        return degraded("summary-data.json missing")
+    if original_state["state"] == "not-regular":
+        return degraded("summary-data.json is not a regular file")
+    if original_state["state"] != "file":
+        return degraded("summary-data.json unreadable")
+    result["summarySha256"] = original_state["sha256"]
+
+    derived_path = archive_dir / "derived"
+    pointer_path = derived_path / "authoritative.json"
+    if not os.path.lexists(pointer_path):
+        return result
+
+    derived_root = derived_path.resolve()
+    if not _path_is_within(derived_root, archive_root):
+        fingerprint["pointer"] = {
+            "state": "path-escape",
+            "sha256": None,
+            "targetHash": hashlib.sha256(str(derived_root).encode("utf-8")).hexdigest(),
+        }
+        return degraded("authoritative pointer escapes archive root")
+
+    pointer_state = _authority_file_state(pointer_path, derived_root)
+    fingerprint["pointer"] = pointer_state
+    if pointer_state["state"] == "path-escape":
+        return degraded("authoritative pointer escapes derived root")
+    if pointer_state["state"] == "missing":
+        return degraded("authoritative pointer missing")
+    if pointer_state["state"] == "not-regular":
+        return degraded("authoritative pointer is not a regular file")
+    if pointer_state["state"] != "file":
+        return degraded("authoritative pointer unreadable")
+
+    try:
+        pointer = read_json(pointer_path.resolve(strict=True))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return degraded("authoritative pointer unreadable")
+    if not isinstance(pointer, dict):
+        return degraded("authoritative pointer must be an object")
+
+    version = str(pointer.get("version") or "")
+    fingerprint["version"] = version or None
+    result["version"] = version or None
+    if re.fullmatch(r"v[0-9]+", version) is None:
+        return degraded("invalid authoritative version")
+
+    version_path = derived_path / version
+    try:
+        version_root = version_path.resolve(strict=True)
+    except OSError:
+        return degraded("authoritative version missing")
+    if not _path_is_within(version_root, derived_root):
+        return degraded("authoritative version escapes derived root")
+    if not version_root.is_dir():
+        return degraded("authoritative version is not a directory")
+
+    record_path = version_path / "repair-record.json"
+    record_state = _authority_file_state(record_path, version_root)
+    fingerprint["record"] = record_state
+    if record_state["state"] == "path-escape":
+        return degraded("repair record escapes authoritative version")
+    if record_state["state"] == "missing":
+        return degraded("repair record missing")
+    if record_state["state"] == "not-regular":
+        return degraded("repair record is not a regular file")
+    if record_state["state"] != "file":
+        return degraded("repair record unreadable")
+
+    derived_summary_path = version_path / "summary-data.json"
+    summary_state = _authority_file_state(derived_summary_path, version_root)
+    fingerprint["summary"] = summary_state
+    if summary_state["state"] == "path-escape":
+        return degraded("authoritative summary escapes authoritative version")
+    if summary_state["state"] == "missing":
+        return degraded("authoritative summary missing")
+    if summary_state["state"] == "not-regular":
+        return degraded("authoritative summary is not a regular file")
+    if summary_state["state"] != "file":
+        return degraded("authoritative summary unreadable")
+
+    try:
+        record = read_json(record_path.resolve(strict=True))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return degraded("repair record unreadable")
+    if not isinstance(record, dict):
+        return degraded("repair record must be an object")
+    record_version = record.get("version")
+    if not isinstance(record_version, str) or record_version != version:
+        return degraded("repair record version mismatch")
+
+    actual = "sha256:" + str(summary_state["sha256"])
+    if record.get("summarySha256") != actual:
+        return degraded("repair record summary hash mismatch")
+    if pointer.get("summarySha256") != actual:
+        return degraded("authoritative pointer hash mismatch")
+
+    try:
+        summary = read_json(derived_summary_path.resolve(strict=True))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return degraded("authoritative summary unreadable")
+    if not isinstance(summary, dict):
+        return degraded("authoritative summary must be an object")
+
+    result["summaryPath"] = derived_summary_path.resolve(strict=True)
+    result["summarySha256"] = summary_state["sha256"]
+    result["status"] = "authoritative"
+    result["version"] = version
+    fingerprint["status"] = "authoritative"
+    fingerprint["version"] = version
+    return result
+
+
+def discover_archive_summary_paths(project: Path) -> list[Path]:
+    archive_root = project / ".harness" / "archive"
+    resolved_archive_root = archive_root.resolve()
+    originals = sorted(archive_root.glob("*/reports/final/summary-data.json"))
+    selected: list[Path] = []
+    for original in originals:
+        resolved_archive = archive_dir_from_summary(original).resolve()
+        if (
+            not _path_is_within(resolved_archive, resolved_archive_root)
+            or resolved_archive.parent != resolved_archive_root
+        ):
+            continue
+        resolution = resolve_archive_summary(original)
+        original_state = (resolution.get("fingerprint") or {}).get("original") or {}
+        if original_state.get("state") != "file":
+            continue
+        try:
+            selected_path = Path(resolution["summaryPath"]).resolve(strict=True)
+        except (KeyError, OSError):
+            continue
+        if (
+            not _path_is_within(selected_path, resolved_archive)
+            or not selected_path.is_file()
+        ):
+            continue
+        selected.append(selected_path)
+    return selected
+
+
+def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any]:
+    """Knowledge publication gate for one archive (API-006/RET-40)."""
     result: dict[str, Any] = {"status": "missing", "allowed": False, "reasons": []}
+    archive_root = (Path(project) / ".harness" / "archive").resolve()
     archive_dir = (Path(project) / archive_rel).resolve()
-    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
-    if not summary_path.is_file():
+    if not _path_is_within(archive_dir, archive_root) or archive_dir.parent != archive_root:
+        result["reasons"].append("archive path escapes archive root")
+        return result
+
+    original_path = archive_dir / "reports" / "final" / "summary-data.json"
+    resolution = resolve_archive_summary(original_path)
+    if resolution.get("version"):
+        result["authoritativeVersion"] = resolution["version"]
+
+    try:
+        summary_path = Path(resolution["summaryPath"]).resolve(strict=True)
+    except (KeyError, OSError):
         result["reasons"].append("summary-data.json missing")
         return result
+    if not _path_is_within(summary_path, archive_dir) or not summary_path.is_file():
+        result["status"] = "degraded"
+        result["reasons"].append("resolved summary escapes archive root")
+        return result
     try:
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        summary_hash = sha256_file(summary_path)
+    except OSError:
+        result["reasons"].append("summary-data.json unreadable")
+        return result
+    result["summaryData"] = rel_to_project(project, summary_path)
+    result["summarySha256"] = summary_hash
+    if not resolution.get("allowed"):
+        result["status"] = "degraded"
+        result["reasons"] = list(resolution.get("reasons") or [])
+        return result
+    try:
+        summary = read_json(summary_path)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         result["reasons"].append("summary-data.json unreadable")
         return result
     if not isinstance(summary, dict):
         result["reasons"].append("summary-data.json must be an object")
         return result
-
-    # A versioned repair becomes authoritative only after its pointer and
-    # repair-record hashes are verified. Gate the authoritative summary, not
-    # the known-bad original that caused the repair.
-    pointer_path = archive_dir / "derived" / "authoritative.json"
-    if pointer_path.is_file():
-        try:
-            pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-            version = str(pointer.get("version") or "")
-            if re.fullmatch(r"v[0-9]+", version) is None:
-                raise ValueError("invalid authoritative version")
-            version_dir = (archive_dir / "derived" / version).resolve()
-            if not version_dir.is_relative_to((archive_dir / "derived").resolve()):
-                raise ValueError("authoritative version escapes derived root")
-            record = json.loads(
-                (version_dir / "repair-record.json").read_text(encoding="utf-8")
-            )
-            derived_path = version_dir / "summary-data.json"
-            summary_bytes = derived_path.read_bytes()
-            actual = "sha256:" + hashlib.sha256(summary_bytes).hexdigest()
-            if record.get("summarySha256") != actual:
-                result["status"] = "degraded"
-                result["reasons"].append("repair record summary hash mismatch")
-                return result
-            if pointer.get("summarySha256") not in {None, actual}:
-                result["status"] = "degraded"
-                result["reasons"].append("authoritative pointer hash mismatch")
-                return result
-            summary = json.loads(summary_bytes.decode("utf-8"))
-            if not isinstance(summary, dict):
-                raise ValueError("authoritative summary must be an object")
-            result["authoritativeVersion"] = version
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            result["status"] = "degraded"
-            result["reasons"].append("authoritative version unreadable")
-            return result
 
     consistency = (summary.get("reportPipeline") or {}).get("sourceConsistency")
     if consistency is None:
@@ -442,16 +644,69 @@ def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any
     return result
 
 
+def archive_publication_statuses(project: Path) -> dict[str, dict[str, Any]]:
+    """Resolve publication state for every safe immediate archive directory."""
+    archive_root = Path(project) / ".harness" / "archive"
+    try:
+        resolved_archive_root = archive_root.resolve(strict=True)
+        children = sorted(archive_root.iterdir())
+    except OSError:
+        return {}
+
+    publications: dict[str, dict[str, Any]] = {}
+    for child in children:
+        try:
+            archive_dir = child.resolve(strict=True)
+        except OSError:
+            continue
+        if (
+            not archive_dir.is_dir()
+            or not _path_is_within(archive_dir, resolved_archive_root)
+            or archive_dir.parent != resolved_archive_root
+        ):
+            continue
+        archive_rel = rel_to_project(project, archive_dir)
+        publications[archive_rel] = archive_publication_status(project, archive_rel)
+    return publications
+
+
 def archive_summary_records(project: Path, summary_paths: list[Path]) -> list[dict[str, Any]]:
     records = []
+    archive_root = (Path(project) / ".harness" / "archive").resolve()
     for summary_path in summary_paths:
-        stat = summary_path.stat()
+        resolution = resolve_archive_summary(summary_path)
+        archive_dir = archive_dir_from_summary(summary_path).resolve()
+        if (
+            not _path_is_within(archive_dir, archive_root)
+            or archive_dir.parent != archive_root
+        ):
+            continue
+        original_state = (resolution.get("fingerprint") or {}).get("original") or {}
+        if original_state.get("state") != "file":
+            continue
+        try:
+            selected_path = Path(resolution["summaryPath"]).resolve(strict=True)
+        except (KeyError, OSError):
+            continue
+        if (
+            not _path_is_within(selected_path, archive_dir)
+            or not selected_path.is_file()
+        ):
+            continue
+        stat = selected_path.stat()
         records.append(
             {
-                "archive": rel_to_project(project, archive_dir_from_summary(summary_path)),
-                "summaryData": rel_to_project(project, summary_path),
-                "summarySha256": sha256_file(summary_path),
+                "archive": rel_to_project(project, archive_dir_from_summary(selected_path)),
+                "summaryData": rel_to_project(project, selected_path),
+                "summarySha256": sha256_file(selected_path),
                 "mtime": dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(timespec="seconds"),
+                "_authority": {
+                    "status": resolution["status"],
+                    "allowed": resolution["allowed"],
+                    "version": resolution["version"],
+                    "reasons": list(resolution["reasons"]),
+                    "fingerprint": resolution["fingerprint"],
+                },
             }
         )
     return records
@@ -778,15 +1033,18 @@ def prune_generated_entries(knowledge: Path, current_entries: list[dict[str, Any
                 path.unlink(missing_ok=True)
                 removed += 1
                 continue
-            if eid in preserved_ids:
-                continue
             replacement = current_by_id.get(str(eid))
-            if replacement is None:
+            if replacement is not None:
+                if (
+                    str(replacement.get("status") or "") == status
+                    and source_identity(entry) == source_identity(replacement)
+                ):
+                    continue
                 path.unlink(missing_ok=True)
                 removed += 1
-            elif str(replacement.get("status")) != status:
-                # entry moved to another status dir; the new file was already
-                # written by the persist step, so remove the stale old file.
+            elif eid in preserved_ids:
+                continue
+            else:
                 path.unlink(missing_ok=True)
                 removed += 1
     return removed
@@ -875,10 +1133,127 @@ def load_preserved_entries(knowledge: Path) -> list[dict[str, Any]]:
     return active_entries + manually_decided_entries
 
 
+def source_identity(entry: dict[str, Any]) -> tuple[str, str]:
+    source = entry.get("source")
+    if not isinstance(source, dict):
+        return ("", "")
+    return (
+        str(source.get("summaryData") or ""),
+        str(source.get("summarySha256") or ""),
+    )
+
+
+def entry_matches_publication(
+    entry: dict[str, Any],
+    publication: dict[str, Any],
+) -> bool:
+    selected = (
+        str(publication.get("summaryData") or ""),
+        str(publication.get("summarySha256") or ""),
+    )
+    return bool(all(selected)) and source_identity(entry) == selected
+
+
 def combine_generated_with_preserved(knowledge: Path, generated: list[dict[str, Any]]) -> list[dict[str, Any]]:
     preserved_entries = load_preserved_entries(knowledge)
+    generated_by_id = {
+        str(entry["id"]): entry
+        for entry in generated
+        if isinstance(entry, dict) and entry.get("id")
+    }
+    preserved_entries = [
+        entry
+        for entry in preserved_entries
+        if not (
+            str(entry.get("id") or "") in generated_by_id
+            and source_identity(entry)
+            != source_identity(generated_by_id[str(entry["id"])])
+        )
+    ]
     preserved_ids = {entry["id"] for entry in preserved_entries}
     return preserved_entries + [entry for entry in generated if entry["id"] not in preserved_ids]
+
+
+def reconcile_archive_publication_entries(
+    knowledge: Path,
+    publications: dict[str, dict[str, Any]],
+) -> dict[str, int]:
+    """Demote preserved active entries when their source archive becomes blocked."""
+    demoted = 0
+    written = 0
+    for status in ["active", "candidate", "stale", "superseded", "conflicted"]:
+        status_dir = knowledge / "entries" / status
+        if not status_dir.exists():
+            continue
+        for source_path in sorted(status_dir.glob("*.json")):
+            try:
+                entry = read_json(source_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            source = entry.get("source")
+            archive = source.get("archive") if isinstance(source, dict) else None
+            publication = publications.get(str(archive)) if archive else None
+            if publication is None:
+                continue
+
+            lifecycle = entry.setdefault("lifecycle", {})
+            publication_allowed = bool(publication.get("allowed"))
+            source_matches = entry_matches_publication(entry, publication)
+            allowed = publication_allowed and source_matches
+            reasons = list(publication.get("reasons") or [])
+            if publication_allowed and not source_matches:
+                reasons = ["entry source is not current authoritative summary"]
+            changed = False
+            target_path = source_path
+            if not allowed:
+                if lifecycle.get("publishBlocked") != reasons:
+                    lifecycle["publishBlocked"] = reasons
+                    lifecycle["lastCheckedAt"] = now_iso()
+                    changed = True
+                if status == "active":
+                    entry["status"] = "candidate"
+                    lifecycle["previousStatus"] = "active"
+                    lifecycle["demotedAt"] = now_iso()
+                    lifecycle["demotionReason"] = (
+                        "archive publication blocked"
+                        + (": " + str(reasons[0]) if reasons else "")
+                    )
+                    lifecycle["publicationAutoDemoted"] = True
+                    lifecycle["lastCheckedAt"] = now_iso()
+                    target_path = (
+                        knowledge / "entries" / "candidate" / entry_filename(entry)
+                    )
+                    changed = True
+                    demoted += 1
+            elif lifecycle.get("publicationAutoDemoted"):
+                restore_active = (
+                    status == "candidate"
+                    and lifecycle.get("previousStatus") == "active"
+                    and not lifecycle.get("judgeAction")
+                )
+                lifecycle.pop("publishBlocked", None)
+                lifecycle.pop("publicationAutoDemoted", None)
+                if not lifecycle.get("judgeAction"):
+                    lifecycle.pop("demotedAt", None)
+                    lifecycle.pop("demotionReason", None)
+                    lifecycle.pop("previousStatus", None)
+                if restore_active:
+                    entry["status"] = "active"
+                    target_path = (
+                        knowledge / "entries" / "active" / entry_filename(entry)
+                    )
+                lifecycle["lastCheckedAt"] = now_iso()
+                changed = True
+
+            if not changed:
+                continue
+            if write_json_if_changed(target_path, entry):
+                written += 1
+            if source_path != target_path and source_path.exists():
+                source_path.unlink()
+    return {"demoted": demoted, "written": written}
 
 
 def archive_sort_key(entry: dict[str, Any]) -> tuple[str, str]:
@@ -1126,8 +1501,8 @@ def persist_entry_updates(knowledge: Path, entries: list[dict[str, Any]]) -> int
         path = knowledge / "entries" / status / entry_filename(entry)
         if path.exists():
             _preserve_confidence_timestamp(path, entry)
-            if write_json_if_changed(path, entry):
-                written += 1
+        if write_json_if_changed(path, entry):
+            written += 1
     return written
 
 
@@ -1839,7 +2214,11 @@ def compute_inputs_hash_from_preserved(
     archive_fingerprint = json.dumps(
         sorted(
             (
-                {"path": r.get("summaryData"), "sha256": r.get("summarySha256")}
+                {
+                    "path": r.get("summaryData"),
+                    "sha256": r.get("summarySha256"),
+                    "authority": r.get("_authority", {}),
+                }
                 for r in records
             ),
             key=lambda item: item["path"] or "",
@@ -1926,9 +2305,7 @@ def build_snapshot(project: Path) -> KnowledgeSnapshot:
     knowledge = project / ".harness" / "knowledge"
     pname = project_id(project)
     config = load_config(knowledge)
-    summary_paths = sorted(
-        (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
-    )
+    summary_paths = discover_archive_summary_paths(project)
     archive_records = archive_summary_records(project, summary_paths)
     inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
     return KnowledgeSnapshot(
@@ -1956,9 +2333,7 @@ def build_index(
         knowledge = project / ".harness" / "knowledge"
         pname = project_id(project)
         config = load_config(knowledge)
-        summary_paths = sorted(
-            (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
-        )
+        summary_paths = discover_archive_summary_paths(project)
         archive_records = archive_summary_records(project, summary_paths)
         inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
     ensure_knowledge_dirs(knowledge)
@@ -2005,6 +2380,7 @@ def build_index(
     current_head = git_head(project)  # recorded in manifest only; not an invalidation key
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
+    publications = archive_publication_statuses(project)
     ingest_mode: dict[str, Any] = {
         "incremental": incremental,
         "mode": mode,
@@ -2053,7 +2429,10 @@ def build_index(
             # API-006/RET-40: entries from archives failing the publication
             # gate stay quarantined (candidate only, never active/promoted).
             archive_rel = rel_to_project(project, archive_dir_from_summary(summary_path))
-            publication = archive_publication_status(project, archive_rel)
+            publication = publications.get(archive_rel)
+            if publication is None:
+                publication = archive_publication_status(project, archive_rel)
+                publications[archive_rel] = publication
             if not publication.get("allowed"):
                 for entry in archive_entries:
                     lifecycle = entry.setdefault("lifecycle", {})
@@ -2064,6 +2443,13 @@ def build_index(
             entries.extend(archive_entries)
         except Exception as exc:  # keep one bad archive from blocking the index
             failures.append({"path": rel_to_project(project, summary_path), "error": str(exc)})
+
+    publication_reconciliation = reconcile_archive_publication_entries(
+        knowledge,
+        publications,
+    )
+    ingest_mode["activeAutoDemoted"] += publication_reconciliation["demoted"]
+    ingest_mode["entriesWritten"] += publication_reconciliation["written"]
 
     seen: set[str] = set()
     deduped: list[dict[str, Any]] = []
@@ -2118,7 +2504,7 @@ def build_index(
     apply_confidence_scores(indexed_entries, config)
     ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     auto_demotions = apply_active_lifecycle_policy(knowledge, indexed_entries, config)
-    ingest_mode["activeAutoDemoted"] = len(auto_demotions)
+    ingest_mode["activeAutoDemoted"] += len(auto_demotions)
     validation = apply_knowledge_validation(project, knowledge, config)
     ingest_mode["validationChecked"] = validation["checked"]
     ingest_mode["validationFailed"] = validation["failed"]
@@ -2198,10 +2584,16 @@ def promote_entry(project: Path, entry_id: str, note: str, allow_stale: bool = F
     archive_rel = (entry.get("source") or {}).get("archive")
     if archive_rel:
         publication = archive_publication_status(project, archive_rel)
-        if not publication.get("allowed"):
+        if (
+            not publication.get("allowed")
+            or not entry_matches_publication(entry, publication)
+        ):
+            reasons = list(publication.get("reasons") or [])
+            if publication.get("allowed"):
+                reasons = ["entry source is not current authoritative summary"]
             raise ValueError(
                 "publication blocked: "
-                + "; ".join(str(r) for r in (publication.get("reasons") or []))
+                + "; ".join(str(r) for r in reasons)
             )
     entry["status"] = "active"
     lifecycle = entry.setdefault("lifecycle", {})
@@ -2424,6 +2816,15 @@ def make_manifest(
         }
         for e in sorted(entries, key=lambda item: (item["source"]["archive"], item["type"], item["title"]))
     ]
+    manifest_archive_records = [
+        {
+            "archive": record.get("archive"),
+            "summaryData": record.get("summaryData"),
+            "summarySha256": record.get("summarySha256"),
+            "mtime": record.get("mtime"),
+        }
+        for record in archive_records
+    ]
 
     return {
         "schemaVersion": 1,
@@ -2436,7 +2837,7 @@ def make_manifest(
             "scanned": len(summary_paths),
             "indexed": len(summary_paths) - len(failures),
             "failed": len(failures),
-            "items": archive_records,
+            "items": manifest_archive_records,
         },
         "stats": stats,
         "byType": by_type,
@@ -2793,8 +3194,13 @@ def refresh_outputs_from_entry_files(
     knowledge: Path,
     ingest_mode: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    summary_paths = sorted((project / ".harness" / "archive").glob("*/reports/final/summary-data.json"))
+    summary_paths = discover_archive_summary_paths(project)
     archive_records = archive_summary_records(project, summary_paths)
+    publications = archive_publication_statuses(project)
+    publication_reconciliation = reconcile_archive_publication_entries(
+        knowledge,
+        publications,
+    )
     existing: dict[str, Any] = {}
     index_path = knowledge / "index.json"
     if index_path.exists():
@@ -2820,6 +3226,20 @@ def refresh_outputs_from_entry_files(
         entries.extend(entry for entry in file_entries if entry["id"] not in existing_ids)
     else:
         entries = file_entries
+    effective_ingest_mode = dict(
+        ingest_mode or existing.get("ingestMode") or {}
+    )
+    effective_ingest_mode["activeAutoDemoted"] = int(
+        effective_ingest_mode.get("activeAutoDemoted") or 0
+    ) + publication_reconciliation["demoted"]
+    effective_ingest_mode["entriesWritten"] = int(
+        effective_ingest_mode.get("entriesWritten") or 0
+    ) + publication_reconciliation["written"]
+    effective_ingest_mode["inputsHash"] = compute_inputs_hash_from_preserved(
+        archive_records,
+        load_config(knowledge),
+        load_preserved_entries(knowledge),
+    )
     index = make_manifest(
         project,
         project_id(project),
@@ -2828,7 +3248,7 @@ def refresh_outputs_from_entry_files(
         entries,
         existing.get("failures") or [],
         int(existing.get("duplicatesSkipped") or 0),
-        ingest_mode or existing.get("ingestMode") or {},
+        effective_ingest_mode,
     )
     write_sqlite(knowledge / "index.sqlite", entries)
     write_json(index_path, index)
@@ -3212,8 +3632,7 @@ def sync_status(project: Path, update: bool = False, incremental: bool = True) -
     knowledge = project / ".harness" / "knowledge"
     index_path = knowledge / "index.json"
     sqlite_path = knowledge / "index.sqlite"
-    archive_root = project / ".harness" / "archive"
-    summary_paths = sorted(archive_root.glob("*/reports/final/summary-data.json"))
+    summary_paths = discover_archive_summary_paths(project)
     current_records = archive_summary_records(project, summary_paths)
     reasons: list[str] = []
     index: dict[str, Any] | None = None
