@@ -7,6 +7,8 @@ import { sha256Bytes } from "../fs/hash.js";
 import {
   extractManagedBlock,
   extractSingleManagedBlockById,
+  managedBlockDigestInput,
+  parseManagedBlocks,
   removeManagedBlock,
   upsertManagedBlock,
   upsertManagedBlockById
@@ -84,7 +86,7 @@ function baselineEntryFor(
   finalContent: string | null,
   projectVersion: string
 ): BaselineManifest["files"][string] {
-  const block = finalContent === null ? null : extractManagedBlock(finalContent);
+  const block = finalContent === null ? null : managedBlockDigestInput(finalContent);
   const remoteHash = contentHash(operation);
   const localHash = finalContent === null ? null : sha256Bytes(finalContent);
   return {
@@ -107,7 +109,7 @@ function acknowledgedEntry(
   const localContent = operation.operation === "delete"
     ? context.sourceContent
     : context.targetContent ?? context.sourceContent;
-  const block = localContent === null ? null : extractManagedBlock(localContent);
+  const block = localContent === null ? null : managedBlockDigestInput(localContent);
   return {
     baseline_hash: contentHash(operation),
     local_hash_at_apply: localContent === null ? null : sha256Bytes(localContent),
@@ -181,17 +183,44 @@ function computeFinalContent(
   let finalContent = incoming;
   if (policy.update_policy === "managed-block-only") {
     if (operation.operation === "delete") {
-      finalContent = sourceContent === null ? null : removeManagedBlock(sourceContent);
+      finalContent = sourceContent === null
+        ? null
+        : removeManagedBlock(sourceContent);
       equivalent = finalContent === sourceContent;
     } else if (incoming !== null) {
+      const parsed = parseManagedBlocks(incoming);
       const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
       const incomingId = extractSingleManagedBlockById(incoming)?.id;
       const blockId = operation.operation === "add" || operation.operation === "modify"
         ? operation.block_id ?? incomingId
         : undefined;
-      finalContent = blockId !== undefined
-        ? upsertManagedBlockById(targetContent ?? "", blockId, incomingBlock)
-        : upsertManagedBlock(targetContent ?? "", incomingBlock);
+      if (blockId !== undefined) {
+        const matching = parsed.blocks.find((block) => block.id === blockId);
+        const body = matching?.content ??
+          (parsed.blocks.length <= 1 ? incomingBlock : null);
+        if (body === null) {
+          throw new Error(
+            `MANAGED_BLOCK_ID_MISSING: incoming artifact does not contain ${blockId}`
+          );
+        }
+        finalContent = upsertManagedBlockById(targetContent ?? "", blockId, body);
+      } else if (parsed.blocks.length > 1) {
+        if (parsed.blocks.some((block) => block.id === null)) {
+          throw new Error(
+            "MANAGED_BLOCK_FULL_FILE_AMBIGUOUS: multi-block artifacts require stable IDs"
+          );
+        }
+        finalContent = parsed.blocks.reduce(
+          (current, block) => upsertManagedBlockById(
+            current,
+            block.id as string,
+            block.content
+          ),
+          targetContent ?? ""
+        );
+      } else {
+        finalContent = upsertManagedBlock(targetContent ?? "", incomingBlock);
+      }
       equivalent = finalContent === targetContent;
     }
   } else if (operation.operation === "delete" && sourceContent === null) {
@@ -218,8 +247,14 @@ function isDirty(
   if (operation.operation === "add") {
     if (targetContent !== null && !equivalent) {
       if (policy.update_policy === "managed-block-only" && incoming !== null) {
-        const incomingBlock = extractManagedBlock(incoming) ?? incoming.trim();
-        equivalent = extractManagedBlock(targetContent) === incomingBlock;
+        const projected = computeFinalContent(
+          operation,
+          policy,
+          targetContent,
+          sourceContent,
+          incoming
+        );
+        equivalent = projected.finalContent === targetContent;
         dirty = !equivalent;
       } else {
         dirty = true;

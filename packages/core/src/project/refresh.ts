@@ -11,6 +11,7 @@ import {
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { aggregateInstalledContentHash, sha256Bytes } from "../fs/hash.js";
+import { assessCodebaseMapOnDisk } from "../codebase/map.js";
 import {
   refreshManagedBlockById,
   removeManagedBlock,
@@ -321,24 +322,11 @@ async function reconcileContextIndex(
   verifications: ReadonlyMap<HarnessAgent, FreshnessIdentity>
 ): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
-  let codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
+  const mapAssessment = await assessCodebaseMapOnDisk(root);
+  const codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
     map: ".harness/codebase/map",
-    status: "missing"
+    status: mapAssessment.status
   };
-  try {
-    const parsed = JSON.parse(existing) as {
-      codebase?: { map?: unknown; status?: unknown };
-    };
-    const current = parsed.codebase;
-    if (
-      typeof current?.map === "string" &&
-      (current.status === "missing" || current.status === "stale" || current.status === "fresh")
-    ) {
-      codebase = { map: current.map, status: current.status };
-    }
-  } catch {
-    // Invalid or absent context indexes are rebuilt with the safe missing default.
-  }
   const record = {
     schema_version: 2,
     project: {
@@ -374,6 +362,28 @@ async function reconcileContextIndex(
     path: CONTEXT_INDEX_PATH,
     content: next
   };
+}
+
+async function projectedFileHex(
+  root: string,
+  path: string,
+  operations: readonly TransactionOperation[]
+): Promise<string | null> {
+  for (let index = operations.length - 1; index >= 0; index -= 1) {
+    const operation = operations[index];
+    if (operation === undefined) continue;
+    if (operation.operation === "rename") {
+      if (operation.to_path === path) {
+        return createHash("sha256").update(operation.content).digest("hex");
+      }
+      if (operation.from_path === path) return null;
+      continue;
+    }
+    if (operation.path !== path) continue;
+    if (operation.operation === "delete") return null;
+    return createHash("sha256").update(operation.content).digest("hex");
+  }
+  return fileHex(join(root, path));
 }
 
 async function projectTransitionOperation(
@@ -631,14 +641,11 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   );
   if (projectOperation !== null) ops.push(projectOperation);
 
-  // Per-file content verification (retro §5.1): compute installedContentHash
-  // and mismatchDetails for each selected adapter so context-index carries
-  // per-file proof, not just the aggregate bundle hash.
-  // Note: fileHex is called per-target; this is not a hot path (runs only on
-  // refresh, not per-test). If refresh latency becomes a concern, batch reads
-  // can replace the per-target loop.
+  // Verify the planned post-transaction view for every installed adapter.
+  // Selected agents control writes; they must not make unselected adapters
+  // regress from verified to unknown.
   const verifications = new Map<HarnessAgent, FreshnessIdentity>();
-  for (const agent of selectedAgents) {
+  for (const agent of agents) {
     const agentProfile = profiles.get(agent) ?? profile;
     let bundleForVerify: LoadedAgentBundle;
     try {
@@ -654,7 +661,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     const verifyEntries: Array<{ relpath: string; sha256: string }> = [];
     for (const target of verifyTargets) {
       const rel = target.target_path.replace(/\\/g, "/");
-      const actual = await fileHex(join(root, target.target_path));
+      const actual = await projectedFileHex(root, target.target_path, ops);
       verifyEntries.push({ relpath: rel, sha256: actual ?? "" });
       if (actual === null) {
         verifyMismatches.push({ relpath: rel, expected: target.sha256, actual: "<missing>" });

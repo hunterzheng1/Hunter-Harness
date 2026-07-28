@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import process from "node:process";
 
 import { adaptBundleDir } from "./adapt-agent-bundle.mjs";
+import { resolvePythonRuntimeSync } from "./python-runtime.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(root, "harness");
@@ -17,11 +18,22 @@ const dataManifestRoot = join(dataPackageRoot, "manifests");
 const migrationsSource = join(resourceRoot, "migrations");
 const dataMigrationsRoot = join(dataPackageRoot, "migrations");
 const syncStampPath = join(root, ".sync-staging", "harness-input-sha256");
-const python = process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3");
+let cachedPythonRuntime;
+function pythonRuntime() {
+  cachedPythonRuntime ??= resolvePythonRuntimeSync({ projectRoot: root, env: process.env });
+  return cachedPythonRuntime;
+}
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.21";
+const BUNDLE_VERSION = "0.2.22";
+const MINIMUM_CLI_VERSION = "0.2.32";
+const REQUIRED_CAPABILITIES = [
+  "sync@1",
+  "rules-sync@1",
+  "rules-review@1",
+  "knowledge-sync@2"
+];
 
 async function syncInputHash() {
   const inputs = [
@@ -51,6 +63,7 @@ async function syncInputHash() {
 async function filesUnder(directory, base = directory) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name === "__pycache__" || entry.name.endsWith(".pyc")) continue;
     const full = join(directory, entry.name);
     if (entry.isDirectory()) result.push(...await filesUnder(full, base));
     if (entry.isFile()) result.push({
@@ -59,6 +72,17 @@ async function filesUnder(directory, base = directory) {
     });
   }
   return result;
+}
+
+async function prunePythonArtifacts(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const full = join(directory, entry.name);
+    if (entry.name === "__pycache__" || entry.name.endsWith(".pyc")) {
+      await rm(full, { recursive: true, force: true });
+    } else if (entry.isDirectory()) {
+      await prunePythonArtifacts(full);
+    }
+  }
 }
 
 async function assertSupportFilesPresent(bundleDir) {
@@ -162,13 +186,25 @@ async function generate(profile, agent) {
   if (profile === "java") {
     args.splice(2, 0, "--overlay", "java");
   }
-  const result = spawnSync(python, args, { cwd: root, encoding: "utf8", shell: false });
+  const runtime = pythonRuntime();
+  const result = spawnSync(
+    runtime.command,
+    [...runtime.argsPrefix, ...args],
+    {
+      cwd: root,
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }
+    }
+  );
   if (result.status !== 0) {
     throw new Error(
       `Harness ${profile}/${agent} build failed\n${result.stdout ?? ""}\n${result.stderr ?? ""}`
     );
   }
   await adaptBundleDir(stage, agent);
+  await prunePythonArtifacts(stage);
   await assertSupportFilesPresent(stage);
 
   const files = [];
@@ -181,6 +217,10 @@ async function generate(profile, agent) {
     profile,
     adapter: agent,
     bundle_version: BUNDLE_VERSION,
+    requires: {
+      minimumCliVersion: MINIMUM_CLI_VERSION,
+      capabilities: REQUIRED_CAPABILITIES
+    },
     generator: "harness_deploy.py",
     files
   }, null, 2) + "\n";
@@ -190,9 +230,24 @@ async function generate(profile, agent) {
   await writeFile(manifestTmp, manifest);
   try {
     const vResult = spawnSync(
-      python,
-      [deploy, "validate-manifest", "--bundle", stage, "--manifest", manifestTmp, "--json"],
-      { cwd: root, encoding: "utf8", shell: false }
+      runtime.command,
+      [
+        ...runtime.argsPrefix,
+        deploy,
+        "validate-manifest",
+        "--bundle",
+        stage,
+        "--manifest",
+        manifestTmp,
+        "--json"
+      ],
+      {
+        cwd: root,
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }
+      }
     );
     if (vResult.status !== 0) {
       throw new Error(
@@ -255,6 +310,11 @@ async function generatedProjectionIsCurrent(inputHash) {
           join(dataManifestRoot, profile, `${agent}.json`),
           "utf8"
         ));
+        if (manifest.bundle_version !== BUNDLE_VERSION) return false;
+        if (manifest.requires?.minimumCliVersion !== MINIMUM_CLI_VERSION) return false;
+        if (JSON.stringify(manifest.requires?.capabilities) !== JSON.stringify(REQUIRED_CAPABILITIES)) {
+          return false;
+        }
         const actual = await filesUnder(bundleRoot);
         if (actual.length !== manifest.files.length) return false;
         const expected = new Map(manifest.files.map((file) => [file.path, file.sha256]));
@@ -267,6 +327,10 @@ async function generatedProjectionIsCurrent(inputHash) {
     }
     const familyManifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
     const familyManifest = JSON.parse(await readFile(familyManifestPath, "utf8"));
+    if (familyManifest.minimumCliVersion !== MINIMUM_CLI_VERSION) return false;
+    if (JSON.stringify(familyManifest.capabilities) !== JSON.stringify(REQUIRED_CAPABILITIES)) {
+      return false;
+    }
     const files = (await filesUnder(dataPackageRoot)).sort((a, b) => a.path.localeCompare(b.path));
     const withContent = [];
     for (const file of files) {
@@ -290,6 +354,12 @@ async function writeWorkflowFamilyManifest() {
     withContent.push({ path: file.path, content: await readFile(full, "utf8") });
   }
   manifest.bundle_version = BUNDLE_VERSION;
+  manifest.minimumCliVersion = MINIMUM_CLI_VERSION;
+  manifest.capabilities = REQUIRED_CAPABILITIES;
+  manifest.requires = {
+    minimumCliVersion: MINIMUM_CLI_VERSION,
+    capabilities: REQUIRED_CAPABILITIES
+  };
   manifest.content_sha256 = sha256Bytes(canonicalJson(withContent));
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
 }

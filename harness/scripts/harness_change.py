@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -50,6 +52,14 @@ CHECKPOINTS_REL = Path("meta") / "implementation-checkpoints.json"
 
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def emit(payload: dict[str, Any], *, as_json: bool) -> None:
@@ -201,6 +211,145 @@ def list_active_changes(project_root: Path) -> list[dict[str, Any]]:
             }
         )
     return active
+
+
+def _verified_archive_receipts(project_root: Path) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
+    archive_root = project_root / ".harness" / "archive"
+    if not archive_root.is_dir():
+        return results
+    for archive_dir in sorted(archive_root.iterdir()):
+        if not archive_dir.is_dir():
+            continue
+        receipt_path = archive_dir / "meta" / "archive-receipt.json"
+        summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+        if not receipt_path.is_file() or not summary_path.is_file():
+            continue
+        try:
+            receipt = _read_json(receipt_path)
+            summary = _read_json(summary_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(receipt, dict) or not isinstance(summary, dict):
+            continue
+        change_name = str(
+            receipt.get("changeName") or summary.get("changeName") or ""
+        ).strip()
+        if not change_name or receipt.get("status") != "archived":
+            continue
+        expected = str(receipt.get("summarySha256") or "").removeprefix("sha256:")
+        actual = sha256_file(summary_path)
+        results[change_name] = {
+            "archivePath": str(archive_dir.resolve()),
+            "receiptPath": str(receipt_path.resolve()),
+            "summaryPath": str(summary_path.resolve()),
+            "expectedSha256": expected,
+            "actualSha256": actual,
+            "verified": bool(expected) and expected == actual,
+        }
+    return results
+
+
+def classify_changes(project_root: Path) -> list[dict[str, Any]]:
+    """Classify every change directory without deleting or rewriting anything."""
+    root = changes_dir(project_root)
+    if not root.is_dir():
+        return []
+    active_ids = {
+        item["changeId"] for item in list_active_changes(project_root)
+    }
+    archive_receipts = _verified_archive_receipts(project_root)
+    results: list[dict[str, Any]] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        reasons: list[str] = []
+        evidence: list[str] = []
+        archive = archive_receipts.get(entry.name)
+        if archive is not None:
+            evidence.extend([archive["receiptPath"], archive["summaryPath"]])
+            if archive["verified"]:
+                status = "ARCHIVED_LEFTOVER"
+                reasons.append("ARCHIVE_RECEIPT_VERIFIED")
+            else:
+                status = "INVALID"
+                reasons.append("ARCHIVE_HASH_MISMATCH")
+        elif entry.name in active_ids:
+            status = "ACTIVE"
+            reasons.append("ACTIVE_CHANGE_EVIDENCE")
+        else:
+            archived_meta = entry / "meta" / "archived.json"
+            if archived_meta.is_file():
+                try:
+                    archived = _read_json(archived_meta)
+                except (OSError, json.JSONDecodeError):
+                    archived = None
+                if not isinstance(archived, dict):
+                    status = "INVALID"
+                    reasons.append("ARCHIVED_METADATA_INVALID")
+                elif archived.get("status") == "archived":
+                    status = "ARCHIVED_LEFTOVER"
+                    reasons.append("LOCAL_ARCHIVED_MARKER")
+                    evidence.append(str(archived_meta.resolve()))
+                else:
+                    status = "INVALID"
+                    reasons.append("ARCHIVED_METADATA_CONTRADICTORY")
+            elif (
+                (entry / "events.ndjson").is_file()
+                or (entry / "runtime").is_dir()
+                or (entry / "evidence").is_dir()
+            ):
+                status = "RECOVERABLE"
+                reasons.append("INTERRUPTED_CHANGE_EVIDENCE")
+            else:
+                status = "ORPHAN"
+                reasons.append("NO_ACTIVITY_OR_ARCHIVE_EVIDENCE")
+        results.append({
+            "changeId": entry.name,
+            "path": str(entry.resolve()),
+            "status": status,
+            "reasonCodes": reasons,
+            "evidence": evidence,
+            "safeToCleanup": status == "ARCHIVED_LEFTOVER",
+        })
+    return results
+
+
+def cleanup_changes(project_root: Path, *, apply: bool = False) -> dict[str, Any]:
+    """Safely quarantine only hash-verified archived leftovers."""
+    statuses = classify_changes(project_root)
+    eligible = sorted(
+        item["changeId"]
+        for item in statuses
+        if item["status"] == "ARCHIVED_LEFTOVER"
+        and "ARCHIVE_RECEIPT_VERIFIED" in item["reasonCodes"]
+    )
+    moved: list[dict[str, str]] = []
+    if apply and eligible:
+        stamp = now_iso().replace(":", "-").replace(".", "-")
+        quarantine = (
+            project_root / ".harness" / "runtime"
+            / "change-cleanup" / stamp
+        )
+        quarantine.mkdir(parents=True, exist_ok=True)
+        for change_id in eligible:
+            source = changes_dir(project_root) / change_id
+            target = quarantine / change_id
+            if not source.is_dir() or target.exists():
+                continue
+            shutil.move(str(source), str(target))
+            moved.append({
+                "changeId": change_id,
+                "from": str(source),
+                "quarantine": str(target),
+            })
+    return {
+        "ok": True,
+        "dryRun": not apply,
+        "eligible": eligible,
+        "moved": moved,
+        "recoverable": True,
+    }
 
 
 def change_dir_for_id(project_root: Path, change_id: str) -> Path | None:
@@ -1115,6 +1264,36 @@ def cmd_ensure_identity(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(args: argparse.Namespace) -> int:
+    project = resolve_main_project_root()
+    items = classify_changes(project)
+    payload = {
+        "ok": True,
+        "code": "CHANGE_STATUS",
+        "project": str(project),
+        "items": items,
+        "summary": {
+            status: sum(1 for item in items if item["status"] == status)
+            for status in (
+                "ACTIVE",
+                "ARCHIVED_LEFTOVER",
+                "RECOVERABLE",
+                "ORPHAN",
+                "INVALID",
+            )
+        },
+    }
+    emit(payload, as_json=bool(args.json))
+    return 0
+
+
+def cmd_cleanup_changes(args: argparse.Namespace) -> int:
+    project = resolve_main_project_root()
+    result = cleanup_changes(project, apply=bool(args.apply))
+    emit(result, as_json=bool(args.json))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_change.py")
     parser.add_argument("--json", action="store_true")
@@ -1125,6 +1304,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_list = sub.add_parser("list", parents=[shared])
     p_list.set_defaults(func=cmd_list)
+
+    p_status = sub.add_parser("status", parents=[shared])
+    p_status.add_argument("--all", action="store_true", dest="show_all")
+    p_status.set_defaults(func=cmd_status)
+
+    p_cleanup = sub.add_parser("cleanup", parents=[shared])
+    cleanup_mode = p_cleanup.add_mutually_exclusive_group()
+    cleanup_mode.add_argument("--dry-run", action="store_true")
+    cleanup_mode.add_argument("--apply", action="store_true")
+    p_cleanup.set_defaults(func=cmd_cleanup_changes)
 
     p_resolve = sub.add_parser("resolve", parents=[shared])
     p_resolve.add_argument("--change", default=None)

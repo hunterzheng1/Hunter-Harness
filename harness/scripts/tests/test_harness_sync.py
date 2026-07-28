@@ -308,22 +308,26 @@ class SyncCliTests(SyncRuntimeTestBase):
         self.assertEqual(finish.returncode, 0, finish.stderr)
         self.assertFalse((self.sync_root / "cli-lifecycle").exists())
 
-    def test_canonical_skill_wires_reap_begin_and_finally_finalize(self) -> None:
+    def test_canonical_skill_fail_fast_uses_unified_cli_entrypoint(self) -> None:
         text = (SCRIPTS_DIR.parent / "harness-sync" / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("harness_sync.py reap", text)
-        self.assertIn("harness_sync.py begin", text)
-        self.assertIn("harness_sync.py finalize", text)
-        self.assertIn("finally", text.lower())
+        capabilities = "npx hunter-harness capabilities --json"
+        sync = "npx hunter-harness sync --project"
+        self.assertIn(capabilities, text)
+        self.assertIn(sync, text)
+        self.assertLess(text.index(capabilities), text.index(sync))
+        self.assertNotIn("harness_sync.py ", text)
+        self.assertNotIn("\npython ", text)
 
-    def test_reference_uses_explore_fallback_and_one_way_instruction_reference(self) -> None:
+    def test_reference_keeps_codegraph_unknown_and_one_way_instruction_reference(self) -> None:
         text = (SCRIPTS_DIR.parent / "harness-sync" / "reference.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("codegraph_explore", text)
-        self.assertIn("CLAUDE.md` 引用 `AGENTS.md", text)
-        self.assertNotIn("AGENTS.md` 是否引用最新版 CLAUDE.md", text)
+        self.assertIn("CodeGraph", text)
+        self.assertIn("`UNKNOWN`", text)
+        self.assertIn("Claude 可单向引用 AGENTS", text)
+        self.assertIn("禁止 AGENTS 反向引用 CLAUDE", text)
 
     def test_reap_cli_emits_json_payload(self) -> None:
         run_dir = self.sync_root / "cli-run"

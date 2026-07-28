@@ -84,7 +84,7 @@ describe("Conservative Refresh", () => {
     expect(result.conflicts).toHaveLength(0);
   });
 
-  it("preserves the codebase-map status maintained by harness-codebase-map", async () => {
+  it("rebuilds codebase-map status from disk instead of preserving a stale display value", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-codebase-status-"));
     await installFirst(root, "general");
     const contextIndexPath = join(root, ".harness", "context-index.json");
@@ -108,9 +108,66 @@ describe("Conservative Refresh", () => {
     };
     expect(refreshed.codebase).toEqual({
       map: ".harness/codebase/map",
-      status: "fresh"
+      status: "missing"
     });
   });
+
+  it("SYNC-STATE-001 persists projected verification in the same refresh that repairs a file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-projected-state-"));
+    await installFirst(root, "general");
+    await rm(join(root, REVIEWER_TARGET), { force: true });
+
+    await refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      profile: "general",
+      agents: ["claude-code"],
+      dryRun: false,
+      forceManaged: false
+    });
+
+    const context = JSON.parse(
+      await readFile(join(root, ".harness", "context-index.json"), "utf8")
+    ) as {
+      skill_bundles: Record<string, {
+        verificationStatus: string;
+        mismatchDetails: unknown[];
+      }>;
+    };
+    expect(context.skill_bundles["claude-code"]?.verificationStatus).toBe("verified");
+    expect(context.skill_bundles["claude-code"]?.mismatchDetails).toEqual([]);
+  });
+
+  it("SYNC-STATE-004 keeps unselected adapters verified during a partial refresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-partial-state-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["claude-code", "codex"], profile: "general" },
+      dryRun: false
+    });
+    await refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      profile: "general",
+      agents: ["claude-code", "codex"],
+      dryRun: false,
+      forceManaged: false
+    });
+    await refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      profile: "general",
+      agents: ["claude-code"],
+      dryRun: false,
+      forceManaged: false
+    });
+
+    const context = JSON.parse(
+      await readFile(join(root, ".harness", "context-index.json"), "utf8")
+    ) as { skill_bundles: Record<string, { verificationStatus: string }> };
+    expect(context.skill_bundles.codex?.verificationStatus).toBe("verified");
+  }, 120_000);
 
   it("adds a missing Bundle target", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-add-"));

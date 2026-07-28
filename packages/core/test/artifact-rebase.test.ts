@@ -52,6 +52,50 @@ function context(
 }
 
 describe("planArtifactRebase", () => {
+  it("SYNC-BLOCK-003 safely merges every id from a full-file artifact without a block_id", () => {
+    const path = "AGENTS.md";
+    const local =
+      "local-before\n" +
+      "<!-- hunter-harness:start id=hunter-harness-core -->\nold-core\n" +
+      "<!-- hunter-harness:end id=hunter-harness-core -->\n" +
+      "<!-- hunter-harness:start id=local-project-policy -->\nlocal-policy\n" +
+      "<!-- hunter-harness:end id=local-project-policy -->\n" +
+      "local-after\n";
+    const incoming =
+      "remote-preamble-must-not-be-copied\n" +
+      "<!-- hunter-harness:start id=hunter-harness-core -->\nnew-core\n" +
+      "<!-- hunter-harness:end id=hunter-harness-core -->\n" +
+      "<!-- hunter-harness:start id=hunter-harness-project-rules -->\nnew-rules\n" +
+      "<!-- hunter-harness:end id=hunter-harness-project-rules -->\n";
+    const operation = modifyOp(path, local, incoming);
+    const plan = planArtifactRebase({
+      baseline: emptyBaseline({
+        [path]: {
+          baseline_hash: hash(local),
+          local_hash_at_apply: hash(local),
+          file_kind: "user_editable",
+          last_applied_version: "pv_0",
+          deleted: false
+        }
+      }),
+      projectVersion: "pv_1",
+      contexts: [context(operation, incoming, local, local)],
+      conflictStrategy: "manual"
+    });
+
+    expect(plan.conflicts).toHaveLength(0);
+    const final = plan.applied[0]?.content ?? "";
+    expect(final).toContain("local-before");
+    expect(final).toContain("local-after");
+    expect(final).toContain("new-core");
+    expect(final).toContain("new-rules");
+    expect(final).toContain("local-policy");
+    expect(final).not.toContain("old-core");
+    expect(final).not.toContain("remote-preamble-must-not-be-copied");
+    expect(final).not.toMatch(/<!-- hunter-harness:start -->/);
+    expect(final.match(/hunter-harness:start id=hunter-harness-core/g)).toHaveLength(1);
+  });
+
   it("UT-001 applies clean modify and advances baseline", () => {
     const path = ".harness/knowledge/a.md";
     const old = "old\n";

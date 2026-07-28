@@ -36,7 +36,11 @@ describe("sync-harness atomicSwapDir — INT-005", () => {
         join(process.cwd(), "packages", "workflow-data-harness", "hunter-workflow-family.json"),
         "utf8"
       )
-    ) as { bundle_version: string };
+    ) as {
+      bundle_version: string;
+      minimumCliVersion: string;
+      capabilities: string[];
+    };
     const bundle = JSON.parse(
       await readFile(
         join(
@@ -53,6 +57,13 @@ describe("sync-harness atomicSwapDir — INT-005", () => {
     ) as { bundle_version: string };
 
     expect(family.bundle_version).toBe(bundle.bundle_version);
+    expect(family.minimumCliVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(family.capabilities).toEqual(expect.arrayContaining([
+      "sync@1",
+      "rules-sync@1",
+      "rules-review@1",
+      "knowledge-sync@2"
+    ]));
   });
 
   it("swaps validated staging into the release target on success", async () => {

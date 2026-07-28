@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractManagedBlock,
+  ManagedBlockStructureError,
+  parseManagedBlocks,
+  repairEquivalentLegacyWrapper,
   refreshManagedBlockById,
   removeManagedBlockById,
   upsertManagedBlock,
@@ -40,6 +43,95 @@ describe("managed blocks", () => {
 });
 
 describe("per-id managed blocks (T8)", () => {
+  it("repairs an equivalent legacy wrapper without changing user content", () => {
+    const core =
+      "<!-- hunter-harness:start id=core -->\ncore\n" +
+      "<!-- hunter-harness:end id=core -->";
+    const rules =
+      "<!-- hunter-harness:start id=rules -->\nrules\n" +
+      "<!-- hunter-harness:end id=rules -->";
+    const corrupted =
+      `user-before\n${core}\n${rules}\n` +
+      `<!-- hunter-harness:start -->\n${core}\n${rules}\n` +
+      "<!-- hunter-harness:end -->\nuser-after\n";
+
+    const result = repairEquivalentLegacyWrapper(corrupted);
+
+    expect(result.repaired).toBe(true);
+    expect(result.conflict).toBe(false);
+    expect(result.content).toBe(
+      `user-before\n${core}\n${rules}\nuser-after\n`
+    );
+  });
+
+  it("refuses repair when the legacy wrapper body differs", () => {
+    const source =
+      "<!-- hunter-harness:start id=core -->\nlocal\n" +
+      "<!-- hunter-harness:end id=core -->\n" +
+      "<!-- hunter-harness:start -->\n" +
+      "<!-- hunter-harness:start id=core -->\nremote\n" +
+      "<!-- hunter-harness:end id=core -->\n" +
+      "<!-- hunter-harness:end -->\n";
+
+    const result = repairEquivalentLegacyWrapper(source);
+
+    expect(result.repaired).toBe(false);
+    expect(result.conflict).toBe(true);
+    expect(result.content).toBe(source);
+  });
+
+  it("parses multiple sibling blocks without treating the full file as one body", () => {
+    const source =
+      "user-before\n" +
+      "<!-- hunter-harness:start id=hunter-harness-core -->\ncore\n" +
+      "<!-- hunter-harness:end id=hunter-harness-core -->\n" +
+      "<!-- hunter-harness:start id=hunter-harness-project-rules -->\nrules\n" +
+      "<!-- hunter-harness:end id=hunter-harness-project-rules -->\n" +
+      "user-after\n";
+
+    const parsed = parseManagedBlocks(source);
+
+    expect(parsed.blocks.map((item) => [item.id, item.content])).toEqual([
+      ["hunter-harness-core", "core"],
+      ["hunter-harness-project-rules", "rules"]
+    ]);
+    expect(parsed.outsideContent).toBe("user-before\n\nuser-after\n");
+  });
+
+  it.each([
+    {
+      code: "DUPLICATE_MANAGED_BLOCK",
+      source:
+        "<!-- hunter-harness:start id=x -->\na\n<!-- hunter-harness:end id=x -->\n" +
+        "<!-- hunter-harness:start id=x -->\nb\n<!-- hunter-harness:end id=x -->"
+    },
+    {
+      code: "NESTED_MANAGED_BLOCK",
+      source:
+        "<!-- hunter-harness:start id=x -->\n" +
+        "<!-- hunter-harness:start id=y -->\ny\n<!-- hunter-harness:end id=y -->\n" +
+        "<!-- hunter-harness:end id=x -->"
+    },
+    {
+      code: "UNCLOSED_MANAGED_BLOCK",
+      source: "<!-- hunter-harness:start id=x -->\nmissing end"
+    },
+    {
+      code: "MISMATCHED_MANAGED_BLOCK",
+      source:
+        "<!-- hunter-harness:start id=x -->\nbody\n" +
+        "<!-- hunter-harness:end id=y -->"
+    }
+  ])("rejects invalid marker AST with $code", ({ code, source }) => {
+    try {
+      parseManagedBlocks(source);
+      throw new Error("expected parseManagedBlocks to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ManagedBlockStructureError);
+      expect((error as ManagedBlockStructureError).code).toBe(code);
+    }
+  });
+
   it("upsertManagedBlockById is defined", () => {
     expect(typeof upsertManagedBlockById).toBe("function");
   });

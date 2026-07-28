@@ -6,6 +6,22 @@
     "general",
     "java"
   ],
-  "bundle_version": "0.2.21",
-  "content_sha256": "sha256:3c3c5f759f8a268bb3665c3c0dd4924d96af3570242819aea8791241a95e0aef"
+  "bundle_version": "0.2.22",
+  "content_sha256": "sha256:832004fb51768868e157c7538e21abbe2a5d62f346be7959c361e299793f1234",
+  "minimumCliVersion": "0.2.32",
+  "capabilities": [
+    "sync@1",
+    "rules-sync@1",
+    "rules-review@1",
+    "knowledge-sync@2"
+  ],
+  "requires": {
+    "minimumCliVersion": "0.2.32",
+    "capabilities": [
+      "sync@1",
+      "rules-sync@1",
+      "rules-review@1",
+      "knowledge-sync@2"
+    ]
+  }
 }

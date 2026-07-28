@@ -1,6 +1,6 @@
 import type { BaselineManifest, FileOperation } from "@hunter-harness/contracts";
 
-import { extractManagedBlock } from "../managed/managed-block.js";
+import { managedBlockDigestInput } from "../managed/managed-block.js";
 import { sha256Bytes } from "../fs/hash.js";
 
 export type UpdateSkipReason =
@@ -45,6 +45,6 @@ export function managedBlockDirty(
   if (managedBlockHash === undefined) {
     return true;
   }
-  const block = extractManagedBlock(currentContent);
+  const block = managedBlockDigestInput(currentContent);
   return block === null || sha256Bytes(block) !== managedBlockHash;
 }

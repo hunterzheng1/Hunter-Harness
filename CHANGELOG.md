@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.32] — hunter-harness / [0.2.30] — @hunter-harness/workflow-harness
+
+### Fixed（可信同步、能力契约与增量知识）
+
+- **单一同步入口**：新增 `sync`、`capabilities`、`doctor` 与 `config show --origins`，在重操作前完成 CLI/workflow 能力握手与 Python runtime 解析；stdout 保持紧凑，完整组件收据写入带哈希的报告。
+- **状态事务一致性**：Adapter verification 改为计划后视图并覆盖全部已安装 Adapter；codebase map 从真实 manifest/hash 重算；薄指令入口按有界引用图验证。
+- **严格 managed block**：完整解析 sibling block，明确拒绝 duplicate、nested、unclosed 和 mismatched marker；多 ID full-file artifact 按 ID 安全合并，不再生成 legacy 嵌套 wrapper。
+- **真正增量的知识同步**：entry ID 使用完整规范正文，路径迁移复用内容 cache；Git 查询按 commit 缓存，near-dedupe 缩小候选集，并增加阶段 heartbeat、耗时、比较量、写入量及三层 ID 一致性断言。
+- **有界仓库感知**：Git 基线优先取上次成功 sync receipt，再退到 upstream merge-base；只报告 shortstat、分类和 Top 目录，不再固定 `HEAD~5`。
+- **安全生命周期**：change 目录采用 ACTIVE、ARCHIVED_LEFTOVER、RECOVERABLE、ORPHAN、INVALID 五态；清理先 dry-run，并核验 archive receipt/hash。
+- **发布门禁**：workflow manifest 声明最低 CLI 与必需能力；npm pack 后从实际 Skill 文档抽取命令并逐一核验打包 CLI。
+
 ## [0.2.29] — @hunter-harness/workflow-harness
 
 ### Fixed（Windows 测试资源安全与进程生命周期）

@@ -20,12 +20,23 @@ import {
   runRulesReview,
   type RulesReviewCommandOptions
 } from "./commands/rules-review.js";
+import { runCapabilities } from "./commands/capabilities.js";
+import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins.js";
+import { runDoctor, type DoctorCommandOptions } from "./commands/doctor.js";
+import { runSync, type SyncCommandOptions } from "./commands/sync.js";
 import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
 import {
+  readWorkflowFamilyManifest,
   resolveWorkflowResourcesRoot,
   WorkflowDataResolutionError
 } from "./workflow-data/resolve.js";
 import type { ResolveWorkflowDataOptions } from "./workflow-data/resolve.js";
+import {
+  assertWorkflowCompatibility,
+  CLI_CAPABILITIES,
+  WorkflowCompatibilityError
+} from "./workflow-data/compatibility.js";
+import { readCliVersion } from "./version.js";
 
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
@@ -123,9 +134,28 @@ export async function runCli(
       resolveOptions.pacoteExtract = overrides.pacoteExtract;
     }
     dependencies.resourcesRoot = await resolveWorkflowResourcesRoot(resolveOptions, argv);
+    const command = argv.find((value) => !value.startsWith("-"));
+    if (command !== "capabilities" && command !== "doctor") {
+      assertWorkflowCompatibility(
+        await readWorkflowFamilyManifest(dependencies.resourcesRoot),
+        {
+          cliVersion: await readCliVersion(),
+          capabilities: CLI_CAPABILITIES
+        }
+      );
+    }
   } catch (error) {
     if (error instanceof WorkflowDataResolutionError) {
       dependencies.stderr(error.message + "\n");
+      return error.exitCode;
+    }
+    if (error instanceof WorkflowCompatibilityError) {
+      dependencies.stderr(JSON.stringify({
+        status: "BLOCKED",
+        reasonCode: error.code,
+        message: error.message,
+        compatibility: error.compatibility
+      }) + "\n");
       return error.exitCode;
     }
     throw error;
@@ -216,6 +246,39 @@ export async function runCli(
         { ...program.opts<RulesReviewCommandOptions>(), ...options },
         dependencies
       );
+    });
+  addCommonOptions(program.command("sync"))
+    .description("执行一次有界的 Harness 元数据同步并生成可校验报告")
+    .option("--project <path>", "项目根目录")
+    .option("--profile <profile>", "interactive | general | java", "interactive")
+    .option("--progress <mode>", "jsonl | text | none", "jsonl")
+    .action(async (options: SyncCommandOptions) => {
+      exitCode = await runSync(
+        { ...program.opts<SyncCommandOptions>(), ...options },
+        dependencies
+      );
+    });
+  program.command("doctor")
+    .description("检查 Harness 运行时与受管文件结构")
+    .option("--runtime")
+    .option("--managed-blocks")
+    .option("--json")
+    .action(async (options: DoctorCommandOptions) => {
+      exitCode = await runDoctor(options, dependencies);
+    });
+  const config = program.command("config")
+    .description("查看 Harness 配置来源");
+  config.command("show")
+    .option("--origins")
+    .option("--json")
+    .action(async (options: ConfigShowOptions) => {
+      exitCode = await runConfigShow(options, dependencies);
+    });
+  program.command("capabilities")
+    .description("输出 CLI 与 workflow 的机器可读能力契约")
+    .option("--json")
+    .action(async () => {
+      exitCode = await runCapabilities(program, dependencies);
     });
 
   try {

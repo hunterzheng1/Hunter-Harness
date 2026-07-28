@@ -19,6 +19,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,14 @@ ENTRY_TYPES = {
     "pitfall",
     "api-contract",
 }
+
+ENTRY_ID_SCHEMA_VERSION = 2
+ARCHIVE_CACHE_SCHEMA_VERSION = 2
+EXTRACTOR_SCHEMA_VERSION = 2
+_GIT_REPO_CACHE: dict[str, bool] = {}
+_GIT_COMMIT_CACHE: dict[tuple[str, str], bool] = {}
+_GIT_DIFF_CACHE: dict[tuple[str, str, tuple[str, ...]], list[str] | None] = {}
+_GIT_SUBPROCESS_COUNT = 0
 
 DEFAULT_AUTO_KNOWLEDGE_CONFIG = {
     "autoPromote": {
@@ -303,16 +312,28 @@ def git_head(project: Path) -> str | None:
 
 
 def is_git_repo(project: Path) -> bool:
+    key = str(project.resolve())
+    if key in _GIT_REPO_CACHE:
+        return _GIT_REPO_CACHE[key]
     result = run_git(project, ["rev-parse", "--is-inside-work-tree"])
-    return result.returncode == 0 and result.stdout.strip() == "true"
+    value = result.returncode == 0 and result.stdout.strip() == "true"
+    _GIT_REPO_CACHE[key] = value
+    return value
 
 
 def git_commit_exists(project: Path, commit: str) -> bool:
+    key = (str(project.resolve()), commit)
+    if key in _GIT_COMMIT_CACHE:
+        return _GIT_COMMIT_CACHE[key]
     result = run_git(project, ["cat-file", "-e", f"{commit}^{{commit}}"])
-    return result.returncode == 0
+    value = result.returncode == 0
+    _GIT_COMMIT_CACHE[key] = value
+    return value
 
 
 def run_git(project: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    global _GIT_SUBPROCESS_COUNT
+    _GIT_SUBPROCESS_COUNT += 1
     try:
         return subprocess.run(
             ["git", "-C", str(project), *args],
@@ -741,22 +762,65 @@ def make_entry(
                 "source commit missing from local git history: " + final_commit[:12]
             )
         elif source_files:
-            diff = run_git(project, ["diff", "--name-only", f"{final_commit}..HEAD", "--", *source_files])
-            if diff.returncode == 0:
-                changed = [line.strip() for line in diff.stdout.splitlines() if line.strip()]
+            diff_key = (
+                str(project.resolve()),
+                final_commit,
+                tuple(sorted(source_files)),
+            )
+            changed = _GIT_DIFF_CACHE.get(diff_key)
+            if changed is None and diff_key not in _GIT_DIFF_CACHE:
+                diff = run_git(
+                    project,
+                    [
+                        "diff",
+                        "--name-only",
+                        f"{final_commit}..HEAD",
+                        "--",
+                        *sorted(source_files),
+                    ],
+                )
+                changed = (
+                    [
+                        line.strip()
+                        for line in diff.stdout.splitlines()
+                        if line.strip()
+                    ]
+                    if diff.returncode == 0
+                    else None
+                )
+                _GIT_DIFF_CACHE[diff_key] = changed
+            if changed is not None:
                 if changed:
                     stale_reasons.append(
                         "source files changed after source commit: " + ", ".join(changed[:8])
                     )
             else:
-                detail = first_sentence(diff.stderr.strip() or f"git diff exited {diff.returncode}")
-                stale_reasons.append("source commit could not be compared with current HEAD: " + detail)
+                stale_reasons.append(
+                    "source commit could not be compared with current HEAD"
+                )
 
     if stale_reasons:
         status = "stale"
 
-    identity = "|".join([project_name, archive, entry_type, title, body[:160]])
-    entry_id = ".".join([project_name, slugify(archive, 80), entry_type, short_hash(identity)])
+    canonical_body = body.strip()
+    identity = json.dumps(
+        {
+            "schemaVersion": ENTRY_ID_SCHEMA_VERSION,
+            "projectId": project_name,
+            "sourceIdentity": {
+                "changeName": str(summary.get("changeName") or archive),
+            },
+            "type": entry_type,
+            "title": title.strip(),
+            "body": canonical_body,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    entry_id = ".".join(
+        [project_name, slugify(archive, 80), entry_type, short_hash(identity)]
+    )
     archive_dir = archive_dir_from_summary(summary_path)
 
     return {
@@ -767,7 +831,7 @@ def make_entry(
         "status": status,
         "title": title.strip(),
         "summary": first_sentence(body),
-        "body": body.strip(),
+        "body": canonical_body,
         "keywords": sorted({kw for kw in keywords if kw}),
         "source": {
             "archive": rel_to_project(project, archive_dir),
@@ -1065,9 +1129,11 @@ def load_entries_from_dir(path: Path) -> list[dict[str, Any]]:
 
 
 def archive_entry_cache_path(project: Path, knowledge: Path, summary_path: Path, summary_hash: str) -> Path:
-    rel_summary = rel_to_project(project, summary_path)
-    cache_id = short_hash(rel_summary + "|" + summary_hash, 20)
-    filename = f"{safe_filename(archive_name(summary_path))}-{cache_id}.json"
+    del project, summary_path
+    cache_id = short_hash(
+        f"extractor:{EXTRACTOR_SCHEMA_VERSION}|summary:{summary_hash}", 24
+    )
+    filename = f"content-{cache_id}.json"
     return knowledge / "cache" / "archive-entries" / filename
 
 
@@ -1085,9 +1151,7 @@ def load_cached_archive_entries(
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("schemaVersion") != 1:
-        return None
-    if payload.get("summaryData") != summary_path:
+    if payload.get("schemaVersion") != ARCHIVE_CACHE_SCHEMA_VERSION:
         return None
     if payload.get("summarySha256") != summary_hash:
         return None
@@ -1112,13 +1176,51 @@ def write_cached_archive_entries(
     write_json(
         cache_path,
         {
-            "schemaVersion": 1,
+            "schemaVersion": ARCHIVE_CACHE_SCHEMA_VERSION,
+            "extractorSchemaVersion": EXTRACTOR_SCHEMA_VERSION,
             "generatedAt": now_iso(),
             "summaryData": summary_path,
             "summarySha256": summary_hash,
             "entries": entries,
         },
     )
+
+
+def rebind_cached_archive_entries(
+    project: Path,
+    summary_path: Path,
+    summary_hash: str,
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rebound = json_clone(entries)
+    summary_rel = rel_to_project(project, summary_path)
+    archive_rel = rel_to_project(project, archive_dir_from_summary(summary_path))
+    for entry in rebound:
+        source = entry.setdefault("source", {})
+        source["archive"] = archive_rel
+        source["summaryData"] = summary_rel
+        source["summarySha256"] = summary_hash
+    return rebound
+
+
+def assert_unique_entry_ids(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    fingerprints: dict[str, str] = {}
+    for entry in entries:
+        entry_id = str(entry.get("id") or "")
+        if not entry_id:
+            raise ValueError("ENTRY_ID_MISSING: knowledge entry has no id")
+        fingerprint = json.dumps(
+            entry, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        previous = fingerprints.get(entry_id)
+        if previous is not None and previous != fingerprint:
+            raise ValueError(
+                f"ENTRY_ID_COLLISION: id {entry_id} maps to different payloads"
+            )
+        fingerprints[entry_id] = fingerprint
+        unique[entry_id] = entry
+    return unique
 
 
 def load_preserved_entries(knowledge: Path) -> list[dict[str, Any]]:
@@ -2299,6 +2401,45 @@ class KnowledgeSnapshot:
         self.inputs_hash = inputs_hash
 
 
+class ProgressReporter:
+    def __init__(self, mode: str = "none") -> None:
+        self.mode = mode
+        self.started = time.monotonic()
+        self.last_emit = 0.0
+
+    def emit(
+        self,
+        phase: str,
+        completed: int,
+        total: int,
+        *,
+        force: bool = False,
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        if self.mode == "none":
+            return
+        now = time.monotonic()
+        if not force and now - self.last_emit < 10.0:
+            return
+        payload = {
+            "phase": phase,
+            "completed": completed,
+            "total": total,
+            "elapsedSeconds": round(now - self.started, 3),
+            "heartbeat": not force,
+            **(metrics or {}),
+        }
+        if self.mode == "jsonl":
+            sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        else:
+            sys.stderr.write(
+                f"[knowledge] {phase} {completed}/{total} "
+                f"elapsed={payload['elapsedSeconds']}s\n"
+            )
+        sys.stderr.flush()
+        self.last_emit = now
+
+
 def build_snapshot(project: Path) -> KnowledgeSnapshot:
     """Load config + archive records + inputs_hash exactly once for one invocation."""
     project = project.resolve()
@@ -2318,7 +2459,11 @@ def build_index(
     incremental: bool = True,
     *,
     snapshot: KnowledgeSnapshot | None = None,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
+    global _GIT_SUBPROCESS_COUNT
+    _GIT_SUBPROCESS_COUNT = 0
+    reporter = progress or ProgressReporter("none")
     project = project.resolve()
     if snapshot is not None:
         # Reuse the single-invocation snapshot: no recomputation of
@@ -2337,6 +2482,7 @@ def build_index(
         archive_records = archive_summary_records(project, summary_paths)
         inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
     ensure_knowledge_dirs(knowledge)
+    reporter.emit("snapshot", len(summary_paths), len(summary_paths), force=True)
 
     # No-op fast path: inputs (archive checksums + config + schema) are unchanged.
     # Write nothing — entries, sqlite, index and views all stay byte-identical,
@@ -2401,7 +2547,7 @@ def build_index(
         "sqliteDelete": 0,
     }
 
-    for summary_path in summary_paths:
+    for summary_index, summary_path in enumerate(summary_paths, start=1):
         summary_rel = rel_to_project(project, summary_path)
         summary_hash = sha256_file(summary_path)
         cache_path = archive_entry_cache_path(project, knowledge, summary_path, summary_hash)
@@ -2426,6 +2572,9 @@ def build_index(
                     ingest_mode["cacheWrites"] += 1
             else:
                 ingest_mode["archivesReused"] += 1
+                archive_entries = rebind_cached_archive_entries(
+                    project, summary_path, summary_hash, archive_entries
+                )
             # API-006/RET-40: entries from archives failing the publication
             # gate stay quarantined (candidate only, never active/promoted).
             archive_rel = rel_to_project(project, archive_dir_from_summary(summary_path))
@@ -2441,6 +2590,7 @@ def build_index(
                         entry["status"] = "candidate"
                         ingest_mode["activeAutoDemoted"] += 1
             entries.extend(archive_entries)
+            reporter.emit("archive-extract", summary_index, len(summary_paths))
         except Exception as exc:  # keep one bad archive from blocking the index
             failures.append({"path": rel_to_project(project, summary_path), "error": str(exc)})
 
@@ -2468,8 +2618,11 @@ def build_index(
         seen.add(fp)
         deduped.append(entry)
 
-    near_dedupe = dedupe_near_duplicates(deduped)
+    reporter.emit("near-deduplicate", 0, len(deduped), force=True)
+    near_dedupe = dedupe_near_duplicates(deduped, progress=reporter)
     ingest_mode["nearDuplicatesMerged"] = near_dedupe["merged"]
+    ingest_mode["similarityCandidates"] = near_dedupe["similarityCandidates"]
+    ingest_mode["exactSimilarityComparisons"] = near_dedupe["exactSimilarityComparisons"]
 
     mark_conflicting_generated_entries(deduped)
     mark_degraded_test_evidence(deduped)
@@ -2479,8 +2632,10 @@ def build_index(
     auto_promotions = apply_auto_promote_policy(deduped, config)
     ingest_mode["confidenceScored"] = len(deduped)
     ingest_mode["candidateAutoPromoted"] = len(auto_promotions)
+    assert_unique_entry_ids(deduped)
 
     preserved_ids = {entry["id"] for entry in load_preserved_entries(knowledge)}
+    failed_entry_ids: set[str] = set()
     for entry in deduped:
         if entry["id"] in preserved_ids:
             continue
@@ -2495,12 +2650,20 @@ def build_index(
             if isinstance(existing, dict) and existing.get("id") != entry["id"]:
                 failures.append({"id": entry["id"], "reason": "filename collision",
                                  "path": str(target), "conflictsWith": existing.get("id")})
+                failed_entry_ids.add(entry["id"])
                 continue
         _preserve_confidence_timestamp(target, entry)
         if write_json_if_changed(target, entry):
             ingest_mode["entriesWritten"] += 1
 
-    indexed_entries = combine_generated_with_preserved(knowledge, deduped)
+    persisted_generated = [
+        entry for entry in deduped if entry["id"] not in failed_entry_ids
+    ]
+    indexed_entries = combine_generated_with_preserved(
+        knowledge, persisted_generated
+    )
+    indexed_by_id = assert_unique_entry_ids(indexed_entries)
+    indexed_entries = list(indexed_by_id.values())
     apply_confidence_scores(indexed_entries, config)
     ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     auto_demotions = apply_active_lifecycle_policy(knowledge, indexed_entries, config)
@@ -2510,13 +2673,18 @@ def build_index(
     ingest_mode["validationFailed"] = validation["failed"]
     ingest_mode["validationAutoDemoted"] = validation["autoDemoted"]
     if auto_demotions:
-        indexed_entries = combine_generated_with_preserved(knowledge, deduped)
+        indexed_entries = combine_generated_with_preserved(
+            knowledge, persisted_generated
+        )
     if validation["checked"]:
         indexed_entries = [entry for _, entry in load_entry_files(knowledge)]
     apply_confidence_scores(indexed_entries, config)
     ingest_mode["entriesWritten"] += persist_entry_updates(knowledge, indexed_entries)
     ingest_mode["confidenceScored"] = len(indexed_entries)
     ingest_mode["entriesPruned"] = prune_generated_entries(knowledge, indexed_entries)
+    ingest_mode["uniqueEntryIdsWritten"] = len(indexed_entries)
+    ingest_mode["stageWriteOperations"] = ingest_mode["entriesWritten"]
+    ingest_mode["gitSubprocessCount"] = _GIT_SUBPROCESS_COUNT
 
     # Lifecycle policies above may relocate or mutate preserved entries. The
     # pre-build hash remains useful for the no-op gate, but the persisted index
@@ -2528,8 +2696,12 @@ def build_index(
         load_preserved_entries(knowledge),
     )
 
+    reporter.emit("sqlite", 0, len(indexed_entries), force=True)
     sqlite_stats = write_sqlite(knowledge / "index.sqlite", indexed_entries)
     ingest_mode.update(sqlite_stats)
+    ingest_mode["sqliteRowsTouched"] = (
+        sqlite_stats.get("sqliteUpsert", 0) + sqlite_stats.get("sqliteDelete", 0)
+    )
     index = make_manifest(
         project,
         pname,
@@ -2543,6 +2715,8 @@ def build_index(
     write_json_if_changed(knowledge / "index.json", index)
     write_views(knowledge, index, indexed_entries)
     write_ingest_report(knowledge, index, failures, duplicates)
+    assert_persistence_invariants(knowledge, index, indexed_entries)
+    reporter.emit("complete", len(indexed_entries), len(indexed_entries), force=True)
     return index
 
 
@@ -2797,6 +2971,7 @@ def make_manifest(
     duplicates: int,
     ingest_mode: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    entries = list(assert_unique_entry_ids(entries).values())
     stats = {status: 0 for status in ["candidate", "active", "stale", "superseded", "deprecated", "conflicted"]}
     by_type = {entry_type: 0 for entry_type in sorted(ENTRY_TYPES)}
     for entry in entries:
@@ -2857,6 +3032,37 @@ def make_manifest(
         "failures": failures,
         "entries": manifest_entries,
     }
+
+
+def assert_persistence_invariants(
+    knowledge: Path,
+    index: dict[str, Any],
+    entries: list[dict[str, Any]],
+) -> None:
+    expected = set(assert_unique_entry_ids(entries))
+    manifest_ids = [str(item.get("id") or "") for item in index.get("entries", [])]
+    if len(manifest_ids) != len(set(manifest_ids)):
+        raise ValueError("ENTRY_ID_COLLISION: duplicate IDs in knowledge manifest")
+    file_entries = [
+        entry
+        for _, entry in load_entry_files(knowledge)
+        if isinstance(entry, dict) and entry.get("id")
+    ]
+    file_ids = [str(entry["id"]) for entry in file_entries]
+    if len(file_ids) != len(set(file_ids)):
+        raise ValueError("ENTRY_ID_COLLISION: duplicate IDs across entry files")
+    connection = sqlite3.connect(knowledge / "index.sqlite")
+    try:
+        sqlite_ids = {
+            str(row[0])
+            for row in connection.execute("select id from entries").fetchall()
+        }
+    finally:
+        connection.close()
+    if set(manifest_ids) != expected or set(file_ids) != expected or sqlite_ids != expected:
+        raise ValueError(
+            "KNOWLEDGE_PERSISTENCE_INVARIANT: manifest, files and SQLite IDs differ"
+        )
 
 
 def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3627,13 +3833,19 @@ def summarize_index(index: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sync_status(project: Path, update: bool = False, incremental: bool = True) -> dict[str, Any]:
+def sync_status(
+    project: Path,
+    update: bool = False,
+    incremental: bool = True,
+    *,
+    progress: ProgressReporter | None = None,
+) -> dict[str, Any]:
     project = project.resolve()
-    knowledge = project / ".harness" / "knowledge"
+    snapshot = build_snapshot(project)
+    knowledge = snapshot.knowledge
     index_path = knowledge / "index.json"
     sqlite_path = knowledge / "index.sqlite"
-    summary_paths = discover_archive_summary_paths(project)
-    current_records = archive_summary_records(project, summary_paths)
+    current_records = snapshot.archive_records
     reasons: list[str] = []
     index: dict[str, Any] | None = None
 
@@ -3670,14 +3882,19 @@ def sync_status(project: Path, update: bool = False, incremental: bool = True) -
         # rebuild. The archive checksum checks above already cover archive
         # changes; compare the full input fingerprint to catch config/schema
         # drift that the per-archive checks would miss.
-        current_inputs_hash = compute_inputs_hash(current_records, load_config(knowledge), knowledge)
+        current_inputs_hash = snapshot.inputs_hash
         if current_inputs_hash != index.get("inputsHash") and not reasons:
             reasons.append("knowledge inputs changed (config or schema)")
 
     action = "none"
     refreshed: dict[str, Any] | None = None
     if reasons and update:
-        refreshed = build_index(project, incremental=incremental)
+        refreshed = build_index(
+            project,
+            incremental=incremental,
+            snapshot=snapshot,
+            progress=progress,
+        )
         action = "ingested"
         reasons = []
 
@@ -4080,6 +4297,8 @@ def supersede_entry(entry: dict[str, Any], newer_id: str, reason: str) -> None:
 def dedupe_near_duplicates(
     entries: list[dict[str, Any]],
     threshold: float = NEAR_DUPLICATE_THRESHOLD,
+    *,
+    progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Merge near-duplicate entries within the same archive (in-place)."""
     by_archive: dict[str, list[dict[str, Any]]] = {}
@@ -4090,6 +4309,47 @@ def dedupe_near_duplicates(
         by_archive.setdefault(archive, []).append(entry)
 
     merges: list[dict[str, Any]] = []
+    normalized = {
+        id(entry): entry_compare_text(entry)
+        for entry in entries
+    }
+    similarity_cache: dict[tuple[int, int], float] = {}
+    similarity_candidates = 0
+    exact_comparisons = 0
+
+    def similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+        nonlocal similarity_candidates, exact_comparisons
+        pair = tuple(sorted((id(left), id(right))))
+        if pair in similarity_cache:
+            return similarity_cache[pair]
+        left_text = normalized[id(left)]
+        right_text = normalized[id(right)]
+        if not left_text or not right_text:
+            similarity_cache[pair] = 0.0
+            return 0.0
+        shorter = min(len(left_text), len(right_text))
+        longer = max(len(left_text), len(right_text))
+        # SequenceMatcher's ratio cannot exceed this length-only upper bound.
+        if longer == 0 or (2 * shorter / (shorter + longer)) < threshold:
+            similarity_cache[pair] = 0.0
+            return 0.0
+        similarity_candidates += 1
+        matcher = SequenceMatcher(None, left_text, right_text)
+        if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
+            similarity_cache[pair] = 0.0
+            return 0.0
+        exact_comparisons += 1
+        value = matcher.ratio()
+        similarity_cache[pair] = value
+        if progress is not None:
+            progress.emit(
+                "near-deduplicate",
+                similarity_candidates,
+                len(entries),
+                metrics={"exactSimilarityComparisons": exact_comparisons},
+            )
+        return value
+
     for archive, group in by_archive.items():
         remaining = list(group)
         while remaining:
@@ -4104,7 +4364,7 @@ def dedupe_near_duplicates(
                 if other.get("type") != current.get("type"):
                     still.append(other)
                     continue
-                if entry_similarity(current, other) >= threshold:
+                if similarity(current, other) >= threshold:
                     cluster.append(other)
                 else:
                     still.append(other)
@@ -4128,10 +4388,15 @@ def dedupe_near_duplicates(
                         "keptId": keeper["id"],
                         "mergedId": absorbed["id"],
                         "archive": archive,
-                        "similarity": round(entry_similarity(keeper, absorbed), 3),
+                        "similarity": round(similarity(keeper, absorbed), 3),
                     }
                 )
-    return {"merged": len(merges), "merges": merges}
+    return {
+        "merged": len(merges),
+        "merges": merges,
+        "similarityCandidates": similarity_candidates,
+        "exactSimilarityComparisons": exact_comparisons,
+    }
 
 
 def relocate_entry_file(
@@ -4922,6 +5187,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Re-extract every archive instead of reusing the archive entry cache",
     )
+    ingest.add_argument(
+        "--progress",
+        choices=["jsonl", "text", "none"],
+        default="none",
+        help="Write phase progress to stderr; stdout remains final JSON",
+    )
 
     sync = sub.add_parser("sync", help="Check whether .harness/knowledge is current")
     sync.add_argument("--project", default=".", help="Project root containing .harness/archive")
@@ -4930,6 +5201,17 @@ def main(argv: list[str] | None = None) -> int:
         "--no-incremental",
         action="store_true",
         help="When used with --update, rebuild without reusing the archive entry cache",
+    )
+    sync.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON (default behavior)",
+    )
+    sync.add_argument(
+        "--progress",
+        choices=["jsonl", "text", "none"],
+        default="none",
+        help="Write phase progress to stderr; stdout remains final JSON",
     )
 
     auto = sub.add_parser("auto", help="Run the default automated knowledge maintenance workflow")
@@ -5041,11 +5323,20 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "ingest":
-        index = build_index(Path(args.project), incremental=not args.no_incremental)
+        index = build_index(
+            Path(args.project),
+            incremental=not args.no_incremental,
+            progress=ProgressReporter(args.progress),
+        )
         print(json.dumps(summarize_index(index), ensure_ascii=False, indent=2))
         return 0
     if args.command == "sync":
-        result = sync_status(Path(args.project), args.update, incremental=not args.no_incremental)
+        result = sync_status(
+            Path(args.project),
+            args.update,
+            incremental=not args.no_incremental,
+            progress=ProgressReporter(args.progress),
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "auto":

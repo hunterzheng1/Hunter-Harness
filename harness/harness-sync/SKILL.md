@@ -1,6 +1,6 @@
 ---
 name: harness-sync
-description: "检查并更新项目AI元数据（CodeGraph索引、harness-codebase-map分析、CLAUDE.md、AGENTS.md、.harness/完整性），确保Claude对代码库的理解与最新代码一致。当用户说'同步/更新索引/刷新元数据/检查一致性'时使用"
+description: "Use when the user asks to synchronize, refresh, or validate Harness metadata, adapters, knowledge, rules, instruction entrypoints, config origins, or CodeGraph status."
 argument-hint: "项目路径或留空使用当前目录"
 effort: medium
 allowed-tools: [Read, Glob, Grep, Edit, Write, Bash(powershell.exe:*)]
@@ -20,71 +20,48 @@ disallowed-tools:
   - Bash(curl *)
 ---
 
-# harness-sync — 元数据同步
+# harness-sync
 
 ## Purpose
 
-检查并更新 AI 元数据（CodeGraph、codebase map、knowledge 索引、公共规则、CLAUDE.md、AGENTS.md、`.harness/`），使理解与代码一致。
+通过一个有界入口同步 Harness 投影、知识、公共规则和元数据，并输出可验证的组件收据。
 
-## When to Use
+## Before running
 
-「同步/更新索引/刷新元数据」、提交前校准、archive/knowledge 变化后。跳过：刚 sync 且无新提交。
-
-## Workflow（薄编排）
-
-运行开始先执行受管 runtime 生命周期：
+读取 `reference.md`。先执行只读能力握手；若最低 CLI 版本或任一必需能力不满足，立即停止，不得先运行 knowledge、refresh 或其他重操作：
 
 ```powershell
-python <skills-root>/scripts/harness_sync.py reap --project . --json
-python <skills-root>/scripts/harness_sync.py begin --project . --run-id <run-id> --agent <agent> --purpose harness-sync --json
+npx hunter-harness capabilities --json
 ```
 
-所有 deploy 临时产物只能写入 `begin` 返回的 `workspace`。无论正常完成、命令失败还是异常退出，都必须在 `finally` 中执行：
+工作流要求 `sync@1`、`rules-sync@1`、`rules-review@1`、`knowledge-sync@2`。`BLOCKED_CAPABILITY_MISMATCH` 属环境阻塞，不得降级为手工拼接旧流程。
+
+## Run
 
 ```powershell
-python <skills-root>/scripts/harness_sync.py finalize --project . --run-id <run-id> --json
+npx hunter-harness sync --project <项目路径> --profile interactive --progress jsonl --json
 ```
 
-禁止重新使用固定 `sync-deploy-*` 目录；`--keep-temp` 仅供显式诊断。
+CLI 负责 Python runtime 解析、投影事务、knowledge、rules、map、指令图、配置来源、change 状态及 CodeGraph 证据汇总。禁止直接调用内部 Python 脚本，禁止使用固定 `HEAD~5`，禁止自动全量重建 CodeGraph。
 
-| Phase | 检查 → 动作 |
-|-------|-------------|
-| 0 | 读 SKILL + `reference.md` + protocols |
-| 1 | git log/diff 感知变更量 |
-| 2 | CodeGraph 索引是否需重建 |
-| 3 | `.harness/codebase/map/` 是否过期 → 报告建议 `/harness-codebase-map` |
-| 3.5 | `harness_knowledge.py sync`；可 `sync --update`；失败不得假装可用。**知识闭环主入口**是 `/harness-knowledge-ingest auto`（含 Agent judge），sync 不重复列人工知识待办 |
-| 3.6 | 单次运行 `harness_knowledge.py maintain --project . --drain --json`，有界推进全部 `.harness/knowledge/maintenance-outbox/{pending,failed}`；不得为每个条目重复启动 Python/重建索引（§8.2：archive close 只 enqueue，sync 异步推进 outbox 到 completed/pending-judge） |
-| 4 | CLAUDE.md 完整性/行数 → 超限 blocking user confirmation 瘦身 |
-| 5 | AGENTS.md 与各 Agent 指令入口一致；Claude Code 启用时验证 CLAUDE.md 引用 AGENTS.md，禁止反向循环引用 |
-| 5.5 | 运行 `npx hunter-harness rules-sync --json`：扫描各 Agent 用户规则并收敛到 `.harness/rules/`，刷新受管投影；读取结构化 review/test/archive 证据生成 `.harness/knowledge/rule-candidates.json`。表现差异按 Agent 适配器语义归一，真实分歧只报告不覆盖 |
-| 5.6 | 读取 `rule_review_pending`。用户主动交互式 sync 且存在新增候选时，运行 `npx hunter-harness rules-review --json`，由 Agent 将候选推荐为公共规则/项目知识/回归测试/CI 任务/Harness issue/暂缓/拒绝，展示证据与规则 diff 并询问用户；批准或修改后用带 candidate revision + target hash 的 decision JSON 执行 `rules-review --apply`。非交互 sync 只报告待评审数，不阻塞、不激活 |
-| 6 | `.harness/` 结构（init 规程 → `reference.md` 第 6 步）；已装 skill 新鲜度只经 `hunter-harness refresh --dry-run --json` 的 post-adaptation freshness 判断，禁止 raw build 字节比较 |
-| 7–9 | `项目规则（见 .harness/context-index.json）/`、构建配置、测试目录 — **只提示不自动修复** |
+长阶段的 heartbeat 写 stderr；stdout 只保留紧凑摘要。完整报告写入摘要中的 `reportPath`，并带 `reportSha256`。不得把完整 JSON 报告直接回显到对话。
 
-状态判断表格、修复动作、输出示例 → `reference.md`
+## Interpret
+
+- `OK`：所有可验证组件通过。
+- `WARN`：存在过期、冲突、待评审或 `UNKNOWN` 证据；按 `reportPath` 中的 `nextAction` 处理。
+- `FAIL`：组件执行失败；不得宣称同步完成。
+- `BLOCKED`：runtime、项目状态或能力契约阻塞；先修复阻塞条件。
+- `UNKNOWN`：证据不足，不等于成功，也不触发无界重建。
+
+非交互或 CI 使用 `--profile general --progress jsonl --json`，不得等待规则候选确认。交互式运行若报告规则待评审，再按 `reference.md` 的显式入口处理。
+
+## Safety
+
+同步不得修改 `.harness/state` 或 `.harness/cache` 的内部文件；只通过 CLI 事务写入。配置真源与生成投影存在漂移时只报告，不静默覆盖真源。change 清理先 dry-run，仅对已验证归档收据执行安全清理。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]
 
-## 关键规则
-
-变更量先行 · CodeGraph 依赖编译产物 · map 与 Repomix 互斥 · CLAUDE 瘦身须用户确认 · 公共规则自动收敛但真实分歧不覆盖 · 历史证据先生成候选再由 Agent 推荐、用户批准 · Phase 7–9 只提示 · knowledge sync 失败记 WARN/FAIL
-
-## Output Format
-
-各组件状态表格 + 操作摘要 → `reference.md`
-
-## 渐进披露
-
-- **Read `reference.md`** — 10 步详细判定与修复
-
-## 交互白名单
-
-- CLAUDE.md/AGENTS.md 瘦身拆分确认
-- 新增、修改、弱化、删除公共规则前的候选处置与最终 diff 确认
-
-非交互、定时或 CI sync 禁止等待输入；只输出 `rule_review_pending` 和后续 `rules-review` 命令。
-
 <!-- @include shared/logging.md -->
-> 片段：[[shared/logging.md|logging]] · phase=`sync`；有未归档变更时写入其 change-dir events
+> 片段：[[shared/logging.md|logging]] · phase=`sync`

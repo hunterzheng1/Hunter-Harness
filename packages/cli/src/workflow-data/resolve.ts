@@ -60,6 +60,7 @@ async function listFilesRecursive(root: string, base = root): Promise<Array<{ pa
   const entries = await readdir(root, { withFileTypes: true });
   const files: Array<{ path: string; content: string }> = [];
   for (const entry of entries) {
+    if (entry.name === "__pycache__" || entry.name.endsWith(".pyc")) continue;
     const absolute = join(root, entry.name);
     if (entry.isDirectory()) {
       files.push(...await listFilesRecursive(absolute, base));

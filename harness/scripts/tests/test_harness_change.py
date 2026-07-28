@@ -132,6 +132,92 @@ class HarnessChangeTests(unittest.TestCase):
 
         self.assertTrue({"plan-only", "worktree-active"}.issubset(ids))
 
+    def test_change_status_classifies_verified_archive_leftover(self) -> None:
+        archive = (
+            self.project / ".harness" / "archive" / "2026-07-28-alpha"
+            / "reports" / "final"
+        )
+        archive.mkdir(parents=True)
+        summary = archive / "summary-data.json"
+        summary.write_text(
+            json.dumps({"changeName": "alpha", "finalStatus": "OK"}),
+            encoding="utf-8",
+        )
+        receipt = archive.parent.parent / "meta" / "archive-receipt.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(
+            json.dumps({
+                "status": "archived",
+                "changeName": "alpha",
+                "summarySha256": change.sha256_file(summary),
+            }),
+            encoding="utf-8",
+        )
+
+        statuses = {
+            item["changeId"]: item for item in change.classify_changes(self.project)
+        }
+
+        self.assertEqual(statuses["alpha"]["status"], "ARCHIVED_LEFTOVER")
+        self.assertEqual(statuses["beta"]["status"], "ACTIVE")
+
+    def test_change_status_marks_archive_hash_mismatch_invalid(self) -> None:
+        archive = (
+            self.project / ".harness" / "archive" / "2026-07-28-alpha"
+            / "reports" / "final"
+        )
+        archive.mkdir(parents=True)
+        (archive / "summary-data.json").write_text(
+            json.dumps({"changeName": "alpha"}),
+            encoding="utf-8",
+        )
+        receipt = archive.parent.parent / "meta" / "archive-receipt.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(
+            json.dumps({
+                "status": "archived",
+                "changeName": "alpha",
+                "summarySha256": "0" * 64,
+            }),
+            encoding="utf-8",
+        )
+
+        status = next(
+            item for item in change.classify_changes(self.project)
+            if item["changeId"] == "alpha"
+        )
+
+        self.assertEqual(status["status"], "INVALID")
+        self.assertIn("ARCHIVE_HASH_MISMATCH", status["reasonCodes"])
+
+    def test_cleanup_dry_run_only_lists_verified_archive_leftovers(self) -> None:
+        archive = (
+            self.project / ".harness" / "archive" / "2026-07-28-alpha"
+            / "reports" / "final"
+        )
+        archive.mkdir(parents=True)
+        summary = archive / "summary-data.json"
+        summary.write_text(
+            json.dumps({"changeName": "alpha", "finalStatus": "OK"}),
+            encoding="utf-8",
+        )
+        receipt = archive.parent.parent / "meta" / "archive-receipt.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(
+            json.dumps({
+                "status": "archived",
+                "changeName": "alpha",
+                "summarySha256": change.sha256_file(summary),
+            }),
+            encoding="utf-8",
+        )
+
+        result = change.cleanup_changes(self.project, apply=False)
+
+        self.assertEqual(result["eligible"], ["alpha"])
+        self.assertTrue((self.changes / "alpha").is_dir())
+        self.assertNotIn("beta", result["eligible"])
+
     def test_claim_conflict_same_change_ut019(self) -> None:
         first = change.claim_lease(
             self.project,

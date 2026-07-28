@@ -597,6 +597,21 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertEqual(third_payload["ingestMode"]["archivesExtracted"], 1)
             self.assertEqual(third_payload["ingestMode"]["archivesReused"], 1)
 
+    def test_sync_accepts_explicit_json_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            self.assertEqual(
+                self.run_cli("ingest", "--project", str(project)).returncode,
+                0,
+            )
+
+            result = self.run_cli(
+                "sync", "--project", str(project), "--json"
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(json.loads(result.stdout)["upToDate"])
+
     def add_independent_archive(self, project: Path) -> Path:
         archive = project / ".harness" / "archive" / "2026-07-05-independent-feature" / "reports" / "final" / "summary-data.json"
         write_json(
@@ -2488,6 +2503,45 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             )
             self.assertEqual(len(collision_files), 1)
 
+    def test_entry_id_collision_guard_rejects_different_payloads(self) -> None:
+        module = self._import_harness_knowledge()
+        first = {
+            "id": "sample.archive.decision.deadbeef00",
+            "body": "first",
+            "source": {"archive": ".harness/archive/a"},
+        }
+        second = {
+            "id": first["id"],
+            "body": "second",
+            "source": {"archive": ".harness/archive/a"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "ENTRY_ID_COLLISION"):
+            module.assert_unique_entry_ids([first, second])
+
+    def test_archive_cache_key_survives_path_only_migration(self) -> None:
+        module = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            knowledge = project / ".harness" / "knowledge"
+            old = (
+                project / ".harness" / "archive" / "old-name"
+                / "reports" / "final" / "summary-data.json"
+            )
+            new = (
+                project / ".harness" / "archive" / "new-name"
+                / "reports" / "final" / "summary-data.json"
+            )
+
+            self.assertEqual(
+                module.archive_entry_cache_path(
+                    project, knowledge, old, "a" * 64
+                ),
+                module.archive_entry_cache_path(
+                    project, knowledge, new, "a" * 64
+                ),
+            )
+
     def test_entry_filename_preserves_full_hash_suffix(self) -> None:
         module = self._import_harness_knowledge()
         self.assertTrue(hasattr(module, "entry_filename"), "entry_filename helper missing")
@@ -3500,6 +3554,36 @@ class KnowledgeContractParityTest(unittest.TestCase):
             )
             self.assertEqual(entry["schemaVersion"], 1)
             self.assertEqual(entry["type"], "decision")
+
+    def test_make_entry_hashes_the_complete_canonical_body(self) -> None:
+        module = HarnessKnowledgeCliTest()._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "sample-project"
+            project.mkdir(parents=True)
+            summary_path = (
+                project / ".harness" / "archive" / "2026-06-30-sample"
+                / "reports" / "final" / "summary-data.json"
+            )
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary = {"changeName": "sample", "finalStatus": "OK"}
+            write_json(summary_path, summary)
+            prefix = "x" * 160
+
+            common = {
+                "project": project,
+                "project_name": "sample",
+                "summary_path": summary_path,
+                "summary_hash": "abc",
+                "summary": summary,
+                "entry_type": "decision",
+                "title": "same title",
+                "source_files": ["src/a.py"],
+                "keywords": ["sample"],
+            }
+            first = module.make_entry(body=prefix + " first", **common)
+            second = module.make_entry(body=prefix + " second", **common)
+
+            self.assertNotEqual(first["id"], second["id"])
 
 
 class QueryCompactOutputTests(unittest.TestCase):

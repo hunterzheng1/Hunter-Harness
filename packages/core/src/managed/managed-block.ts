@@ -1,21 +1,237 @@
 export const MANAGED_BLOCK_START = "<!-- hunter-harness:start -->";
 export const MANAGED_BLOCK_END = "<!-- hunter-harness:end -->";
 
+export type ManagedBlockStructureErrorCode =
+  | "DUPLICATE_MANAGED_BLOCK"
+  | "NESTED_MANAGED_BLOCK"
+  | "UNCLOSED_MANAGED_BLOCK"
+  | "MISMATCHED_MANAGED_BLOCK";
+
+export class ManagedBlockStructureError extends Error {
+  readonly code: ManagedBlockStructureErrorCode;
+
+  constructor(code: ManagedBlockStructureErrorCode, message: string) {
+    super(`${code}: ${message}`);
+    this.name = "ManagedBlockStructureError";
+    this.code = code;
+  }
+}
+
+export interface ParsedManagedBlock {
+  id: string | null;
+  content: string;
+  start: number;
+  end: number;
+}
+
+export interface ParsedManagedBlocks {
+  blocks: ParsedManagedBlock[];
+  outsideContent: string;
+}
+
+export interface ManagedBlockRepair {
+  content: string;
+  repaired: boolean;
+  conflict: boolean;
+  reasonCode: "NO_REPAIR_NEEDED" | "EQUIVALENT_LEGACY_WRAPPER" |
+    ManagedBlockStructureErrorCode;
+}
+
 function markerCount(content: string, marker: string): number {
   return content.split(marker).length - 1;
 }
 
+const MANAGED_MARKER_RE =
+  /<!-- hunter-harness:(start|end)(?: id=([A-Za-z0-9_-]+))? -->/g;
+
+/**
+ * Parse the complete managed-marker structure before any mutation. Sibling
+ * blocks are allowed; duplicate IDs, nesting, mismatched pairs and unclosed
+ * markers are rejected deterministically.
+ */
+export function parseManagedBlocks(content: string): ParsedManagedBlocks {
+  const blocks: ParsedManagedBlock[] = [];
+  const seen = new Set<string>();
+  let open: { id: string | null; start: number; bodyStart: number } | null = null;
+  for (const match of content.matchAll(MANAGED_MARKER_RE)) {
+    const kind = match[1];
+    const id = match[2] ?? null;
+    const markerStart = match.index;
+    if (markerStart === undefined) continue;
+    if (kind === "start") {
+      if (open !== null) {
+        throw new ManagedBlockStructureError(
+          "NESTED_MANAGED_BLOCK",
+          `block ${id ?? "<legacy>"} starts inside ${open.id ?? "<legacy>"}`
+        );
+      }
+      const key = id ?? "<legacy>";
+      if (seen.has(key)) {
+        throw new ManagedBlockStructureError(
+          "DUPLICATE_MANAGED_BLOCK",
+          `managed block ${key} appears more than once`
+        );
+      }
+      open = {
+        id,
+        start: markerStart,
+        bodyStart: markerStart + match[0].length
+      };
+      continue;
+    }
+    if (open === null || open.id !== id) {
+      throw new ManagedBlockStructureError(
+        "MISMATCHED_MANAGED_BLOCK",
+        `end marker ${id ?? "<legacy>"} has no matching start marker`
+      );
+    }
+    const key = id ?? "<legacy>";
+    seen.add(key);
+    blocks.push({
+      id,
+      start: open.start,
+      end: markerStart + match[0].length,
+      content: content
+        .slice(open.bodyStart, markerStart)
+        .replace(/^\r?\n/, "")
+        .replace(/\r?\n$/, "")
+    });
+    open = null;
+  }
+  if (open !== null) {
+    throw new ManagedBlockStructureError(
+      "UNCLOSED_MANAGED_BLOCK",
+      `managed block ${open.id ?? "<legacy>"} has no end marker`
+    );
+  }
+  let outsideContent = "";
+  let cursor = 0;
+  for (const block of blocks) {
+    outsideContent += content.slice(cursor, block.start);
+    cursor = block.end;
+  }
+  outsideContent += content.slice(cursor);
+  // Removing adjacent line-oriented blocks can expose three separator
+  // newlines. Collapse only that structural seam to one blank line.
+  outsideContent = outsideContent.replace(/(\r?\n){3}/g, "$1$1");
+  return { blocks, outsideContent };
+}
+
+/**
+ * Repair the historical full-file rebase shape only when the legacy wrapper
+ * contains the exact same per-ID blocks already present outside it.
+ */
+export function repairEquivalentLegacyWrapper(content: string): ManagedBlockRepair {
+  const legacyStarts = markerCount(content, MANAGED_BLOCK_START);
+  const legacyEnds = markerCount(content, MANAGED_BLOCK_END);
+  if (legacyStarts === 0 && legacyEnds === 0) {
+    try {
+      parseManagedBlocks(content);
+      return {
+        content,
+        repaired: false,
+        conflict: false,
+        reasonCode: "NO_REPAIR_NEEDED"
+      };
+    } catch (error) {
+      if (error instanceof ManagedBlockStructureError) {
+        return {
+          content,
+          repaired: false,
+          conflict: true,
+          reasonCode: error.code
+        };
+      }
+      throw error;
+    }
+  }
+  if (legacyStarts !== 1 || legacyEnds !== 1) {
+    return {
+      content,
+      repaired: false,
+      conflict: true,
+      reasonCode: "DUPLICATE_MANAGED_BLOCK"
+    };
+  }
+  const wrapperStart = content.indexOf(MANAGED_BLOCK_START);
+  const wrapperEnd = content.lastIndexOf(MANAGED_BLOCK_END);
+  if (wrapperStart < 0 || wrapperEnd < wrapperStart) {
+    return {
+      content,
+      repaired: false,
+      conflict: true,
+      reasonCode: "MISMATCHED_MANAGED_BLOCK"
+    };
+  }
+  const bodyStart = wrapperStart + MANAGED_BLOCK_START.length;
+  const inner = content
+    .slice(bodyStart, wrapperEnd)
+    .replace(/^\r?\n/, "")
+    .replace(/\r?\n$/, "");
+  const afterStart = wrapperEnd + MANAGED_BLOCK_END.length;
+  const before = content.slice(0, wrapperStart);
+  const after = content.slice(afterStart);
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const withoutWrapper =
+    before.endsWith(newline) && after.startsWith(newline)
+      ? before + after.slice(newline.length)
+      : before + after;
+  try {
+    const innerParsed = parseManagedBlocks(inner);
+    const outsideParsed = parseManagedBlocks(withoutWrapper);
+    if (
+      innerParsed.outsideContent.trim() !== "" ||
+      innerParsed.blocks.length === 0 ||
+      innerParsed.blocks.some((block) => block.id === null)
+    ) {
+      return {
+        content,
+        repaired: false,
+        conflict: true,
+        reasonCode: "NESTED_MANAGED_BLOCK"
+      };
+    }
+    const outsideById = new Map(
+      outsideParsed.blocks
+        .filter((block): block is ParsedManagedBlock & { id: string } => block.id !== null)
+        .map((block) => [block.id, block.content.replace(/\r\n/g, "\n")])
+    );
+    const equivalent = innerParsed.blocks.every((block) =>
+      block.id !== null &&
+      outsideById.get(block.id) === block.content.replace(/\r\n/g, "\n")
+    );
+    if (!equivalent) {
+      return {
+        content,
+        repaired: false,
+        conflict: true,
+        reasonCode: "NESTED_MANAGED_BLOCK"
+      };
+    }
+    return {
+      content: withoutWrapper,
+      repaired: true,
+      conflict: false,
+      reasonCode: "EQUIVALENT_LEGACY_WRAPPER"
+    };
+  } catch (error) {
+    if (error instanceof ManagedBlockStructureError) {
+      return {
+        content,
+        repaired: false,
+        conflict: true,
+        reasonCode: error.code
+      };
+    }
+    throw error;
+  }
+}
+
 function validateMarkers(content: string): "absent" | "present" {
-  const starts = markerCount(content, MANAGED_BLOCK_START);
-  const ends = markerCount(content, MANAGED_BLOCK_END);
-  if (starts === 0 && ends === 0) {
+  const parsed = parseManagedBlocks(content);
+  const legacy = parsed.blocks.filter((block) => block.id === null);
+  if (legacy.length === 0) {
     return "absent";
-  }
-  if (starts !== 1 || ends !== 1) {
-    throw new Error("managed block markers are malformed or duplicated");
-  }
-  if (content.indexOf(MANAGED_BLOCK_START) > content.indexOf(MANAGED_BLOCK_END)) {
-    throw new Error("managed block markers are out of order");
   }
   return "present";
 }
@@ -86,32 +302,26 @@ export function refreshManagedBlock(original: string, blockContent: string): Man
   return { content: upsertManagedBlock(original, blockContent), action, conflict: false };
 }
 
-function escapeRe(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 const startById = (id: string): string => `<!-- hunter-harness:start id=${id} -->`;
 const endById = (id: string): string => `<!-- hunter-harness:end id=${id} -->`;
 
 export function extractSingleManagedBlockById(
   content: string
 ): { id: string; content: string } | null {
-  const matches = [...content.matchAll(/<!-- hunter-harness:start id=([A-Za-z0-9_-]+) -->/g)];
-  if (matches.length !== 1) return null;
-  const id = matches[0]?.[1];
-  if (id === undefined) return null;
-  const start = startById(id);
-  const end = endById(id);
-  if (markerCount(content, start) !== 1 || markerCount(content, end) !== 1 ||
-      content.indexOf(start) > content.indexOf(end)) {
-    throw new Error("managed block markers are malformed or duplicated");
-  }
-  const bodyStart = content.indexOf(start) + start.length;
-  const bodyEnd = content.indexOf(end);
-  return {
-    id,
-    content: content.slice(bodyStart, bodyEnd).replace(/^\r?\n/, "").replace(/\r?\n$/, "")
-  };
+  const blocks = parseManagedBlocks(content).blocks;
+  if (blocks.length !== 1 || blocks[0]?.id === null || blocks[0] === undefined) return null;
+  return { id: blocks[0].id, content: blocks[0].content };
+}
+
+/** Stable digest input for legacy, single-ID and multi-ID managed files. */
+export function managedBlockDigestInput(content: string): string | null {
+  const blocks = parseManagedBlocks(content).blocks;
+  if (blocks.length === 0) return null;
+  if (blocks.length === 1) return blocks[0]?.content ?? null;
+  return JSON.stringify(blocks.map((block) => ({
+    id: block.id,
+    content: block.content
+  })));
 }
 
 /**
@@ -124,12 +334,13 @@ export function upsertManagedBlockById(
   id: string,
   content: string
 ): string {
+  const parsed = parseManagedBlocks(original);
   const newline = original.includes("\r\n") ? "\r\n" : "\n";
   const normalized = content.replace(/\r\n/g, "\n").replace(/\n/g, newline);
   const block = startById(id) + newline + normalized + newline + endById(id);
-  const re = new RegExp(escapeRe(startById(id)) + "[\\s\\S]*?" + escapeRe(endById(id)));
-  if (re.test(original)) {
-    return original.replace(re, block);
+  const existing = parsed.blocks.find((item) => item.id === id);
+  if (existing !== undefined) {
+    return original.slice(0, existing.start) + block + original.slice(existing.end);
   }
   const separator = original.length === 0
     ? ""
@@ -153,6 +364,14 @@ export function refreshManagedBlockById(
   blockContent: string,
   options: { upgradeLegacy?: boolean } = {}
 ): ManagedBlockByIdRefresh {
+  try {
+    parseManagedBlocks(original);
+  } catch (error) {
+    if (error instanceof ManagedBlockStructureError) {
+      return { content: original, action: "preserved_conflict", conflict: true };
+    }
+    throw error;
+  }
   const idStart = startById(id);
   const idEnd = endById(id);
   const idStarts = markerCount(original, idStart);
@@ -210,6 +429,7 @@ export function refreshManagedBlockById(
 }
 
 export function removeManagedBlockById(original: string, id: string): string {
+  const parsed = parseManagedBlocks(original);
   const idStart = startById(id);
   const idEnd = endById(id);
   if (markerCount(original, idStart) === 0 && markerCount(original, idEnd) === 0) {
@@ -219,8 +439,10 @@ export function removeManagedBlockById(original: string, id: string): string {
       original.indexOf(idStart) > original.indexOf(idEnd)) {
     throw new Error("managed block markers are malformed or duplicated");
   }
-  const start = original.indexOf(idStart);
-  const end = original.indexOf(idEnd) + idEnd.length;
+  const block = parsed.blocks.find((item) => item.id === id);
+  if (block === undefined) return original;
+  const start = block.start;
+  const end = block.end;
   const before = original.slice(0, start).replace(/(?:\r?\n){2}$/, "\n");
   const after = original.slice(end).replace(/^(?:\r?\n){1,2}/, "");
   return before + after;

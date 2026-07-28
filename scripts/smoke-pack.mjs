@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 
+import { extractHunterHarnessCommands } from "./skill-command-contract.mjs";
+
 const root = new URL("../", import.meta.url);
 const rootDir = fileURLToPath(root);
 const tsc = fileURLToPath(new URL("../node_modules/typescript/bin/tsc", import.meta.url));
@@ -54,6 +56,19 @@ function assert(condition, message) {
 
 async function exists(path) {
   try { await stat(path); return true; } catch { return false; }
+}
+
+async function markdownFiles(rootPath) {
+  const files = [];
+  for (const entry of await readdir(rootPath, { withFileTypes: true })) {
+    const path = join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await markdownFiles(path));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(path);
+    }
+  }
+  return files;
 }
 
 try {
@@ -107,6 +122,42 @@ try {
     "workflow data package missing 0.1.1 java migration manifest");
 
   const bin = join(packagedRoot, "dist", "bin.js");
+  // Fail before project writes if the packed workflow requires a newer or
+  // different CLI surface. This exercises the exact installed tarballs.
+  const capabilityOutput = run(
+    process.execPath,
+    [bin, "capabilities", "--json"],
+    { cwd: temporary, capture: true }
+  );
+  const capabilityReceipt = JSON.parse(capabilityOutput.trim());
+  assert(capabilityReceipt.compatibility?.compatible === true,
+    "packed workflow and CLI capability contract is incompatible");
+  for (const capability of ["sync@1", "rules-sync@1", "rules-review@1", "knowledge-sync@2"]) {
+    assert(capabilityReceipt.capabilities?.includes(capability),
+      `packed CLI is missing required capability ${capability}`);
+  }
+
+  const packagedCodexBundle = join(
+    workflowDataRoot,
+    "harness",
+    "bundles",
+    "general",
+    "codex"
+  );
+  const commandDocuments = await markdownFiles(packagedCodexBundle);
+  const documentedCommands = extractHunterHarnessCommands(
+    (await Promise.all(commandDocuments.map((path) => readFile(path, "utf8")))).join("\n")
+  );
+  assert(documentedCommands.length > 0, "packed Skills contain no CLI command examples");
+  for (const command of documentedCommands) {
+    assert(capabilityReceipt.commands?.[command]?.available === true,
+      `packed Skill references unavailable CLI command ${command}`);
+    run(process.execPath, [bin, command, "--help"], {
+      cwd: temporary,
+      capture: true
+    });
+  }
+
   const preview = run(process.execPath, [bin, "--agents", "all", "--profile", "java", "--non-interactive", "--dry-run", "--json"],
     { cwd: temporary, capture: true });
   const previewResult = JSON.parse(preview.trim());
