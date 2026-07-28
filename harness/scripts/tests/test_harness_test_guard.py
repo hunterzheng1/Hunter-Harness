@@ -34,6 +34,14 @@ def load_module():
 guard = load_module()
 
 
+def bounded_test_workers(requested: int) -> int:
+    try:
+        configured = int(os.environ.get("HARNESS_TEST_MAX_WORKERS", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(requested, configured, 2))
+
+
 class TestGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.project = Path(tempfile.mkdtemp(prefix="test-guard-project-"))
@@ -511,7 +519,9 @@ class TestGuardTests(unittest.TestCase):
         ]
         for path in files:
             self._write(path)
-        with ThreadPoolExecutor(max_workers=len(files)) as executor:
+        with ThreadPoolExecutor(
+            max_workers=bounded_test_workers(len(files))
+        ) as executor:
             results = list(executor.map(lambda path: self._record(path), files))
         self.assertTrue(all(result["ok"] for result in results), results)
         manifest = json.loads((self.change / "evidence" / "test-tracking.json").read_text("utf-8"))
@@ -707,7 +717,9 @@ class TestGuardTests(unittest.TestCase):
             return real_git(project, *args, **kwargs)
 
         with mock.patch.object(guard, "_git", side_effect=paused_git):
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with ThreadPoolExecutor(
+                max_workers=bounded_test_workers(2)
+            ) as executor:
                 stage_future = executor.submit(guard.stage, self.project, self.change)
                 self.assertTrue(add_entered.wait(timeout=5))
                 record_future = executor.submit(self._record, second)

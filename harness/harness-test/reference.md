@@ -442,6 +442,29 @@ foreach ($scenario in $scenarios) {
 $results | ConvertTo-Json -Depth 4
 ```
 
+## 资源安全测试执行
+
+### 档位与确认
+
+| 档位 | 默认 | 执行范围 | 确认 |
+|---|:---:|---|---|
+| `safe` | ✅ | 普通模块，逐模块串行 | 不需要 |
+| `system` | ❌ | 服务生命周期、集成等资源密集型模块 | `--confirm-resource-intensive` 或受控 CI |
+| `full` | ❌ | 普通模块后接资源密集型模块，仍逐模块串行 | `--confirm-resource-intensive` 或受控 CI |
+
+通用命令通过 `harness_test_runner.py exec` 托管；Python `unittest` 测试库通过 `harness_test_runner.py unittest` 逐文件执行。不得把“完整验证”解释为单解释器的裸 discovery，也不得同时启动两套同项目测试。
+
+### 资源边界
+
+- `HARNESS_TEST_MAX_WORKERS` 默认且最高为 `2`，环境变量只能进一步调低。
+- Runner 获取基于项目绝对路径的单实例锁；活动 owner 存在时返回 `TEST_RUN_ALREADY_ACTIVE`。
+- Runner 降低自身调度优先级，子进程继承该优先级。
+- Windows 普通模块进入 kill-on-close Job Object；显式验证 detached service 的模块不能嵌套 Job，Runner 持续记录从测试根进程派生的精确 PID 血缘并在结束时逐一回收。其他平台进入独立进程组。
+- detached-service 模块启动前先执行两级 nested-breakaway preflight；受限沙箱拒绝时返回 `DETACHED_PROCESS_CAPABILITY_UNAVAILABLE` 并在模块开始前失败，避免所有服务用例各自等待启动超时。
+- 正常返回、失败、超时和中断均执行进程树清理；PID 血缘模式只处理本次测试的后代，不按进程名做全局清理。
+- 单模块超时返回 `TEST_COMMAND_TIMEOUT`；无法建立进程树隔离返回 `PROCESS_TREE_ISOLATION_UNAVAILABLE`。两者都不得以裸命令重试。
+- 清理只作用于 Runner 创建的进程树，禁止 `taskkill /IM python.exe`、`Stop-Process -Name node` 等宽泛清理用户进程。
+
 ## 命令与请求超时治理
 
 所有命令必须有"预期时长 + 超时上限"，超过预期时长**必须输出一次当前状态**：
@@ -457,6 +480,7 @@ $results | ConvertTo-Json -Depth 4
 | health probe | < 1s | **3s** | 计入启动状态机 |
 | 构建工具编译（如 Maven compile） | 10–60s | **180s** | 输出最后 30 行日志后停 |
 | 测试命令（如 Maven test） | 60–180s | **300s** | 输出失败用例后停 |
+| 资源密集型测试模块 | 60–300s | **600s** | 终止该模块进程树，停止后续模块 |
 | service start | 30–60s | **120s** | 4.1 启动状态机收敛 |
 
 **§5.22 分层耗时与反馈规则**：
@@ -811,10 +835,10 @@ python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --ve
 4. 检查报告和日志是否包含明文凭证/password/secret/access-key/client-secret
 5. 检查 `.harness/changes/<change>/runtime/` 是否不会被提交（.gitignore 确认）
 6. **服务生命周期收尾**：AI_STARTED→Stop-Process / USER_STARTED→只提示 / REUSED_EXISTING→保留或用户确认 / NOT_STARTED→N/A
-7. 检查测试数据是否需要清理
-8. 检查请求执行器结果是否完整（4 种执行器表完整、未与接口测试执行器混写）
-9. 检查是否存在慢请求或超时风险
-10. 如果存在未清理测试数据、fallback 请求执行器、慢请求或环境变更 → 至少 🟡WARN
+7. **资源生命周期收尾**：单实例锁已释放、Runner 管理的进程树无残留；禁止宽泛停止用户原有进程
+8. 检查测试数据是否需要清理
+9. 检查请求执行器结果是否完整（4 种执行器表完整、未与接口测试执行器混写）
+10. 检查是否存在慢请求或超时风险；若有未清理测试数据、fallback、慢请求或环境变更 → 至少 🟡WARN
 
 ## 真实 diffHash 生成
 

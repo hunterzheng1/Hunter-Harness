@@ -1,5 +1,36 @@
 {
   "schemaVersion": 1,
+  "testExecution": {
+    "runner": "harness/scripts/harness_test_runner.py",
+    "defaultProfile": "safe",
+    "maxWorkers": 2,
+    "singleInstance": true,
+    "processTreeCleanup": true,
+    "detachedProcessPreflight": true,
+    "confirmationFlag": "--confirm-resource-intensive",
+    "confirmationRequiredProfiles": ["system", "full"],
+    "resourceIntensiveModules": [
+      "test_harness_integration.py",
+      "test_harness_service.py"
+    ],
+    "profiles": {
+      "safe": {
+        "description": "Default low-load profile; runs regular test modules sequentially in isolated processes.",
+        "includesResourceIntensive": false,
+        "moduleTimeoutSeconds": 300
+      },
+      "system": {
+        "description": "Runs integration and service-lifecycle modules only after explicit confirmation.",
+        "includesResourceIntensive": true,
+        "moduleTimeoutSeconds": 600
+      },
+      "full": {
+        "description": "Runs regular modules followed by resource-intensive modules after explicit confirmation.",
+        "includesResourceIntensive": true,
+        "moduleTimeoutSeconds": 600
+      }
+    }
+  },
   "riskTiers": {
     "fast": {
       "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency. Policy notes: checkpointRules apply only when meta/implementation-checkpoints.json defines the entry for this change; missing file/entry = disabled (gate must not require --task).",
@@ -45,8 +76,8 @@
       "inputs": ["test-scenarios", "verification-ledger"],
       "artifacts": ["test-reports", "verification-ledger"],
       "events": ["phase.start", "phase.end", "command", "verification"],
-      "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close", "test-guard", "ledger-record"]
+      "allowedInteractions": ["resource-intensive-test-confirmation"],
+      "capabilities": ["gate-begin", "gate-close", "test-guard", "ledger-record", "resource-safe-test-runner"]
     },
     "harness-review": {
       "phase": "review",
@@ -184,6 +215,7 @@
   },
   "interactionWhitelist": {
     "global": [],
+    "harness-test": ["resource-intensive-test-confirmation"],
     "harness-submit": ["merge-conflict-resolution"],
     "harness-plan": ["risk-confirmation"]
   },

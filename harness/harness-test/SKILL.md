@@ -55,6 +55,29 @@ disallowed-tools:
 
 并行服务测试先运行 `harness_change.py lease-port --change <id> --run-id <run-id> --range <start-end> --json`，再把返回端口传给 `harness_service.py ensure --leased-port <port> --lease-owner <run-id>`。`serviceStart` 的 command/health/overlay 可用 `{leasedPort}` 占位符；用户自启进程仍只进入 Service Gate，禁止 kill。测试清理的 `finally` 中运行 `harness_change.py release-port --change <id> --run-id <run-id> --json`，避免租约池耗尽。
 
+### Phase -1：资源安全门（任何测试命令之前）
+
+测试默认使用 `safe` 资源档位，禁止直接执行会把整套测试放进同一长生命周期的裸命令。所有本地测试命令必须由 `harness/scripts/harness_test_runner.py` 托管：
+
+```text
+python harness/scripts/harness_test_runner.py exec --profile safe --timeout-seconds <秒> -- <测试命令及参数>
+```
+
+对于 Python `unittest` 测试库，必须使用逐模块隔离模式，不得执行裸 `python -m unittest discover ...`：
+
+```text
+python harness/scripts/harness_test_runner.py unittest --profile safe --tests-dir <测试目录>
+```
+
+资源档位是硬合同：
+
+- `safe`：默认；普通测试模块串行执行，每个模块使用全新进程。
+- `system`：只执行服务生命周期、集成等资源密集型模块。
+- `full`：先执行普通模块，再执行资源密集型模块；仍保持逐模块串行。
+- `system` / `full` 只有在用户明确要求资源密集型测试、传入 `--confirm-resource-intensive`，或受控 CI 设置 `CI=true` / `HARNESS_ALLOW_RESOURCE_INTENSIVE_TESTS=1` 时才允许执行。
+
+Runner 强制同项目单实例、低调度优先级、逐命令超时、正常结束和异常结束的进程树清理。`HARNESS_TEST_MAX_WORKERS` 默认且最高为 `2`，只能调低，不能调高；技术栈自身的并发参数也必须收敛到该值。Windows detached-service 模块在执行前先做 nested-breakaway 能力探测，受限沙箱不支持时立即返回 `DETACHED_PROCESS_CAPABILITY_UNAVAILABLE`，不得让每个服务用例逐一超时。出现该错误、`TEST_RUN_ALREADY_ACTIVE`、`PROCESS_TREE_ISOLATION_UNAVAILABLE` 或 `TEST_COMMAND_TIMEOUT` 必须停止，不得绕过 Runner 重跑裸命令。完整约束见 `checklist.md`「0.0-A 资源安全档位」。
+
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
 先 `harness_change.py resolve [--change] --json` 解析 change-id；再 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
@@ -116,7 +139,7 @@ Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.j
 
 ### 五、命令与请求超时治理
 
-所有命令必须有「预期时长 + 超时上限」，超过预期必须输出一次状态行，**不得静默等待**。`durationMs > 10000` → 🟡 SLOW，`> 30000` → ❌ TIMEOUT_RISK。详见 `reference.md`「命令与请求超时治理」。
+所有命令必须通过资源安全 Runner 设置「预期时长 + 超时上限」，超过预期必须输出一次状态行，**不得静默等待**。测试模块超时或退出时必须清理其进程树；`durationMs > 10000` → 🟡 SLOW，`> 30000` → ❌ TIMEOUT_RISK。详见 `reference.md`「命令与请求超时治理」。
 
 ### 五-A、陈旧测试安全修复
 
@@ -171,6 +194,7 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 本 skill **仅允许**以下 blocking user confirmation；其余默认值 + `decision` 事件：
 
 1. **Service Gate**：仅当 `harness_service.py ensure` 返回 `needs-user-decision`（用户进程占端口）时询问处理方式
+2. **资源密集型测试确认**：仅当发布/验收确实需要 `system` 或 `full` 档位，且用户尚未明确授权时询问；获得授权后传入 `--confirm-resource-intensive`
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`test` · 事件：phase/command/verification/decision/issue/artifact

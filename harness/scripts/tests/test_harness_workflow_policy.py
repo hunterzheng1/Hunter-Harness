@@ -32,10 +32,18 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(loaded["schemaVersion"], 1)
         self.assertIn("foundation-gate", loaded["checkpointRules"])
         self.assertIn("harness-plan", loaded["skills"])
+        self.assertEqual(loaded["testExecution"]["defaultProfile"], "safe")
+        self.assertEqual(loaded["testExecution"]["maxWorkers"], 2)
 
     def test_unknown_nested_field_fails(self) -> None:
         raw = json.loads((REPO_ROOT / policy.POLICY_REL).read_text(encoding="utf-8"))
         raw["skills"]["harness-plan"]["forbidden"] = True
+        with self.assertRaises(policy.PolicyValidationError):
+            policy.validate_policy(raw)
+
+    def test_unknown_test_execution_field_fails(self) -> None:
+        raw = json.loads((REPO_ROOT / policy.POLICY_REL).read_text(encoding="utf-8"))
+        raw["testExecution"]["unboundedParallelism"] = True
         with self.assertRaises(policy.PolicyValidationError):
             policy.validate_policy(raw)
 

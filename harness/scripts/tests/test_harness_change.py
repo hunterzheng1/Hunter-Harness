@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,14 @@ def load_module(name: str, filename: str):
 
 
 change = load_module("harness_change", "harness_change.py")
+
+
+def bounded_test_workers(requested: int) -> int:
+    try:
+        configured = int(os.environ.get("HARNESS_TEST_MAX_WORKERS", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(requested, configured, 2))
 
 
 class HarnessChangeTests(unittest.TestCase):
@@ -152,7 +161,7 @@ class HarnessChangeTests(unittest.TestCase):
                 ttl_seconds=3600,
             )
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=bounded_test_workers(8)) as executor:
             results = list(executor.map(acquire, range(8)))
         winners = [item for item in results if item["ok"]]
         self.assertEqual(len(winners), 1, results)
@@ -185,7 +194,7 @@ class HarnessChangeTests(unittest.TestCase):
                 port_range=(43100, 43107),
             )
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=bounded_test_workers(8)) as executor:
             results = list(executor.map(allocate, range(8)))
         self.assertTrue(all(item["ok"] for item in results), results)
         ports = [item["port"] for item in results]
@@ -219,7 +228,7 @@ class HarnessChangeTests(unittest.TestCase):
         self.assertTrue(change.integration_lock_release(self.project, run_id="submit-a")["ok"])
 
     def test_parallel_integration_lock_has_one_winner(self) -> None:
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        with ThreadPoolExecutor(max_workers=bounded_test_workers(8)) as executor:
             results = list(executor.map(
                 lambda index: change.integration_lock_acquire(
                     self.project, run_id=f"submit-{index}"

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.29] — @hunter-harness/workflow-harness
+
+### Fixed（Windows 测试资源安全与进程生命周期）
+
+- **默认低负载档位**：新增 `safe` / `system` / `full` 测试资源档位；默认只运行 `safe`，资源密集型档位必须显式确认。
+- **逐模块隔离**：Python `unittest` 按测试文件串行、独立解释器执行，禁止单进程整库 discovery 长时间累积线程、端口和子进程。
+- **硬资源边界**：同项目单实例、低调度优先级、worker 上限 2、逐模块超时、失败即停；内部并发回归也服从统一 worker 预算。
+- **Windows 精确清理**：普通模块使用 kill-on-close Job Object；detached-service 测试使用精确 PID 血缘跟踪，正常、失败、超时和中断均回收本轮后代进程，不按进程名误杀用户服务。
+- **工作流合同化**：`harness-test` 技能、检查清单、参考文档和 workflow policy 同步强制安全 Runner、确认门与资源生命周期关门检查。
+- **项目安全入口**：仓库新增 `test:harness:safe/system/full` 命令，完整验证可拆为 safe + system，避免再次制造桌面资源峰值。
+
 ## [0.2.28] — @hunter-harness/workflow-harness
 
 ### Fixed（多日执行发布真实性、状态机与成本治理）

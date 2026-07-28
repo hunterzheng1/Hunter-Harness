@@ -15,6 +15,7 @@ POLICY_REL = Path("harness") / "contracts" / "workflow-policy.json"
 TOP_LEVEL_KEYS = frozenset(
     {
         "schemaVersion",
+        "testExecution",
         "riskTiers",
         "skills",
         "requiredArtifacts",
@@ -62,6 +63,27 @@ CHECKPOINT_RULE_KEYS = frozenset(
         "reviewerTool",
     }
 )
+TEST_EXECUTION_KEYS = frozenset(
+    {
+        "runner",
+        "defaultProfile",
+        "maxWorkers",
+        "singleInstance",
+        "processTreeCleanup",
+        "detachedProcessPreflight",
+        "confirmationFlag",
+        "confirmationRequiredProfiles",
+        "resourceIntensiveModules",
+        "profiles",
+    }
+)
+TEST_EXECUTION_PROFILE_KEYS = frozenset(
+    {
+        "description",
+        "includesResourceIntensive",
+        "moduleTimeoutSeconds",
+    }
+)
 
 
 class PolicyValidationError(ValueError):
@@ -93,6 +115,71 @@ def validate_policy(data: Any) -> dict[str, Any]:
     _require_type(data.get("schemaVersion"), int, "schemaVersion")
     if data["schemaVersion"] != 1:
         raise PolicyValidationError("unsupported schemaVersion")
+
+    test_execution = data["testExecution"]
+    _require_type(test_execution, dict, "testExecution")
+    _reject_unknown(test_execution, TEST_EXECUTION_KEYS, "testExecution")
+    for key in ("runner", "defaultProfile", "confirmationFlag"):
+        _require_type(test_execution[key], str, f"testExecution.{key}")
+    max_workers = test_execution["maxWorkers"]
+    _require_type(max_workers, int, "testExecution.maxWorkers")
+    if isinstance(max_workers, bool) or max_workers < 1 or max_workers > 2:
+        raise PolicyValidationError("testExecution.maxWorkers must be 1 or 2")
+    for key in (
+        "singleInstance",
+        "processTreeCleanup",
+        "detachedProcessPreflight",
+    ):
+        _require_type(test_execution[key], bool, f"testExecution.{key}")
+        if not test_execution[key]:
+            raise PolicyValidationError(f"testExecution.{key} must be true")
+    for key in ("confirmationRequiredProfiles", "resourceIntensiveModules"):
+        values = test_execution[key]
+        _require_type(values, list, f"testExecution.{key}")
+        if any(not isinstance(item, str) or not item for item in values):
+            raise PolicyValidationError(
+                f"testExecution.{key} must contain non-empty strings"
+            )
+
+    execution_profiles = test_execution["profiles"]
+    _require_type(execution_profiles, dict, "testExecution.profiles")
+    required_profile_names = {"safe", "system", "full"}
+    if set(execution_profiles) != required_profile_names:
+        raise PolicyValidationError(
+            "testExecution.profiles must define exactly safe, system, and full"
+        )
+    if test_execution["defaultProfile"] != "safe":
+        raise PolicyValidationError("testExecution.defaultProfile must be safe")
+    confirmation_profiles = set(test_execution["confirmationRequiredProfiles"])
+    if not {"system", "full"}.issubset(confirmation_profiles):
+        raise PolicyValidationError(
+            "testExecution confirmation must cover system and full"
+        )
+    for profile_name, profile in execution_profiles.items():
+        path = f"testExecution.profiles.{profile_name}"
+        _require_type(profile, dict, path)
+        _reject_unknown(profile, TEST_EXECUTION_PROFILE_KEYS, path)
+        _require_type(profile["description"], str, f"{path}.description")
+        _require_type(
+            profile["includesResourceIntensive"],
+            bool,
+            f"{path}.includesResourceIntensive",
+        )
+        timeout = profile["moduleTimeoutSeconds"]
+        _require_type(timeout, int, f"{path}.moduleTimeoutSeconds")
+        if isinstance(timeout, bool) or timeout <= 0:
+            raise PolicyValidationError(
+                f"{path}.moduleTimeoutSeconds must be a positive integer"
+            )
+    if execution_profiles["safe"]["includesResourceIntensive"]:
+        raise PolicyValidationError(
+            "testExecution.profiles.safe must exclude resource-intensive tests"
+        )
+    for profile_name in ("system", "full"):
+        if not execution_profiles[profile_name]["includesResourceIntensive"]:
+            raise PolicyValidationError(
+                f"testExecution.profiles.{profile_name} must include resource-intensive tests"
+            )
 
     risk_tiers = data["riskTiers"]
     _require_type(risk_tiers, dict, "riskTiers")

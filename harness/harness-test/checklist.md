@@ -38,6 +38,20 @@ description: harness-test 的 Phase 0 环境准备 + Playwright 探测 + 关门�
 
 然后确定变更名：用 Glob 搜索 `.harness/changes/*/plans/*-plan.md`（**排除 `.harness/archive/*/`**），读取 frontmatter 提取 `change-name`。
 
+#### 0.0-A 资源安全档位（所有测试的硬前置）
+
+- [ ] 默认选择 `safe`，测试命令由 `harness/scripts/harness_test_runner.py` 托管；禁止裸跑整库 discovery 或工具默认无限并发
+- [ ] Python `unittest` 使用逐模块隔离模式；每个 `test_*.py` 在独立解释器中串行执行，失败默认立即停止
+- [ ] 同项目单实例锁已获得；出现 `TEST_RUN_ALREADY_ACTIVE` 时停止，不得启动第二套测试
+- [ ] `HARNESS_TEST_MAX_WORKERS` 为 `1` 或 `2`，且技术栈自身 worker 参数不高于该值
+- [ ] 每个模块/命令设置明确超时；超时返回 `TEST_COMMAND_TIMEOUT` 并清理整棵进程树
+- [ ] Windows 普通模块使用 kill-on-close Job Object；显式测试 detached service 的模块改用精确 PID 血缘跟踪；其他平台使用独立进程组
+- [ ] Windows detached-service 模块执行前 nested-breakaway preflight 已通过；`DETACHED_PROCESS_CAPABILITY_UNAVAILABLE` 时立即停止并切换到允许该能力的执行环境，不逐用例等待超时
+- [ ] 任一隔离模式返回 `PROCESS_TREE_ISOLATION_UNAVAILABLE` 时停止资源密集型测试
+- [ ] `system` / `full` 属于资源密集型档位：用户明确授权后才传 `--confirm-resource-intensive`；受控 CI 可用 `CI=true`
+- [ ] `safe` 不包含服务生命周期和集成模块；`full` 仍按“普通模块 → 资源密集型模块”顺序串行，不得恢复单进程全量 discovery
+- [ ] 测试前记录已有工作区状态；测试后状态只允许包含本轮预期变化，不要求删除用户原有变更
+
 #### 0.1 命令执行模式 preflight（⚠️ 必须在编译/启动服务/生成执行器之前执行）
 
 - [ ] 检查 PowerShell 基础命令：`powershell.exe -NoProfile -Command "$PSVersionTable.PSVersion"` 返回 exitCode=0
@@ -319,6 +333,7 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] 检查报告和日志是否包含明文凭证/password/secret/access-key/client-secret
 - [ ] 检查 `.harness/changes/<change>/runtime/` 是否不会被提交（.gitignore 确认）
 - [ ] **服务生命周期收尾**：AI_STARTED→Stop-Process / USER_STARTED→提示 / REUSED_EXISTING→保留或确认 / NOT_STARTED→N/A
+- [ ] **资源生命周期收尾**：Runner 单实例锁已释放，测试进程树无新增残留，未对用户原有 Python/Node 进程做宽泛清理
 - [ ] 检查测试数据是否需要清理
 - [ ] 检查请求执行器结果是否完整（4 种执行器，未与接口测试执行器混写）
 - [ ] 检查是否存在慢请求或超时风险
