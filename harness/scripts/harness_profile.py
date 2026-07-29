@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harness profile v3 — module/command graph resolver, recommender and migrator.
+"""Harness profile v3 — module/command/verification graph resolver, recommender and migrator.
 
 Change cluster 1 of harness-deterministic-performance.
 
@@ -7,8 +7,8 @@ Spec §3.1：每个 verification 声明 command/argvTemplate/scope/inputs/covera
 source/basis；持久 profile 只保存模板，不含具体 change-name/worktree 路径或已解析
 overlay；运行期 resolve 结果写入 change runtime/session。
 
-兼容性：保留顶层 `verificationInputs`（派生自 commands.<key>.inputs）以兼容
-harness_ledger.py v1 的 expand_profile_input_files，直到 cluster 2 升级 ledger。
+兼容性：保留顶层 `verificationInputs`（派生自 commands.<key>.inputs）供旧调用方
+展开输入闭包；`verificationGraph.targets` 是动态验证目标的权威声明。
 
 Python 3.10+ stdlib only. UTF-8 without BOM. Windows path friendly.
 """
@@ -186,6 +186,9 @@ def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
             if isinstance(command, dict) and command.get("source") == "user"
         ),
     }
+    projected["defaultsFingerprint"] = profile_defaults_fingerprint()
+    _derive_verification_inputs(projected)
+    _derive_verification_graph(projected)
     return projected
 
 
@@ -266,6 +269,7 @@ VERIFICATION_KEYS: tuple[str, ...] = (
 )
 
 VALID_SOURCES = ("detected", "user")
+TARGET_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 
 
 def now_iso() -> str:
@@ -328,6 +332,16 @@ def is_path_excluded(rel_path: str, excluded: tuple[str, ...] | list[str]) -> bo
 def detect_project_type(project: Path) -> str:
     if (project / "pom.xml").is_file():
         return "java-maven"
+    if any(
+        (project / marker).is_file()
+        for marker in (
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        )
+    ):
+        return "java-gradle"
     if (project / "package.json").is_file():
         return "node"
     return "unknown"
@@ -341,6 +355,8 @@ def discover_nested_components(
         "pyproject.toml": "python",
         "package.json": "node",
         "pom.xml": "java-maven",
+        "build.gradle": "java-gradle",
+        "build.gradle.kts": "java-gradle",
     }
     found: list[tuple[str, str]] = []
     for marker, kind in markers.items():
@@ -412,6 +428,8 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "scope": "module",
             "inputs": _cmd_inputs(reactor_modules, pom=True, main=True, test=False),
             "coverage": "compile",
+            "dependsOn": [],
+            "requiredCapabilities": ["java", "maven"],
             "source": "detected",
             "basis": dict(basis),
         },
@@ -421,6 +439,8 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "scope": "incremental",
             "inputs": _cmd_inputs(reactor_modules, pom=True, main=False, test=True),
             "coverage": "unitTest",
+            "dependsOn": ["compile"],
+            "requiredCapabilities": ["java", "maven"],
             "source": "detected",
             "basis": dict(basis),
         },
@@ -430,6 +450,8 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "scope": "full",
             "inputs": full_inputs,
             "coverage": "unitTestFull",
+            "dependsOn": ["compile"],
+            "requiredCapabilities": ["java", "maven"],
             "source": "detected",
             "basis": dict(basis),
         },
@@ -439,6 +461,8 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "scope": "module-am",
             "inputs": _cmd_inputs(reactor_modules, pom=True, main=False, test=False),
             "coverage": "install",
+            "dependsOn": ["compile"],
+            "requiredCapabilities": ["java", "maven"],
             "source": "detected",
             "basis": dict(basis),
         },
@@ -448,9 +472,93 @@ def _java_commands(reactor_modules: list[str], pom_hash: str) -> dict[str, Any]:
             "scope": "module",
             "inputs": _cmd_inputs(reactor_modules, pom=True, main=True, test=True),
             "coverage": "package",
+            "dependsOn": ["compile"],
+            "requiredCapabilities": ["java", "maven"],
             "source": "detected",
             "basis": dict(basis),
         },
+    }
+
+
+def _gradle_commands(project: Path) -> dict[str, Any]:
+    if (project / "gradlew").is_file():
+        executable = "./gradlew"
+        required_capabilities = ["java"]
+    elif (project / "gradlew.bat").is_file():
+        executable = "gradlew.bat"
+        required_capabilities = ["java"]
+    else:
+        executable = "gradle"
+        required_capabilities = ["java", "gradle"]
+    build_inputs = [
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "gradle.properties",
+        "gradle/wrapper/**",
+        "gradlew",
+        "gradlew.bat",
+    ]
+    full_inputs = build_inputs + ["src/main/**", "src/test/**"]
+    basis = {
+        "buildSystem": "gradle",
+        "wrapper": executable != "gradle",
+    }
+
+    def command(
+        task: str,
+        *,
+        scope: str,
+        inputs: list[str],
+        coverage: str,
+        depends_on: list[str],
+        extra: list[str] | None = None,
+    ) -> dict[str, Any]:
+        argv = [executable, task, *(extra or []), "--offline"]
+        return {
+            "command": " ".join(argv),
+            "argvTemplate": argv,
+            "scope": scope,
+            "inputs": inputs,
+            "coverage": coverage,
+            "dependsOn": depends_on,
+            "requiredCapabilities": list(required_capabilities),
+            "source": "detected",
+            "basis": dict(basis),
+        }
+
+    return {
+        "compile": command(
+            "classes",
+            scope="module",
+            inputs=build_inputs + ["src/main/**"],
+            coverage="compile",
+            depends_on=[],
+        ),
+        "unitTest": command(
+            "test",
+            scope="incremental",
+            inputs=build_inputs + ["src/main/**", "src/test/**"],
+            coverage="unitTest",
+            depends_on=["compile"],
+            extra=["--tests", "{testClasses}"],
+        ),
+        "unitTestFull": command(
+            "test",
+            scope="full",
+            inputs=full_inputs,
+            coverage="unitTestFull",
+            depends_on=["compile"],
+        ),
+        "package": command(
+            "build",
+            scope="module",
+            inputs=full_inputs,
+            coverage="package",
+            depends_on=["compile"],
+            extra=["-x", "test"],
+        ),
     }
 
 
@@ -473,9 +581,21 @@ def _node_commands(project: Path) -> dict[str, Any]:
     if not script_key:
         return {}
     full_cmd = scripts[script_key]
+    declared_package_manager = data.get("packageManager")
+    package_manager = (
+        "pnpm"
+        if (
+            isinstance(declared_package_manager, str)
+            and declared_package_manager.split("@", 1)[0] == "pnpm"
+        )
+        or (project / "pnpm-lock.yaml").is_file()
+        else "npm"
+    )
     # Precise globs (avoid node_modules/** which would make the inputs hash unstable).
     inputs = [
         "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
         "tsconfig.json",
         "tsconfig.*.json",
         "vitest.config.*",
@@ -511,8 +631,13 @@ def _node_commands(project: Path) -> dict[str, Any]:
             "scope": "full",
             "inputs": inputs,
             "coverage": "unitTestFull",
+            "dependsOn": [],
+            "requiredCapabilities": ["node", package_manager],
             "source": "detected",
-            "basis": {"packageScript": script_key},
+            "basis": {
+                "packageScript": script_key,
+                "packageManager": package_manager,
+            },
         }
     }
 
@@ -523,11 +648,17 @@ def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, A
         "defaultsFingerprint": profile_defaults_fingerprint(),
         "detectedAt": "",
         "projectType": "unknown",
-        "toolPaths": {"node": "", "mvn": ""},
+        "toolPaths": {"node": "", "mvn": "", "gradle": "", "npm": "", "pnpm": ""},
         "excludedRoots": list(excluded),
         "commands": {},
-        # 兼容字段：cluster 2 升级 ledger 后由 commands 派生；期间保持 v1 可消费。
+        # 兼容字段：由 commands 派生，供旧调用方展开输入闭包。
         "verificationInputs": {},
+        "verificationGraph": {
+            "schemaVersion": 1,
+            "source": "detected",
+            "candidateTarget": None,
+            "targets": {},
+        },
         "serviceStart": {
             "command": "",
             "healthUrl": "",
@@ -597,8 +728,18 @@ def load_profile(project: Path) -> dict[str, Any] | None:
     if exec_data is None:
         return common_data
 
-    # Merge: start from common, overlay execution's buildCommands.
+    # Merge: start from common, overlay execution's current commands.
     merged = dict(common_data)
+    common_current = common_data.get("commands") or {}
+    exec_current = exec_data.get("commands") or {}
+    if common_current or exec_current:
+        merged_current = (
+            dict(common_current) if isinstance(common_current, dict) else {}
+        )
+        if isinstance(exec_current, dict):
+            merged_current.update(exec_current)
+        merged["commands"] = merged_current
+    # Legacy v1 aliases remain readable during migration.
     common_cmds = common_data.get("buildCommands") or {}
     exec_cmds = exec_data.get("buildCommands") or {}
     if common_cmds or exec_cmds:
@@ -606,19 +747,14 @@ def load_profile(project: Path) -> dict[str, Any] | None:
         if isinstance(exec_cmds, dict):
             merged_cmds.update(exec_cmds)
         merged["buildCommands"] = merged_cmds
-    common_commands = common_data.get("commands") or {}
-    exec_commands = exec_data.get("commands") or {}
-    if common_commands or exec_commands:
-        merged_commands = (
-            dict(common_commands) if isinstance(common_commands, dict) else {}
-        )
-        if isinstance(exec_commands, dict):
-            merged_commands.update(exec_commands)
-        merged["commands"] = merged_commands
+    if isinstance(merged.get("commands"), dict):
         _derive_verification_inputs(merged)
     for field in ("moduleGraph", "commandGraph", "migration"):
         if field in exec_data:
             merged[field] = exec_data[field]
+    exec_graph = exec_data.get("verificationGraph")
+    if isinstance(exec_graph, dict):
+        merged["verificationGraph"] = dict(exec_graph)
     return merged
 
 
@@ -644,8 +780,11 @@ def _merge_user_overrides(
     test_tracking = existing.get("testTracking")
     if isinstance(test_tracking, dict) and test_tracking.get("source") == "user":
         profile["testTracking"] = dict(test_tracking)
-    # 兼容字段：用户在 v1 配置的 verificationInputs 不保留（无 provenance），
-    # 由 commands 重新派生。knownPreexistingErrors/shellQuirks 是人工标注，保留。
+    graph = existing.get("verificationGraph")
+    if isinstance(graph, dict) and graph.get("source") == "user":
+        profile["verificationGraph"] = dict(graph)
+    # verificationInputs 由 commands 重新派生。knownPreexistingErrors /
+    # shellQuirks 是人工标注，保留。
 
 
 def _derive_verification_inputs(profile: dict[str, Any]) -> None:
@@ -656,6 +795,61 @@ def _derive_verification_inputs(profile: dict[str, Any]) -> None:
         if isinstance(cmd, dict) and isinstance(cmd.get("inputs"), list):
             vi[key] = list(cmd["inputs"])
     profile["verificationInputs"] = vi
+
+
+def _required_coverage(scope: Any) -> str:
+    value = str(scope or "").strip()
+    if value == "incremental":
+        return "incremental"
+    if value == "module-am":
+        return "module-am"
+    if value in {"module", "full"}:
+        # A full command may satisfy the module-or-broader candidate gate.
+        return "module"
+    return "module"
+
+
+def _derive_verification_graph(profile: dict[str, Any]) -> None:
+    existing = profile.get("verificationGraph")
+    if isinstance(existing, dict) and existing.get("source") == "user":
+        return
+    commands = profile.get("commands")
+    targets: dict[str, dict[str, Any]] = {}
+    if isinstance(commands, dict):
+        for key, command in sorted(commands.items()):
+            if not isinstance(key, str) or not TARGET_NAME.fullmatch(key):
+                continue
+            if not isinstance(command, dict):
+                continue
+            depends_on = command.get("dependsOn")
+            if not isinstance(depends_on, list):
+                depends_on = []
+            required_capabilities = command.get("requiredCapabilities")
+            if not isinstance(required_capabilities, list):
+                required_capabilities = []
+            targets[key] = {
+                "commandKey": key,
+                "dependsOn": [
+                    item
+                    for item in depends_on
+                    if isinstance(item, str) and TARGET_NAME.fullmatch(item)
+                ],
+                "requiredCoverage": _required_coverage(command.get("scope")),
+                "candidate": key == "unitTestFull",
+                "requiredCapabilities": [
+                    item
+                    for item in required_capabilities
+                    if isinstance(item, str) and item.strip()
+                ],
+            }
+    profile["verificationGraph"] = {
+        "schemaVersion": 1,
+        "source": "detected",
+        "candidateTarget": (
+            "unitTestFull" if "unitTestFull" in targets else None
+        ),
+        "targets": targets,
+    }
 
 
 def detect(project: Path) -> dict[str, Any]:
@@ -696,7 +890,13 @@ def detect(project: Path) -> dict[str, Any]:
 
     node_path = which_tool("node")
     mvn_path = which_tool("mvn")
-    profile["toolPaths"] = {"node": node_path, "mvn": mvn_path}
+    profile["toolPaths"] = {
+        "node": node_path,
+        "mvn": mvn_path,
+        "gradle": which_tool("gradle"),
+        "npm": which_tool("npm"),
+        "pnpm": which_tool("pnpm"),
+    }
 
     pom_hash = sha256_file(project / "pom.xml") if (project / "pom.xml").is_file() else ""
     profile["fingerprint"] = {"mvnVersion": "", "nodeVersion": "", "pomHash": pom_hash}
@@ -709,6 +909,9 @@ def detect(project: Path) -> dict[str, Any]:
                 "src/test/**" if module == "." else f"{module}/src/test/**"
                 for module in reactor_modules
             )
+    elif project_type == "java-gradle":
+        profile["commands"] = _gradle_commands(project)
+        profile["testTracking"]["paths"] = ["src/test/**"]
     elif project_type == "node":
         node_cmds = _node_commands(project)
         if node_cmds:
@@ -748,6 +951,7 @@ def detect(project: Path) -> dict[str, Any]:
         ]
         + list(recommendation["targets"])
     }
+    _derive_verification_graph(profile)
 
     out_path = project / PROFILE_REL
     write_json(out_path, profile)
@@ -863,6 +1067,11 @@ def check(project: Path) -> dict[str, Any]:
                 stale = True
                 issues.append(f"toolPaths.{tool_name} missing: {p}")
 
+    structural_issues = validate_profile(profile, project)
+    if structural_issues:
+        stale = True
+        issues.extend(structural_issues)
+
     status = "stale" if stale else "ready"
     return {
         "ok": not stale,
@@ -897,6 +1106,66 @@ def validate_profile(profile: dict[str, Any], project: Path) -> list[str]:
                 issues.append(
                     f"command {key} input in excluded root: {inp}"
                 )
+    graph = profile.get("verificationGraph")
+    targets = graph.get("targets") if isinstance(graph, dict) else None
+    if (
+        not isinstance(graph, dict)
+        or graph.get("schemaVersion") != 1
+        or not isinstance(targets, dict)
+    ):
+        issues.append("verificationGraph schemaVersion=1 and targets object required")
+        return issues
+    dependencies: dict[str, list[str]] = {}
+    for name, target in targets.items():
+        if not isinstance(name, str) or not TARGET_NAME.fullmatch(name):
+            issues.append(f"verification target name invalid: {name}")
+            continue
+        if not isinstance(target, dict):
+            issues.append(f"verification target {name} must be an object")
+            continue
+        command_key = target.get("commandKey")
+        if command_key not in commands:
+            issues.append(
+                f"verification target {name} references missing command {command_key}"
+            )
+        required = target.get("requiredCoverage")
+        if required not in {"incremental", "module", "module-am", "full"}:
+            issues.append(
+                f"verification target {name} requiredCoverage invalid: {required}"
+            )
+        raw_dependencies = target.get("dependsOn")
+        if not isinstance(raw_dependencies, list):
+            issues.append(f"verification target {name} dependsOn must be a list")
+            continue
+        dependencies[name] = []
+        for dependency in raw_dependencies:
+            if dependency not in targets:
+                issues.append(
+                    f"verification target {name} depends on unknown target {dependency}"
+                )
+            elif isinstance(dependency, str):
+                dependencies[name].append(dependency)
+    candidate = graph.get("candidateTarget")
+    if candidate is not None and candidate not in targets:
+        issues.append(f"verificationGraph candidateTarget missing: {candidate}")
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            issues.append(f"verification target dependency cycle at {name}")
+            return
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in dependencies.get(name, []):
+            visit(dependency)
+        visiting.remove(name)
+        visited.add(name)
+
+    for target_name in dependencies:
+        visit(target_name)
     return issues
 
 
@@ -947,11 +1216,13 @@ def resolve_command(
 
 
 # ---------------------------------------------------------------------------
-# migrate（v1 → v2，dry-run/apply/备份）
+# migrate（v1/v2 → v3，dry-run/apply/备份）
 # ---------------------------------------------------------------------------
 
-def _backup_path(profile_path: Path, version: int = 1) -> Path:
-    return profile_path.with_suffix(profile_path.suffix + f".v{version}.bak")
+def _backup_path(profile_path: Path, schema_version: int) -> Path:
+    return profile_path.with_suffix(
+        profile_path.suffix + f".v{schema_version}.bak"
+    )
 
 
 def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
@@ -1019,6 +1290,7 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
                 "identifier 约束（pattern/maxLength/prefix）",
             ]
         )
+    changes.append("commands → verificationGraph.targets 动态验证图")
     dropped: list[str] = []
     v1_svc = existing.get("serviceStart") or {}
     if isinstance(v1_svc, dict):
@@ -1082,7 +1354,7 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_profile.py",
-        description="Harness profile v3: recommend/detect/audit/validate/resolve/migrate",
+        description="Harness Build Profile v3: recommend/detect/audit/validate/resolve/migrate",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     sub = parser.add_subparsers(dest="command", required=True)

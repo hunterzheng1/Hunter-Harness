@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Harness preflight: build-profile detect/check + quirk recording + agent precheck.
 
-变更簇 4：detect/check 委托 ``harness_profile``（profile v2 公共内核），不再保留
+变更簇 4：detect/check 委托 ``harness_profile``（Build Profile v3 公共内核），不再保留
 v1 重复探测逻辑与 ``buildCommands`` 扁平字符串。record-quirk 适配 v2 ``commands``
 结构：``fix-command`` 写 ``source=user`` override（spec §3.1 显式保留），跨 detect
 保留；``skip-not-block`` 仍写 ``knownPreexistingErrors``。check-agents 与 pitfalls
@@ -51,7 +51,7 @@ def emit_json(payload: dict[str, Any], *, ok: bool = True) -> int:
 
 
 # ---------------------------------------------------------------------------
-# detect / check — 委托 harness_profile（profile v2 公共内核）
+# detect / check — 委托 harness_profile（Build Profile v3 公共内核）
 # ---------------------------------------------------------------------------
 
 def cmd_detect(project: Path) -> dict[str, Any]:

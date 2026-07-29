@@ -28,6 +28,7 @@ describe("CLI/workflow capability contract", () => {
       const payload = JSON.parse(stdout.join("")) as {
         cliVersion: string;
         workflowBundleVersion: string;
+        capabilities: string[];
         commands: Record<string, { available: boolean; schemaVersion: number }>;
         compatibility: { compatible: boolean };
       };
@@ -39,6 +40,14 @@ describe("CLI/workflow capability contract", () => {
       expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["rules-sync"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["rules-review"]).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.capabilities).toEqual(expect.arrayContaining([
+        "build-profile@3",
+        "verification-graph@1",
+        "external-convergence@1",
+        "codegraph-status@1",
+        "doctor-capability@1",
+        "registry-governance@1"
+      ]));
       expect(payload.compatibility.compatible).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });

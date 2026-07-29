@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Unittests for harness_profile.py (Profile v2 — change cluster 1).
+"""Unittests for harness_profile.py (Profile v3 dynamic verification graph).
 
 覆盖 test-scenarios UT-001~UT-009：
   detect 单/多模块、worktree/build 目录排除、user override 保留、basis 变化重建、
-  glob 逃逸拒绝、连续 detect/migrate 幂等、v1→v2 迁移（dry-run/apply/备份）。
+  glob 逃逸拒绝、连续 detect/migrate 幂等、v1/v2→v3 迁移（dry-run/apply/备份）。
 """
 
 from __future__ import annotations
@@ -57,6 +57,14 @@ def _make_java_project(tmp: Path, modules: list[str] | None = None) -> None:
         _write(tmp / "src" / "test" / "java" / "AppTest.java", "class AppTest {}\n")
 
 
+def _make_gradle_project(tmp: Path) -> None:
+    _write(tmp / "settings.gradle.kts", 'rootProject.name = "demo"\n')
+    _write(tmp / "build.gradle.kts", "plugins { java }\n")
+    _write(tmp / "gradlew", "#!/bin/sh\n")
+    _write(tmp / "src" / "main" / "java" / "App.java", "class App {}\n")
+    _write(tmp / "src" / "test" / "java" / "AppTest.java", "class AppTest {}\n")
+
+
 class DetectTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="profile-detect-"))
@@ -64,7 +72,7 @@ class DetectTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_detect_single_module_java_v3_schema(self) -> None:
+    def test_detect_single_module_java_v3_schema_and_verification_graph(self) -> None:
         # UT-001：单模块 Java detect → 完整 compile/unit/full/package profile
         _make_java_project(self.tmp)
         r = hp.detect(self.tmp)
@@ -84,6 +92,52 @@ class DetectTests(unittest.TestCase):
             self.assertIsInstance(cmds[key]["argvTemplate"], list)
         self.assertIn("clean package", cmds["package"]["command"])
         self.assertEqual(cmds["package"]["argvTemplate"][3:5], ["clean", "package"])
+        graph = profile["verificationGraph"]
+        self.assertEqual(graph["schemaVersion"], 1)
+        self.assertEqual(graph["candidateTarget"], "unitTestFull")
+        self.assertEqual(
+            set(graph["targets"]),
+            set(cmds),
+        )
+        self.assertEqual(
+            graph["targets"]["unitTestFull"]["commandKey"],
+            "unitTestFull",
+        )
+        self.assertEqual(
+            graph["targets"]["unitTestFull"]["requiredCoverage"],
+            "module",
+        )
+        self.assertTrue(graph["targets"]["unitTestFull"]["candidate"])
+        self.assertEqual(
+            graph["targets"]["unitTestFull"]["requiredCapabilities"],
+            ["java", "maven"],
+        )
+        self.assertEqual(
+            graph["targets"]["unitTest"]["dependsOn"],
+            ["compile"],
+        )
+
+    def test_detect_gradle_recommends_wrapper_commands_and_capabilities(self) -> None:
+        _make_gradle_project(self.tmp)
+        result = hp.detect(self.tmp)
+
+        self.assertTrue(result["ok"], result)
+        profile = result["profile"]
+        self.assertEqual(profile["projectType"], "java-gradle")
+        self.assertEqual(
+            profile["commands"]["unitTestFull"]["argvTemplate"],
+            ["./gradlew", "test", "--offline"],
+        )
+        self.assertIn(
+            "build.gradle.kts",
+            profile["commands"]["unitTestFull"]["inputs"],
+        )
+        self.assertEqual(
+            profile["verificationGraph"]["targets"]["unitTestFull"][
+                "requiredCapabilities"
+            ],
+            ["java"],
+        )
 
     def test_detect_multi_module_reactor_inputs_cover_all_modules(self) -> None:
         # UT-002：多模块 reactor detect → inputs 覆盖真实 reactor，排序去重
@@ -409,7 +463,7 @@ class MigrateTests(unittest.TestCase):
         self.assertTrue(r.get("needsMigration"), msg="dry-run should report needsMigration")
 
     def test_migrate_apply_creates_backup_and_removes_stale_paths(self) -> None:
-        # UT-005：apply → 有备份，v2 无旧 worktree/change 路径
+        # UT-005：apply → 有备份，v3 无旧 worktree/change 路径
         self._write_v1_profile()
         r = hp.migrate(self.tmp, dry_run=False)
         self.assertTrue(r["ok"])
@@ -417,6 +471,7 @@ class MigrateTests(unittest.TestCase):
         self.assertTrue(Path(r["backupPath"]).is_file())
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
         self.assertEqual(profile["schemaVersion"], 3)
+        self.assertIn("unitTestFull", profile["verificationGraph"]["targets"])
         svc = profile.get("serviceStart", {})
         for field in ("profile", "overlayPath"):
             val = svc.get(field, "")
@@ -433,7 +488,69 @@ class MigrateTests(unittest.TestCase):
         r2 = hp.migrate(self.tmp, dry_run=False)
         self.assertTrue(r2["ok"])
         self.assertFalse(r2.get("needsMigration"),
-                        msg=f"second migrate on v2 should be no-op: {r2}")
+                        msg=f"second migrate on v3 should be no-op: {r2}")
+
+    def test_migrate_v2_preserves_user_command_and_builds_dynamic_graph(self) -> None:
+        _make_java_project(self.tmp)
+        profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
+        v2 = {
+            "schemaVersion": 2,
+            "detectedAt": "2026-07-29T00:00:00Z",
+            "projectType": "java-maven",
+            "toolPaths": {"node": "", "mvn": ""},
+            "excludedRoots": list(hp.DEFAULT_EXCLUDED_ROOTS),
+            "commands": {
+                "backendTest": {
+                    "command": "python -m pytest backend",
+                    "argvTemplate": ["python", "-m", "pytest", "backend"],
+                    "scope": "module",
+                    "inputs": ["src/**"],
+                    "coverage": "backendTest",
+                    "source": "user",
+                    "basis": {"policy": "project"},
+                }
+            },
+            "verificationInputs": {"backendTest": ["src/**"]},
+            "serviceStart": {
+                "command": "",
+                "healthUrl": "",
+                "startTimeoutSec": 120,
+                "inputFiles": [],
+                "source": "detected",
+                "profile": "",
+                "overlayPath": "",
+            },
+            "identifier": {
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+                "maxLength": 64,
+                "prefix": "",
+            },
+            "knownPreexistingErrors": [],
+            "shellQuirks": [],
+            "fingerprint": {"mvnVersion": "", "nodeVersion": "", "pomHash": ""},
+            "testTracking": {
+                "source": "detected",
+                "mode": "force-track-touched",
+                "paths": ["src/test/**"],
+                "staleTestPolicy": "safe-repair",
+                "forbidTemporaryExclusion": True,
+            },
+        }
+        _write(profile_path, json.dumps(v2, ensure_ascii=False, indent=2) + "\n")
+
+        result = hp.migrate(self.tmp, dry_run=False)
+
+        self.assertTrue(result["ok"], result)
+        migrated = _read_json(profile_path)
+        self.assertEqual(migrated["schemaVersion"], 3)
+        self.assertEqual(
+            migrated["commands"]["backendTest"]["command"],
+            "python -m pytest backend",
+        )
+        self.assertEqual(
+            migrated["verificationGraph"]["targets"]["backendTest"]["commandKey"],
+            "backendTest",
+        )
 
 
 class ResolveCommandTests(unittest.TestCase):
@@ -574,6 +691,37 @@ class NodeCommandsTests(unittest.TestCase):
         self.assertEqual(cmds["unitTestFull"]["command"], "npm run lint && npm test")
         self.assertEqual(cmds["unitTestFull"]["source"], "detected")
         self.assertIn("unitTestFull", profile["verificationInputs"])
+        self.assertEqual(
+            profile["verificationGraph"]["targets"]["unitTestFull"][
+                "requiredCapabilities"
+            ],
+            ["node", "npm"],
+        )
+        self.assertEqual(cmds["unitTestFull"]["basis"]["packageManager"], "npm")
+
+    def test_detect_node_recommends_pnpm_from_package_manager_contract(self) -> None:
+        _write(
+            self.tmp / "package.json",
+            json.dumps(
+                {
+                    "name": "demo",
+                    "packageManager": "pnpm@10.0.0",
+                    "scripts": {"check": "pnpm lint && pnpm test"},
+                }
+            ),
+        )
+        _write(self.tmp / "pnpm-lock.yaml", "lockfileVersion: '9.0'\n")
+
+        profile = hp.detect(self.tmp)["profile"]
+        command = profile["commands"]["unitTestFull"]
+        self.assertEqual(command["basis"]["packageManager"], "pnpm")
+        self.assertIn("pnpm-lock.yaml", command["inputs"])
+        self.assertEqual(
+            profile["verificationGraph"]["targets"]["unitTestFull"][
+                "requiredCapabilities"
+            ],
+            ["node", "pnpm"],
+        )
 
     def test_detect_node_inputs_closure_covers_ts_sources_and_config(self) -> None:
         _make_node_project(self.tmp)

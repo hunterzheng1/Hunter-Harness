@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.local/contracts/doctor-capability.schema.json",
+  "title": "Hunter Harness Capability Probe",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "capability",
+    "status",
+    "reasonCode",
+    "observedAt",
+    "evidence"
+  ],
+  "properties": {
+    "capability": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "DEGRADED",
+        "UNKNOWN"
+      ]
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "details": {}
+  }
+}

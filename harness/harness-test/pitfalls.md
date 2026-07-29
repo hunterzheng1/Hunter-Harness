@@ -271,6 +271,6 @@ $cred = $resp.data.accessToken
 | `validateRunnerPayload(payload, {identifierPattern})` | Runner 生成前本地校验 payload schema/必填/identifier/重复 id，返回结构化错误码 | 测试脚本错误（缺字段/非法 id）直到请求服务后才暴露，返工成本高 |
 | `findCredentialValues(text)` | 扫描 profile/Markdown/docs 中的凭据明文值（password/token/secret/Authorization/jdbc password），占位符 `<*_REDACTED>` 与 env 引用 `${ENV}`/`$ENV` 不报 | profile/规则文档误含明文凭据被发布 |
 
-**Runner 生成前强制**（spec §3.4 point 3）：生成 `api-test-runner.mjs` 前用 `validateRunnerPayload` 校验全部场景；`ok=false` → 修复脚本错误，**不得带错请求服务**。场景 id 用 `sanitizeTestIdentifier` 生成（profile v2 `identifier.pattern/maxLength/prefix` 已声明）。
+**Runner 生成前强制**（spec §3.4 point 3）：生成 `api-test-runner.mjs` 前用 `validateRunnerPayload` 校验全部场景；`ok=false` → 修复脚本错误，**不得带错请求服务**。场景 id 用 `sanitizeTestIdentifier` 生成（Build Profile v3 `identifier.pattern/maxLength/prefix` 已声明）。
 
 **凭据边界**（spec §3.4 point 4）：credential 配置只含 env key（如 `${TEST_TOKEN}`）、cache path、角色，不含值。发布前用 `findCredentialValues` 扫 profile/规则/Markdown，命中即 ❌FAIL。详见 `../protocols/sensitive-info-protocol.md` §6。

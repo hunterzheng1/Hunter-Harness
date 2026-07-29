@@ -82,6 +82,63 @@ REQUIRED_COVERAGE = {
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
+def resolve_verification_target(
+    verification: str,
+    project_root: Path | None,
+) -> dict[str, Any] | None:
+    """Resolve a built-in or project-declared profile-v3 verification target."""
+    if not isinstance(verification, str) or not re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9_-]{0,63}",
+        verification,
+    ):
+        return None
+    if project_root is not None:
+        profile = harness_profile.load_profile(project_root)
+        graph = (
+            profile.get("verificationGraph")
+            if isinstance(profile, dict)
+            else None
+        )
+        targets = graph.get("targets") if isinstance(graph, dict) else None
+        target = targets.get(verification) if isinstance(targets, dict) else None
+        if isinstance(target, dict):
+            required = str(target.get("requiredCoverage") or "module")
+            if required not in COVERAGE_RANK:
+                return None
+            return {**target, "requiredCoverage": required}
+    if verification in VERIFICATIONS:
+        required_rank = REQUIRED_COVERAGE.get(verification, 1)
+        required = next(
+            (
+                name
+                for name, rank in COVERAGE_RANK.items()
+                if rank == required_rank
+            ),
+            "module",
+        )
+        return {
+            "commandKey": verification,
+            "dependsOn": [],
+            "requiredCoverage": required,
+            "candidate": verification == "unitTestFull",
+            "requiredCapabilities": [],
+        }
+    return None
+
+
+def verification_target_identity(
+    verification: str,
+    target: dict[str, Any],
+) -> str:
+    payload = json.dumps(
+        {"verification": verification, "target": target},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="milliseconds")
 
@@ -1075,6 +1132,8 @@ def decide_can_reuse(
     requested_profile_hash: str | None = None,
     requested_environment_hash: str | None = None,
     requested_db_schema_hash: str | None = None,
+    requested_target_identity: str | None = None,
+    required_coverage: str | None = None,
     project_root: Path | str | None = None,
 ) -> dict[str, Any]:
     ledger, ledger_path = load_ledger(change_dir)
@@ -1136,6 +1195,7 @@ def decide_can_reuse(
     scope = entry.get("scope")
     algorithm_version = entry.get("algorithmVersion")
     coverage = entry.get("coverage")
+    stored_target_identity = entry.get("targetIdentity")
 
     if entry.get("reusable") is False or isinstance(entry.get("invalidation"), dict):
         return {
@@ -1198,7 +1258,11 @@ def decide_can_reuse(
     # Coverage lattice: recorded coverage rank must meet the verification's
     # required rank. Stops incremental evidence satisfying a module/full gate
     # (UT-015 / API-005).
-    required = REQUIRED_COVERAGE.get(verification, 1)
+    required = (
+        COVERAGE_RANK.get(required_coverage, 1)
+        if required_coverage is not None
+        else REQUIRED_COVERAGE.get(verification, 1)
+    )
     if COVERAGE_RANK.get(str(coverage).strip(), -1) < required:
         return {
             "ok": True,
@@ -1210,6 +1274,31 @@ def decide_can_reuse(
             "ledger_path": str(ledger_path) if ledger_path else None,
             "stored_coverage": coverage,
         }
+
+    if _nonempty_str(requested_target_identity):
+        if not _nonempty_str(stored_target_identity):
+            return {
+                "ok": True,
+                "reuse": False,
+                "reason": "insufficient-evidence",
+                "code": "MISSING_TARGET_IDENTITY",
+                "verification": verification,
+                "detail": "recorded evidence predates the current verification target identity",
+                "ledger_path": str(ledger_path) if ledger_path else None,
+                "requested_target_identity": requested_target_identity,
+            }
+        if str(stored_target_identity).strip() != str(requested_target_identity).strip():
+            return {
+                "ok": True,
+                "reuse": False,
+                "reason": "rerun",
+                "code": "TARGET_IDENTITY_CHANGED",
+                "verification": verification,
+                "detail": "verification target definition changed",
+                "ledger_path": str(ledger_path) if ledger_path else None,
+                "stored_target_identity": stored_target_identity,
+                "requested_target_identity": requested_target_identity,
+            }
 
     if requested_command is not None and str(requested_command).strip():
         if str(command).strip() != str(requested_command).strip():
@@ -1352,6 +1441,7 @@ def upsert_verification_graph_node(
     environment_hash: str | None = None,
     db_schema_hash: str | None = None,
     diff_hash: str | None = None,
+    target_identity: str | None = None,
 ) -> dict[str, Any]:
     """Persist a verification graph node keyed by canonical identity (H-9)."""
     path = verification_graph_path(change_dir)
@@ -1376,6 +1466,7 @@ def upsert_verification_graph_node(
         "environmentHash": environment_hash,
         "dbSchemaHash": db_schema_hash,
         "diffHash": diff_hash,
+        "targetIdentity": target_identity,
     }
     node = {
         "identity": identity,
@@ -1427,16 +1518,19 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     verbose = bool(getattr(args, "verbose", False))
     verification = args.verification
-    if verification not in VERIFICATIONS:
-        return emit_error(
-            f"unsupported verification: {verification}; expected one of {sorted(VERIFICATIONS)}",
-            as_json=as_json,
-        )
     change_dir = resolve_path(args.change_dir)
     try:
         files, project_root = input_files_from_args(args)
     except (OSError, ValueError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
+    target = resolve_verification_target(verification, project_root)
+    if target is None:
+        return emit_error(
+            "unsupported verification: "
+            f"{verification}; declare it in build-profile.json "
+            "verificationGraph.targets",
+            as_json=as_json,
+        )
     profile_input = getattr(args, "profile_input", None)
     project_raw = getattr(args, "project", None)
     if profile_input:
@@ -1474,6 +1568,10 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             requested_profile_hash=getattr(args, "profile_hash", None),
             requested_environment_hash=getattr(args, "environment_hash", None),
             requested_db_schema_hash=getattr(args, "db_schema_hash", None),
+            requested_target_identity=verification_target_identity(
+                verification, target
+            ),
+            required_coverage=str(target["requiredCoverage"]),
             project_root=project_root,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1492,11 +1590,6 @@ def cmd_record(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     change_dir = resolve_path(args.change_dir)
     verification = args.verification
-    if verification not in VERIFICATIONS:
-        return emit_error(
-            f"unsupported verification: {verification}; expected one of {sorted(VERIFICATIONS)}",
-            as_json=as_json,
-        )
     contract_v2 = _contract_is_v2(change_dir)
     if not contract_v2 and any(
         _nonempty_str(getattr(args, field, None))
@@ -1510,6 +1603,14 @@ def cmd_record(args: argparse.Namespace) -> int:
         files, project_root = input_files_from_args(args)
     except (OSError, ValueError) as exc:
         return emit_error(f"record failed: {exc}", as_json=as_json)
+    target = resolve_verification_target(verification, project_root)
+    if target is None:
+        return emit_error(
+            "unsupported verification: "
+            f"{verification}; declare it in build-profile.json "
+            "verificationGraph.targets",
+            as_json=as_json,
+        )
     profile_input = getattr(args, "profile_input", None)
     project_raw = getattr(args, "project", None)
     if profile_input:
@@ -1610,6 +1711,9 @@ def cmd_record(args: argparse.Namespace) -> int:
         # toolchain/profile/environment hashes. v1 entries missing these are
         # conservatively invalidated by can-reuse (COM-002).
         entry["algorithmVersion"] = LEDGER_VERSION
+        entry["targetIdentity"] = verification_target_identity(
+            verification, target
+        )
         coverage = getattr(args, "coverage", None)
         if not (_nonempty_str(coverage) and str(coverage).strip() in COVERAGE_RANK):
             coverage = derive_coverage(verification, args.scope)
@@ -1757,6 +1861,11 @@ def cmd_record(args: argparse.Namespace) -> int:
                     if _nonempty_str(ledger.get("diffHash"))
                     else None
                 ),
+                target_identity=(
+                    str(entry.get("targetIdentity")).strip()
+                    if _nonempty_str(entry.get("targetIdentity"))
+                    else None
+                ),
             )
         except (OSError, ValueError, TypeError):
             # Graph is advisory persistence; ledger write already succeeded.
@@ -1832,7 +1941,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_reuse.add_argument(
         "--verification",
         required=True,
-        choices=sorted(VERIFICATIONS),
+        help="built-in or build-profile v3 verificationGraph target",
     )
     p_reuse.add_argument(
         "--files",

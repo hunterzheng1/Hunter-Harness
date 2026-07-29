@@ -7,13 +7,19 @@
     "java"
   ],
   "bundle_version": "0.2.26",
-  "content_sha256": "sha256:348264ce354a535c2c45ba38a6c77bd5df2a58b944c8c0046b789ffcf8537bfd",
+  "content_sha256": "sha256:ec6abfd9ba92f107408ce9b6a329f29ba840928125bb5783bb32aad59e8a1263",
   "minimumCliVersion": "0.2.37",
   "capabilities": [
     "sync@1",
     "rules-sync@1",
     "rules-review@1",
-    "knowledge-sync@2"
+    "knowledge-sync@2",
+    "build-profile@3",
+    "verification-graph@1",
+    "external-convergence@1",
+    "codegraph-status@1",
+    "doctor-capability@1",
+    "registry-governance@1"
   ],
   "requires": {
     "minimumCliVersion": "0.2.37",
@@ -21,7 +27,13 @@
       "sync@1",
       "rules-sync@1",
       "rules-review@1",
-      "knowledge-sync@2"
+      "knowledge-sync@2",
+      "build-profile@3",
+      "verification-graph@1",
+      "external-convergence@1",
+      "codegraph-status@1",
+      "doctor-capability@1",
+      "registry-governance@1"
     ]
   }
 }

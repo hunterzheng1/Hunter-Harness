@@ -77,7 +77,7 @@ npx hunter-harness sync --project <项目路径> --profile general --progress js
 | instruction graph | 入口、include 边、环、主题可达性 | 缺失引用或循环为 `FAIL` |
 | config origins | canonical/projection 路径与 hash | 漂移 `WARN`，不静默覆盖 |
 | changes | 五态分类及归档收据 | `INVALID`/`ORPHAN` 不自动删除 |
-| CodeGraph | 服务、索引提交、pending、watcher lag | 证据不足为 `UNKNOWN`；不自动全量 reindex |
+| CodeGraph | 索引文件、守护进程管道、watcher 日志、pending、watcher lag | 输出 `CURRENT/PENDING/STALE/INDEX_PRESENT_UNVERIFIED/MISSING/UNKNOWN`；不自动全量 reindex |
 
 全局状态优先级：`BLOCKED` → `FAIL` → `WARN` → `OK`。任一 `UNKNOWN` 至少使全局结果为 `WARN`。
 
@@ -85,7 +85,7 @@ npx hunter-harness sync --project <项目路径> --profile general --progress js
 
 增量基线来自上次成功 sync receipt 的 `headCommit`。首次运行或 receipt 不可用时，仅收集当前 HEAD 和有界文件统计；禁止固定 `HEAD~5`。
 
-CodeGraph 最多执行受限状态探测/短退避复查。不可用或 watcher 尚未追平时报告 `UNKNOWN`/`WARN` 和明确后续动作。不要在 sync 内执行全量索引，不使用依赖 shell 连接符的跨平台命令。
+CodeGraph 状态探测读取 `.codegraph/codegraph.db`、daemon receipt/log，尝试有界管道连接，并比较项目文件与最近索引观察时间。只有服务可达、watcher 已启用且 `pendingFileCount=0` 时为 `CURRENT`；此时才可将当前 HEAD 记录为推断的 `indexedCommit`。不可用、待同步或证据不足时分别报告 `STALE/PENDING/INDEX_PRESENT_UNVERIFIED/UNKNOWN` 与明确后续动作。不要在 sync 内执行全量索引，不使用依赖 shell 连接符的跨平台命令。
 
 ## 6. Instruction graph
 

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.local/contracts/build-profile-v3.schema.json",
+  "title": "Hunter Harness Build Profile v3",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "commands",
+    "verificationInputs",
+    "verificationGraph"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 3
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "command",
+          "argvTemplate",
+          "scope",
+          "inputs",
+          "coverage",
+          "source"
+        ],
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "argvTemplate": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "coverage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "enum": [
+              "detected",
+              "user"
+            ]
+          }
+        }
+      }
+    },
+    "verificationInputs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verificationGraph": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "source",
+        "candidateTarget",
+        "targets"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "source": {
+          "enum": [
+            "detected",
+            "user"
+          ]
+        },
+        "candidateTarget": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "commandKey",
+              "dependsOn",
+              "requiredCoverage",
+              "candidate",
+              "requiredCapabilities"
+            ],
+            "properties": {
+              "commandKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+              },
+              "dependsOn": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+                },
+                "uniqueItems": true
+              },
+              "requiredCoverage": {
+                "enum": [
+                  "incremental",
+                  "module-am",
+                  "module"
+                ]
+              },
+              "candidate": {
+                "type": "boolean"
+              },
+              "requiredCapabilities": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

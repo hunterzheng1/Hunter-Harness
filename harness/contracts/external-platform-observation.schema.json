@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.local/contracts/external-platform-observation.schema.json",
+  "title": "Authoritative External Platform Observation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "subjectIdentity",
+    "businessState",
+    "observationState",
+    "freshness",
+    "retryable",
+    "reasonCode",
+    "observedAt"
+  ],
+  "properties": {
+    "subjectIdentity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "businessState": {
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELLED",
+        "UNKNOWN"
+      ]
+    },
+    "observationState": {
+      "enum": [
+        "PENDING",
+        "TERMINAL",
+        "UNKNOWN"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "FRESH",
+        "STALE",
+        "UNKNOWN"
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {}
+  }
+}

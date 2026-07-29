@@ -395,6 +395,178 @@ class TypedMetricsTests(LedgerV3Fixture):
             [],
         )
 
+
+class DynamicVerificationTargetTests(LedgerV3Fixture):
+    def _write_profile(self) -> None:
+        profile = {
+            "schemaVersion": 3,
+            "commands": {
+                "backendTest": {
+                    "command": "pytest backend",
+                    "argvTemplate": ["pytest", "backend"],
+                    "scope": "module",
+                    "inputs": ["src/**"],
+                    "coverage": "backendTest",
+                    "source": "user",
+                    "basis": {"policy": "project"},
+                }
+            },
+            "verificationInputs": {"backendTest": ["src/**"]},
+            "verificationGraph": {
+                "schemaVersion": 1,
+                "candidateTarget": "backendTest",
+                "targets": {
+                    "backendTest": {
+                        "commandKey": "backendTest",
+                        "dependsOn": [],
+                        "requiredCoverage": "module",
+                        "candidate": True,
+                        "requiredCapabilities": ["python"],
+                    }
+                },
+            },
+        }
+        path = self.project / ".harness" / "config" / "build-profile.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(profile), encoding="utf-8")
+
+    def test_record_and_reuse_accept_project_defined_verification_target(self) -> None:
+        self._write_profile()
+        source = str(self.project / "src" / "app.py")
+        record_code, _out, record_err = self.run_cli(
+            [
+                "--json",
+                "record",
+                "--change-dir",
+                str(self.change_dir),
+                "--project",
+                str(self.project),
+                "--verification",
+                "backendTest",
+                "--status",
+                "ok",
+                "--command",
+                "pytest backend",
+                "--exit-code",
+                "0",
+                "--duration-ms",
+                "100",
+                "--evidence",
+                "backend passed",
+                "--scope",
+                "module",
+                "--coverage",
+                "module",
+                "--files",
+                source,
+            ]
+        )
+        self.assertEqual(record_code, 0, record_err)
+
+        reuse_code, reuse_out, reuse_err = self.run_cli(
+            [
+                "--json",
+                "can-reuse",
+                "--change-dir",
+                str(self.change_dir),
+                "--project",
+                str(self.project),
+                "--verification",
+                "backendTest",
+                "--command",
+                "pytest backend",
+                "--scope",
+                "module",
+                "--files",
+                source,
+                "--verbose",
+            ]
+        )
+        self.assertEqual(reuse_code, 0, reuse_err)
+        self.assertTrue(json.loads(reuse_out)["reuse"])
+
+    def test_changed_target_definition_invalidates_recorded_evidence(self) -> None:
+        self._write_profile()
+        source = str(self.project / "src" / "app.py")
+        record_code, _out, record_err = self.run_cli(
+            [
+                "--json",
+                "record",
+                "--change-dir",
+                str(self.change_dir),
+                "--project",
+                str(self.project),
+                "--verification",
+                "backendTest",
+                "--status",
+                "ok",
+                "--command",
+                "pytest backend",
+                "--exit-code",
+                "0",
+                "--duration-ms",
+                "100",
+                "--evidence",
+                "backend passed",
+                "--scope",
+                "module",
+                "--coverage",
+                "module",
+                "--files",
+                source,
+            ]
+        )
+        self.assertEqual(record_code, 0, record_err)
+
+        profile_path = self.project / ".harness" / "config" / "build-profile.json"
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        target = profile["verificationGraph"]["targets"]["backendTest"]
+        target["requiredCapabilities"] = ["python", "docker"]
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+
+        reuse_code, reuse_out, reuse_err = self.run_cli(
+            [
+                "--json",
+                "can-reuse",
+                "--change-dir",
+                str(self.change_dir),
+                "--project",
+                str(self.project),
+                "--verification",
+                "backendTest",
+                "--command",
+                "pytest backend",
+                "--scope",
+                "module",
+                "--files",
+                source,
+                "--verbose",
+            ]
+        )
+        self.assertEqual(reuse_code, 0, reuse_err)
+        payload = json.loads(reuse_out)
+        self.assertFalse(payload["reuse"])
+        self.assertEqual(payload["code"], "TARGET_IDENTITY_CHANGED")
+
+    def test_unknown_target_without_profile_declaration_fails_closed(self) -> None:
+        source = str(self.project / "src" / "app.py")
+        code, _out, err = self.run_cli(
+            [
+                "--json",
+                "can-reuse",
+                "--change-dir",
+                str(self.change_dir),
+                "--project",
+                str(self.project),
+                "--verification",
+                "inventedTarget",
+                "--files",
+                source,
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("unsupported verification", err)
+
     def test_api_and_browser_records_coexist_without_overwrite(self) -> None:
         source = str(self.project / "src" / "app.py")
 

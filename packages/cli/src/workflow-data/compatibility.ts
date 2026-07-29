@@ -2,7 +2,13 @@ export const CLI_CAPABILITIES = [
   "sync@1",
   "rules-sync@1",
   "rules-review@1",
-  "knowledge-sync@2"
+  "knowledge-sync@2",
+  "build-profile@3",
+  "verification-graph@1",
+  "external-convergence@1",
+  "codegraph-status@1",
+  "doctor-capability@1",
+  "registry-governance@1"
 ] as const;
 
 export interface WorkflowRequirements {

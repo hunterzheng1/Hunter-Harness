@@ -22,6 +22,7 @@ import type { CommandDependencies } from "./configure.js";
 import { inspectConfigOrigins } from "./config-origins.js";
 import { detectProject } from "./refresh.js";
 import { resolvePythonRuntime, type PythonRuntimeResolution } from "../runtime/python.js";
+import { assessCodeGraphStatus } from "../sync/codegraph-status.js";
 import { observeGitDelta } from "../sync/git-delta.js";
 import { CLI_CAPABILITIES } from "../workflow-data/compatibility.js";
 import { readCliVersion } from "../version.js";
@@ -778,14 +779,16 @@ export async function runSync(
     changePayload
   ));
 
-  const codegraphStarted = Date.now();
-  const codegraph = await probeCodeGraph(root, gitDelta.headCommit);
+  const codeGraphStarted = Date.now();
+  const codeGraph = await assessCodeGraphStatus(root, {
+    headCommit: gitDelta.headCommit
+  });
   components.push(receipt(
     "codegraph",
-    codegraphStarted,
-    codegraph.status,
-    codegraph.reasonCode,
-    codegraph.details
+    codeGraphStarted,
+    codeGraph.status,
+    codeGraph.reasonCode,
+    codeGraph
   ));
 
   const status = overallStatus(components);

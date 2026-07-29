@@ -18,7 +18,7 @@
     "build": "node node_modules/typescript/bin/tsc -b && npm run build:artifacts",
     "build:artifacts": "npm run bundle -w packages/cli && npm run bundle -w packages/skill-cli && npm run build -w apps/web",
     "typecheck": "node node_modules/typescript/bin/tsc -b && npm run typecheck -w apps/web",
-    "pretest": "npm run sync:harness",
+    "pretest": "npm run sync:harness && npm run bundle -w packages/cli",
     "test": "node node_modules/vitest/vitest.mjs run --maxWorkers=2",
     "test:watch": "node node_modules/vitest/vitest.mjs",
     "test:harness:safe": "python harness/scripts/harness_test_runner.py unittest --profile safe --timeout-seconds 300 --verbosity 0",
