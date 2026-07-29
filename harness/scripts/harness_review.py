@@ -36,7 +36,15 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 SEVERITIES = {"RED", "YELLOW", "OK"}
-DISPOSITIONS = {"OPEN", "FIXED", "ACCEPTED_RISK", "DEFERRED", "UNKNOWN"}
+DISPOSITIONS = {
+    "OPEN",
+    "FIXED",
+    "ACCEPTED_RISK",
+    "DEFERRED",
+    "NOT_APPLICABLE",
+    "UNKNOWN",
+}
+CURRENT_RISK_DISPOSITIONS = {"OPEN", "ACCEPTED_RISK", "DEFERRED", "UNKNOWN"}
 FINDINGS_REL = Path("reports") / "review" / "review-findings.json"
 DISPOSITIONS_REL = Path("reports") / "review" / "fixback-dispositions.json"
 _REQUIRED_FINDING_FIELDS = ("dimension", "severity", "path", "line", "title")
@@ -253,6 +261,11 @@ def status(change_dir: Path) -> dict[str, Any]:
                 "disposition": disposition,
             }
         )
+    current_risks = [
+        item for item in items
+        if item.get("severity") in {"RED", "YELLOW"}
+        and item.get("disposition") in CURRENT_RISK_DISPOSITIONS
+    ]
     return {
         "ok": True,
         "code": "STATUS",
@@ -260,6 +273,8 @@ def status(change_dir: Path) -> dict[str, Any]:
         "counts": counts,
         "dispositions": disposition_counts,
         "items": items,
+        "currentRiskCount": len(current_risks),
+        "currentRisks": current_risks,
     }
 
 

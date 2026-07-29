@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
@@ -34,7 +34,7 @@ export interface SyncCommandOptions {
   progress?: "jsonl" | "text" | "none";
 }
 
-type SyncStatus = "OK" | "WARN" | "FAIL" | "BLOCKED" | "UNKNOWN";
+export type SyncStatus = "OK" | "WARN" | "FAIL" | "BLOCKED" | "UNKNOWN";
 
 interface ComponentReceipt {
   component: string;
@@ -50,26 +50,74 @@ interface ComponentReceipt {
   details?: unknown;
 }
 
-interface ProcessResult {
+export interface ProcessResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  lastActivityAt: string;
+  timedOut: boolean;
+  timeoutKind: "wall" | "stall" | null;
+  termination: "exited" | "spawn-error" | "terminated" | "killed";
+  signal: NodeJS.Signals | null;
+  heartbeatCount: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+}
+
+export interface ProcessBudget {
+  wallTimeoutMs: number;
+  stallTimeoutMs?: number;
+  heartbeatMs?: number;
+  terminateGraceMs?: number;
+}
+
+export interface SyncPointer {
+  schemaVersion: 1;
+  runId: string;
+  status: SyncStatus;
+  completedAt: string;
+  reportPath: string;
+  reportSha256: string;
+  headCommit: string | null;
 }
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-async function runProcess(
+export async function runProcess(
   argv: readonly string[],
   cwd: string,
   env: Readonly<Record<string, string | undefined>>,
   onStderr: (value: string) => void,
-  timeoutMs = 15 * 60 * 1000
+  budgetInput: number | ProcessBudget = 15 * 60 * 1000
 ): Promise<ProcessResult> {
+  const budget: ProcessBudget = typeof budgetInput === "number"
+    ? { wallTimeoutMs: budgetInput }
+    : budgetInput;
+  const startedAtMs = Date.now();
+  const startedAt = new Date(startedAtMs).toISOString();
   const executable = argv[0];
   if (executable === undefined) {
-    return { exitCode: 1, stdout: "", stderr: "empty process argv" };
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: "empty process argv",
+      startedAt,
+      completedAt: startedAt,
+      durationMs: 0,
+      lastActivityAt: startedAt,
+      timedOut: false,
+      timeoutKind: null,
+      termination: "spawn-error",
+      signal: null,
+      heartbeatCount: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    };
   }
   return new Promise((resolveProcess) => {
     const child = spawn(executable, argv.slice(1), {
@@ -80,23 +128,113 @@ async function runProcess(
     });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill(), timeoutMs);
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let lastActivityMs = startedAtMs;
+    let activityObserved = false;
+    let timedOut = false;
+    let timeoutKind: ProcessResult["timeoutKind"] = null;
+    let hardKillRequested = false;
+    let settled = false;
+    let heartbeatCount = 0;
+    const heartbeatMs = Math.max(10, budget.heartbeatMs ?? 30_000);
+    const stallTimeoutMs = budget.stallTimeoutMs;
+    const terminateGraceMs = Math.max(10, budget.terminateGraceMs ?? 2_000);
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const stopTimers = (): void => {
+      clearTimeout(wallTimer);
+      clearInterval(heartbeatTimer);
+      if (stallTimer !== undefined) clearInterval(stallTimer);
+      if (killTimer !== undefined) clearTimeout(killTimer);
+    };
+    const terminate = (kind: "wall" | "stall"): void => {
+      if (timedOut || settled) return;
+      timedOut = true;
+      timeoutKind = kind;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (settled) return;
+        hardKillRequested = true;
+        child.kill("SIGKILL");
+      }, terminateGraceMs);
+    };
+    const wallTimer = setTimeout(
+      () => terminate("wall"),
+      Math.max(1, budget.wallTimeoutMs)
+    );
+    const heartbeatTimer = setInterval(() => {
+      heartbeatCount += 1;
+      onStderr(JSON.stringify({
+        type: "process.heartbeat",
+        elapsedMs: Date.now() - startedAtMs,
+        idleMs: Date.now() - lastActivityMs
+      }) + "\n");
+    }, heartbeatMs);
+    const stallTimer = stallTimeoutMs === undefined
+      ? undefined
+      : setInterval(() => {
+          if (Date.now() - lastActivityMs >= stallTimeoutMs) terminate("stall");
+        }, Math.max(10, Math.min(heartbeatMs, Math.floor(stallTimeoutMs / 2))));
+
+    const finish = (
+      exitCode: number,
+      termination: ProcessResult["termination"],
+      signal: NodeJS.Signals | null
+    ): void => {
+      if (settled) return;
+      settled = true;
+      stopTimers();
+      const completedAtMs = Date.now();
+      const reportedActivityMs = activityObserved
+        ? Math.max(lastActivityMs, startedAtMs + 1)
+        : lastActivityMs;
+      resolveProcess({
+        exitCode,
+        stdout,
+        stderr,
+        startedAt,
+        completedAt: new Date(completedAtMs).toISOString(),
+        durationMs: completedAtMs - startedAtMs,
+        lastActivityAt: new Date(reportedActivityMs).toISOString(),
+        timedOut,
+        timeoutKind,
+        termination,
+        signal,
+        heartbeatCount,
+        stdoutTruncated,
+        stderrTruncated
+      });
+    };
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
-      if (stdout.length < 16 * 1024 * 1024) stdout += chunk;
+      activityObserved = true;
+      lastActivityMs = Date.now();
+      if (stdout.length < 16 * 1024 * 1024) {
+        stdout += chunk.slice(0, 16 * 1024 * 1024 - stdout.length);
+      }
+      if (stdout.length >= 16 * 1024 * 1024) stdoutTruncated = true;
     });
     child.stderr.on("data", (chunk: string) => {
-      if (stderr.length < 4 * 1024 * 1024) stderr += chunk;
+      activityObserved = true;
+      lastActivityMs = Date.now();
+      if (stderr.length < 4 * 1024 * 1024) {
+        stderr += chunk.slice(0, 4 * 1024 * 1024 - stderr.length);
+      }
+      if (stderr.length >= 4 * 1024 * 1024) stderrTruncated = true;
       onStderr(chunk);
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolveProcess({ exitCode: 1, stdout, stderr: stderr + error.message });
+      stderr += error.message;
+      finish(1, "spawn-error", null);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolveProcess({ exitCode: code ?? 1, stdout, stderr });
+    child.on("close", (code, signal) => {
+      finish(
+        code ?? (timedOut ? 124 : 1),
+        timedOut ? (hardKillRequested ? "killed" : "terminated") : "exited",
+        signal
+      );
     });
   });
 }
@@ -150,10 +288,16 @@ async function updateContextIndexMetadata(
   reportPath: string,
   reportSha256: string,
   status: SyncStatus,
-  origins: Awaited<ReturnType<typeof inspectConfigOrigins>>
+  origins: Awaited<ReturnType<typeof inspectConfigOrigins>>,
+  pointer: SyncPointer,
+  successful: boolean
 ): Promise<void> {
   const path = join(root, ".harness", "context-index.json");
   const existing = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  const previousSync = existing.sync;
+  const sync = previousSync !== null && typeof previousSync === "object"
+    ? previousSync as Record<string, unknown>
+    : {};
   await atomicWriteJson(path, {
     ...existing,
     canonicalConfigPaths: origins
@@ -163,10 +307,13 @@ async function updateContextIndexMetadata(
       .filter((origin) => origin.projectionExists)
       .map((origin) => origin.projectionPath),
     sync: {
+      ...sync,
       status,
       observedAt: nowIso(),
       reportPath,
-      reportSha256
+      reportSha256,
+      lastRun: pointer,
+      ...(successful ? { lastSuccess: pointer } : {})
     }
   });
 }
@@ -177,14 +324,160 @@ async function runPythonComponent(
   args: readonly string[],
   root: string,
   dependencies: CommandDependencies,
-  progress: SyncCommandOptions["progress"]
+  progress: SyncCommandOptions["progress"],
+  budget?: ProcessBudget
 ): Promise<ProcessResult> {
   return runProcess(
     [...runtime.argvPrefix, script, ...args],
     root,
     { ...dependencies.env, PYTHONDONTWRITEBYTECODE: "1" },
-    progress === "none" ? () => undefined : dependencies.stderr
+    progress === "none" ? () => undefined : dependencies.stderr,
+    budget
   );
+}
+
+function positiveEnvMs(
+  env: Readonly<Record<string, string | undefined>>,
+  key: string,
+  fallback: number
+): number {
+  const parsed = Number(env[key]);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+export function classifyKnowledgeResult(
+  result: ProcessResult,
+  outputValid: boolean
+): { status: SyncStatus; reasonCode: string } {
+  if (result.exitCode === 0 && !result.timedOut) {
+    return { status: "OK", reasonCode: "OK" };
+  }
+  if (result.timedOut && outputValid) {
+    return {
+      status: "WARN",
+      reasonCode: "KNOWLEDGE_SYNC_TIMEOUT_OUTPUT_VALID"
+    };
+  }
+  if (result.timeoutKind === "stall") {
+    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_STALL_TIMEOUT" };
+  }
+  if (result.timeoutKind === "wall") {
+    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_WALL_TIMEOUT" };
+  }
+  if (result.termination === "spawn-error") {
+    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_SPAWN_FAILED" };
+  }
+  return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_FAILED" };
+}
+
+export async function probeCodeGraph(
+  root: string,
+  headCommit: string | null
+): Promise<{
+  status: SyncStatus;
+  reasonCode: string;
+  details: Record<string, unknown>;
+}> {
+  const directory = join(root, ".codegraph");
+  try {
+    if (!(await stat(directory)).isDirectory()) {
+      throw new Error("not a directory");
+    }
+  } catch {
+    return {
+      status: "WARN",
+      reasonCode: "CODEGRAPH_NOT_INDEXED",
+      details: {
+        indexPresent: false,
+        serviceReachable: null,
+        indexedCommit: null,
+        pendingFileCount: null,
+        watcherLagMs: null,
+        coverage: "NOT_INDEXED"
+      }
+    };
+  }
+
+  let metadata: Record<string, unknown> = {};
+  for (const name of ["status.json", "metadata.json", "index.json"]) {
+    try {
+      const parsed = JSON.parse(
+        await readFile(join(directory, name), "utf8")
+      ) as unknown;
+      if (parsed !== null && typeof parsed === "object") {
+        metadata = parsed as Record<string, unknown>;
+        break;
+      }
+    } catch {
+      // Probe the next supported metadata sidecar.
+    }
+  }
+  const entries = await readdir(directory, { withFileTypes: true });
+  const indexFiles = entries
+    .filter((entry) =>
+      entry.isFile() && /\.(?:sqlite|sqlite3|db)$/i.test(entry.name)
+    )
+    .map((entry) => entry.name)
+    .sort();
+  const fileStats = await Promise.all(
+    indexFiles.map(async (name) => {
+      const info = await stat(join(directory, name));
+      return { name, size: info.size, modifiedAt: info.mtime.toISOString() };
+    })
+  );
+  const indexedCommit = String(
+    metadata.indexedCommit
+    ?? metadata.indexedHead
+    ?? metadata.headCommit
+    ?? ""
+  ) || null;
+  const pendingRaw = metadata.pendingFileCount ?? metadata.pendingFiles;
+  const pendingFileCount = typeof pendingRaw === "number"
+    ? pendingRaw
+    : Array.isArray(pendingRaw)
+      ? pendingRaw.length
+      : null;
+  const watcherLagMs = typeof metadata.watcherLagMs === "number"
+    ? metadata.watcherLagMs
+    : null;
+  const coverage = indexedCommit !== null && headCommit !== null
+    ? indexedCommit === headCommit ? "CURRENT" : "STALE"
+    : indexFiles.length > 0 ? "PRESENT_UNVERIFIED" : "EMPTY";
+  const status: SyncStatus =
+    coverage === "CURRENT" && (pendingFileCount ?? 0) === 0 ? "OK" : "WARN";
+  const reasonCode = status === "OK"
+    ? "OK"
+    : coverage === "STALE"
+      ? "CODEGRAPH_INDEX_STALE"
+      : indexFiles.length === 0
+        ? "CODEGRAPH_INDEX_EMPTY"
+        : "CODEGRAPH_COVERAGE_UNVERIFIED";
+  return {
+    status,
+    reasonCode,
+    details: {
+      indexPresent: true,
+      serviceReachable: metadata.serviceReachable ?? null,
+      indexedCommit,
+      pendingFileCount,
+      watcherLagMs,
+      coverage,
+      indexFiles: fileStats
+    }
+  };
+}
+
+export async function persistSyncPointers(
+  root: string,
+  pointer: SyncPointer,
+  successful: boolean
+): Promise<void> {
+  const directory = join(root, ".harness", "runtime", "sync");
+  await mkdir(directory, { recursive: true });
+  await atomicWriteJson(join(directory, "last-run.json"), pointer);
+  if (successful) {
+    await atomicWriteJson(join(directory, "last-success.json"), pointer);
+  }
 }
 
 export async function runSync(
@@ -326,20 +619,60 @@ export async function runSync(
     ],
     root,
     dependencies,
-    options.progress
+    options.progress,
+    {
+      wallTimeoutMs: positiveEnvMs(
+        dependencies.env,
+        "HUNTER_HARNESS_SYNC_KNOWLEDGE_WALL_TIMEOUT_MS",
+        15 * 60 * 1000
+      ),
+      stallTimeoutMs: positiveEnvMs(
+        dependencies.env,
+        "HUNTER_HARNESS_SYNC_KNOWLEDGE_STALL_TIMEOUT_MS",
+        3 * 60 * 1000
+      ),
+      heartbeatMs: positiveEnvMs(
+        dependencies.env,
+        "HUNTER_HARNESS_SYNC_HEARTBEAT_MS",
+        30_000
+      ),
+      terminateGraceMs: positiveEnvMs(
+        dependencies.env,
+        "HUNTER_HARNESS_SYNC_TERMINATE_GRACE_MS",
+        2_000
+      )
+    }
   );
   let knowledgePayload: unknown = knowledge.stdout;
+  let parsedKnowledgePayload: Record<string, unknown> | null = null;
   try {
     knowledgePayload = JSON.parse(knowledge.stdout);
+    if (knowledgePayload !== null && typeof knowledgePayload === "object") {
+      parsedKnowledgePayload = knowledgePayload as Record<string, unknown>;
+    }
   } catch {
     // Preserve bounded raw diagnostics in the detailed report.
   }
+  const knowledgeOutputValid = parsedKnowledgePayload?.ok === true;
+  const knowledgeOutcome = classifyKnowledgeResult(
+    knowledge,
+    knowledgeOutputValid
+  );
   components.push(receipt(
     "knowledge",
     knowledgeStarted,
-    knowledge.exitCode === 0 ? "OK" : "FAIL",
-    knowledge.exitCode === 0 ? "OK" : "KNOWLEDGE_SYNC_FAILED",
-    knowledgePayload
+    knowledgeOutcome.status,
+    knowledgeOutcome.reasonCode,
+    {
+      payload: knowledgePayload,
+      postValidation: {
+        valid: knowledgeOutputValid,
+        reasonCode: knowledgeOutputValid
+          ? "KNOWLEDGE_OUTPUT_VALID"
+          : "KNOWLEDGE_OUTPUT_UNVERIFIED"
+      },
+      process: knowledge
+    }
   ));
 
   const rulesStarted = Date.now();
@@ -381,6 +714,8 @@ export async function runSync(
 
   const instructionStarted = Date.now();
   const instructions = await validateInstructionGraph(root);
+  const instructionDiagnosticsRelative =
+    `.harness/runtime/sync/${runId}/instruction-graph-diagnostics.json`;
   components.push(receipt(
     "instruction-graph",
     instructionStarted,
@@ -388,7 +723,20 @@ export async function runSync(
     instructions.entrypointIntegrity.reasonCodes[0] ?? (
       instructions.status === "OK" ? "OK" : "INSTRUCTION_TOPIC_MISSING"
     ),
-    instructions
+    {
+      entrypointIntegrity: instructions.entrypointIntegrity,
+      effectiveGuidanceTopics: instructions.effectiveGuidanceTopics,
+      reachableFileCount: instructions.reachableFiles.length,
+      reachableFileSamples: instructions.reachableFiles.slice(0, 20),
+      unresolvedReferenceCount: instructions.diagnostics.unresolvedCount,
+      unresolvedReferenceSamples: instructions.unresolvedReferences,
+      cycleCount: instructions.cycles.length,
+      cycleSamples: instructions.cycles.slice(0, 10),
+      edgeTypeCounts: instructions.diagnostics.edgeTypeCounts,
+      diagnosticsPath: options.dryRun === true
+        ? null
+        : instructionDiagnosticsRelative
+    }
   ));
 
   const configStarted = Date.now();
@@ -430,19 +778,14 @@ export async function runSync(
     changePayload
   ));
 
+  const codegraphStarted = Date.now();
+  const codegraph = await probeCodeGraph(root, gitDelta.headCommit);
   components.push(receipt(
     "codegraph",
-    Date.now(),
-    "UNKNOWN",
-    "CODEGRAPH_COVERAGE_UNAVAILABLE",
-    {
-      serviceReachable: null,
-      indexedCommit: null,
-      pendingFileCount: null,
-      watcherLagMs: null,
-      coverage: "UNKNOWN",
-      action: "No automatic full reindex was triggered."
-    }
+    codegraphStarted,
+    codegraph.status,
+    codegraph.reasonCode,
+    codegraph.details
   ));
 
   const status = overallStatus(components);
@@ -469,10 +812,13 @@ export async function runSync(
     return status === "OK" ? 0 : status === "WARN" ? 5 : status === "BLOCKED" ? 7 : 1;
   }
   await mkdir(join(root, `.harness/runtime/sync/${runId}/reports`), { recursive: true });
+  await atomicWriteJson(
+    join(root, instructionDiagnosticsRelative),
+    instructions
+  );
   await atomicWriteJson(reportAbsolute, report);
   const reportSha256 = (await sha256File(reportAbsolute)).slice(7);
-  await updateContextIndexMetadata(root, reportRelative, reportSha256, status, origins);
-  await atomicWriteJson(join(root, ".harness", "runtime", "sync", "last-success.json"), {
+  const pointer: SyncPointer = {
     schemaVersion: 1,
     runId,
     status,
@@ -480,7 +826,18 @@ export async function runSync(
     reportPath: reportRelative,
     reportSha256,
     headCommit: gitDelta.headCommit
-  });
+  };
+  const successful = status === "OK" || status === "WARN";
+  await persistSyncPointers(root, pointer, successful);
+  await updateContextIndexMetadata(
+    root,
+    reportRelative,
+    reportSha256,
+    status,
+    origins,
+    pointer,
+    successful
+  );
   dependencies.stdout(JSON.stringify({
     status,
     runId,

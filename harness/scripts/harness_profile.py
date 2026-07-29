@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harness profile v2 — public deterministic profile resolver/validator/migrator.
+"""Harness profile v3 — module/command graph resolver, recommender and migrator.
 
 Change cluster 1 of harness-deterministic-performance.
 
@@ -40,8 +40,188 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
+
+
+def recommend(project: Path) -> dict[str, Any]:
+    """Return a reviewable profile recommendation without writing it."""
+    project = Path(project).resolve()
+    project_type = detect_project_type(project)
+    modules: list[dict[str, Any]] = []
+    targets: list[dict[str, Any]] = []
+    if project_type == "java-maven":
+        reactor = [item for item in find_reactor_modules(project, DEFAULT_EXCLUDED_ROOTS) if item != "."]
+        modules = [
+            {
+                "id": module,
+                "path": module,
+                "type": "java-maven",
+                "ownedPaths": [f"{module}/src/**", f"{module}/pom.xml"],
+                "dependsOn": [],
+            }
+            for module in sorted(reactor)
+        ]
+        if modules:
+            targets.append(
+                {
+                    "id": "unitTest-module",
+                    "verification": "unitTestFull",
+                    "level": "module",
+                    "command": "mvn test -pl {modules} -am -o",
+                    "inputs": [f"{module['path']}/src/**" for module in modules],
+                    "sharedConsumer": False,
+                }
+            )
+        targets.append(
+            {
+                "id": "unitTest-candidate",
+                "verification": "unitTestFull",
+                "level": "candidate",
+                "command": "mvn -f pom.xml test -o",
+                "inputs": ["pom.xml", "**/src/**"],
+                "sharedConsumer": True,
+            }
+        )
+    elif project_type == "node":
+        try:
+            package = read_json(project / "package.json")
+        except (OSError, json.JSONDecodeError):
+            package = {}
+        workspaces = package.get("workspaces", []) if isinstance(package, dict) else []
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages", [])
+        paths: set[str] = set()
+        for pattern in workspaces if isinstance(workspaces, list) else []:
+            for match in project.glob(str(pattern)):
+                if match.is_dir() and (match / "package.json").is_file():
+                    paths.add(match.relative_to(project).as_posix())
+        modules = [
+            {
+                "id": path.replace("/", "-"),
+                "path": path,
+                "type": "node-workspace",
+                "ownedPaths": [f"{path}/src/**", f"{path}/test/**"],
+                "dependsOn": [],
+            }
+            for path in sorted(paths)
+        ]
+        targets.extend(
+            {
+                "id": f"{module['id']}-test",
+                "verification": "unitTest",
+                "level": "module",
+                "command": f"npm test -w {module['path']}",
+                "inputs": module["ownedPaths"],
+                "sharedConsumer": False,
+            }
+            for module in modules
+        )
+        node_commands = _node_commands(project)
+        if "unitTestFull" in node_commands:
+            targets.append(
+                {
+                    "id": "workspace-candidate",
+                    "verification": "unitTestFull",
+                    "level": "candidate",
+                    "command": node_commands["unitTestFull"]["command"],
+                    "inputs": node_commands["unitTestFull"]["inputs"],
+                    "sharedConsumer": True,
+                }
+            )
+    boundaries_proven = bool(modules) or project_type in {"node", "java-maven"}
+    return {
+        "ok": True,
+        "code": "PROFILE_RECOMMENDED",
+        "schemaVersion": SCHEMA_VERSION,
+        "projectType": project_type,
+        "modules": modules,
+        "targets": targets,
+        "moduleGraph": {
+            "modules": modules,
+            "boundariesProven": boundaries_proven,
+            "needsReview": not boundaries_proven,
+        },
+        "needsReview": not boundaries_proven,
+        "applied": False,
+    }
+
+
+def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility projection for review before a protected v3 update."""
+    projected = json.loads(json.dumps(profile))
+    source_version = projected.get("schemaVersion")
+    if source_version == SCHEMA_VERSION:
+        return projected
+    if source_version != 2:
+        return projected
+    projected["schemaVersion"] = SCHEMA_VERSION
+    commands = projected.get("commands") if isinstance(projected.get("commands"), dict) else {}
+    projected.setdefault(
+        "moduleGraph",
+        {"modules": [], "boundariesProven": False, "needsReview": True},
+    )
+    projected["commandGraph"] = {
+        "targets": [
+            {
+                "id": key,
+                "verification": key,
+                "command": command.get("command"),
+                "scope": command.get("scope"),
+                "inputs": list(command.get("inputs") or []),
+                "coverage": command.get("coverage"),
+                "source": command.get("source"),
+            }
+            for key, command in sorted(commands.items())
+            if isinstance(command, dict)
+        ]
+    }
+    projected["migration"] = {
+        "fromSchemaVersion": 2,
+        "projected": True,
+        "needsReview": True,
+        "protectedUserCommands": sorted(
+            key
+            for key, command in commands.items()
+            if isinstance(command, dict) and command.get("source") == "user"
+        ),
+    }
+    return projected
+
+
+def audit_profile(project: Path) -> dict[str, Any]:
+    path = Path(project).resolve() / PROFILE_REL
+    if not path.is_file():
+        return {
+            "ok": False,
+            "code": "PROFILE_MISSING",
+            "needsReview": True,
+            "issues": ["build-profile.json missing"],
+        }
+    try:
+        profile = read_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "PROFILE_INVALID",
+            "needsReview": True,
+            "issues": [str(exc)],
+        }
+    issues: list[str] = []
+    if profile.get("schemaVersion") != SCHEMA_VERSION:
+        issues.append("profile schema requires migration")
+    module_graph = profile.get("moduleGraph")
+    if not isinstance(module_graph, dict) or module_graph.get("boundariesProven") is not True:
+        issues.append("module boundaries are not proven")
+    if not isinstance(profile.get("commandGraph"), dict):
+        issues.append("command graph missing")
+    needs_review = bool(issues)
+    return {
+        "ok": not needs_review,
+        "code": "PROFILE_REVIEW_REQUIRED" if needs_review else "PROFILE_AUDITED",
+        "needsReview": needs_review,
+        "issues": issues,
+    }
 
 # 排除策略（spec §3.1）：所有路径必须位于 project root，排除以下目录。
 # 兄弟 worktree、构建产物、依赖目录、缓存一律不进入 verification inputs。
@@ -406,6 +586,10 @@ def load_profile(project: Path) -> dict[str, Any] | None:
         except (OSError, json.JSONDecodeError):
             pass
 
+    if common_data is not None and common_data.get("schemaVersion") == 2:
+        common_data = project_profile_v3(common_data)
+    if exec_data is not None and exec_data.get("schemaVersion") == 2:
+        exec_data = project_profile_v3(exec_data)
     if common_data is None and exec_data is None:
         return None
     if common_data is None:
@@ -422,6 +606,19 @@ def load_profile(project: Path) -> dict[str, Any] | None:
         if isinstance(exec_cmds, dict):
             merged_cmds.update(exec_cmds)
         merged["buildCommands"] = merged_cmds
+    common_commands = common_data.get("commands") or {}
+    exec_commands = exec_data.get("commands") or {}
+    if common_commands or exec_commands:
+        merged_commands = (
+            dict(common_commands) if isinstance(common_commands, dict) else {}
+        )
+        if isinstance(exec_commands, dict):
+            merged_commands.update(exec_commands)
+        merged["commands"] = merged_commands
+        _derive_verification_inputs(merged)
+    for field in ("moduleGraph", "commandGraph", "migration"):
+        if field in exec_data:
+            merged[field] = exec_data[field]
     return merged
 
 
@@ -533,6 +730,24 @@ def detect(project: Path) -> dict[str, Any]:
 
     _merge_user_overrides(profile, existing)
     _derive_verification_inputs(profile)
+    recommendation = recommend(project)
+    profile["moduleGraph"] = recommendation["moduleGraph"]
+    profile["commandGraph"] = {
+        "targets": [
+            {
+                "id": key,
+                "verification": key,
+                "command": command.get("command"),
+                "scope": command.get("scope"),
+                "inputs": list(command.get("inputs") or []),
+                "coverage": command.get("coverage"),
+                "source": command.get("source"),
+            }
+            for key, command in sorted(profile["commands"].items())
+            if isinstance(command, dict)
+        ]
+        + list(recommendation["targets"])
+    }
 
     out_path = project / PROFILE_REL
     write_json(out_path, profile)
@@ -735,8 +950,8 @@ def resolve_command(
 # migrate（v1 → v2，dry-run/apply/备份）
 # ---------------------------------------------------------------------------
 
-def _backup_path(profile_path: Path) -> Path:
-    return profile_path.with_suffix(profile_path.suffix + ".v1.bak")
+def _backup_path(profile_path: Path, version: int = 1) -> Path:
+    return profile_path.with_suffix(profile_path.suffix + f".v{version}.bak")
 
 
 def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
@@ -780,7 +995,7 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
             "needsMigration": False,
             "reason": f"already schemaVersion {SCHEMA_VERSION}",
         }
-    if sv != 1:
+    if sv not in {1, 2}:
         return {
             "ok": False,
             "action": "migrate",
@@ -789,13 +1004,21 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
             "error": f"unsupported schemaVersion: {sv}",
         }
 
-    # v1 → v2 迁移清单
+    # v1/v2 → v3 迁移清单
     changes = [
-        f"schemaVersion 1 → {SCHEMA_VERSION}",
-        "buildCommands → commands（含 argvTemplate/scope/inputs/coverage/source/basis）",
-        "excludedRoots 显式声明（.git/.harness/worktrees/target/build/node_modules/...）",
-        "identifier 约束（pattern/maxLength/prefix）",
+        f"schemaVersion {sv} → {SCHEMA_VERSION}",
+        "新增 moduleGraph（模块边界/owned paths/dependency）",
+        "新增 commandGraph（dynamic verification targets）",
+        "source=user 命令字节语义保持不变并列入 protectedUserCommands",
     ]
+    if sv == 1:
+        changes.extend(
+            [
+                "buildCommands → commands（含 argvTemplate/scope/inputs/coverage/source/basis）",
+                "excludedRoots 显式声明（.git/.harness/worktrees/target/build/node_modules/...）",
+                "identifier 约束（pattern/maxLength/prefix）",
+            ]
+        )
     dropped: list[str] = []
     v1_svc = existing.get("serviceStart") or {}
     if isinstance(v1_svc, dict):
@@ -811,23 +1034,37 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
                 dropped.append(f"serviceStart.{field}（无 provenance，已备份；请用 record-quirk 重配）")
 
     if dry_run:
+        projected = project_profile_v3(existing) if sv == 2 else None
         return {
             "ok": True,
+            "code": "PROFILE_MIGRATION_PLANNED",
             "action": "migrate",
             "dry_run": True,
             "needsMigration": True,
             "changes": changes,
             "droppedFields": dropped,
             "profilePath": str(profile_path),
+            "projectedProfile": projected,
+            "protectedUserCommands": (
+                projected.get("migration", {}).get("protectedUserCommands", [])
+                if isinstance(projected, dict)
+                else []
+            ),
         }
 
-    # apply：先备份原 v1（不覆盖已有备份），再重新 detect 生成 v2
-    backup = _backup_path(profile_path)
+    # apply：先备份旧 profile。v2 结构兼容投影，不重新 detect，避免覆盖 user command。
+    backup = _backup_path(profile_path, int(sv))
     if not backup.is_file():
         backup.write_text(profile_path.read_text(encoding="utf-8-sig"), encoding="utf-8", newline="\n")
-    detect(project)
+    if sv == 2:
+        projected = project_profile_v3(existing)
+        projected.setdefault("migration", {})["appliedAt"] = now_iso()
+        write_json(profile_path, projected)
+    else:
+        detect(project)
     return {
         "ok": True,
+        "code": "PROFILE_MIGRATED",
         "action": "migrate",
         "dry_run": False,
         "needsMigration": False,
@@ -845,7 +1082,7 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_profile.py",
-        description="Harness profile v2: detect/check/validate/resolve/migrate",
+        description="Harness profile v3: recommend/detect/audit/validate/resolve/migrate",
     )
     parser.add_argument("--json", action="store_true", help="emit JSON")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -853,6 +1090,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_detect = sub.add_parser("detect", help="probe and write build-profile.json")
     p_detect.add_argument("--project", required=True, type=Path)
     p_detect.add_argument("--json", action="store_true")
+
+    p_recommend = sub.add_parser(
+        "recommend", help="analyze modules/targets without writing canonical profile"
+    )
+    p_recommend.add_argument("--project", required=True, type=Path)
+    p_recommend.add_argument("--json", action="store_true")
+
+    p_audit = sub.add_parser(
+        "audit", help="fail closed when module or command boundaries are unproven"
+    )
+    p_audit.add_argument("--project", required=True, type=Path)
+    p_audit.add_argument("--json", action="store_true")
 
     p_check = sub.add_parser("check", help="missing/invalid/stale/ready")
     p_check.add_argument("--project", required=True, type=Path)
@@ -879,7 +1128,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_resolve.add_argument("--json", action="store_true")
 
-    p_migrate = sub.add_parser("migrate", help="migrate v1 → v2")
+    p_migrate = sub.add_parser("migrate", help="migrate v1/v2 → v3")
     p_migrate.add_argument("--project", required=True, type=Path)
     p_migrate.add_argument("--apply", action="store_true", help="apply (default: dry-run)")
     p_migrate.add_argument("--json", action="store_true")
@@ -894,6 +1143,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "detect":
         result = detect(args.project)
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        return 0 if result.get("ok") else 1
+    if args.command == "recommend":
+        result = recommend(args.project)
+        sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+        return 0 if result.get("ok") else 1
+    if args.command == "audit":
+        result = audit_profile(args.project)
         sys.stdout.write(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
         return 0 if result.get("ok") else 1
     if args.command == "check":

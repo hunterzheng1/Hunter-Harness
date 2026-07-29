@@ -346,6 +346,26 @@ def run_git(project: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 
 
+def run_git_with_input(
+    project: Path,
+    args: list[str],
+    input_text: str,
+) -> subprocess.CompletedProcess[str]:
+    global _GIT_SUBPROCESS_COUNT
+    _GIT_SUBPROCESS_COUNT += 1
+    try:
+        return subprocess.run(
+            ["git", "-C", str(project), *args],
+            input=input_text,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(args, 1, "", str(exc))
+
+
 def archive_name(summary_path: Path) -> str:
     parts = summary_path.parts
     try:
@@ -592,17 +612,12 @@ def discover_archive_summary_paths(project: Path) -> list[Path]:
     return selected
 
 
-def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any]:
-    """Knowledge publication gate for one archive (API-006/RET-40)."""
+def _publication_status_from_resolution(
+    project: Path,
+    archive_dir: Path,
+    resolution: dict[str, Any],
+) -> dict[str, Any]:
     result: dict[str, Any] = {"status": "missing", "allowed": False, "reasons": []}
-    archive_root = (Path(project) / ".harness" / "archive").resolve()
-    archive_dir = (Path(project) / archive_rel).resolve()
-    if not _path_is_within(archive_dir, archive_root) or archive_dir.parent != archive_root:
-        result["reasons"].append("archive path escapes archive root")
-        return result
-
-    original_path = archive_dir / "reports" / "final" / "summary-data.json"
-    resolution = resolve_archive_summary(original_path)
     if resolution.get("version"):
         result["authoritativeVersion"] = resolution["version"]
 
@@ -615,11 +630,13 @@ def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any
         result["status"] = "degraded"
         result["reasons"].append("resolved summary escapes archive root")
         return result
-    try:
-        summary_hash = sha256_file(summary_path)
-    except OSError:
-        result["reasons"].append("summary-data.json unreadable")
-        return result
+    summary_hash = str(resolution.get("summarySha256") or "")
+    if not summary_hash:
+        try:
+            summary_hash = sha256_file(summary_path)
+        except OSError:
+            result["reasons"].append("summary-data.json unreadable")
+            return result
     result["summaryData"] = rel_to_project(project, summary_path)
     result["summarySha256"] = summary_hash
     if not resolution.get("allowed"):
@@ -663,6 +680,20 @@ def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any
     result["status"] = "ok"
     result["allowed"] = True
     return result
+
+
+def archive_publication_status(project: Path, archive_rel: str) -> dict[str, Any]:
+    """Knowledge publication gate for one archive (API-006/RET-40)."""
+    result: dict[str, Any] = {"status": "missing", "allowed": False, "reasons": []}
+    archive_root = (Path(project) / ".harness" / "archive").resolve()
+    archive_dir = (Path(project) / archive_rel).resolve()
+    if not _path_is_within(archive_dir, archive_root) or archive_dir.parent != archive_root:
+        result["reasons"].append("archive path escapes archive root")
+        return result
+    resolution = resolve_archive_summary(
+        archive_dir / "reports" / "final" / "summary-data.json"
+    )
+    return _publication_status_from_resolution(project, archive_dir, resolution)
 
 
 def archive_publication_statuses(project: Path) -> dict[str, dict[str, Any]]:
@@ -733,6 +764,74 @@ def archive_summary_records(project: Path, summary_paths: list[Path]) -> list[di
     return records
 
 
+def discover_archive_inputs(
+    project: Path,
+) -> tuple[list[Path], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Resolve, hash and publication-check every archive in a single pass."""
+    archive_root = Path(project) / ".harness" / "archive"
+    try:
+        resolved_archive_root = archive_root.resolve(strict=True)
+        children = sorted(archive_root.iterdir())
+    except OSError:
+        return [], [], {}
+
+    summary_paths: list[Path] = []
+    records: list[dict[str, Any]] = []
+    publications: dict[str, dict[str, Any]] = {}
+    for child in children:
+        try:
+            archive_dir = child.resolve(strict=True)
+        except OSError:
+            continue
+        if (
+            not archive_dir.is_dir()
+            or not _path_is_within(archive_dir, resolved_archive_root)
+            or archive_dir.parent != resolved_archive_root
+        ):
+            continue
+        archive_rel = rel_to_project(project, archive_dir)
+        resolution = resolve_archive_summary(
+            archive_dir / "reports" / "final" / "summary-data.json"
+        )
+        publication = _publication_status_from_resolution(
+            project, archive_dir, resolution
+        )
+        publications[archive_rel] = publication
+        original_state = (resolution.get("fingerprint") or {}).get("original") or {}
+        if original_state.get("state") != "file":
+            continue
+        try:
+            selected_path = Path(resolution["summaryPath"]).resolve(strict=True)
+        except (KeyError, OSError):
+            continue
+        if (
+            not _path_is_within(selected_path, archive_dir)
+            or not selected_path.is_file()
+            or not publication.get("summarySha256")
+        ):
+            continue
+        stat = selected_path.stat()
+        summary_paths.append(selected_path)
+        records.append(
+            {
+                "archive": archive_rel,
+                "summaryData": rel_to_project(project, selected_path),
+                "summarySha256": publication["summarySha256"],
+                "mtime": dt.datetime.fromtimestamp(
+                    stat.st_mtime, dt.timezone.utc
+                ).isoformat(timespec="seconds"),
+                "_authority": {
+                    "status": resolution["status"],
+                    "allowed": resolution["allowed"],
+                    "version": resolution["version"],
+                    "reasons": list(resolution["reasons"]),
+                    "fingerprint": resolution["fingerprint"],
+                },
+            }
+        )
+    return summary_paths, records, publications
+
+
 def make_entry(
     *,
     project: Path,
@@ -756,48 +855,9 @@ def make_entry(
     status = "candidate"
     stale_reasons: list[str] = []
 
-    if final_commit and is_git_repo(project):
-        if not git_commit_exists(project, final_commit):
-            stale_reasons.append(
-                "source commit missing from local git history: " + final_commit[:12]
-            )
-        elif source_files:
-            diff_key = (
-                str(project.resolve()),
-                final_commit,
-                tuple(sorted(source_files)),
-            )
-            changed = _GIT_DIFF_CACHE.get(diff_key)
-            if changed is None and diff_key not in _GIT_DIFF_CACHE:
-                diff = run_git(
-                    project,
-                    [
-                        "diff",
-                        "--name-only",
-                        f"{final_commit}..HEAD",
-                        "--",
-                        *sorted(source_files),
-                    ],
-                )
-                changed = (
-                    [
-                        line.strip()
-                        for line in diff.stdout.splitlines()
-                        if line.strip()
-                    ]
-                    if diff.returncode == 0
-                    else None
-                )
-                _GIT_DIFF_CACHE[diff_key] = changed
-            if changed is not None:
-                if changed:
-                    stale_reasons.append(
-                        "source files changed after source commit: " + ", ".join(changed[:8])
-                    )
-            else:
-                stale_reasons.append(
-                    "source commit could not be compared with current HEAD"
-                )
+    # Git freshness is evaluated for the full entry batch after extraction.
+    # Keeping the candidate status here preserves extraction as a pure operation
+    # and gives the batch evaluator one opportunity to inspect each source commit.
 
     if stale_reasons:
         status = "stale"
@@ -857,6 +917,114 @@ def make_entry(
             "staleReasons": stale_reasons,
         },
     }
+
+
+def apply_batch_git_freshness(
+    project: Path,
+    entries: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Refresh generated-entry Git freshness using bounded, grouped probes."""
+    stats = {
+        "gitCommitBatches": 0,
+        "gitDiffBatches": 0,
+        "gitEntriesChecked": 0,
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        commit = str(entry.get("source", {}).get("sourceCommit") or "").strip()
+        if commit:
+            grouped.setdefault(commit, []).append(entry)
+    if not grouped or not is_git_repo(project):
+        return stats
+
+    commits = sorted(grouped)
+    batch = run_git_with_input(
+        project,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        "".join(f"{commit}^{{commit}}\n" for commit in commits),
+    )
+    stats["gitCommitBatches"] = 1
+    commit_exists: dict[str, bool] = {}
+    output_lines = batch.stdout.splitlines() if batch.returncode == 0 else []
+    for index, commit in enumerate(commits):
+        line = output_lines[index] if index < len(output_lines) else ""
+        commit_exists[commit] = bool(line and not line.endswith(" missing") and line.endswith(" commit"))
+        _GIT_COMMIT_CACHE[(str(project.resolve()), commit)] = commit_exists[commit]
+
+    generated_prefixes = (
+        "source commit missing from local git history:",
+        "source files changed after source commit:",
+        "source commit could not be compared with current HEAD",
+    )
+    checked_at = now_iso()
+    for commit in commits:
+        commit_entries = grouped[commit]
+        stats["gitEntriesChecked"] += len(commit_entries)
+        union_files = sorted(
+            {
+                str(path).replace("\\", "/")
+                for entry in commit_entries
+                for path in entry.get("scope", {}).get("sourceFiles", [])
+                if str(path).strip()
+            }
+        )
+        changed: set[str] | None = set()
+        if commit_exists.get(commit) and union_files:
+            result = run_git(
+                project,
+                ["diff", "--name-only", f"{commit}..HEAD", "--", *union_files],
+            )
+            stats["gitDiffBatches"] += 1
+            changed = (
+                {
+                    line.strip().replace("\\", "/")
+                    for line in result.stdout.splitlines()
+                    if line.strip()
+                }
+                if result.returncode == 0
+                else None
+            )
+
+        for entry in commit_entries:
+            lifecycle = entry.setdefault("lifecycle", {})
+            previous_reasons = [
+                str(reason)
+                for reason in lifecycle.get("staleReasons", [])
+                if str(reason)
+            ]
+            had_generated_reason = any(
+                reason.startswith(generated_prefixes) for reason in previous_reasons
+            )
+            reasons = [
+                reason
+                for reason in previous_reasons
+                if not reason.startswith(generated_prefixes)
+            ]
+            entry_files = {
+                str(path).replace("\\", "/")
+                for path in entry.get("scope", {}).get("sourceFiles", [])
+                if str(path).strip()
+            }
+            if not commit_exists.get(commit):
+                reasons.append(
+                    "source commit missing from local git history: " + commit[:12]
+                )
+            elif changed is None:
+                reasons.append("source commit could not be compared with current HEAD")
+            else:
+                changed_for_entry = sorted(changed.intersection(entry_files))
+                if changed_for_entry:
+                    reasons.append(
+                        "source files changed after source commit: "
+                        + ", ".join(changed_for_entry[:8])
+                    )
+            lifecycle["staleReasons"] = reasons
+            lifecycle["lastCheckedAt"] = checked_at
+            if reasons:
+                entry["status"] = "stale"
+            elif entry.get("status") == "stale" and had_generated_reason:
+                entry["status"] = "candidate"
+    return stats
 
 
 def first_sentence(text: str) -> str:
@@ -2379,6 +2547,7 @@ class KnowledgeSnapshot:
         "config",
         "summary_paths",
         "archive_records",
+        "publications",
         "inputs_hash",
     )
 
@@ -2390,6 +2559,7 @@ class KnowledgeSnapshot:
         config: dict[str, Any],
         summary_paths: list[Path],
         archive_records: list[dict[str, Any]],
+        publications: dict[str, dict[str, Any]],
         inputs_hash: str,
     ) -> None:
         self.project = project
@@ -2398,6 +2568,7 @@ class KnowledgeSnapshot:
         self.config = config
         self.summary_paths = summary_paths
         self.archive_records = archive_records
+        self.publications = publications
         self.inputs_hash = inputs_hash
 
 
@@ -2446,11 +2617,17 @@ def build_snapshot(project: Path) -> KnowledgeSnapshot:
     knowledge = project / ".harness" / "knowledge"
     pname = project_id(project)
     config = load_config(knowledge)
-    summary_paths = discover_archive_summary_paths(project)
-    archive_records = archive_summary_records(project, summary_paths)
+    summary_paths, archive_records, publications = discover_archive_inputs(project)
     inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
     return KnowledgeSnapshot(
-        project, knowledge, pname, config, summary_paths, archive_records, inputs_hash
+        project,
+        knowledge,
+        pname,
+        config,
+        summary_paths,
+        archive_records,
+        publications,
+        inputs_hash,
     )
 
 
@@ -2473,13 +2650,13 @@ def build_index(
         config = snapshot.config
         summary_paths = snapshot.summary_paths
         archive_records = snapshot.archive_records
+        publications = snapshot.publications
         inputs_hash = snapshot.inputs_hash
     else:
         knowledge = project / ".harness" / "knowledge"
         pname = project_id(project)
         config = load_config(knowledge)
-        summary_paths = discover_archive_summary_paths(project)
-        archive_records = archive_summary_records(project, summary_paths)
+        summary_paths, archive_records, publications = discover_archive_inputs(project)
         inputs_hash = compute_inputs_hash(archive_records, config, knowledge)
     ensure_knowledge_dirs(knowledge)
     reporter.emit("snapshot", len(summary_paths), len(summary_paths), force=True)
@@ -2526,7 +2703,11 @@ def build_index(
     current_head = git_head(project)  # recorded in manifest only; not an invalidation key
     entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
-    publications = archive_publication_statuses(project)
+    archive_records_by_summary = {
+        str(record.get("summaryData") or ""): record
+        for record in archive_records
+        if record.get("summaryData")
+    }
     ingest_mode: dict[str, Any] = {
         "incremental": incremental,
         "mode": mode,
@@ -2545,11 +2726,22 @@ def build_index(
         "sqliteRebuild": 0,
         "sqliteUpsert": 0,
         "sqliteDelete": 0,
+        "summaryHashesReused": 0,
+        "summaryHashesComputed": 0,
     }
 
     for summary_index, summary_path in enumerate(summary_paths, start=1):
         summary_rel = rel_to_project(project, summary_path)
-        summary_hash = sha256_file(summary_path)
+        summary_record = archive_records_by_summary.get(summary_rel)
+        summary_hash = (
+            str(summary_record.get("summarySha256"))
+            if summary_record and summary_record.get("summarySha256")
+            else sha256_file(summary_path)
+        )
+        if summary_record and summary_record.get("summarySha256"):
+            ingest_mode["summaryHashesReused"] += 1
+        else:
+            ingest_mode["summaryHashesComputed"] += 1
         cache_path = archive_entry_cache_path(project, knowledge, summary_path, summary_hash)
         try:
             archive_entries = None
@@ -2618,11 +2810,19 @@ def build_index(
         seen.add(fp)
         deduped.append(entry)
 
+    ingest_mode.update(apply_batch_git_freshness(project, deduped))
     reporter.emit("near-deduplicate", 0, len(deduped), force=True)
     near_dedupe = dedupe_near_duplicates(deduped, progress=reporter)
     ingest_mode["nearDuplicatesMerged"] = near_dedupe["merged"]
     ingest_mode["similarityCandidates"] = near_dedupe["similarityCandidates"]
     ingest_mode["exactSimilarityComparisons"] = near_dedupe["exactSimilarityComparisons"]
+    ingest_mode["similarityCandidatePairs"] = near_dedupe["candidatePairs"]
+    ingest_mode["similarityBucketCount"] = near_dedupe["bucketCount"]
+    ingest_mode["similarityComparisonBudget"] = near_dedupe["comparisonBudget"]
+    ingest_mode["similarityComparisonBudgetExceeded"] = near_dedupe[
+        "comparisonBudgetExceeded"
+    ]
+    ingest_mode["similarityComparisonsSkipped"] = near_dedupe["comparisonsSkipped"]
 
     mark_conflicting_generated_entries(deduped)
     mark_degraded_test_evidence(deduped)
@@ -4299,26 +4499,68 @@ def dedupe_near_duplicates(
     threshold: float = NEAR_DUPLICATE_THRESHOLD,
     *,
     progress: ProgressReporter | None = None,
+    max_exact_comparisons: int = 50_000,
+    time_budget_ms: int = 2_000,
 ) -> dict[str, Any]:
-    """Merge near-duplicate entries within the same archive (in-place)."""
-    by_archive: dict[str, list[dict[str, Any]]] = {}
-    for entry in entries:
-        if entry.get("status") == "superseded":
-            continue
-        archive = str(entry.get("source", {}).get("archive") or "")
-        by_archive.setdefault(archive, []).append(entry)
-
+    """Merge near duplicates through sparse buckets and an explicit work budget."""
+    started = time.monotonic()
+    deadline = started + max(0, time_budget_ms) / 1_000
     merges: list[dict[str, Any]] = []
-    normalized = {
-        id(entry): entry_compare_text(entry)
-        for entry in entries
-    }
+    active_entries = [
+        entry for entry in entries if entry.get("status") != "superseded"
+    ]
+    normalized = {id(entry): entry_compare_text(entry) for entry in active_entries}
     similarity_cache: dict[tuple[int, int], float] = {}
     similarity_candidates = 0
     exact_comparisons = 0
+    comparison_budget_exceeded = False
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in active_entries:
+        key = (
+            str(entry.get("source", {}).get("archive") or ""),
+            str(entry.get("type") or ""),
+        )
+        grouped.setdefault(key, []).append(entry)
+
+    candidate_pairs: set[tuple[int, int]] = set()
+    entry_by_identity = {id(entry): entry for entry in active_entries}
+    bucket_count = 0
+    token_pattern = re.compile(r"[\w-]{3,}", flags=re.UNICODE)
+    for group in grouped.values():
+        token_sets = {
+            id(entry): set(token_pattern.findall(normalized[id(entry)]))
+            for entry in group
+        }
+        frequencies: dict[str, int] = {}
+        for tokens in token_sets.values():
+            for token in tokens:
+                frequencies[token] = frequencies.get(token, 0) + 1
+        buckets: dict[str, list[int]] = {}
+        rare_cutoff = max(2, len(group) // 10)
+        for entry in group:
+            identity = id(entry)
+            tokens = token_sets[identity]
+            selected = sorted(
+                (token for token in tokens if frequencies[token] <= rare_cutoff),
+                key=lambda token: (frequencies[token], token),
+            )[:4]
+            if not selected:
+                selected = [f"length:{len(normalized[identity]) // 40}"]
+            for token in selected:
+                buckets.setdefault(token, []).append(identity)
+        bucket_count += len(buckets)
+        for members in buckets.values():
+            if len(members) < 2:
+                continue
+            for left_index, left_identity in enumerate(members):
+                for right_identity in members[left_index + 1 :]:
+                    if left_identity == right_identity:
+                        continue
+                    candidate_pairs.add(tuple(sorted((left_identity, right_identity))))
 
     def similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-        nonlocal similarity_candidates, exact_comparisons
+        nonlocal similarity_candidates, exact_comparisons, comparison_budget_exceeded
         pair = tuple(sorted((id(left), id(right))))
         if pair in similarity_cache:
             return similarity_cache[pair]
@@ -4338,6 +4580,9 @@ def dedupe_near_duplicates(
         if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
             similarity_cache[pair] = 0.0
             return 0.0
+        if exact_comparisons >= max(0, max_exact_comparisons) or time.monotonic() >= deadline:
+            comparison_budget_exceeded = True
+            return 0.0
         exact_comparisons += 1
         value = matcher.ratio()
         similarity_cache[pair] = value
@@ -4350,52 +4595,79 @@ def dedupe_near_duplicates(
             )
         return value
 
-    for archive, group in by_archive.items():
-        remaining = list(group)
-        while remaining:
-            current = remaining.pop(0)
-            if current.get("status") == "superseded":
+    parent = {identity: identity for identity in entry_by_identity}
+
+    def find(identity: int) -> int:
+        while parent[identity] != identity:
+            parent[identity] = parent[parent[identity]]
+            identity = parent[identity]
+        return identity
+
+    def union(left_identity: int, right_identity: int) -> None:
+        left_root = find(left_identity)
+        right_root = find(right_identity)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    ordered_pairs = sorted(candidate_pairs)
+    processed_pairs = 0
+    pair_scores: dict[tuple[int, int], float] = {}
+    for left_identity, right_identity in ordered_pairs:
+        if (
+            exact_comparisons >= max(0, max_exact_comparisons)
+            or time.monotonic() >= deadline
+        ):
+            comparison_budget_exceeded = True
+            break
+        left = entry_by_identity[left_identity]
+        right = entry_by_identity[right_identity]
+        score = similarity(left, right)
+        pair_scores[(left_identity, right_identity)] = score
+        processed_pairs += 1
+        if score >= threshold:
+            union(left_identity, right_identity)
+
+    clusters: dict[int, list[dict[str, Any]]] = {}
+    for identity, entry in entry_by_identity.items():
+        clusters.setdefault(find(identity), []).append(entry)
+    for cluster in clusters.values():
+        if len(cluster) < 2:
+            continue
+        keeper = cluster[0]
+        for candidate in cluster[1:]:
+            keeper = prefer_entry(keeper, candidate)
+        for absorbed in cluster:
+            if absorbed is keeper or absorbed.get("id") == keeper.get("id"):
                 continue
-            cluster = [current]
-            still: list[dict[str, Any]] = []
-            for other in remaining:
-                if other.get("status") == "superseded":
-                    continue
-                if other.get("type") != current.get("type"):
-                    still.append(other)
-                    continue
-                if similarity(current, other) >= threshold:
-                    cluster.append(other)
-                else:
-                    still.append(other)
-            remaining = still
-            if len(cluster) < 2:
-                continue
-            keeper = cluster[0]
-            for candidate in cluster[1:]:
-                keeper = prefer_entry(keeper, candidate)
-            for absorbed in cluster:
-                if absorbed is keeper or absorbed.get("id") == keeper.get("id"):
-                    continue
-                merge_entry_provenance(keeper, absorbed)
-                supersede_entry(
-                    absorbed,
-                    str(keeper["id"]),
-                    "near-duplicate merged into: " + str(keeper["id"]),
-                )
-                merges.append(
-                    {
-                        "keptId": keeper["id"],
-                        "mergedId": absorbed["id"],
-                        "archive": archive,
-                        "similarity": round(similarity(keeper, absorbed), 3),
-                    }
-                )
+            merge_entry_provenance(keeper, absorbed)
+            supersede_entry(
+                absorbed,
+                str(keeper["id"]),
+                "near-duplicate merged into: " + str(keeper["id"]),
+            )
+            pair = tuple(sorted((id(keeper), id(absorbed))))
+            merges.append(
+                {
+                    "keptId": keeper["id"],
+                    "mergedId": absorbed["id"],
+                    "archive": str(keeper.get("source", {}).get("archive") or ""),
+                    "similarity": round(pair_scores.get(pair, threshold), 3),
+                }
+            )
+    comparisons_skipped = max(0, len(ordered_pairs) - processed_pairs)
     return {
         "merged": len(merges),
         "merges": merges,
         "similarityCandidates": similarity_candidates,
         "exactSimilarityComparisons": exact_comparisons,
+        "candidatePairs": len(candidate_pairs),
+        "bucketCount": bucket_count,
+        "comparisonBudget": {
+            "maxExactComparisons": max(0, max_exact_comparisons),
+            "timeBudgetMs": max(0, time_budget_ms),
+        },
+        "comparisonBudgetExceeded": comparison_budget_exceeded,
+        "comparisonsSkipped": comparisons_skipped,
     }
 
 

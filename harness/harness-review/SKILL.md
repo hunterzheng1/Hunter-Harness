@@ -52,7 +52,7 @@ disallowed-tools:
 
 ## Workflow
 
-先用 `harness_change.py resolve [--change] --json` 解析 change；多个 active change 未显式选择时返回 `CHANGE_SELECTION_REQUIRED`，禁止再按 Glob/mtime 猜测。阶段边界固定使用 `harness_gate.py begin --phase review --change <id> --task <n> --skills-root <skills-root> --executor-tool <tool> --json` 和 `harness_gate.py close --phase review --change <id> --status <OK|WARN|FAIL> --run-id <begin-run-id> --json`。不得手工追加 `phase.start/phase.end`；close 失败不得宣称审查完成。
+先用 `harness_context.py prepare --phase review --executor <tool> [--change <id>] --json` 与 `harness_context.py begin --phase review --change <id> --executor <tool> --json` 解析唯一 active change 并校验 test→review receipt；多个 active change 未显式选择时返回 `ACTIVE_CHANGE_AMBIGUOUS`，禁止再按 Glob/mtime 猜测。阶段门禁使用 `harness_gate.py begin --phase review --change <id> --task <n> --skills-root <skills-root> --executor-tool <tool> --json` 和 `harness_gate.py close --phase review --change <id> --status <OK|WARN|FAIL> --run-id <begin-run-id> --json`；之后通过 `harness_context.py close --from-phase review --to-phase submit|run --executor <tool> --json` 交接或 fixback。不得手工追加 `phase.start/phase.end`；任一 close 失败不得宣称审查完成。
 
 0. **启动准备** — 确定变更名（Glob `.harness/changes/*/plans/*-plan.md`，排除 `.harness/archive/*/`，读 frontmatter 提取 change-name）；**append `phase.start` 事件**（不得等审查完成才补）
 1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-run`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更

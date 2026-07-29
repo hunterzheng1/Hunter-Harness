@@ -56,14 +56,14 @@ disallowed-tools:
 | 阶段 | 动作 |
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
-| 0.5 | 先初始化 change-name、plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
+| 0.5 | 先执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --json`，以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
 | 1 | `harness-knowledge-query` 单次 query（内部 ensure-current；失败记 `issue`） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后执行 `harness_context.py close --from-phase plan --to-phase run --executor <tool> --artifact <plan-finalization> --json` 写 append-only handoff receipt；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 

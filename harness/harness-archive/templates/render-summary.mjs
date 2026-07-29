@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Compact deterministic renderer for Harness archive summary-data.json.
+// Deterministic executive renderer for normalized Harness archive reports.
 import fs from "node:fs";
 import path from "node:path";
 
@@ -16,126 +16,233 @@ if (!summaryPath) {
 }
 
 const data = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
-const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-})[char]);
+})[character]);
 const list = (value) => Array.isArray(value) ? value : [];
 const record = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
-const number = (value) => Number(value) || 0;
-const shortHash = (value) => String(value || "N/A").slice(0, 10);
-const statusClass = (value) => {
-  const status = String(value || "UNKNOWN").toUpperCase();
-  if (/FAIL|ERROR/.test(status)) return "danger";
-  if (/WARN|BLOCK|SKIP|CONDITIONAL|PARTIAL|NOT_RUN|UNKNOWN/.test(status)) return "warning";
-  if (/ADVISORY|REUSED/.test(status)) return "neutral";
-  return "success";
-};
-const pill = (value) => `<span class="pill ${statusClass(value)}">${esc(value || "UNKNOWN")}</span>`;
-const describe = (value) => {
-  if (typeof value === "string") return value;
-  if (!value || typeof value !== "object") return String(value ?? "");
-  return value.message || value.action || value.note || value.summary || JSON.stringify(value);
-};
-const duration = (minutes) => {
-  const value = number(minutes);
-  if (value < 1) return `${Math.round(value * 60)} 秒`;
-  if (value < 60) return `${Math.round(value * 10) / 10} 分钟`;
-  return `${Math.floor(value / 60)} 小时 ${Math.round(value % 60)} 分钟`;
-};
-const durationMs = (ms) => {
-  const value = number(ms);
-  if (value <= 0) return "0 秒";
-  if (value < 1000) return `${value}ms`;
-  const seconds = value / 1000;
-  if (seconds < 60) return `${Math.round(seconds * 10) / 10} 秒`;
-  const minutes = seconds / 60;
-  if (minutes < 60) return `${Math.round(minutes * 10) / 10} 分钟`;
-  return `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`;
-};
-
-const stages = Object.entries(record(data.stageStatus));
-const verification = record(data.verification);
-const unit = record(verification.unitTests);
-const api = record(verification.apiTests);
-const browser = record(verification.browserE2E);
-const performance = record(verification.performance);
-const durations = record(data.durations);
-const durationStages = list(durations.stages);
-const timing = record(data.timing);
-const attempts = list(timing.attempts);
-const sessions = list(timing.sessions);
-const candidate = record(data.candidateVerification);
-const archiveIntegrity = record(data.archiveIntegrity);
-const releaseDecision = record(data.releaseDecision);
-const releaseChecks = Object.entries(record(releaseDecision.checks));
-const artifactStorage = record(data.artifactStorage);
-const remoteCost = record(record(data.remoteCost).totals);
-const projection = record(data.projection);
-const wallLabel = timing.workflowWallClockMs != null
-  ? durationMs(timing.workflowWallClockMs)
-  : (durations.totalLabel || duration(durations.totalMinutes));
-const timingColumnsHtml = `
-<article class="card" id="timingColumns"><h2>时间守恒 / Timing Conservation</h2>
-<div class="row"><div><strong>全流程墙钟</strong><small>workflowWallClock</small></div><span>${esc(durationMs(timing.workflowWallClockMs))}</span></div>
-<div class="row"><div><strong>归因阶段并集</strong><small>attributedStageUnion</small></div><span>${esc(durationMs(timing.attributedStageUnionMs))}</span></div>
-<div class="row"><div><strong>远端等待</strong><small>externalWait</small></div><span>${esc(durationMs(timing.externalWaitMs))}</span></div>
-<div class="row"><div><strong>暂停</strong><small>paused</small></div><span>${esc(durationMs(timing.pausedMs))}</span></div>
-<div class="row"><div><strong>未归因</strong><small>agentOrToolUnattributed</small></div><span>${esc(durationMs(timing.agentOrToolUnattributedMs))}</span></div>
-<p><small>conservationDeltaMs=<code>${esc(timing.conservationDeltaMs ?? "N/A")}</code> · reportCutoffAt=<code id="reportCutoffAt">${esc(timing.reportCutoffAt || "N/A")}</code> · active-only 不冒充墙钟</small></p>
-</article>`;
-const maxMinutes = Math.max(1, ...durationStages.map((item) => number(item.minutes)));
-const diff = record(data.diffStat);
-const risks = list(data.knownRisks);
-const actions = list(data.manualActions);
+const numeric = (value) => Number.isFinite(Number(value)) ? Number(value) : null;
+const normalized = record(data.normalizedReport);
+const outcomes = record(normalized.outcomes);
+const current = Object.keys(record(outcomes.current)).length
+  ? record(outcomes.current)
+  : {
+      status: data.finalStatus || "UNKNOWN",
+      reasons: list(data.finalStatusReasons),
+      stages: record(data.stageStatus),
+      knownRisks: list(data.knownRisks),
+      findings: list(data.reviewFindings)
+    };
+const history = record(outcomes.history);
+const release = Object.keys(record(outcomes.release)).length
+  ? record(outcomes.release)
+  : {
+      decision: data.archiveIntent === "record-only" ? "NOT_REQUESTED" : record(data.releaseDecision).code,
+      eligible: Boolean(record(data.releaseDecision).releaseEligible),
+      candidate: record(data.candidateVerification),
+      intent: data.archiveIntent || ""
+    };
+const identity = Object.keys(record(normalized.identity)).length
+  ? record(normalized.identity)
+  : record(data.changeIdentity);
+const verification = Object.keys(record(normalized.verification)).length
+  ? record(normalized.verification)
+  : record(data.verification);
+const timing = Object.keys(record(normalized.timing)).length
+  ? record(normalized.timing)
+  : record(data.timing);
+const measurements = record(normalized.measurements);
+const recordOnly = release.intent === "record-only" || data.archiveIntent === "record-only";
 const files = list(data.changedFiles);
 const commands = list(record(data.reportPipeline).commands);
-const timeline = list(data.timeline);
-const statusReasons = list(data.finalStatusReasons);
-const reasonHtml = statusReasons.length
-  ? `<small>${statusReasons.map((item) => esc(item)).join(" · ")}</small>`
-  : "";
+const timeline = list(history.timeline).length ? list(history.timeline) : list(data.timeline);
+const attempts = list(history.attempts).length
+  ? list(history.attempts)
+  : list(timing.attempts);
+const actions = list(data.manualActions);
+const risks = list(current.findings).length
+  ? list(current.findings)
+  : list(current.knownRisks).length
+  ? list(current.knownRisks)
+  : list(data.knownRisks);
 
-const stageHtml = stages.map(([name, status]) => `<div class="row"><span>${esc(name)}</span>${pill(status)}</div>`).join("") || '<p class="empty">没有阶段状态记录</p>';
-const verificationHtml = [
-  ["单元测试", unit.status || ((number(unit.failures) + number(unit.errors)) > 0 ? "FAIL" : (number(unit.run) > 0 ? "OK" : "NOT_RUN")), `${number(unit.run)} 个 · ${number(unit.failures)} 失败 · ${number(unit.errors)} 错误 · ${number(unit.skipped)} 跳过 · ${number(unit.deselected)} 未选择`],
-  ["API 测试", api.status || "NOT_RUN", `${number(api.executed)}/${number(api.total)} 已执行 · ${number(api.passed)} 通过 · ${number(api.failed)} 失败 · ${number(api.blocked)} 阻塞 · 通过率 ${api.passRate || "N/A"} · 执行率 ${api.executionRate || "N/A"}`],
-  ["浏览器 E2E", browser.status || "NOT_RUN", `${number(browser.total)} 个 · ${number(browser.passed)} 通过 · ${number(browser.failed)} 失败 · ${number(browser.skipped)} 跳过 · ${number(browser.retries)} 重试`],
-  ["数据库兼容", verification.dbCompatibility || "NOT_RUN", verification.coverageDisplay || "未记录覆盖率"],
-  ["性能验证", performance.status || "NOT_RUN", Object.keys(record(performance.metrics)).length ? JSON.stringify(performance.metrics) : "未记录性能指标"]
-].map(([name, status, note]) => `<div class="row"><div><strong>${esc(name)}</strong><small>${esc(note)}</small></div>${pill(status)}</div>`).join("");
-const durationHtml = durationStages.map((item) => {
-  const width = Math.max(2, Math.round(number(item.minutes) / maxMinutes * 100));
-  const attempts = list(item.attempts).length;
-  return `<div class="duration"><div><span>${esc(item.skill || item.stage)}</span><span>${duration(item.minutes)}${attempts > 1 ? ` · ${attempts} 次尝试` : ""}</span></div><i><b style="width:${width}%"></b></i></div>`;
-}).join("") || '<p class="empty">没有可计算的阶段耗时</p>';
-const riskHtml = risks.map((item) => `<li>${esc(describe(item))}</li>`).join("") || "<li>未记录已知风险</li>";
-const actionHtml = actions.map((item) => `<li>${esc(describe(item))}</li>`).join("") || "<li>无需人工后续动作</li>";
-const fileRows = files.map((item) => `<tr><td><code>${esc(item.path || item.file)}</code></td><td class="plus">+${number(item.insertions)}</td><td class="minus">-${number(item.deletions)}</td></tr>`).join("") || '<tr><td colspan="3">没有变更文件证据</td></tr>';
-const timelineRows = timeline.map((item) => `<tr><td>${esc(item.phase || item.stage || "-")}</td><td>${esc(item.attempt || "-")}</td><td>${pill(item.status || item.result || item.type)}</td><td>${esc(item.executorTool || item.executor_tool || item.summary || "-")}</td></tr>`).join("") || '<tr><td colspan="4">没有时间线记录</td></tr>';
-const commandRows = commands.map((item) => `<tr><td>${esc(item.phase || "-")}</td><td><code>${esc(item.command)}</code></td><td>${pill(number(item.exit_code) === 0 ? "OK" : "FAIL")}</td></tr>`).join("") || '<tr><td colspan="3">没有命令证据</td></tr>';
-const releaseCheckHtml = releaseChecks.map(([name, checkValue]) => {
-  const check = record(checkValue);
-  return `<div class="row"><div><strong>${esc(name)}</strong><small>${esc(check.message || check.code || "")}</small></div>${pill(check.ok ? "OK" : "BLOCKED")}</div>`;
-}).join("") || '<p class="empty">没有 release check 证据</p>';
-const attemptRows = attempts.map((item) => `<tr><td>${esc(item.phase || "-")}</td><td>${esc(item.attempt || "-")}</td><td>${pill(item.terminalStatus || item.status || "UNKNOWN")}</td><td>${esc(durationMs(item.durationMs))}</td></tr>`).join("") || '<tr><td colspan="4">没有 typed attempt 记录</td></tr>';
-const sessionRows = sessions.map((item) => `<tr><td>${esc(item.sessionId || item.id || "-")}</td><td>${esc(item.startedAt || "-")}</td><td>${esc(item.endedAt || "-")}</td><td>${esc(durationMs(item.wallClockMs || item.durationMs))}</td></tr>`).join("") || '<tr><td colspan="4">没有 session 记录</td></tr>';
+const statusTone = (raw) => {
+  const status = String(raw || "UNKNOWN").toUpperCase();
+  if (/FAIL|ERROR|BLOCKED/.test(status)) return "danger";
+  if (/WARN|CONDITIONAL|PARTIAL|NOT_RUN|UNKNOWN|SKIP/.test(status)) return "warning";
+  if (/ADVISORY|REUSED|NOT_APPLICABLE/.test(status)) return "neutral";
+  return "success";
+};
+const STATUS_LABELS = {
+  OK: "通过", PASS: "通过", PASSED: "通过", CONDITIONAL_OK: "有条件通过",
+  WARN: "警告", ADVISORY: "建议", FAIL: "失败", FAILED: "失败", ERROR: "错误",
+  BLOCKED: "阻塞", NOT_RUN: "未运行", SKIPPED: "已跳过",
+  NOT_APPLICABLE: "不适用", UNKNOWN: "未知"
+};
+const pill = (raw) => {
+  const status = String(raw || "UNKNOWN").toUpperCase();
+  return `<span class="pill ${statusTone(status)}" title="${esc(status)}">${esc(STATUS_LABELS[status] || status)}</span>`;
+};
+const describe = (value) => {
+  if (typeof value === "string") return value;
+  const item = record(value);
+  return item.title || item.message || item.summary || item.action || item.remediation || item.note || JSON.stringify(item);
+};
+const shortHash = (value) => String(value || "N/A").slice(0, 10);
+const duration = (raw) => {
+  const value = numeric(raw);
+  if (value === null) return "N/A";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  if (value < 60000) return `${Math.round(value / 100) / 10} 秒`;
+  if (value < 3600000) return `${Math.round(value / 6000) / 10} 分钟`;
+  return `${Math.floor(value / 3600000)} 小时 ${Math.round(value % 3600000 / 60000)} 分钟`;
+};
+const measurement = (value, unit = "") => {
+  const item = record(value);
+  if (item.state === "unknown" || item.state === "not_applicable") return "N/A";
+  if (item.state === "zero") return `0${unit}`;
+  if (item.state === "known") return `${esc(item.value)}${unit}`;
+  if (value === null || value === undefined || value === "") return "N/A";
+  return `${esc(value)}${unit}`;
+};
+const verificationStatus = (value) => {
+  if (typeof value === "string") return value;
+  const item = record(value);
+  if (item.status) return item.status;
+  if ((numeric(item.failures) || 0) + (numeric(item.errors) || 0) > 0) return "FAIL";
+  if ((numeric(item.run) || numeric(item.total) || 0) > 0) return "OK";
+  return "NOT_RUN";
+};
+const verificationNote = (key, raw) => {
+  const value = record(raw);
+  if (key === "unitTests") return `${value.passRate || `${value.run ?? 0} 项`} · 失败 ${value.failures ?? 0}`;
+  if (key === "apiTests") return `${value.passRate || `${value.passed ?? 0}/${value.total ?? 0}`} · 阻塞 ${value.blocked ?? 0}`;
+  if (key === "browserE2E") return `${value.passed ?? 0}/${value.total ?? 0} 通过 · ${value.failed ?? 0} 失败 · 重试 ${value.retries ?? 0}`;
+  if (value.checks !== undefined) return `${value.checks} 项检查`;
+  if (value.coverageDisplay) return value.coverageDisplay;
+  return Object.keys(value).filter((name) => name !== "status").slice(0, 3)
+    .map((name) => `${name}=${value[name]}`).join(" · ") || "无额外指标";
+};
+const groups = [
+  ["后端", ["unitTests", "dbCompatibility"]],
+  ["Geo", ["geo"]],
+  ["前端", ["frontend"]],
+  ["浏览器", ["browserE2E"]],
+  ["API", ["apiTests"]]
+].map(([label, keys]) => {
+  const present = keys.filter((key) => verification[key] !== undefined);
+  const values = present.map((key) => verification[key]);
+  const statuses = values.map(verificationStatus);
+  const groupStatus = statuses.some((status) => /FAIL|ERROR|BLOCKED/.test(String(status)))
+    ? "FAIL"
+    : statuses.some((status) => /WARN|CONDITIONAL|PARTIAL/.test(String(status)))
+    ? "WARN"
+    : statuses.length && statuses.every((status) => /NOT_APPLICABLE/.test(String(status)))
+    ? "NOT_APPLICABLE"
+    : statuses.length && statuses.every((status) => /OK|PASS|NOT_APPLICABLE/.test(String(status)))
+    ? "OK"
+    : "NOT_RUN";
+  const note = present.map((key) => verificationNote(key, verification[key])).join(" · ") || "未配置该组验证";
+  return { label, status: groupStatus, note, present };
+});
+const passedGroups = groups.filter((group) => group.status === "OK").length;
+const productCommit = identity.productCommit || data.productCommit || data.finalCommit;
+const wallClock = timing.workflowWallClockMs ?? record(data.durations).totalMs;
 
-const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Harness 最终报告 · ${esc(data.changeName)}</title><style>
-:root{color-scheme:light dark;--bg:#f3f6fa;--card:#fff;--soft:#f7f9fc;--text:#182132;--muted:#667085;--line:#dce3ed;--blue:#2563eb;--good:#087443;--warn:#9b5a00;--bad:#b42318;--shadow:0 8px 24px rgba(18,35,70,.07)}
-@media(prefers-color-scheme:dark){:root{--bg:#0b1018;--card:#121925;--soft:#182130;--text:#eef3fb;--muted:#9aa8bc;--line:#29364a;--blue:#7aa9ff;--good:#55d99d;--warn:#f0bc63;--bad:#ff8b83;--shadow:0 12px 30px rgba(0,0,0,.25)}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 Inter,"Segoe UI","Microsoft YaHei",sans-serif}main{width:min(1140px,calc(100% - 28px));margin:22px auto 44px}.hero,.card,.metric,details{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.hero{padding:23px 25px;border-top:3px solid var(--blue)}.eyebrow{color:var(--blue);font-weight:750;letter-spacing:.08em}h1{font-size:27px;line-height:1.2;margin:5px 0 7px;overflow-wrap:anywhere}.goal,.empty,small{color:var(--muted)}.status{display:flex;align-items:center;gap:10px;margin-top:16px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin:11px 0}.metric{padding:14px 15px}.metric strong{display:block;font-size:19px;margin:4px 0}.grid{display:grid;grid-template-columns:1.12fr .88fr;gap:11px}.card{padding:17px;margin-bottom:11px}h2{font-size:16px;margin:0 0 10px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}.row:last-child{border:0}.row small{display:block;margin-top:2px}.pill{display:inline-flex;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:750;white-space:nowrap}.pill.success{color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent)}.pill.warning{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}.pill.danger{color:var(--bad);background:color-mix(in srgb,var(--bad) 13%,transparent)}.pill.neutral{color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent)}.duration{margin:11px 0}.duration>div{display:flex;justify-content:space-between;color:var(--muted);font-size:12px}.duration>div span:first-child{color:var(--text);font-weight:650}.duration i{display:block;height:7px;background:var(--soft);border-radius:99px;overflow:hidden;margin-top:6px}.duration b{display:block;height:100%;background:linear-gradient(90deg,var(--blue),#7c70ff)}.risk{display:grid;grid-template-columns:1fr 1fr;gap:10px}.risk>div{background:var(--soft);border-radius:10px;padding:11px}.risk h3{font-size:13px;margin:0 0 5px}.risk ul{padding-left:18px;margin:0;color:var(--muted)}details{margin:9px 0}summary{cursor:pointer;padding:13px 15px;font-weight:650}details>div{padding:0 15px 15px;overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:11px;letter-spacing:.04em}code{font-family:"Cascadia Code",Consolas,monospace;color:var(--blue);overflow-wrap:anywhere}.plus{color:var(--good)}.minus{color:var(--bad)}dl{display:grid;grid-template-columns:145px 1fr;gap:7px 11px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
-@media(max-width:800px){.metrics{grid-template-columns:1fr 1fr}.grid,.risk{grid-template-columns:1fr}}@media(max-width:480px){main{width:calc(100% - 18px);margin-top:9px}.metrics{grid-template-columns:1fr}.hero{padding:19px}h1{font-size:23px}dl{grid-template-columns:1fr}}
-</style></head><body><main>
-<section class="hero"><div class="eyebrow">HARNESS EXECUTION REPORT · CURRENT OUTCOME / 当前结果</div><h1>${esc(data.changeName || "未命名变更")}</h1><p class="goal">${esc(data.businessGoal || "未记录业务目标")}</p><div class="status">${pill(data.finalStatus)}<span>当前结果基于事件、验证账本与 Git 证据${data.riskTier ? ` · riskTier=${esc(data.riskTier)}` : ""}</span></div>${reasonHtml ? `<div class="status">${reasonHtml}</div>` : ""}</section>
-<section class="metrics"><article class="metric"><small>产品提交</small><strong><code title="${esc(data.productCommit || data.finalCommit)}">${esc(shortHash(data.productCommit || data.finalCommit))}</code></strong><small>archive=${esc(shortHash(data.archiveCommit || data.finalCommit))}</small></article><article class="metric"><small>代码范围</small><strong>${number(diff.filesChanged)} 个文件</strong><small><span class="plus">+${number(diff.insertions)}</span> · <span class="minus">-${number(diff.deletions)}</span></small></article><article class="metric"><small>全流程墙钟</small><strong>${esc(wallLabel)}</strong><small>活动=${esc(durationMs(timing.stageActiveExecutionMs))} · ${durationStages.length} 阶段</small></article><article class="metric"><small>归档完整性</small><strong>${esc(record(data.archiveManifest).checksumStatus || "UNKNOWN")}</strong><small>${number(record(data.archiveManifest).totalArchiveFiles)} 个归档文件</small></article></section>
-<section class="grid"><div><article class="card"><h2>Candidate Claim / Attestation</h2><div class="row"><div><strong>${esc(candidate.assurance || "none")}</strong><small>${esc(candidate.code || candidate.message || "没有候选证明")}</small></div>${pill(candidate.ok ? "VERIFIED" : "UNVERIFIED")}</div></article><article class="card"><h2>Release Eligibility</h2><div class="row"><div><strong>${esc(releaseDecision.code || "NOT_EVALUATED")}</strong><small>唯一发布公式的汇总结论</small></div>${pill(releaseDecision.releaseEligible ? "ELIGIBLE" : "BLOCKED")}</div>${releaseCheckHtml}</article><article class="card"><h2>验证结论</h2>${verificationHtml}</article><article class="card"><h2>阶段耗时（活动）</h2>${durationHtml}</article>${timingColumnsHtml}</div><div><article class="card"><h2>Archive Integrity</h2><div class="row"><div><strong>${esc(archiveIntegrity.code || "NOT_EVALUATED")}</strong><small>${esc(archiveIntegrity.message || archiveIntegrity.checksumStatus || "")}</small></div>${pill(archiveIntegrity.ok ? "OK" : "FAIL")}</div></article><article class="card"><h2>History Quality</h2><div class="row"><div><strong>${attempts.length} 次 typed attempts</strong><small>${sessions.length} 个 sessions · unclosed=${number(timing.unclosedAttemptCount)}</small></div>${pill(number(timing.unclosedAttemptCount) === 0 ? "CLOSED" : "INCOMPLETE")}</div></article><article class="card"><h2>Remote Cost</h2><div class="row"><div><strong>${number(remoteCost.runnerMinutes)} runner 分钟</strong><small>queue/wait=${durationMs(remoteCost.queueWaitMs)} · artifacts=${number(remoteCost.artifactBytes)} bytes</small></div>${pill(number(remoteCost.duplicateRunCount) === 0 ? "NO_DUPLICATES" : `${number(remoteCost.duplicateRunCount)} DUPLICATES`)}</div></article><article class="card"><h2>Artifact Storage</h2><div class="row"><div><strong>${number(artifactStorage.bytesAdded)} bytes 新增</strong><small>复用=${number(artifactStorage.bytesReused)} · 清理=${number(artifactStorage.bytesPruned)} · ${number(artifactStorage.artifactCount)} 项</small></div>${pill("OBSERVED")}</div></article><article class="card"><h2>Projection / Fallback</h2><div class="row"><div><strong>${esc(projection.mode || projection.status || "not-configured")}</strong><small>${esc(projection.remediation || projection.message || projection.code || "")}</small></div>${pill(projection.ok === false ? "BLOCKED" : (projection.mode === "fallback" ? "FALLBACK" : "OK"))}</div></article><article class="card"><h2>阶段状态</h2>${stageHtml}</article><article class="card"><h2>风险与后续</h2><div class="risk"><div><h3>已知风险</h3><ul>${riskHtml}</ul></div><div><h3>人工动作</h3><ul>${actionHtml}</ul></div></div></article></div></section>
-<details><summary>变更文件（${files.length}）</summary><div><table><thead><tr><th>文件</th><th>新增</th><th>删除</th></tr></thead><tbody>${fileRows}</tbody></table></div></details>
-<details><summary>执行时间线与工具交接（${timeline.length}）</summary><div><table><thead><tr><th>阶段</th><th>尝试</th><th>状态</th><th>来源 / 摘要</th></tr></thead><tbody>${timelineRows}</tbody></table></div></details>
-<details><summary>Typed Attempts（${attempts.length}）</summary><div><table><thead><tr><th>阶段</th><th>尝试</th><th>终态</th><th>耗时</th></tr></thead><tbody>${attemptRows}</tbody></table></div></details>
-<details><summary>Sessions（${sessions.length}）</summary><div><table><thead><tr><th>Session</th><th>开始</th><th>结束</th><th>墙钟</th></tr></thead><tbody>${sessionRows}</tbody></table></div></details>
-<details><summary>命令证据（${commands.length}）</summary><div><table><thead><tr><th>阶段</th><th>命令</th><th>结果</th></tr></thead><tbody>${commandRows}</tbody></table></div></details>
-<details><summary>技术元数据</summary><div><dl><dt>功能合并提交</dt><dd><code>${esc(data.featureMergeHash || data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>发布线尖端</dt><dd><code>${esc(data.releaseTipHash || data.archiveCommit || "N/A")}</code></dd><dt>产品提交</dt><dd><code>${esc(data.productCommit || data.finalCommit || "N/A")}</code></dd><dt>产品树哈希</dt><dd><code>${esc(data.productTreeHash || "N/A")}</code></dd><dt>归档提交</dt><dd><code>${esc(data.archiveCommit || data.finalCommit || "N/A")}</code></dd><dt>基线提交</dt><dd><code>${esc(data.baseCommit || "N/A")}</code></dd><dt>Git 范围</dt><dd><code>${esc(diff.range || "N/A")}</code></dd><dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd><dt>事实来源</dt><dd>${esc(list(record(data.reportPipeline).sources).join(" · ") || "N/A")}</dd></dl></div></details>
+const groupHtml = groups.map((group) => `
+  <article class="verify-card" title="${esc(group.present.map((key) => {
+    const value = record(verification[key]);
+    return `${key} · status=${verificationStatus(verification[key])}${value.failed === undefined ? "" : ` · failed=${value.failed}`}`;
+  }).join(" / "))}">
+    <div><span class="verify-name">${esc(group.label)}</span>${pill(group.status)}</div>
+    <p>${esc(group.note)}</p>
+  </article>`).join("");
+const risksHtml = risks.map((item) => `<li>${esc(describe(item))}</li>`).join("") || "<li>当前没有未处置风险</li>";
+const actionsHtml = actions.map((item) => `<li>${esc(describe(item))}</li>`).join("") || "<li>无需人工后续动作</li>";
+const stageHtml = Object.entries(record(current.stages)).map(([name, status]) =>
+  `<tr><td>${esc(name)}</td><td>${pill(status)}</td></tr>`
+).join("") || '<tr><td colspan="2">没有阶段状态记录</td></tr>';
+const fileHtml = files.map((item) =>
+  `<tr><td><code>${esc(item.path || item.file)}</code></td><td class="positive">+${esc(item.insertions ?? 0)}</td><td class="negative">-${esc(item.deletions ?? 0)}</td></tr>`
+).join("") || '<tr><td colspan="3">没有变更文件证据</td></tr>';
+const timelineHtml = timeline.map((item) =>
+  `<tr><td>${esc(item.phase || item.stage || "-")}</td><td>${esc(item.attempt || "-")}</td><td>${pill(item.status || item.result || item.type)}</td><td>${esc(item.executorTool || item.executor_tool || item.summary || "-")}</td></tr>`
+).join("") || '<tr><td colspan="4">没有时间线记录</td></tr>';
+const commandHtml = commands.map((item) =>
+  `<tr><td>${esc(item.phase || "-")}</td><td><code>${esc(item.command || "")}</code></td><td>${pill(Number(item.exit_code ?? item.exitCode) === 0 ? "OK" : "FAIL")}</td></tr>`
+).join("") || '<tr><td colspan="3">没有命令证据</td></tr>';
+const candidate = record(release.candidate);
+const releaseHtml = recordOnly ? "" : `
+  <article class="card"><h2>发布与候选</h2>
+    <div class="fact"><span>候选证明</span>${pill(candidate.ok ? "OK" : candidate.code || "NOT_RUN")}</div>
+    <div class="fact"><span>发布资格</span>${pill(release.eligible ? "OK" : release.decision || "BLOCKED")}</div>
+  </article>`;
+const remoteCost = record(measurements.remoteCost);
+const remoteCostTotals = record(remoteCost.totals);
+const storage = record(measurements.artifactStorage);
+const projection = record(data.projection);
+
+const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness 最终报告 · ${esc(data.changeName || "未命名变更")}</title>
+<style>
+:root{color-scheme:light dark;--canvas:#f4f6f8;--surface:#fff;--surface-2:#f8fafc;--ink:#172033;--muted:#667085;--line:#dfe5ec;--accent:#2457d6;--good:#087443;--warn:#9a5b00;--bad:#b42318;--shadow:0 8px 26px rgba(22,34,58,.07)}
+@media(prefers-color-scheme:dark){:root{--canvas:#0b1119;--surface:#121a26;--surface-2:#172231;--ink:#eef3f9;--muted:#9aa8ba;--line:#2a384a;--accent:#86abff;--good:#58d59b;--warn:#efbd68;--bad:#ff8b83;--shadow:0 12px 30px rgba(0,0,0,.28)}}
+*{box-sizing:border-box}html,body{max-width:100%;overflow-x:hidden}body{margin:0;background:var(--canvas);color:var(--ink);font:14px/1.55 Inter,"Segoe UI","Microsoft YaHei",sans-serif}main{width:min(1180px,calc(100% - 32px));margin:24px auto 48px}.hero,.card,.metric,details,.verify-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}.hero{padding:24px 26px;border-top:4px solid var(--accent)}.kicker{color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.1em}.hero h1{font-size:28px;line-height:1.25;margin:5px 0 7px;overflow-wrap:anywhere}.goal,.muted,small{color:var(--muted)}.outcome{display:flex;align-items:center;gap:10px;margin-top:14px}.record-only{display:inline-flex;margin-top:12px;padding:6px 10px;border-radius:8px;background:var(--surface-2);color:var(--muted)}.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:11px 0}.metric{min-width:0;padding:13px 14px}.metric strong{display:block;font-size:18px;margin-top:3px;overflow-wrap:anywhere}.card{padding:17px;margin-bottom:11px}.card h2,details summary{font-size:16px;font-weight:760}.card h2{margin:0 0 11px}.verification-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px}.verify-card{padding:13px;box-shadow:none;background:var(--surface-2)}.verify-card>div,.fact{display:flex;justify-content:space-between;gap:9px;align-items:center}.verify-name{font-weight:760}.verify-card p{margin:8px 0 0;color:var(--muted);font-size:12px}.two-column{display:grid;grid-template-columns:1.3fr .7fr;gap:11px}.risk-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.risk-actions section{padding:12px;border-radius:10px;background:var(--surface-2)}.risk-actions h3{font-size:13px;margin:0 0 6px}.risk-actions ul{margin:0;padding-left:18px;color:var(--muted)}.fact{padding:8px 0;border-bottom:1px solid var(--line)}.fact:last-child{border:0}.pill{display:inline-flex;flex:none;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:800;white-space:nowrap}.pill.success{color:var(--good);background:color-mix(in srgb,var(--good) 13%,transparent)}.pill.warning{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}.pill.danger{color:var(--bad);background:color-mix(in srgb,var(--bad) 13%,transparent)}.pill.neutral{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}details{margin:9px 0}summary{cursor:pointer;padding:13px 16px}details>div{padding:0 16px 16px;overflow:auto}.table-wrap{max-width:100%;overflow:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-size:11px}code{font-family:"Cascadia Code",Consolas,monospace;color:var(--accent);overflow-wrap:anywhere}.positive{color:var(--good)}.negative{color:var(--bad)}dl{display:grid;grid-template-columns:155px minmax(0,1fr);gap:7px 12px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}
+@media(max-width:900px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.verification-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.two-column{grid-template-columns:1fr}}
+@media(max-width:600px){main{width:calc(100% - 18px);margin:9px auto 30px}.hero{padding:18px}.hero h1{font-size:23px}.metrics,.verification-grid,.risk-actions{grid-template-columns:1fr}.outcome{align-items:flex-start;flex-direction:column}.card{padding:14px}dl{grid-template-columns:1fr}.metric strong{font-size:17px}}
+</style></head>
+<body><main>
+<section class="hero">
+  <div class="kicker">HARNESS · 管理结论</div>
+  <h1>${esc(data.changeName || "未命名变更")}</h1>
+  <p class="goal">${esc(data.businessGoal || "未记录业务目标")}</p>
+  <div class="outcome">${pill(current.status)}<span>${esc(list(current.reasons).join(" · ") || "结论基于事件、验证账本与 Git 事实")}</span></div>
+  ${recordOnly ? '<div class="record-only">归档意图：仅记录 · 未请求发布</div>' : ""}
+</section>
+<section class="metrics">
+  <article class="metric"><small>产品提交</small><strong><code title="${esc(productCommit || "N/A")}">${esc(shortHash(productCommit))}</code></strong></article>
+  <article class="metric"><small>验证概览</small><strong>${passedGroups}/${groups.length} 组通过</strong><small>按后端 / Geo / 前端 / 浏览器 / API</small></article>
+  <article class="metric"><small>风险与动作</small><strong>${risks.length} / ${actions.length}</strong><small>当前风险 / 人工动作</small></article>
+  <article class="metric"><small>全流程耗时</small><strong>${esc(duration(wallClock))}</strong><small>活动 ${esc(duration(timing.stageActiveExecutionMs))}</small></article>
+  <article class="metric"><small>代码范围</small><strong>${esc(record(data.diffStat).filesChanged ?? files.length)} 个文件</strong><small class="positive">+${esc(record(data.diffStat).insertions ?? 0)} · <span class="negative">-${esc(record(data.diffStat).deletions ?? 0)}</span></small></article>
+</section>
+<article class="card"><h2>验证概览</h2><div class="verification-grid">${groupHtml}</div></article>
+<section class="two-column">
+  <article class="card"><h2>风险与动作</h2><div class="risk-actions"><section><h3>当前风险</h3><ul>${risksHtml}</ul></section><section><h3>人工动作</h3><ul>${actionsHtml}</ul></section></div></article>
+  <div>
+    ${releaseHtml}
+    <article class="card"><h2>事实完整性</h2>
+      <div class="fact"><span>归档完整性</span>${pill(record(data.archiveIntegrity).ok === false ? "FAIL" : record(data.archiveManifest).checksumStatus || "UNKNOWN")}</div>
+      <div class="fact"><span>时间守恒</span>${pill(numeric(timing.conservationDeltaMs) === 0 ? "OK" : "WARN")}</div>
+    </article>
+  </div>
+</section>
+<details><summary>技术证据 · 验证与时间守恒</summary><div>
+  <div class="fact"><span>全流程墙钟 <code title="workflowWallClockMs">workflowWallClock</code></span><strong>${esc(duration(timing.workflowWallClockMs))}</strong></div>
+  <div class="fact"><span>活动执行 <code title="stageActiveExecutionMs">stageActiveExecution</code></span><strong>${esc(duration(timing.stageActiveExecutionMs))}</strong></div>
+  <div class="fact"><span>远端等待 <code title="externalWaitMs">externalWait</code></span><strong>${esc(duration(timing.externalWaitMs))}</strong></div>
+  <div class="fact"><span>暂停 <code title="pausedMs">paused</code></span><strong>${esc(duration(timing.pausedMs))}</strong></div>
+  <div class="fact"><span>未归因 <code title="agentOrToolUnattributedMs">agentOrToolUnattributed</code></span><strong>${esc(duration(timing.agentOrToolUnattributedMs))}</strong></div>
+  <div class="fact"><span>远端 runner 成本</span><strong>${measurement(remoteCostTotals.runnerMinutes ?? remoteCost.runnerMinutes, " 分钟")}</strong></div>
+  <div class="fact"><span>新增制品字节</span><strong>${measurement(storage.bytesAdded, " bytes")}</strong></div>
+  <div class="fact"><span>守恒差值 <code>conservationDeltaMs</code></span><strong>${esc(timing.conservationDeltaMs ?? "N/A")}</strong></div>
+</div></details>
+<details><summary>阶段状态</summary><div class="table-wrap"><table><thead><tr><th>阶段</th><th>结果</th></tr></thead><tbody>${stageHtml}</tbody></table></div></details>
+<details><summary>变更文件（${files.length}）</summary><div class="table-wrap"><table><thead><tr><th>文件</th><th>新增</th><th>删除</th></tr></thead><tbody>${fileHtml}</tbody></table></div></details>
+<details><summary>执行时间线与工具交接（${timeline.length}）</summary><div class="table-wrap"><table><thead><tr><th>阶段</th><th>尝试</th><th>状态</th><th>来源 / 摘要</th></tr></thead><tbody>${timelineHtml}</tbody></table></div></details>
+<details><summary>命令证据（${commands.length}）</summary><div class="table-wrap"><table><thead><tr><th>阶段</th><th>命令</th><th>结果</th></tr></thead><tbody>${commandHtml}</tbody></table></div></details>
+<details><summary>技术元数据</summary><div><dl>
+  <dt>产品提交</dt><dd><code>${esc(productCommit || "N/A")}</code></dd>
+  <dt>产品树哈希</dt><dd><code>${esc(identity.productTreeHash || data.productTreeHash || "N/A")}</code></dd>
+  <dt>环境哈希</dt><dd><code>${esc(identity.environmentHash || data.environmentHash || "N/A")}</code></dd>
+  <dt>基线提交</dt><dd><code>${esc(identity.baseCommit || data.baseCommit || "N/A")}</code></dd>
+  <dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd>
+  <dt>归档意图</dt><dd title="${esc(release.intent)}">${recordOnly ? "仅记录（未请求发布）" : esc(release.intent || "未声明")}</dd>
+  <dt>尝试记录</dt><dd>${attempts.length}</dd>
+  <dt>历史质量</dt><dd>${numeric(timing.unclosedAttemptCount) === 0 ? "无未闭合尝试" : `${esc(timing.unclosedAttemptCount ?? "N/A")} 个未闭合尝试`}</dd>
+  <dt>投影状态</dt><dd title="Projection / Fallback"><code>${esc(projection.code || projection.mode || "N/A")}</code></dd>
+</dl></div></details>
 </main></body></html>`;
 
 fs.mkdirSync(path.dirname(outPath), { recursive: true });

@@ -64,13 +64,15 @@ class DetectTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_detect_single_module_java_v2_schema(self) -> None:
+    def test_detect_single_module_java_v3_schema(self) -> None:
         # UT-001：单模块 Java detect → 完整 compile/unit/full/package profile
         _make_java_project(self.tmp)
         r = hp.detect(self.tmp)
         self.assertTrue(r["ok"], msg=str(r))
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
-        self.assertEqual(profile["schemaVersion"], 2)
+        self.assertEqual(profile["schemaVersion"], 3)
+        self.assertIn("moduleGraph", profile)
+        self.assertIn("commandGraph", profile)
         cmds = profile["commands"]
         for key in ("compile", "unitTest", "unitTestFull", "install", "package"):
             self.assertIn(key, cmds, msg=f"missing command {key}")
@@ -414,7 +416,7 @@ class MigrateTests(unittest.TestCase):
         self.assertTrue(r.get("backupPath"))
         self.assertTrue(Path(r["backupPath"]).is_file())
         profile = _read_json(self.tmp / ".harness" / "config" / "build-profile.json")
-        self.assertEqual(profile["schemaVersion"], 2)
+        self.assertEqual(profile["schemaVersion"], 3)
         svc = profile.get("serviceStart", {})
         for field in ("profile", "overlayPath"):
             val = svc.get(field, "")

@@ -74,6 +74,7 @@ import harness_gate as hgate  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_phase as hphase  # noqa: E402
+import harness_report_model as hrm  # noqa: E402
 import harness_review as hr  # noqa: E402
 
 
@@ -1643,6 +1644,12 @@ def build_workflow_timing(
         if started_dt is not None and cutoff_dt is not None
         else 0
     )
+    # Segment-level integer conversion can lose sub-millisecond fractions at
+    # each boundary. Attribute only that positive rounding residue to the
+    # otherwise-unattributed bucket so the partition remains exact.
+    rounding_residue = workflow_wall - sum(categories.values())
+    if rounding_residue > 0:
+        categories["unattributed"] += rounding_residue
     stage_wall = union_ms(active_intervals)
     sessions: list[dict[str, Any]] = []
     session_start = started_dt
@@ -2664,11 +2671,15 @@ def build_verification_projection(
     apiContract and browserE2E are distinct typed projections; the legacy
     apiTests mapping is retained for schema compatibility.
     """
-    validations = (ledger or {}).get("validations") or {}
+    effective_ledger = _deepcopy_json(ledger or {})
+    projected_validations = hrm.latest_terminal_validations(effective_ledger)
+    if projected_validations:
+        effective_ledger["validations"] = projected_validations
+    validations = effective_ledger.get("validations") or {}
     projection: dict[str, Any] = {
-        "unitTests": _ledger_unit_tests(ledger),
-        "apiTests": _ledger_api_tests(ledger, change_dir=change_dir),
-        "dbCompatibility": _ledger_db_compat(ledger),
+        "unitTests": _ledger_unit_tests(effective_ledger),
+        "apiTests": _ledger_api_tests(effective_ledger, change_dir=change_dir),
+        "dbCompatibility": _ledger_db_compat(effective_ledger),
     }
     api_contract = validations.get("apiContract")
     if isinstance(api_contract, dict):
@@ -3265,6 +3276,7 @@ def _review_summary(
         "redConfirmed": 0,
         "yellowFixed": 0,
         "yellowDeferred": 0,
+        "currentRiskCount": 0,
         "summary": "",
     }
     sidecar = hr.findings_path(change_dir)
@@ -3294,6 +3306,8 @@ def _review_summary(
                     for item in yellow_items
                     if item.get("disposition") in {"DEFERRED", "ACCEPTED_RISK"}
                 ),
+                "currentRiskCount": int(status.get("currentRiskCount") or 0),
+                "currentRisks": list(status.get("currentRisks") or []),
                 "summary": f"structured review run {status.get('runId') or 'unknown'}",
             }
         )
@@ -3766,6 +3780,7 @@ def collect_summary_data(
         data["archiveCommit"] = identity.get("archiveCommit") or data.get("finalCommit")
         data["environmentHash"] = identity.get("environmentHash") or NOT_AVAILABLE
         data["changeIdentity"] = identity
+        data = hrm.apply_identity_mirrors(data)
 
     # diffStat / changedFiles
     if not for_replay or not data.get("changedFiles"):
@@ -3830,8 +3845,11 @@ def collect_summary_data(
     data["gitFacts"] = {
         "baseCommit": data.get("baseCommit") or "",
         "finalCommit": data.get("finalCommit") or "",
+        "productCommit": data.get("productCommit") or "",
         "featureMergeHash": data.get("featureMergeHash") or "",
         "releaseTipHash": data.get("releaseTipHash") or "",
+        "productTreeHash": data.get("productTreeHash") or "",
+        "environmentHash": data.get("environmentHash") or "",
         "filesChanged": int(diff_for_facts.get("filesChanged") or 0),
         "insertions": int(diff_for_facts.get("insertions") or 0),
         "deletions": int(diff_for_facts.get("deletions") or 0),
@@ -3861,10 +3879,12 @@ def collect_summary_data(
             data["artifactStorage"] = (
                 storage if isinstance(storage, dict) else {}
             )
+            data["artifactStorage"]["available"] = True
             sources.append("evidence/artifact-storage.json")
         else:
             data["artifactStorage"] = {
                 "schemaVersion": 1,
+                "available": False,
                 "artifactCount": 0,
                 "bytesAdded": 0,
                 "bytesReused": 0,
@@ -3892,6 +3912,8 @@ def collect_summary_data(
         existing if for_replay else None,
         projected_events,
     )
+    review_status = hr.status(change_dir)
+    data["reviewFindings"] = list(review_status.get("items") or [])
     if not for_replay:
         data["timeline"] = _timeline_from_events(event_summary, projected_events)
     else:
@@ -3940,6 +3962,8 @@ def collect_summary_data(
         data.setdefault("manualActions", [])
         data.setdefault("finalStatusReasons", [])
         data.setdefault("riskTier", "unknown")
+
+    data["normalizedReport"] = hrm.normalize_report(data)
 
     # archiveManifest
     am = {
@@ -4047,7 +4071,7 @@ def resolve_node_path(project_root: Path) -> str | None:
     return shutil.which("node")
 
 
-def render_fallback_html(summary: dict[str, Any]) -> str:
+def _render_legacy_fallback_html(summary: dict[str, Any]) -> str:
     """Render escaped, deterministic HTML with every validate-required fact.
 
     Used when the Node renderer is unavailable or fails. No timestamps / random
@@ -4292,6 +4316,235 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
 
     parts.append("</body></html>")
     return "\n".join(parts) + "\n"
+
+
+def render_fallback_html(summary: dict[str, Any]) -> str:
+    """Render the same executive information architecture without Node."""
+
+    def esc(value: Any) -> str:
+        return _html_escape("" if value is None else str(value))
+
+    def rec(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    def seq(value: Any) -> list[Any]:
+        return value if isinstance(value, list) else []
+
+    normalized = rec(summary.get("normalizedReport"))
+    outcomes = rec(normalized.get("outcomes"))
+    current = rec(outcomes.get("current")) or {
+        "status": summary.get("finalStatus"),
+        "reasons": seq(summary.get("finalStatusReasons")),
+        "stages": rec(summary.get("stageStatus")),
+        "knownRisks": seq(summary.get("knownRisks")),
+    }
+    release = rec(outcomes.get("release")) or {
+        "intent": summary.get("archiveIntent"),
+        "decision": "NOT_REQUESTED"
+        if summary.get("archiveIntent") == "record-only"
+        else rec(summary.get("releaseDecision")).get("code"),
+        "eligible": rec(summary.get("releaseDecision")).get("releaseEligible"),
+    }
+    identity = rec(normalized.get("identity")) or rec(summary.get("changeIdentity"))
+    verification = rec(normalized.get("verification")) or rec(
+        summary.get("verification")
+    )
+    timing = rec(normalized.get("timing")) or rec(summary.get("timing"))
+    measurements = rec(normalized.get("measurements"))
+    record_only = (
+        release.get("intent") == "record-only"
+        or summary.get("archiveIntent") == "record-only"
+    )
+    product_commit = (
+        identity.get("productCommit")
+        or summary.get("productCommit")
+        or summary.get("finalCommit")
+        or "N/A"
+    )
+    labels = [
+        ("后端", ("unitTests", "dbCompatibility")),
+        ("Geo", ("geo",)),
+        ("前端", ("frontend",)),
+        ("浏览器", ("browserE2E",)),
+        ("API", ("apiTests",)),
+    ]
+    status_labels = {
+        "OK": "通过",
+        "PASS": "通过",
+        "PASSED": "通过",
+        "CONDITIONAL_OK": "有条件通过",
+        "WARN": "警告",
+        "ADVISORY": "建议",
+        "FAIL": "失败",
+        "FAILED": "失败",
+        "ERROR": "错误",
+        "BLOCKED": "阻塞",
+        "NOT_RUN": "未运行",
+        "SKIPPED": "已跳过",
+        "NOT_APPLICABLE": "不适用",
+        "UNKNOWN": "未知",
+    }
+
+    def status_label(value: Any) -> str:
+        status = str(value or "UNKNOWN").upper()
+        return status_labels.get(status, status)
+
+    def verification_status(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        item = rec(value)
+        if item.get("status"):
+            return str(item["status"])
+        if int(item.get("failures") or 0) + int(item.get("errors") or 0):
+            return "FAIL"
+        if int(item.get("run") or item.get("total") or 0):
+            return "OK"
+        return "NOT_RUN"
+
+    def describe(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        item = rec(value)
+        return str(
+            item.get("title")
+            or item.get("message")
+            or item.get("summary")
+            or item.get("action")
+            or item.get("remediation")
+            or item
+        )
+
+    def measurement_label(value: Any) -> str:
+        item = rec(value)
+        if item.get("state") in {"unknown", "not_applicable"}:
+            return "N/A"
+        if item.get("state") == "zero":
+            return "0"
+        if item.get("state") == "known":
+            return str(item.get("value"))
+        return "N/A" if value is None or value == "" else str(value)
+
+    risks = (
+        seq(current.get("findings"))
+        or seq(current.get("knownRisks"))
+        or seq(summary.get("knownRisks"))
+    )
+    actions = seq(summary.get("manualActions"))
+    groups: list[str] = []
+    passed = 0
+    for label, keys in labels:
+        statuses = [
+            verification_status(verification[key])
+            for key in keys
+            if key in verification
+        ]
+        status = (
+            "FAIL"
+            if any(value in {"FAIL", "ERROR", "BLOCKED"} for value in statuses)
+            else "WARN"
+            if any("WARN" in value or "CONDITIONAL" in value for value in statuses)
+            else "NOT_APPLICABLE"
+            if statuses and all(value == "NOT_APPLICABLE" for value in statuses)
+            else "OK"
+            if statuses
+            and all(
+                value in {"OK", "PASS", "PASSED", "NOT_APPLICABLE"}
+                for value in statuses
+            )
+            else "NOT_RUN"
+        )
+        if status == "OK":
+            passed += 1
+        details = " · ".join(
+            str(rec(verification.get(key)).get("passRate") or status)
+            for key in keys
+            if key in verification
+        ) or "未配置该组验证"
+        raw_details = " · ".join(
+            f"{key} · status={verification_status(verification[key])}"
+            + (
+                f" · failed={rec(verification[key]).get('failed')}"
+                if rec(verification[key]).get("failed") is not None
+                else ""
+            )
+            for key in keys
+            if key in verification
+        )
+        groups.append(
+            f'<article class="verify" title="{esc(raw_details)}"><strong>{esc(label)}</strong>'
+            f'<span title="{esc(status)}">{esc(status_label(status))}</span><small>{esc(details)}</small></article>'
+        )
+
+    commands = seq(rec(summary.get("reportPipeline")).get("commands"))
+    command_rows = "".join(
+        f"<tr><td>{esc(item.get('phase') or '-')}</td>"
+        f"<td><code>{esc(item.get('command'))}</code></td>"
+        f"<td>{esc('OK' if int(item.get('exit_code', item.get('exitCode', 1))) == 0 else 'FAIL')}</td></tr>"
+        for item in commands
+        if isinstance(item, dict)
+    ) or '<tr><td colspan="3">没有命令证据</td></tr>'
+    files = seq(summary.get("changedFiles"))
+    file_rows = "".join(
+        f"<tr><td><code>{esc(item.get('path') or item.get('file'))}</code></td>"
+        f"<td>+{esc(item.get('insertions') or 0)}</td>"
+        f"<td>-{esc(item.get('deletions') or 0)}</td></tr>"
+        for item in files
+        if isinstance(item, dict)
+    ) or '<tr><td colspan="3">没有变更文件证据</td></tr>'
+    risk_rows = "".join(f"<li>{esc(describe(item))}</li>" for item in risks) or "<li>当前没有未处置风险</li>"
+    action_rows = "".join(f"<li>{esc(describe(item))}</li>" for item in actions) or "<li>无需人工后续动作</li>"
+    release_card = (
+        ""
+        if record_only
+        else "<article class=\"card\"><h2>发布与候选</h2>"
+        f"<p>候选证明 / 发布资格：{esc(release.get('decision') or 'NOT_EVALUATED')}</p></article>"
+    )
+    remote = rec(measurements.get("remoteCost"))
+    storage = rec(measurements.get("artifactStorage"))
+    remote_totals = rec(remote.get("totals"))
+    projection = rec(summary.get("projection"))
+    archive_integrity = rec(summary.get("archiveIntegrity"))
+    total_files = rec(summary.get("archiveManifest")).get("totalArchiveFiles")
+    total_files_text = "" if total_files is None else str(total_files)
+
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness 最终报告 · {esc(summary.get("changeName"))}</title>
+<style>
+:root{{--bg:#f4f6f8;--card:#fff;--text:#172033;--muted:#667085;--line:#dfe5ec}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#0b1119;--card:#121a26;--text:#eef3f9;--muted:#9aa8ba;--line:#2a384a}}}}
+*{{box-sizing:border-box}}html,body{{max-width:100%;overflow-x:hidden}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif}}main{{width:min(1120px,calc(100% - 32px));margin:24px auto}}.hero,.card,.metric,.verify,details{{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}}.hero h1{{margin:4px 0}}.metrics,.groups{{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:10px 0}}.metric strong,.verify strong{{display:block;font-size:17px}}.verify small{{display:block;color:var(--muted)}}.risk{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}.card{{margin:10px 0}}details{{margin:9px 0}}summary{{cursor:pointer;font-weight:700}}details>div{{overflow:auto}}table{{width:100%;border-collapse:collapse}}td,th{{padding:8px;border-bottom:1px solid var(--line);text-align:left}}code{{overflow-wrap:anywhere}}@media(max-width:600px){{main{{width:calc(100% - 18px);margin:9px auto}}.metrics,.groups,.risk{{grid-template-columns:1fr}}}}
+</style></head><body><main>
+<section class="hero"><small>HARNESS · 管理结论</small><h1>{esc(summary.get("changeName"))}</h1>
+<p>{esc(summary.get("businessGoal") or "未记录业务目标")}</p>
+<strong title="{esc(current.get("status"))}">{esc(status_label(current.get("status")))}</strong>
+<p id="finalStatusReasons">{esc(" · ".join(str(item) for item in seq(current.get("reasons"))))}</p>
+{"<p>归档意图：仅记录 · 未请求发布</p>" if record_only else ""}</section>
+<section class="metrics"><article class="metric"><small>产品提交</small><strong><code>{esc(str(product_commit)[:10])}</code></strong></article>
+<article class="metric"><small>验证概览</small><strong>{passed}/5 组通过</strong></article>
+<article class="metric"><small>风险与动作</small><strong>{len(risks)} / {len(actions)}</strong></article>
+<article class="metric"><small>全流程耗时</small><strong>{esc(timing.get("workflowWallClockMs") or "N/A")}</strong></article>
+<article class="metric"><small>归档文件</small><strong>{esc(total_files_text or "N/A")}</strong></article></section>
+<article class="card"><h2>验证概览</h2><div class="groups">{"".join(groups)}</div></article>
+<article class="card"><h2>风险与动作</h2><div class="risk"><section><h3>当前风险</h3><ul>{risk_rows}</ul></section><section><h3>人工动作</h3><ul>{action_rows}</ul></section></div></article>
+{release_card}
+<details><summary>技术证据 · 时间守恒</summary><div><p>conservationDeltaMs={esc(timing.get("conservationDeltaMs") if "conservationDeltaMs" in timing else "N/A")}</p>
+<p>workflowWallClock={esc(timing.get("workflowWallClockMs") if "workflowWallClockMs" in timing else "N/A")}</p>
+<p>stageActiveExecution={esc(timing.get("stageActiveExecutionMs") if "stageActiveExecutionMs" in timing else "N/A")}</p>
+<p>stageWallClockSpan={esc(timing.get("stageWallClockSpanMs") if "stageWallClockSpanMs" in timing else "N/A")}</p>
+<p>reportCutoffAt={esc(timing.get("reportCutoffAt") or "N/A")}</p>
+<p>远端 runner 成本：{esc(measurement_label(remote_totals.get("runnerMinutes") or remote.get("runnerMinutes")))}</p>
+<p>新增制品字节：{esc(measurement_label(storage.get("bytesAdded")))}</p></div></details>
+<details><summary>技术证据 · 发布与归档治理</summary><div>
+<p>归档完整性：{esc(archive_integrity.get("code") or rec(summary.get("archiveManifest")).get("checksumStatus") or "N/A")}</p>
+<p>历史质量：未闭合尝试 {esc(timing.get("unclosedAttemptCount") if "unclosedAttemptCount" in timing else "N/A")}</p>
+<p>投影状态：{esc(projection.get("code") or projection.get("mode") or "N/A")}</p></div></details>
+<details><summary>技术证据 · 变更文件</summary><div><table><tbody>{file_rows}</tbody></table></div></details>
+<details><summary>技术证据 · 命令</summary><div><table><tbody>{command_rows}</tbody></table></div></details>
+<details><summary>技术元数据</summary><div><p>productCommit=<code>{esc(product_commit)}</code></p>
+<p>schemaVersion={esc(summary.get("schemaVersion"))}</p></div></details>
+</main></body></html>
+"""
 
 
 def render_final_summary(
@@ -5006,6 +5259,84 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
                     "severity": "error",
                     "message": f"stageStatus.{phase}={status} but event reducer says {event_status}",
                 })
+
+    # All compatibility mirrors must be derived from the canonical identity.
+    identity_doc = summary.get("changeIdentity")
+    identity_doc = identity_doc if isinstance(identity_doc, dict) else {}
+    canonical = hrm.canonical_identity(summary)
+    mirror_sources = {
+        "productCommit": summary.get("productCommit"),
+        "featureMergeHash": summary.get("featureMergeHash"),
+        "releaseTipHash": summary.get("releaseTipHash"),
+        "productTreeHash": summary.get("productTreeHash"),
+        "environmentHash": summary.get("environmentHash"),
+    }
+    for field, mirror in mirror_sources.items():
+        expected = str(canonical.get(field) or "")
+        actual = str(mirror or "")
+        if field in hrm.CONTENT_HASH_FIELDS:
+            expected = expected.removeprefix("sha256:")
+            actual = actual.removeprefix("sha256:")
+        if identity_doc.get(field) and actual and expected != actual:
+            issues.append(
+                {
+                    "code": "IDENTITY_MIRROR_MISMATCH",
+                    "severity": "error",
+                    "message": f"{field} mirror differs from changeIdentity",
+                    "expected": str(canonical.get(field) or ""),
+                    "actual": str(mirror or ""),
+                }
+            )
+
+    # Timing categories form a disjoint, wall-clock-conserving partition.
+    timing = summary.get("timing")
+    timing = timing if isinstance(timing, dict) else {}
+    if timing:
+        wall = int(timing.get("workflowWallClockMs") or 0)
+        parts = sum(
+            int(timing.get(key) or 0)
+            for key in (
+                "attributedStageUnionMs",
+                "externalWaitMs",
+                "pausedMs",
+                "agentOrToolUnattributedMs",
+            )
+        )
+        declared_delta = int(timing.get("conservationDeltaMs") or 0)
+        if parts != wall or declared_delta != wall - parts:
+            issues.append(
+                {
+                    "code": "TIMING_CONSERVATION_MISMATCH",
+                    "severity": "error",
+                    "message": (
+                        f"timing categories total {parts}ms, wall clock is "
+                        f"{wall}ms, declared delta is {declared_delta}ms"
+                    ),
+                }
+            )
+
+    candidate_gate_for_release = summary.get("candidateVerification")
+    candidate_gate_for_release = (
+        candidate_gate_for_release
+        if isinstance(candidate_gate_for_release, dict)
+        else {}
+    )
+    candidate_status = str(
+        candidate_gate_for_release.get("status")
+        or candidate_gate_for_release.get("code")
+        or ""
+    ).upper()
+    if bool(summary.get("releaseEligible")) and (
+        candidate_gate_for_release.get("ok") is False
+        or candidate_status in {"FAIL", "FAILED", "ERROR", "BLOCKED"}
+    ):
+        issues.append(
+            {
+                "code": "RELEASE_ELIGIBILITY_CONTRADICTION",
+                "severity": "error",
+                "message": "releaseEligible=true while candidate verification is not successful",
+            }
+        )
 
     # Candidate receipt and summary must describe the same immutable subject.
     candidate_gate = summary.get("candidateVerification")

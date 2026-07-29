@@ -124,6 +124,43 @@ class ReportAdequacyGateTests(unittest.TestCase):
         result = ha.validate_report_adequacy(summary)
         self.assertTrue(result.get("ok"), result)
 
+    def test_blocks_identity_mirror_timing_and_release_contradictions(self) -> None:
+        summary = {
+            "changeName": "demo",
+            "finalStatus": "OK",
+            "baseCommit": "base",
+            "finalCommit": "product",
+            "productCommit": "stale",
+            "productTreeHash": "sha256:" + "c" * 64,
+            "changeIdentity": {
+                "baseCommit": "base",
+                "productCommit": "product",
+                "productTreeHash": "sha256:" + "a" * 64,
+            },
+            "verification": {
+                "unitTests": {"passed": 10, "failed": 0, "skipped": 0, "passRate": "100%"},
+                "apiTests": {"status": "OK", "passed": 8, "failed": 0},
+            },
+            "stageStatus": {"run": "OK", "test": "OK"},
+            "stageStatusFromEvents": {"run": "OK", "test": "OK"},
+            "diffStat": {"filesChanged": 5, "insertions": 100, "deletions": 10},
+            "timing": {
+                "workflowWallClockMs": 1000,
+                "attributedStageUnionMs": 700,
+                "externalWaitMs": 400,
+                "pausedMs": 0,
+                "agentOrToolUnattributedMs": 0,
+                "conservationDeltaMs": -100,
+            },
+            "releaseEligible": True,
+            "candidateVerification": {"ok": False, "status": "FAIL"},
+        }
+        result = ha.validate_report_adequacy(summary)
+        codes = {issue["code"] for issue in result.get("issues", [])}
+        self.assertIn("IDENTITY_MIRROR_MISMATCH", codes)
+        self.assertIn("TIMING_CONSERVATION_MISMATCH", codes)
+        self.assertIn("RELEASE_ELIGIBILITY_CONTRADICTION", codes)
+
 
 if __name__ == "__main__":
     unittest.main()
