@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.36] — hunter-harness / [0.2.34] — @hunter-harness/workflow-harness
+
+### Fixed（完整修复 2026-07-29 Harness 流程与最终报告复盘）
+
+- **事实模型可信化**：统一产品提交/树/环境身份，选择同一目标的最新终态验证；当前结果、历史尝试与发布资格分层，record-only 明确为“未请求发布”，未采集成本与存储不再伪装为绿色零值。
+- **执行结果页重构**：Node 与 Python fallback 统一为中文、决策优先、技术明细折叠的执行结果页；按后端、Geo、前端、浏览器、API 分组，并补齐桌面浅色、桌面深色和 390×844 移动端视觉回归。
+- **Sync 有界可靠**：显式指令图取代路径猜测，生成目录禁止递归；子进程具备墙钟/停滞超时、心跳、输出上限和分级终止，失败只更新 last-run，成功才更新 last-success。
+- **知识增量与规模治理**：Git freshness 批处理、单次 archive 扫描、SQLite dirty set 真正 no-op；相似度候选采用稀有词分桶和比较预算，避免近似平方增长。
+- **计划、Profile 与验证账本升级**：新增 aggregate scale/冲突/DAG/父子提交闭包分析，Profile v3 的模块图与命令图，affected consumer closure，以及动态 verification targets 的严格身份复用。
+- **跨工具续跑**：新增 prepare/begin/close/view 上下文协议、租约与哈希链 handoff receipt；Review/Test fixback 只失效验证目标，不删除历史证据。
+- **精确时间守恒**：分段毫秒取整残差归入未归因时间，报告墙钟分区保持严格守恒。
+
 ## [0.2.32] — hunter-harness / [0.2.30] — @hunter-harness/workflow-harness
 
 ### Fixed（可信同步、能力契约与增量知识）

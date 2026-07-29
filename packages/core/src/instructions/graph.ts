@@ -13,6 +13,17 @@ export interface InstructionGraphTopic {
   evidencePaths: string[];
 }
 
+export type InstructionEdgeType = "include" | "catalog" | "ownership";
+
+export interface InstructionGraphEdge {
+  from: string;
+  to: string;
+  type: InstructionEdgeType;
+  sourceField: string | null;
+  traversed: boolean;
+  reason: string | null;
+}
+
 export interface InstructionGraphResult {
   status: InstructionGraphStatus;
   entrypointIntegrity: {
@@ -32,11 +43,24 @@ export interface InstructionGraphResult {
   maxDepth: number;
   totalBytes: number;
   ownership: Record<string, "project" | "harness-managed" | "generated">;
+  edges: InstructionGraphEdge[];
+  diagnostics: {
+    edgeCount: number;
+    edgeTypeCounts: Record<InstructionEdgeType, number>;
+    unresolvedCount: number;
+    unresolvedOmitted: number;
+    maxFiles: number;
+    maxDepth: number;
+    maxBytes: number;
+    budgetExceededAt: string | null;
+  };
 }
 
 const MAX_FILES = 64;
 const MAX_DEPTH = 8;
 const MAX_BYTES = 512 * 1024;
+const MAX_DIAGNOSTIC_SAMPLES = 50;
+const MAX_UNRESOLVED_IDENTITIES = 1024;
 
 const TOPICS = {
   architecture: ["architecture", "架构", "module boundary", "dependency"],
@@ -77,13 +101,41 @@ function markdownReferences(content: string): string[] {
   return [...references];
 }
 
-function jsonReferences(value: unknown, output = new Set<string>()): Set<string> {
+interface TypedReference {
+  reference: string;
+  type: InstructionEdgeType;
+  sourceField: string | null;
+}
+
+function jsonReferences(
+  value: unknown,
+  path: readonly string[] = [],
+  output: TypedReference[] = []
+): TypedReference[] {
   if (typeof value === "string" && /\.(?:md|json)$/i.test(value)) {
-    output.add(value);
+    const field = path.at(-1) ?? "";
+    const ancestors = new Set(path);
+    const type: InstructionEdgeType | null =
+      field === "instructions" || field === "shared_instructions"
+        ? "ownership"
+        : ancestors.has("rules")
+          ? "catalog"
+          : ["include", "includes", "references", "imports"].includes(field)
+            ? "include"
+            : null;
+    if (type !== null) {
+      output.push({
+        reference: value,
+        type,
+        sourceField: path.join(".")
+      });
+    }
   } else if (Array.isArray(value)) {
-    for (const item of value) jsonReferences(item, output);
+    for (const item of value) jsonReferences(item, path, output);
   } else if (value !== null && typeof value === "object") {
-    for (const item of Object.values(value)) jsonReferences(item, output);
+    for (const [key, item] of Object.entries(value)) {
+      jsonReferences(item, [...path, key], output);
+    }
   }
   return output;
 }
@@ -97,7 +149,14 @@ async function existsFile(path: string): Promise<boolean> {
 }
 
 function ownershipOf(path: string): "project" | "harness-managed" | "generated" {
-  if (path.startsWith(".harness/codebase/") || path.startsWith(".harness/knowledge/")) {
+  if (
+    path.startsWith(".harness/codebase/")
+    || path.startsWith(".harness/knowledge/")
+    || path.startsWith(".harness/archive/")
+    || path.startsWith(".harness/runtime/")
+    || path.startsWith(".harness/state/")
+    || path.startsWith(".harness/cache/")
+  ) {
     return "generated";
   }
   if (path.startsWith(".harness/rules/") || path === "AGENTS.md" || path === "CLAUDE.md") {
@@ -114,17 +173,35 @@ export async function validateInstructionGraph(
   const entry = resolve(root, entrypoint);
   const reachable = new Map<string, string>();
   const ownership: InstructionGraphResult["ownership"] = {};
-  const unresolved = new Set<string>();
+  const unresolvedSamples = new Set<string>();
+  const unresolvedIdentities = new Set<string>();
+  let unresolvedCount = 0;
   const reasonCodes = new Set<string>();
   const cycles: string[][] = [];
+  const edges: InstructionGraphEdge[] = [];
   const visiting: string[] = [];
   let maxDepth = 0;
   let totalBytes = 0;
+  let budgetExceededAt: string | null = null;
+
+  const addUnresolved = (reference: string): void => {
+    const unseen = !unresolvedIdentities.has(reference);
+    if (unseen) {
+      unresolvedCount += 1;
+      if (unresolvedIdentities.size < MAX_UNRESOLVED_IDENTITIES) {
+        unresolvedIdentities.add(reference);
+      }
+      if (unresolvedSamples.size < MAX_DIAGNOSTIC_SAMPLES) {
+        unresolvedSamples.add(reference);
+      }
+    }
+  };
 
   const visit = async (path: string, depth: number): Promise<void> => {
     const rel = projectRelative(root, path);
     if (depth > MAX_DEPTH || reachable.size >= MAX_FILES || totalBytes >= MAX_BYTES) {
       reasonCodes.add("INSTRUCTION_GRAPH_BUDGET_EXCEEDED");
+      budgetExceededAt ??= rel;
       return;
     }
     const cycleAt = visiting.indexOf(rel);
@@ -135,15 +212,21 @@ export async function validateInstructionGraph(
     }
     if (reachable.has(rel)) return;
     if (!(await existsFile(path))) {
-      unresolved.add(rel);
+      addUnresolved(rel);
       reasonCodes.add("INSTRUCTION_REFERENCE_MISSING");
+      return;
+    }
+    const fileStat = await stat(path);
+    if (fileStat.size > MAX_BYTES - totalBytes) {
+      reasonCodes.add("INSTRUCTION_GRAPH_BUDGET_EXCEEDED");
+      budgetExceededAt ??= rel;
       return;
     }
     let content: string;
     try {
       content = await readFile(path, "utf8");
     } catch {
-      unresolved.add(rel);
+      addUnresolved(rel);
       reasonCodes.add("INSTRUCTION_REFERENCE_UNREADABLE");
       return;
     }
@@ -163,22 +246,35 @@ export async function validateInstructionGraph(
         }
       }
     }
-    let references: string[];
+    let references: TypedReference[];
     if (rel.endsWith(".json")) {
       try {
-        references = [...jsonReferences(JSON.parse(content))];
+        references = jsonReferences(JSON.parse(content));
       } catch {
         reasonCodes.add("INSTRUCTION_JSON_INVALID");
         references = [];
       }
     } else {
-      references = markdownReferences(content);
+      references = markdownReferences(content).map((reference) => ({
+        reference,
+        type: "include" as const,
+        sourceField: null
+      }));
     }
-    for (const reference of references) {
+    for (const typedReference of references) {
+      const { reference } = typedReference;
       const target = safeProjectPath(root, path, reference);
       if (target === null) {
-        unresolved.add(reference);
+        addUnresolved(reference);
         reasonCodes.add("INSTRUCTION_REFERENCE_OUTSIDE_PROJECT");
+        edges.push({
+          from: rel,
+          to: reference,
+          type: typedReference.type,
+          sourceField: typedReference.sourceField,
+          traversed: false,
+          reason: "outside-project"
+        });
         continue;
       }
       const targetRelative = projectRelative(root, target);
@@ -186,15 +282,48 @@ export async function validateInstructionGraph(
         rel === ".harness/context-index.json" &&
         ["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md"].includes(targetRelative)
       ) {
-        // context-index catalogs adapter entrypoints; those ownership pointers
-        // are not include edges back into the instruction graph.
+        edges.push({
+          from: rel,
+          to: targetRelative,
+          type: "ownership",
+          sourceField: typedReference.sourceField,
+          traversed: false,
+          reason: "entrypoint-ownership-pointer"
+        });
+        continue;
+      }
+      if (ownershipOf(targetRelative) === "generated") {
+        edges.push({
+          from: rel,
+          to: targetRelative,
+          type: typedReference.type,
+          sourceField: typedReference.sourceField,
+          traversed: false,
+          reason: "generated-state-boundary"
+        });
         continue;
       }
       if (!(await existsFile(target))) {
-        unresolved.add(targetRelative);
+        addUnresolved(targetRelative);
         reasonCodes.add("INSTRUCTION_REFERENCE_MISSING");
+        edges.push({
+          from: rel,
+          to: targetRelative,
+          type: typedReference.type,
+          sourceField: typedReference.sourceField,
+          traversed: false,
+          reason: "missing"
+        });
         continue;
       }
+      edges.push({
+        from: rel,
+        to: targetRelative,
+        type: typedReference.type,
+        sourceField: typedReference.sourceField,
+        traversed: true,
+        reason: null
+      });
       await visit(target, depth + 1);
     }
     visiting.pop();
@@ -228,10 +357,25 @@ export async function validateInstructionGraph(
     },
     effectiveGuidanceTopics: topics,
     reachableFiles: [...reachable.keys()].sort(),
-    unresolvedReferences: [...unresolved].sort(),
+    unresolvedReferences: [...unresolvedSamples].sort(),
     cycles,
     maxDepth,
     totalBytes,
-    ownership
+    ownership,
+    edges,
+    diagnostics: {
+      edgeCount: edges.length,
+      edgeTypeCounts: {
+        include: edges.filter((edge) => edge.type === "include").length,
+        catalog: edges.filter((edge) => edge.type === "catalog").length,
+        ownership: edges.filter((edge) => edge.type === "ownership").length
+      },
+      unresolvedCount,
+      unresolvedOmitted: Math.max(0, unresolvedCount - unresolvedSamples.size),
+      maxFiles: MAX_FILES,
+      maxDepth: MAX_DEPTH,
+      maxBytes: MAX_BYTES,
+      budgetExceededAt
+    }
   };
 }

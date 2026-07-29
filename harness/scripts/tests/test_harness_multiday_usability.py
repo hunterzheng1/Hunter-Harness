@@ -164,14 +164,14 @@ class MultiDayUsabilityTests(unittest.TestCase):
         )
 
         for label in (
-            "Current Outcome",
-            "Candidate Claim / Attestation",
-            "Archive Integrity",
-            "Release Eligibility",
-            "History Quality",
-            "Remote Cost",
-            "Artifact Storage",
-            "Projection / Fallback",
+            "管理结论",
+            "候选证明",
+            "归档完整性",
+            "发布资格",
+            "历史质量",
+            "远端 runner 成本",
+            "新增制品字节",
+            "投影状态",
             "conservationDeltaMs",
         ):
             self.assertIn(label, html)

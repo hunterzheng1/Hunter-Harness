@@ -83,7 +83,7 @@ describe("embedded Harness Bundles", () => {
 
     expect(planSkill).toContain("effort: medium");
     expect(planSkill).toContain(
-      "先初始化 change-name、plan-run-id 与 attempt（首次为 1）",
+      "以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1）",
     );
     expect(planSkill).toContain("用同一身份追加 `phase.start`");
     expect(planSkill).toContain("歧义优先检查");
@@ -92,7 +92,7 @@ describe("embedded Harness Bundles", () => {
     expect(planSkill).toContain("仅高复杂度探索考虑委派");
     expect(planSkill).toContain("executionMode=delegated");
     expect(planSkill).toContain("fallbackPolicy=inline-no-retry");
-    expect(planSkill.indexOf("先初始化 change-name + `phase.start`")).toBeLessThan(
+    expect(planSkill.indexOf("harness_context.py prepare --phase plan")).toBeLessThan(
       planSkill.indexOf("`harness-knowledge-query` 单次 query")
     );
 

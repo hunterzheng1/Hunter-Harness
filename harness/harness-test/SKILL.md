@@ -80,9 +80,9 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
-先 `harness_change.py resolve [--change] --json` 解析 change-id；再 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
+先 `harness_context.py prepare --phase test --executor <tool> [--change <id>] --json`，再 `harness_context.py begin --phase test --change <id> --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
 
-验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：`harness_test_guard.py begin` → 执行 → `close`（可选 `mark` stale-test-repair）。阶段结束必须 `harness_gate.py close --phase test --status ...`。
+验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：`harness_test_guard.py begin` → 执行 → `close`（可选 `mark` stale-test-repair）。阶段结束必须 `harness_gate.py close --phase test --status ...`，随后 `harness_context.py close --from-phase test --to-phase review --executor <tool> --json`；fixback 时改为 `--to-phase run` 并由 context 失效受影响 target。
 
 - **Read `checklist.md`** — 各项检查详情 + 0.1 preflight + Playwright 探测 + 避坑规则指引
 - **失败处理**：任一项检查失败 → 终止流程并报告原因，用户确认修复后才能继续

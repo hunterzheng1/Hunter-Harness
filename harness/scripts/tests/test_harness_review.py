@@ -221,7 +221,14 @@ class DispositionsTests(ReviewFixture):
                 },
             )
             self.assertFalse(result["ok"], bad)
-        for good in ("OPEN", "FIXED", "ACCEPTED_RISK", "DEFERRED", "UNKNOWN"):
+        for good in (
+            "OPEN",
+            "FIXED",
+            "ACCEPTED_RISK",
+            "DEFERRED",
+            "NOT_APPLICABLE",
+            "UNKNOWN",
+        ):
             result = review.write_dispositions(
                 self.change_dir,
                 {
@@ -267,6 +274,40 @@ class StatusReconcileTests(ReviewFixture):
         self.assertEqual(status["counts"]["YELLOW"], 1)
         self.assertEqual(status["dispositions"]["FIXED"], 1)
         self.assertEqual(status["dispositions"]["UNKNOWN"], 2)
+
+    def test_current_risks_exclude_fixed_and_not_applicable_findings(self) -> None:
+        self.assertTrue(
+            review.write_findings(self.change_dir, self.sample_findings())["ok"]
+        )
+        written = json.loads(
+            (
+                self.state_dir / "reports" / "review" / "review-findings.json"
+            ).read_text(encoding="utf-8")
+        )
+        dispositions = [
+            {"findingId": written["findings"][0]["id"], "disposition": "FIXED"},
+            {
+                "findingId": written["findings"][1]["id"],
+                "disposition": "NOT_APPLICABLE",
+            },
+            {"findingId": written["findings"][2]["id"], "disposition": "OPEN"},
+        ]
+        self.assertTrue(
+            review.write_dispositions(
+                self.change_dir,
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "dispositions": dispositions,
+                },
+            )["ok"]
+        )
+        status = review.status(self.change_dir)
+        self.assertEqual(status["currentRiskCount"], 1)
+        self.assertEqual(
+            [item["disposition"] for item in status["currentRisks"]],
+            ["OPEN"],
+        )
 
 
 class ReviewSkillWiringTests(unittest.TestCase):

@@ -26,8 +26,8 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.25";
-const MINIMUM_CLI_VERSION = "0.2.35";
+const BUNDLE_VERSION = "0.2.26";
+const MINIMUM_CLI_VERSION = "0.2.36";
 const REQUIRED_CAPABILITIES = [
   "sync@1",
   "rules-sync@1",

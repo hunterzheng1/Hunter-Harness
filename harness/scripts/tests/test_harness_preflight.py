@@ -35,7 +35,7 @@ def _read_json(path: Path) -> dict:
 
 
 class DetectDelegationTests(unittest.TestCase):
-    """簇 4：cmd_detect 委托 harness_profile.detect，产出 v2 profile。"""
+    """簇 4：cmd_detect 委托 harness_profile.detect，产出 v3 profile。"""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="preflight-detect-"))
@@ -44,28 +44,30 @@ class DetectDelegationTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_detect_produces_v2_profile_delegated_to_harness_profile(self) -> None:
+    def test_detect_produces_v3_profile_delegated_to_harness_profile(self) -> None:
         r1 = hp.cmd_detect(self.tmp)
         self.assertTrue(r1["ok"])
         self.assertEqual(r1["action"], "detect")
         profile_path = self.tmp / ".harness" / "config" / "build-profile.json"
         self.assertTrue(profile_path.is_file())
         p1 = _read_json(profile_path)
-        # v2 schema
+        # v3 schema
         self.assertEqual(p1["schemaVersion"], hprof.SCHEMA_VERSION)
-        self.assertEqual(p1["schemaVersion"], 2)
+        self.assertEqual(p1["schemaVersion"], 3)
         self.assertIn("toolPaths", p1)
         self.assertIn("fingerprint", p1)
         self.assertTrue(p1["fingerprint"]["pomHash"])
-        # v2: commands 而非 buildCommands
+        self.assertIn("moduleGraph", p1)
+        self.assertIn("commandGraph", p1)
+        # v3 continues to use commands rather than buildCommands.
         self.assertIn("commands", p1)
         self.assertNotIn("buildCommands", p1)
         self.assertIn("mvn", p1["commands"]["compile"]["command"])
-        # v2: 排除策略 + identifier 显式声明
+        # Exclusion strategy + identifier remain explicit.
         self.assertEqual(set(p1["excludedRoots"]), set(hprof.DEFAULT_EXCLUDED_ROOTS))
         self.assertIn("identifier", p1)
         self.assertIn("pattern", p1["identifier"])
-        # v2: verificationInputs 由 commands 派生（兼容 ledger v1 消费）
+        # verificationInputs remain derived from commands for legacy ledger consumers.
         self.assertEqual(
             p1["verificationInputs"]["unitTestFull"],
             p1["commands"]["unitTestFull"]["inputs"],

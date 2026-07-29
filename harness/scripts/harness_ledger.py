@@ -1089,7 +1089,22 @@ def decide_can_reuse(
         }
 
     validations = ledger.get("validations")
-    if not isinstance(validations, dict):
+    targets_raw = ledger.get("verificationTargets")
+    targets = (
+        list(targets_raw.values())
+        if isinstance(targets_raw, dict)
+        else targets_raw
+        if isinstance(targets_raw, list)
+        else []
+    )
+    target_entries = [
+        target
+        for target in targets
+        if isinstance(target, dict) and target.get("verification") == verification
+    ]
+    target_entries.sort(key=lambda item: str(item.get("finishedAt") or ""))
+    entry = target_entries[-1] if target_entries else None
+    if not isinstance(validations, dict) and entry is None:
         return {
             "ok": True,
             "reuse": False,
@@ -1100,7 +1115,8 @@ def decide_can_reuse(
             "ledger_path": str(ledger_path) if ledger_path else None,
         }
 
-    entry = validations.get(verification)
+    if entry is None and isinstance(validations, dict):
+        entry = validations.get(verification)
     if not isinstance(entry, dict):
         return {
             "ok": True,
@@ -1120,6 +1136,17 @@ def decide_can_reuse(
     scope = entry.get("scope")
     algorithm_version = entry.get("algorithmVersion")
     coverage = entry.get("coverage")
+
+    if entry.get("reusable") is False or isinstance(entry.get("invalidation"), dict):
+        return {
+            "ok": True,
+            "reuse": False,
+            "reason": "rerun",
+            "code": "EVIDENCE_INVALIDATED",
+            "verification": verification,
+            "detail": "recorded target was invalidated by workflow fixback",
+            "invalidation": entry.get("invalidation"),
+        }
 
     # v2 fields: a v1 entry (no algorithmVersion/coverage) is conservatively
     # invalidated once and must be re-recorded with v2 fields (COM-002). No
@@ -1207,12 +1234,17 @@ def decide_can_reuse(
         ("dbSchemaHash", requested_db_schema_hash, "DB_SCHEMA_CHANGED"),
     ):
         stored = entry.get(field)
-        if (
-            requested
-            and str(requested).strip()
-            and _nonempty_str(stored)
-            and str(stored).strip() != str(requested).strip()
-        ):
+        if requested and str(requested).strip() and not _nonempty_str(stored):
+            return {
+                "ok": True,
+                "reuse": False,
+                "reason": "insufficient-evidence",
+                "code": "MISSING_TARGET_IDENTITY",
+                "verification": verification,
+                "detail": f"{field} missing from recorded target",
+                "field": field,
+            }
+        if requested and str(requested).strip() and str(stored).strip() != str(requested).strip():
             return {
                 "ok": True,
                 "reuse": False,
@@ -1611,7 +1643,40 @@ def cmd_record(args: argparse.Namespace) -> int:
             # Fresh record without scenario-ids must not keep stale ids from prev.
             entry.pop("scenarioIds", None)
 
-        ledger["validations"][verification] = entry
+        target_identity = {
+            "verification": verification,
+            "command": entry.get("command"),
+            "scope": entry.get("scope"),
+            "coverage": entry.get("coverage"),
+            "inputsHash": entry.get("inputsHash"),
+            "toolchainHash": entry.get("toolchainHash"),
+            "profileHash": entry.get("profileHash"),
+            "environmentHash": entry.get("environmentHash"),
+            "dbSchemaHash": entry.get("dbSchemaHash"),
+        }
+        target_id = (
+            verification
+            + "-"
+            + hashlib.sha256(
+                json.dumps(
+                    target_identity,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+        )
+        target = {"id": target_id, "verification": verification, **entry}
+        targets = ledger.setdefault("verificationTargets", {})
+        if not isinstance(targets, dict):
+            targets = {}
+            ledger["verificationTargets"] = targets
+        targets[target_id] = target
+        ledger["validations"][verification] = {
+            key: value
+            for key, value in target.items()
+            if key not in {"id", "verification"}
+        }
         if "changeName" not in ledger:
             ledger["changeName"] = change_dir.name
         if "stateDir" not in ledger:

@@ -96,6 +96,21 @@ describe("hunter-harness sync", () => {
       expect(report.components.every((item) =>
         /^(OK|WARN|FAIL|BLOCKED|UNKNOWN)$/.test(item.status)
       )).toBe(true);
+      const lastRun = JSON.parse(
+        await readFile(
+          join(root, ".harness", "runtime", "sync", "last-run.json"),
+          "utf8"
+        )
+      ) as { runId: string; status: string };
+      const lastSuccess = JSON.parse(
+        await readFile(
+          join(root, ".harness", "runtime", "sync", "last-success.json"),
+          "utf8"
+        )
+      ) as { runId: string; status: string };
+      expect(lastRun.runId).toBe(payload.runId);
+      expect(lastSuccess.runId).toBe(payload.runId);
+      expect(lastRun.status).toBe(payload.status);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
