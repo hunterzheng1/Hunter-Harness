@@ -181,6 +181,7 @@ class ProductCiGateTests(unittest.TestCase):
                 "subject": {
                     "productCommit": "bbbbbbbb",
                     "productTreeHash": "sha256:" + "a" * 64,
+                    "environmentHash": "sha256:" + "e" * 64,
                 },
                 "verification": {
                     "commandSetHash": "sha256:" + "b" * 64,
@@ -211,6 +212,7 @@ class ProductCiGateTests(unittest.TestCase):
                 "subject": {
                     "productCommit": "bbbbbbbb",
                     "productTreeHash": "sha256:" + "a" * 64,
+                    "environmentHash": "sha256:" + "e" * 64,
                 },
                 "verification": {
                     "commandSetHash": "sha256:" + "b" * 64,
@@ -325,6 +327,10 @@ class ProductCiGateTests(unittest.TestCase):
             ["sha256:" + "b" * 64],
         )
         self.assertEqual(
+            receipt["subject"]["environmentHash"],
+            "sha256:" + "b" * 64,
+        )
+        self.assertEqual(
             receipt["verification"]["dependencyHashes"],
             ["sha256:" + "e" * 64],
         )
@@ -333,6 +339,47 @@ class ProductCiGateTests(unittest.TestCase):
             (self.change / "evidence" / "product-candidate-verification.json").is_file()
         )
         self.assertTrue(ha.evaluate_product_ci_gate(self.change)["ok"])
+
+    def test_local_reproducible_gate_rejects_missing_subject_environment(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "standard",
+                "candidateVerification": {
+                    "minimumAssurance": "local-reproducible",
+                    "allowLocalRelease": True,
+                },
+            },
+        )
+        _write_json(
+            self.change / "evidence" / "product-candidate-verification.json",
+            {
+                "schemaVersion": 2,
+                "provider": "local-harness",
+                "conclusion": "success",
+                "assurance": "local-reproducible",
+                "subject": {
+                    "productCommit": "bbbbbbbb",
+                    "productTreeHash": "sha256:" + "a" * 64,
+                },
+                "verification": {
+                    "commandSetHash": "sha256:" + "b" * 64,
+                    "ledgerHash": "sha256:" + "c" * 64,
+                    "toolchainHashes": ["sha256:" + "d" * 64],
+                    "environmentHashes": ["sha256:" + "e" * 64],
+                    "dependencyHashes": ["sha256:" + "f" * 64],
+                    "logHashes": ["sha256:" + "1" * 64],
+                },
+            },
+        )
+
+        gate = ha.evaluate_product_ci_gate(self.change)
+
+        self.assertFalse(gate["ok"])
+        self.assertEqual(gate["code"], "PRODUCT_CANDIDATE_NOT_VERIFIED")
+        self.assertIn("subject.environmentHash", gate["message"])
 
     def test_certify_local_rejects_missing_environment_identity(self) -> None:
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
