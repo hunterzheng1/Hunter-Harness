@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.37] — hunter-harness / [0.2.35] — @hunter-harness/workflow-harness
+
+### Fixed（release-candidate 身份自洽补丁）
+
+- 本地候选认证收据现在把唯一验证环境写入 `subject.environmentHash`；多个验证环境则写入稳定聚合哈希，使候选认证与归档身份校验使用同一不可变环境身份。
+- 本地可复现候选若缺少 subject 级环境身份将被明确拒绝，避免“候选认证成功、release-candidate 归档失败”的矛盾终态。
+
 ## [0.2.36] — hunter-harness / [0.2.34] — @hunter-harness/workflow-harness
 
 ### Fixed（完整修复 2026-07-29 Harness 流程与最终报告复盘）

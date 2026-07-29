@@ -621,6 +621,7 @@ def evaluate_product_ci_gate(change_dir: Path) -> dict[str, Any]:
 
         if assurance == "local-reproducible" and provider == "local-harness":
             local_required = {
+                "subject.environmentHash": environment_hash,
                 "verification.commandSetHash": command_set_hash,
                 "verification.ledgerHash": ledger_hash,
                 "verification.toolchainHashes": verification.get("toolchainHashes"),
@@ -1047,6 +1048,14 @@ def certify_local_candidate(
             f"ledger={recorded_tree_hash} current={current_tree_hash}"
         )
     product_tree_hash = current_tree_hash
+    environment_hashes = sorted(
+        {str(item["environmentHash"]) for item in selected}
+    )
+    subject_environment_hash = (
+        environment_hashes[0]
+        if len(environment_hashes) == 1
+        else _candidate_value_hash(environment_hashes)
+    )
 
     receipt = {
         "schemaVersion": 2,
@@ -1057,6 +1066,7 @@ def certify_local_candidate(
         "subject": {
             "productCommit": product_commit,
             "productTreeHash": product_tree_hash,
+            "environmentHash": subject_environment_hash,
         },
         "verification": {
             "requiredValidations": required,
@@ -1068,9 +1078,7 @@ def certify_local_candidate(
             "toolchainHashes": sorted(
                 {str(item["toolchainHash"]) for item in selected}
             ),
-            "environmentHashes": sorted(
-                {str(item["environmentHash"]) for item in selected}
-            ),
+            "environmentHashes": environment_hashes,
             "dependencyHashes": sorted(
                 {str(item["inputsHash"]) for item in selected}
             ),
