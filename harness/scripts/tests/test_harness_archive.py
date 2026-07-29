@@ -515,6 +515,13 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                 "verification": {
                     "unitTests": {"status": "OK", "run": 2, "failures": 0, "errors": 0},
                     "apiTests": {"status": "BLOCKED", "total": 1, "passed": 0, "blocked": 1},
+                    "browserE2E": {
+                        "status": "FAIL",
+                        "total": 1,
+                        "passed": 0,
+                        "failed": 1,
+                        "skipped": 0,
+                    },
                     "dbCompatibility": "NOT_RUN",
                 },
                 "changedFiles": [{"path": "src/demo.ts", "insertions": 3, "deletions": 1}],
@@ -537,7 +544,32 @@ class ArchiveFactDerivationTests(unittest.TestCase):
             self.assertIn(full_hash[:10], html)
             self.assertIn(full_hash, html)
             self.assertIn("npm test", html)
+            self.assertIn("浏览器 E2E", html)
+            self.assertIn("1 失败", html)
             self.assertNotIn("鍙", html)
+
+    def test_python_fallback_renders_browser_e2e_status(self) -> None:
+        html = ha.render_fallback_html(
+            {
+                "changeName": "browser-report",
+                "finalStatus": "FAIL",
+                "verification": {
+                    "unitTests": {},
+                    "apiTests": {},
+                    "browserE2E": {
+                        "status": "FAIL",
+                        "total": 3,
+                        "passed": 0,
+                        "failed": 3,
+                        "skipped": 0,
+                    },
+                },
+            }
+        )
+
+        self.assertIn("browserE2E", html)
+        self.assertIn("status=FAIL", html)
+        self.assertIn("failed=3", html)
 
 
 class ReplayOldArchiveTests(unittest.TestCase):
@@ -749,6 +781,58 @@ class ConditionalOkTests(unittest.TestCase):
         status, reasons = ha._compute_final_status(stage, verification)
         self.assertEqual(status, "CONDITIONAL_OK")
         self.assertTrue(reasons)
+
+    def test_browser_failure_forces_fail(self) -> None:
+        status, reasons = ha._compute_final_status(
+            {"plan": "OK", "run": "OK", "test": "OK"},
+            {
+                "unitTests": {"run": 1, "failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0},
+                "browserE2E": {"status": "FAIL", "failed": 3},
+                "dbCompatibility": "OK",
+            },
+        )
+
+        self.assertEqual(status, "FAIL")
+        self.assertIn("browserE2E.failed=3", reasons)
+
+    def test_browser_not_run_forces_conditional_ok(self) -> None:
+        status, reasons = ha._compute_final_status(
+            {"plan": "OK", "run": "OK", "test": "OK"},
+            {
+                "unitTests": {"run": 1, "failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0},
+                "browserE2E": {"status": "NOT_RUN", "failed": 0},
+                "dbCompatibility": "OK",
+            },
+        )
+
+        self.assertEqual(status, "CONDITIONAL_OK")
+        self.assertIn("browserE2E.status=NOT_RUN", reasons)
+
+    def test_browser_failure_rejects_pure_ok_summary(self) -> None:
+        summary = {
+            "changeName": "browser-contradiction",
+            "finalStatus": "OK",
+            "verification": {
+                "unitTests": {"failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0},
+                "browserE2E": {"status": "FAIL", "failed": 1},
+                "dbCompatibility": "OK",
+            },
+            "archiveManifest": {"totalArchiveFiles": 0},
+            "reportPipeline": {"commands": []},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "final-summary.html"
+            html.write_text(
+                "<html><body>browser-contradiction OK browserE2E FAIL</body></html>",
+                encoding="utf-8",
+            )
+            result = ha.validate_summary(summary, html)
+
+        codes = {item.get("code") for item in result.get("issues") or []}
+        self.assertIn("status-contradiction", codes)
 
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
@@ -1157,6 +1241,33 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(projection["unitTests"]["deselected"], 7)
         self.assertEqual(projection["performance"]["status"], "OK")
         self.assertEqual(projection["performance"]["metrics"]["p95Ms"], 81)
+
+    def test_browser_test_projects_to_browser_e2e_without_polluting_api(self) -> None:
+        ledger = {
+            "validations": {
+                "apiTest": {
+                    "status": "OK",
+                    "metrics": {"total": 6, "passed": 6, "failed": 0, "blocked": 0},
+                },
+                "browserTest": {
+                    "status": "NOT_RUN",
+                    "metrics": {
+                        "total": 1,
+                        "passed": 0,
+                        "failed": 0,
+                        "skipped": 1,
+                        "retries": 2,
+                    },
+                },
+            }
+        }
+
+        projection = ha.build_verification_projection(ledger)
+
+        self.assertEqual(projection["apiTests"]["status"], "OK")
+        self.assertEqual(projection["browserE2E"]["status"], "NOT_RUN")
+        self.assertEqual(projection["browserE2E"]["skipped"], 1)
+        self.assertEqual(projection["browserE2E"]["retries"], 2)
 
 
 class ProductIdentityTests(unittest.TestCase):

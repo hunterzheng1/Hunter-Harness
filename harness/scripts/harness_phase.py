@@ -39,6 +39,7 @@ VALIDATION_PHASES = {
     "unitTest": "run",
     "unitTestFull": "test",
     "apiTest": "test",
+    "browserTest": "test",
     "dbCompatibility": "test",
     "package": "package",
 }

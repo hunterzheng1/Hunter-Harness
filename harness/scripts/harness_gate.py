@@ -77,6 +77,7 @@ VALIDATION_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "unitTest": ("compile",),
     "unitTestFull": ("unitTest",),
     "apiTest": ("unitTest",),
+    "browserTest": ("unitTest",),
     "dbCompatibility": ("unitTest",),
     "package": ("unitTestFull", "apiTest", "dbCompatibility"),
 }

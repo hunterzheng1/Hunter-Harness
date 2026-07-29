@@ -2645,10 +2645,9 @@ def _typed_test_metrics(entry: dict[str, Any], *, total_key: str) -> dict[str, A
         "executionRate": f"{executed / total:.0%}" if total > 0 else NOT_AVAILABLE,
         "source": "committed" if total > 0 else "not-run",
     }
-    if "blocked" in metrics:
-        out["blocked"] = int(metrics.get("blocked", 0) or 0)
-    if "skipped" in metrics:
-        out["skipped"] = int(metrics.get("skipped", 0) or 0)
+    for optional_count in ("blocked", "skipped", "retries"):
+        if optional_count in metrics:
+            out[optional_count] = int(metrics.get(optional_count, 0) or 0)
     applicability = entry.get("applicability")
     if isinstance(applicability, dict):
         out["applicability"] = applicability
@@ -2676,7 +2675,7 @@ def build_verification_projection(
         projection["apiContract"] = _typed_test_metrics(
             api_contract, total_key="scenariosTotal"
         )
-    browser_e2e = validations.get("browserE2E")
+    browser_e2e = validations.get("browserTest") or validations.get("browserE2E")
     if isinstance(browser_e2e, dict):
         projection["browserE2E"] = _typed_test_metrics(browser_e2e, total_key="total")
     performance = validations.get("performance")
@@ -3023,8 +3022,10 @@ def _compute_final_status(
     verification: dict[str, Any],
 ) -> tuple[str, list[str]]:
     api = verification.get("apiTests") or {}
+    browser = verification.get("browserE2E") or {}
     db = str(verification.get("dbCompatibility") or "")
     api_status = str(api.get("status") or "")
+    browser_status = str(browser.get("status") or "")
     reasons: list[str] = []
     for phase, v in stage_status.items():
         if v == "FAIL":
@@ -3036,12 +3037,18 @@ def _compute_final_status(
         return "FAIL", [f"unitTests.errors={unit.get('errors')}"]
     if int(api.get("failed") or 0) > 0:
         return "FAIL", [f"apiTests.failed={api.get('failed')}"]
+    if int(browser.get("failed") or 0) > 0:
+        return "FAIL", [f"browserE2E.failed={browser.get('failed')}"]
+    if browser_status == "FAIL":
+        return "FAIL", ["browserE2E.status=FAIL"]
     conditional = {
         "USER_SKIPPED", "BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA",
         "NOT_RUN", "PARTIAL",
     }
     if api_status in conditional:
         reasons.append(f"apiTests.status={api_status}")
+    if browser_status in conditional:
+        reasons.append(f"browserE2E.status={browser_status}")
     if db in conditional:
         reasons.append(f"dbCompatibility={db}")
     if reasons:
@@ -4217,6 +4224,7 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
     ver = summary.get("verification") or {}
     unit = ver.get("unitTests") or {}
     api = ver.get("apiTests") or {}
+    browser = ver.get("browserE2E") or {}
     parts.append("<h3>Verification</h3>")
     parts.append(
         "<p>unitTests: run={run} failures={failures} errors={errors} "
@@ -4237,6 +4245,17 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
             passed=esc(api.get("passed")),
             failed=esc(api.get("failed")),
             blocked=esc(api.get("blocked")),
+        )
+    )
+    parts.append(
+        "<p>browserE2E: status={status} total={total} passed={passed} "
+        "failed={failed} skipped={skipped} retries={retries}</p>".format(
+            status=esc(browser.get("status")),
+            total=esc(browser.get("total")),
+            passed=esc(browser.get("passed")),
+            failed=esc(browser.get("failed")),
+            skipped=esc(browser.get("skipped")),
+            retries=esc(browser.get("retries")),
         )
     )
     parts.append(f"<p>dbCompatibility: {esc(ver.get('dbCompatibility'))}</p>")
@@ -4725,6 +4744,7 @@ def validate_summary(
         ver = summary.get("verification") or {}
         unit = ver.get("unitTests") or {}
         api = ver.get("apiTests") or {}
+        browser = ver.get("browserE2E") or {}
         pass_rate = unit.get("passRate")
         if pass_rate and pass_rate != NOT_AVAILABLE and str(pass_rate) not in html:
             issues.append(
@@ -4745,6 +4765,22 @@ def validate_summary(
                         "message": f"apiTests.status '{api_status}' not visible in final-summary",
                     }
                 )
+        browser_status = str(browser.get("status") or "")
+        if (
+            browser_status
+            and browser_status not in {"", NOT_AVAILABLE}
+            and browser_status not in html
+        ):
+            issues.append(
+                {
+                    "code": "missing-verification",
+                    "severity": "warning",
+                    "message": (
+                        f"browserE2E.status '{browser_status}' not visible "
+                        "in final-summary"
+                    ),
+                }
+            )
 
         # artifacts / summary-data path hints
         am = summary.get("archiveManifest") or {}
@@ -4777,11 +4813,23 @@ def validate_summary(
 
         # status contradiction
         final_status = str(summary.get("finalStatus") or "")
-        has_skip = api_status == "USER_SKIPPED" or str(
+        browser_conditional = {
+            "USER_SKIPPED",
+            "BLOCKED",
+            "BLOCKED_BY_ENV",
+            "NOT_RUN",
+            "PARTIAL",
+        }
+        has_skip = api_status == "USER_SKIPPED" or browser_status in browser_conditional or str(
             ver.get("dbCompatibility") or ""
         ) == "BLOCKED_BY_DBA"
         has_fail_ver = int(unit.get("failures") or 0) > 0 or int(unit.get("errors") or 0) > 0
         has_fail_ver = has_fail_ver or int(api.get("failed") or 0) > 0
+        has_fail_ver = (
+            has_fail_ver
+            or int(browser.get("failed") or 0) > 0
+            or browser_status == "FAIL"
+        )
         stage = summary.get("stageStatus") or {}
         has_fail_stage = any(str(v).upper() == "FAIL" for v in stage.values())
 
@@ -4811,13 +4859,26 @@ def validate_summary(
         ver = summary.get("verification") or {}
         unit = ver.get("unitTests") or {}
         api = ver.get("apiTests") or {}
+        browser = ver.get("browserE2E") or {}
         api_status = str(api.get("status") or "")
+        browser_status = str(browser.get("status") or "")
         final_status = str(summary.get("finalStatus") or "")
-        has_skip = api_status == "USER_SKIPPED" or str(
+        has_skip = api_status == "USER_SKIPPED" or browser_status in {
+            "USER_SKIPPED",
+            "BLOCKED",
+            "BLOCKED_BY_ENV",
+            "NOT_RUN",
+            "PARTIAL",
+        } or str(
             ver.get("dbCompatibility") or ""
         ) == "BLOCKED_BY_DBA"
         has_fail_ver = int(unit.get("failures") or 0) > 0 or int(unit.get("errors") or 0) > 0
         has_fail_ver = has_fail_ver or int(api.get("failed") or 0) > 0
+        has_fail_ver = (
+            has_fail_ver
+            or int(browser.get("failed") or 0) > 0
+            or browser_status == "FAIL"
+        )
         stage = summary.get("stageStatus") or {}
         has_fail_stage = any(str(v).upper() == "FAIL" for v in stage.values())
         if (has_skip or has_fail_ver or has_fail_stage) and final_status == "OK":

@@ -82,6 +82,14 @@
       "blocked": 0,
       "passRate": "34/35"
     },
+    "browserE2E": {
+      "status": "OK | FAIL | PARTIAL | USER_SKIPPED | NOT_RUN",
+      "total": 0,
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "retries": 0
+    },
     "dbCompatibility": "OK | BLOCKED_BY_DBA | NOT_RUN",
     "coverageDisplay": "例如 29/29 或 USER_SKIPPED"
   },

@@ -289,7 +289,7 @@ ledger 的 `status` 与 final-summary 展示状态对应：
 
 ### 9.2 coverage lattice
 
-`COVERAGE_RANK = {incremental:0, module:1, module-am:2, full:3}`。各 verification 最低要求：`unitTest`=0、`unitTestFull`/`compile`/`apiTest`=1、`install`/`package`=2。entry.coverage rank < 要求 → `insufficient-evidence`（code `COVERAGE_INSUFFICIENT`），**禁止增量证据提升为全量门禁**（UT-015/API-005）。
+`COVERAGE_RANK = {incremental:0, module:1, module-am:2, full:3}`。各 verification 最低要求：`unitTest`=0、`unitTestFull`/`compile`/`apiTest`/`browserTest`=1、`install`/`package`=2。entry.coverage rank < 要求 → `insufficient-evidence`（code `COVERAGE_INSUFFICIENT`），**禁止增量证据提升为全量门禁**（UT-015/API-005）。
 
 ### 9.3 package verification
 
@@ -336,7 +336,7 @@ v2 契约下 `record` 写入前强制解析并校验顶层身份字段，缺失�
 
 ### 10.2 类型化 metrics 与 applicability
 
-- v2 契约下 `--metrics-json` 必须通过 `validate_metrics` 类型校验：`unitTest`/`unitTestFull` 要求 `total/passed/failed`；`apiContract` 要求 `scenariosTotal/passed/failed`；`browserE2E` 要求 `total/passed/failed`；`dbCompatibility` 要求 `applicability ∈ APPLICABLE|NOT_APPLICABLE`，`NOT_APPLICABLE` 必须带 `reason`（UT-005/RET-15、UT-006/RET-16）。未知 verification 类型放行。
+- v2 契约下 `--metrics-json` 必须通过 `validate_metrics` 类型校验：`unitTest`/`unitTestFull` 要求 `total/passed/failed`；`apiTest` 要求 `total/passed/failed`；`browserTest`（报告投影名 `browserE2E`）要求 `total/passed/failed`；`apiContract` 要求 `scenariosTotal/passed/failed`；`dbCompatibility` 要求 `applicability ∈ APPLICABLE|NOT_APPLICABLE`，`NOT_APPLICABLE` 必须带 `reason`（UT-005/RET-15、UT-006/RET-16）。未知 verification 类型放行。
 - `--applicability APPLICABLE|NOT_APPLICABLE` + `--applicability-reason` 写入 entry 级 applicability；`NOT_APPLICABLE` 无 reason 直接报错。applicability **既不计入通过也不计入失败**（UT-012/RET-24）。
 - legacy 契约不校验 metrics 形状（旧的 `{"run","failures"}` 松散格式继续可用）。
 

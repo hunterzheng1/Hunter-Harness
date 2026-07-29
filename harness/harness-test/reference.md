@@ -744,10 +744,11 @@ python <skills-root>/scripts/harness_gate.py close --change <cn> --phase test --
 
 # ledger 记录 / 复用（--profile-input = verification key，不是文件路径）
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: N, Failures: 0" --coverage full --files "packages/core/src/index.ts"
+python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification browserTest --status ok --command "<真实栈 Playwright 命令>" --exit-code 0 --duration-ms 120000 --evidence "Browser E2E: N passed, 0 failed" --coverage module --files "<Playwright 配置与受测 spec>"
 python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
 ```
 
-> **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 强制顶层身份（缺失非零退出、不写账本）；`--metrics-json` 必须过 typed schema（unit/apiContract/browserE2E/dbCompatibility 各有不同必填键）；dbCompatibility 等不适用验证用 `--applicability NOT_APPLICABLE --applicability-reason "<scope 原因>"`（不计通过也不计失败）。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
+> **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 强制顶层身份（缺失非零退出、不写账本）；`--metrics-json` 必须过 typed schema（unit/apiTest/browserTest/apiContract/dbCompatibility 各有不同必填键）；`browserTest` 在报告中投影为 `browserE2E`；dbCompatibility 等不适用验证用 `--applicability NOT_APPLICABLE --applicability-reason "<scope 原因>"`（不计通过也不计失败）。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
 
 ### 常见报错对照
 

@@ -57,6 +57,7 @@ const stages = Object.entries(record(data.stageStatus));
 const verification = record(data.verification);
 const unit = record(verification.unitTests);
 const api = record(verification.apiTests);
+const browser = record(verification.browserE2E);
 const performance = record(verification.performance);
 const durations = record(data.durations);
 const durationStages = list(durations.stages);
@@ -98,6 +99,7 @@ const stageHtml = stages.map(([name, status]) => `<div class="row"><span>${esc(n
 const verificationHtml = [
   ["单元测试", unit.status || ((number(unit.failures) + number(unit.errors)) > 0 ? "FAIL" : (number(unit.run) > 0 ? "OK" : "NOT_RUN")), `${number(unit.run)} 个 · ${number(unit.failures)} 失败 · ${number(unit.errors)} 错误 · ${number(unit.skipped)} 跳过 · ${number(unit.deselected)} 未选择`],
   ["API 测试", api.status || "NOT_RUN", `${number(api.executed)}/${number(api.total)} 已执行 · ${number(api.passed)} 通过 · ${number(api.failed)} 失败 · ${number(api.blocked)} 阻塞 · 通过率 ${api.passRate || "N/A"} · 执行率 ${api.executionRate || "N/A"}`],
+  ["浏览器 E2E", browser.status || "NOT_RUN", `${number(browser.total)} 个 · ${number(browser.passed)} 通过 · ${number(browser.failed)} 失败 · ${number(browser.skipped)} 跳过 · ${number(browser.retries)} 重试`],
   ["数据库兼容", verification.dbCompatibility || "NOT_RUN", verification.coverageDisplay || "未记录覆盖率"],
   ["性能验证", performance.status || "NOT_RUN", Object.keys(record(performance.metrics)).length ? JSON.stringify(performance.metrics) : "未记录性能指标"]
 ].map(([name, status, note]) => `<div class="row"><div><strong>${esc(name)}</strong><small>${esc(note)}</small></div>${pill(status)}</div>`).join("");

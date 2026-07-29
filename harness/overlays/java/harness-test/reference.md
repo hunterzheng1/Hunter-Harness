@@ -668,6 +668,8 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 - unitTest: ✅ OK / 🟡 REUSED_FROM_RUN
 - apiTest: **OK / PARTIAL / BLOCKED / NOT_RUN / FAIL**
   - 例：`apiTest=PARTIAL` — 15 个 API 场景中 5 个 PASS，9 个 BLOCKED，1 个 FAIL
+- browserTest: **OK / PARTIAL / BLOCKED / NOT_RUN / FAIL**
+  - 只记录真实浏览器或真实栈 Playwright；不得覆盖 `apiTest`，归档报告投影为 `browserE2E`
 - gitDiffCheck: ✅
 - serviceLifecycle: ✅ AI_STARTED stopped / 🟡 USER_STARTED 保留
 

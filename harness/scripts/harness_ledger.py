@@ -43,6 +43,7 @@ VERIFICATIONS = frozenset(
         "unitTest",
         "unitTestFull",
         "apiTest",
+        "browserTest",
         "install",
         "package",
         "dbCompatibility",
@@ -72,6 +73,7 @@ REQUIRED_COVERAGE = {
     "unitTestFull": 1,  # module or broader
     "compile": 1,
     "apiTest": 1,
+    "browserTest": 1,
     "install": 2,       # module-am or broader
     "package": 2,
     "dbCompatibility": 1,
@@ -784,6 +786,7 @@ _METRICS_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     "unitTest": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
     "unitTestFull": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
     "apiTest": {"required": ("total", "passed", "failed"), "optional": ("blocked",)},
+    "browserTest": {"required": ("total", "passed", "failed"), "optional": ("skipped", "retries")},
     "apiContract": {"required": ("scenariosTotal", "passed", "failed"), "optional": ("blocked",)},
     "browserE2E": {"required": ("total", "passed", "failed"), "optional": ("skipped", "retries")},
 }

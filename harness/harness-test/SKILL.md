@@ -135,7 +135,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### 四、单元测试复用 + 写入 ledger
 
-Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.json`，并用 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算真实指纹：run 的 unitTest 满足（diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 跑了全量测试）则复用，否则按 **profile key resolve** 执行测试命令（`python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTest|unitTestFull --json`，**不复制示例 `-pl` 命令**）。Phase 1/2 完成后必须写回 ledger：执行增量测试类 → 记 `unitTest`（scope=incremental）；执行 profile 模块全量命令 → 记 `unitTestFull`（scope=module，可供 submit 复用）；接口测试 → 记 `apiTest`。详见 `checklist.md`「单元测试复用」、`../protocols/ledger-protocol.md`。
+Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.json`，并用 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算真实指纹：run 的 unitTest 满足（diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 跑了全量测试）则复用，否则按 **profile key resolve** 执行测试命令（`python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTest|unitTestFull --json`，**不复制示例 `-pl` 命令**）。Phase 1/2 完成后必须写回 ledger：执行增量测试类 → 记 `unitTest`（scope=incremental）；执行 profile 模块全量命令 → 记 `unitTestFull`（scope=module，可供 submit 复用）；HTTP/API 契约测试 → 记 `apiTest`；真实浏览器/真实栈 Playwright → 单独记 `browserTest`，不得覆盖 `apiTest`。详见 `checklist.md`「单元测试复用」、`../protocols/ledger-protocol.md`。
 
 ### 五、命令与请求超时治理
 

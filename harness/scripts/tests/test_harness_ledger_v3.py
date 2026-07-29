@@ -381,6 +381,81 @@ class TypedMetricsTests(LedgerV3Fixture):
         # Cross-type metrics must not validate:
         self.assertNotEqual(ledger.validate_metrics("apiContract", e2e), [])
 
+    def test_browser_test_is_a_canonical_verification_with_e2e_metrics(self) -> None:
+        e2e = {"total": 9, "passed": 8, "failed": 1, "skipped": 0, "retries": 1}
+
+        self.assertIn("browserTest", ledger.VERIFICATIONS)
+        self.assertEqual(ledger.REQUIRED_COVERAGE["browserTest"], 1)
+        self.assertEqual(ledger.validate_metrics("browserTest", e2e), [])
+        self.assertNotEqual(
+            ledger.validate_metrics(
+                "browserTest",
+                {"scenariosTotal": 9, "passed": 8, "failed": 1},
+            ),
+            [],
+        )
+
+    def test_api_and_browser_records_coexist_without_overwrite(self) -> None:
+        source = str(self.project / "src" / "app.py")
+
+        for verification, status, command, metrics in (
+            (
+                "apiTest",
+                "ok",
+                "pytest api",
+                {"total": 6, "passed": 6, "failed": 0, "blocked": 0},
+            ),
+            (
+                "browserTest",
+                "not_run",
+                "playwright test --grep real-stack",
+                {"total": 3, "passed": 0, "failed": 0, "skipped": 3},
+            ),
+        ):
+            code, _out, err = self.run_cli(
+                [
+                    "--json",
+                    "record",
+                    "--change-dir",
+                    str(self.change_dir),
+                    "--verification",
+                    verification,
+                    "--status",
+                    status,
+                    "--command",
+                    command,
+                    "--exit-code",
+                    "0",
+                    "--duration-ms",
+                    "100",
+                    "--evidence",
+                    f"{verification} evidence",
+                    "--coverage",
+                    "module",
+                    "--files",
+                    source,
+                    "--metrics-json",
+                    json.dumps(metrics),
+                ]
+            )
+            self.assertEqual(code, 0, err)
+
+        written = json.loads(
+            (
+                self.project
+                / ".harness"
+                / "state"
+                / "changes"
+                / "demo"
+                / "evidence"
+                / "verification-ledger.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(written["validations"]["apiTest"]["status"], "OK")
+        self.assertEqual(written["validations"]["browserTest"]["status"], "NOT_RUN")
+        self.assertEqual(written["validations"]["apiTest"]["metrics"]["passed"], 6)
+        self.assertEqual(written["validations"]["browserTest"]["metrics"]["skipped"], 3)
+
     def test_api_test_metrics_are_typed_separately_from_api_contract(self) -> None:
         api_test = {"total": 7, "passed": 6, "failed": 1, "blocked": 0}
 
