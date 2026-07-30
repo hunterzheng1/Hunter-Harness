@@ -139,6 +139,55 @@ def verification_target_identity(
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
+def _hash_text(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def command_set_hash(command: str) -> str:
+    """Stable identity for the exact command set represented by one target."""
+    return _hash_text(str(command).strip())
+
+
+def product_tree_hash(project_root: Path | None) -> str | None:
+    """Git tree identity is content provenance; a commit SHA is not."""
+    if project_root is None:
+        return None
+    tree = _git_text(project_root, "rev-parse", "--verify", "HEAD^{tree}")
+    return "sha256:" + tree if _nonempty_str(tree) else None
+
+
+def lock_hash(project_root: Path | None) -> str | None:
+    """Hash present dependency lockfiles, when the project exposes any."""
+    if project_root is None:
+        return None
+    names = (
+        "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+        "yarn.lock", "Cargo.lock", "go.sum", "poetry.lock",
+    )
+    files = [project_root / name for name in names if (project_root / name).is_file()]
+    if not files:
+        return None
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return "sha256:" + digest.hexdigest()
+
+
+def canonical_reuse_key(entry: dict[str, Any]) -> dict[str, str]:
+    """Commit-independent verification identity used to authorize reuse."""
+    fields = (
+        "verification", "productTreeHash", "commandSetHash", "environmentHash",
+        "toolchainHash", "lockHash", "dbSchemaHash", "targetIdentity",
+    )
+    return {
+        field: str(entry.get(field)).strip()
+        for field in fields
+        if _nonempty_str(entry.get(field))
+    }
+
+
 def now_iso() -> str:
     return dt.datetime.now().astimezone().isoformat(timespec="milliseconds")
 
@@ -1132,6 +1181,9 @@ def decide_can_reuse(
     requested_profile_hash: str | None = None,
     requested_environment_hash: str | None = None,
     requested_db_schema_hash: str | None = None,
+    requested_product_tree_hash: str | None = None,
+    requested_command_set_hash: str | None = None,
+    requested_lock_hash: str | None = None,
     requested_target_identity: str | None = None,
     required_coverage: str | None = None,
     project_root: Path | str | None = None,
@@ -1162,7 +1214,40 @@ def decide_can_reuse(
         if isinstance(target, dict) and target.get("verification") == verification
     ]
     target_entries.sort(key=lambda item: str(item.get("finishedAt") or ""))
-    entry = target_entries[-1] if target_entries else None
+    # A ledger can contain both a feature-tip and a later merge target. Select
+    # the newest candidate matching the requested canonical key, rather than
+    # letting an unrelated newest commit mask reusable evidence.
+    requested_key_values = {
+        "productTreeHash": requested_product_tree_hash,
+        "commandSetHash": requested_command_set_hash,
+        "toolchainHash": requested_toolchain_hash,
+        "profileHash": requested_profile_hash,
+        "environmentHash": requested_environment_hash,
+        "lockHash": requested_lock_hash,
+        "dbSchemaHash": requested_db_schema_hash,
+    }
+    matching_entries = [
+        candidate
+        for candidate in target_entries
+        if all(
+            not _nonempty_str(requested)
+            or str(candidate.get(field) or "").strip().removeprefix("sha256:")
+            == str(requested).strip().removeprefix("sha256:")
+            for field, requested in requested_key_values.items()
+        )
+        and (
+            not _nonempty_str(requested_command)
+            or str(candidate.get("command") or "").strip()
+            == str(requested_command).strip()
+        )
+    ]
+    entry = (
+        matching_entries[-1]
+        if matching_entries
+        else target_entries[-1]
+        if target_entries
+        else None
+    )
     if not isinstance(validations, dict) and entry is None:
         return {
             "ok": True,
@@ -1314,12 +1399,17 @@ def decide_can_reuse(
                 "requested_command": requested_command,
             }
 
-    # Toolchain / profile / environment hash drift -> structured rerun (UT-017).
+    # The reusable identity is content and execution context, never commit SHA.
+    # productCommit remains provenance only so a feature tip can serve its no-ff
+    # merge when the merge has exactly the same product tree.
     # Only compared when both the stored entry and the request carry the field.
     for field, requested, code_name in (
+        ("productTreeHash", requested_product_tree_hash, "PRODUCT_TREE_CHANGED"),
+        ("commandSetHash", requested_command_set_hash, "COMMAND_SET_CHANGED"),
         ("toolchainHash", requested_toolchain_hash, "TOOLCHAIN_CHANGED"),
         ("profileHash", requested_profile_hash, "PROFILE_CHANGED"),
         ("environmentHash", requested_environment_hash, "ENVIRONMENT_CHANGED"),
+        ("lockHash", requested_lock_hash, "LOCK_CHANGED"),
         ("dbSchemaHash", requested_db_schema_hash, "DB_SCHEMA_CHANGED"),
     ):
         stored = entry.get(field)
@@ -1400,6 +1490,13 @@ def decide_can_reuse(
         "inputsHash": stored_hash,
         "inputsFiles": stored_files,
         "evidence_summary": evidence_summary(entry),
+        "reusedFrom": {
+            "targetId": entry.get("id"),
+            "sourceCommit": entry.get("productCommit") or entry.get("currentHead"),
+            "sourceCandidate": entry.get("candidateId"),
+        },
+        "reuseReason": "canonical reuse key matched; commit SHA is provenance only",
+        "reuseKey": canonical_reuse_key(entry),
         "marker": "REUSED",
     }
 
@@ -1568,6 +1665,20 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             requested_profile_hash=getattr(args, "profile_hash", None),
             requested_environment_hash=getattr(args, "environment_hash", None),
             requested_db_schema_hash=getattr(args, "db_schema_hash", None),
+            requested_product_tree_hash=(
+                getattr(args, "product_tree_hash", None) or product_tree_hash(project_root)
+            ),
+            requested_command_set_hash=(
+                getattr(args, "command_set_hash", None)
+                or (
+                    command_set_hash(str(getattr(args, "command", "")))
+                    if _nonempty_str(getattr(args, "command", None))
+                    else None
+                )
+            ),
+            requested_lock_hash=(
+                getattr(args, "lock_hash", None) or lock_hash(project_root)
+            ),
             requested_target_identity=verification_target_identity(
                 verification, target
             ),
@@ -1727,6 +1838,13 @@ def cmd_record(args: argparse.Namespace) -> int:
             val = getattr(args, attr, None)
             if _nonempty_str(val):
                 entry[field] = str(val).strip()
+        entry["commandSetHash"] = command_set_hash(args.command)
+        tree_hash = product_tree_hash(project_root)
+        if tree_hash:
+            entry["productTreeHash"] = tree_hash
+        dependency_lock_hash = lock_hash(project_root)
+        if dependency_lock_hash:
+            entry["lockHash"] = dependency_lock_hash
         # package verification: record build artifact + test-reuse provenance.
         if verification == "package":
             if _nonempty_str(getattr(args, "deploy_artifact", None)):
@@ -1756,6 +1874,9 @@ def cmd_record(args: argparse.Namespace) -> int:
             "toolchainHash": entry.get("toolchainHash"),
             "profileHash": entry.get("profileHash"),
             "environmentHash": entry.get("environmentHash"),
+            "productTreeHash": entry.get("productTreeHash"),
+            "commandSetHash": entry.get("commandSetHash"),
+            "lockHash": entry.get("lockHash"),
             "dbSchemaHash": entry.get("dbSchemaHash"),
         }
         target_id = (
@@ -1994,6 +2115,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="optional DB schema hash to compare against ledger entry (H-9)",
     )
+    p_reuse.add_argument("--product-tree-hash", default=None)
+    p_reuse.add_argument("--command-set-hash", default=None)
+    p_reuse.add_argument("--lock-hash", default=None)
     p_reuse.add_argument(
         "--verbose",
         action="store_true",

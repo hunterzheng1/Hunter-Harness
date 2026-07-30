@@ -34,21 +34,30 @@ IDENTITY_FIELDS = (
     "repositoryId",
     "changeName",
     "baseCommit",
+    "checkpointCommit",
     "productCommit",
+    "featureTip",
+    "mergeCommit",
+    "releaseTip",
     "featureMergeHash",
     "releaseTipHash",
     "productTreeHash",
     "environmentHash",
     "candidateId",
 )
-CONTENT_HASH_FIELDS = frozenset({"productTreeHash", "environmentHash"})
+CONTENT_HASH_FIELDS = frozenset(
+    {"productTreeHash", "commandSetHash", "environmentHash", "toolchainHash", "lockHash", "dbSchemaHash"}
+)
 TARGET_IDENTITY_FIELDS = (
     "target",
     "repositoryId",
     "changeName",
-    "productCommit",
     "productTreeHash",
+    "commandSetHash",
     "environmentHash",
+    "toolchainHash",
+    "lockHash",
+    "dbSchemaHash",
     "profile",
     "candidateId",
 )
@@ -92,18 +101,23 @@ def canonical_identity(summary: Mapping[str, Any]) -> dict[str, str]:
         "repositoryId": ("repositoryId",),
         "changeName": ("changeName",),
         "baseCommit": ("baseCommit",),
+        "checkpointCommit": ("checkpointCommit",),
         "productCommit": ("productCommit", "finalCommit"),
-        "featureMergeHash": ("featureMergeHash", "productCommit", "finalCommit"),
-        "releaseTipHash": ("releaseTipHash", "archiveCommit", "finalCommit"),
+        "featureTip": ("featureTip", "featureTipHash", "productCommit", "finalCommit"),
+        "mergeCommit": ("mergeCommit", "featureMergeHash"),
+        "releaseTip": ("releaseTip", "releaseTipHash", "archiveCommit", "finalCommit"),
+        "featureMergeHash": ("featureMergeHash", "mergeCommit", "featureTip", "productCommit", "finalCommit"),
+        "releaseTipHash": ("releaseTipHash", "releaseTip", "archiveCommit", "finalCommit"),
         "productTreeHash": ("productTreeHash",),
         "environmentHash": ("environmentHash",),
         "candidateId": ("candidateId",),
     }
     identity: dict[str, str] = {}
     for field in IDENTITY_FIELDS:
+        # Prefer changeIdentity, then nested aliases, then top-level mirrors.
         candidates = (nested.get(field),) + tuple(
-            summary.get(key) for key in fallbacks[field]
-        )
+            nested.get(key) for key in fallbacks[field]
+        ) + tuple(summary.get(key) for key in fallbacks[field])
         value = next(
             (
                 str(candidate).strip()
@@ -126,7 +140,11 @@ def apply_identity_mirrors(
     canonical = dict(identity or canonical_identity(summary))
     result["changeIdentity"] = copy.deepcopy(canonical)
     for field in (
+        "checkpointCommit",
         "productCommit",
+        "featureTip",
+        "mergeCommit",
+        "releaseTip",
         "featureMergeHash",
         "releaseTipHash",
         "productTreeHash",
@@ -138,7 +156,11 @@ def apply_identity_mirrors(
     git_facts = copy.deepcopy(git_facts) if isinstance(git_facts, Mapping) else {}
     for field in (
         "baseCommit",
+        "checkpointCommit",
         "productCommit",
+        "featureTip",
+        "mergeCommit",
+        "releaseTip",
         "featureMergeHash",
         "releaseTipHash",
         "productTreeHash",

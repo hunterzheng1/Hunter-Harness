@@ -192,6 +192,51 @@ class SummaryBaseAndAdequacyTest(unittest.TestCase):
             )
             self.assertEqual(resolved, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
+    def test_arch_id_state_snapshot_outranks_phase_context(self) -> None:
+        """ARCH-ID-01: ledger empty → state-snapshot base beats merge phase context."""
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp) / "chg"
+            meta = change_dir / "meta"
+            meta.mkdir(parents=True)
+            ctx = change_dir / "runtime" / "phase-context"
+            ctx.mkdir(parents=True)
+            snapshot_base = "c7a494b26b1debe9258328d442f859964ddd2e37"
+            feature_tip = "0fc4e656742ab74c2ec7b80ecdd9ca613f9494e5"
+            (meta / "state-snapshot.json").write_text(
+                json.dumps({"git": {"base": snapshot_base, "head": feature_tip}}),
+                encoding="utf-8",
+            )
+            (ctx / "merge-1.json").write_text(
+                json.dumps({"baseCommit": feature_tip}),
+                encoding="utf-8",
+            )
+            resolved = ha._resolve_base_commit(
+                {"mergeFinalHash": feature_tip},
+                change_dir,
+                Path(tmp),
+                feature_tip,
+            )
+            self.assertEqual(resolved, snapshot_base)
+
+    def test_arch_id_ledger_still_outranks_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp) / "chg"
+            meta = change_dir / "meta"
+            meta.mkdir(parents=True)
+            ledger_base = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            snapshot_base = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            (meta / "state-snapshot.json").write_text(
+                json.dumps({"git": {"base": snapshot_base}}),
+                encoding="utf-8",
+            )
+            resolved = ha._resolve_base_commit(
+                {"baseCommit": ledger_base},
+                change_dir,
+                Path(tmp),
+                "cccccccccccccccccccccccccccccccccccccccc",
+            )
+            self.assertEqual(resolved, ledger_base)
+
     def test_ut009_identity_base_missing_when_final_without_base(self) -> None:
         summary = {
             "baseCommit": "",

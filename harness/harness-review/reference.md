@@ -87,13 +87,28 @@ fixback 是给后续修复循环使用的结构化清单，不替代 review-repo
 
 ## CodeGraph Identity 合同（C12）
 
-调用 `codegraph_explore` 后必须校验响应中的 `repositoryId` / `indexedHead` / `indexedAt`：
+发出 `codegraph_explore` 前，必须从实际 `executionRoot` 构造并随查询记录以下
+expected identity：`rootPath`、`worktreeId`（主 checkout 为 `null`）、`repositoryId`、`head`。
+采纳返回源码前，必须校验响应中的：
 
+- `rootPath` 必须是当前 `executionRoot`（规范化后比较）；不可只比较 repositoryId
+- `worktreeId` 必须与当前 worktree 相同；主 checkout 必须为 `null`
 - `repositoryId` 必须与 `harness_paths.repository_identity(project_root)` 一致
-- `indexedHead` 必须与当前 HEAD 一致
-- `indexedAt` 必须存在
+- `head`（兼容 `indexedHead`）必须与当前 HEAD 一致
+- `indexSnapshotAt`（兼容 `indexedAt`）必须存在
 
-identity 不匹配时记 `CODEGRAPH_IDENTITY_MISMATCH` warning，降级为 Grep/Glob + Read。
+identity 不匹配时必须返回 `IDENTITY_MISMATCH`，包含 expected/actual 的完整
+identity，且**不得采纳任何 CodeGraph 源码**；降级为 Grep/Glob + Read 实际
+worktree。该状态不同于 index stale，不能以 stale warning 代替。
 identity 匹配时正常使用 codegraph 结果。
 
-校验函数：`harness_review.validate_codegraph_identity(response, expected_repository_id, expected_head)`。
+校验函数：
+`harness_review.validate_codegraph_identity(response, expected_repository_id, expected_head, expected_root, expected_worktree_id)`。
+
+Review 通过脚本入口执行该校验，例如：
+
+```text
+python harness_review.py validate-codegraph-identity --input <codegraph-response.json> \
+  --execution-root <actual-worktree-root> --repository-id <repository-id> \
+  --head <HEAD> [--worktree-id <worktree-id>]
+```

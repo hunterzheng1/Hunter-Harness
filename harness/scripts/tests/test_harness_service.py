@@ -647,6 +647,58 @@ class StopIdempotentAndIfStartedByAiTests(unittest.TestCase):
         self.assertFalse(hs.is_pid_alive(pid))
 
 
+class SessionOwnershipTests(unittest.TestCase):
+    def test_ensure_persists_and_discovers_runtime_ownership(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-svc-owner-") as raw:
+            root = Path(raw)
+            project = root / "worktree"
+            change = project / ".harness" / "state" / "changes" / "demo"
+            execution = root / "execution"
+            project.mkdir(parents=True)
+            execution.mkdir()
+            health = change / "runtime" / "healthy.marker"
+            _setup_project(project, health_file=health)
+            code, payload = _run_json(
+                [
+                    "ensure",
+                    "--change-dir",
+                    str(change),
+                    "--project",
+                    str(project),
+                    "--change-name",
+                    "demo",
+                    "--worktree-root",
+                    str(project),
+                    "--execution-root",
+                    str(execution),
+                    "--attempt-id",
+                    "attempt-1",
+                ]
+            )
+            self.assertEqual(code, 0, msg=payload)
+            pid = payload["pid"]
+            try:
+                session = hs.load_session(change)
+                self.assertIsNotNone(session)
+                assert session is not None
+                self.assertEqual(session["changeId"], "demo")
+                self.assertEqual(Path(session["worktreeRoot"]), project.resolve())
+                self.assertEqual(Path(session["executionRoot"]), execution.resolve())
+                self.assertEqual(session["attemptId"], "attempt-1")
+                found = hs.find_owned_sessions(
+                    project,
+                    change_id="demo",
+                    execution_root=execution,
+                    worktree_root=project,
+                )
+                self.assertEqual(len(found["owned"]), 1)
+                self.assertFalse(found["reported"])
+            finally:
+                hs.stop_ai_session(change, hs.load_session(change) or {}, require_identity=True)
+                if hs.is_pid_alive(pid):
+                    hs.terminate_process_tree(pid)
+
+
 class MissingServiceStartConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-svc-nocmd-"))

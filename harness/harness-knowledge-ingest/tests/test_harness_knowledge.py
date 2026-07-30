@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -3223,6 +3224,147 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertEqual(item["attempts"], 1)
             self.assertIn("supersede failed", item["lastError"])
             self.assertIn("supersede failed", item["lastError"])
+
+    # --- HH-KNOW-20260730-001: sync_status must drain the maintenance outbox ---
+
+    def test_sync_status_drains_outbox_when_index_already_up_to_date(self) -> None:
+        """sync_status(update=False) on an already-current index must still drain
+        pending outbox items instead of leaving them in pending/ forever."""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            outbox = self._enqueue_pending(project, archive_id)
+
+            result = hk.sync_status(project)
+
+            self.assertTrue(result["upToDate"], msg=result)
+            self.assertTrue(result["ok"], msg=result)
+            self.assertIsNone(result["nextAction"])
+            self.assertTrue(result["maintenance"]["attempted"])
+            self.assertFalse(result["maintenance"]["skipped"])
+            self.assertTrue(result["maintenance"]["ok"], msg=result["maintenance"])
+            self.assertEqual(result["maintenance"]["processed"], 1)
+            self.assertEqual(result["maintenance"]["remaining"], 0)
+            self.assertFalse((outbox / "pending" / f"{archive_id}.json").exists())
+            self.assertTrue(
+                any((outbox / state / f"{archive_id}.json").exists() for state in ("completed", "pending-judge"))
+            )
+
+    def test_sync_status_drains_outbox_after_rebuilding_stale_index(self) -> None:
+        """sync_status(update=True) must ingest AND drain in one call."""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            outbox = self._enqueue_pending(project, archive_id)
+
+            summary = project / ".harness" / "archive" / archive_id / "reports" / "final" / "summary-data.json"
+            data = json.loads(summary.read_text(encoding="utf-8"))
+            data["knownRisks"].append("新增归档风险，知识索引应提示需要刷新")
+            write_json(summary, data)
+
+            result = hk.sync_status(project, update=True)
+
+            self.assertEqual(result["action"], "ingested")
+            self.assertTrue(result["upToDate"], msg=result)
+            self.assertTrue(result["ok"], msg=result)
+            self.assertTrue(result["maintenance"]["attempted"])
+            self.assertTrue(result["maintenance"]["ok"], msg=result["maintenance"])
+            self.assertFalse((outbox / "pending" / f"{archive_id}.json").exists())
+
+    def test_sync_status_skips_drain_when_stale_and_update_not_requested(self) -> None:
+        """A plain status check (update=False) on a stale index must not force a
+        rebuild via maintain_knowledge's internal build_index call -- it should
+        report the pending outbox count and mark maintenance as skipped instead."""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            self._enqueue_pending(project, archive_id)
+
+            summary = project / ".harness" / "archive" / archive_id / "reports" / "final" / "summary-data.json"
+            data = json.loads(summary.read_text(encoding="utf-8"))
+            data["knownRisks"].append("新增归档风险，知识索引应提示需要刷新")
+            write_json(summary, data)
+
+            result = hk.sync_status(project, update=False)
+
+            self.assertFalse(result["upToDate"], msg=result)
+            self.assertFalse(result["ok"], msg=result)
+            self.assertIsNotNone(result["nextAction"])
+            self.assertTrue(result["maintenance"]["skipped"], msg=result["maintenance"])
+            self.assertFalse(result["maintenance"]["attempted"])
+            self.assertEqual(result["maintenance"]["pending"], 1)
+
+    def test_sync_status_reports_warn_when_outbox_fails_to_drain(self) -> None:
+        """If the outbox drain itself fails, sync_status must surface ok=False
+        and a retryable nextAction even though the index is current."""
+        from unittest import mock
+
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            self._enqueue_pending(project, archive_id)
+
+            with mock.patch.object(hk, "auto_supersede_knowledge", side_effect=RuntimeError("boom")):
+                result = hk.sync_status(project)
+
+            self.assertTrue(result["upToDate"], msg=result)
+            self.assertFalse(result["ok"], msg=result)
+            self.assertFalse(result["maintenance"]["ok"], msg=result["maintenance"])
+            self.assertIsNotNone(result["nextAction"])
+            self.assertIn("maintain", result["nextAction"])
+
+    def test_drain_maintenance_outbox_recovers_stale_running_item(self) -> None:
+        """API-010 crash recovery: a `running` item left behind by a killed
+        process must be reclaimed and re-driven to completion by drain, not
+        left stuck forever."""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            outbox = self._enqueue_pending(project, archive_id)
+
+            item, status = hk.claim_outbox(outbox, archive_id)
+            self.assertEqual(status, "running")
+            running_path = outbox / "running" / f"{archive_id}.json"
+            self.assertTrue(running_path.exists())
+            stale_mtime = time.time() - 3600
+            os.utime(running_path, (stale_mtime, stale_mtime))
+
+            result = hk.drain_maintenance_outbox(project, stale_running_seconds=300.0)
+
+            self.assertTrue(result["ok"], msg=result)
+            self.assertEqual(result["staleRunningRecovered"], 1)
+            self.assertFalse(running_path.exists())
+            self.assertTrue(
+                any((outbox / state / f"{archive_id}.json").exists() for state in ("completed", "pending-judge"))
+            )
+
+    def test_drain_maintenance_outbox_ignores_fresh_running_item(self) -> None:
+        """A `running` item that is not stale yet (still owned by an in-flight
+        process) must not be re-entered by a concurrent drain call."""
+        hk = self._import_harness_knowledge()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.make_project(Path(tmp))
+            hk.build_index(project)
+            archive_id = "2026-06-30-ai-check-job"
+            outbox = self._enqueue_pending(project, archive_id)
+            item, status = hk.claim_outbox(outbox, archive_id)
+            self.assertEqual(status, "running")
+
+            result = hk.drain_maintenance_outbox(project, stale_running_seconds=300.0)
+
+            self.assertEqual(result["processed"], 0)
+            self.assertEqual(result["staleRunningRecovered"], 0)
+            self.assertTrue((outbox / "running" / f"{archive_id}.json").exists())
 
     # --- cluster 6b: knowledge 真增量补全 + 共享 snapshot (UT-028/029, API-009/010, INT-003) ---
 

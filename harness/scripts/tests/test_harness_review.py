@@ -395,38 +395,54 @@ class CodeGraphIdentityTests(ReviewFixture):
         result = review.validate_codegraph_identity(
             response={
                 "repositoryId": "sha256:abc",
-                "indexedHead": "def456",
-                "indexedAt": "2026-07-21T10:00:00+08:00",
+                "rootPath": str(self.project),
+                "worktreeId": None,
+                "head": "def456",
+                "indexSnapshotAt": "2026-07-21T10:00:00+08:00",
             },
             expected_repository_id="sha256:abc",
             expected_head="def456",
+            expected_root=self.project,
+            expected_worktree_id=None,
         )
         self.assertTrue(result.get("ok"))
         self.assertEqual(result["code"], "IDENTITY_OK")
+        self.assertEqual(result["evidence"]["rootPath"], str(self.project))
+        self.assertIn("worktreeId", result["evidence"])
+        self.assertIn("head", result["evidence"])
+        self.assertIn("indexSnapshotAt", result["evidence"])
 
-    def test_validate_identity_mismatch_triggers_warning(self) -> None:
+    def test_cg_identity_01_main_evidence_rejected_for_feature_worktree(self) -> None:
+        """CG-IDENTITY-01: identical repository/head never masks a root mismatch."""
         result = review.validate_codegraph_identity(
             response={
-                "repositoryId": "sha256:wrong",
-                "indexedHead": "def456",
-                "indexedAt": "2026-07-21T10:00:00+08:00",
+                "repositoryId": "sha256:abc",
+                "rootPath": str(self.project),
+                "worktreeId": None,
+                "head": "def456",
+                "indexSnapshotAt": "2026-07-21T10:00:00+08:00",
             },
             expected_repository_id="sha256:abc",
             expected_head="def456",
+            expected_root=self.project / "feature-worktree",
+            expected_worktree_id="sha256:feature-worktree",
         )
         self.assertFalse(result.get("ok"))
-        self.assertEqual(result["code"], "CODEGRAPH_IDENTITY_MISMATCH")
-        self.assertIn("fallback", result)
+        self.assertEqual(result["code"], "IDENTITY_MISMATCH")
         self.assertEqual(result["fallback"], "grep-glob-read")
+        self.assertEqual(result["actual"]["rootPath"], str(self.project))
+        self.assertEqual(result["expected"]["worktreeId"], "sha256:feature-worktree")
 
     def test_validate_identity_missing_fields_triggers_warning(self) -> None:
         result = review.validate_codegraph_identity(
             response={"repositoryId": "sha256:abc"},
             expected_repository_id="sha256:abc",
             expected_head="def456",
+            expected_root=self.project,
+            expected_worktree_id=None,
         )
         self.assertFalse(result.get("ok"))
-        self.assertEqual(result["code"], "CODEGRAPH_IDENTITY_MISMATCH")
+        self.assertEqual(result["code"], "IDENTITY_MISMATCH")
 
 
 if __name__ == "__main__":

@@ -238,6 +238,17 @@ describe("Conservative Refresh", () => {
     });
 
     expect(result.conflicts.some((c) => c.target_path === REVIEWER_TARGET)).toBe(true);
+    const conflict = result.conflicts.find((item) => item.target_path === REVIEWER_TARGET);
+    expect(conflict).toMatchObject({
+      source_path: REVIEWER_SOURCE,
+      target_path: REVIEWER_TARGET,
+      adapter_content_sha256: hex("user edited\n"),
+      source_content_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      diff_summary: expect.objectContaining({
+        kind: "CONTENT_DIFFERENT",
+        adapter_bytes: "user edited\n".length
+      })
+    });
     const preserved = result.preserved.find((item) => item.target_path === REVIEWER_TARGET);
     expect(preserved?.reason).toBe("LOCAL_MODIFICATION");
     expect(await readFile(join(root, REVIEWER_TARGET), "utf8")).toBe("user edited\n");

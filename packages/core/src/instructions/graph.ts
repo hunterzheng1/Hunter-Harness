@@ -15,6 +15,23 @@ export interface InstructionGraphTopic {
 
 export type InstructionEdgeType = "include" | "catalog" | "ownership";
 
+export type InstructionReferenceTokenType =
+  | "inline-code"
+  | "at-ref"
+  | "markdown-link"
+  | "json-field";
+
+export type InstructionResolutionRoot = "project-root" | "document-relative";
+
+export interface InstructionResolutionTrace {
+  rawToken: string;
+  tokenType: InstructionReferenceTokenType;
+  attemptedRoots: InstructionResolutionRoot[];
+  selectedRoot: InstructionResolutionRoot | null;
+  selectedPath: string | null;
+  rejectionReason: string | null;
+}
+
 export interface InstructionGraphEdge {
   from: string;
   to: string;
@@ -22,6 +39,7 @@ export interface InstructionGraphEdge {
   sourceField: string | null;
   traversed: boolean;
   reason: string | null;
+  resolutionTrace?: InstructionResolutionTrace;
 }
 
 export interface InstructionGraphResult {
@@ -74,37 +92,164 @@ function projectRelative(root: string, path: string): string {
   return relative(root, path).replace(/\\/g, "/");
 }
 
-function safeProjectPath(root: string, from: string, reference: string): string | null {
-  if (reference.includes("://") || isAbsolute(reference)) return null;
-  const sourcePath = projectRelative(root, from);
-  const projectRootRelative =
-    reference.startsWith(".") || sourcePath === ".harness/context-index.json";
-  const candidate = resolve(
-    root,
-    projectRootRelative
-      ? reference
-      : projectRelative(root, resolve(dirname(from), reference))
-  );
+function escapesProject(root: string, candidate: string): boolean {
   const rel = projectRelative(root, candidate);
-  if (rel === ".." || rel.startsWith("../")) return null;
-  return candidate;
+  return rel === ".." || rel.startsWith("../");
 }
 
-function markdownReferences(content: string): string[] {
-  const references = new Set<string>();
+/**
+ * Resolves a raw reference token to a candidate file path.
+ *
+ * - `./` / `../` tokens are document-relative only (resolved against `dirname(from)`).
+ * - Every other token is treated as a project-root-relative path first (matching how
+ *   most references such as `docs/ai/x.json` or `.harness/rules/x.md` are authored),
+ *   falling back to document-relative resolution only when the project-root candidate
+ *   does not exist. When neither candidate exists, the project-root candidate is kept
+ *   for unresolved/missing reporting to match legacy (0.2.37) behavior.
+ */
+async function resolveReference(
+  root: string,
+  from: string,
+  reference: string,
+  tokenType: InstructionReferenceTokenType
+): Promise<{ target: string | null; trace: InstructionResolutionTrace }> {
+  const rawToken = reference;
+  if (reference.includes("://") || isAbsolute(reference)) {
+    return {
+      target: null,
+      trace: {
+        rawToken,
+        tokenType,
+        attemptedRoots: [],
+        selectedRoot: null,
+        selectedPath: null,
+        rejectionReason: "absolute-or-url"
+      }
+    };
+  }
+
+  if (reference.startsWith("./") || reference.startsWith("../")) {
+    const candidate = resolve(dirname(from), reference);
+    if (escapesProject(root, candidate)) {
+      return {
+        target: null,
+        trace: {
+          rawToken,
+          tokenType,
+          attemptedRoots: ["document-relative"],
+          selectedRoot: null,
+          selectedPath: null,
+          rejectionReason: "outside-project"
+        }
+      };
+    }
+    return {
+      target: candidate,
+      trace: {
+        rawToken,
+        tokenType,
+        attemptedRoots: ["document-relative"],
+        selectedRoot: "document-relative",
+        selectedPath: projectRelative(root, candidate),
+        rejectionReason: null
+      }
+    };
+  }
+
+  const rootCandidate = resolve(root, reference);
+  const rootOk = !escapesProject(root, rootCandidate);
+  const docCandidate = resolve(dirname(from), reference);
+  const docOk = !escapesProject(root, docCandidate);
+
+  if (!rootOk && !docOk) {
+    return {
+      target: null,
+      trace: {
+        rawToken,
+        tokenType,
+        attemptedRoots: [],
+        selectedRoot: null,
+        selectedPath: null,
+        rejectionReason: "outside-project"
+      }
+    };
+  }
+
+  const attemptedRoots: InstructionResolutionRoot[] = [
+    ...(rootOk ? (["project-root"] as const) : []),
+    ...(docOk ? (["document-relative"] as const) : [])
+  ];
+  const rootExists = rootOk && (await existsFile(rootCandidate));
+  const docExists = !rootExists && docOk && (await existsFile(docCandidate));
+
+  if (rootExists) {
+    return {
+      target: rootCandidate,
+      trace: {
+        rawToken,
+        tokenType,
+        attemptedRoots,
+        selectedRoot: "project-root",
+        selectedPath: projectRelative(root, rootCandidate),
+        rejectionReason: null
+      }
+    };
+  }
+  if (docExists) {
+    return {
+      target: docCandidate,
+      trace: {
+        rawToken,
+        tokenType,
+        attemptedRoots,
+        selectedRoot: "document-relative",
+        selectedPath: projectRelative(root, docCandidate),
+        rejectionReason: null
+      }
+    };
+  }
+  const preferRoot = rootOk;
+  const preferred = preferRoot ? rootCandidate : docCandidate;
+  return {
+    target: preferred,
+    trace: {
+      rawToken,
+      tokenType,
+      attemptedRoots,
+      selectedRoot: preferRoot ? "project-root" : "document-relative",
+      selectedPath: projectRelative(root, preferred),
+      rejectionReason: null
+    }
+  };
+}
+
+interface MarkdownReference {
+  reference: string;
+  tokenType: InstructionReferenceTokenType;
+}
+
+function markdownReferences(content: string): MarkdownReference[] {
+  const references = new Map<string, InstructionReferenceTokenType>();
+  const add = (reference: string, tokenType: InstructionReferenceTokenType): void => {
+    if (!references.has(reference)) references.set(reference, tokenType);
+  };
   for (const match of content.matchAll(/@([A-Za-z0-9_.\-/]+\.(?:md|json))/gi)) {
-    if (match[1] !== undefined) references.add(match[1]);
+    if (match[1] !== undefined) add(match[1], "at-ref");
   }
   for (const match of content.matchAll(/`((?:\.?\.?\/)?[A-Za-z0-9_.\-/]+\.(?:md|json))`/gi)) {
-    if (match[1] !== undefined) references.add(match[1]);
+    if (match[1] !== undefined) add(match[1], "inline-code");
   }
-  return [...references];
+  for (const match of content.matchAll(/\[[^\]\n]*\]\(([A-Za-z0-9_.\-/]+\.(?:md|json))\)/gi)) {
+    if (match[1] !== undefined) add(match[1], "markdown-link");
+  }
+  return [...references.entries()].map(([reference, tokenType]) => ({ reference, tokenType }));
 }
 
 interface TypedReference {
   reference: string;
   type: InstructionEdgeType;
   sourceField: string | null;
+  tokenType: InstructionReferenceTokenType;
 }
 
 function jsonReferences(
@@ -127,7 +272,8 @@ function jsonReferences(
       output.push({
         reference: value,
         type,
-        sourceField: path.join(".")
+        sourceField: path.join("."),
+        tokenType: "json-field"
       });
     }
   } else if (Array.isArray(value)) {
@@ -255,15 +401,21 @@ export async function validateInstructionGraph(
         references = [];
       }
     } else {
-      references = markdownReferences(content).map((reference) => ({
-        reference,
+      references = markdownReferences(content).map((markdownReference) => ({
+        reference: markdownReference.reference,
         type: "include" as const,
-        sourceField: null
+        sourceField: null,
+        tokenType: markdownReference.tokenType
       }));
     }
     for (const typedReference of references) {
       const { reference } = typedReference;
-      const target = safeProjectPath(root, path, reference);
+      const { target, trace } = await resolveReference(
+        root,
+        path,
+        reference,
+        typedReference.tokenType
+      );
       if (target === null) {
         addUnresolved(reference);
         reasonCodes.add("INSTRUCTION_REFERENCE_OUTSIDE_PROJECT");
@@ -273,7 +425,8 @@ export async function validateInstructionGraph(
           type: typedReference.type,
           sourceField: typedReference.sourceField,
           traversed: false,
-          reason: "outside-project"
+          reason: "outside-project",
+          resolutionTrace: trace
         });
         continue;
       }
@@ -288,7 +441,8 @@ export async function validateInstructionGraph(
           type: "ownership",
           sourceField: typedReference.sourceField,
           traversed: false,
-          reason: "entrypoint-ownership-pointer"
+          reason: "entrypoint-ownership-pointer",
+          resolutionTrace: trace
         });
         continue;
       }
@@ -299,7 +453,8 @@ export async function validateInstructionGraph(
           type: typedReference.type,
           sourceField: typedReference.sourceField,
           traversed: false,
-          reason: "generated-state-boundary"
+          reason: "generated-state-boundary",
+          resolutionTrace: trace
         });
         continue;
       }
@@ -312,7 +467,8 @@ export async function validateInstructionGraph(
           type: typedReference.type,
           sourceField: typedReference.sourceField,
           traversed: false,
-          reason: "missing"
+          reason: "missing",
+          resolutionTrace: trace
         });
         continue;
       }
@@ -322,7 +478,8 @@ export async function validateInstructionGraph(
         type: typedReference.type,
         sourceField: typedReference.sourceField,
         traversed: true,
-        reason: null
+        reason: null,
+        resolutionTrace: trace
       });
       await visit(target, depth + 1);
     }

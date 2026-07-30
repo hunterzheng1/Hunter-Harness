@@ -149,6 +149,120 @@ describe("instruction graph validator", () => {
     }
   });
 
+  it("SYNC-PATH-01 resolves a root-relative reference from the project root, not the document dir", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-path-root-"));
+    try {
+      await mkdir(join(root, "docs", "ai"), { recursive: true });
+      await writeFile(
+        join(root, "docs", "ai", "readme.md"),
+        "See `docs/ai/example.json` for budgets.\n"
+      );
+      await writeFile(join(root, "docs", "ai", "example.json"), "{}\n");
+
+      const result = await validateInstructionGraph(root, "docs/ai/readme.md");
+      const typed = result as typeof result & {
+        edges: Array<{ to: string; traversed: boolean; resolutionTrace?: { selectedRoot: string | null; attemptedRoots: string[] } }>;
+      };
+
+      expect(result.reachableFiles).toContain("docs/ai/example.json");
+      expect(result.reachableFiles).not.toContain("docs/ai/docs/ai/example.json");
+      const edge = typed.edges.find((candidate) => candidate.to === "docs/ai/example.json");
+      expect(edge?.traversed).toBe(true);
+      expect(edge?.resolutionTrace?.selectedRoot).toBe("project-root");
+      expect(edge?.resolutionTrace?.attemptedRoots).toEqual(
+        expect.arrayContaining(["project-root", "document-relative"])
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SYNC-PATH-02 resolves a ./ reference from the document directory only", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-path-doc-"));
+    try {
+      await mkdir(join(root, "docs"), { recursive: true });
+      await writeFile(
+        join(root, "docs", "notes.md"),
+        "See `./example.json` for context.\n"
+      );
+      await writeFile(join(root, "docs", "example.json"), "{\"scope\":\"docs\"}\n");
+      await writeFile(join(root, "example.json"), "{\"scope\":\"root\"}\n");
+
+      const result = await validateInstructionGraph(root, "docs/notes.md");
+      const typed = result as typeof result & {
+        edges: Array<{ to: string; traversed: boolean; resolutionTrace?: { selectedRoot: string | null; attemptedRoots: string[] } }>;
+      };
+
+      expect(result.reachableFiles).toContain("docs/example.json");
+      expect(result.reachableFiles).not.toContain("example.json");
+      const edge = typed.edges.find((candidate) => candidate.to === "docs/example.json");
+      expect(edge?.traversed).toBe(true);
+      expect(edge?.resolutionTrace?.selectedRoot).toBe("document-relative");
+      expect(edge?.resolutionTrace?.attemptedRoots).toEqual(["document-relative"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SYNC-PATH-03 uses the Markdown link target, not the display text", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-path-link-"));
+    try {
+      await mkdir(join(root, "docs"), { recursive: true });
+      await writeFile(
+        join(root, "docs", "guide.md"),
+        "See [docs/other.json](../example.json) for details.\n"
+      );
+      await writeFile(join(root, "example.json"), "{}\n");
+
+      const result = await validateInstructionGraph(root, "docs/guide.md");
+      const typed = result as typeof result & {
+        edges: Array<{
+          to: string;
+          traversed: boolean;
+          resolutionTrace?: { rawToken: string; tokenType: string; selectedRoot: string | null };
+        }>;
+      };
+
+      expect(result.reachableFiles).toContain("example.json");
+      expect(result.unresolvedReferences).not.toContain("docs/other.json");
+      const edge = typed.edges.find((candidate) => candidate.to === "example.json");
+      expect(edge?.traversed).toBe(true);
+      expect(edge?.resolutionTrace?.rawToken).toBe("../example.json");
+      expect(edge?.resolutionTrace?.tokenType).toBe("markdown-link");
+      expect(edge?.resolutionTrace?.selectedRoot).toBe("document-relative");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SYNC-PATH-04 rejects a reference that escapes the project root, recording a resolution trace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-path-escape-"));
+    try {
+      await writeFile(join(root, "CLAUDE.md"), "See `../../outside.json` here.\n");
+
+      const result = await validateInstructionGraph(root, "CLAUDE.md");
+      const typed = result as typeof result & {
+        edges: Array<{
+          to: string;
+          traversed: boolean;
+          reason: string | null;
+          resolutionTrace?: { selectedPath: string | null; rejectionReason: string | null };
+        }>;
+      };
+
+      expect(result.entrypointIntegrity.reasonCodes).toContain(
+        "INSTRUCTION_REFERENCE_OUTSIDE_PROJECT"
+      );
+      const edge = typed.edges.find((candidate) => candidate.to === "../../outside.json");
+      expect(edge?.traversed).toBe(false);
+      expect(edge?.reason).toBe("outside-project");
+      expect(edge?.resolutionTrace?.selectedPath).toBeNull();
+      expect(edge?.resolutionTrace?.rejectionReason).toBe("outside-project");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("SYNC-003 rejects an oversized include before reading it", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-instruction-budget-"));
     try {

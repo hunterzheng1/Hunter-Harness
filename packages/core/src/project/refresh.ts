@@ -70,8 +70,21 @@ export interface RefreshConflict {
   source_path: string;
   target_path: string;
   reason: RefreshReason;
+  /** Hash of the canonical bundle source that refresh did not apply. */
+  source_content_sha256: string | null;
+  /** Hash of the locally edited adapter target that refresh preserved. */
+  adapter_content_sha256: string | null;
+  /** Last trusted projection hash, when a baseline is available. */
+  baseline_content_sha256: string | null;
   old_sha256: string | null;
   incoming_sha256: string | null;
+  diff_summary: {
+    kind: "CONTENT_DIFFERENT" | "SOURCE_REMOVED";
+    source_bytes: number | null;
+    adapter_bytes: number | null;
+    source_lines: number | null;
+    adapter_lines: number | null;
+  };
 }
 
 export interface RefreshResult {
@@ -294,18 +307,44 @@ function item(
   };
 }
 
-function conflict(
+async function conflict(
+  root: string,
   target: ProjectedBundleFile,
   reason: RefreshReason,
   oldSha: string | null,
-  incomingSha: string | null
-): RefreshConflict {
+  incomingSha: string | null,
+  baselineSha: string | null
+): Promise<RefreshConflict> {
+  let adapterBytes: number | null = null;
+  let adapterLines: number | null = null;
+  if (oldSha !== null) {
+    try {
+      const adapterContent = await readFile(join(root, target.target_path));
+      adapterBytes = adapterContent.byteLength;
+      adapterLines = new TextDecoder().decode(adapterContent).split("\n").length;
+    } catch {
+      // Hash evidence remains useful even if a concurrent edit removes the target.
+    }
+  }
+  const sourcePresent = incomingSha !== null;
   return {
     source_path: target.source_path,
     target_path: target.target_path,
     reason,
+    source_content_sha256: incomingSha,
+    adapter_content_sha256: oldSha,
+    baseline_content_sha256: baselineSha,
     old_sha256: oldSha,
-    incoming_sha256: incomingSha
+    incoming_sha256: incomingSha,
+    diff_summary: {
+      kind: sourcePresent ? "CONTENT_DIFFERENT" : "SOURCE_REMOVED",
+      source_bytes: sourcePresent ? target.bytes.byteLength : null,
+      adapter_bytes: adapterBytes,
+      source_lines: sourcePresent
+        ? new TextDecoder().decode(target.bytes).split("\n").length
+        : null,
+      adapter_lines: adapterLines
+    }
   };
 }
 
@@ -460,7 +499,14 @@ async function reconcileMarkdownBlock(
   } catch {
     const current = original === "" ? null : createHash("sha256").update(original).digest("hex");
     preserved.push(item(synthetic, "preserve", "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
-    conflicts.push(conflict(synthetic, "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
+    conflicts.push(await conflict(
+      root,
+      synthetic,
+      "MALFORMED_MANAGED_BLOCK",
+      current,
+      synthetic.sha256,
+      null
+    ));
     return;
   }
   if (next !== original) ops.push({
@@ -598,7 +644,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     } else {
       const reason: RefreshReason = trustedHash === undefined ? "LEGACY_BASELINE_UNKNOWN" : "LOCAL_MODIFICATION";
       preserved.push(item(target, "preserve", reason, current, incoming));
-      conflicts.push(conflict(target, reason, current, incoming));
+      conflicts.push(await conflict(
+        root,
+        target,
+        reason,
+        current,
+        incoming,
+        trustedHash ?? null
+      ));
       if (trustedHash !== undefined) {
         newStateFiles.push({ owner: target.owner, source_path: target.source_path, target_path: target.target_path, sha256: trustedHash });
       }
@@ -623,7 +676,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     } else {
       const reason: RefreshReason = trustedHash === undefined ? "LEGACY_BASELINE_UNKNOWN" : "LEGACY_PROFILE_FILE_MODIFIED";
       preserved.push(item(target, "preserve", reason, current, null));
-      conflicts.push(conflict(target, reason, current, null));
+      conflicts.push(await conflict(
+        root,
+        target,
+        reason,
+        current,
+        null,
+        trustedHash ?? null
+      ));
       // 保留的旧 profile 冲突文件不再受管（design §8），不进入新 state。
     }
   }

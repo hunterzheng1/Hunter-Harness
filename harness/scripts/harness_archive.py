@@ -1250,7 +1250,7 @@ def resolve_product_archive_identity(
     product_commit: str | None = None,
     archive_commit: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve the three-way archive identity fields for summary/meta."""
+    """Resolve checkpoint → product/feature → merge → release identity facts."""
     change_dir = change_dir.resolve()
     project_root = (project or find_project_root(change_dir)).resolve()
     ledger = load_ledger(change_dir) or {}
@@ -1266,14 +1266,27 @@ def resolve_product_archive_identity(
         or ledger.get("finalCommit")
         or ""
     )
-    feature_merge = str(
-        ledger.get("featureMergeHash")
-        or ledger.get("mergeFinalHash")
+    checkpoint = str(
+        ledger.get("checkpointCommit")
+        or (ledger.get("checkpoint") or {}).get("commit")
+        if isinstance(ledger.get("checkpoint"), dict)
+        else ledger.get("checkpointCommit") or ""
+    ).strip()
+    feature_tip = str(
+        ledger.get("featureTip")
+        or ledger.get("featureTipHash")
         or product
+    ).strip()
+    merge_commit = str(
+        ledger.get("mergeCommit")
+        or ledger.get("featureMergeHash")
+        or ledger.get("mergeFinalHash")
+        or ""
     ).strip()
     code, current_head, _ = git_run(project_root, "rev-parse", "HEAD")
     release_tip = str(
-        ledger.get("releaseTipHash")
+        ledger.get("releaseTip")
+        or ledger.get("releaseTipHash")
         or (current_head if code == 0 else "")
         or ledger.get("archiveCommit")
         or product
@@ -1318,8 +1331,13 @@ def resolve_product_archive_identity(
             # Bare temp fixtures are not real project roots — avoid scanning up-tree.
             tree = hashlib.sha256(b"fixture-no-product-tree").hexdigest()
     identity = {
+        "checkpointCommit": checkpoint,
         "productCommit": str(product),
-        "featureMergeHash": feature_merge,
+        "featureTip": feature_tip,
+        "mergeCommit": merge_commit,
+        "releaseTip": release_tip,
+        # Legacy aliases retain their prior public contract.
+        "featureMergeHash": merge_commit or feature_tip,
         "releaseTipHash": release_tip,
         "productTreeHash": str(tree),
         "archiveCommit": str(archive),
@@ -2312,6 +2330,90 @@ def check_status(
     }
 
 
+def archive_auto_gate(
+    change_dir: Path,
+    *,
+    allow_missing_review: bool = False,
+    archive_intent: str = "release-candidate",
+) -> dict[str, Any]:
+    """Read-only proof that a post-submit/merge archive may run unattended."""
+    status = check_status(
+        change_dir,
+        allow_missing_review=allow_missing_review,
+        archive_intent=archive_intent,
+    )
+    if not status.get("archivable"):
+        return {
+            "ok": False,
+            "action": "auto-gate",
+            "autoArchiveAllowed": False,
+            "reasonCode": "ARCHIVE_PRECONDITIONS_UNSATISFIED",
+            "status": status,
+            "nextAction": "Resolve archive status blockers, then run `harness_archive.py auto-gate` again.",
+        }
+
+    snapshot_path = change_dir / "meta" / "state-snapshot.json"
+    try:
+        snapshot = read_json(snapshot_path)
+    except (OSError, json.JSONDecodeError, TypeError):
+        snapshot = None
+    if not isinstance(snapshot, dict):
+        return {
+            "ok": False,
+            "action": "auto-gate",
+            "autoArchiveAllowed": False,
+            "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_MISSING",
+            "status": status,
+            "nextAction": "Capture the post-submit/merge archive-boundary state snapshot before auto-archiving.",
+        }
+
+    git_state = snapshot.get("git")
+    snapshot_base = (
+        (git_state.get("base") or git_state.get("baseCommit"))
+        if isinstance(git_state, dict)
+        else snapshot.get("base") or snapshot.get("baseCommit")
+    )
+    if not isinstance(snapshot_base, str) or not snapshot_base.strip():
+        return {
+            "ok": False,
+            "action": "auto-gate",
+            "autoArchiveAllowed": False,
+            "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_INVALID",
+            "status": status,
+            "nextAction": "Capture a state snapshot containing the archive-boundary base commit after Submit or Merge.",
+        }
+
+    events_path = change_dir / "events.ndjson"
+    events = he.load_events(events_path) if events_path.is_file() else []
+    completed = any(
+        event.get("phase") in {"submit", "merge"}
+        and event.get("type") == "phase.end"
+        and str(event.get("status") or "").upper() in {"OK", "WARN"}
+        for event in events
+        if isinstance(event, dict)
+    )
+    if not completed:
+        return {
+            "ok": False,
+            "action": "auto-gate",
+            "autoArchiveAllowed": False,
+            "reasonCode": "SUBMIT_OR_MERGE_NOT_COMPLETED",
+            "status": status,
+            "nextAction": "Complete Submit or Merge and record its terminal phase event before auto-archiving.",
+        }
+
+    return {
+        "ok": True,
+        "action": "auto-gate",
+        "autoArchiveAllowed": True,
+        "reasonCode": "ARCHIVE_AUTO_GATE_SATISFIED",
+        "status": status,
+        "snapshotPath": str(snapshot_path),
+        "snapshotBase": snapshot_base,
+        "nextAction": "Run `harness_archive.py finalize` with the same change directory and intent; no AskQuestion confirmation is required.",
+    }
+
+
 # ---------------------------------------------------------------------------
 # collect
 # ---------------------------------------------------------------------------
@@ -2337,6 +2439,11 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
         "skipped": 0,
         "passRate": NOT_AVAILABLE,
         "source": "not-run",
+        "latestAuthoritativeAttempt": None,
+        "perAttemptCounts": [],
+        "uniqueTestIdentities": [],
+        "uniqueTestCount": 0,
+        "rerunCount": 0,
     }
     if not ledger:
         return empty
@@ -2460,6 +2567,87 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
     }
     if status in {"NOT_RUN", "USER_SKIPPED", "SKIPPED"}:
         result["status"] = status if status != "SKIPPED" else "USER_SKIPPED"
+    attempt_records: list[dict[str, Any]] = []
+    for key in ("history", "attempts"):
+        records = unit.get(key)
+        if isinstance(records, list):
+            attempt_records.extend(item for item in records if isinstance(item, dict))
+    if not attempt_records:
+        attempt_records = [unit]
+    seen_attempts: set[str] = set()
+    per_attempt: list[dict[str, Any]] = []
+    unique_identities: set[str] = set()
+    for index, attempt in enumerate(attempt_records, start=1):
+        attempt_key = json.dumps(
+            {
+                "attempt": attempt.get("attempt"),
+                "runId": attempt.get("runId") or attempt.get("run_id"),
+                "finishedAt": attempt.get("finishedAt") or attempt.get("completedAt"),
+                "metrics": attempt.get("metrics"),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        if attempt_key in seen_attempts:
+            continue
+        seen_attempts.add(attempt_key)
+        attempt_metrics = (
+            attempt.get("metrics") if isinstance(attempt.get("metrics"), dict) else attempt
+        )
+        attempt_total = int(
+            attempt_metrics.get(
+                "total",
+                attempt_metrics.get("run", attempt_metrics.get("testsRun", 0)),
+            )
+            or 0
+        )
+        attempt_failed = int(
+            attempt_metrics.get("failed", attempt_metrics.get("failures", 0)) or 0
+        )
+        attempt_errors = int(attempt_metrics.get("errors", 0) or 0)
+        attempt_skipped = int(attempt_metrics.get("skipped", 0) or 0)
+        attempt_passed = int(
+            attempt_metrics.get(
+                "passed",
+                max(
+                    attempt_total - attempt_failed - attempt_errors - attempt_skipped,
+                    0,
+                ),
+            )
+            or 0
+        )
+        raw_identities = (
+            attempt.get("testIdentities")
+            or attempt_metrics.get("testIdentities")
+            or attempt.get("testIds")
+            or attempt_metrics.get("testIds")
+            or []
+        )
+        identities = (
+            sorted({str(item) for item in raw_identities if str(item)})
+            if isinstance(raw_identities, list)
+            else []
+        )
+        unique_identities.update(identities)
+        per_attempt.append(
+            {
+                "attempt": attempt.get("attempt", index),
+                "status": str(attempt.get("status") or status or "UNKNOWN").upper(),
+                "run": attempt_total,
+                "passed": attempt_passed,
+                "failures": attempt_failed,
+                "errors": attempt_errors,
+                "skipped": attempt_skipped,
+                "deselected": int(attempt_metrics.get("deselected", 0) or 0),
+                "testIdentities": identities,
+            }
+        )
+    result["perAttemptCounts"] = per_attempt
+    result["latestAuthoritativeAttempt"] = per_attempt[-1] if per_attempt else None
+    result["uniqueTestIdentities"] = sorted(unique_identities)
+    result["uniqueTestCount"] = len(unique_identities)
+    result["rerunCount"] = max(len(per_attempt) - 1, 0)
     return result
 
 
@@ -2631,19 +2819,61 @@ def _risks_from_test_results(change_dir: Path) -> tuple[list[dict[str, Any]], li
     return risks, actions
 
 
-def _ledger_db_compat(ledger: dict[str, Any] | None) -> str:
+def _ledger_db_compat(ledger: dict[str, Any] | None) -> dict[str, Any]:
+    """Project only typed DB compatibility evidence; command text is not proof."""
+    empty = {"status": "NOT_RUN", "source": "not-run"}
     if not ledger:
-        return "NOT_RUN"
+        return empty
     validations = ledger.get("validations") or {}
     db = validations.get("dbCompatibility") or validations.get("db") or {}
-    if isinstance(db, dict):
-        return str(db.get("status") or "NOT_RUN").upper()
-    if isinstance(db, str) and db.strip():
-        return db.strip().upper()
-    top = ledger.get("dbCompatibility")
-    if isinstance(top, str) and top.strip():
-        return top.strip().upper()
-    return "NOT_RUN"
+    if not isinstance(db, dict):
+        return empty
+    raw_status = str(db.get("status") or "").upper()
+    if raw_status in {"NOT_RUN", "USER_SKIPPED", "SKIPPED"}:
+        return {"status": "NOT_RUN", "source": "typed-ledger"}
+    if raw_status == "UNKNOWN":
+        return {"status": "UNKNOWN", "source": "typed-ledger"}
+    metrics = db.get("metrics")
+    receipt = db.get("receipt")
+    if not isinstance(metrics, dict) and isinstance(receipt, dict):
+        candidate = receipt.get("metrics", receipt)
+        metrics = candidate if isinstance(candidate, dict) else None
+    if not isinstance(metrics, dict):
+        return {"status": "EVIDENCE_MISSING", "source": "typed-ledger"}
+    applicability = str(metrics.get("applicability") or "").upper()
+    if applicability == "NOT_APPLICABLE":
+        reason = str(metrics.get("reason") or "").strip()
+        return {
+            "status": "NOT_APPLICABLE" if reason else "EVIDENCE_MISSING",
+            "reason": reason,
+            "source": "typed-receipt" if isinstance(receipt, dict) else "typed-ledger",
+        }
+    if applicability != "APPLICABLE":
+        return {"status": "UNKNOWN", "source": "typed-ledger"}
+    typed_status = str(metrics.get("status") or "").upper()
+    total = metrics.get("total")
+    passed = metrics.get("passed")
+    failed = metrics.get("failed")
+    evidence_hash = metrics.get("evidenceHash")
+    valid_counts = (
+        all(isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (total, passed, failed))
+        and passed + failed == total
+    )
+    valid_hash = isinstance(evidence_hash, str) and bool(
+        re.fullmatch(r"sha256:[0-9a-f]{64}", evidence_hash)
+    )
+    if typed_status not in {"OK", "FAIL"} or not valid_counts or not valid_hash:
+        return {"status": "EVIDENCE_MISSING", "source": "typed-ledger"}
+    return {
+        "status": typed_status,
+        "applicability": applicability,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "evidenceHash": evidence_hash,
+        "source": "typed-receipt" if isinstance(receipt, dict) else "typed-ledger",
+    }
 
 
 def _typed_test_metrics(entry: dict[str, Any], *, total_key: str) -> dict[str, Any]:
@@ -2691,8 +2921,10 @@ def build_verification_projection(
     projection: dict[str, Any] = {
         "unitTests": _ledger_unit_tests(effective_ledger),
         "apiTests": _ledger_api_tests(effective_ledger, change_dir=change_dir),
-        "dbCompatibility": _ledger_db_compat(effective_ledger),
     }
+    db_compatibility = _ledger_db_compat(effective_ledger)
+    projection["dbCompatibility"] = db_compatibility["status"]
+    projection["dbCompatibilityEvidence"] = db_compatibility
     api_contract = validations.get("apiContract")
     if isinstance(api_contract, dict):
         projection["apiContract"] = _typed_test_metrics(
@@ -2946,6 +3178,9 @@ def _durations_from_event_phases(
         timing = canonical.get(name)
         if timing:
             stage["activeExecutionMs"] = timing.get("activeExecutionMs")
+            # HH-WF-20260730-001: recovered/superseded time (write-path
+            # auto-seal) stays disjoint from activeExecutionMs.
+            stage["recoveredMs"] = timing.get("recoveredMs")
             stage["wallClockSpanMs"] = timing.get("wallClockSpanMs")
             stage["lateEventCount"] = timing.get("lateEventCount")
             stage["unclosedAttemptCount"] = timing.get("unclosedAttemptCount")
@@ -3364,17 +3599,57 @@ def _review_summary(
     return base
 
 
+def _base_from_state_snapshot(change_dir: Path) -> str:
+    """Read archive-boundary base from meta/state-snapshot.json when present."""
+    for relative in (
+        Path("meta") / "state-snapshot.json",
+        Path("state-snapshot.json"),
+    ):
+        path = change_dir / relative
+        if not path.is_file():
+            continue
+        try:
+            payload = read_json(path)
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        git_info = payload.get("git")
+        if isinstance(git_info, dict):
+            base = str(git_info.get("base") or git_info.get("baseCommit") or "").strip()
+            if base and base != NOT_AVAILABLE:
+                return base
+        base = str(payload.get("baseCommit") or payload.get("base") or "").strip()
+        if base and base != NOT_AVAILABLE:
+            return base
+    return ""
+
+
 def _resolve_base_commit(
     ledger: dict[str, Any] | None,
     change_dir: Path,
     project: Path,
     final: str | None,
 ) -> str:
-    """Resolve baseCommit: ledger → latest phase-context → merge first parent → merge-base."""
+    """Resolve baseCommit in archive-boundary order.
+
+    Priority (HH-ARCHIVE-20260730-001):
+      ledger base
+      → archive-boundary state snapshot base
+      → phase context
+      → merge first parent
+      → merge-base
+
+    Latest merge phase context must not override the full change boundary.
+    """
     if ledger:
         base = str(ledger.get("baseCommit") or "").strip()
         if base and base != NOT_AVAILABLE:
             return base
+
+    snapshot_base = _base_from_state_snapshot(change_dir)
+    if snapshot_base:
+        return snapshot_base
 
     ctx_dir = change_dir / "runtime" / "phase-context"
     if ctx_dir.is_dir():
@@ -3685,6 +3960,7 @@ def collect_summary_data(
             "unitTests": unit,
             "apiTests": api,
             "dbCompatibility": db,
+            "dbCompatibilityEvidence": projection["dbCompatibilityEvidence"],
             "coverageDisplay": coverage,
         }
         for typed_key in ("apiContract", "browserE2E", "performance"):
@@ -3698,6 +3974,7 @@ def collect_summary_data(
         ver.setdefault("unitTests", {})
         ver.setdefault("apiTests", {})
         ver.setdefault("dbCompatibility", ver.get("dbCompatibility", NOT_AVAILABLE))
+        ver.setdefault("dbCompatibilityEvidence", {})
         ver.setdefault("coverageDisplay", ver.get("coverageDisplay", NOT_AVAILABLE))
 
     # stageStatus / finalStatus
@@ -3785,9 +4062,13 @@ def collect_summary_data(
     # IA-1/4 identity (product vs archive)
     if not for_replay:
         identity = resolve_product_archive_identity(change_dir, project=project)
+        data["checkpointCommit"] = identity.get("checkpointCommit") or ""
         data["productCommit"] = identity.get("productCommit") or data.get("finalCommit")
-        data["featureMergeHash"] = identity.get("featureMergeHash") or data.get("finalCommit")
-        data["releaseTipHash"] = identity.get("releaseTipHash") or data.get("archiveCommit")
+        data["featureTip"] = identity.get("featureTip") or data["productCommit"]
+        data["mergeCommit"] = identity.get("mergeCommit") or ""
+        data["releaseTip"] = identity.get("releaseTip") or data.get("archiveCommit")
+        data["featureMergeHash"] = data["mergeCommit"] or data.get("finalCommit")
+        data["releaseTipHash"] = data["releaseTip"] or data.get("archiveCommit")
         data["productTreeHash"] = identity.get("productTreeHash")
         data["archiveCommit"] = identity.get("archiveCommit") or data.get("finalCommit")
         data["environmentHash"] = identity.get("environmentHash") or NOT_AVAILABLE
@@ -3856,8 +4137,12 @@ def collect_summary_data(
     diff_for_facts = data.get("diffStat") if isinstance(data.get("diffStat"), dict) else {}
     data["gitFacts"] = {
         "baseCommit": data.get("baseCommit") or "",
+        "checkpointCommit": data.get("checkpointCommit") or "",
         "finalCommit": data.get("finalCommit") or "",
         "productCommit": data.get("productCommit") or "",
+        "featureTip": data.get("featureTip") or "",
+        "mergeCommit": data.get("mergeCommit") or "",
+        "releaseTip": data.get("releaseTip") or "",
         "featureMergeHash": data.get("featureMergeHash") or "",
         "releaseTipHash": data.get("releaseTipHash") or "",
         "productTreeHash": data.get("productTreeHash") or "",
@@ -5240,6 +5525,92 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
             "message": f"final commit {final} differs from base {base} but filesChanged=0",
         })
 
+    # HH-ARCHIVE-20260730-001: refuse internally-consistent but truncated boundaries.
+    identity_doc_early = (
+        summary.get("changeIdentity")
+        if isinstance(summary.get("changeIdentity"), dict)
+        else {}
+    )
+    product_commit = str(
+        summary.get("productCommit")
+        or identity_doc_early.get("productCommit")
+        or ""
+    ).strip()
+    feature_tip = str(
+        summary.get("featureTip")
+        or summary.get("featureTipHash")
+        or product_commit
+        or ""
+    ).strip()
+    if not feature_tip:
+        feature_tip = str(identity_doc_early.get("productCommit") or "").strip()
+
+    if (
+        base
+        and base != NOT_AVAILABLE
+        and feature_tip
+        and feature_tip != NOT_AVAILABLE
+        and base == feature_tip
+    ):
+        issues.append({
+            "code": "ARCHIVE_BASE_EQUALS_FEATURE_TIP",
+            "severity": "error",
+            "message": (
+                f"baseCommit equals feature tip ({base}); "
+                "archive boundary collapsed to an empty/merge-only delta"
+            ),
+        })
+
+    ownership = summary.get("ownershipDiff") or summary.get("ownership")
+    ownership = ownership if isinstance(ownership, dict) else {}
+    ownership_files = ownership.get("files") or ownership.get("changedFiles") or []
+    ownership_count = 0
+    if isinstance(ownership_files, list):
+        ownership_count = len(ownership_files)
+    elif isinstance(ownership.get("fileCount"), int):
+        ownership_count = int(ownership["fileCount"])
+    changed_files = summary.get("changedFiles")
+    changed_count = len(changed_files) if isinstance(changed_files, list) else files_changed
+
+    if ownership_count > 0 and changed_count == 0:
+        issues.append({
+            "code": "ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP",
+            "severity": "error",
+            "message": (
+                f"ownership diff has {ownership_count} file(s) but report "
+                "diff is empty; base/diff pairing is internally consistent "
+                "but does not represent the full change"
+            ),
+        })
+    elif ownership_count > 0 and changed_count > 0 and changed_count * 3 < ownership_count:
+        issues.append({
+            "code": "ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP",
+            "severity": "error",
+            "message": (
+                f"report diff covers {changed_count} file(s) but ownership "
+                f"lists {ownership_count}; suspected merge-delta truncation"
+            ),
+        })
+
+    merge_parents = summary.get("mergeParents") or summary.get("mergeParentHashes")
+    if isinstance(merge_parents, list) and len(merge_parents) >= 2:
+        first_parent = str(merge_parents[0] or "").strip()
+        if (
+            base
+            and first_parent
+            and base == first_parent
+            and ownership_count > max(changed_count, files_changed)
+            and max(changed_count, files_changed) <= 1
+        ):
+            issues.append({
+                "code": "ARCHIVE_NOFF_MERGE_DELTA_ONLY",
+                "severity": "error",
+                "message": (
+                    "no-ff merge archive appears to cover only the merge "
+                    "commit delta rather than archive-base..release-tip"
+                ),
+            })
+
     # Typed metrics missing despite test report artifacts present.
     verification = summary.get("verification") or {}
     if isinstance(verification, dict):
@@ -5257,6 +5628,33 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
                 "code": "TYPED_METRICS_MISSING",
                 "severity": "error",
                 "message": "test report artifacts present but unitTests/apiTests typed metrics are empty",
+            })
+        db_status = str(verification.get("dbCompatibility") or "NOT_RUN").upper()
+        db_evidence = verification.get("dbCompatibilityEvidence")
+        if "dbCompatibility" in verification and db_status == "EVIDENCE_MISSING":
+            issues.append({
+                "code": "DB_COMPATIBILITY_EVIDENCE_MISSING",
+                "severity": "error",
+                "message": (
+                    "DB compatibility was recorded but lacks a valid typed "
+                    "ledger/receipt evidence payload"
+                ),
+            })
+        elif "dbCompatibility" in verification and db_status == "NOT_RUN":
+            issues.append({
+                "code": "DB_COMPATIBILITY_NOT_RUN",
+                "severity": "warning",
+                "message": "DB compatibility validation was not run",
+            })
+        elif (
+            "dbCompatibility" in verification
+            and db_status in {"OK", "FAIL", "NOT_APPLICABLE"}
+            and not isinstance(db_evidence, dict)
+        ):
+            issues.append({
+                "code": "DB_COMPATIBILITY_EVIDENCE_MISSING",
+                "severity": "error",
+                "message": "DB compatibility status has no typed evidence projection",
             })
 
     # stageStatus contradicts event reducer.
@@ -7410,6 +7808,16 @@ def cmd_status_cli(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_auto_gate_cli(args: argparse.Namespace) -> int:
+    result = archive_auto_gate(
+        resolve_path(args.change_dir),
+        allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
+        archive_intent=str(getattr(args, "intent", "release-candidate")),
+    )
+    emit_json(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_certify_local_cli(args: argparse.Namespace) -> int:
     change_dir = resolve_path(args.change_dir)
     project = (
@@ -7648,6 +8056,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
     )
     p_status.set_defaults(func=cmd_status_cli)
+
+    p_auto_gate = sub.add_parser(
+        "auto-gate",
+        help="read-only proof that a post-submit/merge archive may run without confirmation",
+    )
+    p_auto_gate.add_argument("--change-dir", required=True)
+    p_auto_gate.add_argument("--json", action="store_true", default=True)
+    p_auto_gate.add_argument(
+        "--allow-missing-review",
+        action="store_true",
+        help="downgrade full-tier missing review from blocker to warning",
+    )
+    p_auto_gate.add_argument(
+        "--intent",
+        choices=("release-candidate", "record-only"),
+        default="release-candidate",
+    )
+    p_auto_gate.set_defaults(func=cmd_auto_gate_cli)
 
     p_cert = sub.add_parser(
         "certify-local",

@@ -80,6 +80,45 @@ class ReportAdequacyGateTests(unittest.TestCase):
         codes = {issue["code"] for issue in result.get("issues", [])}
         self.assertIn("TYPED_METRICS_MISSING", codes)
 
+    def test_distinguishes_db_evidence_missing_from_not_run(self) -> None:
+        common = {
+            "changeName": "demo",
+            "finalStatus": "WARN",
+            "verification": {
+                "unitTests": {"passed": 1},
+                "apiTests": {"status": "OK", "passed": 1},
+            },
+        }
+        missing = ha.validate_report_adequacy(
+            {
+                **common,
+                "verification": {
+                    **common["verification"],
+                    "dbCompatibility": "EVIDENCE_MISSING",
+                },
+            }
+        )
+        not_run = ha.validate_report_adequacy(
+            {
+                **common,
+                "verification": {
+                    **common["verification"],
+                    "dbCompatibility": "NOT_RUN",
+                },
+            }
+        )
+
+        missing_issue = next(
+            issue for issue in missing["issues"]
+            if issue["code"] == "DB_COMPATIBILITY_EVIDENCE_MISSING"
+        )
+        not_run_issue = next(
+            issue for issue in not_run["issues"]
+            if issue["code"] == "DB_COMPATIBILITY_NOT_RUN"
+        )
+        self.assertEqual(missing_issue["severity"], "error")
+        self.assertEqual(not_run_issue["severity"], "warning")
+
     def test_blocks_when_stage_status_contradicts_event_reducer(self) -> None:
         summary = {
             "changeName": "demo",
@@ -160,6 +199,59 @@ class ReportAdequacyGateTests(unittest.TestCase):
         self.assertIn("IDENTITY_MIRROR_MISMATCH", codes)
         self.assertIn("TIMING_CONSERVATION_MISMATCH", codes)
         self.assertIn("RELEASE_ELIGIBILITY_CONTRADICTION", codes)
+
+    def test_arch_id_02_rejects_base_equals_feature_tip(self) -> None:
+        tip = "0fc4e656742ab74c2ec7b80ecdd9ca613f9494e5"
+        summary = {
+            "changeName": "demo",
+            "finalStatus": "OK",
+            "baseCommit": tip,
+            "finalCommit": "419bdb790a3865e305d21b3116d38262b856a33f",
+            "productCommit": tip,
+            "diffStat": {"filesChanged": 1, "insertions": 2, "deletions": 0},
+            "changedFiles": ["README.md"],
+            "verification": {
+                "unitTests": {"passed": 1, "failed": 0, "skipped": 0, "passRate": "100%"},
+                "apiTests": {"status": "OK", "passed": 1, "failed": 0},
+            },
+            "stageStatus": {"run": "OK", "test": "OK"},
+            "stageStatusFromEvents": {"run": "OK", "test": "OK"},
+        }
+        result = ha.validate_report_adequacy(summary)
+        self.assertFalse(result.get("ok"))
+        codes = {issue["code"] for issue in result.get("issues", [])}
+        self.assertIn("ARCHIVE_BASE_EQUALS_FEATURE_TIP", codes)
+
+    def test_arch_id_02_rejects_internally_consistent_but_shrunk_diff(self) -> None:
+        summary = {
+            "changeName": "demo",
+            "finalStatus": "OK",
+            "baseCommit": "mergeparent0000000000000000000000000001",
+            "finalCommit": "mergecommit0000000000000000000000000002",
+            "productCommit": "featuretip0000000000000000000000000003",
+            "diffStat": {"filesChanged": 1, "insertions": 2, "deletions": 0},
+            "changedFiles": ["MERGE_NOTE.md"],
+            "ownershipDiff": {
+                "files": [f"src/file_{i}.py" for i in range(30)],
+            },
+            "mergeParents": [
+                "mergeparent0000000000000000000000000001",
+                "featuretip0000000000000000000000000003",
+            ],
+            "verification": {
+                "unitTests": {"passed": 1, "failed": 0, "skipped": 0, "passRate": "100%"},
+                "apiTests": {"status": "OK", "passed": 1, "failed": 0},
+            },
+            "stageStatus": {"run": "OK", "test": "OK"},
+            "stageStatusFromEvents": {"run": "OK", "test": "OK"},
+        }
+        result = ha.validate_report_adequacy(summary)
+        self.assertFalse(result.get("ok"))
+        codes = {issue["code"] for issue in result.get("issues", [])}
+        self.assertTrue(
+            {"ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP", "ARCHIVE_NOFF_MERGE_DELTA_ONLY"}
+            & codes
+        )
 
 
 if __name__ == "__main__":

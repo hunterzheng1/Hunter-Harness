@@ -156,6 +156,27 @@ class ReportUiTest(unittest.TestCase):
         ):
             self.assertIn('title="NOT_APPLICABLE">不适用', html)
 
+    def test_node_renderer_labels_unique_tests_and_db_evidence(self) -> None:
+        summary = record_only_summary()
+        summary["normalizedReport"]["verification"]["unitTests"].update(
+            {
+                "run": 6,
+                "uniqueTestCount": 2,
+                "rerunCount": 2,
+                "perAttemptCounts": [{}, {}, {}],
+            }
+        )
+        summary["normalizedReport"]["verification"]["dbCompatibility"] = "EVIDENCE_MISSING"
+        summary["normalizedReport"]["verification"]["dbCompatibilityEvidence"] = {
+            "status": "EVIDENCE_MISSING"
+        }
+
+        html = self.render_node(summary)
+
+        self.assertIn("唯一 2 项", html)
+        self.assertIn("重跑 2", html)
+        self.assertIn("证据缺失", html)
+
 
 if __name__ == "__main__":
     unittest.main()

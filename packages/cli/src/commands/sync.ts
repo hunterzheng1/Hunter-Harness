@@ -48,6 +48,10 @@ interface ComponentReceipt {
   evidence: string[];
   autoFixed: boolean;
   nextAction: string | null;
+  effects?: {
+    persisted: string[];
+    notPersisted: string[];
+  };
   details?: unknown;
 }
 
@@ -250,7 +254,9 @@ function receipt(
   startedAt: number,
   status: SyncStatus,
   reasonCode: string,
-  details?: unknown
+  details?: unknown,
+  nextAction?: string | null,
+  effects?: ComponentReceipt["effects"]
 ): ComponentReceipt {
   return {
     component,
@@ -262,8 +268,93 @@ function receipt(
     outputHash: null,
     evidence: [],
     autoFixed: false,
-    nextAction: null,
+    nextAction: nextAction ?? defaultSyncNextAction(component, status, reasonCode),
+    ...(effects === undefined ? {} : { effects }),
     ...(details === undefined ? {} : { details })
+  };
+}
+
+function defaultSyncNextAction(
+  component: string,
+  status: SyncStatus,
+  reasonCode: string
+): string | null {
+  if (status === "OK") return null;
+  if (component === "adapter-projection") {
+    return "Review the preserved adapter change, apply the intended update to the `harness/` source of truth, run its focused tests, then refresh adapters; do not overwrite the local adapter file.";
+  }
+  if (component === "runtime:python") {
+    return "Install or select a usable Python runtime, then re-run `hunter-harness sync`.";
+  }
+  if (reasonCode === "DRY_RUN_NOT_EXECUTED") {
+    return "Run `hunter-harness sync` without `--dry-run` after reviewing this preview.";
+  }
+  return `Resolve ${reasonCode} for ${component}, then re-run \`hunter-harness sync\` and inspect its component receipt.`;
+}
+
+interface AdapterConflictEvidence {
+  source_path: string;
+  target_path: string;
+  source_content_sha256?: string | null;
+  adapter_content_sha256?: string | null;
+  baseline_content_sha256?: string | null;
+  old_sha256?: string | null;
+  incoming_sha256?: string | null;
+  diff_summary?: unknown;
+}
+
+export function buildPromoteCandidates(
+  conflicts: readonly AdapterConflictEvidence[]
+): Array<{
+  candidateId: string;
+  patchHash: string;
+  adapterTargets: string[];
+  sourcePaths: string[];
+  proposal: {
+    status: "PROPOSED";
+    steps: readonly string[];
+  };
+}> {
+  const grouped = new Map<string, AdapterConflictEvidence[]>();
+  for (const conflict of conflicts) {
+    const patchHash = conflict.adapter_content_sha256 ?? conflict.old_sha256;
+    if (patchHash === null || patchHash === undefined) continue;
+    grouped.set(patchHash, [...(grouped.get(patchHash) ?? []), conflict]);
+  }
+  return [...grouped.entries()]
+    .filter(([, entries]) => entries.length > 1)
+    .map(([patchHash, entries]) => ({
+      candidateId: `adapter-patch-${patchHash.slice(0, 12)}`,
+      patchHash,
+      adapterTargets: entries.map((entry) => entry.target_path).sort(),
+      sourcePaths: [...new Set(entries.map((entry) => entry.source_path))].sort(),
+      proposal: {
+        status: "PROPOSED" as const,
+        steps: [
+          "Review the shared adapter patch and confirm its intended behavior.",
+          "Apply the approved change to the matching harness/ source file(s).",
+          "Run focused source tests and refresh adapters without force-overwriting local edits."
+        ]
+      }
+    }))
+    .sort((left, right) => left.candidateId.localeCompare(right.candidateId));
+}
+
+export function summarizePartialEffects(
+  components: readonly ComponentReceipt[]
+): {
+  persisted: string[];
+  notPersisted: string[];
+  summary: string;
+} {
+  const persisted = components.flatMap((component) => component.effects?.persisted ?? []);
+  const notPersisted = components.flatMap((component) => component.effects?.notPersisted ?? []);
+  return {
+    persisted,
+    notPersisted,
+    summary: persisted.length === 0
+      ? "No durable sync effects were recorded before the overall result."
+      : `Durable effects already persisted: ${persisted.join("; ")}.${notPersisted.length === 0 ? "" : ` Not persisted: ${notPersisted.join("; ")}.`}`
   };
 }
 
@@ -346,12 +437,54 @@ function positiveEnvMs(
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/**
+ * `sync_status()` reports `ok` only once the index is current AND the
+ * maintenance outbox (drain_maintenance_outbox) has been fully drained.
+ * Older/degraded payloads may omit `maintenance` entirely -- treat that as
+ * valid so this stays backward compatible with pre-HH-KNOW-20260730-001
+ * workflow bundles.
+ */
+export function deriveKnowledgeOutputValid(
+  payload: Record<string, unknown> | null | undefined
+): boolean {
+  if (payload === null || payload === undefined) return false;
+  if (payload.ok === true) return true;
+  if (payload.upToDate !== true) return false;
+  const maintenance = asRecord(payload.maintenance);
+  if (maintenance === null) return true;
+  if (maintenance.skipped === true) return true;
+  return maintenance.ok !== false;
+}
+
+function isKnowledgeOutboxPending(
+  payload: Record<string, unknown> | null | undefined
+): boolean {
+  if (payload === null || payload === undefined) return false;
+  if (payload.upToDate !== true) return false;
+  const maintenance = asRecord(payload.maintenance);
+  if (maintenance === null || maintenance.skipped === true) return false;
+  return maintenance.ok === false;
+}
+
 export function classifyKnowledgeResult(
   result: ProcessResult,
-  outputValid: boolean
+  outputValid: boolean,
+  payload?: Record<string, unknown> | null
 ): { status: SyncStatus; reasonCode: string } {
   if (result.exitCode === 0 && !result.timedOut) {
-    return { status: "OK", reasonCode: "OK" };
+    if (outputValid) {
+      return { status: "OK", reasonCode: "OK" };
+    }
+    if (isKnowledgeOutboxPending(payload)) {
+      return { status: "WARN", reasonCode: "KNOWLEDGE_OUTBOX_PENDING" };
+    }
+    return { status: "WARN", reasonCode: "KNOWLEDGE_OUTPUT_UNVERIFIED" };
   }
   if (result.timedOut && outputValid) {
     return {
@@ -369,6 +502,39 @@ export function classifyKnowledgeResult(
     return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_SPAWN_FAILED" };
   }
   return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_FAILED" };
+}
+
+/** Ensures WARN/FAIL knowledge receipts always carry an actionable next step. */
+export function resolveKnowledgeNextAction(
+  status: SyncStatus,
+  reasonCode: string,
+  payload?: Record<string, unknown> | null
+): string | null {
+  if (status === "OK") return null;
+  const payloadNextAction = payload?.nextAction;
+  if (typeof payloadNextAction === "string" && payloadNextAction.length > 0) {
+    return payloadNextAction;
+  }
+  switch (reasonCode) {
+    case "KNOWLEDGE_OUTBOX_PENDING":
+      return (
+        "Retry `hunter-harness sync`, or run `python harness/harness-knowledge-ingest/" +
+        "scripts/harness_knowledge.py maintain --project <project> --drain` to drain " +
+        "the remaining maintenance outbox items."
+      );
+    case "KNOWLEDGE_SYNC_TIMEOUT_OUTPUT_VALID":
+      return "Re-run `hunter-harness sync`; the knowledge sync process timed out but returned a valid result.";
+    case "KNOWLEDGE_SYNC_STALL_TIMEOUT":
+    case "KNOWLEDGE_SYNC_WALL_TIMEOUT":
+      return (
+        "Re-run `hunter-harness sync`; raise HUNTER_HARNESS_SYNC_KNOWLEDGE_WALL_TIMEOUT_MS " +
+        "or HUNTER_HARNESS_SYNC_KNOWLEDGE_STALL_TIMEOUT_MS if it keeps timing out."
+      );
+    case "KNOWLEDGE_SYNC_SPAWN_FAILED":
+      return "Verify the Python runtime is available, then re-run `hunter-harness sync`.";
+    default:
+      return "Retry `hunter-harness sync` to reconcile the knowledge index and maintenance outbox.";
+  }
 }
 
 export async function probeCodeGraph(
@@ -508,10 +674,13 @@ export async function runSync(
     runtime
   ));
   if (!runtime.available) {
+    const partialEffects = summarizePartialEffects(components);
     const compact = {
       status: "BLOCKED",
       runId,
       components: statusCounts(components),
+      componentOutcomes: components,
+      partialEffects,
       reportPath: null,
       reportSha256: null
     };
@@ -527,10 +696,13 @@ export async function runSync(
       "BLOCKED",
       detection.status === "absent" ? "PROJECT_NOT_INITIALIZED" : "PROJECT_CONFIG_INVALID"
     ));
+    const partialEffects = summarizePartialEffects(components);
     dependencies.stdout(JSON.stringify({
       status: "BLOCKED",
       runId,
       components: statusCounts(components),
+      componentOutcomes: components,
+      partialEffects,
       reportPath: null,
       reportSha256: null
     }) + "\n");
@@ -577,6 +749,7 @@ export async function runSync(
       dryRun: options.dryRun === true,
       forceManaged: false
     });
+    const promotionCandidates = buildPromoteCandidates(result.conflicts);
     components.push(receipt(
       "adapter-projection",
       refreshStarted,
@@ -586,7 +759,20 @@ export async function runSync(
         applied: result.applied.length,
         removed: result.removed.length,
         preserved: result.preserved.length,
-        conflicts: result.conflicts.slice(0, 5)
+        conflicts: result.conflicts.slice(0, 20),
+        promotionCandidates
+      },
+      result.conflicts.length === 0
+        ? null
+        : "Review the source/adapter hashes and diff summaries in this receipt. For each intended patch, modify the matching `harness/` source of truth, run focused tests, then refresh adapters; do not overwrite local adapter edits.",
+      {
+        persisted: [
+          ...(result.applied.length > 0 ? [`adapter projection applied ${result.applied.length} change(s)`] : []),
+          ...(result.removed.length > 0 ? [`adapter projection removed ${result.removed.length} clean target(s)`] : [])
+        ],
+        notPersisted: result.conflicts.length === 0
+          ? []
+          : [`${result.conflicts.length} locally modified adapter target(s) were preserved`]
       }
     ));
   } catch (error) {
@@ -595,7 +781,9 @@ export async function runSync(
       refreshStarted,
       "FAIL",
       "ADAPTER_REFRESH_FAILED",
-      String(error)
+      String(error),
+      undefined,
+      { persisted: [], notPersisted: ["adapter projection did not complete"] }
     ));
   }
 
@@ -654,10 +842,16 @@ export async function runSync(
   } catch {
     // Preserve bounded raw diagnostics in the detailed report.
   }
-  const knowledgeOutputValid = parsedKnowledgePayload?.ok === true;
+  const knowledgeOutputValid = deriveKnowledgeOutputValid(parsedKnowledgePayload);
   const knowledgeOutcome = classifyKnowledgeResult(
     knowledge,
-    knowledgeOutputValid
+    knowledgeOutputValid,
+    parsedKnowledgePayload
+  );
+  const knowledgeNextAction = resolveKnowledgeNextAction(
+    knowledgeOutcome.status,
+    knowledgeOutcome.reasonCode,
+    parsedKnowledgePayload
   );
   components.push(receipt(
     "knowledge",
@@ -673,6 +867,15 @@ export async function runSync(
           : "KNOWLEDGE_OUTPUT_UNVERIFIED"
       },
       process: knowledge
+    },
+    knowledgeNextAction,
+    {
+      persisted: knowledgeOutputValid && options.dryRun !== true
+        ? ["knowledge sync returned verified output"]
+        : [],
+      notPersisted: knowledgeOutputValid || options.dryRun === true
+        ? []
+        : ["knowledge output was not verified"]
     }
   ));
 
@@ -690,13 +893,30 @@ export async function runSync(
           applied: projections.written.length,
           conflicts: projections.conflicts.slice(0, 5),
           pendingReview: candidates.candidates
+        },
+        undefined,
+        {
+          persisted: projections.written.length > 0
+            ? [`rule projection wrote ${projections.written.length} file(s)`]
+            : [],
+          notPersisted: projections.conflicts.length > 0
+            ? [`${projections.conflicts.length} rule projection conflict(s) need review`]
+            : []
         }
       ));
     } else {
       components.push(receipt("rules", rulesStarted, "UNKNOWN", "DRY_RUN_NOT_EXECUTED"));
     }
   } catch (error) {
-    components.push(receipt("rules", rulesStarted, "FAIL", "RULE_SYNC_FAILED", String(error)));
+    components.push(receipt(
+      "rules",
+      rulesStarted,
+      "FAIL",
+      "RULE_SYNC_FAILED",
+      String(error),
+      undefined,
+      { persisted: [], notPersisted: ["rule synchronization did not complete"] }
+    ));
   }
 
   const mapStarted = Date.now();
@@ -792,6 +1012,7 @@ export async function runSync(
   ));
 
   const status = overallStatus(components);
+  const partialEffects = summarizePartialEffects(components);
   const reportRelative = `.harness/runtime/sync/${runId}/reports/sync-report.json`;
   const reportAbsolute = join(root, reportRelative);
   const report = {
@@ -802,13 +1023,16 @@ export async function runSync(
     status,
     projectRoot: root,
     headCommit: gitDelta.headCommit,
-    components
+    components,
+    partialEffects
   };
   if (options.dryRun === true) {
     dependencies.stdout(JSON.stringify({
       status,
       runId,
       components: statusCounts(components),
+      componentOutcomes: components,
+      partialEffects,
       reportPath: null,
       reportSha256: null
     }) + "\n");
@@ -845,6 +1069,8 @@ export async function runSync(
     status,
     runId,
     components: statusCounts(components),
+    componentOutcomes: components,
+    partialEffects,
     reportPath: reportRelative,
     reportSha256
   }) + "\n");

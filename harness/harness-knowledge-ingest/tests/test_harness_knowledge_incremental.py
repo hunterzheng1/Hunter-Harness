@@ -221,6 +221,38 @@ class KnowledgeIncrementalTest(unittest.TestCase):
         self.assertTrue(result["comparisonBudgetExceeded"])
         self.assertGreater(result["comparisonsSkipped"], 0)
 
+    def test_online_near_dedupe_only_compares_dirty_active_candidates(self) -> None:
+        old_candidate = make_entry(
+            "fixture.decision.old-candidate",
+            "bounded sync keeps active knowledge fresh without historical scans",
+        )
+        new_entry = make_entry(
+            "fixture.decision.delta",
+            "bounded sync keeps active knowledge fresh without historical scans.",
+        )
+        stale = make_entry(
+            "fixture.decision.stale",
+            "bounded sync keeps active knowledge fresh without historical scans",
+        )
+        stale["status"] = "stale"
+        superseded = make_entry(
+            "fixture.decision.superseded",
+            "bounded sync keeps active knowledge fresh without historical scans",
+        )
+        superseded["status"] = "superseded"
+
+        result = KNOWLEDGE.dedupe_near_duplicates(
+            [old_candidate, new_entry, stale, superseded],
+            dirty_entry_ids={new_entry["id"]},
+            max_exact_comparisons=20,
+            time_budget_ms=1_000,
+        )
+
+        self.assertEqual(result["merged"], 1)
+        self.assertEqual(stale["status"], "stale")
+        self.assertEqual(superseded["status"], "superseded")
+        self.assertLessEqual(result["candidatePairs"], 1)
+
     def test_sqlite_second_write_is_a_true_dirty_set_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "index.sqlite"

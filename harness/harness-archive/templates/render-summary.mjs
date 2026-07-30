@@ -69,7 +69,7 @@ const risks = list(current.findings).length
 const statusTone = (raw) => {
   const status = String(raw || "UNKNOWN").toUpperCase();
   if (/FAIL|ERROR|BLOCKED/.test(status)) return "danger";
-  if (/WARN|CONDITIONAL|PARTIAL|NOT_RUN|UNKNOWN|SKIP/.test(status)) return "warning";
+  if (/WARN|CONDITIONAL|PARTIAL|NOT_RUN|UNKNOWN|SKIP|EVIDENCE_MISSING/.test(status)) return "warning";
   if (/ADVISORY|REUSED|NOT_APPLICABLE/.test(status)) return "neutral";
   return "success";
 };
@@ -77,7 +77,7 @@ const STATUS_LABELS = {
   OK: "通过", PASS: "通过", PASSED: "通过", CONDITIONAL_OK: "有条件通过",
   WARN: "警告", ADVISORY: "建议", FAIL: "失败", FAILED: "失败", ERROR: "错误",
   BLOCKED: "阻塞", NOT_RUN: "未运行", SKIPPED: "已跳过",
-  NOT_APPLICABLE: "不适用", UNKNOWN: "未知"
+  NOT_APPLICABLE: "不适用", UNKNOWN: "未知", EVIDENCE_MISSING: "证据缺失"
 };
 const pill = (raw) => {
   const status = String(raw || "UNKNOWN").toUpperCase();
@@ -115,7 +115,17 @@ const verificationStatus = (value) => {
 };
 const verificationNote = (key, raw) => {
   const value = record(raw);
-  if (key === "unitTests") return `${value.passRate || `${value.run ?? 0} 项`} · 失败 ${value.failures ?? 0}`;
+  if (key === "unitTests") {
+    const unique = numeric(value.uniqueTestCount);
+    const uniqueLabel = unique === null ? "唯一用例未记录" : `唯一 ${unique} 项`;
+    return `${value.passRate || `${value.run ?? 0} 次执行`} · ${uniqueLabel} · 重跑 ${value.rerunCount ?? 0}`;
+  }
+  if (key === "dbCompatibility") {
+    const evidence = record(verification.dbCompatibilityEvidence);
+    return evidence.status === "EVIDENCE_MISSING"
+      ? "缺少可验证的类型化账本/收据"
+      : evidence.reason || evidence.evidenceHash || "类型化兼容性证据";
+  }
   if (key === "apiTests") return `${value.passRate || `${value.passed ?? 0}/${value.total ?? 0}`} · 阻塞 ${value.blocked ?? 0}`;
   if (key === "browserE2E") return `${value.passed ?? 0}/${value.total ?? 0} 通过 · ${value.failed ?? 0} 失败 · 重试 ${value.retries ?? 0}`;
   if (value.checks !== undefined) return `${value.checks} 项检查`;
@@ -135,6 +145,8 @@ const groups = [
   const statuses = values.map(verificationStatus);
   const groupStatus = statuses.some((status) => /FAIL|ERROR|BLOCKED/.test(String(status)))
     ? "FAIL"
+    : statuses.some((status) => /EVIDENCE_MISSING/.test(String(status)))
+    ? "EVIDENCE_MISSING"
     : statuses.some((status) => /WARN|CONDITIONAL|PARTIAL/.test(String(status)))
     ? "WARN"
     : statuses.length && statuses.every((status) => /NOT_APPLICABLE/.test(String(status)))
@@ -147,6 +159,13 @@ const groups = [
 });
 const passedGroups = groups.filter((group) => group.status === "OK").length;
 const productCommit = identity.productCommit || data.productCommit || data.finalCommit;
+const identityChain = [
+  ["检查点", identity.checkpointCommit || data.checkpointCommit],
+  ["产品", productCommit],
+  ["功能尖端", identity.featureTip || data.featureTip],
+  ["合并", identity.mergeCommit || data.mergeCommit || identity.featureMergeHash],
+  ["发布尖端", identity.releaseTip || data.releaseTip || identity.releaseTipHash]
+].filter(([, value]) => value).map(([label, value]) => `${label} ${shortHash(value)}`).join(" → ") || "N/A";
 const wallClock = timing.workflowWallClockMs ?? record(data.durations).totalMs;
 
 const groupHtml = groups.map((group) => `
@@ -201,7 +220,7 @@ const html = `<!doctype html>
   ${recordOnly ? '<div class="record-only">归档意图：仅记录 · 未请求发布</div>' : ""}
 </section>
 <section class="metrics">
-  <article class="metric"><small>产品提交</small><strong><code title="${esc(productCommit || "N/A")}">${esc(shortHash(productCommit))}</code></strong></article>
+  <article class="metric"><small>产品提交链</small><strong><code title="${esc(identityChain)}">${esc(identityChain)}</code></strong></article>
   <article class="metric"><small>验证概览</small><strong>${passedGroups}/${groups.length} 组通过</strong><small>按后端 / Geo / 前端 / 浏览器 / API</small></article>
   <article class="metric"><small>风险与动作</small><strong>${risks.length} / ${actions.length}</strong><small>当前风险 / 人工动作</small></article>
   <article class="metric"><small>全流程耗时</small><strong>${esc(duration(wallClock))}</strong><small>活动 ${esc(duration(timing.stageActiveExecutionMs))}</small></article>
@@ -234,6 +253,7 @@ const html = `<!doctype html>
 <details><summary>命令证据（${commands.length}）</summary><div class="table-wrap"><table><thead><tr><th>阶段</th><th>命令</th><th>结果</th></tr></thead><tbody>${commandHtml}</tbody></table></div></details>
 <details><summary>技术元数据</summary><div><dl>
   <dt>产品提交</dt><dd><code>${esc(productCommit || "N/A")}</code></dd>
+  <dt>检查点 → 产品 → 功能尖端 → 合并 → 发布尖端</dt><dd><code>${esc(identityChain)}</code></dd>
   <dt>产品树哈希</dt><dd><code>${esc(identity.productTreeHash || data.productTreeHash || "N/A")}</code></dd>
   <dt>环境哈希</dt><dd><code>${esc(identity.environmentHash || data.environmentHash || "N/A")}</code></dd>
   <dt>基线提交</dt><dd><code>${esc(identity.baseCommit || data.baseCommit || "N/A")}</code></dd>

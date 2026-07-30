@@ -36,6 +36,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import harness_change  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths  # noqa: E402
+import harness_service  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -291,6 +292,68 @@ def _dedupe_verify_commands(
         seen.add(normalized)
         result.append(list(normalized))
     return result
+
+
+_HEAVY_VERIFICATIONS = frozenset({"unitTestFull", "apiTest", "browserTest", "package"})
+
+
+def _merge_command_kind(item: Any) -> tuple[str, str | None]:
+    """Classify typed merge commands; legacy strings remain smoke."""
+    if not isinstance(item, dict):
+        return "smoke", None
+    verification = str(item.get("verification") or item.get("target") or "").strip() or None
+    declared = str(item.get("kind") or item.get("class") or "").strip().lower()
+    if declared in {"integrity", "smoke", "heavyweight"}:
+        return declared, verification
+    return ("heavyweight" if verification in _HEAVY_VERIFICATIONS else "smoke"), verification
+
+
+def _reusable_merge_evidence(
+    ledger_path: Path | None,
+    *,
+    verification: str | None,
+    command: Sequence[str],
+    product_tree_hash: str | None,
+    reuse_context: dict[str, str],
+) -> dict[str, Any] | None:
+    """Return feature-tip evidence when merge content and execution key match."""
+    if ledger_path is None or verification is None or not product_tree_hash:
+        return None
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw = ledger.get("verificationTargets")
+    entries = raw.values() if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+    command_hash = hl.command_set_hash(" ".join(str(part) for part in command))
+    for entry in reversed(list(entries)):
+        if not isinstance(entry, dict) or entry.get("verification") != verification:
+            continue
+        if entry.get("status") != "OK":
+            continue
+        if str(entry.get("productTreeHash") or "").removeprefix("sha256:") != product_tree_hash.removeprefix("sha256:"):
+            continue
+        if str(entry.get("commandSetHash") or "") != command_hash:
+            continue
+        # Context identity is fail-closed: an evidence field may only be
+        # reused when the merge policy supplies the same current value.
+        if any(
+            str(entry.get(field) or "").strip()
+            and str(entry.get(field) or "").strip()
+            != str(reuse_context.get(field) or "").strip()
+            for field in ("environmentHash", "toolchainHash", "lockHash", "dbSchemaHash")
+        ):
+            continue
+        return {
+            "reusedFrom": {
+                "targetId": entry.get("id"),
+                "sourceCommit": entry.get("productCommit") or entry.get("currentHead"),
+                "sourceCandidate": entry.get("candidateId"),
+            },
+            "reuseReason": "product tree and canonical execution key matched",
+            "reuseKey": hl.canonical_reuse_key({**entry, "verification": verification}),
+        }
+    return None
 
 
 def _normalize_verify_command(
@@ -1210,6 +1273,49 @@ class IntegrationTransaction:
                 raise ValueError(f"requiredOnMerge[{index}].command missing")
         return commands
 
+    def _required_on_merge_plan(self) -> list[dict[str, Any]]:
+        """Classify profile commands without breaking the legacy command API."""
+        import harness_profile
+
+        profile = harness_profile.load_profile(self.project_root)
+        merge = profile.get("mergeVerification") if isinstance(profile, dict) else None
+        required = merge.get("requiredOnMerge") if isinstance(merge, dict) else []
+        if not isinstance(required, list):
+            return []
+        plan: list[dict[str, Any]] = []
+        for index, item in enumerate(required):
+            if isinstance(item, str) and item.strip():
+                plan.append({"command": _split_verify_command(item.strip()), "kind": "smoke"})
+                continue
+            if not isinstance(item, dict):
+                raise ValueError(f"requiredOnMerge[{index}] must be string or object")
+            raw = item.get("command")
+            if isinstance(raw, list) and raw and all(isinstance(value, str) and value for value in raw):
+                command = [str(value) for value in raw]
+            elif isinstance(raw, str) and raw.strip():
+                command = _split_verify_command(raw.strip())
+            else:
+                raise ValueError(f"requiredOnMerge[{index}].command missing")
+            kind, verification = _merge_command_kind(item)
+            plan.append(
+                {
+                    "command": command,
+                    "kind": kind,
+                    "verification": verification,
+                    "reuseContext": {
+                        field: str(item.get(field)).strip()
+                        for field in (
+                            "environmentHash",
+                            "toolchainHash",
+                            "lockHash",
+                            "dbSchemaHash",
+                        )
+                        if str(item.get(field) or "").strip()
+                    },
+                }
+            )
+        return plan
+
     def verify(
         self,
         commands: Sequence[Sequence[str]] | None = None,
@@ -1217,12 +1323,16 @@ class IntegrationTransaction:
         timeout_seconds: float = DEFAULT_VERIFY_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         commands = list(commands or [])
-        # Wave-2 H-9: append profile mergeVerification.requiredOnMerge commands.
         try:
-            commands.extend(self._required_on_merge_commands())
+            profile_plan = self._required_on_merge_plan()
         except Exception as exc:  # noqa: BLE001 — surface as verify plan error
             raise VerifyPlanMissingError(f"mergeVerification load failed: {exc}") from exc
-        commands = _dedupe_verify_commands(commands)
+        plan = [
+            {"command": list(command), "kind": "smoke", "verification": None}
+            for command in commands
+        ]
+        plan.extend(profile_plan)
+        commands = _dedupe_verify_commands([item["command"] for item in plan])
         if timeout_seconds <= 0:
             raise VerifyPlanMissingError("verification timeout must be greater than zero")
 
@@ -1236,7 +1346,35 @@ class IntegrationTransaction:
                 )
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
+            merge_tree = self.runner.text(intg_root, "rev-parse", "--verify", "HEAD^{tree}")
+            merge_tree_hash = "sha256:" + merge_tree if merge_tree else None
+            policies = {tuple(item["command"]): item for item in plan}
             for index, command in enumerate(commands):
+                policy = policies.get(
+                    tuple(command), {"kind": "smoke", "verification": None}
+                )
+                reused = (
+                    _reusable_merge_evidence(
+                        self._ledger_path(),
+                        verification=policy.get("verification"),
+                        command=command,
+                        product_tree_hash=merge_tree_hash,
+                        reuse_context=policy.get("reuseContext") or {},
+                    )
+                    if policy.get("kind") == "heavyweight"
+                    else None
+                )
+                if reused is not None:
+                    results.append(
+                        {
+                            "command": list(command),
+                            "exitCode": 0,
+                            "reused": True,
+                            "kind": "heavyweight",
+                            **reused,
+                        }
+                    )
+                    continue
                 executable_command = _normalize_verify_command(command)
                 started = dt.datetime.now().astimezone()
                 try:
@@ -1579,6 +1717,51 @@ class IntegrationTransaction:
             "residualPaths": residual_paths,
         }
 
+    def _persist_cleanup_snapshot(
+        self, journal: dict[str, Any], execution_root: Path
+    ) -> dict[str, Any]:
+        """Persist all evidence needed to close cleanup after the root is gone."""
+        snapshot = {
+            "schemaVersion": 1,
+            "createdAt": now_iso(),
+            "changeId": self.change_id,
+            "attemptId": self.run_id,
+            "worktreeRoot": str(execution_root.resolve()),
+            "executionRoot": str(execution_root.resolve()),
+            "mergeEvidence": {
+                key: journal.get(key)
+                for key in (
+                    "mergeCommit",
+                    "pushedHead",
+                    "mergeFinalHash",
+                    "ciExpectedHead",
+                    "remoteHead",
+                )
+            },
+            "evidenceIdentity": journal.get("evidenceIdentity"),
+        }
+        journal["cleanupSnapshot"] = snapshot
+        self._save(journal)
+        return snapshot
+
+    def _stop_owned_services(
+        self, journal: dict[str, Any], execution_root: Path
+    ) -> dict[str, Any]:
+        """Stop only sessions explicitly owned by this transaction worktree."""
+        result = harness_service.stop_owned_sessions(
+            self.project_root,
+            change_id=self.change_id,
+            execution_root=execution_root,
+            worktree_root=execution_root,
+        )
+        journal["serviceStop"] = result
+        self._save(journal)
+        if not result["ok"]:
+            raise CleanupRefusedError(
+                "owned service could not be identity-verified and stopped"
+            )
+        return result
+
     def cleanup(self) -> dict[str, Any]:
         try:
             existing = self._load()
@@ -1592,6 +1775,8 @@ class IntegrationTransaction:
         def action(journal: dict[str, Any]) -> None:
             self._assert_cleanup_consistency(journal)
             intg_root = Path(journal["integrationRoot"])
+            self._persist_cleanup_snapshot(journal, intg_root)
+            service_stop = self._stop_owned_services(journal, intg_root)
             cleanup_result: dict[str, Any] = {
                 "ok": True,
                 "code": "ALREADY_ABSENT",
@@ -1657,6 +1842,15 @@ class IntegrationTransaction:
                 "primaryHead": local_target,
                 "remoteHead": remote_target,
                 "residualPaths": cleanup_result.get("residualPaths") or [],
+                "serviceStop": service_stop,
+            }
+            journal["cleanupReceipt"] = {
+                "schemaVersion": 1,
+                "completedAt": now_iso(),
+                "snapshot": journal.get("cleanupSnapshot"),
+                "worktreeRemoval": cleanup_result,
+                "serviceStop": service_stop,
+                "worktreeGone": not intg_root.exists(),
             }
             self._save(journal)
 

@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import uuid
 from pathlib import Path
@@ -351,43 +352,121 @@ def degradation_matrix(
     return {"fallback": "advisory", "status": "ADVISORY"}
 
 
+def _canonical_root(value: str | Path) -> str:
+    """Canonicalize a root for an identity comparison across Windows worktrees."""
+    return os.path.normcase(str(Path(value).expanduser().resolve()))
+
+
+def codegraph_worktree_id(execution_root: Path) -> str | None:
+    """Return a stable id for a linked worktree, or ``None`` for the main checkout."""
+    root = Path(execution_root).resolve()
+    try:
+        git_dir = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        common_dir = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return None
+    if git_dir.returncode != 0 or common_dir.returncode != 0:
+        return None
+    git_dir_path = Path(git_dir.stdout.strip())
+    common_dir_path = Path(common_dir.stdout.strip())
+    if not git_dir_path.is_absolute():
+        git_dir_path = (root / git_dir_path).resolve()
+    if not common_dir_path.is_absolute():
+        common_dir_path = (root / common_dir_path).resolve()
+    if _canonical_root(git_dir_path) == _canonical_root(common_dir_path):
+        return None
+    return "sha256:" + hashlib.sha256(
+        _canonical_root(root).encode("utf-8")
+    ).hexdigest()
+
+
+def codegraph_expected_identity(
+    execution_root: Path,
+    *,
+    expected_repository_id: str,
+    expected_head: str,
+) -> dict[str, str | None]:
+    """Build the identity contract supplied with every CodeGraph query."""
+    root = Path(execution_root).resolve()
+    return {
+        "rootPath": str(root),
+        "worktreeId": codegraph_worktree_id(root),
+        "repositoryId": expected_repository_id,
+        "head": expected_head,
+        "indexSnapshotAt": None,
+    }
+
+
 def validate_codegraph_identity(
     *,
     response: dict[str, Any],
     expected_repository_id: str,
     expected_head: str,
+    expected_root: str | Path,
+    expected_worktree_id: str | None,
 ) -> dict[str, Any]:
-    """C12: validate CodeGraph identity — repositoryId/indexedHead must match.
+    """Validate CodeGraph evidence before Review adopts its source snippets.
 
-    On mismatch, signal CODEGRAPH_IDENTITY_MISMATCH with fallback to Grep/Glob + Read.
+    A repository id is shared by the main checkout and linked worktrees, so it
+    cannot by itself prevent main-checkout evidence from being used for feature
+    worktree review. Root and worktree identity are therefore mandatory.
     """
     repo_id = response.get("repositoryId")
-    indexed_head = response.get("indexedHead")
-    indexed_at = response.get("indexedAt")
+    indexed_head = response.get("head", response.get("indexedHead"))
+    indexed_at = response.get("indexSnapshotAt", response.get("indexedAt"))
+    root_path = response.get("rootPath", response.get("indexedRoot"))
+    worktree_id = response.get("worktreeId")
+    expected_root_path = _canonical_root(expected_root)
+    actual_root_path = (
+        _canonical_root(root_path) if isinstance(root_path, str) and root_path.strip() else None
+    )
+    actual = {
+        "rootPath": root_path,
+        "worktreeId": worktree_id,
+        "repositoryId": repo_id,
+        "head": indexed_head,
+        "indexSnapshotAt": indexed_at,
+    }
+    expected = {
+        "rootPath": str(Path(expected_root).resolve()),
+        "worktreeId": expected_worktree_id,
+        "repositoryId": expected_repository_id,
+        "head": expected_head,
+        "indexSnapshotAt": None,
+    }
     if (
         repo_id == expected_repository_id
         and indexed_head == expected_head
+        and actual_root_path == expected_root_path
+        and worktree_id == expected_worktree_id
         and indexed_at
     ):
         return {
             "ok": True,
             "code": "IDENTITY_OK",
-            "repositoryId": repo_id,
-            "indexedHead": indexed_head,
-            "indexedAt": indexed_at,
+            "evidence": actual,
         }
     return {
         "ok": False,
-        "code": "CODEGRAPH_IDENTITY_MISMATCH",
-        "expected": {
-            "repositoryId": expected_repository_id,
-            "indexedHead": expected_head,
-        },
-        "actual": {
-            "repositoryId": repo_id,
-            "indexedHead": indexed_head,
-            "indexedAt": indexed_at,
-        },
+        "code": "IDENTITY_MISMATCH",
+        "expected": expected,
+        "actual": actual,
         "fallback": "grep-glob-read",
     }
 
@@ -396,6 +475,20 @@ def cmd_validate_findings(args: argparse.Namespace) -> int:
     doc = _read_json(Path(args.input))
     problems = validate_findings(doc)
     payload = {"ok": not problems, "problems": problems}
+    return _emit(payload, as_json=True)
+
+
+def cmd_validate_codegraph_identity(args: argparse.Namespace) -> int:
+    response = _read_json(Path(args.input))
+    if not isinstance(response, dict):
+        raise ValueError("CodeGraph response must be an object")
+    payload = validate_codegraph_identity(
+        response=response,
+        expected_repository_id=args.repository_id,
+        expected_head=args.head,
+        expected_root=args.execution_root,
+        expected_worktree_id=args.worktree_id,
+    )
     return _emit(payload, as_json=True)
 
 
@@ -420,6 +513,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_validate = sub.add_parser("validate-findings")
     p_validate.add_argument("--input", required=True)
     p_validate.set_defaults(func=cmd_validate_findings)
+
+    p_codegraph = sub.add_parser("validate-codegraph-identity")
+    p_codegraph.add_argument("--input", required=True)
+    p_codegraph.add_argument("--execution-root", required=True)
+    p_codegraph.add_argument("--repository-id", required=True)
+    p_codegraph.add_argument("--head", required=True)
+    p_codegraph.add_argument("--worktree-id")
+    p_codegraph.set_defaults(func=cmd_validate_codegraph_identity)
 
     p_findings = sub.add_parser("write-findings")
     p_findings.add_argument("--change-dir", required=True)

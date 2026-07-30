@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.41] — hunter-harness / [0.2.39] — @hunter-harness/workflow-harness
+
+### Fixed（2026-07-30 CBM Forge generic-job-status-api Harness 复盘上游修复）
+
+- **阶段闭合**：`phase.start` 写入路径在发现同阶段开放尝试时先写 `phase.auto_sealed`（原因含 executor_lost / user_wait / external_wait / superseded / unknown）；`recoveredMs` 与有效执行时间分离，CLI/gate 共用同一保证。
+- **归档身份**：base 解析改为 ledger → archive-boundary state-snapshot → phase-context → merge parent/merge-base；adequacy 拒绝 base=feature tip、no-ff 仅 merge delta、ownership 与报告 diff 显著缩小等“内部自洽但截断”的边界。
+- **Sync 指令路径**：根相对 inline code 优先按项目根解析，Markdown link 使用 target 而非显示文本，并保留越界拒绝与 resolution trace。
+- **Knowledge Sync 事务**：`sync_status` 在索引最新后推进 maintenance outbox；索引成功但 outbox 未清时返回 `ok=false`/`WARN` 与非空 `nextAction`；崩溃残留的 stale `running` 可恢复。
+- **验证复用**：以 productTreeHash + 命令集/环境/工具链/DB 身份为复用键；feature tip 与 no-ff merge 产品树相同时可复用 Full/API/Browser/Package，仅补跑 merge integrity/smoke。
+- **服务生命周期**：service-session 记录 worktree/change 所有权；cleanup 先停 owned 服务再删 worktree，并写 cleanup receipt；非 Harness 进程只报告不误杀。
+- **报告语义**：DB compatibility 只认类型化证据（区分 NOT_RUN / NOT_APPLICABLE / UNKNOWN / EVIDENCE_MISSING）；测试统计增加 unique/rerun；报告展示 checkpoint→product→feature tip→merge 身份链。
+- **Knowledge 真增量**：archive delta 分类；online near-dedupe/freshness 排除 stale/superseded；SQLite dirty upsert 同步 lifecycle 状态变更（promote/conflict）。
+- **CodeGraph / Adapter / UX**：Review 对 worktree 根不匹配返回 `IDENTITY_MISMATCH`；Adapter 冲突聚合为可提升 proposal 且禁止盲覆盖；Sync 输出 `partialEffects` 与组件级可执行 `nextAction`；Archive `auto-gate` 满足时可无确认执行。
+- workflow bundle 提升至 `0.2.29`，最低 CLI 版本提升至 `0.2.41`。
+
 ## [0.2.40] — hunter-harness / [0.2.38] — @hunter-harness/workflow-harness
 
 ### Fixed（worktree 发包源码绑定补丁）

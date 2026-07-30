@@ -1501,44 +1501,67 @@ def append_phase_event(
     executor_model: str | None = None,
     code: str | None = None,
 ) -> dict[str, Any]:
+    """Skill-facing phase lifecycle append (begin/close use this directly).
+
+    HH-WF-20260730-001: shares harness_events' write-path auto-seal helpers
+    so a ``phase.start`` here gets the same guarantee as the CLI's
+    ``append_events.py append`` — a still-open prior attempt for the same
+    phase is auto-sealed (``phase.auto_sealed``) before the new start is
+    appended, atomically under the same lock.
+    """
     events_file = he.events_path(change_dir)
-    existing = he.load_events(events_file)
-    args = argparse.Namespace(
-        phase=phase,
-        type=type_,
-        status=status,
-        note=note,
-        command=None,
-        exit_code=None,
-        duration_ms=None,
-        name=None,
-        path=None,
-        kind=None,
-        code=code,
-        severity=None,
-        message=None,
-        decision=None,
-        reason=None,
-        run_id=run_id,
-        attempt=None,
-        executor_tool=executor_tool,
-        executor_agent=executor_agent,
-        executor_model=executor_model,
-        handoff_from_tool=None,
-        handoff_reason=None,
-    )
-    event = he.build_event(args, existing)
-    if identity:
-        for key, value in identity.items():
-            if key not in event and value is not None:
-                event[key] = value
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     lock_path = events_file.with_name(events_file.name + ".lock")
+    auto_sealed: list[dict[str, Any]] = []
     with he.event_file_lock(lock_path):
+        existing = he.load_events(events_file)
+        args = argparse.Namespace(
+            phase=phase,
+            type=type_,
+            status=status,
+            note=note,
+            command=None,
+            exit_code=None,
+            duration_ms=None,
+            name=None,
+            path=None,
+            kind=None,
+            code=code,
+            severity=None,
+            message=None,
+            decision=None,
+            reason=None,
+            run_id=run_id,
+            attempt=None,
+            executor_tool=executor_tool,
+            executor_agent=executor_agent,
+            executor_model=executor_model,
+            handoff_from_tool=None,
+            handoff_reason=None,
+        )
+        event = he.build_event(args, existing)
+        if identity:
+            for key, value in identity.items():
+                if key not in event and value is not None:
+                    event[key] = value
+        if type_ == "phase.start":
+            open_attempts = he.open_attempts_for_phase(existing, phase)
+            if open_attempts:
+                inferred_reason = he.infer_auto_seal_reason(
+                    open_attempts[-1].get("events") or []
+                )
+                auto_sealed = he.seal_open_phase_attempts(
+                    existing, phase=phase, seal_reason=inferred_reason
+                )
+        for seal_event in auto_sealed:
+            he.atomic_append_line(
+                events_file,
+                json.dumps(seal_event, ensure_ascii=False, separators=(",", ":")),
+            )
+        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
         he.atomic_append_line(events_file, line)
     rendered = False
     log_path = None
-    if type_ == "phase.end":
+    if type_ == "phase.end" or auto_sealed:
         events = he.load_events(events_file)
         content = he.render_execution_log(events)
         log_path = he.write_execution_log(change_dir, content)
@@ -1549,6 +1572,7 @@ def append_phase_event(
         "path": str(events_file),
         "rendered": rendered,
         "executionLogPath": str(log_path) if log_path else None,
+        "autoSealed": auto_sealed,
     }
 
 

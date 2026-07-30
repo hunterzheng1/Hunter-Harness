@@ -130,7 +130,7 @@ review 结果默认只作参考，不阻塞 submit/archive；报告措辞遵循 
 
 ### 四、Shell 安全 / 敏感信息 / 证据化报告 / CodeGraph 探索
 
-git diff/log 命令通过 `powershell.exe -Command "..."` 执行；review-report 中如发现明文 token/密码/密钥，必须列入 RED 问题并在报告中以 `<TOKEN_REDACTED>` 等占位符引用；RED/YELLOW/OK 结论必须基于实际 diff 内容，不得凭印象判断。代码探索必须优先使用 CodeGraph MCP 工具（`mcp__codegraph__codegraph_explore`），不允许通过普通 Bash 调 codegraph 命令（已列入 `disallowed-tools`）；MCP 不可用时降级为 Grep/Glob + Read，并在执行日志记录降级原因。遵循 `../protocols/powershell-protocol.md` / `sensitive-info-protocol.md` / `evidence-based-reporting-protocol.md`。
+git diff/log 命令通过 `powershell.exe -Command "..."` 执行；review-report 中如发现明文 token/密码/密钥，必须列入 RED 问题并在报告中以 `<TOKEN_REDACTED>` 等占位符引用；RED/YELLOW/OK 结论必须基于实际 diff 内容，不得凭印象判断。代码探索必须优先使用 CodeGraph MCP 工具（`mcp__codegraph__codegraph_explore`），不允许通过普通 Bash 调 codegraph 命令（已列入 `disallowed-tools`）；采纳任何返回源码前，按 `reference.md` 的 C12 合同校验 executionRoot/rootPath、worktreeId、repositoryId、HEAD 与 index snapshot，`IDENTITY_MISMATCH` 必须读取实际 worktree，不得当作 stale 忽略；MCP 不可用时降级为 Grep/Glob + Read，并在执行日志记录降级原因。遵循 `../protocols/powershell-protocol.md` / `sensitive-info-protocol.md` / `evidence-based-reporting-protocol.md`。
 
 ### 五、state snapshot 与源码重验
 

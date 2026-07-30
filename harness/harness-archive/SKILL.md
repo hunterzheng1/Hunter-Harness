@@ -43,7 +43,7 @@ disallowed-tools:
 自动调用边界：
 
 - 归档涉及移动/删除原变更目录，支持被其他 skill 调用，但调用前必须确保前置条件已满足；也支持用户显式 `/harness-archive` 调用。
-- 归档前确认是强制阻断检查点，用户拒绝 → 终止流程，不执行任何操作。
+- 默认归档前确认是阻断检查点。若 `harness_archive.py auto-gate` 返回 `ARCHIVE_AUTO_GATE_SATISFIED`（Submit 或 Merge 已终态，archive-boundary snapshot 存在且全部归档门禁满足），后续 Archive 可无 AskQuestion 自动运行；其他情况仍须确认。
 
 ## 前置条件
 
@@ -94,9 +94,12 @@ disallowed-tools:
 - **Read `checklist.md`** — 归档前检查项
 - 发现多个未归档变更 → 让用户选择或终止
 
-### Phase 2：确认归档 ⚠️ 强制阻断
+### Phase 2：确认归档 / 自动门禁
 
-blocking user confirmation 让用户确认归档操作。**用户拒绝 → 终止流程，不执行任何操作。**
+先运行 `harness_archive.py auto-gate --change-dir ".harness/changes/<change-name>" --intent <intent> --json`。
+
+- `autoArchiveAllowed=true`：记录 gate receipt，直接进入 Phase 3；无需 AskQuestion。
+- 否则：blocking user confirmation 让用户确认归档操作。**用户拒绝 → 终止流程，不执行任何操作。**
 
 - **Read `reference.md`** — 确认对话框的内容格式
 
@@ -127,9 +130,9 @@ blocking user confirmation 让用户确认归档操作。**用户拒绝 → 终�
 
 扫描排除 `.harness/archive/`；多个未归档变更 → 让用户选择或终止，不批量归档。
 
-### 二、归档前确认是强制阻断检查点
+### 二、归档前确认或自动门禁
 
-blocking user confirmation 确认；用户拒绝 → 终止，不执行任何操作。
+`auto-gate` 只有在 Submit/Merge 终态、`meta/state-snapshot.json` 含 archive-boundary base、且 `status.archivable=true` 时才允许无确认执行。未满足时 blocking user confirmation；用户拒绝 → 终止，不执行任何操作。
 
 ### 三、文件移动只用内置工具或 PowerShell
 
@@ -202,7 +205,7 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 fi
 
 ## 交互白名单
 
-**仅允许**归档确认（Phase 2 blocking user confirmation）；拒绝 → 终止，不执行任何移动。
+仅当 `auto-gate` 未满足时，允许归档确认（Phase 2 blocking user confirmation）；拒绝 → 终止，不执行任何移动。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`archive`

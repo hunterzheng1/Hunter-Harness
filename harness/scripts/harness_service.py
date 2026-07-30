@@ -726,6 +726,173 @@ def write_session(change_dir: Path, session: dict[str, Any]) -> Path:
     return path
 
 
+def _same_path(left: Any, right: Path | None) -> bool:
+    if right is None or not isinstance(left, str) or not left.strip():
+        return False
+    try:
+        return Path(left).resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def session_is_owned(
+    session: dict[str, Any],
+    *,
+    change_id: str | None = None,
+    execution_root: Path | None = None,
+    worktree_root: Path | None = None,
+) -> bool:
+    """Return true for an AI session owned by the supplied change/root filters.
+
+    ``change_id`` is required when provided. Root filters match if the session's
+    ``executionRoot`` or ``worktreeRoot`` equals any supplied root (OR).
+    """
+    if session.get("startedBy") != "AI":
+        return False
+    if change_id is not None and session.get("changeId") != change_id:
+        return False
+    root_matches: list[bool] = []
+    if execution_root is not None:
+        root_matches.append(_same_path(session.get("executionRoot"), execution_root))
+        root_matches.append(_same_path(session.get("worktreeRoot"), execution_root))
+    if worktree_root is not None:
+        root_matches.append(_same_path(session.get("worktreeRoot"), worktree_root))
+        root_matches.append(_same_path(session.get("executionRoot"), worktree_root))
+    if root_matches and not any(root_matches):
+        return False
+    return True
+
+
+def find_owned_sessions(
+    project_root: Path,
+    *,
+    change_id: str | None = None,
+    execution_root: Path | None = None,
+    worktree_root: Path | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Discover persisted sessions and classify them without stopping anything."""
+    project = resolve_path(project_root)
+    candidate_dirs: list[Path] = []
+    if change_id:
+        candidate_dirs.extend(
+            [
+                project / ".harness" / "changes" / change_id,
+                project / ".harness" / "state" / "changes" / change_id,
+            ]
+        )
+    else:
+        for root in (
+            project / ".harness" / "changes",
+            project / ".harness" / "state" / "changes",
+        ):
+            if root.is_dir():
+                candidate_dirs.extend(path for path in root.iterdir() if path.is_dir())
+
+    owned: list[dict[str, Any]] = []
+    reported: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    for change_dir in candidate_dirs:
+        path = session_path(change_dir)
+        try:
+            path = path.resolve()
+        except OSError:
+            continue
+        if path in seen or not path.is_file():
+            continue
+        seen.add(path)
+        try:
+            session = load_session(change_dir)
+        except SessionCorrupt as exc:
+            reported.append(
+                {
+                    "sessionPath": str(path),
+                    "reason": "session-corrupt",
+                    "detail": str(exc),
+                }
+            )
+            continue
+        if session is None:
+            continue
+        item = {"changeDir": str(change_dir.resolve()), "session": session}
+        if session_is_owned(
+            session,
+            change_id=change_id,
+            execution_root=execution_root,
+            worktree_root=worktree_root,
+        ):
+            owned.append(item)
+        else:
+            reported.append(
+                {
+                    "sessionPath": str(path),
+                    "reason": "not-owned",
+                    "startedBy": session.get("startedBy"),
+                    "pid": session.get("pid"),
+                    "leasedPort": session.get("leasedPort"),
+                }
+            )
+    return {"owned": owned, "reported": reported}
+
+
+def stop_owned_sessions(
+    project_root: Path,
+    *,
+    change_id: str | None = None,
+    execution_root: Path | None = None,
+    worktree_root: Path | None = None,
+) -> dict[str, Any]:
+    """Stop only discovered AI sessions whose persisted ownership still matches."""
+    discovered = find_owned_sessions(
+        project_root,
+        change_id=change_id,
+        execution_root=execution_root,
+        worktree_root=worktree_root,
+    )
+    stopped: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    ports_still_in_use: list[int] = []
+    for item in discovered["owned"]:
+        change_dir = Path(item["changeDir"])
+        session = item["session"]
+        if not session_is_owned(
+            session,
+            change_id=change_id,
+            execution_root=execution_root,
+            worktree_root=worktree_root,
+        ):
+            blocked.append(
+                {"sessionPath": str(session_path(change_dir)), "reason": "ownership-changed"}
+            )
+            continue
+        result = stop_ai_session(change_dir, session, require_identity=True)
+        result["sessionPath"] = str(session_path(change_dir))
+        if result.get("action") == "needs-user-decision":
+            blocked.append(result)
+            continue
+        pid = session.get("pid")
+        if isinstance(pid, int) and is_pid_alive(pid):
+            blocked.append(
+                {
+                    "sessionPath": str(session_path(change_dir)),
+                    "reason": "owned-process-still-alive",
+                    "pid": pid,
+                }
+            )
+            continue
+        stopped.append(result)
+        port = session.get("leasedPort")
+        if isinstance(port, int) and is_port_in_use(port):
+            ports_still_in_use.append(port)
+    return {
+        "ok": not blocked,
+        "ownedSessions": len(discovered["owned"]),
+        "stopped": stopped,
+        "blocked": blocked,
+        "reported": discovered["reported"],
+        "portsStillInUse": ports_still_in_use,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Start / stop helpers
 # ---------------------------------------------------------------------------
@@ -924,6 +1091,10 @@ def build_session(
     command: str,
     service_start: dict[str, Any],
     started_at: str | None = None,
+    worktree_root: Path | None = None,
+    execution_root: Path | None = None,
+    change_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     profile_name = service_start.get("profile") or "local-dev"
     overlay = service_start.get("overlayPath") or ""
@@ -941,6 +1112,14 @@ def build_session(
     if isinstance(service_start.get("leasedPort"), int):
         session["leasedPort"] = service_start["leasedPort"]
         session["leaseOwner"] = service_start.get("leaseOwner")
+    if worktree_root is not None:
+        session["worktreeRoot"] = str(worktree_root.resolve())
+    if execution_root is not None:
+        session["executionRoot"] = str(execution_root.resolve())
+    if change_id:
+        session["changeId"] = change_id
+    if attempt_id:
+        session["attemptId"] = attempt_id
     return session
 
 
@@ -1031,6 +1210,15 @@ def cmd_ensure(args: argparse.Namespace) -> int:
     # 持久 profile 只保存模板；runtime overlay/profile 注入到 session，不写回持久 profile。
     # 含 worktree/change 陈旧持久值时拒绝（修复输入端陈旧 profile）。
     change_name = getattr(args, "change_name", None) or change_dir.name
+    worktree_root_raw = getattr(args, "worktree_root", None)
+    execution_root_raw = getattr(args, "execution_root", None)
+    attempt_id = str(getattr(args, "attempt_id", None) or "").strip() or None
+    worktree_root = (
+        resolve_path(worktree_root_raw) if worktree_root_raw else project
+    )
+    execution_root = (
+        resolve_path(execution_root_raw) if execution_root_raw else None
+    )
     overlay = getattr(args, "overlay", None)
     leased_port = getattr(args, "leased_port", None)
     lease_owner = str(getattr(args, "lease_owner", None) or "").strip() or None
@@ -1135,6 +1323,10 @@ def cmd_ensure(args: argparse.Namespace) -> int:
                 as_json=as_json,
                 action="restarted",
                 previousPid=pid,
+                worktree_root=worktree_root,
+                execution_root=execution_root,
+                change_id=change_name,
+                attempt_id=attempt_id,
             )
 
         # pid dead → stale session; clear and fall through
@@ -1161,6 +1353,10 @@ def cmd_ensure(args: argparse.Namespace) -> int:
         files=files,
         as_json=as_json,
         action="started",
+        worktree_root=worktree_root,
+        execution_root=execution_root,
+        change_id=change_name,
+        attempt_id=attempt_id,
     )
 
 
@@ -1173,6 +1369,10 @@ def _start_and_record(
     files: list[str],
     as_json: bool,
     action: str,
+    worktree_root: Path | None = None,
+    execution_root: Path | None = None,
+    change_id: str | None = None,
+    attempt_id: str | None = None,
     **extra: Any,
 ) -> int:
     if not files:
@@ -1224,6 +1424,10 @@ def _start_and_record(
         command=command,
         service_start=service_start,
         started_at=started_at,
+        worktree_root=worktree_root,
+        execution_root=execution_root,
+        change_id=change_id,
+        attempt_id=attempt_id,
     )
     write_session(change_dir, session)
 
@@ -1422,6 +1626,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--lease-owner",
         default=None,
         help="run id that owns --leased-port",
+    )
+    p_ensure.add_argument(
+        "--worktree-root",
+        default=None,
+        help="worktree that owns the service (default: --project)",
+    )
+    p_ensure.add_argument(
+        "--execution-root",
+        default=None,
+        help="ephemeral execution worktree that owns the service",
+    )
+    p_ensure.add_argument(
+        "--attempt-id",
+        default=None,
+        help="phase or transaction attempt that started the service",
     )
     p_ensure.add_argument("--json", action="store_true")
     p_ensure.set_defaults(func=cmd_ensure)

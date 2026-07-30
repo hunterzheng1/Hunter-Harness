@@ -1242,6 +1242,63 @@ class LedgerCountFallbackTests(unittest.TestCase):
         self.assertEqual(projection["performance"]["status"], "OK")
         self.assertEqual(projection["performance"]["metrics"]["p95Ms"], 81)
 
+    def test_report_db_01_projects_typed_db_receipt_evidence(self) -> None:
+        evidence_hash = "sha256:" + "d" * 64
+        ledger = {
+            "validations": {
+                "dbCompatibility": {
+                    "status": "OK",
+                    "metrics": {
+                        "applicability": "APPLICABLE",
+                        "status": "OK",
+                        "total": 3,
+                        "passed": 3,
+                        "failed": 0,
+                        "evidenceHash": evidence_hash,
+                    },
+                }
+            }
+        }
+
+        projection = ha.build_verification_projection(ledger)
+
+        self.assertEqual(projection["dbCompatibility"], "OK")
+        self.assertEqual(
+            projection["dbCompatibilityEvidence"]["evidenceHash"], evidence_hash
+        )
+
+    def test_report_count_01_reruns_do_not_inflate_unique_test_count(self) -> None:
+        attempts = [
+            {
+                "attempt": number,
+                "status": "OK",
+                "metrics": {
+                    "total": 2,
+                    "passed": 2,
+                    "failed": 0,
+                    "testIdentities": ["suite::one", "suite::two"],
+                },
+            }
+            for number in (1, 2, 3)
+        ]
+        ledger = {
+            "validations": {
+                "unitTestFull": {
+                    "status": "OK",
+                    "attempts": attempts,
+                    "metrics": attempts[-1]["metrics"],
+                }
+            }
+        }
+
+        result = ha._ledger_unit_tests(ledger)
+
+        self.assertEqual(result["run"], 2)  # legacy latest-run field
+        self.assertEqual(result["uniqueTestCount"], 2)
+        self.assertEqual(result["rerunCount"], 2)
+        self.assertEqual(len(result["perAttemptCounts"]), 3)
+        self.assertEqual(result["latestAuthoritativeAttempt"]["attempt"], 3)
+
     def test_browser_test_projects_to_browser_e2e_without_polluting_api(self) -> None:
         ledger = {
             "validations": {
@@ -2121,6 +2178,43 @@ class ArtifactPreflightIntegrationTests(unittest.TestCase):
         self.assertEqual(materialized["copied"], ["artifacts/product/build/contract.json"])
         self.assertEqual(artifacts[-1]["path"], "artifacts/product/build/contract.json")
         self.assertTrue((self.change / artifacts[-1]["path"]).is_file())
+
+
+class ArchiveAutoGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-auto-gate-"))
+        self.change = self.tmp / ".harness" / "changes" / "auto-gate-demo"
+        self.change.mkdir(parents=True)
+        _seed_change_dir(self.change)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_auto_gate_requires_archive_boundary_snapshot(self) -> None:
+        result = ha.archive_auto_gate(self.change, archive_intent="record-only")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reasonCode"], "ARCHIVE_BOUNDARY_SNAPSHOT_MISSING")
+        self.assertTrue(result["nextAction"])
+
+    def test_auto_gate_allows_post_submit_snapshot_without_confirmation(self) -> None:
+        _write_json(
+            self.change / "meta" / "state-snapshot.json",
+            {"git": {"base": "bbbbbbbb", "head": "bbbbbbbb"}},
+        )
+        ha.append_event(
+            self.change,
+            phase="merge",
+            type_="phase.end",
+            status="OK",
+            note="merge completed",
+        )
+
+        result = ha.archive_auto_gate(self.change, archive_intent="record-only")
+
+        self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
+        self.assertTrue(result["autoArchiveAllowed"])
+        self.assertEqual(result["reasonCode"], "ARCHIVE_AUTO_GATE_SATISFIED")
+        self.assertIn("no AskQuestion", result["nextAction"])
 
 
 if __name__ == "__main__":

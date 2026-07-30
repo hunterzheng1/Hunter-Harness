@@ -18,6 +18,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -650,6 +651,126 @@ class IntegrationLockTests(TransactionFixture):
 
 
 class CleanupBoundaryTests(TransactionFixture):
+    def _start_owned_service(self, txn: object) -> tuple[int, Path]:
+        txn.preflight()
+        txn.prepare()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        intg_root = Path(journal["integrationRoot"])
+        change_dir = (
+            self.primary / ".harness" / "state" / "changes" / "demo"
+        )
+        health = change_dir / "runtime" / "healthy.marker"
+        script = intg_root / "fake_service.py"
+        script.write_text(
+            "from pathlib import Path\n"
+            "import time\n"
+            f"Path({str(health)!r}).parent.mkdir(parents=True, exist_ok=True)\n"
+            f"Path({str(health)!r}).write_text('ok', encoding='utf-8')\n"
+            "time.sleep(600)\n",
+            encoding="utf-8",
+        )
+        (intg_root / "Svc.java").write_text("class Svc {}\n", encoding="utf-8")
+        (intg_root / ".harness" / "config").mkdir(parents=True)
+        (intg_root / ".harness" / "config" / "build-profile.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "serviceStart": {
+                        "command": f'"{sys.executable}" "{script}"',
+                        "healthUrl": f"file:{health}",
+                        "startTimeoutSec": 20,
+                        "inputFiles": ["Svc.java"],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        code = integration.harness_service.main(
+            [
+                "--json",
+                "ensure",
+                "--change-dir",
+                str(change_dir),
+                "--project",
+                str(intg_root),
+                "--change-name",
+                "demo",
+                "--worktree-root",
+                str(intg_root),
+                "--execution-root",
+                str(intg_root),
+                "--attempt-id",
+                txn.run_id,
+            ]
+        )
+        self.assertEqual(code, 0)
+        session = integration.harness_service.load_session(change_dir)
+        self.assertIsNotNone(session)
+        assert session is not None
+        return session["pid"], intg_root
+
+    def _complete_from_prepared(self, txn: object) -> None:
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
+
+    def test_lifecycle_01_stops_owned_service_before_removing_worktree(self) -> None:
+        txn = self.make_txn()
+        pid, intg_root = self._start_owned_service(txn)
+        self._complete_from_prepared(txn)
+
+        journal = txn.cleanup()
+
+        self.assertFalse(intg_root.exists())
+        self.assertFalse(integration.harness_service.is_pid_alive(pid))
+        self.assertEqual(journal["serviceStop"]["ownedSessions"], 1)
+        self.assertEqual(journal["serviceStop"]["stopped"][0]["pid"], pid)
+        self.assertTrue(journal["cleanupReceipt"]["worktreeGone"])
+        self.assertEqual(
+            journal["cleanupReceipt"]["snapshot"]["executionRoot"],
+            str(intg_root.resolve()),
+        )
+        recovered = txn.recover()
+        self.assertFalse(intg_root.exists())
+        self.assertTrue(recovered["cleanupReceipt"]["worktreeGone"])
+
+    def test_lifecycle_02_reports_unrelated_port_holder_without_killing_it(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        intg_root = Path(journal["integrationRoot"])
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        self.addCleanup(holder.close)
+        port = int(holder.getsockname()[1])
+        change_dir = self.primary / ".harness" / "state" / "changes" / "demo"
+        integration.harness_service.write_session(
+            change_dir,
+            {
+                "pid": os.getpid(),
+                "startedBy": "User",
+                "startedAt": integration.harness_service.now_iso(),
+                "changeId": "demo",
+                "worktreeRoot": str(intg_root),
+                "executionRoot": str(intg_root),
+                "leasedPort": port,
+            },
+        )
+        self._complete_from_prepared(txn)
+
+        journal = txn.cleanup()
+
+        self.assertTrue(integration.harness_service.is_port_in_use(port))
+        self.assertEqual(journal["serviceStop"]["ownedSessions"], 0)
+        self.assertEqual(
+            journal["serviceStop"]["reported"][0]["reason"], "not-owned"
+        )
+        self.assertEqual(journal["serviceStop"]["reported"][0]["leasedPort"], port)
+
     def test_cleanup_before_push_is_refused_and_keeps_integration_worktree(self) -> None:
         txn = self.make_txn()
         txn.preflight()
@@ -876,6 +997,54 @@ class VerifyInIntegrationWorktreeTests(TransactionFixture):
         self.assertIn("verify-out", content)
         self.assertIn("verify-err", content)
         self.assertIn("exitCode: 3", content)
+
+    def test_merge_reuses_heavy_feature_tip_evidence_but_runs_smoke(self) -> None:
+        """VERIFY-REUSE-01: a no-ff commit must not invalidate identical content."""
+        txn = self.make_txn()
+        smoke_marker = self.tmp / "smoke-ran"
+        heavy_marker = self.tmp / "heavy-ran"
+        smoke = [sys.executable, "-c", f"open({str(smoke_marker)!r}, 'w').write('ok')"]
+        heavy = [sys.executable, "-c", f"open({str(heavy_marker)!r}, 'w').write('bad')"]
+        feature_tree = git(
+            self.primary, "rev-parse", "feature/demo^{tree}"
+        ).stdout.strip()
+        heavy_text = " ".join(heavy)
+        ledger = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        ledger["verificationTargets"] = {
+            "feature-tip-full": {
+                "id": "feature-tip-full",
+                "verification": "unitTestFull",
+                "status": "OK",
+                "productCommit": git(
+                    self.primary, "rev-parse", "feature/demo"
+                ).stdout.strip(),
+                "productTreeHash": "sha256:" + feature_tree,
+                "commandSetHash": integration.hl.command_set_hash(heavy_text),
+                "evidence": "feature tip full tests",
+            }
+        }
+        self.ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        profile = {
+            "mergeVerification": {
+                "requiredOnMerge": [
+                    {
+                        "command": heavy,
+                        "kind": "heavyweight",
+                        "verification": "unitTestFull",
+                    }
+                ]
+            }
+        }
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        with mock.patch("harness_profile.load_profile", return_value=profile):
+            journal = txn.verify(commands=[smoke])
+        self.assertTrue(smoke_marker.is_file())
+        self.assertFalse(heavy_marker.exists())
+        reused = next(item for item in journal["verifyResults"] if item.get("reused"))
+        self.assertEqual(reused["reusedFrom"]["targetId"], "feature-tip-full")
+        self.assertIn("reuseKey", reused)
 
 
 class VerifyCommandParsingTests(unittest.TestCase):

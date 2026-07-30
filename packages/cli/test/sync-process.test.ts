@@ -5,11 +5,34 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPromoteCandidates,
   classifyKnowledgeResult,
+  deriveKnowledgeOutputValid,
   persistSyncPointers,
   probeCodeGraph,
-  runProcess
+  resolveKnowledgeNextAction,
+  runProcess,
+  summarizePartialEffects
 } from "../src/commands/sync.js";
+
+function okProcessResult(stdout: string): Parameters<typeof classifyKnowledgeResult>[0] {
+  return {
+    exitCode: 0,
+    stdout,
+    stderr: "",
+    startedAt: "2026-07-30T00:00:00.000Z",
+    completedAt: "2026-07-30T00:00:01.000Z",
+    durationMs: 1000,
+    lastActivityAt: "2026-07-30T00:00:01.000Z",
+    timedOut: false,
+    timeoutKind: null,
+    termination: "exited",
+    signal: null,
+    heartbeatCount: 0,
+    stdoutTruncated: false,
+    stderrTruncated: false
+  };
+}
 
 describe("sync bounded process runner", () => {
   it("SYNC-004 reports typed wall-timeout and termination evidence", async () => {
@@ -128,6 +151,126 @@ describe("sync bounded process runner", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("HH-KNOW-20260730-001 treats sync_status ok:true as valid output", () => {
+    const payload = { ok: true, upToDate: true, maintenance: { attempted: true, ok: true } };
+    expect(deriveKnowledgeOutputValid(payload)).toBe(true);
+    expect(classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), true, payload))
+      .toEqual({ status: "OK", reasonCode: "OK" });
+  });
+
+  it("HH-KNOW-20260730-001 flags an un-drained maintenance outbox as WARN with a next action", () => {
+    const payload = {
+      ok: false,
+      upToDate: true,
+      reasons: [],
+      maintenance: {
+        attempted: true,
+        skipped: false,
+        ok: false,
+        processed: 1,
+        remaining: 1,
+        results: [{ ok: false, archiveId: "2026-07-30-example", status: "failed" }]
+      },
+      nextAction: "Retry `hunter-harness sync` to drain the maintenance outbox."
+    };
+    expect(deriveKnowledgeOutputValid(payload)).toBe(false);
+    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
+    expect(outcome).toEqual({ status: "WARN", reasonCode: "KNOWLEDGE_OUTBOX_PENDING" });
+    const nextAction = resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload);
+    expect(nextAction).toBe(payload.nextAction);
+  });
+
+  it("HH-KNOW-20260730-001 falls back to a generic next action when the payload omits one", () => {
+    const payload = {
+      ok: false,
+      upToDate: true,
+      maintenance: { attempted: true, skipped: false, ok: false, processed: 0, remaining: 3 }
+    };
+    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
+    expect(outcome.status).toBe("WARN");
+    expect(outcome.reasonCode).toBe("KNOWLEDGE_OUTBOX_PENDING");
+    const nextAction = resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload);
+    expect(nextAction).toBeTruthy();
+    expect(nextAction).toMatch(/harness_knowledge\.py maintain .*--drain/);
+  });
+
+  it("HH-KNOW-20260730-001 treats a stale index (maintenance skipped) as unverified, not outbox-pending", () => {
+    const payload = {
+      ok: false,
+      upToDate: false,
+      reasons: ["archive added: .harness/archive/2026-07-30-example"],
+      maintenance: { attempted: false, skipped: true, ok: true, pending: 0, failed: 0 }
+    };
+    expect(deriveKnowledgeOutputValid(payload)).toBe(false);
+    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
+    expect(outcome).toEqual({ status: "WARN", reasonCode: "KNOWLEDGE_OUTPUT_UNVERIFIED" });
+    expect(resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload)).toBeTruthy();
+  });
+
+  it("resolveKnowledgeNextAction returns null on OK status", () => {
+    expect(resolveKnowledgeNextAction("OK", "OK", { ok: true })).toBeNull();
+  });
+
+  it("HH-ADAPTER-20260730-001 groups identical local adapter patches into one promotion proposal", () => {
+    const candidates = buildPromoteCandidates([
+      {
+        source_path: "skills/harness-sync/SKILL.md",
+        target_path: ".claude/skills/harness-sync/SKILL.md",
+        adapter_content_sha256: "a".repeat(64)
+      },
+      {
+        source_path: "skills/harness-sync/SKILL.md",
+        target_path: ".cursor/skills/harness-sync/SKILL.md",
+        adapter_content_sha256: "a".repeat(64)
+      }
+    ]);
+    expect(candidates).toEqual([
+      expect.objectContaining({
+        patchHash: "a".repeat(64),
+        adapterTargets: [
+          ".claude/skills/harness-sync/SKILL.md",
+          ".cursor/skills/harness-sync/SKILL.md"
+        ],
+        proposal: expect.objectContaining({ status: "PROPOSED" })
+      })
+    ]);
+    expect(candidates[0]?.proposal.steps.join(" ")).toContain("harness/");
+  });
+
+  it("HH-UX-20260730-001 reports effects that persisted before a failure", () => {
+    const partial = summarizePartialEffects([
+      {
+        component: "adapter-projection",
+        status: "OK",
+        reasonCode: "OK",
+        observedAt: "2026-07-30T00:00:00.000Z",
+        durationMs: 1,
+        inputHash: null,
+        outputHash: null,
+        evidence: [],
+        autoFixed: false,
+        nextAction: null,
+        effects: { persisted: ["adapter projection applied 1 change(s)"], notPersisted: [] }
+      },
+      {
+        component: "knowledge",
+        status: "FAIL",
+        reasonCode: "KNOWLEDGE_SYNC_FAILED",
+        observedAt: "2026-07-30T00:00:00.000Z",
+        durationMs: 1,
+        inputHash: null,
+        outputHash: null,
+        evidence: [],
+        autoFixed: false,
+        nextAction: "Retry sync",
+        effects: { persisted: [], notPersisted: ["knowledge output was not verified"] }
+      }
+    ]);
+    expect(partial.persisted).toEqual(["adapter projection applied 1 change(s)"]);
+    expect(partial.notPersisted).toEqual(["knowledge output was not verified"]);
+    expect(partial.summary).toContain("Durable effects already persisted");
   });
 
   it("SYNC-007 probes CodeGraph metadata instead of returning a constant", async () => {

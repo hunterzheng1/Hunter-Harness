@@ -92,6 +92,28 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(mirrored["productTreeHash"], identity["productTreeHash"])
         self.assertEqual(mirrored["gitFacts"]["productCommit"], "product")
 
+    def test_canonical_identity_preserves_the_checkpoint_to_release_chain(self) -> None:
+        identity = model.canonical_identity(
+            {
+                "changeIdentity": {
+                    "checkpointCommit": "checkpoint",
+                    "productCommit": "product",
+                    "featureTip": "feature",
+                    "mergeCommit": "merge",
+                    "releaseTip": "release",
+                    "productTreeHash": "a" * 64,
+                }
+            }
+        )
+
+        self.assertEqual(identity["checkpointCommit"], "checkpoint")
+        self.assertEqual(identity["productCommit"], "product")
+        self.assertEqual(identity["featureTip"], "feature")
+        self.assertEqual(identity["mergeCommit"], "merge")
+        self.assertEqual(identity["releaseTip"], "release")
+        self.assertEqual(identity["featureMergeHash"], "merge")
+        self.assertEqual(identity["releaseTipHash"], "release")
+
     def test_latest_terminal_verification_matches_the_full_target_identity(self) -> None:
         target = {
             "target": "unitTestFull",
@@ -124,6 +146,26 @@ class IdentityTests(unittest.TestCase):
         selected = model.select_latest_terminal_verification(records, target)
         self.assertIsNotNone(selected)
         self.assertEqual(selected["evidence"], "correct-old")
+
+    def test_terminal_selection_treats_commit_as_provenance_not_reuse_key(self) -> None:
+        target = {
+            "target": "unitTestFull",
+            "productCommit": "merge-commit",
+            "productTreeHash": "sha256:" + "a" * 64,
+            "commandSetHash": "sha256:cmd",
+            "environmentHash": "sha256:env",
+            "toolchainHash": "sha256:tool",
+            "lockHash": "sha256:lock",
+        }
+        feature_tip = {
+            **target,
+            "productCommit": "feature-tip",
+            "status": "OK",
+            "finishedAt": "2026-07-30T10:00:00+08:00",
+            "evidence": "reusable feature evidence",
+        }
+        selected = model.select_latest_terminal_verification([feature_tip], target)
+        self.assertEqual(selected["evidence"], "reusable feature evidence")
 
     def test_ledger_projection_ignores_newer_evidence_for_another_product(self) -> None:
         tree = "sha256:" + "a" * 64

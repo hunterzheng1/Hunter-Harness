@@ -2654,6 +2654,55 @@ def build_snapshot(project: Path) -> KnowledgeSnapshot:
     )
 
 
+def archive_delta(
+    archive_records: list[dict[str, Any]],
+    previous_index: dict[str, Any] | None,
+) -> dict[str, set[str]]:
+    """Classify archive summaries without treating the whole corpus as dirty."""
+    previous_items = (
+        previous_index.get("archives", {}).get("items", [])
+        if isinstance(previous_index, dict)
+        else []
+    )
+    previous = {
+        str(item.get("summaryData")): str(item.get("summarySha256") or "")
+        for item in previous_items
+        if isinstance(item, dict) and item.get("summaryData")
+    }
+    current = {
+        str(item.get("summaryData")): str(item.get("summarySha256") or "")
+        for item in archive_records
+        if item.get("summaryData")
+    }
+    added = set(current) - set(previous)
+    changed = {
+        path for path in set(current) & set(previous)
+        if current[path] != previous[path]
+    }
+    return {
+        "added": added,
+        "changed": changed,
+        "removed": set(previous) - set(current),
+        "dirty": added | changed,
+    }
+
+
+def restore_unchanged_entry_state(
+    entry: dict[str, Any],
+    previous_entries: dict[str, dict[str, Any]],
+    *,
+    is_dirty: bool,
+) -> None:
+    """Keep historical lifecycle decisions out of a warm ingest hot path."""
+    if is_dirty:
+        return
+    previous = previous_entries.get(str(entry.get("id") or ""))
+    if previous is None:
+        return
+    entry["status"] = previous.get("status", entry.get("status"))
+    entry["lifecycle"] = json_clone(previous.get("lifecycle", entry.get("lifecycle", {})))
+
+
 def build_index(
     project: Path,
     incremental: bool = True,
@@ -2684,19 +2733,21 @@ def build_index(
     ensure_knowledge_dirs(knowledge)
     reporter.emit("snapshot", len(summary_paths), len(summary_paths), force=True)
 
+    old_index: dict[str, Any] | None = None
+    index_path = knowledge / "index.json"
+    if index_path.exists():
+        try:
+            old_index = read_json(index_path)
+        except (OSError, json.JSONDecodeError):
+            old_index = None
+    delta = archive_delta(archive_records, old_index)
+
     # No-op fast path: inputs (archive checksums + config + schema) are unchanged.
     # Write nothing — entries, sqlite, index and views all stay byte-identical,
     # so a repeated ingest is a true no-op (design §3.5, cluster 6, UT-025).
     # Also require index.sqlite to exist so a query never sees a stale index.json
     # pointing at a missing sqlite (API-009 single ensure-current).
     if incremental:
-        old_index: dict[str, Any] | None = None
-        index_path = knowledge / "index.json"
-        if index_path.exists():
-            try:
-                old_index = read_json(index_path)
-            except (OSError, json.JSONDecodeError):
-                old_index = None
         if (
             isinstance(old_index, dict)
             and old_index.get("inputsHash") == inputs_hash
@@ -2716,6 +2767,10 @@ def build_index(
                     "sqliteRebuild": 0,
                     "sqliteUpsert": 0,
                     "sqliteDelete": 0,
+                    "archivesAdded": 0,
+                    "archivesChanged": 0,
+                    "archivesRemoved": 0,
+                    "archivesDelta": 0,
                 }
             )
             result = dict(old_index)
@@ -2751,7 +2806,17 @@ def build_index(
         "sqliteDelete": 0,
         "summaryHashesReused": 0,
         "summaryHashesComputed": 0,
+        "archivesAdded": len(delta["added"]),
+        "archivesChanged": len(delta["changed"]),
+        "archivesRemoved": len(delta["removed"]),
+        "archivesDelta": len(delta["dirty"]) + len(delta["removed"]),
     }
+    previous_entries = {
+        str(entry.get("id")): entry
+        for _, entry in load_entry_files(knowledge)
+        if entry.get("id")
+    }
+    dirty_entry_ids: set[str] = set()
 
     for summary_index, summary_path in enumerate(summary_paths, start=1):
         summary_rel = rel_to_project(project, summary_path)
@@ -2790,6 +2855,15 @@ def build_index(
                 archive_entries = rebind_cached_archive_entries(
                     project, summary_path, summary_hash, archive_entries
                 )
+            is_dirty = summary_rel in delta["dirty"] or not incremental
+            for entry in archive_entries:
+                restore_unchanged_entry_state(
+                    entry,
+                    previous_entries,
+                    is_dirty=is_dirty,
+                )
+                if is_dirty and entry.get("id"):
+                    dirty_entry_ids.add(str(entry["id"]))
             # API-006/RET-40: entries from archives failing the publication
             # gate stay quarantined (candidate only, never active/promoted).
             archive_rel = rel_to_project(project, archive_dir_from_summary(summary_path))
@@ -2833,9 +2907,24 @@ def build_index(
         seen.add(fp)
         deduped.append(entry)
 
-    ingest_mode.update(apply_batch_git_freshness(project, deduped))
+    freshness_entries = [
+        entry
+        for entry in deduped
+        if (
+            str(entry.get("id") or "") in dirty_entry_ids
+            or (
+                entry.get("status") in {"active", "candidate"}
+                and str(entry.get("id") or "") not in previous_entries
+            )
+        )
+    ]
+    ingest_mode.update(apply_batch_git_freshness(project, freshness_entries))
     reporter.emit("near-deduplicate", 0, len(deduped), force=True)
-    near_dedupe = dedupe_near_duplicates(deduped, progress=reporter)
+    near_dedupe = dedupe_near_duplicates(
+        deduped,
+        progress=reporter,
+        dirty_entry_ids=dirty_entry_ids if incremental else None,
+    )
     ingest_mode["nearDuplicatesMerged"] = near_dedupe["merged"]
     ingest_mode["similarityCandidates"] = near_dedupe["similarityCandidates"]
     ingest_mode["exactSimilarityComparisons"] = near_dedupe["exactSimilarityComparisons"]
@@ -2920,7 +3009,22 @@ def build_index(
     )
 
     reporter.emit("sqlite", 0, len(indexed_entries), force=True)
-    sqlite_stats = write_sqlite(knowledge / "index.sqlite", indexed_entries)
+    sqlite_dirty_entries = [
+        entry
+        for entry in indexed_entries
+        if (
+            str(entry.get("id") or "") in dirty_entry_ids
+            or (
+                entry.get("status") in {"active", "candidate"}
+                and str(entry.get("id") or "") not in previous_entries
+            )
+        )
+    ]
+    sqlite_stats = write_sqlite(
+        knowledge / "index.sqlite",
+        indexed_entries,
+        dirty_entries=sqlite_dirty_entries if incremental else None,
+    )
     ingest_mode.update(sqlite_stats)
     ingest_mode["sqliteRowsTouched"] = (
         sqlite_stats.get("sqliteUpsert", 0) + sqlite_stats.get("sqliteDelete", 0)
@@ -3288,13 +3392,19 @@ def assert_persistence_invariants(
         )
 
 
-def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
+def write_sqlite(
+    path: Path,
+    entries: list[dict[str, Any]],
+    *,
+    dirty_entries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Persist entries to SQLite using a transactional dirty-set.
 
-    Reads existing rows, then upserts only changed entries and deletes removed
-    ones within a single transaction. When the schema version changes or the
-    table is missing, performs a full rebuild. If nothing changed the file is
-    not touched (cluster 6, design §3.5 — true incremental).
+    The normal path compares existing row payloads. Incremental callers may
+    provide the known dirty entries instead, avoiding a full JSON digest of
+    unchanged historical rows. Both paths delete rows absent from the current
+    closure in one transaction. When the schema version changes or the table
+    is missing, performs a full rebuild.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     stats: dict[str, Any] = {
@@ -3315,18 +3425,52 @@ def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
         need_rebuild = (not table_exists) or existing_version != SQLITE_SCHEMA_VERSION
 
         existing_map: dict[str, str] = {}
-        if not need_rebuild:
+        existing_status: dict[str, str] = {}
+        dirty_mode = dirty_entries is not None and not need_rebuild
+        if not need_rebuild and not dirty_mode:
             rows = con.execute("select id, entry_json from entries").fetchall()
             existing_map = {str(row[0]): str(row[1]) for row in rows}
+        elif dirty_mode:
+            rows = con.execute("select id, status from entries").fetchall()
+            existing_map = {str(row[0]): "" for row in rows}
+            existing_status = {str(row[0]): str(row[1] or "") for row in rows}
 
         new_map: dict[str, str] = {}
-        for entry in entries:
+        entries_to_serialize = list(dirty_entries or []) if dirty_mode else list(entries)
+        if dirty_mode:
+            # HH-KNOW-20260730-002: archive-delta dirty sets miss lifecycle-only
+            # transitions (promote/demote/conflict/supersede) on unchanged
+            # archives. Reconcile those by status without digesting every row.
+            seen_serialize_ids = {
+                str(entry.get("id") or "")
+                for entry in entries_to_serialize
+                if isinstance(entry, dict) and entry.get("id")
+            }
+            for entry in entries:
+                if not isinstance(entry, dict) or not entry.get("id"):
+                    continue
+                eid = str(entry["id"])
+                if eid in seen_serialize_ids:
+                    continue
+                if existing_status.get(eid) != str(entry.get("status") or ""):
+                    entries_to_serialize.append(entry)
+                    seen_serialize_ids.add(eid)
+        for entry in entries_to_serialize:
             if isinstance(entry, dict) and entry.get("id"):
                 new_map[str(entry["id"])] = json.dumps(entry, ensure_ascii=False)
 
-        to_upsert = [eid for eid in new_map if new_map[eid] != existing_map.get(eid)]
-        to_delete = [eid for eid in existing_map if eid not in new_map]
-        stats["sqliteUnchanged"] = len(new_map) - len(to_upsert)
+        current_ids = {
+            str(entry["id"])
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("id")
+        }
+        to_upsert = (
+            list(new_map)
+            if dirty_mode
+            else [eid for eid in new_map if new_map[eid] != existing_map.get(eid)]
+        )
+        to_delete = [eid for eid in existing_map if eid not in current_ids]
+        stats["sqliteUnchanged"] = len(entries) - len(to_upsert)
 
         if not need_rebuild and not to_upsert and not to_delete:
             # nothing to do; leave the file (and its mtime) untouched
@@ -3372,6 +3516,11 @@ def write_sqlite(path: Path, entries: list[dict[str, Any]]) -> dict[str, Any]:
             con.execute(f"pragma user_version = {SQLITE_SCHEMA_VERSION}")
             stats["sqliteRebuild"] = 1
             # full rebuild => every entry must be (re)inserted
+            new_map = {
+                str(entry["id"]): json.dumps(entry, ensure_ascii=False)
+                for entry in entries
+                if isinstance(entry, dict) and entry.get("id")
+            }
             to_upsert = list(new_map.keys())
             to_delete = []
 
@@ -4121,6 +4270,62 @@ def sync_status(
         action = "ingested"
         reasons = []
 
+    # HH-KNOW-20260730-001: an up-to-date index is not the whole story --
+    # maintenance-outbox items enqueued by `harness archive` still need to be
+    # drained (auto-supersede/reverify-stale/judge-export) before the project
+    # is truly caught up. Drain here whenever the index is current: either it
+    # was just refreshed above, or it was already current on entry. When the
+    # caller did not request an update and the index is stale, skip the drain
+    # -- maintain_knowledge() would otherwise trigger an implicit rebuild via
+    # its own build_index(incremental=True) call, contradicting "don't force
+    # rebuild" for a plain status check.
+    index_current = not reasons
+    outbox_root = _outbox_root(project)
+    maintenance: dict[str, Any]
+    next_action: str | None = None
+    maintain_hint = (
+        "python harness/harness-knowledge-ingest/scripts/harness_knowledge.py "
+        "maintain --project <project> --drain"
+    )
+
+    if index_current:
+        drain_result = drain_maintenance_outbox(project)
+        outbox_ok = bool(drain_result.get("ok")) and drain_result.get("remaining", 0) == 0
+        maintenance = {
+            "attempted": True,
+            "skipped": False,
+            "ok": outbox_ok,
+            "processed": drain_result.get("processed", 0),
+            "remaining": drain_result.get("remaining", 0),
+            "staleRunningRecovered": drain_result.get("staleRunningRecovered", 0),
+            "results": drain_result.get("results", []),
+        }
+        if not outbox_ok:
+            next_action = (
+                "Maintenance outbox is not fully drained. Retry `hunter-harness sync`, "
+                f"or run `{maintain_hint}` to process the remaining items."
+            )
+    else:
+        pending_count = len(list((outbox_root / "pending").glob("*.json"))) if outbox_root.is_dir() else 0
+        failed_count = len(list((outbox_root / "failed").glob("*.json"))) if outbox_root.is_dir() else 0
+        running_count = len(list((outbox_root / "running").glob("*.json"))) if outbox_root.is_dir() else 0
+        outbox_ok = pending_count == 0 and failed_count == 0
+        maintenance = {
+            "attempted": False,
+            "skipped": True,
+            "skippedReason": "index out of date; rerun with --update to rebuild and drain",
+            "ok": outbox_ok,
+            "pending": pending_count,
+            "failed": failed_count,
+            "running": running_count,
+        }
+        next_action = (
+            "Run `hunter-harness sync` (or sync --update) to rebuild the index; "
+            "the maintenance outbox drain is skipped while the index is stale."
+        )
+
+    ok = index_current and bool(maintenance.get("ok"))
+
     result = {
         "project": str(project),
         "upToDate": not reasons,
@@ -4131,6 +4336,9 @@ def sync_status(
             "index": str(index_path),
             "sqlite": str(sqlite_path),
         },
+        "maintenance": maintenance,
+        "ok": ok,
+        "nextAction": next_action,
     }
     if refreshed is not None:
         result["index"] = summarize_index(refreshed)
@@ -4522,16 +4730,33 @@ def dedupe_near_duplicates(
     threshold: float = NEAR_DUPLICATE_THRESHOLD,
     *,
     progress: ProgressReporter | None = None,
+    dirty_entry_ids: set[str] | None = None,
     max_exact_comparisons: int = 50_000,
     time_budget_ms: int = 2_000,
 ) -> dict[str, Any]:
-    """Merge near duplicates through sparse buckets and an explicit work budget."""
+    """Merge near duplicates through sparse buckets and an explicit work budget.
+
+    Full / offline path (``dirty_entry_ids is None``): keep historical semantics —
+    every non-superseded status participates, and pairs stay scoped to the same
+    ``(archive, type)`` group.
+
+    Online hot path (``dirty_entry_ids`` provided): exclude stale/superseded from
+    the comparison corpus, keep archive scoping, and only emit pairs that touch
+    at least one dirty entry (HH-KNOW-20260730-002).
+    """
     started = time.monotonic()
     deadline = started + max(0, time_budget_ms) / 1_000
     merges: list[dict[str, Any]] = []
-    active_entries = [
-        entry for entry in entries if entry.get("status") != "superseded"
-    ]
+    if dirty_entry_ids is None:
+        active_entries = [
+            entry for entry in entries if entry.get("status") != "superseded"
+        ]
+    else:
+        active_entries = [
+            entry
+            for entry in entries
+            if entry.get("status") in {"active", "candidate"}
+        ]
     normalized = {id(entry): entry_compare_text(entry) for entry in active_entries}
     similarity_cache: dict[tuple[int, int], float] = {}
     similarity_candidates = 0
@@ -4540,6 +4765,8 @@ def dedupe_near_duplicates(
 
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for entry in active_entries:
+        # Same-archive scoping is intentional: near-dup merges are intra-archive.
+        # Cross-archive evolution/conflict is handled by supersede/review paths.
         key = (
             str(entry.get("source", {}).get("archive") or ""),
             str(entry.get("type") or ""),
@@ -4579,6 +4806,13 @@ def dedupe_near_duplicates(
             for left_index, left_identity in enumerate(members):
                 for right_identity in members[left_index + 1 :]:
                     if left_identity == right_identity:
+                        continue
+                    if dirty_entry_ids is not None and not (
+                        str(entry_by_identity[left_identity].get("id") or "")
+                        in dirty_entry_ids
+                        or str(entry_by_identity[right_identity].get("id") or "")
+                        in dirty_entry_ids
+                    ):
                         continue
                     candidate_pairs.add(tuple(sorted((left_identity, right_identity))))
 
@@ -5451,15 +5685,35 @@ def maintain_knowledge(project: Path, archive_id: str) -> dict[str, Any]:
         }
 
 
-def drain_maintenance_outbox(project: Path, limit: int = 50) -> dict[str, Any]:
-    """Advance all retryable maintenance items in one bounded invocation."""
+def drain_maintenance_outbox(
+    project: Path, limit: int = 50, *, stale_running_seconds: float = 300.0
+) -> dict[str, Any]:
+    """Advance all retryable maintenance items in one bounded invocation.
+
+    Crash recovery: a `running` item left behind by a process that died
+    mid-maintenance never returns to `pending`/`failed` on its own, so it
+    would stall forever. Once a `running` item is older than
+    `stale_running_seconds` it is treated as stuck and re-included here.
+    `claim_outbox` returns a `running` item as-is (it only claims from
+    pending/failed/pending-judge), and `maintain_knowledge` does NOT early
+    return for `status == "running"` (only for `"completed"`) -- it falls
+    through to the try block and retries the maintenance steps in place, so
+    simply including the stale id in the drain batch is sufficient recovery.
+    """
     project = project.resolve()
     root = _outbox_root(project)
-    all_archive_ids = sorted({
+    now = time.time()
+    retryable_ids = {
         path.stem
         for status in ("pending", "failed")
         for path in (root / status).glob("*.json")
-    })
+    }
+    stale_running_ids = {
+        path.stem
+        for path in (root / "running").glob("*.json")
+        if now - path.stat().st_mtime >= stale_running_seconds
+    }
+    all_archive_ids = sorted(retryable_ids | stale_running_ids)
     archive_ids = all_archive_ids[:max(0, limit)]
     results = [maintain_knowledge(project, archive_id) for archive_id in archive_ids]
     return {
@@ -5467,6 +5721,7 @@ def drain_maintenance_outbox(project: Path, limit: int = 50) -> dict[str, Any]:
         "project": str(project),
         "processed": len(results),
         "remaining": max(0, len(all_archive_ids) - len(results)),
+        "staleRunningRecovered": len(stale_running_ids & set(archive_ids)),
         "results": results,
     }
 

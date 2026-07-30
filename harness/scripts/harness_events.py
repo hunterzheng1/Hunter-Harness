@@ -43,6 +43,7 @@ EVENT_TYPES = frozenset(
     {
         "phase.start",
         "phase.end",
+        "phase.auto_sealed",
         "command",
         "verification",
         "artifact",
@@ -124,6 +125,7 @@ _EVENT_ALLOWED_FIELDS = {
         {"status", "duration_ms", "note", "reason", "issue_id"}
     )
     | _PROVENANCE_FIELDS,
+    "phase.auto_sealed": frozenset({"status", "reason", "note"}) | _PROVENANCE_FIELDS,
     "command": frozenset({"command", "exit_code", "duration_ms", "note"})
     | _PROVENANCE_FIELDS,
     "verification": frozenset(
@@ -164,10 +166,34 @@ _EVENT_REQUIRED_FIELDS = {
         "new_value_json",
         "reason",
     ),
+    "phase.auto_sealed": ("reason",),
 }
 _CORRECTION_PROTECTED_FIELDS = frozenset(
     {"schema_version", "id", "timestamp", "phase", "type"}
 )
+
+# HH-WF-20260730-001: reasons a write-path auto-seal may attribute to an
+# attempt that was still open when it was closed on its behalf.
+_AUTO_SEAL_REASONS = frozenset(
+    {"executor_lost", "user_wait", "external_wait", "superseded", "unknown"}
+)
+
+# Best-effort mapping from wait-style metadata events (seen inside an open
+# attempt's own event stream) to the auto-seal reason they imply.
+_WAIT_EVENT_REASON_MAP = {
+    "user.wait": "user_wait",
+    "environment.wait": "external_wait",
+    "env.wait": "external_wait",
+    "external.wait": "external_wait",
+    "ci.wait": "external_wait",
+}
+_RECOVERY_EVENT_TYPES = frozenset({"recovery", "phase.recovery", "attempt.recovery"})
+
+# Terminal event types that close a phase attempt (RET/HH-WF-20260730-001).
+# ``phase.end`` is an explicit human/automation-reported terminal; the
+# write path also inserts ``phase.auto_sealed`` when a new ``phase.start``
+# (or another terminal path) finds a still-open prior attempt.
+TERMINAL_PHASE_EVENT_TYPES = frozenset({"phase.end", "phase.auto_sealed"})
 
 
 def now_iso() -> str:
@@ -587,12 +613,23 @@ def append_event(
     if archived is not None:
         return {"ok": False, "code": "ARCHIVED_CHANGE_IMMUTABLE", "message": str(archived)}
     events_path_obj = events_path(change_dir)
-    lock_path = events_path_obj.with_name(events_path_obj.name + ".lock")
-    existing = []
-    event = build_event(args, existing)
-    with event_file_lock(lock_path):
-        atomic_append_line(events_path_obj, json.dumps(event, ensure_ascii=False))
-    return {"ok": True, "event": event, "events_path": str(events_path_obj), "rendered": False}
+    event = build_event(args, [])
+    result = append_with_auto_seal(events_path_obj, event)
+    if result.get("phaseAlreadyClosed"):
+        return {
+            "ok": False,
+            "code": "PHASE_ALREADY_CLOSED",
+            "message": "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same attempt",
+            "event": event,
+            "autoSealed": result.get("autoSealed") or [],
+        }
+    return {
+        "ok": True,
+        "event": event,
+        "events_path": str(events_path_obj),
+        "rendered": False,
+        "autoSealed": result.get("autoSealed") or [],
+    }
 
 
 def batch_append_events(
@@ -791,6 +828,14 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
                 "EVENT_TIMING_FIELD_INVALID",
                 f"EVENT_TIMING_FIELD_INVALID: --{field.replace('_', '-')} must be a nonnegative integer",
             )
+    if event_type == "phase.auto_sealed":
+        reason_value = str(getattr(args, "reason", "") or "").strip()
+        if reason_value and reason_value not in _AUTO_SEAL_REASONS:
+            return (
+                "EVENT_REASON_INVALID",
+                "EVENT_REASON_INVALID: phase.auto_sealed --reason must be one of "
+                f"{sorted(_AUTO_SEAL_REASONS)}",
+            )
     if event_type == "correction":
         target_field = str(getattr(args, "target_field", "") or "").strip()
         if target_field in _CORRECTION_PROTECTED_FIELDS:
@@ -879,7 +924,11 @@ def group_events_by_phase(events: list[dict[str, Any]]) -> list[tuple[str, list[
 
 
 def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Split repeated starts into attempts and flag legacy events written after end."""
+    """Split repeated starts into attempts and flag legacy events written after end.
+
+    ``phase.end`` and ``phase.auto_sealed`` are both terminal: either one closes
+    the current attempt (HH-WF-20260730-001).
+    """
     attempts: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     next_attempt = 1
@@ -906,7 +955,7 @@ def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, A
             if attempts:
                 prior_type = attempts[-1]["events"][-1].get("type")
                 attempts[-1]["events"].append(event)
-                if prior_type == "phase.end":
+                if prior_type in TERMINAL_PHASE_EVENT_TYPES:
                     attempts[-1]["warnings"].append("event recorded after phase.end")
                 continue
             if event.get("type") in pre_start_metadata_types:
@@ -924,7 +973,7 @@ def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, A
             }
         else:
             current["events"].append(event)
-        if event.get("type") == "phase.end":
+        if event.get("type") in TERMINAL_PHASE_EVENT_TYPES:
             attempts.append(current)
             current = None
     if current is not None:
@@ -948,7 +997,7 @@ def phase_duration_ms(phase_events: list[dict[str, Any]]) -> int | None:
         etype = event.get("type")
         if etype == "phase.start" and start_ts is None:
             start_ts = event.get("timestamp")
-        elif etype == "phase.end":
+        elif etype in TERMINAL_PHASE_EVENT_TYPES:
             end_ts = event.get("timestamp")
     if start_ts and end_ts:
         # Closed phases end at the matching phase.end. Late events appended
@@ -1031,8 +1080,12 @@ def attempt_invocations(
 ) -> list[dict[str, Any]]:
     """Per-attempt invocation view: attempt, status, durationMs (RET-22 / IA-2).
 
-    Closed attempts keep phase.end status. Unclosed attempts are sealed as
-    INCOMPLETE at the next attempt start, an explicit recovery event, or cutoff.
+    Closed attempts keep phase.end status. Attempts closed by a write-path
+    ``phase.auto_sealed`` event (HH-WF-20260730-001) keep that event's status
+    (typically RECOVERED) but are never activeEligible: recovered/superseded
+    time must not count as active execution. Unclosed attempts (no terminal
+    event at all yet) are sealed as INCOMPLETE at the next attempt start, an
+    explicit recovery event, or cutoff.
     """
     attempts = split_phase_attempts(phase_events)
     invocations: list[dict[str, Any]] = []
@@ -1043,6 +1096,7 @@ def attempt_invocations(
         status = None
         terminal_status = None
         closed_by_end = False
+        closed_by_auto_seal = False
         for event in events_in:
             if event.get("type") == "phase.start" and start_ts is None:
                 start_ts = event.get("timestamp")
@@ -1052,9 +1106,15 @@ def attempt_invocations(
                     status = event.get("status")
                     terminal_status = str(event.get("status") or "").upper() or None
                 closed_by_end = True
+            elif event.get("type") == "phase.auto_sealed":
+                end_ts = event.get("timestamp")
+                seal_status = event.get("status") or "RECOVERED"
+                status = seal_status
+                terminal_status = str(seal_status or "").upper() or "RECOVERED"
+                closed_by_auto_seal = True
         missing_start = start_ts is None
         sealed_incomplete = False
-        if not closed_by_end:
+        if not closed_by_end and not closed_by_auto_seal:
             next_start = None
             if index + 1 < len(attempts):
                 for event in attempts[index + 1].get("events") or []:
@@ -1078,7 +1138,9 @@ def attempt_invocations(
         duration = None
         if start_ts and end_ts:
             duration = duration_ms_between(start_ts, end_ts)
-        # Active execution counts phase.end-closed attempts only (INCOMPLETE seals excluded).
+        # Active execution counts phase.end-closed attempts only. Both
+        # cutoff/INCOMPLETE seals and auto-sealed (recovered/superseded)
+        # attempts are excluded (HH-WF-20260730-001).
         active_eligible = closed_by_end and not sealed_incomplete
         invocations.append(
             {
@@ -1090,6 +1152,7 @@ def attempt_invocations(
                 "durationMs": duration,
                 "activeEligible": active_eligible,
                 "sealedIncomplete": sealed_incomplete,
+                "closedByAutoSeal": closed_by_auto_seal,
                 "warnings": list(attempt.get("warnings") or []),
             }
         )
@@ -1124,6 +1187,8 @@ def canonical_phase_timing(
     """Single reducer for every duration view (RET-20 / IA-2).
 
     activeExecutionMs: sum of closed attempt start→end only (INCOMPLETE excluded).
+    recoveredMs: sum of durations for attempts terminated via write-path
+        auto-seal (HH-WF-20260730-001) — always disjoint from activeExecutionMs.
     wallClockSpanMs: first → last/cutoff timestamp; unclosed attempts retain span.
     """
     invocations = attempt_invocations(phase_events, cutoff_ts=cutoff_ts)
@@ -1138,6 +1203,12 @@ def canonical_phase_timing(
         if invocation.get("activeEligible") and invocation.get("durationMs") is not None
     ]
     active = sum(closed_durations) if closed_durations else (0 if invocations else None)
+    recovered_durations = [
+        invocation["durationMs"]
+        for invocation in invocations
+        if invocation.get("closedByAutoSeal") and invocation.get("durationMs") is not None
+    ]
+    recovered = sum(recovered_durations) if recovered_durations else (0 if invocations else None)
     late = late_event_stats(phase_events)
     if len(stamps) >= 2:
         wall = duration_ms_between(stamps[0], stamps[-1])
@@ -1151,6 +1222,7 @@ def canonical_phase_timing(
     )
     return {
         "activeExecutionMs": active,
+        "recoveredMs": recovered,
         "wallClockSpanMs": wall,
         "lateEventCount": late["lateEventCount"],
         "lateEventSpanMs": late["lateEventSpanMs"],
@@ -1231,6 +1303,14 @@ def render_event_line(event: dict[str, Any]) -> list[str]:
         note = str(event.get("note") or "").strip()
         suffix = f" — {note}" if note else ""
         return [f"- phase.end @ {event.get('timestamp', '')}{suffix}"]
+    if etype == "phase.auto_sealed":
+        reason = str(event.get("reason") or "").strip() or "unknown"
+        status = str(event.get("status") or "RECOVERED").strip()
+        note = str(event.get("note") or "").strip()
+        suffix = f" — {note}" if note else ""
+        return [
+            f"- phase.auto_sealed ({status}/{reason}) @ {event.get('timestamp', '')}{suffix}"
+        ]
     if etype == "verification":
         note = str(event.get("note") or "").strip()
         name = str(event.get("name") or "").strip() or (
@@ -1422,14 +1502,19 @@ def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, A
 def phase_end_already_recorded(
     events: list[dict[str, Any]], candidate: dict[str, Any]
 ) -> bool:
-    """Return whether the candidate attempt already has a terminal event."""
+    """Return whether the candidate attempt already has a terminal event.
+
+    ``phase.auto_sealed`` counts as a terminal here too (HH-WF-20260730-001):
+    a stale ``phase.end`` for an attempt that was already auto-sealed (e.g.
+    superseded by a later ``phase.start``) must not close it a second time.
+    """
     phase_events = [
         event for event in events if event.get("phase") == candidate.get("phase")
     ]
     candidate_attempt = candidate.get("attempt")
     if isinstance(candidate_attempt, int):
         return any(
-            event.get("type") == "phase.end"
+            event.get("type") in TERMINAL_PHASE_EVENT_TYPES
             and event.get("attempt") == candidate_attempt
             for event in phase_events
         )
@@ -1437,7 +1522,151 @@ def phase_end_already_recorded(
     if not attempts:
         return False
     latest_events = attempts[-1].get("events") or []
-    return any(event.get("type") == "phase.end" for event in latest_events)
+    return any(event.get("type") in TERMINAL_PHASE_EVENT_TYPES for event in latest_events)
+
+
+def infer_auto_seal_reason(attempt_events: list[dict[str, Any]]) -> str:
+    """Best-effort ``phase.auto_sealed`` reason from an open attempt's own events.
+
+    HH-WF-20260730-001: prefer an explicit wait signal recorded while the
+    attempt was open, then an explicit recovery marker, else fall back to
+    ``superseded`` (the default meaning: a new phase.start arrived).
+    """
+    for event in attempt_events:
+        mapped = _WAIT_EVENT_REASON_MAP.get(str(event.get("type") or "").lower())
+        if mapped:
+            return mapped
+    for event in attempt_events:
+        if str(event.get("type") or "").lower() in _RECOVERY_EVENT_TYPES:
+            return "executor_lost"
+    return "superseded"
+
+
+def open_attempts_for_phase(
+    existing_events: list[dict[str, Any]], phase: str
+) -> list[dict[str, Any]]:
+    """Return ``split_phase_attempts`` records for ``phase`` that started but
+    have no terminal (``phase.end``/``phase.auto_sealed``) event yet.
+    """
+    phase_events = [event for event in existing_events if event.get("phase") == phase]
+    if not phase_events:
+        return []
+    open_attempts: list[dict[str, Any]] = []
+    for attempt in split_phase_attempts(phase_events):
+        events_in = attempt.get("events") or []
+        if not events_in:
+            continue
+        if not any(event.get("type") == "phase.start" for event in events_in):
+            # No actual start recorded (e.g. pure metadata bucket) — nothing
+            # to auto-seal; sealing it would manufacture a phantom attempt.
+            continue
+        if any(
+            event.get("type") in TERMINAL_PHASE_EVENT_TYPES for event in events_in
+        ):
+            # Prefer "any terminal" over "last event is terminal": late events
+            # may be appended onto a closed attempt after phase.end/auto_sealed.
+            continue
+        open_attempts.append(attempt)
+    return open_attempts
+
+
+def seal_open_phase_attempts(
+    existing_events: list[dict[str, Any]],
+    *,
+    phase: str,
+    seal_reason: str | None = None,
+    seal_ts: str | None = None,
+) -> list[dict[str, Any]]:
+    """Build ``phase.auto_sealed`` events for still-open attempts of ``phase``.
+
+    HH-WF-20260730-001: write-path auto-seal. Returns the seal event dicts —
+    callers append them (then the triggering event, e.g. the new
+    ``phase.start``) under the same lock so the whole sequence is atomic from
+    other processes' point of view.
+
+    When ``seal_reason`` is omitted, each open attempt gets a best-effort
+    inferred reason (wait / recovery / superseded).
+    """
+    open_attempts = open_attempts_for_phase(existing_events, phase)
+    if not open_attempts:
+        return []
+    ts = seal_ts or now_iso()
+    seal_events: list[dict[str, Any]] = []
+    for attempt in open_attempts:
+        events_in = attempt.get("events") or []
+        provenance_source = events_in[0] if events_in else {}
+        if seal_reason is None:
+            reason = infer_auto_seal_reason(events_in)
+        elif seal_reason in _AUTO_SEAL_REASONS:
+            reason = seal_reason
+        else:
+            reason = "unknown"
+        seal_event: dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "id": new_event_id(),
+            "timestamp": ts,
+            "phase": phase,
+            "type": "phase.auto_sealed",
+            "status": "RECOVERED",
+            "reason": reason,
+            "note": "",
+            "attempt": attempt.get("attempt"),
+        }
+        for field in ("run_id", "executor_tool", "executor_agent", "executor_model"):
+            value = provenance_source.get(field)
+            if value is not None:
+                seal_event[field] = value
+        seal_events.append(seal_event)
+    return seal_events
+
+
+def append_with_auto_seal(
+    events_file: Path,
+    event: dict[str, Any],
+    *,
+    existing_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Append ``event`` under lock; auto-seal open attempts when type is phase.start.
+
+    Returns ``{ok, event, autoSealed, phaseAlreadyClosed, events_path}``.
+    Caller must NOT hold the events lock — this function acquires it.
+    """
+    lock_path = events_file.with_name(events_file.name + ".lock")
+    event_type = str(event.get("type") or "")
+    phase = str(event.get("phase") or "")
+    auto_sealed: list[dict[str, Any]] = []
+    phase_already_closed = False
+    with event_file_lock(lock_path):
+        loaded = (
+            existing_events
+            if existing_events is not None
+            else (
+                load_events(events_file)
+                if event_type in {"phase.start", "phase.end", "correction"}
+                else []
+            )
+        )
+        if event_type == "phase.start" and phase:
+            auto_sealed = seal_open_phase_attempts(loaded, phase=phase)
+            for seal_event in auto_sealed:
+                atomic_append_line(
+                    events_file,
+                    json.dumps(seal_event, ensure_ascii=False, separators=(",", ":")),
+                )
+        if event_type == "phase.end":
+            phase_already_closed = phase_end_already_recorded(loaded, event)
+        if not phase_already_closed:
+            atomic_append_line(
+                events_file,
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+            )
+    return {
+        "ok": not phase_already_closed,
+        "event": event,
+        "autoSealed": auto_sealed,
+        "phaseAlreadyClosed": phase_already_closed,
+        "events_path": str(events_file),
+    }
 
 
 def cmd_append(args: argparse.Namespace) -> int:
@@ -1487,11 +1716,12 @@ def cmd_append(args: argparse.Namespace) -> int:
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     phase_closed = False
     projection_error: str | None = None
+    auto_sealed_events: list[dict[str, Any]] = []
     try:
         with event_file_lock(lock_path):
             existing_events = (
                 load_events(path)
-                if args.type in {"phase.end", "correction"}
+                if args.type in {"phase.end", "correction", "phase.start"}
                 else []
             )
             if args.type == "phase.end":
@@ -1501,7 +1731,26 @@ def cmd_append(args: argparse.Namespace) -> int:
                     apply_event_corrections([*existing_events, event])
                 except ValueError as exc:
                     projection_error = str(exc)
+            elif args.type == "phase.start":
+                # HH-WF-20260730-001: a new phase.start must not be appended
+                # while a prior attempt for the same phase is still open —
+                # auto-seal it first so timing never has two open attempts.
+                open_attempts = open_attempts_for_phase(existing_events, args.phase)
+                if open_attempts:
+                    inferred_reason = infer_auto_seal_reason(
+                        open_attempts[-1].get("events") or []
+                    )
+                    auto_sealed_events = seal_open_phase_attempts(
+                        existing_events,
+                        phase=args.phase,
+                        seal_reason=inferred_reason,
+                    )
             if not phase_closed and projection_error is None:
+                for seal_event in auto_sealed_events:
+                    atomic_append_line(
+                        path,
+                        json.dumps(seal_event, ensure_ascii=False, separators=(",", ":")),
+                    )
                 atomic_append_line(path, line)
     except (OSError, TimeoutError, ValueError) as exc:
         return emit_error(f"append failed: {exc}", as_json=as_json)
@@ -1519,12 +1768,13 @@ def cmd_append(args: argparse.Namespace) -> int:
             error_code=error_code,
         )
 
-    # §6.1: phase.end append -> 追加成功后执行一次 render（从完整 events 重建 log）。
-    # 普通 command/issue 等 append 不渲染（O(1)）；显式 `render` 子命令随时重建。
+    # §6.1: phase.end append（或写路径产生了 auto-seal）-> 追加成功后执行一次
+    # render（从完整 events 重建 log）。普通 command/issue 等 append 不渲染
+    # （O(1)）；显式 `render` 子命令随时重建。
     rendered = False
     log_path = None
     log_lines = None
-    if args.type == "phase.end":
+    if args.type == "phase.end" or auto_sealed_events:
         try:
             events = load_events(path)
             content = render_execution_log(events)
@@ -1541,6 +1791,8 @@ def cmd_append(args: argparse.Namespace) -> int:
         "events_path": str(path),
         "rendered": rendered,
     }
+    if args.type == "phase.start":
+        payload["autoSealed"] = auto_sealed_events
     if log_path is not None:
         payload["execution_log_path"] = str(log_path)
         payload["execution_log_lines"] = log_lines
