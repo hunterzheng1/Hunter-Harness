@@ -1503,6 +1503,14 @@ def build_workflow_timing(
     started = started_dt.isoformat() if started_dt else None
     cutoff = cutoff_dt.isoformat() if cutoff_dt else cutoff_text
 
+    def elapsed_ms(start: Any, end: Any) -> int:
+        delta = end - start
+        total_microseconds = (
+            (delta.days * 86_400 + delta.seconds) * 1_000_000
+            + delta.microseconds
+        )
+        return max(0, total_microseconds // 1_000)
+
     def clipped_interval(
         start_value: Any,
         end_value: Any,
@@ -1535,7 +1543,7 @@ def build_workflow_timing(
         return sum(
             max(
                 0,
-                int((interval_end - interval_start).total_seconds() * 1000),
+                elapsed_ms(interval_start, interval_end),
             )
             for interval_start, interval_end in merged
         )
@@ -1636,7 +1644,7 @@ def build_workflow_timing(
     for segment_start, segment_end in zip(boundaries, boundaries[1:]):
         milliseconds = max(
             0,
-            int((segment_end - segment_start).total_seconds() * 1000),
+            elapsed_ms(segment_start, segment_end),
         )
         if covered(segment_start, segment_end, active_intervals):
             categories["attributed"] += milliseconds
@@ -1648,7 +1656,7 @@ def build_workflow_timing(
             categories["unattributed"] += milliseconds
 
     workflow_wall = (
-        max(0, int((cutoff_dt - started_dt).total_seconds() * 1000))
+        elapsed_ms(started_dt, cutoff_dt)
         if started_dt is not None and cutoff_dt is not None
         else 0
     )
@@ -1668,9 +1676,7 @@ def build_workflow_timing(
                     "session": len(sessions) + 1,
                     "startedAt": session_start.isoformat(),
                     "endedAt": pause_start_dt.isoformat(),
-                    "wallClockMs": int(
-                        (pause_start_dt - session_start).total_seconds() * 1000
-                    ),
+                    "wallClockMs": elapsed_ms(session_start, pause_start_dt),
                     "terminalStatus": "PAUSED",
                 }
             )
@@ -1685,9 +1691,7 @@ def build_workflow_timing(
                 "session": len(sessions) + 1,
                 "startedAt": session_start.isoformat(),
                 "endedAt": cutoff_dt.isoformat(),
-                "wallClockMs": int(
-                    (cutoff_dt - session_start).total_seconds() * 1000
-                ),
+                "wallClockMs": elapsed_ms(session_start, cutoff_dt),
                 "terminalStatus": "CUTOFF",
             }
         )

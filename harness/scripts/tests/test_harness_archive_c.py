@@ -943,6 +943,38 @@ class ExecutionLogRebuildTests(unittest.TestCase):
 class CanonicalTimingTests(_FinalizeFixture):
     """UT-008 / RET-20: archive views use canonical transaction timing."""
 
+    def test_millisecond_partition_uses_exact_integer_arithmetic(self) -> None:
+        events = [
+            {
+                "phase": "plan",
+                "type": "phase.start",
+                "timestamp": "2026-07-30T00:00:00.000000+00:00",
+            },
+            {
+                "phase": "plan",
+                "type": "phase.end",
+                "timestamp": "2026-07-30T00:00:00.335000+00:00",
+            },
+        ]
+
+        timing = ha.build_workflow_timing(
+            events,
+            report_cutoff_at="2026-07-30T00:00:01.005000+00:00",
+        )
+
+        categories = sum(
+            timing[key]
+            for key in (
+                "attributedStageUnionMs",
+                "externalWaitMs",
+                "pausedMs",
+                "agentOrToolUnattributedMs",
+            )
+        )
+        self.assertEqual(timing["workflowWallClockMs"], 1005)
+        self.assertEqual(categories, timing["workflowWallClockMs"])
+        self.assertEqual(timing["conservationDeltaMs"], 0)
+
     def test_durations_carry_canonical_fields(self) -> None:
         code, payload, archive_dir = self._finalize()
         self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))

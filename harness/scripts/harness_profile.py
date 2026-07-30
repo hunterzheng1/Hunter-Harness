@@ -157,6 +157,15 @@ def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
         return projected
     projected["schemaVersion"] = SCHEMA_VERSION
     commands = projected.get("commands") if isinstance(projected.get("commands"), dict) else {}
+    legacy_verification_inputs = {
+        key: list(patterns)
+        for key, patterns in (
+            projected.get("verificationInputs")
+            if isinstance(projected.get("verificationInputs"), dict)
+            else {}
+        ).items()
+        if isinstance(key, str) and isinstance(patterns, list)
+    }
     projected.setdefault(
         "moduleGraph",
         {"modules": [], "boundariesProven": False, "needsReview": True},
@@ -188,6 +197,10 @@ def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
     }
     projected["defaultsFingerprint"] = profile_defaults_fingerprint()
     _derive_verification_inputs(projected)
+    projected["verificationInputs"] = {
+        **legacy_verification_inputs,
+        **projected["verificationInputs"],
+    }
     _derive_verification_graph(projected)
     return projected
 
