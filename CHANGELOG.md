@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.39] — hunter-harness / [0.2.37] — @hunter-harness/workflow-harness
+
+### Fixed（Push 运行时缓存过滤补丁）
+
+- `push` 在递归 adapter working copy 时会在读取前排除 Python 运行产生的 `__pycache__`、`.pyc`、`.pyo`、测试缓存和本地虚拟环境，避免二进制缓存误入敏感扫描与 proposal manifest。
+- FilePolicy 同步将这些路径归类为 `generated_cache / push_policy=never`，保护直接 proposal builder 与 baseline 路径；真实用户 skill 文本仍照常扫描。
+- symlink 安全检查继续先于缓存过滤，缓存目录名不能绕过 `UNSAFE_SYMLINK`。
+- 新增真实大体积 `.pyc`、常见缓存路径、真实 secret 与 junction 的回归测试；workflow bundle 提升至 `0.2.27`，最低 CLI 版本提升至 `0.2.39`。
+
 ## [0.2.38] — hunter-harness / [0.2.36] — @hunter-harness/workflow-harness
 
 ### Fixed（知识维护终态与状态文件一致性补丁）

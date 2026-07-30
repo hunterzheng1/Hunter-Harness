@@ -36,7 +36,13 @@ describe("file policy matrix", () => {
     [".agents/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
     [".cursor/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
     [".codebuddy/skills/harness-review/SKILL.md", "user_editable", "diff-proposal"],
-    [".codebuddy/agents/harness-reviewer.md", "user_editable", "diff-proposal"]
+    [".codebuddy/agents/harness-reviewer.md", "user_editable", "diff-proposal"],
+    [".claude/skills/harness-review/scripts/__pycache__/tool.cpython-311.pyc", "generated_cache", "never"],
+    [".agents/skills/harness-review/scripts/tool.PYO", "generated_cache", "never"],
+    [".cursor/skills/harness-review/.pytest_cache/CACHEDIR.TAG", "generated_cache", "never"],
+    [".codebuddy/skills/harness-review/.mypy_cache/3.12/cache.json", "generated_cache", "never"],
+    [".claude/skills/harness-review/.coverage.worker-1", "generated_cache", "never"],
+    [".claude/skills/harness-review/.venv/pyvenv.cfg", "generated_cache", "never"]
   ])("classifies %s uniquely", (path, kind, pushPolicy) => {
     const policy = classifyFile(path);
     expect(policy.file_kind).toBe(kind);
