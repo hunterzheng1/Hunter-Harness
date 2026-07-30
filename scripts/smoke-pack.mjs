@@ -1,4 +1,13 @@
-import { mkdtemp, readdir, rm, stat, writeFile, readFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -201,6 +210,41 @@ try {
       "CLAUDE.md user content + managed block not preserved");
     const agents = await readFile(join(project, "AGENTS.md"), "utf8");
     assert(agents.includes("# User Agents"), "AGENTS.md user content not preserved");
+
+    // The exact packed CLI must ignore generated Python runtime caches before
+    // scanning or proposal construction. This catches worktree builds that
+    // accidentally bundle stale @hunter-harness/core sources via node_modules.
+    const pythonCache = join(
+      project,
+      ".claude",
+      "skills",
+      "harness-knowledge-ingest",
+      "scripts",
+      "__pycache__"
+    );
+    await mkdir(pythonCache, { recursive: true });
+    const cachedBytecode = Buffer.alloc(512 * 1024, 0x20);
+    cachedBytecode.write(
+      "C:\\Users\\Example\\Hunter-Harness\\harness_knowledge.py"
+    );
+    await writeFile(
+      join(pythonCache, "harness_knowledge.cpython-311.pyc"),
+      cachedBytecode
+    );
+    const pushOutput = run(process.execPath, [
+      projectBin,
+      "push",
+      "--dry-run",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ], { cwd: project, capture: true });
+    const pushReceipt = JSON.parse(pushOutput.trim());
+    assert(pushReceipt.ok === true, "packed CLI rejected generated Python cache");
+    assert(pushReceipt.summary?.findings === 0,
+      "packed CLI scanned generated Python cache");
+    assert(pushReceipt.items?.every((item) => !item.path.includes("__pycache__")),
+      "packed CLI included generated Python cache in proposal");
 
     // 重跑相同多 Agent 命令必须保持受管文件字节不变。
     const beforeProject = await readFile(join(project, ".harness", "project.yaml"), "utf8");
