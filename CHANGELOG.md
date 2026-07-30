@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.40] — hunter-harness / [0.2.38] — @hunter-harness/workflow-harness
+
+### Fixed（worktree 发包源码绑定补丁）
+
+- CLI bundle 不再通过 `node_modules` workspace Junction 解析私有包，而是显式绑定当前 checkout 的 `packages/core/src` 与 `packages/contracts/src`，避免 linked worktree 发包时静默打入主工作区旧源码。
+- esbuild metafile 新增 fail-closed 完整性检查：私有 workspace 输入缺失、来自其他 checkout，或落到旧 `dist` 均直接终止打包。
+- pack smoke 现在从真实 tarball 安装 CLI，并创建含 Windows 绝对路径的 512 KiB `__pycache__/*.pyc`；要求敏感发现为 0 且 proposal 不含缓存路径，覆盖本次 `0.2.39` 发布产物失配。
+- workflow bundle 提升至 `0.2.28`，最低 CLI 版本提升至 `0.2.40`。
+
 ## [0.2.39] — hunter-harness / [0.2.37] — @hunter-harness/workflow-harness
 
 ### Fixed（Push 运行时缓存过滤补丁）
