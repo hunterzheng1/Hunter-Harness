@@ -231,6 +231,27 @@ try {
       join(pythonCache, "harness_knowledge.cpython-311.pyc"),
       cachedBytecode
     );
+    const knowledgeRoot = join(project, ".harness", "knowledge");
+    const staleKnowledge = join(knowledgeRoot, "entries", "stale");
+    const supersededKnowledge = join(
+      knowledgeRoot,
+      "entries",
+      "superseded"
+    );
+    await mkdir(staleKnowledge, { recursive: true });
+    await mkdir(supersededKnowledge, { recursive: true });
+    await writeFile(
+      join(knowledgeRoot, "index.json"),
+      Buffer.alloc(11 * 1024 * 1024, 0x20)
+    );
+    await writeFile(
+      join(staleKnowledge, "stale-entry.json"),
+      Buffer.alloc(1024, 0x20)
+    );
+    await writeFile(
+      join(supersededKnowledge, "superseded-entry.json"),
+      Buffer.alloc(1024, 0x20)
+    );
     const pushOutput = run(process.execPath, [
       projectBin,
       "push",
@@ -245,6 +266,11 @@ try {
       "packed CLI scanned generated Python cache");
     assert(pushReceipt.items?.every((item) => !item.path.includes("__pycache__")),
       "packed CLI included generated Python cache in proposal");
+    assert(pushReceipt.items?.every((item) =>
+      item.path !== ".harness/knowledge/index.json" &&
+      !item.path.startsWith(".harness/knowledge/entries/stale/") &&
+      !item.path.startsWith(".harness/knowledge/entries/superseded/")
+    ), "packed CLI included rebuildable knowledge projections in proposal");
 
     // 重跑相同多 Agent 命令必须保持受管文件字节不变。
     const beforeProject = await readFile(join(project, ".harness", "project.yaml"), "utf8");

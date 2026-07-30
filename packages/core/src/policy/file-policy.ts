@@ -124,8 +124,14 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/knowledge/project-local/")) {
     return PROJECT_LOCAL;
   }
+  // The manifest and terminal lifecycle projections are rebuilt by knowledge
+  // maintenance. Keep active/candidate/conflicted entries governed, but do not
+  // upload redundant history that can exceed the server proposal envelope.
   if (
+    path === ".harness/knowledge/index.json" ||
     path === ".harness/knowledge/index.sqlite" ||
+    under(path, ".harness/knowledge/entries/stale/") ||
+    under(path, ".harness/knowledge/entries/superseded/") ||
     under(path, ".harness/knowledge/cache/") ||
     under(path, ".harness/knowledge/views/") ||
     under(path, ".harness/knowledge/context-packs/")
