@@ -78,8 +78,33 @@ function under(path: string, prefix: string): boolean {
   return path === prefix.slice(0, -1) || path.startsWith(prefix);
 }
 
+const PYTHON_RUNTIME_CACHE_DIRECTORIES = new Set([
+  "__pycache__",
+  ".hypothesis",
+  ".mypy_cache",
+  ".nox",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".venv"
+]);
+
+export function isGeneratedRuntimeCachePath(input: string): boolean {
+  const path = normalizeManagedPath(input).toLowerCase();
+  const segments = path.split("/");
+  const name = segments.at(-1) ?? "";
+  return segments.some((segment) => PYTHON_RUNTIME_CACHE_DIRECTORIES.has(segment)) ||
+    name.endsWith(".pyc") ||
+    name.endsWith(".pyo") ||
+    name === ".coverage" ||
+    name.startsWith(".coverage.");
+}
+
 export function classifyFile(input: string): FilePolicy {
   const path = normalizeManagedPath(input);
+  if (isGeneratedRuntimeCachePath(path)) {
+    return GENERATED_CACHE;
+  }
   if (path === "CLAUDE.md" || path === "AGENTS.md" || path === "CODEBUDDY.md") {
     return USER_MANAGED_BLOCK;
   }

@@ -16,6 +16,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { ApiError, HunterHarnessApiClient } from "../api/client.js";
 import { sha256Bytes } from "../fs/hash.js";
 import { normalizeManagedPath } from "../fs/path-safety.js";
+import { isGeneratedRuntimeCachePath } from "../policy/file-policy.js";
 import {
   generateProposalPreview
 } from "../proposal/preview.js";
@@ -163,10 +164,16 @@ async function walkFiles(root: string, current: string, output: string[]): Promi
     if (item.isSymbolicLink()) {
       throw new PushWorkflowError("symlink is not pushable", 6, "UNSAFE_SYMLINK");
     }
+    const relativePath = normalizeManagedPath(
+      relative(root, path).replaceAll("\\", "/")
+    );
+    if (isGeneratedRuntimeCachePath(relativePath)) {
+      continue;
+    }
     if (item.isDirectory()) {
       await walkFiles(root, path, output);
     } else if (item.isFile()) {
-      output.push(normalizeManagedPath(relative(root, path).replaceAll("\\", "/")));
+      output.push(relativePath);
     }
   }
 }
