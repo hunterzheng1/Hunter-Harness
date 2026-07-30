@@ -1397,7 +1397,8 @@ def load_preserved_entries(knowledge: Path) -> list[dict[str, Any]]:
         entry
         for status in ["candidate", "stale", "superseded", "conflicted"]
         for entry in load_entries_from_dir(knowledge / "entries" / status)
-        if entry.get("lifecycle", {}).get("demotedAt")
+        if status == "superseded"
+        or entry.get("lifecycle", {}).get("demotedAt")
         or entry.get("lifecycle", {}).get("judgeAction")
     ]
     return active_entries + manually_decided_entries
@@ -1762,6 +1763,27 @@ def _preserve_confidence_timestamp(target: Path, entry: dict[str, Any]) -> None:
         entry["confidence"]["lastCalculatedAt"] = disk_conf.get("lastCalculatedAt")
 
 
+def remove_other_entry_status_files(
+    knowledge: Path,
+    entry: dict[str, Any],
+    target: Path,
+) -> None:
+    entry_id = str(entry.get("id") or "")
+    if not entry_id:
+        return
+    filename = entry_filename(entry)
+    for status in ["candidate", "active", "stale", "superseded", "conflicted"]:
+        existing_path = knowledge / "entries" / status / filename
+        if existing_path == target or not existing_path.exists():
+            continue
+        try:
+            existing = read_json(existing_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(existing, dict) and str(existing.get("id") or "") == entry_id:
+            existing_path.unlink()
+
+
 def persist_entry_updates(knowledge: Path, entries: list[dict[str, Any]]) -> int:
     written = 0
     for entry in entries:
@@ -1773,6 +1795,7 @@ def persist_entry_updates(knowledge: Path, entries: list[dict[str, Any]]) -> int
             _preserve_confidence_timestamp(path, entry)
         if write_json_if_changed(path, entry):
             written += 1
+        remove_other_entry_status_files(knowledge, entry, path)
     return written
 
 

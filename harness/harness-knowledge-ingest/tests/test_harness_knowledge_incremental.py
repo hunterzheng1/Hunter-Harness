@@ -57,6 +57,65 @@ def make_entry(
 
 
 class KnowledgeIncrementalTest(unittest.TestCase):
+    def test_auto_superseded_entry_is_preserved_on_incremental_rebuild(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge = Path(tmp) / ".harness" / "knowledge"
+            existing = make_entry(
+                "fixture.decision.superseded",
+                "workflow state is superseded",
+            )
+            existing["status"] = "superseded"
+            existing["lifecycle"]["supersededBy"] = "fixture.decision.replacement"
+            existing_path = (
+                knowledge
+                / "entries"
+                / "superseded"
+                / KNOWLEDGE.entry_filename(existing)
+            )
+            KNOWLEDGE.write_json(existing_path, existing)
+
+            generated = make_entry(
+                "fixture.decision.superseded",
+                "workflow state is superseded",
+            )
+            combined = KNOWLEDGE.combine_generated_with_preserved(
+                knowledge,
+                [generated],
+            )
+
+            self.assertEqual(len(combined), 1)
+            self.assertEqual(combined[0]["status"], "superseded")
+            self.assertEqual(
+                combined[0]["lifecycle"]["supersededBy"],
+                "fixture.decision.replacement",
+            )
+
+    def test_persisted_status_change_relocates_existing_entry_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge = Path(tmp) / ".harness" / "knowledge"
+            existing = make_entry(
+                "fixture.decision.relocated",
+                "workflow state changes status",
+            )
+            existing["status"] = "stale"
+            existing_path = (
+                knowledge
+                / "entries"
+                / "stale"
+                / KNOWLEDGE.entry_filename(existing)
+            )
+            KNOWLEDGE.write_json(existing_path, existing)
+
+            updated = json.loads(json.dumps(existing))
+            updated["status"] = "superseded"
+            updated["lifecycle"]["supersededBy"] = "fixture.decision.replacement"
+            KNOWLEDGE.persist_entry_updates(knowledge, [updated])
+
+            loaded = KNOWLEDGE.load_entry_files(knowledge)
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0][1]["status"], "superseded")
+            self.assertFalse(existing_path.exists())
+
     def test_snapshot_resolves_and_hashes_each_archive_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

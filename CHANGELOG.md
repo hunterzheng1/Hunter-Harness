@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.36] — @hunter-harness/workflow-harness
+
+### Fixed（知识维护终态与状态文件一致性补丁）
+
+- 自动 supersede 产生的终态条目现在进入 preserved closure，同一 archive 未变化时不再被增量缓存中的旧状态覆盖。
+- 条目状态变化会按稳定 ID 迁移持久化文件，并移除其他状态目录中的旧副本，避免验证重载阶段出现同 ID 不同载荷碰撞。
+- 工作流时间分区改用整数微秒换算毫秒，消除浮点边界偶发产生的 `conservationDeltaMs=-1`，确保分类总和严格等于墙钟。
+- 新增自动 supersede 保留与跨状态文件迁移回归测试，并用真实归档知识库完成冷重建和 maintenance outbox 恢复验证。
+
 ## [0.2.37] — hunter-harness / [0.2.35] — @hunter-harness/workflow-harness
 
 ### Fixed（release-candidate 身份自洽补丁）
