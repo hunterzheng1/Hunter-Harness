@@ -7,6 +7,7 @@
 - CLI bundle 不再通过 `node_modules` workspace Junction 解析私有包，而是显式绑定当前 checkout 的 `packages/core/src` 与 `packages/contracts/src`，避免 linked worktree 发包时静默打入主工作区旧源码。
 - esbuild metafile 新增 fail-closed 完整性检查：私有 workspace 输入缺失、来自其他 checkout，或落到旧 `dist` 均直接终止打包。
 - pack smoke 现在从真实 tarball 安装 CLI，并创建含 Windows 绝对路径的 512 KiB `__pycache__/*.pyc`；要求敏感发现为 0 且 proposal 不含缓存路径，覆盖本次 `0.2.39` 发布产物失配。
+- Push 不再上传可从知识条目重建的 `knowledge/index.json`，也不上传非活动的 `entries/stale` / `entries/superseded` 投影；active、candidate、conflicted 与 project-local 知识仍按原治理策略处理，避免大型项目命中单文件 10 MiB / proposal 50 MiB 门禁。
 - workflow bundle 提升至 `0.2.28`，最低 CLI 版本提升至 `0.2.40`。
 
 ## [0.2.39] — hunter-harness / [0.2.37] — @hunter-harness/workflow-harness
