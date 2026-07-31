@@ -292,6 +292,15 @@ class DeploySafetyReproTests(unittest.TestCase):
         hd.cmd_build(root, out2, None)
         self.assertEqual(hd.collect_files(out1), hd.collect_files(out2))
 
+    def test_core_hash_is_independent_of_git_metadata(self) -> None:
+        root = _fixture_root(self.tmp)
+        without_git = hd.core_content_hash(root, None)
+
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+        self.assertEqual(without_git, hd.core_content_hash(root, None))
+
     def test_generated_skill_uses_lf_newlines(self) -> None:
         root = _fixture_root(self.tmp)
         out = self.tmp / "out"

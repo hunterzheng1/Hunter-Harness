@@ -1,12 +1,13 @@
 # Changelog
 
-## [0.2.42] — hunter-harness
+## [0.2.42] — hunter-harness / [0.2.40] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-07-31 Sync 指令图与发布收据修复）
 
 - **指令引用强度**：反引号中的裸 `.md` / `.json` 文件名若不存在，按说明文字保留诊断边但不再触发 `INSTRUCTION_REFERENCE_MISSING`；带目录的 inline 路径、`@ref`、Markdown link 与 JSON 指令字段继续严格校验，避免 `build-profile.json` 等配置名误阻断 sync。
 - **Dry-run 收据真实性**：Adapter 投影预览不再写入 `partialEffects.persisted`，改为明确的 `notPersisted` preview；dry-run 保持零持久化且汇总不再声称变更已经落盘。
 - **发布可复现性**：修正 workflow family 的受跟踪内容哈希；pack smoke 在 workflow prepack 改写 family manifest 时 fail-closed，防止发布 tarball 与候选 Git 提交静默不一致。
+- **跨平台 Bundle 摘要**：`coreHash` 统一按 POSIX 相对路径排序并使用实际文件 SHA-256，不再因 Windows/Linux 路径排序或 Git 元数据是否存在而漂移；Windows 与 Linux 生成的 854 个 workflow 文件逐文件一致。
 
 ## [0.2.41] — hunter-harness / [0.2.39] — @hunter-harness/workflow-harness
 

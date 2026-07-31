@@ -316,48 +316,6 @@ def validate_build_paths(skills_root: Path, out_dir: Path) -> tuple[Path, Path]:
     return skills_root, out_dir
 
 
-def _git_repo_root(start: Path) -> Path | None:
-    """Return the git toplevel containing ``start``, or None if not a git repo."""
-    try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(start),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    return Path(r.stdout.strip())
-
-
-def _git_blob_sha(path: Path, repo_root: Path) -> str | None:
-    """Return the git blob sha for a tracked file (CRLF-normalized by .gitattributes),
-    or None if untracked / git unavailable. Caller falls back to working-copy sha256
-    for untracked build inputs (deterministic enough outside git's normalization)."""
-    try:
-        rel = path.resolve().relative_to(repo_root.resolve())
-    except ValueError:
-        return None
-    try:
-        r = subprocess.run(
-            ["git", "ls-files", "-s", "--", rel.as_posix()],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    # format: "<mode> <sha> <stage>\t<path>"
-    parts = r.stdout.strip().splitlines()[0].split()
-    return parts[1] if len(parts) >= 2 else None
-
-
 def core_content_hash(
     skills_root: Path,
     overlay_dir: Path | None,
@@ -387,17 +345,18 @@ def core_content_hash(
     if agent_overlay_dir and agent_overlay_dir.is_dir():
         files.extend(p for p in agent_overlay_dir.rglob("*") if p.is_file())
     skills_root_resolved = skills_root.resolve()
-    repo_root = _git_repo_root(skills_root_resolved)
-    for f in sorted(set(files)):
-        rel = f.resolve().relative_to(skills_root_resolved).as_posix()
+    files_by_relative_path = {
+        f.resolve().relative_to(skills_root_resolved).as_posix(): f
+        for f in files
+    }
+    for rel in sorted(files_by_relative_path):
+        f = files_by_relative_path[rel]
         h.update(rel.encode("utf-8"))
         h.update(b"\0")
-        # Prefer the git blob sha: .gitattributes eol=lf normalization makes the
-        # hash independent of working-copy CRLF state (the CRLF working-copy drift
-        # that previously caused core hash mismatches across main/worktree). Fall
-        # back to working-tree bytes for untracked build inputs (templates, etc.).
-        blob = _git_blob_sha(f, repo_root) if repo_root else None
-        h.update((blob or sha256_file(f)).encode("ascii"))
+        # Hash the actual build input with one algorithm regardless of whether the
+        # source happens to live inside a Git checkout. Relative POSIX-path sorting
+        # keeps the order identical on case-insensitive Windows and Linux.
+        h.update(sha256_file(f).encode("ascii"))
         h.update(b"\0")
     return h.hexdigest()[:16]
 
