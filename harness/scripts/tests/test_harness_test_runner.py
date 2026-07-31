@@ -348,6 +348,44 @@ class RunnerContractTests(unittest.TestCase):
                     ):
                         time.sleep(0.05)
 
+    def test_detached_service_mode_contains_ordinary_child_when_lineage_scan_misses(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-lineage-race-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            pid_file = tmp / "child.pid"
+            script = (
+                "import pathlib,subprocess,sys;"
+                "child=subprocess.Popen([sys.executable,'-c',"
+                "'import time;time.sleep(10)']);"
+                "pathlib.Path(sys.argv[1]).write_text(str(child.pid),encoding='utf-8')"
+            )
+            with mock.patch.object(
+                runner,
+                "_update_windows_descendants",
+                return_value=True,
+            ):
+                result = runner.run_managed_command(
+                    [sys.executable, "-c", script, str(pid_file)],
+                    cwd=tmp,
+                    timeout_seconds=5,
+                    environ={},
+                    allow_detached_processes=True,
+                )
+            child_pid = int(pid_file.read_text(encoding="utf-8"))
+            try:
+                self.assertEqual(result.returncode, 0)
+                self.assertTrue(result.process_tree_isolated)
+                self.assertFalse(runner._pid_is_running(child_pid))
+            finally:
+                if runner._pid_is_running(child_pid):
+                    subprocess.run(
+                        ["taskkill", "/PID", str(child_pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+
     def test_detached_exec_fails_fast_when_capability_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harness-runner-capability-") as raw_tmp:
             stderr = io.StringIO()

@@ -502,15 +502,32 @@ class _WindowsBasicAccountingInformation(ctypes.Structure):
     ]
 
 
+_WINDOWS_JOB_PROCESS_ID_CAPACITY = 4096
+
+
+class _WindowsJobProcessIdList(ctypes.Structure):
+    _fields_ = [
+        ("NumberOfAssignedProcesses", ctypes.c_uint32),
+        ("NumberOfProcessIdsInList", ctypes.c_uint32),
+        (
+            "ProcessIdList",
+            ctypes.c_size_t * _WINDOWS_JOB_PROCESS_ID_CAPACITY,
+        ),
+    ]
+
+
 class _WindowsKillOnCloseJob:
     """Best-effort Windows Job Object that kills descendants when closed."""
 
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
     _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS = 1
+    _JOB_OBJECT_BASIC_PROCESS_ID_LIST_CLASS = 3
 
-    def __init__(self) -> None:
+    def __init__(self, *, allow_breakaway: bool = False) -> None:
         self.handle: int | None = None
+        self.allow_breakaway = allow_breakaway
 
     def assign(self, process: subprocess.Popen[object]) -> bool:
         if os.name != "nt":
@@ -521,7 +538,14 @@ class _WindowsKillOnCloseJob:
         if not handle:
             return False
         info = _WindowsExtendedLimitInformation()
-        info.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        info.BasicLimitInformation.LimitFlags = (
+            self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            | (
+                self._JOB_OBJECT_LIMIT_BREAKAWAY_OK
+                if self.allow_breakaway
+                else 0
+            )
+        )
         configured = kernel32.SetInformationJobObject(
             ctypes.c_void_p(handle),
             self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
@@ -554,24 +578,68 @@ class _WindowsKillOnCloseJob:
             return True
         kernel32 = ctypes.windll.kernel32
         handle = ctypes.c_void_p(self.handle)
-        kernel32.TerminateJobObject(handle, 1)
         deadline = time.monotonic() + max(0.0, timeout_seconds)
-        drained = False
-        while time.monotonic() < deadline:
-            accounting = _WindowsBasicAccountingInformation()
-            queried = kernel32.QueryInformationJobObject(
-                handle,
-                self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS,
-                ctypes.byref(accounting),
-                ctypes.sizeof(accounting),
-                None,
-            )
-            if not queried or accounting.ActiveProcesses == 0:
-                drained = True
-                break
-            time.sleep(0.02)
-        self.close()
-        return drained
+        process_ids = _WindowsJobProcessIdList()
+        process_list_queried = kernel32.QueryInformationJobObject(
+            handle,
+            self._JOB_OBJECT_BASIC_PROCESS_ID_LIST_CLASS,
+            ctypes.byref(process_ids),
+            ctypes.sizeof(process_ids),
+            None,
+        )
+        process_list_complete = bool(
+            process_list_queried
+            and process_ids.NumberOfAssignedProcesses
+            == process_ids.NumberOfProcessIdsInList
+        )
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        process_handles: list[int] = []
+        if process_list_complete:
+            for index in range(int(process_ids.NumberOfProcessIdsInList)):
+                process_handle = kernel32.OpenProcess(
+                    0x00100000,
+                    False,
+                    int(process_ids.ProcessIdList[index]),
+                )
+                if process_handle:
+                    process_handles.append(int(process_handle))
+                else:
+                    process_list_complete = False
+        terminated = bool(kernel32.TerminateJobObject(handle, 1))
+        handles_signaled = process_list_complete
+        try:
+            for process_handle in process_handles:
+                remaining_ms = max(
+                    0,
+                    int((deadline - time.monotonic()) * 1000),
+                )
+                if (
+                    kernel32.WaitForSingleObject(
+                        ctypes.c_void_p(process_handle),
+                        remaining_ms,
+                    )
+                    != 0
+                ):
+                    handles_signaled = False
+            accounting_drained = False
+            while time.monotonic() < deadline:
+                accounting = _WindowsBasicAccountingInformation()
+                queried = kernel32.QueryInformationJobObject(
+                    handle,
+                    self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS,
+                    ctypes.byref(accounting),
+                    ctypes.sizeof(accounting),
+                    None,
+                )
+                if queried and accounting.ActiveProcesses == 0:
+                    accounting_drained = True
+                    break
+                time.sleep(0.02)
+        finally:
+            for process_handle in process_handles:
+                kernel32.CloseHandle(ctypes.c_void_p(process_handle))
+            self.close()
+        return terminated and handles_signaled and accounting_drained
 
 
 class _WindowsProcessEntry(ctypes.Structure):
@@ -761,15 +829,15 @@ def _cleanup_descendants_after_success(
     process: subprocess.Popen[object],
     *,
     windows_job: _WindowsKillOnCloseJob | None,
-) -> None:
+) -> bool:
     if windows_job is not None and windows_job.handle is not None:
-        windows_job.terminate_and_wait()
-        return
+        return windows_job.terminate_and_wait()
     if os.name != "nt":
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+    return os.name != "nt"
 
 
 def run_managed_command(
@@ -813,8 +881,8 @@ def run_managed_command(
     try:
         process = subprocess.Popen(list(argv), **popen_kwargs)
         windows_job = (
-            _WindowsKillOnCloseJob()
-            if os.name == "nt" and not allow_detached_processes
+            _WindowsKillOnCloseJob(allow_breakaway=allow_detached_processes)
+            if os.name == "nt"
             else None
         )
         isolated = bool(windows_job and windows_job.assign(process))
@@ -849,16 +917,16 @@ def run_managed_command(
             if os.name == "nt":
                 _terminate_tracked_windows_descendants(known_windows_descendants)
             raise
+        descendants_drained = True
         if not timed_out:
-            _cleanup_descendants_after_success(process, windows_job=windows_job)
+            descendants_drained = _cleanup_descendants_after_success(
+                process,
+                windows_job=windows_job,
+            )
         if os.name == "nt":
             _update_windows_descendants(process.pid, known_windows_descendants)
             _terminate_tracked_windows_descendants(known_windows_descendants)
-            isolated = (
-                windows_snapshot_ok
-                if allow_detached_processes
-                else isolated and windows_snapshot_ok
-            )
+            isolated = isolated and windows_snapshot_ok and descendants_drained
         duration = time.monotonic() - started
         output_tail = ""
         if output_stream is not None:
@@ -1337,7 +1405,10 @@ def build_parser() -> argparse.ArgumentParser:
     exec_parser.add_argument(
         "--allow-detached-processes",
         action="store_true",
-        help="Use exact Windows PID-lineage tracking instead of a Job Object.",
+        help=(
+            "Permit explicit Windows Job breakaway while retaining ordinary "
+            "descendants and tracking escaped process lineages."
+        ),
     )
     exec_parser.set_defaults(handler=_run_exec)
 

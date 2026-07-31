@@ -26,6 +26,7 @@ def load_module(name: str, filename: str):
 
 
 runtime = load_module("harness_runtime", "harness_runtime.py")
+test_runner = load_module("harness_test_runner_for_runtime", "harness_test_runner.py")
 
 
 class RuntimeDoctorTests(unittest.TestCase):
@@ -119,6 +120,43 @@ class ManagedRunSessionTests(unittest.TestCase):
                 return result
             time.sleep(0.05)
         self.fail(f"run session did not finish: {result}")
+
+    def test_terminal_receipt_waits_for_worker_process_to_exit(self) -> None:
+        receipt = {
+            "sessionId": "run-finalizing",
+            "status": "OK",
+            "reasonCode": "CHILD_EXIT_ZERO",
+            "workerPid": 1234,
+            "workerIdentity": {
+                "startedAt": "2026-07-31T00:00:00+00:00",
+                "executable": sys.executable,
+            },
+        }
+        with (
+            mock.patch.object(runtime, "_load_run_receipt", return_value=receipt),
+            mock.patch(
+                "harness_service.verify_process_identity",
+                return_value=True,
+            ),
+            mock.patch("harness_service.is_pid_alive", return_value=True),
+        ):
+            finalizing = runtime.run_session_status(Path("."), "run-finalizing")
+
+        self.assertEqual(finalizing["status"], "FINALIZING")
+        self.assertEqual(finalizing["reasonCode"], "WORKER_FINALIZING")
+        self.assertEqual(receipt["status"], "OK")
+
+        with (
+            mock.patch.object(runtime, "_load_run_receipt", return_value=receipt),
+            mock.patch(
+                "harness_service.verify_process_identity",
+                return_value=False,
+            ),
+            mock.patch("harness_service.is_pid_alive", return_value=False),
+        ):
+            terminal = runtime.run_session_status(Path("."), "run-finalizing")
+
+        self.assertEqual(terminal["status"], "OK")
 
     def test_detached_session_supports_unicode_paths_incremental_logs_and_receipt(
         self,
@@ -336,9 +374,12 @@ class ManagedRunSessionTests(unittest.TestCase):
             terminal = self._wait_for_terminal(root / "state", started["sessionId"])
             self.assertEqual(terminal["status"], "OK", terminal)
 
-    def test_windows_job_does_not_allow_descendant_breakaway(self) -> None:
-        source = (SCRIPTS_DIR / "harness_test_runner.py").read_text(encoding="utf-8")
-        self.assertNotIn("_JOB_OBJECT_LIMIT_BREAKAWAY_OK", source)
+    def test_windows_job_breakaway_requires_explicit_detached_mode(self) -> None:
+        default_job = test_runner._WindowsKillOnCloseJob()
+        detached_job = test_runner._WindowsKillOnCloseJob(allow_breakaway=True)
+
+        self.assertFalse(default_job.allow_breakaway)
+        self.assertTrue(detached_job.allow_breakaway)
 
     def test_timeout_writes_diagnostics_before_bounded_termination(self) -> None:
         start_fn = getattr(runtime, "start_run_session", None)

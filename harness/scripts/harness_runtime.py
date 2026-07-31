@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -566,13 +567,12 @@ def start_run_session(
         session_id,
     ]
     try:
-        with worker_log_path.open("ab", buffering=0) as worker_log:
-            worker = _spawn_detached_worker(
-                worker_argv,
-                cwd=working_directory,
-                env=worker_env,
-                output=worker_log,
-            )
+        worker_log_path.touch()
+        worker = _spawn_detached_worker(
+            worker_argv,
+            cwd=working_directory,
+            env=worker_env,
+        )
     except OSError as exc:
         spec_path.unlink(missing_ok=True)
         locks_released = _release_resource_locks(
@@ -957,11 +957,61 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
     return 0 if receipt.get("status") == "OK" else 1
 
 
+def _run_session_worker_with_log(state_root: Path, session_id: str) -> int:
+    worker_log_path = _run_session_root(state_root, session_id) / "worker.log"
+    try:
+        worker_log = worker_log_path.open(
+            "a",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+    except OSError:
+        return _run_session_worker(state_root, session_id)
+    with worker_log:
+        with (
+            contextlib.redirect_stdout(worker_log),
+            contextlib.redirect_stderr(worker_log),
+        ):
+            return _run_session_worker(state_root, session_id)
+
+
 def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
     from harness_service import is_pid_alive, verify_process_identity
 
     receipt = _load_run_receipt(state_root, session_id)
+    worker_pid = receipt.get("workerPid")
+    worker_identity = receipt.get("workerIdentity")
+    worker_session = {
+        "pid": worker_pid,
+        "startedAt": (
+            worker_identity.get("startedAt")
+            if isinstance(worker_identity, dict)
+            else None
+        ),
+        "processIdentity": {
+            "executable": (
+                worker_identity.get("executable")
+                if isinstance(worker_identity, dict)
+                else None
+            )
+        },
+    }
     if receipt.get("status") in RUN_TERMINAL_STATUSES:
+        if (
+            isinstance(worker_pid, int)
+            and worker_pid > 0
+            and is_pid_alive(worker_pid)
+            and verify_process_identity(worker_session) is True
+        ):
+            finalizing = dict(receipt)
+            finalizing.update(
+                {
+                    "status": "FINALIZING",
+                    "reasonCode": "WORKER_FINALIZING",
+                }
+            )
+            return finalizing
         return receipt
     heartbeat_text = str(receipt.get("lastHeartbeatAt") or "")
     try:
@@ -986,23 +1036,6 @@ def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
         and heartbeat_age < startup_grace
     ):
         return receipt
-    worker_pid = receipt.get("workerPid")
-    worker_identity = receipt.get("workerIdentity")
-    worker_session = {
-        "pid": worker_pid,
-        "startedAt": (
-            worker_identity.get("startedAt")
-            if isinstance(worker_identity, dict)
-            else None
-        ),
-        "processIdentity": {
-            "executable": (
-                worker_identity.get("executable")
-                if isinstance(worker_identity, dict)
-                else None
-            )
-        },
-    }
     identity_state = verify_process_identity(worker_session)
     worker_gone = (
         isinstance(worker_pid, int)
@@ -1329,7 +1362,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "adapter":
             result = {"ok": True, "action": "adapter", **adapter_worktree(args.agent, args.change)}
         elif args.command == "_worker":
-            return _run_session_worker(Path(args.state_root), args.session_id)
+            return _run_session_worker_with_log(
+                Path(args.state_root),
+                args.session_id,
+            )
         elif args.command == "run-start":
             command_argv = list(args.argv)
             if command_argv and command_argv[0] == "--":
