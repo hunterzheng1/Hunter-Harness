@@ -598,6 +598,294 @@ class FailureRecoveryTests(TransactionFixture):
         self.assertEqual(recovered["ledgerSync"]["status"], "DONE")
         self.assertEqual(recovered["mergeFinalHash"], journal["mergeCommit"])
 
+    def test_recover_remote_push_with_explicit_evidence_change(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+
+        evidence_change = "demo-evidence"
+        evidence_ledger = (
+            self.primary / ".harness" / "state" / "changes" / evidence_change
+            / "verification-ledger.json"
+        )
+        evidence_ledger.parent.mkdir(parents=True, exist_ok=True)
+        evidence_payload = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        evidence_payload["changeName"] = evidence_change
+        evidence_payload["currentHead"] = journal["base"]
+        for field in ("mergeFinalHash", "ciExpectedHead", "remoteHead"):
+            evidence_payload[field] = journal["base"]
+        evidence_ledger.write_text(
+            json.dumps(evidence_payload) + "\n",
+            encoding="utf-8",
+        )
+        self.ledger_path.unlink()
+
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+
+        failed = integration.load_journal(self.primary, txn.transaction_id)
+        previous_verification_hash = failed["verificationIdentity"]["sha256"]
+        failed.pop("evidenceChangeName", None)  # simulate a legacy journal
+        txn._save(failed)
+        recovery = integration.IntegrationTransaction(
+            project_root=self.primary,
+            change_id="demo",
+            run_id="run-1",
+            target_branch="main",
+            feature_branch="feature/demo",
+            temp_root=self.temp_root,
+            runner=self.runner,
+        )
+        recovered = recovery.recover(evidence_change_id=evidence_change)
+
+        push_step = next(s for s in recovered["steps"] if s["name"] == "push")
+        cleanup_step = next(s for s in recovered["steps"] if s["name"] == "cleanup")
+        self.assertEqual(push_step["status"], "DONE")
+        self.assertEqual(cleanup_step["status"], "DONE")
+        self.assertEqual(recovered["evidenceChangeName"], evidence_change)
+        self.assertEqual(recovered["ledgerSync"]["status"], "DONE")
+        self.assertEqual(recovered["mergeFinalHash"], journal["mergeCommit"])
+        self.assertEqual(
+            recovered["evidenceRebind"]["reason"],
+            "REMOTE_CONFIRMED_DEFAULT_LEDGER_MISSING",
+        )
+        self.assertEqual(
+            recovered["evidenceIdentity"]["ledgerIdentity"]["changeName"],
+            evidence_change,
+        )
+        self.assertEqual(
+            recovered["verificationIdentity"]["ledgerIdentity"]["changeName"],
+            evidence_change,
+        )
+        self.assertNotEqual(
+            recovered["verificationIdentity"]["sha256"],
+            previous_verification_hash,
+        )
+        self.assertEqual(
+            json.loads(evidence_ledger.read_text(encoding="utf-8"))["remoteHead"],
+            journal["mergeCommit"],
+        )
+
+    def test_recover_rebind_refuses_before_remote_confirmed_missing_ledger(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        push_calls_before = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+
+        with self.assertRaises(integration.EvidenceRebindRefusedError):
+            txn.recover(evidence_change_id="demo-evidence")
+
+        push_calls_after = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+        self.assertEqual(push_calls_after, push_calls_before)
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(journal["evidenceChangeName"], "demo")
+
+    def test_push_rejects_unreceipted_evidence_binding_before_remote_write(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        journal["evidenceChangeName"] = "demo-evidence"
+        txn._save(journal)
+        remote_before = git(
+            self.primary, "ls-remote", "origin", "main"
+        ).stdout.split()[0]
+        push_calls_before = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+
+        with self.assertRaises(integration.EvidenceRebindRefusedError):
+            txn.push()
+
+        remote_after = git(
+            self.primary, "ls-remote", "origin", "main"
+        ).stdout.split()[0]
+        push_calls_after = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+        self.assertEqual(remote_after, remote_before)
+        self.assertEqual(push_calls_after, push_calls_before)
+
+    def test_cleanup_rejects_unreceipted_evidence_binding(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        integration_root = Path(journal["integrationRoot"])
+        journal["evidenceChangeName"] = "demo-evidence"
+        txn._save(journal)
+
+        with self.assertRaises(integration.EvidenceRebindRefusedError):
+            txn.cleanup()
+
+        self.assertTrue(integration_root.exists())
+
+    def test_cleanup_legacy_journal_uses_transaction_change_ledger(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        txn.push()
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        journal.pop("evidenceChangeName", None)
+        txn._save(journal)
+
+        cleaned = txn.cleanup()
+
+        cleanup_step = next(s for s in cleaned["steps"] if s["name"] == "cleanup")
+        self.assertEqual(cleanup_step["status"], "DONE")
+
+    def test_recover_rebind_rejects_unsafe_change_path_without_network_write(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        self.ledger_path.unlink()
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+        push_calls_before = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+
+        for unsafe in ("../escape", r"..\escape", "C:/escape", r"\\host\share"):
+            with self.subTest(unsafe=unsafe):
+                with self.assertRaises(integration.EvidenceRebindRefusedError):
+                    txn.recover(evidence_change_id=unsafe)
+
+        push_calls_after = sum(
+            1 for _cwd, args in self.runner.history if args and args[0] == "push"
+        )
+        self.assertEqual(push_calls_after, push_calls_before)
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(journal["evidenceChangeName"], "demo")
+
+    def test_recover_rebind_rejects_ledger_outside_feature_lineage(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        evidence_change = "demo-evidence"
+        evidence_ledger = (
+            self.primary / ".harness" / "state" / "changes" / evidence_change
+            / "evidence" / "verification-ledger.json"
+        )
+        evidence_ledger.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        payload["changeName"] = evidence_change
+        payload["currentHead"] = "0" * 40
+        for field in ("mergeFinalHash", "ciExpectedHead", "remoteHead"):
+            payload[field] = journal["base"]
+        evidence_ledger.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        self.ledger_path.unlink()
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+        ledger_before = evidence_ledger.read_bytes()
+
+        with self.assertRaises(integration.EvidenceRebindRefusedError):
+            txn.recover(evidence_change_id=evidence_change)
+
+        self.assertEqual(evidence_ledger.read_bytes(), ledger_before)
+        journal = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(journal["evidenceChangeName"], "demo")
+
+    def test_recover_rebind_rejects_other_ancestor_change_handoff(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        evidence_change = "old-evidence"
+        evidence_ledger = (
+            self.primary / ".harness" / "state" / "changes" / evidence_change
+            / "evidence" / "verification-ledger.json"
+        )
+        evidence_ledger.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        payload["changeName"] = evidence_change
+        payload["currentHead"] = journal["base"]
+        for field in ("mergeFinalHash", "ciExpectedHead", "remoteHead"):
+            payload[field] = "f" * 40
+        evidence_ledger.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        self.ledger_path.unlink()
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+        ledger_before = evidence_ledger.read_bytes()
+
+        with self.assertRaisesRegex(
+            integration.EvidenceRebindRefusedError,
+            "prior integration handoff",
+        ):
+            txn.recover(evidence_change_id=evidence_change)
+
+        self.assertEqual(evidence_ledger.read_bytes(), ledger_before)
+        rebound = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(rebound["evidenceChangeName"], "demo")
+
+    def test_recover_rebind_is_durable_and_cannot_switch_to_third_change(self) -> None:
+        txn = self.make_txn()
+        txn.preflight()
+        txn.prepare()
+        journal = txn.merge()
+        txn.verify(commands=[[sys.executable, "-c", "pass"]])
+        evidence_change = "demo-evidence"
+        evidence_ledger = (
+            self.primary / ".harness" / "state" / "changes" / evidence_change
+            / "evidence" / "verification-ledger.json"
+        )
+        evidence_ledger.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.loads(self.ledger_path.read_text(encoding="utf-8"))
+        payload["changeName"] = evidence_change
+        payload["currentHead"] = journal["base"]
+        for field in ("mergeFinalHash", "ciExpectedHead", "remoteHead"):
+            payload[field] = journal["base"]
+        evidence_ledger.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        self.ledger_path.unlink()
+        with self.assertRaises(integration.LedgerSyncError):
+            txn.push()
+
+        recovery = self.make_txn()
+        with mock.patch.object(recovery, "push", side_effect=RuntimeError("stop")):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                recovery.recover(evidence_change_id=evidence_change)
+        rebound = integration.load_journal(self.primary, txn.transaction_id)
+        self.assertEqual(rebound["evidenceChangeName"], evidence_change)
+        self.assertEqual(rebound["evidenceRebind"]["status"], "DONE")
+
+        third_change = "third-evidence"
+        third_ledger = (
+            self.primary / ".harness" / "state" / "changes" / third_change
+            / "evidence" / "verification-ledger.json"
+        )
+        third_ledger.parent.mkdir(parents=True, exist_ok=True)
+        payload["changeName"] = third_change
+        third_ledger.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        third_before = third_ledger.read_bytes()
+
+        with self.assertRaises(integration.EvidenceRebindRefusedError):
+            recovery.recover(evidence_change_id=third_change)
+
+        self.assertEqual(third_ledger.read_bytes(), third_before)
+        resumed = recovery.recover()
+        self.assertEqual(resumed["evidenceChangeName"], evidence_change)
+        cleanup_step = next(s for s in resumed["steps"] if s["name"] == "cleanup")
+        self.assertEqual(cleanup_step["status"], "DONE")
+
     def test_recover_after_failed_verify_does_not_remerge(self) -> None:
         txn = self.make_txn()
         txn.preflight()
@@ -1250,6 +1538,36 @@ class JournalCompactOutputTests(TransactionFixture):
         self.assertIn("steps", payload)
         self.assertIn("mergeCommit", payload)
         self.assertIn("pushedHead", payload)
+
+    def test_parser_accepts_explicit_evidence_change(self) -> None:
+        args = integration.build_parser().parse_args([
+            "recover",
+            "--change", "demo",
+            "--evidence-change", "demo-evidence",
+            "--run-id", "run-1",
+            "--target-branch", "main",
+            "--feature-branch", "feature/demo",
+            "--temp-root", str(self.temp_root),
+        ])
+
+        self.assertEqual(args.change, "demo")
+        self.assertEqual(args.evidence_change, "demo-evidence")
+
+    def test_parser_rejects_evidence_change_outside_recover(self) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        with redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit):
+                integration.build_parser().parse_args([
+                    "push",
+                    "--change", "demo",
+                    "--evidence-change", "demo-evidence",
+                    "--run-id", "run-1",
+                    "--target-branch", "main",
+                    "--feature-branch", "feature/demo",
+                    "--temp-root", str(self.temp_root),
+                ])
 
 
 if __name__ == "__main__":

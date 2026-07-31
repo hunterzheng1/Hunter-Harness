@@ -415,6 +415,10 @@ class LedgerSyncError(IntegrationError):
     code = "LEDGER_SYNC_PENDING"
 
 
+class EvidenceRebindRefusedError(IntegrationError):
+    code = "EVIDENCE_REBIND_REFUSED"
+
+
 class CleanupRefusedError(IntegrationError):
     code = "CLEANUP_REFUSED"
 
@@ -727,6 +731,7 @@ class IntegrationTransaction:
             "schemaVersion": 1,
             "transactionId": self.transaction_id,
             "changeName": self.change_id,
+            "evidenceChangeName": self.change_id,
             "runId": self.run_id,
             "repositoryId": harness_paths.repository_identity(self.project_root),
             "primaryRoot": str(self.project_root),
@@ -750,12 +755,66 @@ class IntegrationTransaction:
             "createdAt": now_iso(),
         }
 
-    def _evidence_identity(self) -> dict[str, Any]:
-        change_dir = (
-            self.project_root / ".harness" / "changes" / self.change_id
+    def _change_roots(self, change_id: str) -> tuple[Path, Path]:
+        if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", change_id) is None:
+            raise EvidenceRebindRefusedError(
+                "evidence change must be a non-empty kebab-case path segment"
+            )
+        contract_base = (self.project_root / ".harness" / "changes").resolve()
+        state_base = (
+            self.project_root / ".harness" / "state" / "changes"
         ).resolve()
+        raw_change_dir = contract_base / change_id
+        raw_state_dir = state_base / change_id
+        change_dir = raw_change_dir.resolve()
+        state_dir = raw_state_dir.resolve()
+        direct_contract_path = os.path.normcase(str(raw_change_dir.absolute()))
+        direct_state_path = os.path.normcase(str(raw_state_dir.absolute()))
+        if (
+            change_dir.parent != contract_base
+            or state_dir.parent != state_base
+            or os.path.normcase(str(change_dir)) != direct_contract_path
+            or os.path.normcase(str(state_dir)) != direct_state_path
+        ):
+            raise EvidenceRebindRefusedError(
+                "evidence change must remain inside the direct Change roots"
+            )
+        return change_dir, state_dir
+
+    def _bound_evidence_change(self, journal: dict[str, Any]) -> str:
+        if journal.get("changeName") != self.change_id:
+            raise JournalConflictError(
+                "transaction Change does not match the journal"
+            )
+        if "evidenceChangeName" not in journal:
+            return self.change_id
+        raw_change_id = journal.get("evidenceChangeName")
+        if not isinstance(raw_change_id, str) or not raw_change_id:
+            raise EvidenceRebindRefusedError(
+                "journal evidence Change binding is invalid"
+            )
+        change_id = raw_change_id
+        self._change_roots(change_id)
+        if change_id == self.change_id:
+            return change_id
+        rebind = journal.get("evidenceRebind") or {}
+        if (
+            rebind.get("status") != "DONE"
+            or rebind.get("from") != self.change_id
+            or rebind.get("to") != change_id
+            or rebind.get("reason")
+            != "REMOTE_CONFIRMED_DEFAULT_LEDGER_MISSING"
+            or rebind.get("remoteHead") != journal.get("mergeCommit")
+        ):
+            raise EvidenceRebindRefusedError(
+                "journal evidence Change override has no valid recovery receipt"
+            )
+        return change_id
+
+    def _evidence_identity(self, change_id: str | None = None) -> dict[str, Any]:
+        change_dir, state_dir = self._change_roots(change_id or self.change_id)
         state_candidates = [
-            self.project_root / ".harness" / "state" / "changes" / self.change_id,
+            state_dir,
             change_dir,
         ]
         events_file = next(
@@ -792,25 +851,23 @@ class IntegrationTransaction:
                     break
             if artifact_hash:
                 break
-        for root in state_candidates:
-            ledger_path = root / "evidence" / "verification-ledger.json"
-            if not ledger_path.is_file():
-                continue
+        ledger_path = self._ledger_path(change_id or self.change_id)
+        if ledger_path is not None:
             try:
                 ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
             except (OSError, json.JSONDecodeError):
-                break
-            for key in (
-                "schemaVersion",
-                "repositoryId",
-                "changeName",
-                "baseCommit",
-                "currentHead",
-                "diffHash",
-                "ownershipHash",
-            ):
-                ledger_identity[key] = ledger.get(key)
-            break
+                ledger = {}
+            if isinstance(ledger, dict):
+                for key in (
+                    "schemaVersion",
+                    "repositoryId",
+                    "changeName",
+                    "baseCommit",
+                    "currentHead",
+                    "diffHash",
+                    "ownershipHash",
+                ):
+                    ledger_identity[key] = ledger.get(key)
         return {
             "eventHighWater": {
                 "count": event_count,
@@ -821,16 +878,26 @@ class IntegrationTransaction:
             "ledgerIdentity": ledger_identity,
         }
 
-    def _ledger_path(self) -> Path | None:
+    def _ledger_path(self, change_id: str) -> Path | None:
+        change_dir, state_dir = self._change_roots(change_id)
         candidates = (
-            self.project_root / ".harness" / "state" / "changes" / self.change_id
-            / "evidence" / "verification-ledger.json",
-            self.project_root / ".harness" / "changes" / self.change_id
-            / "evidence" / "verification-ledger.json",
-            self.project_root / ".harness" / "state" / "changes" / self.change_id
-            / "verification-ledger.json",
+            state_dir / "evidence" / "verification-ledger.json",
+            change_dir / "evidence" / "verification-ledger.json",
+            state_dir / "verification-ledger.json",
         )
-        return next((path for path in candidates if path.is_file()), None)
+        for path in candidates:
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if path.is_symlink() or not any(
+                resolved.is_relative_to(root)
+                for root in (state_dir, change_dir)
+            ):
+                raise EvidenceRebindRefusedError(
+                    "verification ledger must remain inside its direct Change root"
+                )
+            return path
+        return None
 
     def _finalize_remote_push(
         self,
@@ -839,7 +906,9 @@ class IntegrationTransaction:
         merge_commit: str,
         remote_head: str,
     ) -> None:
+        evidence_change = self._bound_evidence_change(journal)
         journal.update({
+            "evidenceChangeName": evidence_change,
             "pushedHead": merge_commit,
             "mergeFinalHash": merge_commit,
             "ciExpectedHead": merge_commit,
@@ -854,14 +923,14 @@ class IntegrationTransaction:
             "ledgerSync": {"status": "PENDING", "updatedAt": now_iso()},
         })
         self._save(journal)
-        ledger_path = self._ledger_path()
+        ledger_path = self._ledger_path(evidence_change)
         if ledger_path is None:
             result = {"ok": False, "code": "LEDGER_MISSING"}
         else:
             result = hl.record_integration_hashes(
                 ledger_path,
                 change_dir=(
-                    self.project_root / ".harness" / "changes" / self.change_id
+                    self.project_root / ".harness" / "changes" / evidence_change
                 ),
                 repository_id=str(journal["repositoryId"]),
                 merge_final_hash=merge_commit,
@@ -881,6 +950,7 @@ class IntegrationTransaction:
             )
 
     def _assert_cleanup_consistency(self, journal: dict[str, Any]) -> None:
+        evidence_change = self._bound_evidence_change(journal)
         push_step = self._step(journal, "push")
         merge_commit = str(journal.get("mergeCommit") or "")
         remote_line = self.runner.text(
@@ -909,7 +979,7 @@ class IntegrationTransaction:
             raise CleanupRefusedError(
                 "remote/journal final hashes are missing or inconsistent"
             )
-        ledger_path = self._ledger_path()
+        ledger_path = self._ledger_path(evidence_change)
         if ledger_path is None:
             raise CleanupRefusedError("verification ledger missing before cleanup")
         try:
@@ -1344,6 +1414,7 @@ class IntegrationTransaction:
                 raise VerifyPlanMissingError(
                     "integration verification requires at least one executable command"
                 )
+            evidence_change = self._bound_evidence_change(journal)
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
             merge_tree = self.runner.text(intg_root, "rev-parse", "--verify", "HEAD^{tree}")
@@ -1355,7 +1426,7 @@ class IntegrationTransaction:
                 )
                 reused = (
                     _reusable_merge_evidence(
-                        self._ledger_path(),
+                        self._ledger_path(evidence_change),
                         verification=policy.get("verification"),
                         command=command,
                         product_tree_hash=merge_tree_hash,
@@ -1509,6 +1580,7 @@ class IntegrationTransaction:
 
     def push(self) -> dict[str, Any]:
         def action(journal: dict[str, Any]) -> None:
+            self._bound_evidence_change(journal)
             verify_step = self._step(journal, "verify")
             verify_results = journal.get("verifyResults")
             if (
@@ -2002,10 +2074,174 @@ class IntegrationTransaction:
 
     # ------------------------------------------------------------ recover
 
+    def _rebind_evidence_change_for_recovery(
+        self,
+        journal: dict[str, Any],
+        evidence_change_id: str,
+    ) -> dict[str, Any]:
+        self._change_roots(evidence_change_id)
+        current_change = self._bound_evidence_change(journal)
+        if current_change == evidence_change_id:
+            return journal
+        if current_change != self.change_id:
+            raise EvidenceRebindRefusedError(
+                "transaction evidence is already bound to another Change"
+            )
+
+        push_step = self._step(journal, "push")
+        ledger_sync = journal.get("ledgerSync") or {}
+        ledger_result = ledger_sync.get("result") or {}
+        merge_commit = str(journal.get("mergeCommit") or "")
+        push_intent = journal.get("pushIntent") or {}
+        if (
+            push_step.get("status") != "FAILED"
+            or ledger_sync.get("status") != "FAILED"
+            or ledger_result.get("code") != "LEDGER_MISSING"
+            or push_intent.get("status") != "REMOTE_CONFIRMED"
+            or push_intent.get("mergeCommit") != merge_commit
+            or push_intent.get("observedRemoteHead") != merge_commit
+        ):
+            raise EvidenceRebindRefusedError(
+                "evidence rebind requires a remote-confirmed push blocked only by "
+                "the default LEDGER_MISSING result"
+            )
+
+        probe = self.runner.remote_probe(
+            self.project_root,
+            "ls-remote",
+            "origin",
+            self.target_branch,
+        )
+        if probe["exitCode"] != 0:
+            raise RemoteProbeFailedError(
+                "cannot confirm the remote target before evidence rebind: "
+                f"{probe['category']}: {probe['redactedStderr']}"
+            )
+        if not merge_commit or probe["stdoutHash"] != merge_commit:
+            raise EvidenceRebindRefusedError(
+                "remote target no longer equals the transaction merge commit"
+            )
+
+        ledger_path = self._ledger_path(evidence_change_id)
+        if ledger_path is None:
+            raise EvidenceRebindRefusedError(
+                "requested evidence Change has no verification ledger"
+            )
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EvidenceRebindRefusedError(
+                f"requested evidence ledger is unreadable: {exc}"
+            ) from exc
+        missing = hl.validate_ledger_identity(ledger)
+        if missing:
+            raise EvidenceRebindRefusedError(
+                "requested evidence ledger identity is invalid: "
+                + ", ".join(missing)
+            )
+        if ledger.get("changeName") != evidence_change_id:
+            raise EvidenceRebindRefusedError(
+                "requested evidence ledger Change identity does not match"
+            )
+        if ledger.get("repositoryId") != journal.get("repositoryId"):
+            raise EvidenceRebindRefusedError(
+                "requested evidence ledger repository identity does not match"
+            )
+
+        expected_handoff = str(
+            journal.get("remoteTargetHead") or journal.get("base") or ""
+        )
+        handoff_values = [
+            ledger.get("mergeFinalHash"),
+            ledger.get("ciExpectedHead"),
+            ledger.get("remoteHead"),
+        ]
+        handoff_valid = all(
+            isinstance(value, str)
+            and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+            for value in handoff_values
+        )
+        handoff_hashes = set(handoff_values) if handoff_valid else set()
+        if (
+            not handoff_valid
+            or len(handoff_hashes) != 1
+            or next(iter(handoff_hashes), None)
+            not in {expected_handoff, merge_commit}
+        ):
+            raise EvidenceRebindRefusedError(
+                "requested evidence ledger has no matching prior integration handoff"
+            )
+
+        current_head = str(ledger.get("currentHead") or "")
+        feature_head = str(journal.get("featureHead") or "")
+        current_in_feature = self.runner.run(
+            self.project_root,
+            "merge-base",
+            "--is-ancestor",
+            current_head,
+            feature_head,
+            check=False,
+        ).returncode == 0
+        feature_in_merge = self.runner.run(
+            self.project_root,
+            "merge-base",
+            "--is-ancestor",
+            feature_head,
+            merge_commit,
+            check=False,
+        ).returncode == 0
+        if not current_in_feature or not feature_in_merge:
+            raise EvidenceRebindRefusedError(
+                "requested evidence ledger head is not in the integrated feature lineage"
+            )
+
+        previous_identity = journal.get("evidenceIdentity")
+        previous_verification_identity = journal.get("verificationIdentity")
+        target_identity = self._evidence_identity(evidence_change_id)
+        journal["evidenceChangeName"] = evidence_change_id
+        journal["evidenceIdentity"] = target_identity
+        verification_basis = json.dumps(
+            {
+                "mergeCommit": journal.get("mergeCommit"),
+                "results": journal.get("verifyResults"),
+                "evidenceIdentity": target_identity,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        journal["verificationIdentity"] = {
+            "sha256": (
+                "sha256:"
+                + hashlib.sha256(verification_basis.encode("utf-8")).hexdigest()
+            ),
+            "ledgerIdentity": target_identity.get("ledgerIdentity") or {},
+        }
+        journal["evidenceRebind"] = {
+            "status": "DONE",
+            "from": current_change,
+            "to": evidence_change_id,
+            "reason": "REMOTE_CONFIRMED_DEFAULT_LEDGER_MISSING",
+            "remoteHead": merge_commit,
+            "handoffHash": next(iter(handoff_hashes)),
+            "previousEvidenceIdentity": previous_identity,
+            "previousVerificationIdentity": previous_verification_identity,
+            "targetLedgerIdentity": target_identity.get("ledgerIdentity") or {},
+            "updatedAt": now_iso(),
+        }
+        return self._save(journal)
+
     def recover(
-        self, verify_commands: Sequence[Sequence[str]] | None = None
+        self,
+        verify_commands: Sequence[Sequence[str]] | None = None,
+        *,
+        evidence_change_id: str | None = None,
     ) -> dict[str, Any]:
         journal = self._load()
+        if evidence_change_id is not None:
+            journal = self._rebind_evidence_change_for_recovery(
+                journal,
+                evidence_change_id,
+            )
         actions: dict[str, Callable[[], dict[str, Any]]] = {
             "preflight": self.preflight,
             "prepare": self.prepare,
@@ -2102,7 +2338,11 @@ def cmd_abandon(args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
-    return _emit(_txn_from_args(args).recover())
+    return _emit(
+        _txn_from_args(args).recover(
+            evidence_change_id=getattr(args, "evidence_change", None)
+        )
+    )
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -2138,7 +2378,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_integration.py")
     sub = parser.add_subparsers(dest="command_name", required=True)
 
-    def add(name: str, func: Callable[[argparse.Namespace], int]) -> None:
+    def add(
+        name: str,
+        func: Callable[[argparse.Namespace], int],
+    ) -> argparse.ArgumentParser:
         p = sub.add_parser(name)
         p.add_argument("--change", required=True)
         p.add_argument("--run-id", required=True)
@@ -2146,6 +2389,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--feature-branch", required=True)
         p.add_argument("--temp-root")
         p.set_defaults(func=func)
+        return p
 
     add("preflight", cmd_preflight)
     add("prepare", cmd_prepare)
@@ -2153,7 +2397,14 @@ def build_parser() -> argparse.ArgumentParser:
     add("push", cmd_push)
     add("cleanup", cmd_cleanup)
     add("abandon", cmd_abandon)
-    add("recover", cmd_recover)
+    p_recover = add("recover", cmd_recover)
+    p_recover.add_argument(
+        "--evidence-change",
+        help=(
+            "one-time recovery binding after a remote-confirmed "
+            "default LEDGER_MISSING failure"
+        ),
+    )
     add("status", cmd_status)
 
     p_journal = sub.add_parser("journal")

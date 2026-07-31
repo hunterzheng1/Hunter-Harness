@@ -389,6 +389,18 @@ python harness/scripts/harness_integration.py push --change <change-name> --run-
 
 远端基线漂移 → `TARGET_MOVED` 结构化失败，不继续。成功后 journal `pushedHead` 即 `mergeFinalHash`。
 
+若远端已确认 mergeCommit，但包装事务名与证据所属 Change 不同，导致
+`LEDGER_SYNC_PENDING / LEDGER_MISSING`，必须显式指定真实证据归属后恢复：
+
+```powershell
+python harness/scripts/harness_integration.py recover --change <transaction-change> --evidence-change <evidence-change> --run-id <run-id> --feature-branch harness/<transaction-change> --target-branch <主分支> --temp-root <task-temp>
+```
+
+该覆盖只允许修复“默认同名台账缺失”的远端已确认事务；一旦 journal 已绑定证据
+Change，后续传入不同值会 fail closed。目标台账的既有三项集成哈希必须精确匹配
+本事务基线（或已匹配本次 mergeCommit），作为前序集成交接身份；禁止为包装事务
+伪造空台账或覆盖其他历史 Change 的集成哈希。
+
 ### 步骤 M6：cleanup
 
 ```powershell
