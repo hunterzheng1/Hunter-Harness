@@ -140,6 +140,91 @@ class ArchiveStatusPreflightTests(unittest.TestCase):
         canonical = [i for i in items if i["category"] == "canonicalizable"]
         self.assertTrue(canonical, f"expected canonicalizable item: {items}")
 
+    def test_status_applies_artifact_path_correction_before_classification(self) -> None:
+        _write(self.change_dir / "reports" / "design.md", "# design\n")
+        original_path = ".harness/changes/change-a/reports/design.md"
+        artifact = he.append_event(
+            self.change_dir,
+            phase="plan",
+            type_="artifact",
+            kind="file-backed",
+            path=original_path,
+            note="design with corrected path",
+            run_id="r1",
+        )
+        self.assertTrue(artifact.get("ok"), artifact)
+        correction = he.batch_append_events(
+            self.change_dir,
+            [
+                {
+                    "phase": "plan",
+                    "type": "correction",
+                    "target_event_id": artifact["event"]["id"],
+                    "target_field": "path",
+                    "old_value_hash": he.canonical_value_hash(original_path),
+                    "new_value_json": json.dumps("reports/design.md"),
+                    "reason": "normalize artifact path",
+                }
+            ],
+        )
+        self.assertTrue(correction.get("ok"), correction)
+
+        result = ha.artifact_preflight(self.change_dir)
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(
+            result.get("items"),
+            [
+                {
+                    "eventId": artifact["event"]["id"],
+                    "category": "file-backed",
+                    "path": "reports/design.md",
+                    "exists": True,
+                }
+            ],
+        )
+
+    def test_status_blocks_when_artifact_correction_projection_is_invalid(self) -> None:
+        _write(self.change_dir / "reports" / "design.md", "# design\n")
+        artifact = he.append_event(
+            self.change_dir,
+            phase="plan",
+            type_="artifact",
+            kind="file-backed",
+            path="reports/design.md",
+            note="design with invalid correction",
+            run_id="r1",
+        )
+        self.assertTrue(artifact.get("ok"), artifact)
+        correction = he.batch_append_events(
+            self.change_dir,
+            [
+                {
+                    "phase": "plan",
+                    "type": "correction",
+                    "target_event_id": artifact["event"]["id"],
+                    "target_field": "path",
+                    "old_value_hash": he.canonical_value_hash("wrong-old-value"),
+                    "new_value_json": json.dumps("reports/renamed.md"),
+                    "reason": "invalid optimistic-concurrency guard",
+                }
+            ],
+        )
+        self.assertTrue(correction.get("ok"), correction)
+
+        result = ha.check_status(self.change_dir, archive_intent="record-only")
+
+        self.assertFalse(result.get("archivable"), result)
+        self.assertIn(
+            "artifact-preflight-invalid",
+            {item.get("code") for item in result.get("blockers", [])},
+        )
+        self.assertFalse(result["checks"]["artifact_preflight"]["ok"])
+        self.assertIn(
+            "CORRECTION_OLD_VALUE_MISMATCH",
+            result["checks"]["artifact_preflight"]["error"],
+        )
+
     def test_status_classifies_escape_path_as_blocking(self) -> None:
         he.append_event(
             self.change_dir,

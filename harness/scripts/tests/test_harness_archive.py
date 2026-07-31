@@ -250,6 +250,36 @@ class FinalizeSuccessTests(unittest.TestCase):
         self.assertIn("demo-change", html_text)
         self.assertIn("ARCHIVED_LOCAL_ONLY", html_text)
 
+    def test_finalize_refuses_invalid_artifact_projection_and_preserves_change(self) -> None:
+        invalid = {
+            "ok": False,
+            "items": [],
+            "blocking": [],
+            "error": "CORRECTION_OLD_VALUE_MISMATCH: injected",
+        }
+        with mock.patch.object(ha, "artifact_preflight", return_value=invalid):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--intent",
+                    "record-only",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+
+        self.assertNotEqual(code, 0)
+        self.assertFalse(payload.get("ok"), payload)
+        self.assertTrue(self.change.is_dir(), "failed finalize must preserve source change")
+        self.assertEqual(list(self.archive_root.iterdir()), [])
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertIn("ARTIFACT_PREFLIGHT_INVALID", serialized)
+        self.assertIn("CORRECTION_OLD_VALUE_MISMATCH", serialized)
+
     def test_finalize_writes_and_verifies_durable_archive_before_source_deletion(
         self,
     ) -> None:
