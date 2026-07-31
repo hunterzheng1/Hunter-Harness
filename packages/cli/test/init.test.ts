@@ -141,11 +141,14 @@ describe("hunter-harness initialization", () => {
     );
   });
 
-  it("fails non-interactively when profile is missing", async () => {
+  it("defaults a blank non-interactive install to the general profile", async () => {
     const code = await run(["--non-interactive", "--yes"]);
-    expect(code).toBe(3);
-    expect(stderr.join(" ")).toMatch(/profile/i);
-    expect(await pathExists(join(root, ".harness"))).toBe(false);
+    expect(code).toBe(0);
+    expect(stderr).toEqual([]);
+    const project = parseYaml(
+      await readFile(join(root, ".harness", "project.yaml"), "utf8")
+    ) as { project: { profiles: string[] } };
+    expect(project.project.profiles).toEqual(["general"]);
   });
 
   it.each([

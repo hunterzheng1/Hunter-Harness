@@ -108,6 +108,10 @@
               "requiredCapabilities"
             ],
             "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+              },
               "commandKey": {
                 "type": "string",
                 "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
@@ -124,7 +128,36 @@
                 "enum": [
                   "incremental",
                   "module-am",
-                  "module"
+                  "module",
+                  "full"
+                ]
+              },
+              "argvTemplate": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "coverage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "coverageLevel": {
+                "enum": [
+                  "incremental",
+                  "module",
+                  "module-am",
+                  "full"
                 ]
               },
               "candidate": {
@@ -137,6 +170,28 @@
                   "minLength": 1
                 },
                 "uniqueItems": true
+              },
+              "resourceLocks": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "uniqueItems": true
+              },
+              "estimatedDurationSeconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "requiresFrozenIdentity": {
+                "type": "boolean"
+              },
+              "reusePolicy": {
+                "enum": [
+                  "never",
+                  "identity-exact",
+                  "ledger-exact"
+                ]
               }
             }
           }

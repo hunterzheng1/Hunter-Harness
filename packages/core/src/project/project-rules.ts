@@ -260,9 +260,11 @@ export async function synchronizeProjectRules(
     migrated: [], agent_specific: [], written: [], removed: [], unchanged: [], conflicts: []
   };
   if (options.dryRun !== true) {
+    // Initialization promises the canonical rule directory even when no
+    // custom rules exist. mkdir is idempotent for an existing directory; the
+    // projection receipt below is separately guarded against no-op rewrites.
     await mkdir(canonicalRoot, { recursive: true });
   }
-
   const previous = await readReceipt(root);
   const virtualMigrations = await importAgentRules(
     root,
@@ -362,7 +364,11 @@ export async function synchronizeProjectRules(
   }
 
   if (options.dryRun !== true) {
-    await atomicWrite(join(root, RECEIPT_PATH), JSON.stringify(next, null, 2) + "\n");
+    const receiptPath = join(root, RECEIPT_PATH);
+    const desiredReceipt = JSON.stringify(next, null, 2) + "\n";
+    if (await optionalText(receiptPath) !== desiredReceipt) {
+      await atomicWrite(receiptPath, desiredReceipt);
+    }
   }
   result.migrated.sort();
   result.agent_specific.sort();

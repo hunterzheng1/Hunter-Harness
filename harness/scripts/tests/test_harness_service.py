@@ -1181,5 +1181,36 @@ class ServiceOwnershipContractTests(unittest.TestCase):
             self.assertTrue(hs.session_path(change).is_file())
 
 
+class StaleSessionRetirementTests(unittest.TestCase):
+    def test_retire_stale_preserves_evidence_without_touching_unknown_process(
+        self,
+    ) -> None:
+        retire = getattr(hs, "retire_stale_session", None)
+        self.assertTrue(callable(retire), "retire_stale_session must be implemented")
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            session = {
+                "sessionId": "stale-session",
+                "pid": 999_999_999,
+                "startedAt": "2026-07-31T10:00:00+08:00",
+                "startedBy": "AI",
+                "processIdentity": {
+                    "executable": str(Path(sys.executable).resolve()),
+                },
+            }
+            hs.write_session(change_dir, session)
+            result = retire(change_dir)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["action"], "retired-stale")
+            self.assertTrue(result["unknownProcessUntouched"])
+            self.assertFalse(hs.session_path(change_dir).exists())
+            retired = Path(result["retiredEvidence"])
+            self.assertTrue(retired.is_file())
+            self.assertEqual(
+                json.loads(retired.read_text(encoding="utf-8"))["sessionId"],
+                "stale-session",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   extractManagedBlock,
+  pendingTransactions,
   readBaseline,
   sha256Bytes,
   synchronizeProjectRules,
@@ -470,11 +471,18 @@ describe("hunter-harness update", () => {
     expect(await pathExists(join(root, path))).toBe(true);
     expect((await readBaseline(root)).complete_project_version).toBe("pv_interrupt");
 
-    const answers = ["1"];
-    expect(await runCli([], {
+    const pending = await pendingTransactions(root);
+    const recoveryId = pending[0]?.recoveryId;
+    expect(recoveryId).toBeDefined();
+    expect(await runCli([
+      "recover",
+      recoveryId ?? "",
+      "--action", "rollback",
+      "--non-interactive",
+      "--yes"
+    ], {
       cwd: root,
       resourcesRoot,
-      prompt: async () => answers.shift() ?? "",
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);

@@ -37,7 +37,10 @@ DEFAULT_RESOURCE_MODULES = (
     "test_harness_integration.py",
     "test_harness_service.py",
 )
-DEFAULT_DETACHED_SERVICE_MODULES = ("test_harness_service.py",)
+DEFAULT_DETACHED_SERVICE_MODULES = (
+    "test_harness_service.py",
+    "test_harness_runtime.py",
+)
 TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -189,16 +192,17 @@ def classify_test_lock(path: Path) -> dict[str, object]:
             "path": str(path),
             "token": payload.get("token"),
         }
-    if time.time() < float(expires):
-        return {
-            "classification": "ACTIVE",
-            "path": str(path),
-            "token": payload.get("token"),
-            "owner": owner,
-        }
+    unexpired = time.time() < float(expires)
     if not isinstance(owner, dict) or any(
         not owner.get(field) for field in ("pid", "executable", "startedAt")
     ):
+        if unexpired:
+            return {
+                "classification": "ACTIVE",
+                "path": str(path),
+                "token": payload.get("token"),
+                "owner": owner,
+            }
         return {
             "classification": "OWNER_IDENTITY_INCOMPLETE",
             "path": str(path),
@@ -207,6 +211,13 @@ def classify_test_lock(path: Path) -> dict[str, object]:
     try:
         owner_pid = int(owner["pid"])
     except (TypeError, ValueError):
+        if unexpired:
+            return {
+                "classification": "ACTIVE",
+                "path": str(path),
+                "token": payload.get("token"),
+                "owner": owner,
+            }
         return {
             "classification": "OWNER_IDENTITY_INCOMPLETE",
             "path": str(path),
@@ -215,6 +226,13 @@ def classify_test_lock(path: Path) -> dict[str, object]:
     if not _pid_is_running(owner_pid):
         return {
             "classification": "RECLAIMABLE",
+            "path": str(path),
+            "token": payload.get("token"),
+            "owner": owner,
+        }
+    if unexpired:
+        return {
+            "classification": "ACTIVE",
             "path": str(path),
             "token": payload.get("token"),
             "owner": owner,
@@ -244,7 +262,7 @@ def classify_test_lock(path: Path) -> dict[str, object]:
 
 
 def reap_test_lock(path: Path) -> dict[str, object]:
-    """Reap only an expired lock whose exact recorded owner is absent."""
+    """Reap only a lock whose exact recorded owner is definitely absent."""
     classification = classify_test_lock(path)
     reaped = classification.get("classification") == "RECLAIMABLE"
     if reaped:
@@ -488,7 +506,6 @@ class _WindowsKillOnCloseJob:
     """Best-effort Windows Job Object that kills descendants when closed."""
 
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-    _JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
     _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS = 1
 
@@ -504,10 +521,7 @@ class _WindowsKillOnCloseJob:
         if not handle:
             return False
         info = _WindowsExtendedLimitInformation()
-        info.BasicLimitInformation.LimitFlags = (
-            self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | self._JOB_OBJECT_LIMIT_BREAKAWAY_OK
-        )
+        info.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         configured = kernel32.SetInformationJobObject(
             ctypes.c_void_p(handle),
             self._JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
@@ -535,13 +549,14 @@ class _WindowsKillOnCloseJob:
         ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(self.handle))
         self.handle = None
 
-    def terminate_and_wait(self, timeout_seconds: float = 5.0) -> None:
+    def terminate_and_wait(self, timeout_seconds: float = 5.0) -> bool:
         if self.handle is None:
-            return
+            return True
         kernel32 = ctypes.windll.kernel32
         handle = ctypes.c_void_p(self.handle)
         kernel32.TerminateJobObject(handle, 1)
         deadline = time.monotonic() + max(0.0, timeout_seconds)
+        drained = False
         while time.monotonic() < deadline:
             accounting = _WindowsBasicAccountingInformation()
             queried = kernel32.QueryInformationJobObject(
@@ -552,9 +567,11 @@ class _WindowsKillOnCloseJob:
                 None,
             )
             if not queried or accounting.ActiveProcesses == 0:
+                drained = True
                 break
             time.sleep(0.02)
         self.close()
+        return drained
 
 
 class _WindowsProcessEntry(ctypes.Structure):

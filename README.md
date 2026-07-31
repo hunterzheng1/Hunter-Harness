@@ -42,12 +42,18 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 
 ```bash
 npx hunter-harness
+npx hunter-harness status --json
+npx hunter-harness recover <recovery-id> --action inspect --json
+npx hunter-harness resume <recovery-id> --non-interactive --yes --json
+npx hunter-harness recover <recovery-id> --action rollback --non-interactive --yes --json
 npx hunter-harness rules-sync --json
 npx hunter-harness push
 npx hunter-harness update
 ```
 
-- `npx hunter-harness`：离线初始化、配置与事务恢复菜单。
+- `npx hunter-harness`：未安装时离线初始化；已安装且状态健康时直接 refresh；存在未完成事务时先进入恢复。
+- `status`：只读输出本地恢复状态、变更是否已部分应用和建议动作。
+- `recover` / `resume`：按稳定 recovery ID 检查或回滚指定事务；非交互回滚必须显式提供 `--yes`。
 - `rules-sync`：把各 Agent 的全局规则收敛到 `.harness/rules/` 并刷新受管投影，同时从结构化 review/test/archive 证据生成待审规则候选；分歧和 Agent 专属规则不会被覆盖。
 - `push`：预览、敏感信息扫描、首次项目绑定并上传 proposal；不推进 baseline。
 - `update`：仅拉取已批准 artifact，校验 SHA-256 后事务化写入。

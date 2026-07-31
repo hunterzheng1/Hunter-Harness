@@ -841,7 +841,12 @@ def _derive_verification_graph(profile: dict[str, Any]) -> None:
             if not isinstance(required_capabilities, list):
                 required_capabilities = []
             targets[key] = {
+                "id": key,
                 "commandKey": key,
+                "argvTemplate": list(command.get("argvTemplate") or []),
+                "inputs": list(command.get("inputs") or []),
+                "coverage": command.get("coverage"),
+                "coverageLevel": str(command.get("scope") or "module"),
                 "dependsOn": [
                     item
                     for item in depends_on
@@ -854,6 +859,10 @@ def _derive_verification_graph(profile: dict[str, Any]) -> None:
                     for item in required_capabilities
                     if isinstance(item, str) and item.strip()
                 ],
+                "resourceLocks": [],
+                "estimatedDurationSeconds": 0,
+                "requiresFrozenIdentity": key == "unitTestFull",
+                "reusePolicy": "ledger-exact",
             }
     profile["verificationGraph"] = {
         "schemaVersion": 1,
@@ -1145,6 +1154,31 @@ def validate_profile(profile: dict[str, Any], project: Path) -> list[str]:
         if required not in {"incremental", "module", "module-am", "full"}:
             issues.append(
                 f"verification target {name} requiredCoverage invalid: {required}"
+            )
+        resource_locks = target.get("resourceLocks", [])
+        if not isinstance(resource_locks, list) or any(
+            not isinstance(item, str) or not item.strip()
+            for item in resource_locks
+        ):
+            issues.append(
+                f"verification target {name} resourceLocks must be non-empty strings"
+            )
+        estimated = target.get("estimatedDurationSeconds", 0)
+        if (
+            not isinstance(estimated, (int, float))
+            or isinstance(estimated, bool)
+            or estimated < 0
+        ):
+            issues.append(
+                f"verification target {name} estimatedDurationSeconds invalid: {estimated}"
+            )
+        if target.get("reusePolicy", "ledger-exact") not in {
+            "never",
+            "identity-exact",
+            "ledger-exact",
+        }:
+            issues.append(
+                f"verification target {name} reusePolicy invalid"
             )
         raw_dependencies = target.get("dependsOn")
         if not isinstance(raw_dependencies, list):

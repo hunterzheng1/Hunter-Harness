@@ -120,9 +120,13 @@ describe("protocol state", () => {
 
     expect(rawJournal).not.toContain(marker);
     expect(Buffer.byteLength(rawJournal)).toBeLessThan(4_096);
-    expect(journal.schema_version).toBe(2);
+    expect(journal.schema_version).toBe(3);
     expect(journal.operations).toEqual([
-      { operation: "add", path: "large.txt" }
+      {
+        operation: "add",
+        path: "large.txt",
+        content_sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/)
+      }
     ]);
     expect(journal.applied_count).toBe(1);
     expect(status).toMatchObject({ state: "committed", applied_count: 1 });
@@ -193,5 +197,36 @@ describe("protocol state", () => {
     expect(journal.protected_local_roots.before).toEqual(
       journal.protected_local_roots.after
     );
+  });
+
+  it("records a stable recovery contract and plan hash before applying", async () => {
+    const result = await runTransaction(root, [{
+      operation: "add",
+      path: "contract.txt",
+      content: "value\n"
+    }], {
+      id: "tx_contract",
+      kind: "update",
+      projectIdentity: "sha256:project",
+      targetBundleVersion: "0.2.43",
+      ownershipManifestHash: "sha256:ownership"
+    });
+    expect(result.recoveryId).toBe("tx_contract");
+    expect(result.planHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const journal = JSON.parse(await readFile(
+      join(stateLayout(root).transactions, "tx_contract", "journal.json"),
+      "utf8"
+    ));
+    expect(journal).toMatchObject({
+      schema_version: 3,
+      transaction_id: "tx_contract",
+      recovery_id: "tx_contract",
+      project_identity: "sha256:project",
+      target_bundle_version: "0.2.43",
+      ownership_manifest_hash: "sha256:ownership",
+      plan_hash: result.planHash
+    });
+    expect(journal.completed_operations).toEqual([0]);
+    expect(journal.pending_operations).toEqual([]);
   });
 });

@@ -28,7 +28,7 @@ describe("configuration recovery menu", () => {
     })).toBe(0);
   });
 
-  it("detects and recovers an interrupted update", async () => {
+  it("detects and resumes an interrupted update", async () => {
     const path = join(root, "recover.md");
     await writeFile(path, "before\n");
     await expect(runTransaction(root, [{
@@ -50,7 +50,7 @@ describe("configuration recovery menu", () => {
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
-    expect(await readFile(path, "utf8")).toBe("before\n");
+    expect(await readFile(path, "utf8")).toBe("after\n");
   });
 
   it("blocks non-interactive work until interrupted state is recovered", async () => {
@@ -81,11 +81,15 @@ describe("configuration recovery menu", () => {
       content: "after\n"
     }], { id: "tx_committed_update", kind: "update" });
 
-    const answers = ["2"];
-    expect(await runCli([], {
+    expect(await runCli([
+      "recover",
+      "tx_committed_update",
+      "--action",
+      "rollback",
+      "--yes"
+    ], {
       cwd: root,
       resourcesRoot,
-      prompt: async () => answers.shift() ?? "",
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -102,11 +106,15 @@ describe("configuration recovery menu", () => {
     }], { id: "tx_dirty_update", kind: "update" });
     await writeFile(path, "user changed\n");
 
-    const answers = ["2"];
-    expect(await runCli([], {
+    expect(await runCli([
+      "recover",
+      "tx_dirty_update",
+      "--action",
+      "rollback",
+      "--yes"
+    ], {
       cwd: root,
       resourcesRoot,
-      prompt: async () => answers.shift() ?? "",
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(5);

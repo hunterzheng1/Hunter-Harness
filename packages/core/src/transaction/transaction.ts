@@ -9,7 +9,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   assertNoCaseCollisions,
@@ -31,6 +31,12 @@ import type {
   TransactionJournalOperation,
   TransactionOperation
 } from "./journal.js";
+import {
+  externalRecoveryTransactionRoot,
+  mirrorRecoveryTransaction,
+  removeRecoveryMirror,
+  restoreRecoveryTransaction
+} from "./recovery-store.js";
 
 export interface TransactionOptions {
   id?: string;
@@ -38,16 +44,28 @@ export interface TransactionOptions {
   failAfterApply?: number;
   interruptAfterApply?: number;
   allowedProtectedLocalRoots?: readonly typeof PROTECTED_LOCAL_ROOTS[number][];
+  projectIdentity?: string;
+  cliVersion?: string;
+  targetBundleVersion?: string;
+  ownershipManifestHash?: string;
 }
 
 export interface TransactionResult {
   transactionId: string;
+  recoveryId: string;
+  planHash: string;
   status: "committed" | "rolled_back";
   protectedLocalRoots: {
     before: ProtectedLocalRootInventory[];
     after: ProtectedLocalRootInventory[];
     unchanged: boolean;
   };
+}
+
+export interface ResumeTransactionExpectations {
+  projectIdentity?: string;
+  targetBundleVersion?: string;
+  ownershipManifestHash?: string;
 }
 
 export class ProtectedLocalRootMutationError extends Error {
@@ -113,22 +131,51 @@ async function writeJournal(
   transactionRoot: string,
   journal: TransactionJournal
 ): Promise<void> {
+  journal.updated_at = new Date().toISOString();
   await atomicWriteJson(join(transactionRoot, "journal.json"), journal);
   await writeStatus(transactionRoot, journal);
+  if (journal.recovery_store_path !== undefined) {
+    if (journal.state === "committed" || journal.state === "rolled_back") {
+      await removeRecoveryMirror(journal.recovery_store_path);
+    } else {
+      await mirrorRecoveryTransaction(
+        transactionRoot,
+        journal.recovery_store_path
+      );
+    }
+  }
 }
 
 async function writeStatus(
   transactionRoot: string,
   journal: TransactionJournal
 ): Promise<void> {
-  await atomicWriteJson(join(transactionRoot, "status.json"), {
+  const status = {
     schema_version: 1,
     transaction_id: journal.transaction_id,
+    recovery_id: journal.recovery_id ?? journal.transaction_id,
     state: journal.state,
     applied_count: journal.applied_count,
+    plan_hash: journal.plan_hash ?? null,
+    completed_operations: journal.completed_operations ?? [],
+    pending_operations: journal.pending_operations ?? [],
     failure: journal.failure,
+    failure_reason_code: journal.failure_reason_code ?? null,
+    safe_actions: journal.safe_actions ?? [],
     updated_at: new Date().toISOString()
-  });
+  };
+  await atomicWriteJson(join(transactionRoot, "status.json"), status);
+  if (
+    journal.recovery_store_path !== undefined &&
+    journal.state !== "committed" &&
+    journal.state !== "rolled_back"
+  ) {
+    await mkdir(journal.recovery_store_path, { recursive: true });
+    await atomicWriteJson(
+      join(journal.recovery_store_path, "status.json"),
+      status
+    );
+  }
 }
 
 function journalOperation(
@@ -138,10 +185,71 @@ function journalOperation(
     return {
       operation: "rename",
       from_path: operation.from_path,
-      to_path: operation.to_path
+      to_path: operation.to_path,
+      content_sha256: sha256Bytes(operation.content)
     };
   }
-  return { operation: operation.operation, path: operation.path };
+  if (operation.operation === "delete") {
+    return { operation: "delete", path: operation.path };
+  }
+  return {
+    operation: operation.operation,
+    path: operation.path,
+    content_sha256: sha256Bytes(operation.content)
+  };
+}
+
+async function computeSnapshotDigest(
+  transactionRoot: string,
+  snapshots: readonly SnapshotRecord[]
+): Promise<string> {
+  const inventory = [];
+  for (const snapshot of snapshots) {
+    inventory.push({
+      path: snapshot.path,
+      existed: snapshot.existed,
+      hash: snapshot.snapshot_name === null
+        ? null
+        : await sha256File(join(
+            transactionRoot,
+            "before",
+            snapshot.snapshot_name
+          ))
+    });
+  }
+  return sha256Bytes(JSON.stringify(inventory));
+}
+
+function computedPlanHash(journal: TransactionJournal): string {
+  return sha256Bytes(JSON.stringify({
+    operations: journal.operations,
+    projectIdentity: journal.project_identity ?? null,
+    targetBundleVersion: journal.target_bundle_version ?? null,
+    ownershipManifestHash: journal.ownership_manifest_hash ?? null
+  }));
+}
+
+function fallbackPlanHash(journal: TransactionJournal): string {
+  return journal.plan_hash ?? computedPlanHash(journal);
+}
+
+export async function assertTransactionJournalIntegrity(
+  transactionRoot: string,
+  journal: TransactionJournal
+): Promise<void> {
+  if (journal.schema_version < 3) return;
+  if (journal.plan_hash !== computedPlanHash(journal)) {
+    throw new Error("TRANSACTION_PLAN_HASH_MISMATCH");
+  }
+  if (
+    journal.snapshot_digest === undefined ||
+    journal.snapshot_digest !== await computeSnapshotDigest(
+      transactionRoot,
+      journal.snapshots
+    )
+  ) {
+    throw new Error("TRANSACTION_SNAPSHOT_DIGEST_MISMATCH");
+  }
 }
 
 // design §10：提交后剪除同 kind 的更早成功事务，仅保留最新一个供回滚。
@@ -253,7 +361,10 @@ export async function rollbackTransaction(
   projectRoot: string,
   transactionId: string
 ): Promise<TransactionResult> {
-  const transactionRoot = join(stateLayout(projectRoot).transactions, transactionId);
+  const transactionRoot = await restoreRecoveryTransaction(
+    projectRoot,
+    transactionId
+  );
   const journal = JSON.parse(
     await readFile(join(transactionRoot, "journal.json"), "utf8")
   ) as TransactionJournal;
@@ -264,9 +375,16 @@ export async function rollbackTransaction(
     unchanged: true
   };
   if (journal.state === "committed") {
-    return { transactionId, status: "committed", protectedLocalRoots };
+    return {
+      transactionId,
+      recoveryId: journal.recovery_id ?? transactionId,
+      planHash: fallbackPlanHash(journal),
+      status: "committed",
+      protectedLocalRoots
+    };
   }
 
+  await assertTransactionJournalIntegrity(transactionRoot, journal);
   journal.state = "rolling_back";
   await writeJournal(transactionRoot, journal);
   try {
@@ -286,6 +404,8 @@ export async function rollbackTransaction(
     const afterRollback = await collectProtectedLocalRootsInventory(projectRoot);
     return {
       transactionId,
+      recoveryId: journal.recovery_id ?? transactionId,
+      planHash: fallbackPlanHash(journal),
       status: "rolled_back",
       protectedLocalRoots: {
         before: protectedLocalRoots.before,
@@ -299,6 +419,288 @@ export async function rollbackTransaction(
     await writeJournal(transactionRoot, journal);
     throw error;
   }
+}
+
+function durableOperationForApply(
+  operation: TransactionJournalOperation
+): TransactionOperation {
+  if (operation.operation === "rename") {
+    return {
+      operation: "rename",
+      from_path: operation.from_path,
+      to_path: operation.to_path,
+      content: new Uint8Array()
+    };
+  }
+  if (operation.operation === "delete") {
+    return { operation: "delete", path: operation.path };
+  }
+  return {
+    operation: operation.operation,
+    path: operation.path,
+    content: new Uint8Array()
+  };
+}
+
+async function assertCompletedOperationState(
+  projectRoot: string,
+  transactionRoot: string,
+  operation: TransactionJournalOperation,
+  index: number
+): Promise<void> {
+  const staged = join(transactionRoot, "staged", String(index));
+  if (operation.operation === "delete") {
+    if (await exists(join(projectRoot, operation.path))) {
+      throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
+    }
+    return;
+  }
+  if (operation.content_sha256 === undefined ||
+      await sha256File(staged) !== operation.content_sha256) {
+    throw new Error("TRANSACTION_STAGED_CONTENT_MISMATCH");
+  }
+  const targetPath = operation.operation === "rename"
+    ? operation.to_path
+    : operation.path;
+  const target = join(projectRoot, targetPath);
+  if (!await exists(target) || await sha256File(target) !== operation.content_sha256) {
+    throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
+  }
+  if (
+    operation.operation === "rename" &&
+    await exists(join(projectRoot, operation.from_path))
+  ) {
+    throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
+  }
+}
+
+async function assertSnapshotPathState(
+  projectRoot: string,
+  transactionRoot: string,
+  snapshot: SnapshotRecord
+): Promise<void> {
+  const target = join(projectRoot, snapshot.path);
+  const present = await exists(target);
+  if (present !== snapshot.existed) {
+    throw new Error("TRANSACTION_RESUME_PENDING_TARGET_CHANGED: " + snapshot.path);
+  }
+  if (!present) return;
+  if (snapshot.snapshot_name === null) {
+    throw new Error("TRANSACTION_SNAPSHOT_RECORD_INVALID: " + snapshot.path);
+  }
+  const before = join(transactionRoot, "before", snapshot.snapshot_name);
+  if (await sha256File(target) !== await sha256File(before)) {
+    throw new Error("TRANSACTION_RESUME_PENDING_TARGET_CHANGED: " + snapshot.path);
+  }
+}
+
+function journalAffectedPaths(
+  operation: TransactionJournalOperation
+): string[] {
+  return operation.operation === "rename"
+    ? [operation.from_path, operation.to_path]
+    : [operation.path];
+}
+
+export async function resumeTransaction(
+  projectRoot: string,
+  transactionId: string,
+  expectations: ResumeTransactionExpectations = {}
+): Promise<TransactionResult> {
+  const layout = stateLayout(projectRoot);
+  const transactionRoot = await restoreRecoveryTransaction(
+    projectRoot,
+    transactionId
+  );
+  const journal = JSON.parse(
+    await readFile(join(transactionRoot, "journal.json"), "utf8")
+  ) as TransactionJournal;
+  if (journal.state === "committed") {
+    const current = await collectProtectedLocalRootsInventory(projectRoot);
+    return {
+      transactionId,
+      recoveryId: journal.recovery_id ?? transactionId,
+      planHash: fallbackPlanHash(journal),
+      status: "committed",
+      protectedLocalRoots: journal.protected_local_roots ?? {
+        before: current,
+        after: current,
+        unchanged: true
+      }
+    };
+  }
+  if (journal.schema_version < 3 ||
+      journal.state === "rolling_back" ||
+      journal.state === "rolled_back") {
+    throw new Error("TRANSACTION_RESUME_UNAVAILABLE");
+  }
+  await assertTransactionJournalIntegrity(transactionRoot, journal);
+  const localProjectIdentity = "local-root:" + sha256Bytes(resolve(projectRoot));
+  if (
+    journal.project_identity?.startsWith("local-root:") === true &&
+    journal.project_identity !== localProjectIdentity
+  ) {
+    throw new Error("TRANSACTION_PROJECT_IDENTITY_CHANGED");
+  }
+  if (
+    expectations.projectIdentity !== undefined &&
+    journal.project_identity !== expectations.projectIdentity
+  ) {
+    throw new Error("TRANSACTION_PROJECT_IDENTITY_CHANGED");
+  }
+  if (
+    expectations.targetBundleVersion !== undefined &&
+    journal.target_bundle_version !== expectations.targetBundleVersion
+  ) {
+    throw new Error("TRANSACTION_TARGET_BUNDLE_VERSION_CHANGED");
+  }
+  if (
+    expectations.ownershipManifestHash !== undefined &&
+    journal.ownership_manifest_hash !== expectations.ownershipManifestHash
+  ) {
+    throw new Error("TRANSACTION_OWNERSHIP_MANIFEST_CHANGED");
+  }
+  if (journal.cli_version === "direct-core-api") {
+    if (journal.target_bundle_version !== "unchanged") {
+      throw new Error("TRANSACTION_TARGET_BUNDLE_VERSION_CHANGED");
+    }
+    if (
+      journal.ownership_manifest_hash !==
+      sha256Bytes(JSON.stringify(journal.operations))
+    ) {
+      throw new Error("TRANSACTION_OWNERSHIP_MANIFEST_CHANGED");
+    }
+  }
+
+  try {
+    const status = JSON.parse(
+      await readFile(join(transactionRoot, "status.json"), "utf8")
+    ) as {
+      completed_operations?: number[];
+      pending_operations?: number[];
+      applied_count?: number;
+    };
+    if (Array.isArray(status.completed_operations)) {
+      journal.completed_operations = status.completed_operations;
+    }
+    if (Array.isArray(status.pending_operations)) {
+      journal.pending_operations = status.pending_operations;
+    }
+    journal.applied_count = Math.max(
+      journal.applied_count,
+      Number(status.applied_count ?? 0)
+    );
+  } catch {
+    // journal.json remains the durable fallback for legacy status projections.
+  }
+  const completed = new Set(journal.completed_operations ?? []);
+  const pending = journal.operations
+    .map((_operation, index) => index)
+    .filter((index) => !completed.has(index));
+  for (const index of completed) {
+    const operation = journal.operations[index];
+    if (operation === undefined) {
+      throw new Error("TRANSACTION_PROGRESS_INVALID");
+    }
+    await assertCompletedOperationState(
+      projectRoot,
+      transactionRoot,
+      operation,
+      index
+    );
+  }
+  for (const index of pending) {
+    const operation = journal.operations[index];
+    if (operation === undefined) {
+      throw new Error("TRANSACTION_PROGRESS_INVALID");
+    }
+    if (
+      operation.operation !== "delete" &&
+      (
+        operation.content_sha256 === undefined ||
+        await sha256File(join(transactionRoot, "staged", String(index))) !==
+          operation.content_sha256
+      )
+    ) {
+      throw new Error("TRANSACTION_STAGED_CONTENT_MISMATCH");
+    }
+    for (const path of journalAffectedPaths(operation)) {
+      const snapshot = journal.snapshots.find((item) => item.path === path);
+      if (snapshot === undefined) {
+        throw new Error("TRANSACTION_SNAPSHOT_RECORD_MISSING: " + path);
+      }
+      await assertSnapshotPathState(
+        projectRoot,
+        transactionRoot,
+        snapshot
+      );
+    }
+  }
+  const protectedBefore = journal.protected_local_roots?.before ??
+    await collectProtectedLocalRootsInventory(projectRoot);
+  const protectedCurrent = await collectProtectedLocalRootsInventory(projectRoot);
+  if (!inventoriesEqual(protectedBefore, protectedCurrent)) {
+    throw new Error("PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED");
+  }
+
+  journal.completed_operations = [...completed].sort((left, right) => left - right);
+  journal.pending_operations = pending;
+  journal.applied_count = journal.completed_operations.length;
+  journal.state = "applying";
+  journal.failure = null;
+  journal.failure_reason_code = null;
+  journal.safe_actions = ["inspect", "resume", "rollback"];
+  await writeJournal(transactionRoot, journal);
+
+  for (const index of pending) {
+    const operation = journal.operations[index];
+    if (operation === undefined) continue;
+    await applyOperation(
+      projectRoot,
+      transactionRoot,
+      durableOperationForApply(operation),
+      index,
+      transactionId
+    );
+    journal.completed_operations.push(index);
+    journal.pending_operations = journal.pending_operations.filter(
+      (candidate) => candidate !== index
+    );
+    journal.applied_count = journal.completed_operations.length;
+    await writeStatus(transactionRoot, journal);
+  }
+
+  const after = [];
+  for (const snapshot of journal.snapshots) {
+    const target = join(projectRoot, snapshot.path);
+    after.push({
+      path: snapshot.path,
+      exists: await exists(target),
+      hash: await exists(target) ? await sha256File(target) : null
+    });
+  }
+  await atomicWriteJson(join(transactionRoot, "after", "manifest.json"), after);
+  const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
+  if (!inventoriesEqual(protectedBefore, protectedAfter)) {
+    throw new Error("PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED");
+  }
+  journal.protected_local_roots = {
+    before: protectedBefore,
+    after: protectedAfter,
+    unchanged: true
+  };
+  journal.state = "committed";
+  journal.safe_actions = ["inspect", "rollback"];
+  await writeJournal(transactionRoot, journal);
+  await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
+  await pruneOlderSuccessful(layout, transactionId, journal.kind);
+  return {
+    transactionId,
+    recoveryId: journal.recovery_id ?? transactionId,
+    planHash: fallbackPlanHash(journal),
+    status: "committed",
+    protectedLocalRoots: journal.protected_local_roots
+  };
 }
 
 export async function runTransaction(
@@ -342,13 +744,42 @@ export async function runTransaction(
   const protectedBefore = await collectProtectedLocalRootsInventory(projectRoot);
   const snapshots = await snapshotPaths(projectRoot, transactionRoot, paths);
   await stageOperations(transactionRoot, operations);
+  const durableOperations = operations.map(journalOperation);
+  const projectIdentity = options.projectIdentity ??
+    "local-root:" + sha256Bytes(resolve(projectRoot));
+  const cliVersion = options.cliVersion ?? "direct-core-api";
+  const targetBundleVersion = options.targetBundleVersion ?? "unchanged";
+  const ownershipManifestHash = options.ownershipManifestHash ??
+    sha256Bytes(JSON.stringify(durableOperations));
+  const planHash = sha256Bytes(JSON.stringify({
+    operations: durableOperations,
+    projectIdentity,
+    targetBundleVersion,
+    ownershipManifestHash
+  }));
   const journal: TransactionJournal = {
-    schema_version: 2,
+    schema_version: 3,
     transaction_id: transactionId,
+    recovery_id: transactionId,
+    recovery_store_path: externalRecoveryTransactionRoot(
+      projectRoot,
+      transactionId
+    ),
     ...(options.kind === undefined ? {} : { kind: options.kind }),
     state: "prepared",
     created_at: new Date().toISOString(),
-    operations: operations.map(journalOperation),
+    updated_at: new Date().toISOString(),
+    project_identity: projectIdentity,
+    cli_version: cliVersion,
+    target_bundle_version: targetBundleVersion,
+    ownership_manifest_hash: ownershipManifestHash,
+    plan_hash: planHash,
+    snapshot_digest: await computeSnapshotDigest(transactionRoot, snapshots),
+    completed_operations: [],
+    pending_operations: operations.map((_operation, index) => index),
+    failure_reason_code: null,
+    safe_actions: ["inspect", "resume", "rollback"],
+    operations: durableOperations,
     snapshots,
     applied_count: 0,
     failure: null,
@@ -370,6 +801,13 @@ export async function runTransaction(
       }
       await applyOperation(projectRoot, transactionRoot, operation, index, transactionId);
       journal.applied_count = index + 1;
+      journal.completed_operations = [
+        ...(journal.completed_operations ?? []),
+        index
+      ];
+      journal.pending_operations = (journal.pending_operations ?? []).filter(
+        (pending) => pending !== index
+      );
       // Progress is a small fixed-size status write. journal.json is persisted
       // only at state transitions, so N files no longer cause N rewrites of an
       // O(N + payload) document.
@@ -377,6 +815,7 @@ export async function runTransaction(
       if (options.interruptAfterApply === journal.applied_count) {
         journal.state = "interrupted";
         journal.failure = "injected interruption";
+        journal.failure_reason_code = "TRANSACTION_INTERRUPTED";
         await writeJournal(transactionRoot, journal);
         throw new InterruptedTransactionError();
       }
@@ -409,12 +848,14 @@ export async function runTransaction(
       );
     }
     journal.state = "committed";
+    journal.safe_actions = ["inspect", "rollback"];
     await writeJournal(transactionRoot, journal);
   } catch (error) {
     if (error instanceof InterruptedTransactionError) {
       throw error;
     }
     journal.failure = error instanceof Error ? error.message : String(error);
+    journal.failure_reason_code = "TRANSACTION_APPLY_FAILED";
     await writeJournal(transactionRoot, journal);
     await rollbackTransaction(projectRoot, transactionId);
     throw error;
@@ -425,6 +866,8 @@ export async function runTransaction(
   await pruneOlderSuccessful(layout, transactionId, options.kind);
   return {
     transactionId,
+    recoveryId: transactionId,
+    planHash,
     status: "committed",
     protectedLocalRoots: journal.protected_local_roots ?? {
       before: protectedBefore,

@@ -94,13 +94,18 @@ requested=true + path missing
 6. **读取测试场景表**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` → 获取测试真相源
 7. **读取验证账本**：`.harness/changes/<change-name>/evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状态**：`.harness/changes/<change-name>/evidence/run-task-status.md`（如存在）→ 恢复上次运行状态
-9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并将 RED/YELLOW 条目映射为本轮变更簇
+9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并用 `harness_fixback.py` 将相关 RED/YELLOW 条目合并为一个批次；每条问题保留 RED/GREEN 证据，批次关闭后只触发一次 affected verification 与一次 review
 10. 确认 `项目规则（见 .harness/context-index.json）/` 规则已加载
 11. **执行测试基础设施探测**（见下方"步骤 0.5"）
 12. 确认构建环境正常（构建命令按技术栈，见项目 CLAUDE.md 或 `.harness/config/harness-build-config.md`；如 Java 的 `powershell.exe -Command "mvn compile -pl <module> -o -q"`）
 13. **检查构建配置完整性**：如果在 worktree 中执行，确认构建配置文件存在（如 Java 的 `.mvn/maven.config`/`settings.xml`、JVM 的 `gradle.properties`、前端的 `package.json`/lockfile 等）。worktree 可能不包含主目录的构建配置，缺失时从主目录复制
 14. **依赖模块预安装**：如果在 worktree 中执行，检查上游依赖是否已安装（如 Java 的 `mvn install` 到本地仓库、前端的依赖已 install）。缺失时先执行对应安装命令（Java 示例：`powershell.exe -Command "mvn install -pl <upstream-modules> -am -DskipTests -nsu"`）
 15. **代码探索优先用 codegraph_explore**：一次调用可获取多个相关符号的源码，替代逐个 Read 文件。违反 `项目 codegraph 规则` 规则逐个 Read 会浪费 3-5 分钟。仅在 codegraph 返回结果不完整时补充 Read
+
+长时编译或验证不得依赖当前对话持续在线；使用 `harness_runtime.py run-start` 创建
+受管会话，并以状态/日志游标重连。并行执行前先调用
+`harness_verification.py` 的 `plan` 模式取得资源锁 wave；没有资源声明的重任务保持串行。详见
+`../protocols/execution-session-protocol.md`。
 
 ### 步骤 0.0：正式产物来源确认
 

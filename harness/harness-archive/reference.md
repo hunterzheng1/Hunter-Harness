@@ -47,6 +47,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 - `durations`：totalMinutes + stages[{stage,skill,startedAt,endedAt,minutes,result}] —— 从 `logs/execution-log.md` 各 `[N] harness-<skill>` 小节的 `开始`/`结束`/`耗时` 解析；
 - `skillCalls`：每个 skill 的调用次数（含重入）+ 结果 —— 从 execution-log 统计；
 - `verification`：单元/API/覆盖展示，含 passRate —— 来自 `evidence/verification-ledger.json`；
+- `efficiency`：墙钟/活动/资源等待、验证尝试、失败分类、环境 prepare/reuse/reset/cleanup、重复命令与 wrapper 数 —— 由 `harness_efficiency.py` 从运行回执自动汇总；
 - `changedFiles`：path/summary/insertions/deletions —— 来自 `git diff --numstat <base>..<head>`；
 - `reviewSummary`：red/yellow + redFixed/redConfirmed/yellowFixed/yellowDeferred 修复进度；
 - `maintenanceNotes`：给后续维护者看的结论；

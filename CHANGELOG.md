@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.45] — hunter-harness / [0.2.43] — @hunter-harness/workflow-harness
+
+### Fixed（2026-07-31 CBM Forge 生产数据 Harness 执行效率复盘修复）
+
+- **可重连运行会话**：长时命令具备独立 session、心跳、日志游标、超时/取消和 Windows Job Object；launcher、测试失败、超时与失联使用不同 terminal 状态和原因码。
+- **安全验证调度**：验证 DAG 按资源锁分 wave，未分类重任务默认串行；复用/跳过带稳定原因与解释，冻结候选身份漂移立即阻断。
+- **环境会话双模式**：支持 change-session 内容指纹复用与 ephemeral 每次重置；prepare/reuse/reset/cleanup 自动写脱敏回执，跨 change writable volume 继续 fail closed。
+- **Fixback 合批**：相关审查/测试问题可在同一批次完成 RED→GREEN，只触发一次 affected verification 与一次 review；开放问题或缺证据阻断 freeze，安全问题自动扩展门禁。
+- **效率事实报告**：归档自动汇总墙钟、活动执行、资源等待、失败分类、环境动作、重复命令与 wrapper；历史不足时不生成 ETA。
+- **可恢复 CLI**：裸命令根据 absent/valid 状态自动 init 或 refresh；新增只读 `status` 及按 recovery ID 精确执行的 `recover` / `resume`，避免误回滚其他事务。
+- **事务 journal v3**：记录恢复 ID、计划/快照哈希、产品/CLI/Bundle/ownership 身份、已完成/待执行操作、原因码与安全动作。
+- workflow bundle 提升至 `0.2.32`，最低 CLI 版本提升至 `0.2.45`。
+
 ## [0.2.44] — hunter-harness / [0.2.42] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-07-31 Lark Channel Bridge Sync / Knowledge 复盘修复）

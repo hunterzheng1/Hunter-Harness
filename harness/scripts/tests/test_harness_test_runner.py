@@ -184,6 +184,44 @@ class RunnerContractTests(unittest.TestCase):
             finally:
                 lock.release()
 
+    def test_unexpired_lock_with_definitely_dead_owner_is_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-lock-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            lock_root = tmp / "locks"
+            lock = runner.TestRunLock(tmp / "project", lock_root=lock_root)
+            lock.path.parent.mkdir(parents=True)
+            lock.path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "token": "dead-before-expiry",
+                        "status": "ACTIVE",
+                        "heartbeatAtUnix": time.time(),
+                        "expiresAtUnix": time.time() + 3600,
+                        "owner": {
+                            "pid": 99999999,
+                            "executable": sys.executable,
+                            "startedAt": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            lock.acquire()
+
+            try:
+                self.assertEqual(
+                    runner.classify_test_lock(lock.path)["classification"],
+                    "ACTIVE",
+                )
+                self.assertEqual(
+                    len(list((lock_root / "receipts").glob("*-reap-*.json"))),
+                    1,
+                )
+            finally:
+                lock.release()
+
     def test_expired_incomplete_owner_lock_is_report_only(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harness-runner-lock-") as raw_tmp:
             tmp = Path(raw_tmp)
