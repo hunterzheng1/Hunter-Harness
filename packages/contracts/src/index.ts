@@ -13,6 +13,7 @@ export * from "./protocol.js";
 export * from "./dashboard.js";
 export * from "./external-skill.js";
 export * from "./registry.js";
+export * from "./recovery.js";
 export * from "./semantic.js";
 export * from "./skill-package.js";
 export * from "./workflow-family.js";

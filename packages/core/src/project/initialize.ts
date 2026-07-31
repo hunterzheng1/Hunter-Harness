@@ -22,8 +22,14 @@ import { aggregateInstalledContentHash } from "../fs/hash.js";
 
 import { sha256Bytes } from "../fs/hash.js";
 import { upsertManagedBlockById } from "../managed/managed-block.js";
+import { collectProtectedLocalRootsInventory } from "./local-state.js";
 import type { TransactionOperation } from "../transaction/journal.js";
-import { runTransaction } from "../transaction/transaction.js";
+import type { RecoveryStoreOptions } from "../transaction/recovery-store.js";
+import {
+  assertExpectedPlanHash,
+  runTransaction,
+  transactionPlanHash
+} from "../transaction/transaction.js";
 import { getAdapter, managedTargetsFor } from "./agent-adapters.js";
 import {
   AGENTS_CORE_BLOCK_ID,
@@ -72,6 +78,11 @@ export interface InitializeProjectOptions {
   resourcesRoot: string;
   config: InitConfig;
   dryRun: boolean;
+  expectedPlanHash?: string;
+  localProjectKey?: string;
+  planTimestamp?: string;
+  cliVersion?: string;
+  recoveryStore?: Omit<RecoveryStoreOptions, "managedPaths">;
 }
 
 export interface InitializeProjectResult {
@@ -79,6 +90,8 @@ export interface InitializeProjectResult {
   paths: string[];
   bundleHash: string;
   registryVersion: string;
+  planHash: string;
+  recoveryId: string | null;
 }
 
 /** @deprecated Prefer InstalledBundleStateV3 */
@@ -306,7 +319,8 @@ export async function initializeProject(
     project: {
       name: existing?.project.name ?? basename(root),
       root: ".",
-      local_project_key: existing?.project.local_project_key ?? uuidV7(),
+      local_project_key: existing?.project.local_project_key ??
+        options.localProjectKey ?? uuidV7(),
       project_id: config.project_id ?? existing?.project.project_id ?? null,
       profiles: [config.profile]
     },
@@ -422,7 +436,7 @@ export async function initializeProject(
       HarnessAgent,
       HarnessProfile
     >>,
-    installed_at: new Date().toISOString(),
+    installed_at: options.planTimestamp ?? new Date().toISOString(),
     manifests,
     files: mergedTargets.map((target) => ({
       owner: target.owner,
@@ -435,11 +449,43 @@ export async function initializeProject(
   files.set(INSTALLED_BUNDLE_PATH, JSON.stringify(installedState, null, 2) + "\n");
 
   const paths = [...files.keys()].sort((left, right) => left.localeCompare(right));
+  const writeOperations = await Promise.all(
+    [...files.entries()].map(async ([path, content]) =>
+      operationFor(root, path, content)
+    )
+  );
+  const transactionIdentity = {
+    kind: "init" as const,
+    projectIdentity: projectConfig.project.local_project_key,
+    cliVersion: options.cliVersion ?? "unknown",
+    targetBundleVersion: primaryRegistryVersion,
+    ownershipManifestHash: primaryBundleHash
+  };
+  const planHash = transactionPlanHash(
+    writeOperations,
+    transactionIdentity,
+    await collectProtectedLocalRootsInventory(root)
+  );
+  assertExpectedPlanHash(options.expectedPlanHash, planHash);
+  let recoveryId: string | null = null;
   if (!options.dryRun) {
-    const writeOperations = await Promise.all(
-      [...files.entries()].map(async ([path, content]) => operationFor(root, path, content))
-    );
-    await runTransaction(root, writeOperations, { kind: "init" });
+    const transaction = await runTransaction(root, writeOperations, {
+      ...transactionIdentity,
+      ...(options.recoveryStore === undefined
+        ? {}
+        : {
+          recoveryStore: {
+            ...options.recoveryStore,
+            managedPaths: paths,
+            allowedSensitiveContentHashes: mergedTargets.map((target) =>
+              target.sha256.startsWith("sha256:")
+                ? target.sha256
+                : `sha256:${target.sha256}`
+            )
+          }
+        })
+    });
+    recoveryId = transaction.recoveryId;
 
     // Per-file content verification (retro §5.1): now that managed files are
     // on disk, compute installedContentHash/verificationStatus for each
@@ -452,7 +498,9 @@ export async function initializeProject(
     projectConfig,
     paths,
     bundleHash: primaryBundleHash,
-    registryVersion: primaryRegistryVersion
+    registryVersion: primaryRegistryVersion,
+    planHash,
+    recoveryId
   };
 }
 

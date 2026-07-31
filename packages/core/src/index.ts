@@ -51,6 +51,7 @@ export * from "./sync/artifact-rebase.js";
 export * from "./sync/synchronize.js";
 export * from "./transaction/journal.js";
 export * from "./transaction/recovery.js";
+export * from "./transaction/recovery-store.js";
 export * from "./transaction/transaction.js";
 export * from "./update/conflicts.js";
 export * from "./update/update.js";

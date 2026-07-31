@@ -120,9 +120,13 @@ describe("protocol state", () => {
 
     expect(rawJournal).not.toContain(marker);
     expect(Buffer.byteLength(rawJournal)).toBeLessThan(4_096);
-    expect(journal.schema_version).toBe(2);
+    expect(journal.schema_version).toBe(3);
     expect(journal.operations).toEqual([
-      { operation: "add", path: "large.txt" }
+      expect.objectContaining({
+        operation: "add",
+        path: "large.txt",
+        content_sha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/)
+      })
     ]);
     expect(journal.applied_count).toBe(1);
     expect(status).toMatchObject({ state: "committed", applied_count: 1 });
@@ -193,5 +197,60 @@ describe("protocol state", () => {
     expect(journal.protected_local_roots.before).toEqual(
       journal.protected_local_roots.after
     );
+  });
+
+  it("records a stable recovery contract and immutable plan hash", async () => {
+    const result = await runTransaction(root, [{
+      operation: "add",
+      path: "contract.txt",
+      content: "value\n"
+    }], {
+      id: "tx_contract",
+      kind: "update",
+      projectIdentity: "sha256:project",
+      cliVersion: "0.2.44",
+      targetBundleVersion: "0.2.45",
+      ownershipManifestHash: "sha256:ownership"
+    });
+
+    expect(result.recoveryId).toBe("tx_contract");
+    expect(result.planHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+    const journal = JSON.parse(await readFile(
+      join(stateLayout(root).transactions, "tx_contract", "journal.json"),
+      "utf8"
+    ));
+    expect(journal).toMatchObject({
+      schema_version: 3,
+      transaction_id: "tx_contract",
+      recovery_id: "tx_contract",
+      project_identity: "sha256:project",
+      cli_version: "0.2.44",
+      target_bundle_version: "0.2.45",
+      ownership_manifest_hash: "sha256:ownership",
+      plan_hash: result.planHash,
+      state: "committed"
+    });
+    expect(journal.snapshot_digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(journal.completed_operations).toEqual([0]);
+    expect(journal.pending_operations).toEqual([]);
+  });
+
+  it("rejects transaction ids that can escape the transaction store", async () => {
+    const outside = join(root, ".harness", "state", "escaped");
+
+    await expect(runTransaction(root, [{
+      operation: "add",
+      path: "managed.txt",
+      content: "must not be written"
+    }], {
+      id: "../escaped"
+    })).rejects.toMatchObject({ code: "RECOVERY_ID_INVALID" });
+
+    await expect(readFile(join(outside, "journal.json"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(join(root, "managed.txt"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
   });
 });
