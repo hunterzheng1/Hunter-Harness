@@ -201,6 +201,10 @@ const releaseHtml = recordOnly ? "" : `
 const remoteCost = record(measurements.remoteCost);
 const remoteCostTotals = record(remoteCost.totals);
 const storage = record(measurements.artifactStorage);
+const efficiency = record(data.efficiency);
+const efficiencyTiming = record(efficiency.timing);
+const environmentActions = record(efficiency.environment);
+const failureClasses = record(efficiency.failureClasses);
 const projection = record(data.projection);
 const durability = record(data.archiveDurability);
 const durabilityStatus = durability.status || "ARCHIVED_LOCAL_ONLY";
@@ -264,6 +268,10 @@ ${scenarioCoverageHtml}
   <div class="fact"><span>未归因 <code title="agentOrToolUnattributedMs">agentOrToolUnattributed</code></span><strong>${esc(duration(timing.agentOrToolUnattributedMs))}</strong></div>
   <div class="fact"><span>远端 runner 成本</span><strong>${measurement(remoteCostTotals.runnerMinutes ?? remoteCost.runnerMinutes, " 分钟")}</strong></div>
   <div class="fact"><span>新增制品字节</span><strong>${measurement(storage.bytesAdded, " bytes")}</strong></div>
+  <div class="fact"><span>验证尝试 / 资源等待</span><strong>${esc(efficiency.verificationAttempts ?? 0)} / ${esc(duration(efficiencyTiming.resourceWaitMs))}</strong></div>
+  <div class="fact"><span>环境准备 / 复用 / 重置 / 清理</span><strong>${esc(environmentActions.prepare ?? 0)} / ${esc(environmentActions.reuse ?? 0)} / ${esc(environmentActions.reset ?? 0)} / ${esc(environmentActions.cleanup ?? 0)}</strong></div>
+  <div class="fact"><span>启动器 / 环境 / 测试 / 外部失败</span><strong>${esc(failureClasses.launcher ?? 0)} / ${esc(failureClasses.environment ?? 0)} / ${esc(failureClasses.test ?? 0)} / ${esc(failureClasses.external ?? 0)}</strong></div>
+  <div class="fact"><span>无新证据的重复命令</span><strong>${esc(efficiency.repeatedCommandsWithoutNewEvidence ?? 0)}</strong></div>
   <div class="fact"><span>守恒差值 <code>conservationDeltaMs</code></span><strong>${esc(timing.conservationDeltaMs ?? "N/A")}</strong></div>
 </div></details>
 <details><summary>阶段状态</summary><div class="table-wrap"><table><thead><tr><th>阶段</th><th>结果</th></tr></thead><tbody>${stageHtml}</tbody></table></div></details>

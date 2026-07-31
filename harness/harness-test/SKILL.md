@@ -80,11 +80,17 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 动态数据库/Redis/令牌字段必须先由 `harness_environment.py prepare` 生成 secret-free receipt，再用 `exec --environment-receipt <file> --required-environment-field <NAME>` 闭包注入；缺失或指纹变化在启动测试前返回 `VERIFICATION_ENVIRONMENT_INCOMPLETE`。复杂 JSON、Docker template 或含引号参数不得跨多层 `-Command` 传递，改用 `exec --argv-file <utf8-json> --runtime-receipt <file>`；参数文件记录 PowerShell edition/version，运行回执只存 argv hash。`harness_service.py ensure` 属于正式持久服务模式，禁止从 bounded runner 内启动；命中时返回 `PERSISTENT_SERVICE_MODE_REQUIRED`。
 
+预计超过交互窗口的正式验证使用 `harness_runtime.py run-start`，随后通过
+`run-status` / `run-log --cursor` 重连；不得把调用方存活当作验证存活条件。环境 acquire
+必须显式选择 `change-session`（同 change + 内容指纹复用）或 `ephemeral`（每次重置）。
+验证 DAG 的并行度由 `resourceLocks` 决定，未分类重任务默认串行。完整合同见
+`../protocols/execution-session-protocol.md`。
+
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
 先 `harness_context.py prepare --phase test --executor <tool> [--change <id>] --json`，再 `harness_context.py begin --phase test --change <id> --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
 
-验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：`harness_test_guard.py begin` → 执行 → `close`（可选 `mark` stale-test-repair）。阶段结束必须 `harness_gate.py close --phase test --status ...`，随后 `harness_context.py close --from-phase test --to-phase review --executor <tool> --json`；fixback 时改为 `--to-phase run` 并由 context 失效受影响 target。
+验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：`harness_test_guard.py begin` → 执行 → `close`（可选 `mark` stale-test-repair）。阶段结束必须 `harness_gate.py close --phase test --status ...`，随后 `harness_context.py close --from-phase test --to-phase review --executor <tool> --json`；fixback 时由 `harness_fixback.py` 合批记录 RED/GREEN 和 affected verification，再 `--to-phase run` 并由 context 失效受影响 target。
 
 - **Read `checklist.md`** — 各项检查详情 + 0.1 preflight + Playwright 探测 + 避坑规则指引
 - **失败处理**：任一项检查失败 → 终止流程并报告原因，用户确认修复后才能继续

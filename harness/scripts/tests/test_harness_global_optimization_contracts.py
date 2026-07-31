@@ -31,6 +31,15 @@ class GlobalOptimizationContractTests(unittest.TestCase):
                 "requiredCapabilities",
             },
         )
+        self.assertTrue(
+            {
+                "resourceLocks",
+                "estimatedDurationSeconds",
+                "requiresFrozenIdentity",
+                "reusePolicy",
+            }
+            <= set(target["properties"])
+        )
 
     def test_external_platform_contract_separates_state_freshness_and_retry(self) -> None:
         schema = json.loads(

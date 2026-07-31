@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -888,6 +889,238 @@ class EnvironmentManagerTests(unittest.TestCase):
         )
         self.assertEqual(stored["status"], "STALE_CONTENT")
 
+    def test_change_session_reuses_matching_content_and_emits_receipt(self) -> None:
+        receipt = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T12:00:00Z",
+                "migrationHead": "005_ready",
+                "canaries": [{"name": "db", "status": "PASS"}],
+            },
+        )
+        first = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=henv.compute_environment_hash(self.project),
+            environment_receipt=receipt,
+            lease_root=self.leases,
+            mode="change-session",
+        )
+        second = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=henv.compute_environment_hash(self.project),
+            environment_receipt=receipt,
+            lease_root=self.leases,
+            mode="change-session",
+        )
+
+        self.assertEqual(first["code"], "LEASE_ACQUIRED")
+        self.assertEqual(second["code"], "LEASE_REUSED")
+        self.assertEqual(second["lease"]["reuseCount"], 1)
+        self.assertEqual(second["lease"]["mode"], "change-session")
+        self.assertEqual(Path(second["receiptPath"]).parent.name, "environment-receipts")
+
+    def test_ephemeral_session_resets_instead_of_reusing(self) -> None:
+        env_hash = henv.compute_environment_hash(self.project)
+        first = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+            mode="ephemeral",
+        )
+        second = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+            mode="ephemeral",
+        )
+        self.assertFalse(second["ok"])
+        self.assertEqual(second["code"], "ENVIRONMENT_RESET_REQUIRED")
+        reset_evidence = henv.execute_provider_operation(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            operation="reset",
+            argv=[sys.executable, "-c", "print('reset complete')"],
+            lease_root=self.leases,
+        )
+        second = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+            mode="ephemeral",
+            reset_evidence=reset_evidence,
+        )
+
+        self.assertEqual(first["code"], "LEASE_ACQUIRED")
+        self.assertEqual(second["code"], "LEASE_RESET")
+        self.assertNotEqual(first["lease"]["sessionId"], second["lease"]["sessionId"])
+        self.assertEqual(second["lease"]["resetCount"], 1)
+
+    def test_release_does_not_claim_provider_cleanup_without_evidence(self) -> None:
+        henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=henv.compute_environment_hash(self.project),
+            lease_root=self.leases,
+        )
+        released = henv.release_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            lease_root=self.leases,
+        )
+
+        self.assertEqual(released["code"], "LEASE_RELEASED")
+        self.assertTrue(Path(released["receiptPath"]).is_file())
+        cleanup = json.loads(Path(released["receiptPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(cleanup["action"], "release")
+        self.assertEqual(cleanup["changeId"], "change-a")
+
+    def test_release_records_cleanup_only_with_matching_provider_evidence(self) -> None:
+        env_hash = henv.compute_environment_hash(self.project)
+        henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+        )
+        cleanup_evidence = henv.execute_provider_operation(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            operation="cleanup",
+            argv=[sys.executable, "-c", "print('cleanup complete')"],
+            lease_root=self.leases,
+        )
+
+        released = henv.release_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            lease_root=self.leases,
+            cleanup_evidence=cleanup_evidence,
+        )
+
+        self.assertTrue(released["ok"], released)
+        receipt = json.loads(Path(released["receiptPath"]).read_text(encoding="utf-8"))
+        self.assertEqual(receipt["action"], "cleanup")
+        self.assertEqual(
+            receipt["operationEvidence"]["operationId"],
+            cleanup_evidence["operationId"],
+        )
+
+    def test_forged_provider_evidence_and_tampered_content_receipt_fail_closed(
+        self,
+    ) -> None:
+        env_hash = henv.compute_environment_hash(self.project)
+        receipt = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T12:00:00Z",
+                "migrationHead": "005_ready",
+                "canaries": [{"name": "db", "status": "PASS"}],
+            },
+        )
+        forged = dict(receipt)
+        forged["content"]["instanceId"] = "forged"
+        acquired = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            environment_receipt=forged,
+            lease_root=self.leases,
+        )
+        self.assertFalse(acquired["ok"])
+        self.assertEqual(acquired["code"], "ENVIRONMENT_RECEIPT_INVALID")
+
+        first = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+            mode="ephemeral",
+        )
+        self.assertTrue(first["ok"], first)
+        reset = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+            mode="ephemeral",
+            reset_evidence={
+                "schemaVersion": 2,
+                "operation": "reset",
+                "status": "OK",
+                "operationId": "forged",
+                "stackId": "db-main",
+                "environmentHash": env_hash,
+            },
+        )
+        self.assertFalse(reset["ok"])
+        self.assertEqual(reset["code"], "ENVIRONMENT_RESET_REQUIRED")
+
+    def test_change_session_without_content_evidence_is_not_reusable(self) -> None:
+        env_hash = henv.compute_environment_hash(self.project)
+        first = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+        )
+        second = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=env_hash,
+            lease_root=self.leases,
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertFalse(second["ok"], second)
+        self.assertEqual(second["code"], "ENVIRONMENT_RESET_REQUIRED")
+
+    def test_parallel_stack_acquire_has_one_winner(self) -> None:
+        env_hash = henv.compute_environment_hash(self.project)
+
+        def acquire(_: int) -> dict:
+            return henv.acquire_lease(
+                self.project,
+                change_id="change-a",
+                stack_id="db-main",
+                environment_hash=env_hash,
+                lease_root=self.leases,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(acquire, range(2)))
+
+        winners = [result for result in results if result.get("ok")]
+        self.assertEqual(len(winners), 1, results)
+        self.assertEqual(
+            {result.get("code") for result in results if not result.get("ok")},
+            {"ENVIRONMENT_RESET_REQUIRED"},
+        )
+
     def test_verification_environment_fails_before_run_when_field_missing(
         self,
     ) -> None:
@@ -944,6 +1177,36 @@ class EnvironmentManagerTests(unittest.TestCase):
         self.assertEqual(reaped["reaped"], ["db-main"])
         self.assertFalse((self.leases / "db-main.json").exists())
         self.assertTrue(Path(reaped["receiptPath"]).is_file())
+
+    def test_unexpired_lease_with_definitely_dead_owner_is_safely_reaped(self) -> None:
+        self.leases.mkdir(parents=True, exist_ok=True)
+        now = dt.datetime.now(dt.timezone.utc)
+        _write_json(
+            self.leases / "db-main.json",
+            {
+                "schemaVersion": 3,
+                "changeId": "change-a",
+                "stackId": "db-main",
+                "environmentHash": "sha256:env",
+                "status": "ACTIVE",
+                "acquiredAt": now.isoformat(timespec="seconds"),
+                "heartbeatAt": now.isoformat(timespec="seconds"),
+                "expiresAt": (now + dt.timedelta(hours=1)).isoformat(
+                    timespec="seconds"
+                ),
+                "owner": {
+                    "pid": 99999999,
+                    "executable": sys.executable,
+                    "startedAt": "2000-01-01T00:00:00+00:00",
+                },
+            },
+        )
+
+        classified = henv.classify_leases(self.leases)
+        reaped = henv.reap_expired_leases(self.leases)
+
+        self.assertEqual(classified[0]["classification"], "RECLAIMABLE")
+        self.assertEqual(reaped["reaped"], ["db-main"])
 
     def test_expired_lease_with_incomplete_owner_is_report_only(self) -> None:
         self.leases.mkdir(parents=True, exist_ok=True)

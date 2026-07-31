@@ -2215,6 +2215,33 @@ class NoPatchConsistencyTests(unittest.TestCase):
         self.assertTrue(timeline, "archive timeline duration must come from events")
         self.assertGreaterEqual(timeline[-1]["durationMs"], 0)
 
+    def test_collect_includes_execution_efficiency_summary(self) -> None:
+        session_dir = (
+            self.work
+            / "runtime"
+            / "run-sessions"
+            / "verification-unit"
+        )
+        session_dir.mkdir(parents=True)
+        _write_json(
+            session_dir / "session.json",
+            {
+                "status": "OK",
+                "wallClockMs": 1200,
+                "activeTimeMs": 1000,
+                "resourceWaitMs": 200,
+                "commandHash": "sha256:command",
+                "productIdentity": "sha256:product",
+                "testProcessStarted": True,
+            },
+        )
+
+        summary = ha.collect_summary_data(self.work, write=False)
+
+        self.assertEqual(summary["efficiency"]["schemaVersion"], 1)
+        self.assertEqual(summary["efficiency"]["verificationAttempts"], 1)
+        self.assertEqual(summary["efficiency"]["timing"]["resourceWaitMs"], 200)
+
 
 class ArtifactPreflightIntegrationTests(unittest.TestCase):
     """C14 (retro §5.31): artifact_preflight 与 validate_report_adequacy 集成到

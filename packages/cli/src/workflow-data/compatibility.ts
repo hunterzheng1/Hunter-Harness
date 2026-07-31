@@ -7,6 +7,7 @@ export const CLI_CAPABILITIES = [
   "knowledge-sync@3",
   "build-profile@3",
   "verification-graph@1",
+  "execution-session@1",
   "external-convergence@1",
   "codegraph-status@1",
   "codegraph-status@2",

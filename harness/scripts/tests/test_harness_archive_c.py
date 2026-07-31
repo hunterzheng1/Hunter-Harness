@@ -1199,13 +1199,15 @@ class KnowledgeGateTests(unittest.TestCase):
         self.assertTrue(status.get("allowed"))
         self.assertEqual(status.get("status"), "ok")
 
-    def test_gate_blocks_degraded_even_when_consistent(self) -> None:
+    def test_gate_keeps_release_degraded_but_allows_consistent_knowledge(self) -> None:
         self._write_summary({"ok": True, "issues": []}, final_status="DEGRADED")
         status = hk.archive_publication_status(
             self.project, ".harness/archive/2026-07-18-demo"
         )
-        self.assertFalse(status.get("allowed"), status)
-        self.assertEqual(status.get("status"), "degraded")
+        self.assertTrue(status.get("allowed"), status)
+        self.assertEqual(status.get("status"), "ok")
+        self.assertFalse(status["archiveReleaseEligibility"]["eligible"])
+        self.assertTrue(status["knowledgePublicationEligibility"]["allowed"])
 
     def test_gate_uses_hash_valid_authoritative_repair(self) -> None:
         self._write_summary({"ok": False, "issues": [{"code": "old"}]}, final_status="DEGRADED")

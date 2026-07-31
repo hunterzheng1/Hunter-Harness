@@ -361,6 +361,15 @@ async function reconcileContextIndex(
   verifications: ReadonlyMap<HarnessAgent, FreshnessIdentity>
 ): Promise<TransactionOperation | null> {
   const existing = await readOptionalText(join(root, CONTEXT_INDEX_PATH));
+  let existingSkillBundles: Record<string, Record<string, unknown>> = {};
+  try {
+    const parsed = JSON.parse(existing) as {
+      skill_bundles?: Record<string, Record<string, unknown>>;
+    };
+    existingSkillBundles = parsed.skill_bundles ?? {};
+  } catch {
+    // Invalid context-index is replaced by the verified projection below.
+  }
   const mapAssessment = await assessCodebaseMapOnDisk(root);
   const codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
     map: ".harness/codebase/map",
@@ -381,16 +390,23 @@ async function reconcileContextIndex(
     codebase,
     skill_bundles: Object.fromEntries(manifests.map((manifest) => {
       const ver = verifications.get(manifest.adapter as HarnessAgent);
+      const candidate = {
+        registry_version: manifest.bundle_version,
+        bundle_hash: manifest.bundle_manifest_hash,
+        installedContentHash: ver?.installedContentHash ?? null,
+        verifiedAt: ver?.verifiedAt ?? null,
+        verificationStatus: ver?.verificationStatus ?? "unknown",
+        mismatchDetails: ver?.mismatchDetails ?? []
+      };
+      const previous = existingSkillBundles[manifest.adapter];
+      const previousComparable = previous === undefined
+        ? null
+        : { ...previous, verifiedAt: candidate.verifiedAt };
+      const stable = previous !== undefined &&
+        JSON.stringify(previousComparable) === JSON.stringify(candidate);
       return [
         manifest.adapter,
-        {
-          registry_version: manifest.bundle_version,
-          bundle_hash: manifest.bundle_manifest_hash,
-          installedContentHash: ver?.installedContentHash ?? null,
-          verifiedAt: ver?.verifiedAt ?? null,
-          verificationStatus: ver?.verificationStatus ?? "unknown",
-          mismatchDetails: ver?.mismatchDetails ?? []
-        }
+        stable ? { ...candidate, verifiedAt: previous.verifiedAt } : candidate
       ];
     }))
   };
@@ -795,7 +811,9 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   }
 
   if (!options.dryRun) {
-    await runTransaction(root, ops, { kind: "refresh" });
+    if (ops.length > 0) {
+      await runTransaction(root, ops, { kind: "refresh" });
+    }
     await synchronizeProjectRules(root, agents, codebuddySurface);
     await pruneEmptyParentDirs(
       root,

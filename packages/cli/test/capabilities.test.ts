@@ -44,6 +44,7 @@ describe("CLI/workflow capability contract", () => {
       expect(payload.capabilities).toEqual(expect.arrayContaining([
         "build-profile@3",
         "verification-graph@1",
+        "execution-session@1",
         "external-convergence@1",
         "sync@2",
         "knowledge-sync@3",

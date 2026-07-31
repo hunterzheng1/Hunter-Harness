@@ -125,6 +125,34 @@
       "duplicateRunCount": 0
     }
   },
+  "efficiency": {
+    "schemaVersion": 1,
+    "timing": {
+      "wallClockMs": 0,
+      "activeTimeMs": 0,
+      "resourceWaitMs": 0
+    },
+    "verificationAttempts": 0,
+    "statusCounts": {},
+    "failureClasses": {
+      "launcher": 0,
+      "environment": 0,
+      "test": 0,
+      "external": 0,
+      "unknown": 0
+    },
+    "invalidationReasons": {},
+    "environment": {
+      "prepare": 0,
+      "reuse": 0,
+      "reset": 0,
+      "cleanup": 0
+    },
+    "productIdentityCount": 0,
+    "repeatedCommandsWithoutNewEvidence": 0,
+    "manualWrapperCount": 0,
+    "notes": []
+  },
   "reviewSummary": {
     "status": "ADVISORY",
     "red": 0,

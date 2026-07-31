@@ -13,11 +13,18 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
+import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import harness_service as hservice
+from harness_paths import resolve_state_dir_for_contract
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -87,11 +94,20 @@ def _read_json(path: Path) -> Any:
 
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
     )
+    tmp = Path(raw_tmp)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def default_lease_root(project: Path) -> Path:
@@ -231,6 +247,45 @@ def create_environment_receipt(
     return receipt
 
 
+def _validate_environment_receipt(
+    receipt: Any,
+    *,
+    stack_id: str,
+    environment_hash: str,
+) -> bool:
+    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != 1:
+        return False
+    if (
+        receipt.get("stackId") != stack_id
+        or receipt.get("environmentHash") != environment_hash
+        or not isinstance(receipt.get("content"), dict)
+    ):
+        return False
+    try:
+        canonical_content = json.dumps(
+            _canonical_content_evidence(receipt["content"]),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except ValueError:
+        return False
+    expected_fingerprint = "sha256:" + _sha256_bytes(canonical_content)
+    if receipt.get("contentFingerprint") != expected_fingerprint:
+        return False
+    identity_payload = json.dumps(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key not in {"preparedAt", "receiptId"}
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return receipt.get("receiptId") == "sha256:" + _sha256_bytes(identity_payload)
+
+
 def resolve_verification_environment(
     receipt: dict[str, Any],
     *,
@@ -279,7 +334,298 @@ def resolve_verification_environment(
 
 def _lease_path(lease_root: Path, stack_id: str) -> Path:
     safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in stack_id)
+    if safe != stack_id:
+        safe = f"{safe}-{hashlib.sha256(stack_id.encode('utf-8')).hexdigest()[:12]}"
     return lease_root / f"{safe}.json"
+
+
+@contextmanager
+def _lease_registry_guard(lease_root: Path) -> Iterator[None]:
+    lease_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lease_root / ".acquire.lock"
+    deadline = time.monotonic() + 5.0
+    token = uuid.uuid4().hex
+    while True:
+        try:
+            fd = os.open(
+                lock_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            try:
+                holder = _read_json(lock_path)
+            except (OSError, json.JSONDecodeError):
+                holder = {}
+            pid = holder.get("pid") if isinstance(holder, dict) else None
+            if isinstance(pid, int) and pid > 0 and not hservice.is_pid_alive(pid):
+                try:
+                    lock_path.unlink()
+                    continue
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("ENVIRONMENT_LEASE_BUSY")
+            time.sleep(0.02)
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(
+                {
+                    "schemaVersion": 1,
+                    "pid": os.getpid(),
+                    "token": token,
+                    "acquiredAt": now_iso(),
+                },
+                handle,
+                ensure_ascii=False,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        break
+    try:
+        yield
+    finally:
+        try:
+            holder = _read_json(lock_path)
+        except (OSError, json.JSONDecodeError):
+            holder = {}
+        if isinstance(holder, dict) and holder.get("token") == token:
+            lock_path.unlink(missing_ok=True)
+
+
+def _provider_operation_root(lease_root: Path) -> Path:
+    return lease_root / "provider-operations"
+
+
+def _provider_receipt_digest(receipt: dict[str, Any]) -> str:
+    payload = {
+        key: value
+        for key, value in receipt.items()
+        if key != "receiptDigest"
+    }
+    return "sha256:" + _sha256_bytes(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+
+
+def execute_provider_operation(
+    project: Path,
+    *,
+    change_id: str,
+    stack_id: str,
+    operation: str,
+    argv: list[str],
+    lease_root: Path | None = None,
+    timeout_seconds: float = 900.0,
+) -> dict[str, Any]:
+    """Execute a reset/cleanup provider and emit a bound, durable receipt."""
+    if operation not in {"reset", "cleanup"}:
+        raise ValueError("ENVIRONMENT_PROVIDER_OPERATION_INVALID")
+    if (
+        not argv
+        or not all(isinstance(item, str) and item for item in argv)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("ENVIRONMENT_PROVIDER_ARGV_INVALID")
+    root = lease_root or default_lease_root(project)
+    lease_path = _lease_path(root, stack_id)
+    lease = _read_json(lease_path)
+    if (
+        not isinstance(lease, dict)
+        or lease.get("changeId") != change_id
+        or lease.get("stackId") != stack_id
+        or lease.get("status") != "ACTIVE"
+    ):
+        raise ValueError("ENVIRONMENT_PROVIDER_LEASE_INVALID")
+    executable = shutil.which(argv[0]) or str(Path(argv[0]).expanduser().resolve())
+    started_at = now_iso()
+    process = subprocess.Popen(
+        argv,
+        cwd=str(project.resolve()),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+    )
+    created = hservice.get_process_create_time(process.pid)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        hservice.terminate_process_tree(process.pid)
+        stdout, stderr = process.communicate()
+    operation_id = uuid.uuid4().hex
+    receipt_path = _provider_operation_root(root) / f"{operation}-{operation_id}.json"
+    receipt: dict[str, Any] = {
+        "schemaVersion": 2,
+        "operation": operation,
+        "status": "OK" if process.returncode == 0 and not timed_out else "FAIL",
+        "operationId": operation_id,
+        "changeId": change_id,
+        "stackId": stack_id,
+        "environmentHash": str(lease.get("environmentHash") or ""),
+        "environmentSessionId": str(lease.get("sessionId") or ""),
+        "contentFingerprint": str(
+            lease.get("contentFingerprint") or "sha256:none"
+        ),
+        "performedAt": started_at,
+        "completedAt": now_iso(),
+        "provider": {
+            "pid": process.pid,
+            "executable": executable,
+            "startedAt": (
+                created.isoformat(timespec="seconds")
+                if created is not None
+                else started_at
+            ),
+            "argvHash": "sha256:"
+            + _sha256_bytes(
+                json.dumps(argv, ensure_ascii=False, separators=(",", ":")).encode(
+                    "utf-8"
+                )
+            ),
+        },
+        "exitCode": process.returncode,
+        "timedOut": timed_out,
+        "stdoutDigest": "sha256:" + _sha256_bytes(stdout),
+        "stderrDigest": "sha256:" + _sha256_bytes(stderr),
+        "receiptPath": str(receipt_path.resolve()),
+    }
+    receipt["receiptDigest"] = _provider_receipt_digest(receipt)
+    _write_json(receipt_path, receipt)
+    return receipt
+
+
+def _operation_evidence(
+    evidence: dict[str, Any] | None,
+    *,
+    operation: str,
+    lease_root: Path,
+    lease: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(evidence, dict):
+        return None
+    raw_path = str(evidence.get("receiptPath") or "").strip()
+    if not raw_path:
+        return None
+    receipt_path = Path(raw_path).expanduser().resolve()
+    provider_root = _provider_operation_root(lease_root).resolve()
+    try:
+        receipt_path.relative_to(provider_root)
+    except ValueError:
+        return None
+    try:
+        stored = _read_json(receipt_path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if stored != evidence or not isinstance(stored, dict):
+        return None
+    performed_at = _parse_expiry(stored.get("performedAt"))
+    age_seconds = (
+        (dt.datetime.now(dt.timezone.utc) - performed_at).total_seconds()
+        if performed_at is not None
+        else 1_000_000
+    )
+    if (
+        stored.get("schemaVersion") != 2
+        or stored.get("operation") != operation
+        or stored.get("status") != "OK"
+        or stored.get("changeId") != lease.get("changeId")
+        or stored.get("stackId") != lease.get("stackId")
+        or stored.get("environmentHash") != lease.get("environmentHash")
+        or stored.get("environmentSessionId") != lease.get("sessionId")
+        or stored.get("contentFingerprint")
+        != str(lease.get("contentFingerprint") or "sha256:none")
+        or not str(stored.get("operationId") or "").strip()
+        or not isinstance(stored.get("provider"), dict)
+        or not str(stored["provider"].get("executable") or "").strip()
+        or not str(stored["provider"].get("argvHash") or "").startswith("sha256:")
+        or stored.get("exitCode") != 0
+        or stored.get("timedOut") is not False
+        or age_seconds < -5
+        or age_seconds > 900
+        or stored.get("receiptDigest") != _provider_receipt_digest(stored)
+    ):
+        return None
+    consumed = lease_root / ".consumed-provider-operations" / (
+        hashlib.sha256(str(stored["operationId"]).encode("utf-8")).hexdigest()
+        + ".json"
+    )
+    if consumed.exists():
+        return None
+    return stored
+
+
+def _consume_operation_evidence(
+    lease_root: Path,
+    evidence: dict[str, Any],
+) -> bool:
+    consumed = lease_root / ".consumed-provider-operations" / (
+        hashlib.sha256(str(evidence["operationId"]).encode("utf-8")).hexdigest()
+        + ".json"
+    )
+    consumed.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            consumed,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+    except FileExistsError:
+        return False
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        json.dump(
+            {
+                "schemaVersion": 1,
+                "operationId": evidence["operationId"],
+                "receiptDigest": evidence["receiptDigest"],
+                "consumedAt": now_iso(),
+            },
+            stream,
+            ensure_ascii=False,
+        )
+        stream.flush()
+        os.fsync(stream.fileno())
+    return True
+
+
+def _write_environment_action_receipt(
+    lease_root: Path,
+    *,
+    action: str,
+    lease: dict[str, Any],
+    previous_session_id: str | None = None,
+    receipt_dir: Path | None = None,
+    operation_evidence: dict[str, Any] | None = None,
+) -> Path:
+    receipt = {
+        "schemaVersion": 1,
+        "action": action,
+        "recordedAt": now_iso(),
+        "changeId": lease.get("changeId"),
+        "stackId": lease.get("stackId"),
+        "sessionId": lease.get("sessionId"),
+        "mode": lease.get("mode"),
+        "environmentHash": lease.get("environmentHash"),
+        "contentFingerprint": lease.get("contentFingerprint"),
+    }
+    if previous_session_id:
+        receipt["previousSessionId"] = previous_session_id
+    if operation_evidence is not None:
+        receipt["operationEvidence"] = operation_evidence
+    receipt_dir = receipt_dir or lease_root.parent / "environment-receipts"
+    stack_digest = hashlib.sha256(
+        str(lease.get("stackId") or "").encode("utf-8")
+    ).hexdigest()[:12]
+    target = receipt_dir / f"{action}-{stack_digest}-{uuid.uuid4().hex}.json"
+    _write_json(target, receipt)
+    return target
 
 
 def list_leases(lease_root: Path) -> list[dict[str, Any]]:
@@ -340,29 +686,46 @@ def classify_leases(lease_root: Path) -> list[dict[str, Any]]:
             item["classification"] = "LEASE_EXPIRY_INVALID"
             results.append(item)
             continue
-        if now < expires_at:
-            item["classification"] = (
-                "STALE_CONTENT"
-                if lease.get("status") == "STALE_CONTENT"
-                else "ACTIVE"
-            )
-            results.append(item)
-            continue
+        unexpired = now < expires_at
         owner = lease.get("owner")
         if not isinstance(owner, dict) or any(
             not owner.get(field) for field in ("pid", "executable", "startedAt")
         ):
+            if unexpired:
+                item["classification"] = (
+                    "STALE_CONTENT"
+                    if lease.get("status") == "STALE_CONTENT"
+                    else "ACTIVE"
+                )
+                results.append(item)
+                continue
             item["classification"] = "OWNER_IDENTITY_INCOMPLETE"
             results.append(item)
             continue
         try:
             owner_pid = int(owner["pid"])
         except (TypeError, ValueError):
+            if unexpired:
+                item["classification"] = (
+                    "STALE_CONTENT"
+                    if lease.get("status") == "STALE_CONTENT"
+                    else "ACTIVE"
+                )
+                results.append(item)
+                continue
             item["classification"] = "OWNER_IDENTITY_INCOMPLETE"
             results.append(item)
             continue
         if not hservice.is_pid_alive(owner_pid):
             item["classification"] = "RECLAIMABLE"
+            results.append(item)
+            continue
+        if unexpired:
+            item["classification"] = (
+                "STALE_CONTENT"
+                if lease.get("status") == "STALE_CONTENT"
+                else "ACTIVE"
+            )
             results.append(item)
             continue
         identity = hservice.verify_process_identity(
@@ -386,7 +749,7 @@ def classify_leases(lease_root: Path) -> list[dict[str, Any]]:
 
 
 def reap_expired_leases(lease_root: Path) -> dict[str, Any]:
-    """Remove only expired leases whose recorded owner is definitely gone."""
+    """Remove only leases whose recorded owner is definitely gone."""
     leases = classify_leases(lease_root)
     reaped: list[str] = []
     for item in leases:
@@ -502,6 +865,16 @@ def require_writable_lease(
                 "changeId": change_id,
                 "stackId": stack_id,
             }
+        if not _validate_environment_receipt(
+            environment_receipt,
+            stack_id=stack_id,
+            environment_hash=str(lease.get("environmentHash") or ""),
+        ):
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_RECEIPT_INVALID",
+                "message": "environment receipt digest or identity is invalid",
+            }
         observed_content = str(
             environment_receipt.get("contentFingerprint") or ""
         ).strip()
@@ -532,7 +905,7 @@ def require_writable_lease(
     return {"ok": True, "code": "LEASE_HELD", "lease": lease}
 
 
-def acquire_lease(
+def _acquire_lease_locked(
     project: Path,
     *,
     change_id: str,
@@ -542,8 +915,17 @@ def acquire_lease(
     writable_volumes: list[str] | None = None,
     ttl_seconds: int = 3600,
     environment_receipt: dict[str, Any] | None = None,
+    mode: str = "change-session",
+    reset_evidence: dict[str, Any] | None = None,
+    receipt_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Acquire a lease; reject cross-change sharing of the same writable volume."""
+    """Acquire, reuse, or reset an isolated environment session."""
+    if mode not in {"change-session", "ephemeral"}:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_SESSION_MODE_INVALID",
+            "message": f"unsupported environment session mode: {mode}",
+        }
     root = lease_root or default_lease_root(project)
     root.mkdir(parents=True, exist_ok=True)
     volumes = [str(v).replace("\\", "/") for v in (writable_volumes or [])]
@@ -577,11 +959,16 @@ def acquire_lease(
             }
 
     path = _lease_path(root, stack_id)
+    current: dict[str, Any] = {}
     if path.is_file():
         try:
             current = _read_json(path)
-        except (OSError, json.JSONDecodeError):
-            current = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_LEASE_UNREADABLE",
+                "message": str(exc),
+            }
         if str(current.get("changeId") or "") not in {"", change_id}:
             return {
                 "ok": False,
@@ -596,15 +983,15 @@ def acquire_lease(
     started = dt.datetime.now().astimezone()
     expires = started + dt.timedelta(seconds=max(60, int(ttl_seconds)))
     if environment_receipt is not None:
-        if (
-            environment_receipt.get("schemaVersion") != 1
-            or environment_receipt.get("stackId") != stack_id
-            or not str(environment_receipt.get("contentFingerprint") or "").strip()
+        if not _validate_environment_receipt(
+            environment_receipt,
+            stack_id=stack_id,
+            environment_hash=environment_hash,
         ):
             return {
                 "ok": False,
                 "code": "ENVIRONMENT_RECEIPT_INVALID",
-                "message": "environment receipt identity does not match requested stack",
+                "message": "environment receipt digest or identity does not match",
             }
         canaries = (
             environment_receipt.get("content", {}).get("canaries")
@@ -620,10 +1007,94 @@ def acquire_lease(
                 "code": "ENVIRONMENT_CONTENT_NOT_READY",
                 "message": "all environment content canaries must pass before acquire",
             }
+    current_fingerprint = str(current.get("contentFingerprint") or "").strip()
+    requested_fingerprint = str(
+        (environment_receipt or {}).get("contentFingerprint") or ""
+    ).strip()
+    same_content = bool(current_fingerprint) and (
+        current_fingerprint == requested_fingerprint
+    )
+    owner = current.get("owner")
+    owner_verified = False
+    if isinstance(owner, dict):
+        try:
+            owner_pid = int(owner.get("pid"))
+        except (TypeError, ValueError):
+            owner_pid = 0
+        owner_verified = hservice.verify_process_identity(
+            {
+                "pid": owner_pid,
+                "startedAt": owner.get("startedAt"),
+                "processIdentity": {"executable": owner.get("executable")},
+            }
+        ) is True
+    expires_at = _parse_expiry(current.get("expiresAt"))
+    unexpired = (
+        expires_at is not None
+        and dt.datetime.now(dt.timezone.utc) < expires_at
+    )
+    if (
+        current
+        and str(current.get("changeId") or "") == change_id
+        and mode == "change-session"
+        and str(current.get("mode") or "change-session") == "change-session"
+        and current.get("status") == "ACTIVE"
+        and current.get("environmentHash") == environment_hash
+        and current.get("writableVolumes") == volumes
+        and owner_verified
+        and unexpired
+        and same_content
+    ):
+        current["heartbeatAt"] = started.isoformat(timespec="seconds")
+        current["expiresAt"] = expires.isoformat(timespec="seconds")
+        current["reuseCount"] = int(current.get("reuseCount") or 0) + 1
+        _write_json(path, current)
+        action_receipt = _write_environment_action_receipt(
+            root,
+            action="reuse",
+            lease=current,
+            receipt_dir=receipt_dir,
+        )
+        return {
+            "ok": True,
+            "code": "LEASE_REUSED",
+            "lease": current,
+            "path": str(path),
+            "receiptPath": str(action_receipt),
+        }
+    previous_session_id = str(current.get("sessionId") or "").strip() or None
+    reset_count = int(current.get("resetCount") or 0)
+    is_reset = bool(current)
+    reset_operation = _operation_evidence(
+        reset_evidence,
+        operation="reset",
+        lease_root=root,
+        lease=current,
+    )
+    if is_reset and reset_operation is None:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_RESET_REQUIRED",
+            "message": (
+                "existing environment cannot be replaced until a matching "
+                "provider reset receipt is supplied"
+            ),
+            "changeId": change_id,
+            "stackId": stack_id,
+            "previousSessionId": previous_session_id,
+        }
+    if is_reset and not _consume_operation_evidence(root, reset_operation):
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_RESET_EVIDENCE_REPLAYED",
+            "message": "provider reset evidence was already consumed",
+        }
     lease = {
-        "schemaVersion": 2 if environment_receipt is not None else 1,
+        "schemaVersion": 3,
         "changeId": change_id,
         "stackId": stack_id,
+        "sessionId": uuid.uuid4().hex,
+        "mode": mode,
         "environmentHash": environment_hash,
         "writableVolumes": volumes,
         "acquiredAt": started.isoformat(timespec="seconds"),
@@ -631,6 +1102,8 @@ def acquire_lease(
         "expiresAt": expires.isoformat(timespec="seconds"),
         "projectRoot": str(project.resolve()),
         "status": "ACTIVE",
+        "reuseCount": 0,
+        "resetCount": reset_count + (1 if is_reset else 0),
         "owner": {
             "pid": os.getpid(),
             "executable": hservice.get_process_executable(os.getpid())
@@ -645,15 +1118,79 @@ def acquire_lease(
         lease["contentFingerprint"] = environment_receipt["contentFingerprint"]
         lease["environmentReceiptId"] = environment_receipt.get("receiptId")
     _write_json(path, lease)
-    return {"ok": True, "code": "LEASE_ACQUIRED", "lease": lease, "path": str(path)}
+    action = "reset" if is_reset else "prepare"
+    action_receipt = _write_environment_action_receipt(
+        root,
+        action=action,
+        lease=lease,
+        previous_session_id=previous_session_id,
+        receipt_dir=receipt_dir,
+        operation_evidence=reset_operation,
+    )
+    return {
+        "ok": True,
+        "code": "LEASE_RESET" if is_reset else "LEASE_ACQUIRED",
+        "lease": lease,
+        "path": str(path),
+        "receiptPath": str(action_receipt),
+    }
 
 
-def release_lease(
+def acquire_lease(
+    project: Path,
+    *,
+    change_id: str,
+    stack_id: str,
+    environment_hash: str,
+    lease_root: Path | None = None,
+    writable_volumes: list[str] | None = None,
+    ttl_seconds: int = 3600,
+    environment_receipt: dict[str, Any] | None = None,
+    mode: str = "change-session",
+    reset_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = lease_root or default_lease_root(project)
+    receipt_dir: Path | None = None
+    if lease_root is None:
+        contract_dir = project / ".harness" / "changes" / change_id
+        receipt_dir = (
+            resolve_state_dir_for_contract(contract_dir, project)
+            / "runtime"
+            / "environment-receipts"
+        )
+    try:
+        with _lease_registry_guard(root):
+            return _acquire_lease_locked(
+                project,
+                change_id=change_id,
+                stack_id=stack_id,
+                environment_hash=environment_hash,
+                lease_root=root,
+                writable_volumes=writable_volumes,
+                ttl_seconds=ttl_seconds,
+                environment_receipt=environment_receipt,
+                mode=mode,
+                reset_evidence=reset_evidence,
+                receipt_dir=receipt_dir,
+            )
+    except RuntimeError as exc:
+        if str(exc) != "ENVIRONMENT_LEASE_BUSY":
+            raise
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_LEASE_BUSY",
+            "message": "another lease acquisition is still in progress",
+        }
+
+
+def _release_lease_locked(
     project: Path,
     *,
     change_id: str,
     stack_id: str,
     lease_root: Path | None = None,
+    cleanup_evidence: dict[str, Any] | None = None,
+    receipt_dir: Path | None = None,
 ) -> dict[str, Any]:
     root = lease_root or default_lease_root(project)
     path = _lease_path(root, stack_id)
@@ -677,8 +1214,78 @@ def release_lease(
             "holder": lease.get("changeId"),
             "changeId": change_id,
         }
+    cleanup_operation = _operation_evidence(
+        cleanup_evidence,
+        operation="cleanup",
+        lease_root=root,
+        lease=lease,
+    )
+    if cleanup_evidence is not None and cleanup_operation is None:
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_CLEANUP_EVIDENCE_INVALID",
+            "message": "provider cleanup evidence does not match the held lease",
+        }
+    if cleanup_operation is not None and not _consume_operation_evidence(
+        root, cleanup_operation
+    ):
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_CLEANUP_EVIDENCE_REPLAYED",
+            "message": "provider cleanup evidence was already consumed",
+        }
+    action_receipt = _write_environment_action_receipt(
+        root,
+        action="cleanup" if cleanup_operation is not None else "release",
+        lease=lease,
+        receipt_dir=receipt_dir,
+        operation_evidence=cleanup_operation,
+    )
     path.unlink(missing_ok=True)
-    return {"ok": True, "code": "LEASE_RELEASED", "changeId": change_id, "stackId": stack_id}
+    return {
+        "ok": True,
+        "code": "LEASE_RELEASED",
+        "changeId": change_id,
+        "stackId": stack_id,
+        "receiptPath": str(action_receipt),
+    }
+
+
+def release_lease(
+    project: Path,
+    *,
+    change_id: str,
+    stack_id: str,
+    lease_root: Path | None = None,
+    cleanup_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = lease_root or default_lease_root(project)
+    receipt_dir: Path | None = None
+    if lease_root is None:
+        contract_dir = project / ".harness" / "changes" / change_id
+        receipt_dir = (
+            resolve_state_dir_for_contract(contract_dir, project)
+            / "runtime"
+            / "environment-receipts"
+        )
+    try:
+        with _lease_registry_guard(root):
+            return _release_lease_locked(
+                project,
+                change_id=change_id,
+                stack_id=stack_id,
+                lease_root=root,
+                cleanup_evidence=cleanup_evidence,
+                receipt_dir=receipt_dir,
+            )
+    except RuntimeError as exc:
+        if str(exc) != "ENVIRONMENT_LEASE_BUSY":
+            raise
+        return {
+            "ok": False,
+            "code": "ENVIRONMENT_LEASE_BUSY",
+            "message": "another lease operation is still in progress",
+        }
 
 
 def cmd_fingerprint(args: argparse.Namespace) -> int:
@@ -822,11 +1429,12 @@ def cmd_prepare(args: argparse.Namespace) -> int:
 
 def cmd_acquire(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
-    root = Path(args.lease_root).resolve() if args.lease_root else default_lease_root(project)
+    root = Path(args.lease_root).resolve() if args.lease_root else None
     env_hash = args.environment_hash or compute_environment_hash(project)
     volumes = [v for v in (args.writable_volume or []) if v]
     try:
         receipt = _load_receipt_arg(args.environment_receipt)
+        reset_evidence = _load_receipt_arg(args.reset_evidence)
         result = acquire_lease(
             project,
             change_id=args.change,
@@ -836,6 +1444,8 @@ def cmd_acquire(args: argparse.Namespace) -> int:
             writable_volumes=volumes,
             ttl_seconds=int(args.ttl_seconds or 3600),
             environment_receipt=receipt,
+            mode=args.mode,
+            reset_evidence=reset_evidence,
         )
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         result = {
@@ -848,14 +1458,70 @@ def cmd_acquire(args: argparse.Namespace) -> int:
 
 def cmd_release(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
-    root = Path(args.lease_root).resolve() if args.lease_root else default_lease_root(project)
-    result = release_lease(
-        project,
-        change_id=args.change,
-        stack_id=args.stack_id,
-        lease_root=root,
-    )
+    root = Path(args.lease_root).resolve() if args.lease_root else None
+    try:
+        cleanup_evidence = _load_receipt_arg(args.cleanup_evidence)
+        result = release_lease(
+            project,
+            change_id=args.change,
+            stack_id=args.stack_id,
+            lease_root=root,
+            cleanup_evidence=cleanup_evidence,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        result = {
+            "ok": False,
+            "code": "ENVIRONMENT_CLEANUP_EVIDENCE_INVALID",
+            "message": str(exc),
+        }
     return emit_json(result, ok=bool(result.get("ok")))
+
+
+def cmd_provider_operation(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    root = Path(args.lease_root).resolve() if args.lease_root else None
+    try:
+        argv = json.loads(args.argv_json)
+        if not isinstance(argv, list):
+            raise ValueError("provider argv must be a JSON array")
+        result = execute_provider_operation(
+            project,
+            change_id=args.change,
+            stack_id=args.stack_id,
+            operation=args.operation,
+            argv=argv,
+            lease_root=root,
+            timeout_seconds=float(args.timeout_seconds),
+        )
+    except (
+        OSError,
+        json.JSONDecodeError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as exc:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_PROVIDER_OPERATION_FAILED",
+                "message": str(exc),
+            },
+            ok=False,
+        )
+    if args.output:
+        _write_json(Path(args.output).resolve(), result)
+    return emit_json(
+        {
+            "ok": result.get("status") == "OK",
+            "code": (
+                "ENVIRONMENT_PROVIDER_OPERATION_OK"
+                if result.get("status") == "OK"
+                else "ENVIRONMENT_PROVIDER_OPERATION_FAILED"
+            ),
+            "receiptPath": result.get("receiptPath"),
+            "receiptDigest": result.get("receiptDigest"),
+        },
+        ok=result.get("status") == "OK",
+    )
 
 
 def cmd_require(args: argparse.Namespace) -> int:
@@ -933,9 +1599,15 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--stack-id", required=True)
     ac.add_argument("--environment-hash")
     ac.add_argument("--environment-receipt")
+    ac.add_argument("--reset-evidence")
     ac.add_argument("--lease-root")
     ac.add_argument("--writable-volume", action="append", default=[])
     ac.add_argument("--ttl-seconds", type=int, default=3600)
+    ac.add_argument(
+        "--mode",
+        choices=("change-session", "ephemeral"),
+        default="change-session",
+    )
     ac.set_defaults(func=cmd_acquire)
 
     rel = sub.add_parser("release")
@@ -943,7 +1615,19 @@ def build_parser() -> argparse.ArgumentParser:
     rel.add_argument("--change", required=True)
     rel.add_argument("--stack-id", required=True)
     rel.add_argument("--lease-root")
+    rel.add_argument("--cleanup-evidence")
     rel.set_defaults(func=cmd_release)
+
+    provider = sub.add_parser("provider-operation")
+    provider.add_argument("--project", required=True)
+    provider.add_argument("--change", required=True)
+    provider.add_argument("--stack-id", required=True)
+    provider.add_argument("--operation", choices=("reset", "cleanup"), required=True)
+    provider.add_argument("--argv-json", required=True)
+    provider.add_argument("--lease-root")
+    provider.add_argument("--timeout-seconds", type=float, default=900.0)
+    provider.add_argument("--output")
+    provider.set_defaults(func=cmd_provider_operation)
 
     req = sub.add_parser("require")
     req.add_argument("--project", required=True)

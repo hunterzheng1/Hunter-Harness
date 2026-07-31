@@ -308,15 +308,14 @@ class SyncCliTests(SyncRuntimeTestBase):
         self.assertEqual(finish.returncode, 0, finish.stderr)
         self.assertFalse((self.sync_root / "cli-lifecycle").exists())
 
-    def test_canonical_skill_fail_fast_uses_unified_cli_entrypoint(self) -> None:
+    def test_canonical_skill_uses_sync_owned_capability_handshake(self) -> None:
         text = (SCRIPTS_DIR.parent / "harness-sync" / "SKILL.md").read_text(
             encoding="utf-8"
         )
-        capabilities = "npx hunter-harness capabilities --json"
         sync = "npx hunter-harness sync --project"
-        self.assertIn(capabilities, text)
         self.assertIn(sync, text)
-        self.assertLess(text.index(capabilities), text.index(sync))
+        self.assertIn("`sync` 自身会在任何重操作之前完成能力握手", text)
+        self.assertNotIn("npx hunter-harness capabilities --json", text)
         self.assertNotIn("harness_sync.py ", text)
         self.assertNotIn("\npython ", text)
 

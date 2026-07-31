@@ -13,7 +13,11 @@ import {
 } from "./commands/configure.js";
 import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runPush, type PushOptions } from "./commands/push.js";
-import { runRefresh, type RefreshCommandOptions } from "./commands/refresh.js";
+import {
+  detectProject,
+  runRefresh,
+  type RefreshCommandOptions
+} from "./commands/refresh.js";
 import { runUpdate, type UpdateOptions } from "./commands/update.js";
 import { runRulesSync, type RulesSyncCommandOptions } from "./commands/rules-sync.js";
 import {
@@ -24,7 +28,13 @@ import { runCapabilities } from "./commands/capabilities.js";
 import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins.js";
 import { runDoctor, type DoctorCommandOptions } from "./commands/doctor.js";
 import { runSync, type SyncCommandOptions } from "./commands/sync.js";
-import { runRecoveryMenuIfApplicable } from "./commands/recovery.js";
+import {
+  runRecoveryCommand,
+  runRecoveryMenuIfApplicable,
+  runRecoveryStatus,
+  type RecoveryCommandOptions,
+  type RecoveryStatusOptions
+} from "./commands/recovery.js";
 import {
   readWorkflowFamilyManifest,
   resolveWorkflowResourcesRoot,
@@ -181,7 +191,12 @@ export async function runCli(
       exitCode = recoveryResult;
       return;
     }
-    exitCode = await runConfigure(options, dependencies);
+    const detection = await detectProject(dependencies.cwd);
+    const guardedOptions = detection.status === "absent" &&
+      options.nonInteractive === true
+      ? { ...options, profile: options.profile ?? "general" }
+      : options;
+    exitCode = await runConfigure(guardedOptions, dependencies);
   });
   addCommonOptions(program.command("refresh"))
     .description("本地保守刷新已安装的 Harness 项目")
@@ -284,6 +299,41 @@ export async function runCli(
     .option("--json")
     .action(async () => {
       exitCode = await runCapabilities(program, dependencies);
+    });
+  program.command("status")
+    .description("只读显示 Harness 本地状态和待恢复事务")
+    .option("--json")
+    .action(async (options: RecoveryStatusOptions) => {
+      exitCode = await runRecoveryStatus(
+        { ...program.opts<RecoveryStatusOptions>(), ...options },
+        dependencies
+      );
+    });
+  addCommonOptions(program.command("recover [recovery-id]"))
+    .description("检查或安全回滚未完成事务")
+    .option("--action <action>", "inspect | resume | rollback", "inspect")
+    .action(async (
+      recoveryId: string | undefined,
+      options: RecoveryCommandOptions
+    ) => {
+      exitCode = await runRecoveryCommand(
+        recoveryId,
+        { ...program.opts<RecoveryCommandOptions>(), ...options },
+        dependencies
+      );
+    });
+  addCommonOptions(program.command("resume [recovery-id]"))
+    .description("按 recoveryId 从已校验的暂存内容继续事务")
+    .option("--action <action>", "inspect | resume | rollback", "resume")
+    .action(async (
+      recoveryId: string | undefined,
+      options: RecoveryCommandOptions
+    ) => {
+      exitCode = await runRecoveryCommand(
+        recoveryId,
+        { ...program.opts<RecoveryCommandOptions>(), ...options },
+        dependencies
+      );
     });
 
   try {

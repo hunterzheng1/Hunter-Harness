@@ -70,6 +70,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events as he  # noqa: E402
+import harness_efficiency as heff  # noqa: E402
 import harness_gate as hgate  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
@@ -3890,12 +3891,15 @@ def collect_summary_data(
             "retention",
             "archiveDurability",
             "remoteCost",
+            "efficiency",
             "projection",
         ):
             if key in existing:
                 data[key] = _deepcopy_json(existing[key])
     if not for_replay or not isinstance(data.get("remoteCost"), dict):
         data["remoteCost"] = remote_cost
+    if not for_replay or not isinstance(data.get("efficiency"), dict):
+        data["efficiency"] = heff.collect_efficiency_summary(change_dir)
 
     event_summary = he.build_summary(change_dir, events) if events else {
         "ok": True,

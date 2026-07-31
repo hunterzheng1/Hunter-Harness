@@ -60,7 +60,14 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 ├── sqls/
 ├── scripts/
 ├── runtime/
-│   └── service-session.json
+│   ├── service-session.json
+│   ├── run-sessions/<session-id>/
+│   │   ├── session.json
+│   │   ├── stdout.log
+│   │   └── stderr.log
+│   ├── environment-receipts/
+│   ├── invalidations/
+│   └── fixback/batches/
 └── backups/
     └── uncommitted-tests/
 ```
@@ -72,6 +79,10 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 服务复用（§5.3）必须**同时**比对 `moduleInputsHash` + `startCommandHash` + `profile` + `overlayPath` + 进程身份（pid 存活 + create time 匹配 `startedAt`）。任一变化 -> AI 自动 restart；身份无法确认 -> `needs-user-decision`；非 AI 用户进程永不自动 kill。
 
 `build-profile.json` 的 `serviceStart.inputFiles`（glob 列表，相对 project 展开）是 `moduleInputsHash` 的来源。`harness_service.py ensure` 取 CLI `--files` ∪ `serviceStart.inputFiles` 计算依赖闭包；**空输入被拒绝**（exit 非 0），**不得生成可复用的空指纹**。通用项目 detect 无法猜 module 源，`inputFiles` 默认空数组，须人工配置。
+
+过期的 service session 只有在进程身份明确不匹配时才允许由 `retire-stale` 移入
+`runtime/retired-service-sessions/`；该动作保留原始回执且不终止进程。受管命令、
+环境会话和 fixback 的完整合同见 `execution-session-protocol.md`。
 
 ## knowledge maintenance-outbox（§8）
 
@@ -179,3 +190,15 @@ Harness skill 读取的项目级配置（不提交 git）。缺失时使用下�
 | `knowledge.manualReview` | boolean | `false` | `true` 时 knowledge-ingest promote 等高价值操作需人工确认；`false` 时按 skill 默认策略 |
 
 读取顺序：`.harness/config/harness.json` → 缺失则默认值。plan 阶段 5 设计审批包须读取 `defaultWorktree` 作为 worktree 选项的推荐值。
+
+## 可恢复文件事务
+
+schema v3 事务在本地 `transactions/<transaction-id>/` 保存 journal、before snapshot、staged payload、after manifest 和小型 status 投影。journal 固定 project identity、执行器版本、目标 Bundle identity、ownership manifest hash、plan hash 与 snapshot digest。
+
+未完成事务同时镜像到用户级恢复根：
+
+```text
+${HUNTER_HARNESS_RECOVERY_ROOT:-~/.hunter-harness/recovery}/<project-path-hash>/transactions/<transaction-id>/
+```
+
+因此项目内 `.harness` 局部丢失后，`status` 仍可只读发现恢复项。`resume` 仅在 plan/snapshot/staged digest 与已完成操作的当前文件状态全部匹配时继续 pending operations；任一不匹配均 fail closed。`rollback` 在写回 before snapshot 前重新校验 snapshot digest。事务提交或回滚成功后删除用户级镜像；本地 committed 事务仍按保留策略提供显式回滚。

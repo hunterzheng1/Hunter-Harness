@@ -1855,6 +1855,74 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def retire_stale_session(change_dir: Path) -> dict[str, Any]:
+    """Retire only Harness state whose recorded process identity is gone.
+
+    This operation never terminates a process or releases a live listener. The
+    original receipt is moved into an immutable evidence directory so a new
+    superseding session may be created safely.
+    """
+    change_dir = resolve_path(change_dir)
+    try:
+        session = load_session(change_dir)
+    except SessionCorrupt as exc:
+        return {
+            "ok": False,
+            "code": "SERVICE_SESSION_CORRUPT",
+            "action": "retire-refused",
+            "error": str(exc),
+            "unknownProcessUntouched": True,
+        }
+    if session is None:
+        return {
+            "ok": True,
+            "code": "SERVICE_SESSION_ABSENT",
+            "action": "already-retired",
+            "unknownProcessUntouched": True,
+        }
+    identity = verify_process_identity(session)
+    if identity is True:
+        return {
+            "ok": False,
+            "code": "SERVICE_PROCESS_STILL_OWNED",
+            "action": "retire-refused",
+            "unknownProcessUntouched": True,
+        }
+    if identity is None:
+        return {
+            "ok": False,
+            "code": "SERVICE_PROCESS_IDENTITY_UNVERIFIED",
+            "action": "retire-refused",
+            "unknownProcessUntouched": True,
+        }
+    source = session_path(change_dir)
+    raw_id = str(session.get("sessionId") or session.get("session_id") or "")
+    safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_id).strip("-")
+    if not safe_id:
+        safe_id = sha256_text(json.dumps(session, sort_keys=True))[7:23]
+    retired_root = change_dir / "runtime" / "retired-service-sessions"
+    retired_root.mkdir(parents=True, exist_ok=True)
+    destination = retired_root / f"{safe_id}-{int(time.time() * 1000)}.json"
+    os.replace(source, destination)
+    receipt = {
+        "schemaVersion": 1,
+        "action": "retired-stale",
+        "code": "STALE_IDENTITY_RETIRED",
+        "retiredAt": now_iso(),
+        "retiredEvidence": str(destination),
+        "unknownProcessUntouched": True,
+        "sessionId": raw_id or None,
+    }
+    write_json(retired_root / f"{destination.stem}.receipt.json", receipt)
+    return {"ok": True, **receipt}
+
+
+def cmd_retire_stale(args: argparse.Namespace) -> int:
+    result = retire_stale_session(resolve_path(args.change_dir))
+    emit_json(result, as_json=bool(args.json))
+    return 0 if result.get("ok") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_service.py",
@@ -1933,6 +2001,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_stop.add_argument("--json", action="store_true")
     p_stop.set_defaults(func=cmd_stop)
+
+    p_retire = sub.add_parser(
+        "retire-stale",
+        help="retire stale Harness state without terminating unknown processes",
+    )
+    p_retire.add_argument("--change-dir", required=True)
+    p_retire.add_argument("--json", action="store_true")
+    p_retire.set_defaults(func=cmd_retire_stale)
 
     return parser
 

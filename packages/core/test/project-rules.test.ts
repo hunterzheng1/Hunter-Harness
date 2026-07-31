@@ -15,13 +15,18 @@ describe("project rule projections", () => {
     const first = await synchronizeProjectRules(
       root, ["claude-code", "codex", "cursor", "codebuddy"], "both"
     );
+    const receiptPath = join(root, ".harness", "state", "local", "rule-projections.json");
+    const receiptBefore = await stat(receiptPath);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     const second = await synchronizeProjectRules(
       root, ["claude-code", "codex", "cursor", "codebuddy"], "both"
     );
+    const receiptAfter = await stat(receiptPath);
 
     expect(first.written).toHaveLength(5);
     expect(second.written).toEqual([]);
     expect(second.unchanged).toHaveLength(5);
+    expect(receiptAfter.mtimeMs).toBe(receiptBefore.mtimeMs);
     for (const relative of [
       ".claude/rules/team.md",
       ".cursor/rules/team.mdc",

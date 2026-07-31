@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { canonicalJson } from "@hunter-harness/contracts";
-import { readBaseline, sha256Bytes, uuidV7 } from "@hunter-harness/core";
+import {
+  listTransactions,
+  readBaseline,
+  sha256Bytes,
+  uuidV7
+} from "@hunter-harness/core";
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
 
@@ -164,13 +169,24 @@ describe("Hunter Harness end-to-end governance", () => {
       expect(await readFile(join(root, knowledgePath), "utf8")).toBe(knowledge);
       expect(await readFile(join(root, rulePath), "utf8")).toContain("Local unpushed edit");
 
-      const answers = ["2"];
-      expect(await runCli([], {
+      const latestUpdate = (await listTransactions(root)).find(
+        (transaction) =>
+          transaction.kind === "update" && transaction.state === "committed"
+      );
+      if (latestUpdate === undefined) {
+        throw new Error("committed update transaction is missing");
+      }
+      expect(await runCli([
+        "recover",
+        latestUpdate.transactionId,
+        "--action",
+        "rollback",
+        "--yes"
+      ], {
         cwd: root,
         resourcesRoot,
         fetch,
         env,
-        prompt: async () => answers.shift() ?? "",
         ...silent
       })).toBe(0);
       await expect(stat(join(root, knowledgePath))).rejects.toMatchObject({ code: "ENOENT" });
