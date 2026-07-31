@@ -2246,6 +2246,14 @@ def check_status(
     except Exception as exc:  # noqa: BLE001 — preflight must not crash status
         preflight = {"ok": False, "items": [], "blocking": [], "error": str(exc)}
     checks["artifact_preflight"] = preflight
+    if preflight.get("ok") is not True and not preflight.get("blocking"):
+        blockers.append({
+            "code": "artifact-preflight-invalid",
+            "message": str(
+                preflight.get("error")
+                or "artifact event projection or preflight validation failed"
+            ),
+        })
     for item in preflight.get("blocking") or []:
         blockers.append({
             "code": "artifact-path-blocking",
@@ -6465,12 +6473,9 @@ def artifact_preflight(change_dir: Path) -> dict[str, Any]:
         return {"ok": True, "items": [], "blocking": []}
     change_id = change_dir.name
     project_root = find_project_root(change_dir)
-    for line in events_p.read_text(encoding="utf-8").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "artifact":
+    events = he.apply_event_corrections(he.load_events(events_p))
+    for event in events:
+        if event.get("type") != "artifact":
             continue
         path = str(event.get("path") or "").strip()
         kind = str(event.get("kind") or "").strip()
@@ -6657,8 +6662,18 @@ def evaluate_artifact_budget(change_dir: Path) -> dict[str, Any]:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {
             "ok": False,
-            "code": "ARTIFACT_POLICY_INVALID",
+            "code": "ARTIFACT_PREFLIGHT_INVALID",
             "message": str(exc),
+        }
+    if preflight.get("ok") is not True:
+        return {
+            "ok": False,
+            "code": "ARTIFACT_PREFLIGHT_INVALID",
+            "message": str(
+                preflight.get("error")
+                or "artifact event projection or preflight validation failed"
+            ),
+            "preflightBlocking": preflight.get("blocking") or [],
         }
     excluded_parts = {
         "node_modules",
@@ -6697,7 +6712,7 @@ def evaluate_artifact_budget(change_dir: Path) -> dict[str, Any]:
     oversized = [
         item for item in entries if int(item["bytes"]) > max_file
     ]
-    ok = total <= max_total and not oversized and bool(preflight.get("ok"))
+    ok = total <= max_total and not oversized
     return {
         "ok": ok,
         "code": (
@@ -6726,6 +6741,13 @@ def materialize_repository_artifacts(change_dir: Path) -> dict[str, Any]:
     change_dir = change_dir.resolve()
     project_root = find_project_root(change_dir)
     preflight = artifact_preflight(change_dir)
+    if preflight.get("ok") is not True:
+        raise ValueError(
+            str(
+                preflight.get("error")
+                or "artifact event projection or preflight validation failed"
+            )
+        )
     copied: list[str] = []
     objects: list[dict[str, Any]] = []
     bytes_added = 0
@@ -7307,7 +7329,13 @@ def cmd_finalize(
     artifact_budget = evaluate_artifact_budget(original_change_dir)
     payload["steps"]["artifact_budget"] = artifact_budget
     if not artifact_budget.get("ok"):
-        payload["error"] = "artifact budget exceeded before staging"
+        if artifact_budget.get("code") == "ARTIFACT_PREFLIGHT_INVALID":
+            payload["error"] = str(
+                artifact_budget.get("message")
+                or "artifact validation failed before staging"
+            )
+        else:
+            payload["error"] = "artifact budget exceeded before staging"
         payload["issues"] = [
             {
                 "code": str(
@@ -7478,19 +7506,36 @@ def cmd_finalize(
         "blockingCount": len(preflight.get("blocking") or []),
         "itemsCount": len(preflight.get("items") or []),
     }
-    if preflight.get("blocking"):
-        payload["error"] = (
-            f"artifact preflight blocking: "
-            f"{len(preflight['blocking'])} path(s) cannot be archived"
-        )
-        payload["issues"] = [
-            {
-                "code": "ARTIFACT_PATH_BLOCKING",
-                "severity": "error",
-                "message": f"{item.get('path', '')}: {item.get('reason', 'blocking')}",
-            }
-            for item in preflight["blocking"]
-        ]
+    if preflight.get("ok") is not True:
+        blocking_paths = preflight.get("blocking") or []
+        if blocking_paths:
+            payload["error"] = (
+                f"artifact preflight blocking: "
+                f"{len(blocking_paths)} path(s) cannot be archived"
+            )
+            payload["issues"] = [
+                {
+                    "code": "ARTIFACT_PATH_BLOCKING",
+                    "severity": "error",
+                    "message": f"{item.get('path', '')}: {item.get('reason', 'blocking')}",
+                }
+                for item in blocking_paths
+            ]
+        else:
+            payload["error"] = (
+                "artifact preflight invalid: "
+                + str(
+                    preflight.get("error")
+                    or "artifact event projection or preflight validation failed"
+                )
+            )
+            payload["issues"] = [
+                {
+                    "code": "ARTIFACT_PREFLIGHT_INVALID",
+                    "severity": "error",
+                    "message": payload["error"],
+                }
+            ]
         _restore_finalize_failure()
         payload["warnings"] = warnings
         payload["ok"] = False
