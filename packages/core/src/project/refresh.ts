@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   canonicalJson,
+  projectConfigSchema,
   sortHarnessAgents,
   type CodeBuddySurface,
   type HarnessAgent
@@ -17,7 +18,13 @@ import {
   removeManagedBlock,
   removeManagedBlockById
 } from "../managed/managed-block.js";
-import { runTransaction } from "../transaction/transaction.js";
+import { collectProtectedLocalRootsInventory } from "./local-state.js";
+import type { RecoveryStoreOptions } from "../transaction/recovery-store.js";
+import {
+  assertExpectedPlanHash,
+  runTransaction,
+  transactionPlanHash
+} from "../transaction/transaction.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import {
   AGENTS_CORE_BLOCK_ID,
@@ -96,6 +103,8 @@ export interface RefreshResult {
   preserved: RefreshItem[];
   unchanged: RefreshItem[];
   conflicts: RefreshConflict[];
+  plan_hash: string;
+  recovery_id: string | null;
 }
 
 export interface RefreshOptions {
@@ -106,6 +115,10 @@ export interface RefreshOptions {
   codebuddySurface?: CodeBuddySurface;
   dryRun: boolean;
   forceManaged: boolean;
+  expectedPlanHash?: string;
+  planTimestamp?: string;
+  cliVersion?: string;
+  recoveryStore?: Omit<RecoveryStoreOptions, "managedPaths">;
 }
 
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
@@ -368,7 +381,7 @@ async function reconcileContextIndex(
     };
     existingSkillBundles = parsed.skill_bundles ?? {};
   } catch {
-    // Invalid context-index is replaced by the verified projection below.
+    // Invalid context-index is replaced by the fully validated projection.
   }
   const mapAssessment = await assessCodebaseMapOnDisk(root);
   const codebase: { map: string; status: "missing" | "stale" | "fresh" } = {
@@ -390,23 +403,27 @@ async function reconcileContextIndex(
     codebase,
     skill_bundles: Object.fromEntries(manifests.map((manifest) => {
       const ver = verifications.get(manifest.adapter as HarnessAgent);
-      const candidate = {
-        registry_version: manifest.bundle_version,
-        bundle_hash: manifest.bundle_manifest_hash,
-        installedContentHash: ver?.installedContentHash ?? null,
-        verifiedAt: ver?.verifiedAt ?? null,
-        verificationStatus: ver?.verificationStatus ?? "unknown",
-        mismatchDetails: ver?.mismatchDetails ?? []
-      };
       const previous = existingSkillBundles[manifest.adapter];
-      const previousComparable = previous === undefined
-        ? null
-        : { ...previous, verifiedAt: candidate.verifiedAt };
-      const stable = previous !== undefined &&
-        JSON.stringify(previousComparable) === JSON.stringify(candidate);
+      const mismatchDetails = ver?.mismatchDetails ?? [];
+      const verificationUnchanged = previous !== undefined &&
+        previous.registry_version === manifest.bundle_version &&
+        previous.bundle_hash === manifest.bundle_manifest_hash &&
+        previous.installedContentHash === (ver?.installedContentHash ?? null) &&
+        previous.verificationStatus === (ver?.verificationStatus ?? "unknown") &&
+        JSON.stringify(previous.mismatchDetails ?? []) ===
+          JSON.stringify(mismatchDetails);
       return [
         manifest.adapter,
-        stable ? { ...candidate, verifiedAt: previous.verifiedAt } : candidate
+        {
+          registry_version: manifest.bundle_version,
+          bundle_hash: manifest.bundle_manifest_hash,
+          installedContentHash: ver?.installedContentHash ?? null,
+          verifiedAt: verificationUnchanged
+            ? previous.verifiedAt ?? null
+            : ver?.verifiedAt ?? null,
+          verificationStatus: ver?.verificationStatus ?? "unknown",
+          mismatchDetails
+        }
       ];
     }))
   };
@@ -756,7 +773,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       adapterHash: null,
       installedAdapterHash: null,
       installedContentHash: aggregateInstalledContentHash(verifyEntries),
-      verifiedAt: new Date().toISOString(),
+      verifiedAt: options.planTimestamp ?? new Date().toISOString(),
       verificationStatus: verifyMismatches.length === 0 ? "verified" : "degraded",
       mismatchDetails: verifyMismatches
     });
@@ -794,7 +811,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
       agent,
       profiles.get(agent) ?? "general"
     ])),
-    installed_at: new Date().toISOString(),
+    installed_at: options.planTimestamp ?? new Date().toISOString(),
     manifests: manifests.sort((left, right) => left.adapter.localeCompare(right.adapter)),
     files: [...filesByTarget.values()].sort((left, right) => left.target_path.localeCompare(right.target_path) || left.source_path.localeCompare(right.source_path)),
     managed_blocks: managedBlocks
@@ -810,10 +827,54 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     });
   }
 
-  if (!options.dryRun) {
-    if (ops.length > 0) {
-      await runTransaction(root, ops, { kind: "refresh" });
-    }
+  const projectConfigText = await readOptionalText(
+    join(root, ".harness", "project.yaml")
+  );
+  const parsedProject = projectConfigSchema.safeParse(
+    parseYaml(projectConfigText)
+  );
+  const transactionIdentity = {
+    kind: "refresh" as const,
+    projectIdentity: parsedProject.success
+      ? parsedProject.data.project.local_project_key
+      : sha256Bytes(resolve(root).replaceAll("\\", "/")),
+    cliVersion: options.cliVersion ?? "unknown",
+    targetBundleVersion: manifests
+      .map((item) => item.bundle_version)
+      .sort()
+      .join("+") || "unknown",
+    ownershipManifestHash: sha256Bytes(canonicalJson(manifests))
+  };
+  const planHash = transactionPlanHash(
+    ops,
+    transactionIdentity,
+    await collectProtectedLocalRootsInventory(root)
+  );
+  assertExpectedPlanHash(options.expectedPlanHash, planHash);
+  let recoveryId: string | null = null;
+  if (!options.dryRun && ops.length > 0) {
+    const transaction = await runTransaction(root, ops, {
+      ...transactionIdentity,
+      ...(options.recoveryStore === undefined
+        ? {}
+        : {
+          recoveryStore: {
+            ...options.recoveryStore,
+            managedPaths: ops.flatMap((operation) =>
+              operation.operation === "rename"
+                ? [operation.from_path, operation.to_path]
+                : [operation.path]
+            ),
+            allowedSensitiveContentHashes: [
+              ...newManaged.map((target) => target.sha256),
+              ...trusted.values()
+            ].map((digest) =>
+              digest.startsWith("sha256:") ? digest : `sha256:${digest}`
+            )
+          }
+        })
+    });
+    recoveryId = transaction.recoveryId;
     await synchronizeProjectRules(root, agents, codebuddySurface);
     await pruneEmptyParentDirs(
       root,
@@ -833,7 +894,9 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     removed: sortByTarget(removed),
     preserved: sortByTarget(preserved),
     unchanged: sortByTarget(unchanged),
-    conflicts: sortByTarget(conflicts)
+    conflicts: sortByTarget(conflicts),
+    plan_hash: planHash,
+    recovery_id: recoveryId
   };
 }
 

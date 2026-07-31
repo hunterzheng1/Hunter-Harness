@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
+  lstat,
   mkdir,
   readFile,
   readdir,
@@ -9,7 +10,9 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
+
+import { canonicalJson } from "@hunter-harness/contracts";
 
 import {
   assertNoCaseCollisions,
@@ -24,18 +27,24 @@ import {
   type ProtectedLocalRootInventory
 } from "../project/local-state.js";
 import { atomicWriteJson } from "../state/atomic.js";
-import { ensureStateLayout, stateLayout } from "../state/layout.js";
+import { ensureStateLayout } from "../state/layout.js";
 import type {
+  CompletedTargetState,
   SnapshotRecord,
   TransactionJournal,
   TransactionJournalOperation,
   TransactionOperation
 } from "./journal.js";
 import {
-  externalRecoveryTransactionRoot,
-  mirrorRecoveryTransaction,
-  removeRecoveryMirror,
-  restoreRecoveryTransaction
+  acquireRecoveryMutationLock,
+  assertValidRecoveryId,
+  locateRecovery,
+  prepareDurableRecovery,
+  resolveRecoveryRoot,
+  syncDurableRecovery,
+  type RecoveryLocation,
+  type RecoveryLocationOptions,
+  type RecoveryStoreOptions
 } from "./recovery-store.js";
 
 export interface TransactionOptions {
@@ -43,17 +52,20 @@ export interface TransactionOptions {
   kind?: TransactionJournal["kind"];
   failAfterApply?: number;
   interruptAfterApply?: number;
+  /** @internal deterministic concurrency hook for transaction protocol tests. */
+  pauseBeforeApply?: () => Promise<void>;
   allowedProtectedLocalRoots?: readonly typeof PROTECTED_LOCAL_ROOTS[number][];
   projectIdentity?: string;
   cliVersion?: string;
   targetBundleVersion?: string;
   ownershipManifestHash?: string;
+  recoveryStore?: RecoveryStoreOptions;
 }
 
 export interface TransactionResult {
   transactionId: string;
   recoveryId: string;
-  planHash: string;
+  planHash: string | null;
   status: "committed" | "rolled_back";
   protectedLocalRoots: {
     before: ProtectedLocalRootInventory[];
@@ -62,10 +74,27 @@ export interface TransactionResult {
   };
 }
 
-export interface ResumeTransactionExpectations {
-  projectIdentity?: string;
-  targetBundleVersion?: string;
-  ownershipManifestHash?: string;
+export class PlanChangedAfterPreviewError extends Error {
+  readonly code = "PLAN_CHANGED_AFTER_PREVIEW";
+  readonly exitCode = 5;
+  readonly expectedPlanHash: string;
+  readonly actualPlanHash: string;
+
+  constructor(expectedPlanHash: string, actualPlanHash: string) {
+    super("guarded plan changed after preview; refusing to mutate project");
+    this.name = "PlanChangedAfterPreviewError";
+    this.expectedPlanHash = expectedPlanHash;
+    this.actualPlanHash = actualPlanHash;
+  }
+}
+
+export function assertExpectedPlanHash(
+  expectedPlanHash: string | undefined,
+  actualPlanHash: string
+): void {
+  if (expectedPlanHash !== undefined && expectedPlanHash !== actualPlanHash) {
+    throw new PlanChangedAfterPreviewError(expectedPlanHash, actualPlanHash);
+  }
 }
 
 export class ProtectedLocalRootMutationError extends Error {
@@ -127,55 +156,31 @@ function inventoriesEqual(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-async function writeJournal(
+export async function writeTransactionJournal(
   transactionRoot: string,
   journal: TransactionJournal
 ): Promise<void> {
   journal.updated_at = new Date().toISOString();
   await atomicWriteJson(join(transactionRoot, "journal.json"), journal);
   await writeStatus(transactionRoot, journal);
-  if (journal.recovery_store_path !== undefined) {
-    if (journal.state === "committed" || journal.state === "rolled_back") {
-      await removeRecoveryMirror(journal.recovery_store_path);
-    } else {
-      await mirrorRecoveryTransaction(
-        transactionRoot,
-        journal.recovery_store_path
-      );
-    }
-  }
 }
 
 async function writeStatus(
   transactionRoot: string,
   journal: TransactionJournal
 ): Promise<void> {
-  const status = {
+  await atomicWriteJson(join(transactionRoot, "status.json"), {
     schema_version: 1,
     transaction_id: journal.transaction_id,
     recovery_id: journal.recovery_id ?? journal.transaction_id,
     state: journal.state,
     applied_count: journal.applied_count,
-    plan_hash: journal.plan_hash ?? null,
     completed_operations: journal.completed_operations ?? [],
     pending_operations: journal.pending_operations ?? [],
+    completed_target_states: journal.completed_target_states ?? [],
     failure: journal.failure,
-    failure_reason_code: journal.failure_reason_code ?? null,
-    safe_actions: journal.safe_actions ?? [],
     updated_at: new Date().toISOString()
-  };
-  await atomicWriteJson(join(transactionRoot, "status.json"), status);
-  if (
-    journal.recovery_store_path !== undefined &&
-    journal.state !== "committed" &&
-    journal.state !== "rolled_back"
-  ) {
-    await mkdir(journal.recovery_store_path, { recursive: true });
-    await atomicWriteJson(
-      join(journal.recovery_store_path, "status.json"),
-      status
-    );
-  }
+  });
 }
 
 function journalOperation(
@@ -189,67 +194,98 @@ function journalOperation(
       content_sha256: sha256Bytes(operation.content)
     };
   }
-  if (operation.operation === "delete") {
-    return { operation: "delete", path: operation.path };
-  }
   return {
     operation: operation.operation,
     path: operation.path,
-    content_sha256: sha256Bytes(operation.content)
+    ...(operation.operation === "delete"
+      ? {}
+      : { content_sha256: sha256Bytes(operation.content) })
   };
 }
 
-async function computeSnapshotDigest(
-  transactionRoot: string,
-  snapshots: readonly SnapshotRecord[]
-): Promise<string> {
-  const inventory = [];
-  for (const snapshot of snapshots) {
-    inventory.push({
-      path: snapshot.path,
-      existed: snapshot.existed,
-      hash: snapshot.snapshot_name === null
-        ? null
-        : await sha256File(join(
-            transactionRoot,
-            "before",
-            snapshot.snapshot_name
-          ))
-    });
+function planOperation(operation: TransactionOperation): Record<string, unknown> {
+  if (operation.operation === "rename") {
+    return {
+      operation: operation.operation,
+      from_path: normalizeManagedPath(operation.from_path),
+      to_path: normalizeManagedPath(operation.to_path),
+      content_sha256: sha256Bytes(operation.content)
+    };
   }
-  return sha256Bytes(JSON.stringify(inventory));
+  return {
+    operation: operation.operation,
+    path: normalizeManagedPath(operation.path),
+    ...(operation.operation === "delete"
+      ? {}
+      : { content_sha256: sha256Bytes(operation.content) })
+  };
 }
 
-function computedPlanHash(journal: TransactionJournal): string {
-  return sha256Bytes(JSON.stringify({
-    operations: journal.operations,
-    projectIdentity: journal.project_identity ?? null,
-    targetBundleVersion: journal.target_bundle_version ?? null,
-    ownershipManifestHash: journal.ownership_manifest_hash ?? null
+export function transactionPlanHash(
+  operations: readonly TransactionOperation[],
+  options: Pick<
+    TransactionOptions,
+    "kind" | "projectIdentity" | "cliVersion" | "targetBundleVersion" |
+    "ownershipManifestHash"
+  >,
+  protectedPathInventory: readonly ProtectedLocalRootInventory[]
+): string {
+  return sha256Bytes(canonicalJson({
+    kind: options.kind ?? null,
+    project_identity: options.projectIdentity ?? null,
+    cli_version: options.cliVersion ?? null,
+    target_bundle_version: options.targetBundleVersion ?? null,
+    ownership_manifest_hash: options.ownershipManifestHash ?? null,
+    protected_path_inventory: protectedPathInventory,
+    operations: operations.map(planOperation)
   }));
 }
 
-function fallbackPlanHash(journal: TransactionJournal): string {
-  return journal.plan_hash ?? computedPlanHash(journal);
+export function transactionJournalPlanHash(
+  journal: TransactionJournal
+): string {
+  return sha256Bytes(canonicalJson({
+    kind: journal.kind ?? null,
+    project_identity: journal.project_identity ?? null,
+    cli_version: journal.cli_version ?? null,
+    target_bundle_version: journal.target_bundle_version ?? null,
+    ownership_manifest_hash: journal.ownership_manifest_hash ?? null,
+    protected_path_inventory: journal.protected_local_roots?.before ?? [],
+    operations: journal.operations.map((operation) => {
+      if (operation.operation === "rename") {
+        return {
+          operation: operation.operation,
+          from_path: operation.from_path,
+          to_path: operation.to_path,
+          content_sha256: operation.content_sha256
+        };
+      }
+      return {
+        operation: operation.operation,
+        path: operation.path,
+        ...(operation.operation === "delete"
+          ? {}
+          : { content_sha256: operation.content_sha256 })
+      };
+    })
+  }));
 }
 
-export async function assertTransactionJournalIntegrity(
+export async function computeSnapshotDigest(
   transactionRoot: string,
-  journal: TransactionJournal
-): Promise<void> {
-  if (journal.schema_version < 3) return;
-  if (journal.plan_hash !== computedPlanHash(journal)) {
-    throw new Error("TRANSACTION_PLAN_HASH_MISMATCH");
+  snapshots: readonly SnapshotRecord[]
+): Promise<string> {
+  const entries = [];
+  for (const snapshot of snapshots) {
+    entries.push({
+      path: snapshot.path,
+      existed: snapshot.existed,
+      content_sha256: snapshot.snapshot_name === null
+        ? null
+        : await sha256File(join(transactionRoot, "before", snapshot.snapshot_name))
+    });
   }
-  if (
-    journal.snapshot_digest === undefined ||
-    journal.snapshot_digest !== await computeSnapshotDigest(
-      transactionRoot,
-      journal.snapshots
-    )
-  ) {
-    throw new Error("TRANSACTION_SNAPSHOT_DIGEST_MISMATCH");
-  }
+  return sha256Bytes(canonicalJson(entries));
 }
 
 // design §10：提交后剪除同 kind 的更早成功事务，仅保留最新一个供回滚。
@@ -330,7 +366,7 @@ async function installStaged(
   await rename(temporary, target);
 }
 
-async function applyOperation(
+export async function applyTransactionOperation(
   projectRoot: string,
   transactionRoot: string,
   operation: TransactionOperation,
@@ -357,350 +393,332 @@ async function applyOperation(
   );
 }
 
-export async function rollbackTransaction(
+export async function transactionTargetState(
   projectRoot: string,
-  transactionId: string
-): Promise<TransactionResult> {
-  const transactionRoot = await restoreRecoveryTransaction(
-    projectRoot,
-    transactionId
-  );
-  const journal = JSON.parse(
-    await readFile(join(transactionRoot, "journal.json"), "utf8")
-  ) as TransactionJournal;
-  const currentProtectedRoots = await collectProtectedLocalRootsInventory(projectRoot);
-  const protectedLocalRoots = journal.protected_local_roots ?? {
-    before: currentProtectedRoots,
-    after: currentProtectedRoots,
-    unchanged: true
-  };
-  if (journal.state === "committed") {
-    return {
-      transactionId,
-      recoveryId: journal.recovery_id ?? transactionId,
-      planHash: fallbackPlanHash(journal),
-      status: "committed",
-      protectedLocalRoots
-    };
-  }
-
-  await assertTransactionJournalIntegrity(transactionRoot, journal);
-  journal.state = "rolling_back";
-  await writeJournal(transactionRoot, journal);
-  try {
-    for (const snapshot of [...journal.snapshots].reverse()) {
-      const target = join(projectRoot, snapshot.path);
-      await rm(target, { force: true, recursive: true });
-      if (snapshot.existed && snapshot.snapshot_name !== null) {
-        await mkdir(dirname(target), { recursive: true });
-        await copyFile(
-          join(transactionRoot, "before", snapshot.snapshot_name),
-          target
-        );
-      }
-    }
-    journal.state = "rolled_back";
-    await writeJournal(transactionRoot, journal);
-    const afterRollback = await collectProtectedLocalRootsInventory(projectRoot);
-    return {
-      transactionId,
-      recoveryId: journal.recovery_id ?? transactionId,
-      planHash: fallbackPlanHash(journal),
-      status: "rolled_back",
-      protectedLocalRoots: {
-        before: protectedLocalRoots.before,
-        after: afterRollback,
-        unchanged: inventoriesEqual(protectedLocalRoots.before, afterRollback)
-      }
-    };
-  } catch (error) {
-    journal.state = "recovery_required";
-    journal.failure = error instanceof Error ? error.message : String(error);
-    await writeJournal(transactionRoot, journal);
-    throw error;
-  }
-}
-
-function durableOperationForApply(
-  operation: TransactionJournalOperation
-): TransactionOperation {
-  if (operation.operation === "rename") {
-    return {
-      operation: "rename",
-      from_path: operation.from_path,
-      to_path: operation.to_path,
-      content: new Uint8Array()
-    };
-  }
-  if (operation.operation === "delete") {
-    return { operation: "delete", path: operation.path };
-  }
-  return {
-    operation: operation.operation,
-    path: operation.path,
-    content: new Uint8Array()
-  };
-}
-
-async function assertCompletedOperationState(
-  projectRoot: string,
-  transactionRoot: string,
   operation: TransactionJournalOperation,
-  index: number
-): Promise<void> {
-  const staged = join(transactionRoot, "staged", String(index));
-  if (operation.operation === "delete") {
-    if (await exists(join(projectRoot, operation.path))) {
-      throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
-    }
-    return;
-  }
-  if (operation.content_sha256 === undefined ||
-      await sha256File(staged) !== operation.content_sha256) {
-    throw new Error("TRANSACTION_STAGED_CONTENT_MISMATCH");
-  }
-  const targetPath = operation.operation === "rename"
-    ? operation.to_path
-    : operation.path;
-  const target = join(projectRoot, targetPath);
-  if (!await exists(target) || await sha256File(target) !== operation.content_sha256) {
-    throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
-  }
-  if (
-    operation.operation === "rename" &&
-    await exists(join(projectRoot, operation.from_path))
-  ) {
-    throw new Error("TRANSACTION_RESUME_STATE_MISMATCH");
-  }
-}
-
-async function assertSnapshotPathState(
-  projectRoot: string,
-  transactionRoot: string,
-  snapshot: SnapshotRecord
-): Promise<void> {
-  const target = join(projectRoot, snapshot.path);
-  const present = await exists(target);
-  if (present !== snapshot.existed) {
-    throw new Error("TRANSACTION_RESUME_PENDING_TARGET_CHANGED: " + snapshot.path);
-  }
-  if (!present) return;
-  if (snapshot.snapshot_name === null) {
-    throw new Error("TRANSACTION_SNAPSHOT_RECORD_INVALID: " + snapshot.path);
-  }
-  const before = join(transactionRoot, "before", snapshot.snapshot_name);
-  if (await sha256File(target) !== await sha256File(before)) {
-    throw new Error("TRANSACTION_RESUME_PENDING_TARGET_CHANGED: " + snapshot.path);
-  }
-}
-
-function journalAffectedPaths(
-  operation: TransactionJournalOperation
-): string[] {
-  return operation.operation === "rename"
+  operationIndex: number
+): Promise<CompletedTargetState> {
+  const paths = operation.operation === "rename"
     ? [operation.from_path, operation.to_path]
     : [operation.path];
+  const targets = [];
+  for (const path of paths) {
+    const target = join(projectRoot, path);
+    const present = await exists(target);
+    targets.push({
+      path,
+      exists: present,
+      hash: present ? await sha256File(target) : null
+    });
+  }
+  return { operation_index: operationIndex, targets };
 }
 
-export async function resumeTransaction(
-  projectRoot: string,
-  transactionId: string,
-  expectations: ResumeTransactionExpectations = {}
-): Promise<TransactionResult> {
-  const layout = stateLayout(projectRoot);
-  const transactionRoot = await restoreRecoveryTransaction(
-    projectRoot,
-    transactionId
-  );
-  const journal = JSON.parse(
-    await readFile(join(transactionRoot, "journal.json"), "utf8")
-  ) as TransactionJournal;
-  if (journal.state === "committed") {
-    const current = await collectProtectedLocalRootsInventory(projectRoot);
-    return {
-      transactionId,
-      recoveryId: journal.recovery_id ?? transactionId,
-      planHash: fallbackPlanHash(journal),
-      status: "committed",
-      protectedLocalRoots: journal.protected_local_roots ?? {
-        before: current,
-        after: current,
-        unchanged: true
-      }
-    };
-  }
-  if (journal.schema_version < 3 ||
-      journal.state === "rolling_back" ||
-      journal.state === "rolled_back") {
-    throw new Error("TRANSACTION_RESUME_UNAVAILABLE");
-  }
-  await assertTransactionJournalIntegrity(transactionRoot, journal);
-  const localProjectIdentity = "local-root:" + sha256Bytes(resolve(projectRoot));
-  if (
-    journal.project_identity?.startsWith("local-root:") === true &&
-    journal.project_identity !== localProjectIdentity
-  ) {
-    throw new Error("TRANSACTION_PROJECT_IDENTITY_CHANGED");
-  }
-  if (
-    expectations.projectIdentity !== undefined &&
-    journal.project_identity !== expectations.projectIdentity
-  ) {
-    throw new Error("TRANSACTION_PROJECT_IDENTITY_CHANGED");
-  }
-  if (
-    expectations.targetBundleVersion !== undefined &&
-    journal.target_bundle_version !== expectations.targetBundleVersion
-  ) {
-    throw new Error("TRANSACTION_TARGET_BUNDLE_VERSION_CHANGED");
-  }
-  if (
-    expectations.ownershipManifestHash !== undefined &&
-    journal.ownership_manifest_hash !== expectations.ownershipManifestHash
-  ) {
-    throw new Error("TRANSACTION_OWNERSHIP_MANIFEST_CHANGED");
-  }
-  if (journal.cli_version === "direct-core-api") {
-    if (journal.target_bundle_version !== "unchanged") {
-      throw new Error("TRANSACTION_TARGET_BUNDLE_VERSION_CHANGED");
-    }
-    if (
-      journal.ownership_manifest_hash !==
-      sha256Bytes(JSON.stringify(journal.operations))
-    ) {
-      throw new Error("TRANSACTION_OWNERSHIP_MANIFEST_CHANGED");
-    }
-  }
+function recoveryPrecondition(message: string): Error {
+  return Object.assign(new Error(message), {
+    code: "RECOVERY_PRECONDITION_FAILED"
+  });
+}
 
-  try {
-    const status = JSON.parse(
-      await readFile(join(transactionRoot, "status.json"), "utf8")
-    ) as {
-      completed_operations?: number[];
-      pending_operations?: number[];
-      applied_count?: number;
-    };
-    if (Array.isArray(status.completed_operations)) {
-      journal.completed_operations = status.completed_operations;
-    }
-    if (Array.isArray(status.pending_operations)) {
-      journal.pending_operations = status.pending_operations;
-    }
-    journal.applied_count = Math.max(
-      journal.applied_count,
-      Number(status.applied_count ?? 0)
-    );
-  } catch {
-    // journal.json remains the durable fallback for legacy status projections.
+export function assertJournalCheckpoint(journal: TransactionJournal): void {
+  const operationIndexes = journal.operations.map((_item, index) => index);
+  const completed = journal.completed_operations ??
+    operationIndexes.filter((index) => index < journal.applied_count);
+  const pending = journal.pending_operations ??
+    operationIndexes.filter((index) => index >= journal.applied_count);
+  const completedSet = new Set(completed);
+  const pendingSet = new Set(pending);
+  const valid = completed.length === completedSet.size &&
+    pending.length === pendingSet.size &&
+    completed.every((index) =>
+      Number.isInteger(index) && operationIndexes.includes(index)
+    ) &&
+    pending.every((index) =>
+      Number.isInteger(index) && operationIndexes.includes(index)
+    ) &&
+    completed.every((index) => !pendingSet.has(index)) &&
+    [...completed, ...pending].sort((left, right) => left - right)
+      .every((index, position) => index === operationIndexes[position]) &&
+    journal.applied_count === completed.length;
+  if (!valid) {
+    throw recoveryPrecondition("recovery checkpoint partition is inconsistent");
   }
-  const completed = new Set(journal.completed_operations ?? []);
-  const pending = journal.operations
-    .map((_operation, index) => index)
-    .filter((index) => !completed.has(index));
-  for (const index of completed) {
-    const operation = journal.operations[index];
-    if (operation === undefined) {
-      throw new Error("TRANSACTION_PROGRESS_INVALID");
-    }
-    await assertCompletedOperationState(
-      projectRoot,
-      transactionRoot,
-      operation,
-      index
-    );
-  }
-  for (const index of pending) {
-    const operation = journal.operations[index];
-    if (operation === undefined) {
-      throw new Error("TRANSACTION_PROGRESS_INVALID");
-    }
-    if (
-      operation.operation !== "delete" &&
-      (
-        operation.content_sha256 === undefined ||
-        await sha256File(join(transactionRoot, "staged", String(index))) !==
-          operation.content_sha256
-      )
-    ) {
-      throw new Error("TRANSACTION_STAGED_CONTENT_MISMATCH");
-    }
-    for (const path of journalAffectedPaths(operation)) {
-      const snapshot = journal.snapshots.find((item) => item.path === path);
-      if (snapshot === undefined) {
-        throw new Error("TRANSACTION_SNAPSHOT_RECORD_MISSING: " + path);
-      }
-      await assertSnapshotPathState(
-        projectRoot,
-        transactionRoot,
-        snapshot
+  if (journal.schema_version === 3) {
+    const targetStateIndexes = (journal.completed_target_states ?? [])
+      .map((item) => item.operation_index);
+    if (targetStateIndexes.length !== completed.length ||
+        completed.some((index) => !targetStateIndexes.includes(index))) {
+      throw recoveryPrecondition(
+        "schema v3 recovery checkpoint is missing a completed target state"
       );
     }
   }
-  const protectedBefore = journal.protected_local_roots?.before ??
-    await collectProtectedLocalRootsInventory(projectRoot);
-  const protectedCurrent = await collectProtectedLocalRootsInventory(projectRoot);
-  if (!inventoriesEqual(protectedBefore, protectedCurrent)) {
-    throw new Error("PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED");
+}
+
+async function assertRollbackPreconditions(
+  projectRoot: string,
+  location: RecoveryLocation,
+  journal: TransactionJournal,
+  completed: readonly number[],
+  restorePaths: ReadonlySet<string>
+): Promise<void> {
+  assertJournalCheckpoint(journal);
+  if (journal.schema_version === 3 &&
+      (typeof journal.plan_hash !== "string" ||
+        transactionJournalPlanHash(journal) !== journal.plan_hash)) {
+    throw recoveryPrecondition("recovery plan metadata has drifted");
   }
-
-  journal.completed_operations = [...completed].sort((left, right) => left - right);
-  journal.pending_operations = pending;
-  journal.applied_count = journal.completed_operations.length;
-  journal.state = "applying";
-  journal.failure = null;
-  journal.failure_reason_code = null;
-  journal.safe_actions = ["inspect", "resume", "rollback"];
-  await writeJournal(transactionRoot, journal);
-
-  for (const index of pending) {
-    const operation = journal.operations[index];
-    if (operation === undefined) continue;
-    await applyOperation(
+  for (const path of restorePaths) {
+    try {
+      await assertNoSymlinks(projectRoot, path);
+    } catch {
+      throw recoveryPrecondition(
+        "rollback target path is no longer symlink-safe"
+      );
+    }
+  }
+  for (const completedState of journal.completed_target_states ?? []) {
+    if (!completed.includes(completedState.operation_index)) continue;
+    const operation = journal.operations[completedState.operation_index];
+    if (operation === undefined) {
+      throw recoveryPrecondition("completed operation metadata is invalid");
+    }
+    const current = await transactionTargetState(
       projectRoot,
-      transactionRoot,
-      durableOperationForApply(operation),
-      index,
-      transactionId
+      operation,
+      completedState.operation_index
     );
-    journal.completed_operations.push(index);
-    journal.pending_operations = journal.pending_operations.filter(
-      (candidate) => candidate !== index
-    );
-    journal.applied_count = journal.completed_operations.length;
-    await writeStatus(transactionRoot, journal);
+    if (JSON.stringify(current) !== JSON.stringify(completedState)) {
+      throw recoveryPrecondition("a completed target changed after interruption");
+    }
   }
 
-  const after = [];
-  for (const snapshot of journal.snapshots) {
-    const target = join(projectRoot, snapshot.path);
-    after.push({
-      path: snapshot.path,
-      exists: await exists(target),
-      hash: await exists(target) ? await sha256File(target) : null
+  const beforeRoot = join(location.transactionRoot, "before");
+  const beforeStat = await lstat(beforeRoot).catch(() => null);
+  if (beforeStat === null || beforeStat.isSymbolicLink() ||
+      !beforeStat.isDirectory()) {
+    throw recoveryPrecondition("recovery snapshot directory is unavailable");
+  }
+  const relevantSnapshots = journal.snapshots.filter((snapshot) =>
+    restorePaths.has(snapshot.path)
+  );
+  if ([...restorePaths].some((path) =>
+    !relevantSnapshots.some((snapshot) => snapshot.path === path)
+  )) {
+    throw recoveryPrecondition(
+      "recovery journal is missing a required target snapshot"
+    );
+  }
+  for (const snapshot of relevantSnapshots) {
+    if (!snapshot.existed) continue;
+    if (snapshot.snapshot_name === null) {
+      throw recoveryPrecondition("recovery snapshot metadata is incomplete");
+    }
+    const snapshotStat = await lstat(
+      join(beforeRoot, snapshot.snapshot_name)
+    ).catch(() => null);
+    if (snapshotStat === null || snapshotStat.isSymbolicLink() ||
+        !snapshotStat.isFile()) {
+      throw recoveryPrecondition("recovery snapshot payload is unavailable");
+    }
+  }
+
+  try {
+    if (location.source === "project") {
+      if (journal.schema_version === 3) {
+        if (typeof journal.snapshot_digest !== "string" ||
+            await computeSnapshotDigest(
+              location.transactionRoot,
+              journal.snapshots
+            ) !== journal.snapshot_digest) {
+          throw recoveryPrecondition(
+            "SNAPSHOT_DIGEST_MISMATCH: recovery snapshot digest does not match"
+          );
+        }
+      }
+      return;
+    }
+
+    const mirror = location.mirror;
+    if (mirror === null) {
+      throw recoveryPrecondition("durable recovery mirror metadata is unavailable");
+    }
+    const mirroredPathSet = new Set(mirror.mirroredSnapshotPaths);
+    if (mirroredPathSet.size !== mirror.mirroredSnapshotPaths.length ||
+        relevantSnapshots.some((snapshot) =>
+          !mirroredPathSet.has(snapshot.path)
+        )) {
+      throw recoveryPrecondition(
+        "durable recovery mirror does not contain every required snapshot"
+      );
+    }
+    const mirroredSnapshots = journal.snapshots.filter((snapshot) =>
+      mirroredPathSet.has(snapshot.path)
+    );
+    if (mirroredSnapshots.length !== mirroredPathSet.size ||
+        await computeSnapshotDigest(
+          location.transactionRoot,
+          mirroredSnapshots
+        ) !== mirror.snapshotDigest) {
+      throw recoveryPrecondition(
+        "SNAPSHOT_DIGEST_MISMATCH: durable recovery snapshot digest does not match"
+      );
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error &&
+        error.code === "RECOVERY_PRECONDITION_FAILED") {
+      throw error;
+    }
+    throw recoveryPrecondition("recovery snapshot integrity could not be verified");
+  }
+}
+
+export async function assertRollbackRecoveryPreconditions(
+  projectRoot: string,
+  location: RecoveryLocation,
+  journal: TransactionJournal
+): Promise<void> {
+  const completed = journal.completed_operations ??
+    journal.operations.map((_operation, index) => index)
+      .filter((index) => index < journal.applied_count);
+  const restorePaths = new Set(completed.flatMap((index) => {
+    const operation = journal.operations[index];
+    if (operation === undefined) return [];
+    return operation.operation === "rename"
+      ? [operation.from_path, operation.to_path]
+      : [operation.path];
+  }));
+  await assertRollbackPreconditions(
+    projectRoot,
+    location,
+    journal,
+    completed,
+    restorePaths
+  );
+}
+
+async function rollbackTransactionWithoutLock(
+  projectRoot: string,
+  transactionId: string,
+  options: RecoveryLocationOptions = {}
+): Promise<TransactionResult> {
+  const location = await locateRecovery(projectRoot, transactionId, options);
+  if (location === null) {
+    throw Object.assign(new Error("recoveryId does not exist"), {
+      code: "RECOVERY_NOT_FOUND"
     });
   }
-  await atomicWriteJson(join(transactionRoot, "after", "manifest.json"), after);
-  const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
-  if (!inventoriesEqual(protectedBefore, protectedAfter)) {
-    throw new Error("PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED");
+  const transactionRoot = location.transactionRoot;
+  const journal = JSON.parse(
+      await readFile(join(transactionRoot, "journal.json"), "utf8")
+    ) as TransactionJournal;
+    const currentProtectedRoots = await collectProtectedLocalRootsInventory(projectRoot);
+    const protectedLocalRoots = journal.protected_local_roots ?? {
+      before: currentProtectedRoots,
+      after: currentProtectedRoots,
+      unchanged: true
+    };
+    if (journal.state === "committed" || journal.state === "rolled_back") {
+      return {
+        transactionId: journal.transaction_id,
+        recoveryId: journal.recovery_id ?? transactionId,
+        planHash: journal.plan_hash ?? null,
+        status: journal.state,
+        protectedLocalRoots
+      };
+    }
+
+    const completed = journal.completed_operations ??
+      journal.operations.map((_operation, index) => index)
+        .filter((index) => index < journal.applied_count);
+    if (location.source === "durable" && completed.some((index) =>
+      !location.mirror?.mirroredOperationIndexes.includes(index)
+    )) {
+      throw Object.assign(new Error(
+        "durable mirror does not contain every applied managed operation"
+      ), { code: "RECOVERY_PRECONDITION_FAILED" });
+    }
+    const restorePaths = new Set(completed.flatMap((index) => {
+      const operation = journal.operations[index];
+      if (operation === undefined) return [];
+      return operation.operation === "rename"
+        ? [operation.from_path, operation.to_path]
+        : [operation.path];
+    }));
+    await assertRollbackRecoveryPreconditions(projectRoot, location, journal);
+    journal.state = "rolling_back";
+    await writeTransactionJournal(transactionRoot, journal);
+    if (location.source === "project" && options.recoveryRoot !== undefined) {
+      await syncDurableRecovery(projectRoot, journal, {
+        root: options.recoveryRoot
+      });
+    }
+    try {
+      for (const snapshot of [...journal.snapshots].reverse()) {
+        if (!restorePaths.has(snapshot.path)) continue;
+        const target = join(projectRoot, snapshot.path);
+        await rm(target, { force: true, recursive: true });
+        if (snapshot.existed && snapshot.snapshot_name !== null) {
+          await mkdir(dirname(target), { recursive: true });
+          await copyFile(
+            join(transactionRoot, "before", snapshot.snapshot_name),
+            target
+          );
+        }
+      }
+      journal.state = "rolled_back";
+      await writeTransactionJournal(transactionRoot, journal);
+      if (location.source === "project" && options.recoveryRoot !== undefined) {
+        await syncDurableRecovery(projectRoot, journal, {
+          root: options.recoveryRoot
+        });
+      }
+      const afterRollback = await collectProtectedLocalRootsInventory(projectRoot);
+      return {
+        transactionId: journal.transaction_id,
+        recoveryId: journal.recovery_id ?? transactionId,
+        planHash: journal.plan_hash ?? null,
+        status: "rolled_back",
+        protectedLocalRoots: {
+          before: protectedLocalRoots.before,
+          after: afterRollback,
+          unchanged: inventoriesEqual(protectedLocalRoots.before, afterRollback)
+        }
+      };
+    } catch (error) {
+      journal.state = "recovery_required";
+      journal.failure = error instanceof Error ? error.message : String(error);
+      await writeTransactionJournal(transactionRoot, journal);
+      if (location.source === "project" && options.recoveryRoot !== undefined) {
+        await syncDurableRecovery(projectRoot, journal, {
+          root: options.recoveryRoot
+        });
+      }
+      throw error;
+    }
+}
+
+export async function rollbackTransaction(
+  projectRoot: string,
+  transactionId: string,
+  options: RecoveryLocationOptions = {}
+): Promise<TransactionResult> {
+  const location = await locateRecovery(projectRoot, transactionId, options);
+  if (location === null) {
+    throw Object.assign(new Error("recoveryId does not exist"), {
+      code: "RECOVERY_NOT_FOUND"
+    });
   }
-  journal.protected_local_roots = {
-    before: protectedBefore,
-    after: protectedAfter,
-    unchanged: true
-  };
-  journal.state = "committed";
-  journal.safe_actions = ["inspect", "rollback"];
-  await writeJournal(transactionRoot, journal);
-  await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
-  await pruneOlderSuccessful(layout, transactionId, journal.kind);
-  return {
-    transactionId,
-    recoveryId: journal.recovery_id ?? transactionId,
-    planHash: fallbackPlanHash(journal),
-    status: "committed",
-    protectedLocalRoots: journal.protected_local_roots
-  };
+  const release = await acquireRecoveryMutationLock(location.transactionRoot);
+  try {
+    return await rollbackTransactionWithoutLock(
+      projectRoot,
+      transactionId,
+      options
+    );
+  } finally {
+    await release();
+  }
 }
 
 export async function runTransaction(
@@ -710,6 +728,7 @@ export async function runTransaction(
 ): Promise<TransactionResult> {
   const layout = await ensureStateLayout(projectRoot);
   const transactionId = options.id ?? "tx_" + Date.now() + "_" + randomUUID();
+  assertValidRecoveryId(transactionId);
   const transactionRoot = join(layout.transactions, transactionId);
   await Promise.all([
     mkdir(join(transactionRoot, "before"), { recursive: true }),
@@ -728,6 +747,13 @@ export async function runTransaction(
     return { ...operation, path: normalizeManagedPath(operation.path) };
   });
   const paths = operations.flatMap(affectedPaths);
+  const recoveryStore = options.recoveryStore ??
+    (process.env.HUNTER_HARNESS_RECOVERY_ROOT?.trim()
+      ? {
+          root: resolveRecoveryRoot(),
+          managedPaths: paths
+        }
+      : undefined);
   assertNoCaseCollisions(paths);
   const allowedProtectedRoots = new Set(options.allowedProtectedLocalRoots ?? []);
   const forbiddenProtectedPaths = paths.filter((path) => {
@@ -742,139 +768,177 @@ export async function runTransaction(
   }
 
   const protectedBefore = await collectProtectedLocalRootsInventory(projectRoot);
+  const planHash = transactionPlanHash(operations, options, protectedBefore);
   const snapshots = await snapshotPaths(projectRoot, transactionRoot, paths);
+  const snapshotDigest = await computeSnapshotDigest(transactionRoot, snapshots);
   await stageOperations(transactionRoot, operations);
-  const durableOperations = operations.map(journalOperation);
-  const projectIdentity = options.projectIdentity ??
-    "local-root:" + sha256Bytes(resolve(projectRoot));
-  const cliVersion = options.cliVersion ?? "direct-core-api";
-  const targetBundleVersion = options.targetBundleVersion ?? "unchanged";
-  const ownershipManifestHash = options.ownershipManifestHash ??
-    sha256Bytes(JSON.stringify(durableOperations));
-  const planHash = sha256Bytes(JSON.stringify({
-    operations: durableOperations,
-    projectIdentity,
-    targetBundleVersion,
-    ownershipManifestHash
-  }));
   const journal: TransactionJournal = {
     schema_version: 3,
     transaction_id: transactionId,
     recovery_id: transactionId,
-    recovery_store_path: externalRecoveryTransactionRoot(
-      projectRoot,
-      transactionId
-    ),
     ...(options.kind === undefined ? {} : { kind: options.kind }),
     state: "prepared",
     created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    project_identity: projectIdentity,
-    cli_version: cliVersion,
-    target_bundle_version: targetBundleVersion,
-    ownership_manifest_hash: ownershipManifestHash,
-    plan_hash: planHash,
-    snapshot_digest: await computeSnapshotDigest(transactionRoot, snapshots),
-    completed_operations: [],
-    pending_operations: operations.map((_operation, index) => index),
-    failure_reason_code: null,
-    safe_actions: ["inspect", "resume", "rollback"],
-    operations: durableOperations,
+    operations: operations.map(journalOperation),
     snapshots,
     applied_count: 0,
     failure: null,
+    project_identity: options.projectIdentity ?? null,
+    cli_version: options.cliVersion ?? null,
+    target_bundle_version: options.targetBundleVersion ?? null,
+    ownership_manifest_hash: options.ownershipManifestHash ?? null,
+    plan_hash: planHash,
+    snapshot_digest: snapshotDigest,
+    completed_operations: [],
+    pending_operations: operations.map((_operation, index) => index),
+    completed_target_states: [],
+    verification_outcomes: [],
     protected_local_roots: {
       before: protectedBefore,
       after: protectedBefore,
       unchanged: true
     }
   };
-  await writeJournal(transactionRoot, journal);
-
+  const release = await acquireRecoveryMutationLock(transactionRoot);
   try {
-    journal.state = "applying";
-    await writeJournal(transactionRoot, journal);
-    for (let index = 0; index < operations.length; index += 1) {
-      const operation = operations[index];
-      if (operation === undefined) {
-        continue;
-      }
-      await applyOperation(projectRoot, transactionRoot, operation, index, transactionId);
-      journal.applied_count = index + 1;
-      journal.completed_operations = [
-        ...(journal.completed_operations ?? []),
-        index
-      ];
-      journal.pending_operations = (journal.pending_operations ?? []).filter(
-        (pending) => pending !== index
+    await writeTransactionJournal(transactionRoot, journal);
+    if (recoveryStore !== undefined) {
+      await prepareDurableRecovery(
+        projectRoot,
+        transactionRoot,
+        journal,
+        recoveryStore
       );
-      // Progress is a small fixed-size status write. journal.json is persisted
-      // only at state transitions, so N files no longer cause N rewrites of an
-      // O(N + payload) document.
-      await writeStatus(transactionRoot, journal);
-      if (options.interruptAfterApply === journal.applied_count) {
-        journal.state = "interrupted";
-        journal.failure = "injected interruption";
-        journal.failure_reason_code = "TRANSACTION_INTERRUPTED";
-        await writeJournal(transactionRoot, journal);
-        throw new InterruptedTransactionError();
-      }
-      if (options.failAfterApply === journal.applied_count) {
-        throw new Error("injected transaction failure");
-      }
     }
+    await options.pauseBeforeApply?.();
+    try {
+      journal.state = "applying";
+      await writeTransactionJournal(transactionRoot, journal);
+      if (recoveryStore !== undefined) {
+        await syncDurableRecovery(projectRoot, journal, recoveryStore);
+      }
+      for (let index = 0; index < operations.length; index += 1) {
+        const operation = operations[index];
+        if (operation === undefined) {
+          continue;
+        }
+        await applyTransactionOperation(
+          projectRoot,
+          transactionRoot,
+          operation,
+          index,
+          transactionId
+        );
+        journal.applied_count = index + 1;
+        journal.completed_operations = operations
+          .map((_item, operationIndex) => operationIndex)
+          .filter((operationIndex) => operationIndex < journal.applied_count);
+        journal.pending_operations = operations
+          .map((_item, operationIndex) => operationIndex)
+          .filter((operationIndex) => operationIndex >= journal.applied_count);
+        journal.completed_target_states = [
+          ...(journal.completed_target_states ?? []).filter(
+            (item) => item.operation_index !== index
+          ),
+          await transactionTargetState(
+            projectRoot,
+            journal.operations[index] ?? journalOperation(operation),
+            index
+          )
+        ];
+        // The canonical checkpoint must reach disk before another operation
+        // can begin. Recovery never guesses between status and journal.
+        await writeTransactionJournal(transactionRoot, journal);
+        if (recoveryStore !== undefined) {
+          await syncDurableRecovery(projectRoot, journal, recoveryStore);
+        }
+        if (options.interruptAfterApply === journal.applied_count) {
+          journal.state = "interrupted";
+          journal.failure = "injected interruption";
+          await writeTransactionJournal(transactionRoot, journal);
+          if (recoveryStore !== undefined) {
+            await syncDurableRecovery(
+              projectRoot,
+              journal,
+              recoveryStore
+            );
+          }
+          throw new InterruptedTransactionError();
+        }
+        if (options.failAfterApply === journal.applied_count) {
+          throw new Error("injected transaction failure");
+        }
+      }
 
-    const after = [];
-    for (const path of paths) {
-      const target = join(projectRoot, path);
-      after.push({
-        path,
-        exists: await exists(target),
-        hash: await exists(target) ? await sha256File(target) : null
-      });
-    }
-    await atomicWriteJson(join(transactionRoot, "after", "manifest.json"), after);
-    const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
-    const protectedUnchanged = inventoriesEqual(protectedBefore, protectedAfter);
-    journal.protected_local_roots = {
-      before: protectedBefore,
-      after: protectedAfter,
-      unchanged: protectedUnchanged
-    };
-    if (!protectedUnchanged) {
-      throw new Error(
-        "PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED: protected local state changed " +
-        "without a declared transaction operation"
+      const after = [];
+      for (const path of paths) {
+        const target = join(projectRoot, path);
+        after.push({
+          path,
+          exists: await exists(target),
+          hash: await exists(target) ? await sha256File(target) : null
+        });
+      }
+      await atomicWriteJson(
+        join(transactionRoot, "after", "manifest.json"),
+        after
       );
-    }
-    journal.state = "committed";
-    journal.safe_actions = ["inspect", "rollback"];
-    await writeJournal(transactionRoot, journal);
-  } catch (error) {
-    if (error instanceof InterruptedTransactionError) {
+      const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
+      const protectedUnchanged = inventoriesEqual(protectedBefore, protectedAfter);
+      journal.protected_local_roots = {
+        before: protectedBefore,
+        after: protectedAfter,
+        unchanged: protectedUnchanged
+      };
+      if (!protectedUnchanged) {
+        journal.verification_outcomes = [{
+          name: "protected-local-roots",
+          status: "failed",
+          detail: "inventory changed without a declared transaction operation"
+        }];
+        throw new Error(
+          "PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED: protected local state changed " +
+          "without a declared transaction operation"
+        );
+      }
+      journal.verification_outcomes = [{
+        name: "protected-local-roots",
+        status: "passed"
+      }];
+      journal.state = "committed";
+      await writeTransactionJournal(transactionRoot, journal);
+      if (recoveryStore !== undefined) {
+        await syncDurableRecovery(projectRoot, journal, recoveryStore);
+      }
+    } catch (error) {
+      if (error instanceof InterruptedTransactionError) {
+        throw error;
+      }
+      journal.failure = error instanceof Error ? error.message : String(error);
+      await writeTransactionJournal(transactionRoot, journal);
+      if (recoveryStore !== undefined) {
+        await syncDurableRecovery(projectRoot, journal, recoveryStore);
+      }
+      await rollbackTransactionWithoutLock(projectRoot, transactionId);
       throw error;
     }
-    journal.failure = error instanceof Error ? error.message : String(error);
-    journal.failure_reason_code = "TRANSACTION_APPLY_FAILED";
-    await writeJournal(transactionRoot, journal);
-    await rollbackTransaction(projectRoot, transactionId);
-    throw error;
+    // 成功提交后删 staged/，并按 kind 保留最新成功事务。
+    await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
+    await pruneOlderSuccessful(layout, transactionId, options.kind);
+    return {
+      transactionId,
+      recoveryId: transactionId,
+      planHash,
+      status: "committed",
+      protectedLocalRoots: journal.protected_local_roots ?? {
+        before: protectedBefore,
+        after: protectedBefore,
+        unchanged: true
+      }
+    };
+  } finally {
+    await release();
   }
-  // design §10：成功提交后立即删 staged/（保留 before/after/journal/status 供回滚），
-  // 并按 kind 保留最新成功事务，剪除更早的同 kind committed 事务。
-  await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
-  await pruneOlderSuccessful(layout, transactionId, options.kind);
-  return {
-    transactionId,
-    recoveryId: transactionId,
-    planHash,
-    status: "committed",
-    protectedLocalRoots: journal.protected_local_roots ?? {
-      before: protectedBefore,
-      after: protectedBefore,
-      unchanged: true
-    }
-  };
 }
 
 export async function verifyStagedContent(
