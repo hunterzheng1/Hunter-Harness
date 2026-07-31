@@ -6,32 +6,32 @@
     "general",
     "java"
   ],
-  "bundle_version": "0.2.30",
-  "content_sha256": "sha256:7c4de66387fa3713a542bd381ad571a93ebe345888c566c81d2f40fb8750a03d",
-  "minimumCliVersion": "0.2.43",
+  "bundle_version": "0.2.31",
+  "content_sha256": "sha256:b4d7a31fa5a6b583bb3e51428c35421cd17e4dde2c3fd7113c4544c221fcdc30",
+  "minimumCliVersion": "0.2.44",
   "capabilities": [
-    "sync@1",
+    "sync@2",
     "rules-sync@1",
     "rules-review@1",
-    "knowledge-sync@2",
+    "knowledge-sync@3",
     "build-profile@3",
     "verification-graph@1",
     "external-convergence@1",
-    "codegraph-status@1",
+    "codegraph-status@2",
     "doctor-capability@1",
     "registry-governance@1"
   ],
   "requires": {
-    "minimumCliVersion": "0.2.43",
+    "minimumCliVersion": "0.2.44",
     "capabilities": [
-      "sync@1",
+      "sync@2",
       "rules-sync@1",
       "rules-review@1",
-      "knowledge-sync@2",
+      "knowledge-sync@3",
       "build-profile@3",
       "verification-graph@1",
       "external-convergence@1",
-      "codegraph-status@1",
+      "codegraph-status@2",
       "doctor-capability@1",
       "registry-governance@1"
     ]

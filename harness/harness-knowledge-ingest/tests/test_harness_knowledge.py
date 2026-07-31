@@ -2930,7 +2930,14 @@ class HarnessKnowledgeCliTest(unittest.TestCase):
             self.assertTrue(judgement_path.exists())
             judgement = json.loads(judgement_path.read_text(encoding="utf-8"))
             self.assertEqual(len(judgement["applied"]), 4)
-            self.assertEqual(judgement["applied"][0]["before"]["status"], "candidate")
+            self.assertNotIn("before", judgement["applied"][0])
+            self.assertEqual(
+                judgement["applied"][0]["beforeSnapshot"]["sha256"],
+                judgement["applied"][0]["beforeSnapshot"]["path"].split("-")[-1].removesuffix(".json.gz"),
+            )
+            self.assertTrue(
+                (knowledge / judgement["applied"][0]["beforeSnapshot"]["path"]).exists()
+            )
 
             promoted = json.loads(
                 next(
@@ -3726,6 +3733,351 @@ class KnowledgeContractParityTest(unittest.TestCase):
             second = module.make_entry(body=prefix + " second", **common)
 
             self.assertNotEqual(first["id"], second["id"])
+
+
+class RetrospectiveRegressionTests(unittest.TestCase):
+    """HH-SYNC-KNOW-001..018 regression contract."""
+
+    def setUp(self) -> None:
+        self.cli = HarnessKnowledgeCliTest()
+        self.module = self.cli._import_harness_knowledge()
+
+    def test_normalized_identity_handles_unicode_case_spacing_and_punctuation(self) -> None:
+        self.assertEqual(
+            self.module.normalize_knowledge_text(" Decision ：  USE Foo。 "),
+            self.module.normalize_knowledge_text("decision:use foo."),
+        )
+
+    def test_judge_counts_are_totalled_before_preview_limits_and_blocked_entries_are_quarantined(self) -> None:
+        entries = [
+            self.cli._minimal_entry(
+                f"sample.judge.decision.candidate{index:02d}",
+                title=f"candidate {index}",
+                body=f"candidate body {index}",
+            )
+            for index in range(5)
+        ]
+        entries[0]["lifecycle"]["publishBlocked"] = ["source consistency never ran"]
+        left = self.cli._minimal_entry(
+            "sample.judge.decision.conflict-a",
+            status="conflicted",
+            title="draft.aiChecks source",
+            body="`draft.aiChecks` is the only source.",
+        )
+        right = self.cli._minimal_entry(
+            "sample.judge.decision.conflict-b",
+            status="conflicted",
+            title="draft.aiChecks replacement",
+            body="Replace `draft.aiChecks` with `aiJobResult`.",
+        )
+        left["lifecycle"]["conflictsWith"] = [right["id"]]
+        right["lifecycle"]["conflictsWith"] = [left["id"]]
+
+        work = self.module.collect_judge_work(entries + [left, right], limit=2)
+
+        self.assertEqual(work["counts"]["totalCandidateEntries"], 5)
+        self.assertEqual(work["counts"]["totalConflictGroups"], 1)
+        self.assertEqual(work["counts"]["totalConflictEntries"], 2)
+        self.assertEqual(work["counts"]["displayedCandidateEntries"], 2)
+        self.assertEqual(work["counts"]["displayedConflictGroups"], 1)
+        self.assertEqual(work["counts"]["quarantinedEntries"], 1)
+        self.assertEqual(work["counts"]["quarantinedCount"], 1)
+        self.assertEqual(work["counts"]["requiredDecisionCount"], 6)
+        self.assertEqual(work["counts"]["pendingWorkItemCount"], 5)
+        self.assertEqual(work["counts"]["previewCount"], 3)
+        self.assertEqual(work["counts"]["previewEntryCount"], 4)
+        self.assertEqual(work["counts"]["deferredByLimitCount"], 2)
+        self.assertFalse(any(
+            item.get("id") == entries[0]["id"]
+            for item in work["promoteCandidates"]
+        ))
+
+    def test_defer_expires_immediately_when_source_evidence_changes(self) -> None:
+        entry = self.cli._minimal_entry(
+            "sample.judge.decision.defer-fingerprint",
+            title="deferred entry",
+            body="Use `draft.aiChecks` as the only source.",
+        )
+        lifecycle = entry["lifecycle"]
+        lifecycle["judgeAction"] = "defer"
+        lifecycle["reviewAfter"] = "2099-01-01"
+        lifecycle["deferEvidence"] = self.module.review_evidence_fingerprints(entry)
+
+        unchanged = self.module.collect_judge_work([entry], limit=10)
+        self.assertEqual(unchanged["counts"]["requiredDecisionCount"], 0)
+
+        entry["source"]["summarySha256"] = "changed-summary"
+        changed = self.module.collect_judge_work([entry], limit=10)
+        self.assertEqual(changed["counts"]["requiredDecisionCount"], 1)
+        self.assertEqual(changed["promoteCandidates"][0]["id"], entry["id"])
+
+        lifecycle["deferEvidence"] = self.module.review_evidence_fingerprints(entry)
+        lifecycle["conflictsWith"] = ["sample.judge.decision.new-conflict"]
+        conflict_changed = self.module.collect_judge_work([entry], limit=10)
+        self.assertEqual(conflict_changed["counts"]["requiredDecisionCount"], 1)
+
+    def test_warn_archive_with_verified_sources_is_not_blanket_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.cli.make_project(Path(tmp))
+            summary_path = next(
+                (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["finalStatus"] = "WARN"
+            summary["warnings"] = ["user baseline already dirty"]
+            write_json(summary_path, summary)
+
+            status = self.module.archive_publication_status(
+                project,
+                ".harness/archive/2026-06-30-ai-check-job",
+            )
+
+            self.assertTrue(status["allowed"])
+            self.assertEqual(status["knowledgePublicationEligibility"]["status"], "ok")
+            self.assertEqual(status["archiveReleaseEligibility"]["status"], "WARN")
+
+    def test_explicit_candidates_drive_extraction_and_process_observations_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.cli.make_project(Path(tmp))
+            summary_path = next(
+                (project / ".harness" / "archive").glob("*/reports/final/summary-data.json")
+            )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["knowledgeCandidates"] = [
+                {
+                    "type": "decision",
+                    "title": "One source",
+                    "body": "Use   one\nsource.",
+                    "sourceFiles": ["apps/server/src/registry/store.ts"],
+                },
+                {
+                    "type": "decision",
+                    "title": "One  source",
+                    "body": "Use one source.",
+                    "sourceFiles": ["apps/server/src/registry/store.ts"],
+                },
+                {
+                    "type": "implementation",
+                    "category": "process-observation",
+                    "title": "Worktree baseline",
+                    "body": "The worktree was dirty before preflight.",
+                    "sourceFiles": [".gitattributes"],
+                },
+            ]
+            write_json(summary_path, summary)
+
+            index = self.module.build_index(project, incremental=False)
+            entries = self.module.load_indexed_entries(project)
+
+            self.assertEqual(index["ingestMode"]["normalizedDuplicatesRemoved"], 1)
+            self.assertFalse(any(entry["title"] == "Worktree baseline" for entry in entries))
+            self.assertEqual(
+                sum(1 for entry in entries if "One source" in entry["title"].replace("  ", " ")),
+                1,
+            )
+
+    def test_conflicts_require_a_shared_entity_and_emit_evidence(self) -> None:
+        session = self.cli._minimal_entry(
+            "sample.conflict.decision.session",
+            title="Session identity",
+            body="Keep `sessionId` as the stable identity.",
+            source_files=["docs/change.md"],
+        )
+        baseline = self.cli._minimal_entry(
+            "sample.conflict.decision.baseline",
+            title="Existing baseline",
+            body="Do not replace the user-owned `.gitattributes` baseline.",
+            source_files=["docs/change.md"],
+        )
+        self.assertIsNone(self.module.conflict_evidence(session, baseline))
+
+        old = self.cli._minimal_entry(
+            "sample.conflict.decision.old",
+            title="draft.aiChecks source",
+            body="Keep `draft.aiChecks` as the only source.",
+            source_files=["apps/server/src/registry/store.ts"],
+        )
+        new = self.cli._minimal_entry(
+            "sample.conflict.decision.new",
+            title="draft.aiChecks replacement",
+            body="Replace `draft.aiChecks` with `aiJobResult`.",
+            source_files=["apps/server/src/registry/store.ts"],
+        )
+        evidence = self.module.conflict_evidence(old, new)
+        self.assertIsNotNone(evidence)
+        self.assertIn("draft.aiChecks", evidence["sharedEntities"])
+        self.assertTrue(evidence["mutuallyExclusiveAssertions"])
+
+    def test_health_summary_uses_orthogonal_dimensions(self) -> None:
+        candidate = self.cli._minimal_entry(
+            "sample.health.decision.candidate",
+            title="candidate",
+            body="candidate",
+        )
+        candidate["lifecycle"]["publishBlocked"] = ["missing consistency"]
+        candidate["lifecycle"]["reviewState"] = "quarantined"
+        active = self.cli._minimal_entry(
+            "sample.health.decision.active",
+            status="active",
+            title="active",
+            body="active",
+        )
+        active["validators"] = [{"type": "file_exists", "path": "src/a.ts"}]
+
+        health = self.module.summarize_knowledge_health(
+            [candidate, active],
+            duplicate_groups=1,
+        )
+
+        self.assertEqual(health["contentLifecycle"]["candidate"], 1)
+        self.assertEqual(health["contentLifecycle"]["active"], 1)
+        self.assertEqual(health["reviewState"]["quarantined"], 1)
+        self.assertEqual(health["publicationState"]["blocked"], 1)
+        self.assertEqual(health["validationState"]["covered"], 1)
+        self.assertEqual(health["duplicateGroups"], 1)
+
+    def test_equivalent_judge_exports_are_content_addressed_and_reused(self) -> None:
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.cli.make_project(Path(tmp))
+            self.module.build_index(project)
+            with mock.patch.object(self.module, "timestamp", side_effect=["first", "second"]):
+                first = self.module.judge_export(project)
+                second = self.module.judge_export(project)
+
+            self.assertEqual(first["exportPath"], second["exportPath"])
+            self.assertTrue((project / ".harness" / "knowledge" / "reports" / "latest.json").exists())
+            exports = list(
+                (project / ".harness" / "knowledge" / "reports").glob("judge-export-*.json")
+            )
+            self.assertEqual(len(exports), 1)
+
+    def test_report_retention_keeps_latest_pointer_and_referenced_rollback_blob(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge = Path(tmp) / ".harness" / "knowledge"
+            reports = knowledge / "reports"
+            blobs = reports / "blobs"
+            blobs.mkdir(parents=True)
+            exports = []
+            for index in range(4):
+                path = reports / f"judge-export-{index:064x}.json"
+                write_json(path, {"index": index})
+                os.utime(path, (index + 1, index + 1))
+                exports.append(path)
+            write_json(
+                reports / "latest.json",
+                {
+                    "schemaVersion": 1,
+                    "reports": {
+                        "judge-export": {
+                            "path": str(exports[0].relative_to(knowledge)).replace("\\", "/"),
+                            "sha256": "0" * 64,
+                        }
+                    },
+                },
+            )
+            kept_blob = blobs / f"rollback-{'a' * 64}.json.gz"
+            orphan_blob = blobs / f"rollback-{'b' * 64}.json.gz"
+            kept_blob.write_bytes(b"kept")
+            orphan_blob.write_bytes(b"orphan")
+            write_json(
+                reports / f"judgements-{'c' * 64}.json",
+                {
+                    "applied": [
+                        {
+                            "beforeSnapshot": {
+                                "path": str(kept_blob.relative_to(knowledge)).replace("\\", "/"),
+                                "sha256": "a" * 64,
+                            }
+                        }
+                    ]
+                },
+            )
+
+            removed = self.module.prune_knowledge_reports(knowledge, keep=2)
+
+            self.assertTrue(exports[0].exists())
+            self.assertTrue(exports[2].exists())
+            self.assertTrue(exports[3].exists())
+            self.assertFalse(exports[1].exists())
+            self.assertEqual(removed["judge-export"], 1)
+            self.assertTrue(kept_blob.exists())
+            self.assertFalse(orphan_blob.exists())
+            self.assertEqual(removed["rollback-blobs"], 1)
+
+    def test_validator_summary_exposes_eligible_applied_remaining_and_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "project"
+            source = project / "src" / "service.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("class StableService:\n    pass\n", encoding="utf-8")
+            knowledge = project / ".harness" / "knowledge"
+            self.module.ensure_knowledge_dirs(knowledge)
+            for index in range(3):
+                entry = self.cli._minimal_entry(
+                    f"sample.validator.decision.entry{index}",
+                    title=f"StableService {index}",
+                    body="StableService remains available.",
+                    source_files=["src/service.py"],
+                )
+                self.cli._write_entry(knowledge, entry)
+            self.module.refresh_outputs_from_entry_files(project, knowledge)
+
+            summary = self.module.suggest_validators(project, limit=1, apply=False)
+
+            self.assertEqual(summary["eligible"], 3)
+            self.assertEqual(summary["selected"], 1)
+            self.assertEqual(summary["applied"], 0)
+            self.assertEqual(summary["remaining"], 2)
+            self.assertEqual(summary["unavailable"], 0)
+
+    def test_sync_check_is_read_only_even_with_pending_maintenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.cli.make_project(Path(tmp))
+            self.module.build_index(project)
+            outbox = self.cli._enqueue_pending(project, "2026-06-30-ai-check-job")
+
+            result = self.module.sync_status(project, check=True)
+
+            self.assertTrue((outbox / "pending" / "2026-06-30-ai-check-job.json").exists())
+            self.assertFalse(result["maintenance"]["attempted"])
+            self.assertTrue(result["maintenance"]["readOnly"])
+            self.assertIn("freshness", result)
+            self.assertIn("health", result)
+
+    def test_no_argument_cli_defaults_to_auto_and_admin_keeps_advanced_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self.cli.make_project(Path(tmp))
+            default_run = subprocess.run(
+                [sys.executable, str(SCRIPT)],
+                cwd=str(project),
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(default_run.returncode, 0, default_run.stderr)
+            default_payload = json.loads(default_run.stdout)
+            self.assertEqual(default_payload["command"], "auto")
+
+            admin_run = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "admin",
+                    "audit",
+                    "--project",
+                    str(project),
+                    "--limit",
+                    "1",
+                ],
+                cwd=str(project),
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(admin_run.returncode, 0, admin_run.stderr)
+            self.assertIn("counts", json.loads(admin_run.stdout))
 
 
 class QueryCompactOutputTests(unittest.TestCase):

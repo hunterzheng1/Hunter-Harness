@@ -32,7 +32,7 @@ describe("hunter-harness sync", () => {
     const stdout: string[] = [];
     try {
       const code = await runCli([
-        "sync", "--project", root, "--profile", "interactive", "--dry-run", "--json"
+        "sync", "--project", root, "--profile", "interactive", "--dry-run", "--verbose", "--json"
       ], {
         cwd: root,
         resourcesRoot,
@@ -115,7 +115,7 @@ describe("hunter-harness sync", () => {
         reportPath: string;
         reportSha256: string;
       };
-      expect(payload.status).toMatch(/^(OK|WARN)$/);
+      expect(payload.status).toMatch(/^(OK|ADVISORY|WARN)$/);
       expect(payload.reportPath).toMatch(/^\.harness\/runtime\/sync\//);
       expect(payload.reportSha256).toMatch(/^[a-f0-9]{64}$/);
       const report = JSON.parse(
@@ -123,7 +123,7 @@ describe("hunter-harness sync", () => {
       ) as { components: Array<{ status: string; reasonCode: string }> };
       expect(report.components.length).toBeGreaterThan(3);
       expect(report.components.every((item) =>
-        /^(OK|WARN|FAIL|BLOCKED|UNKNOWN)$/.test(item.status)
+        /^(OK|ADVISORY|WARN|FAIL|BLOCKED|UNKNOWN)$/.test(item.status)
       )).toBe(true);
       const lastRun = JSON.parse(
         await readFile(

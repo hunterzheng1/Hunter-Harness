@@ -10,7 +10,7 @@ import { readWorkflowFamilyManifest } from "../workflow-data/resolve.js";
 
 const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   capabilities: 1,
-  sync: 1,
+  sync: 2,
   refresh: 1,
   update: 1,
   push: 1,

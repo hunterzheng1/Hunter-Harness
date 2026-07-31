@@ -6,13 +6,8 @@ description: harness-sync 的能力契约、统一状态模型、报告收据和
 
 ## 1. 能力握手
 
-统一入口执行前读取：
-
-```powershell
-npx hunter-harness capabilities --json
-```
-
-工作流 family manifest 声明 `minimumCliVersion` 和 `capabilities`。CLI 在任何高成本阶段之前核对版本与能力；缺失时返回：
+工作流 family manifest 声明 `minimumCliVersion` 和 `capabilities`。`sync` 在任何高成本
+阶段之前自行核对版本与能力；Skill 不要再运行独立的 `capabilities` 子进程。缺失时返回：
 
 ```json
 {
@@ -47,22 +42,41 @@ npx hunter-harness sync --project <项目路径> --profile interactive --progres
 CI/非交互式：
 
 ```powershell
-npx hunter-harness sync --project <项目路径> --profile general --progress jsonl --json
+npx hunter-harness sync --check --project <项目路径> --profile general --progress jsonl --json
 ```
 
-`--dry-run` 只做只读检查或事务预览，不应生成持久报告、receipt 或投影。每个长阶段通过 stderr 输出受限 heartbeat；stdout 只输出：
+`--check` 是严格只读检查；`--dry-run` 是兼容别名。两者都不生成持久报告、receipt 或
+投影。每个长阶段通过 stderr 输出受限 heartbeat；stdout 默认只输出：
 
 ```json
 {
   "status": "WARN",
   "runId": "<run-id>",
-  "components": {"ok": 7, "warn": 1, "fail": 0, "blocked": 0, "unknown": 1},
+  "components": {"ok": 7, "advisory": 1, "warn": 0, "fail": 0, "blocked": 0, "unknown": 0},
+  "versions": {
+    "cliVersion": "0.0.0",
+    "workflowBundleVersion": "0.0.0",
+    "adapterBundleVersions": {}
+  },
+  "remediations": [],
   "reportPath": ".harness/runtime/sync/<run-id>/reports/sync-report.json",
   "reportSha256": "<sha256>"
 }
 ```
 
-详细报告必须受大小限制，并包含每个组件的 `status`、`reasonCode`、`observedAt`、`durationMs`、输入/输出 hash、证据、是否自动修复及 `nextAction`。
+只读检查的 `reportPath/reportSha256` 为 `null`。详细报告必须受大小限制，并包含每个组件
+的 `status`、`reasonCode`、`observedAt`、`durationMs`、输入/输出 hash、证据、是否自动
+修复及 `nextAction`；只有显式 `--verbose` 才把组件级详情写到 stdout。
+
+### 结构化修复
+
+- `remediations[]` 含稳定 `id`、风险、写入范围、备份/回滚说明、预计耗时、是否需确认、
+  `previewCommand` 与 `applyCommand`。
+- `--apply safe` 只执行低风险、无需确认的修复。
+- `--fix <id>` 只执行该项；需要覆盖受管 Adapter 时必须加 `--yes`。
+- 指定修复时，其他组件仍参与诊断但保持只读。
+- Adapter 覆盖由 refresh 事务执行，before snapshot 位于最新 committed refresh
+  transaction；事务失败会自动回滚。预览永远不得产生写入。
 
 ## 4. 组件状态
 
@@ -77,15 +91,21 @@ npx hunter-harness sync --project <项目路径> --profile general --progress js
 | instruction graph | 入口、include 边、环、主题可达性 | 缺失引用或循环为 `FAIL` |
 | config origins | canonical/projection 路径与 hash | 漂移 `WARN`，不静默覆盖 |
 | changes | 五态分类及归档收据 | `INVALID`/`ORPHAN` 不自动删除 |
-| CodeGraph | 索引文件、守护进程管道、watcher 日志、pending、watcher lag | 输出 `CURRENT/PENDING/STALE/INDEX_PRESENT_UNVERIFIED/MISSING/UNKNOWN`；不自动全量 reindex |
+| CodeGraph | `codegraph status --json` 的 pending、数据库观察时间、watcher 可达性 | 输出 `CURRENT/PENDING/STALE/INDEX_PRESENT_UNVERIFIED/MISSING/UNKNOWN`；日志 mtime 只证明 watcher 活动，不证明索引完成；不自动全量 reindex |
 
-全局状态优先级：`BLOCKED` → `FAIL` → `WARN` → `OK`。任一 `UNKNOWN` 至少使全局结果为 `WARN`。
+全局状态优先级：`BLOCKED` → `FAIL` → `WARN` → `ADVISORY` → `OK`。任一 `UNKNOWN`
+至少使全局结果为 `WARN`。knowledge freshness 与 health 分开：索引一致但仍有待裁决候选时
+为 `ADVISORY`，不得误报为过期。
 
 ## 5. Git 与 CodeGraph
 
 增量基线来自上次成功 sync receipt 的 `headCommit`。首次运行或 receipt 不可用时，仅收集当前 HEAD 和有界文件统计；禁止固定 `HEAD~5`。
 
-CodeGraph 状态探测读取 `.codegraph/codegraph.db`、daemon receipt/log，尝试有界管道连接，并比较项目文件与最近索引观察时间。只有服务可达、watcher 已启用且 `pendingFileCount=0` 时为 `CURRENT`；此时才可将当前 HEAD 记录为推断的 `indexedCommit`。不可用、待同步或证据不足时分别报告 `STALE/PENDING/INDEX_PRESENT_UNVERIFIED/UNKNOWN` 与明确后续动作。不要在 sync 内执行全量索引，不使用依赖 shell 连接符的跨平台命令。
+CodeGraph 状态探测优先读取 `codegraph status --json` 的权威 pending 列表；只有该 API
+不可用时才退回受限文件扫描，并把来源标成 `database-scan` 或 `unverified`。`.agents/`、
+`.cursor/`、`.claude/` 等 Adapter 投影和 Markdown 文档不计入源码 pending。daemon log
+mtime 只写入 `watcherObservedAt`，不能冒充 `indexObservedAt`。只有服务可达、watcher 已
+启用且权威 `pendingFileCount=0` 时为 `CURRENT`。不要在 sync 内执行全量索引。
 
 ## 6. Instruction graph
 

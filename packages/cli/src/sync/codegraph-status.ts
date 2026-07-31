@@ -1,10 +1,14 @@
 import { createConnection } from "node:net";
+import { execFile } from "node:child_process";
 import {
   readFile,
   readdir,
   stat
 } from "node:fs/promises";
-import { join } from "node:path";
+import { extname, join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 export type CodeGraphCoverage =
   | "CURRENT"
@@ -27,9 +31,11 @@ export interface CodeGraphStatus {
   indexedCommit: string | null;
   indexedCommitSource: "inferred-current-head" | "unavailable";
   pendingFileCount: number | null;
+  pendingSource: "codegraph-api" | "database-scan" | "unverified";
   watcherLagMs: number | null;
   coverage: CodeGraphCoverage;
   indexObservedAt: string | null;
+  watcherObservedAt: string | null;
   watcherActive: boolean | null;
   action: string;
 }
@@ -38,10 +44,16 @@ export interface CodeGraphStatusOptions {
   now?: () => Date;
   headCommit?: string | null;
   socketProbe?: (socketPath: string, pid: number | null) => Promise<boolean>;
+  statusProbe?: (root: string) => Promise<unknown | null>;
 }
 
 const EXCLUDED_DIRECTORIES = new Set([
+  ".agents",
+  ".claude",
+  ".codebuddy",
+  ".cursor",
   ".git",
+  ".github",
   ".harness",
   ".codegraph",
   ".next",
@@ -57,9 +69,54 @@ const EXCLUDED_DIRECTORIES = new Set([
   "venv"
 ]);
 
+const INDEXABLE_EXTENSIONS = new Set([
+  ".c",
+  ".cc",
+  ".cpp",
+  ".cs",
+  ".cts",
+  ".go",
+  ".h",
+  ".hpp",
+  ".java",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".liquid",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".py",
+  ".rb",
+  ".rs",
+  ".scala",
+  ".svelte",
+  ".swift",
+  ".ts",
+  ".tsx",
+  ".vue",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
+
 interface DaemonReceipt {
   pid: number | null;
   socketPath: string | null;
+}
+
+interface CodeGraphCliStatus {
+  initialized?: unknown;
+  lastIndexed?: unknown;
+  pendingChanges?: {
+    added?: unknown;
+    modified?: unknown;
+    removed?: unknown;
+  };
+  index?: {
+    state?: unknown;
+  };
 }
 
 async function pathMtimeMs(path: string): Promise<number | null> {
@@ -128,6 +185,51 @@ function watcherState(log: string): boolean | null {
   return active > disabled;
 }
 
+async function defaultStatusProbe(root: string): Promise<unknown | null> {
+  try {
+    const result = await execFileAsync(
+      "codegraph",
+      ["status", "--json", root],
+      {
+        timeout: 5_000,
+        windowsHide: true,
+        maxBuffer: 1024 * 1024,
+        encoding: "utf8"
+      }
+    );
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+function nonNegativeInteger(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function parseCliStatus(value: unknown): {
+  pendingFileCount: number;
+  indexObservedMs: number | null;
+} | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = value as CodeGraphCliStatus;
+  if (status.initialized !== true || status.index?.state !== "complete") return null;
+  const pending = status.pendingChanges;
+  if (pending === null || typeof pending !== "object") return null;
+  const observed = typeof status.lastIndexed === "string"
+    ? Date.parse(status.lastIndexed)
+    : Number.NaN;
+  return {
+    pendingFileCount:
+      nonNegativeInteger(pending.added) +
+      nonNegativeInteger(pending.modified) +
+      nonNegativeInteger(pending.removed),
+    indexObservedMs: Number.isFinite(observed) ? observed : null
+  };
+}
+
 async function countFilesNewerThan(
   root: string,
   thresholdMs: number
@@ -150,6 +252,7 @@ async function countFilesNewerThan(
         continue;
       }
       if (!entry.isFile()) continue;
+      if (!INDEXABLE_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue;
       const modifiedAt = await pathMtimeMs(path);
       if (modifiedAt !== null && modifiedAt > thresholdMs + 50) {
         count += 1;
@@ -175,9 +278,11 @@ export async function assessCodeGraphStatus(
       indexedCommit: null,
       indexedCommitSource: "unavailable",
       pendingFileCount: null,
+      pendingSource: "unverified",
       watcherLagMs: null,
       coverage: "MISSING",
       indexObservedAt: null,
+      watcherObservedAt: null,
       watcherActive: null,
       action: "Run `codegraph init` explicitly if this project should be indexed."
     };
@@ -199,14 +304,23 @@ export async function assessCodeGraphStatus(
     const watcherActive = watcherState(log);
     const observedCandidates = await Promise.all([
       Promise.resolve(databaseMtime),
-      pathMtimeMs(join(graphRoot, "codegraph.db-wal")),
-      pathMtimeMs(join(graphRoot, "daemon.log"))
+      pathMtimeMs(join(graphRoot, "codegraph.db-wal"))
     ]);
-    const indexObservedMs = Math.max(
+    const databaseObservedMs = Math.max(
       ...observedCandidates.filter((value): value is number => value !== null)
     );
-    const pendingFileCount = await countFilesNewerThan(root, indexObservedMs);
+    const watcherObservedMs = await pathMtimeMs(join(graphRoot, "daemon.log"));
+    const probedStatus = parseCliStatus(
+      await (options.statusProbe ?? defaultStatusProbe)(root)
+    );
+    const pendingSource = probedStatus === null ? "database-scan" : "codegraph-api";
+    const indexObservedMs = probedStatus?.indexObservedMs ?? databaseObservedMs;
+    const pendingFileCount = probedStatus?.pendingFileCount ??
+      await countFilesNewerThan(root, indexObservedMs);
     const indexObservedAt = new Date(indexObservedMs).toISOString();
+    const watcherObservedAt = watcherObservedMs === null
+      ? null
+      : new Date(watcherObservedMs).toISOString();
     const watcherLagMs = pendingFileCount > 0
       ? Math.max(0, now.getTime() - indexObservedMs)
       : 0;
@@ -219,9 +333,11 @@ export async function assessCodeGraphStatus(
         indexedCommit: null,
         indexedCommitSource: "unavailable",
         pendingFileCount,
+        pendingSource,
         watcherLagMs,
         coverage: "STALE",
         indexObservedAt,
+        watcherObservedAt,
         watcherActive,
         action: "Restart the CodeGraph integration; no automatic full reindex was triggered."
       };
@@ -234,9 +350,11 @@ export async function assessCodeGraphStatus(
         indexedCommit: null,
         indexedCommitSource: "unavailable",
         pendingFileCount,
+        pendingSource,
         watcherLagMs,
         coverage: "INDEX_PRESENT_UNVERIFIED",
         indexObservedAt,
+        watcherObservedAt,
         watcherActive,
         action: "Verify the CodeGraph daemon and watcher; no automatic full reindex was triggered."
       };
@@ -249,9 +367,11 @@ export async function assessCodeGraphStatus(
         indexedCommit: null,
         indexedCommitSource: "unavailable",
         pendingFileCount,
+        pendingSource,
         watcherLagMs,
         coverage: "PENDING",
         indexObservedAt,
+        watcherObservedAt,
         watcherActive,
         action: "Wait for incremental synchronization; no automatic full reindex was triggered."
       };
@@ -268,9 +388,11 @@ export async function assessCodeGraphStatus(
       indexedCommit: headCommit,
       indexedCommitSource: headCommit === null ? "unavailable" : "inferred-current-head",
       pendingFileCount,
+      pendingSource,
       watcherLagMs,
       coverage: "CURRENT",
       indexObservedAt,
+      watcherObservedAt,
       watcherActive,
       action: "No reindex required."
     };
@@ -282,9 +404,11 @@ export async function assessCodeGraphStatus(
       indexedCommit: null,
       indexedCommitSource: "unavailable",
       pendingFileCount: null,
+      pendingSource: "unverified",
       watcherLagMs: null,
       coverage: "UNKNOWN",
       indexObservedAt: null,
+      watcherObservedAt: null,
       watcherActive: null,
       action: "Inspect CodeGraph diagnostics; no automatic full reindex was triggered."
     };

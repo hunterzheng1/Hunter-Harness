@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.2.44] — hunter-harness / [0.2.42] — @hunter-harness/workflow-harness
+
+### Fixed（2026-07-31 Lark Channel Bridge Sync / Knowledge 复盘修复）
+
+- **可信 CodeGraph 状态**：`sync` 优先读取 `codegraph status --json` 的权威 pending，
+  fallback 仅扫描可索引源码并排除 Adapter/Markdown；watcher 日志不再冒充索引完成时间。
+- **只读检查与紧凑输出**：新增严格零写入 `sync --check`（`--dry-run` 兼容）、默认紧凑
+  stdout、`--verbose` 组件详情、版本身份和结构化 `remediations[]`。
+- **单一能力入口**：能力握手内置到 `sync` 并在任何 Python/项目工作前 fail closed；
+  workflow 不再重复启动 `capabilities` 进程，契约升级为 `sync@2`、
+  `knowledge-sync@3`、`codegraph-status@2`。
+- **安全修复契约**：支持 `--apply safe`、`--fix <id>`、显式确认、写入范围与事务 before
+  snapshot；修复预览保持只读，Adapter 多目标 drift 聚合成一项可执行建议。
+- **知识 freshness/health 解耦**：索引一致性与 lifecycle/review/publication/validation
+  四维健康分开；待评审规则或知识以 `ADVISORY` 表示，不再伪装成过期或失败。
+- **知识抽取与语义治理**：优先显式 `knowledgeCandidates[]`，过滤 process observation；
+  Unicode/标点/空白归一化去重，冲突要求共同实体、范围与双方 evidence。
+- **裁决与发布门禁**：judge 返回完整总量、有界 preview 和 quarantined 数；blocked 条目
+  不进入裁决，defer 绑定证据指纹；knowledge publication 与 archive release status 独立，
+  legacy gate 只在 summary/hash/source commit 可证明时自动修复。
+- **有界可恢复产物**：judge/rollback 报告内容寻址并维护 latest 指针和保留上限，回滚快照
+  gzip 压缩；validator 明确报告 eligible/selected/applied/remaining/unavailable。
+- workflow bundle 提升至 `0.2.31`，最低 CLI 版本提升至 `0.2.44`。
+
 ## [0.2.43] — hunter-harness / [0.2.41] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-07-31 本地状态耐久性与执行证据闭环）

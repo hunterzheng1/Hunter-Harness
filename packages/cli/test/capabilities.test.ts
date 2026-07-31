@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import {
   assertWorkflowCompatibility,
   WorkflowCompatibilityError
 } from "../src/workflow-data/compatibility.js";
+import { runSync } from "../src/commands/sync.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
@@ -37,14 +38,16 @@ describe("CLI/workflow capability contract", () => {
       ) as { version: string };
       expect(payload.cliVersion).toBe(packageJson.version);
       expect(payload.workflowBundleVersion).toMatch(/^\d+\.\d+\.\d+$/);
-      expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 2 });
       expect(payload.commands["rules-sync"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["rules-review"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.capabilities).toEqual(expect.arrayContaining([
         "build-profile@3",
         "verification-graph@1",
         "external-convergence@1",
-        "codegraph-status@1",
+        "sync@2",
+        "knowledge-sync@3",
+        "codegraph-status@2",
         "doctor-capability@1",
         "registry-governance@1"
       ]));
@@ -77,6 +80,46 @@ describe("CLI/workflow capability contract", () => {
     } catch (error) {
       expect((error as WorkflowCompatibilityError).code).toBe("BLOCKED_CAPABILITY_MISMATCH");
       expect((error as WorkflowCompatibilityError).exitCode).toBe(7);
+    }
+  });
+
+  it("performs the capability gate inside sync before runtime or project work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-sync-capability-"));
+    const workflow = join(root, "workflow");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    try {
+      await mkdir(workflow, { recursive: true });
+      await writeFile(join(workflow, "hunter-workflow-family.json"), JSON.stringify({
+        minimumCliVersion: "99.0.0",
+        capabilities: ["sync@99"]
+      }));
+      const code = await runSync(
+        { project: root, check: true, json: true, progress: "none" },
+        {
+          cwd: root,
+          resourcesRoot: workflow,
+          stdout: (value) => stdout.push(value),
+          stderr: (value) => stderr.push(value),
+          prompt: async () => "",
+          fetch
+        }
+      );
+      expect(code).toBe(7);
+      expect(stderr.join("")).toBe("");
+      const payload = JSON.parse(stdout.join("")) as {
+        status: string;
+        componentOutcomes?: Array<{ component: string }>;
+        remediations: Array<{ component: string }>;
+      };
+      expect(payload.status).toBe("BLOCKED");
+      expect(payload.remediations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ component: "capabilities" })
+      ]));
+      expect(await readFile(join(workflow, "hunter-workflow-family.json"), "utf8"))
+        .toContain("\"sync@99\"");
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

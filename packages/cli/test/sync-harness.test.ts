@@ -59,10 +59,11 @@ describe("sync-harness atomicSwapDir — INT-005", () => {
     expect(family.bundle_version).toBe(bundle.bundle_version);
     expect(family.minimumCliVersion).toMatch(/^\d+\.\d+\.\d+$/);
     expect(family.capabilities).toEqual(expect.arrayContaining([
-      "sync@1",
+      "sync@2",
       "rules-sync@1",
       "rules-review@1",
-      "knowledge-sync@2"
+      "knowledge-sync@3",
+      "codegraph-status@2"
     ]));
   });
 

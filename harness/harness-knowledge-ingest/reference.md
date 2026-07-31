@@ -16,6 +16,9 @@ description: harness-knowledge-ingest 的命令详细示例、config.json 配置
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<project-root>'"
 ```
 
+省略子命令时也进入 `auto`；旧命令可放在 `admin` 后继续调用，例如
+`admin audit --project <root>`。
+
 `auto` 会按默认维护顺序执行：首建 `config.json`（若缺失）、`sync --update`、**默认写回** validator 建议、`verify`、`audit`。首次发现 `.harness/knowledge/config.json` 不存在时，会写入启用版 `autoPromote` + `activeLifecycle.autoDemote` + `knowledgeValidation.autoDemoteActive` + `judge.maxCandidatesPerRun` 配置。
 
 关闭 validator 写回：
@@ -35,7 +38,11 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto 
 
 - **conflicted**：优先 `supersede` 较旧/较弱证据方；对称难判 → `keep-conflict` + reason
 - **candidate**：`decision|api-contract|requirement|pitfall` 且 confidence 高 → `promote`；`implementation|test-evidence` 倾向 `drop` 或保持 candidate
-- 超过 `judge.maxCandidatesPerRun`（默认 100）的低分 candidate：跳过，记入 `skippedCandidates`
+- `requiredDecisionCount` 是完整总量，`previewCount` 才受
+  `judge.maxCandidatesPerRun`（默认 100）限制。
+- publication gate 阻断项计入 `quarantinedCount`，不进入待裁决单位。
+- 超出预览窗口的 candidate 计入 `deferredByLimitCount`，不能让
+  `pendingAgentJudge` 误报为窗口大小。
 
 ```powershell
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' judge --project '<project-root>' --export '<export.json>'"
@@ -65,15 +72,18 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' inges
 ### Sync knowledge
 
 ```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync --project '<project-root>'"
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' status --project '<project-root>'"
 ```
 
-检查 `.harness/knowledge` 是否与 `.harness/archive` 和当前 HEAD 一致。输出 JSON 包含：
+严格只读地检查 `.harness/knowledge` 是否与 `.harness/archive` 和当前 HEAD 一致。也可用
+兼容命令 `sync --check`。输出 JSON 包含：
 
 - `upToDate`
 - `reasons`
 - `archiveCount`
 - `paths`
+- `freshness`
+- `health`（lifecycle/review/publication/validation 四个独立维度）
 
 如果希望发现过期后自动刷新：
 
@@ -86,6 +96,24 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync 
 ```powershell
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync --project '<project-root>' --update --no-incremental"
 ```
+
+### Repair
+
+先诊断、不写入：
+
+```powershell
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' repair all --project '<project-root>' --no-apply"
+```
+
+执行可证明的修复：
+
+```powershell
+powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' repair all --project '<project-root>'"
+```
+
+repair 处理归一化重复、冲突重算、旧 publication gate attestation 与报告保留。旧归档只有在
+authoritative summary/hash 和 source commit 均可独立验证时自动修复；其余项进入
+`needsConfirmation`，不得猜测或静默放行。
 
 ### Verify knowledge validators
 
@@ -129,7 +157,10 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' verif
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' suggest-validators --project '<project-root>' --limit 20"
 ```
 
-默认只生成建议和 `reports/validator-suggestions-*.md`，不会改写 entries。建议来源是当前 entry 的 `scope.sourceFiles`、正文/标题/关键词中的稳定 token，以及项目文件中的实际内容。当前只生成安全的 `file_exists` / `file_contains` 建议。
+默认只生成建议和 content-addressed report，不会改写 entries。结果分别报告
+`eligible/selected/suggested/applied/remaining/unavailable`。建议来源是当前 entry 的
+`scope.sourceFiles`、正文/标题/关键词中的稳定 token，以及项目文件中的实际内容。
+当前只生成安全的 `file_exists` / `file_contains` 建议。
 
 如需把建议写入 entry JSON：
 
@@ -145,12 +176,18 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sugge
 powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' promote --project '<project-root>' --id '<entry-id>' --note '<人工确认说明>'"
 ```
 
-**发布门禁（archive publication gate）**：promote / judge apply / autoPromote 只处理来自**已验证归档**的条目。以下来源归档会被阻断并在条目上标记 `lifecycle.publishBlocked`（ingest 仍可生成 quarantined candidate，但不得 active/promote）：
+**发布门禁（archive publication gate）**：promote / judge apply / autoPromote 只处理
+knowledge publication 证据通过的条目。它与归档 release status 独立：归档为 WARN 但
+source consistency 与 authoritative pointer/hash 均通过时，知识可以发布，同时保留
+`archiveReleaseEligibility` advisory。以下来源归档会被阻断并在条目上标记
+`lifecycle.publishBlocked`：
 
 - 归档 summary 缺少 `reportPipeline.sourceConsistency`（source consistency 未运行）或 `ok=false`；
 - `derived/authoritative.json` pointer 缺失、版本目录不可读，或 repair record / pointer 的 summary hash 不匹配（DEGRADED）。
 
-修复路径：先运行 `harness_archive.py repair` 生成通过两层 validator 的新 derived version，再重新 ingest（旧错误条目标记 superseded），之后 promote 才放行。
+修复路径：优先运行本 skill 的 `repair legacy-publication-gates`。只有 summary/hash/source
+commit 都可证明时才生成 attestation；否则输出 `needsConfirmation`。也可由 archive repair
+生成通过 validator 的新 derived version，再重新 ingest。
 
 将一条 `candidate` 提升为 `active`，写入：
 
@@ -288,6 +325,20 @@ powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge_mcp.py'"
 - `harness_knowledge_demote`
 
 ## 变更日志
+
+## v1.15 补充能力（sync/knowledge retrospective hardening）
+
+- 默认无参数进入 `auto`；新增严格只读 `status`、`sync --check`、`repair all` 与
+  `admin <legacy-command>` 兼容入口。
+- 显式 `knowledgeCandidates[]` 为首选来源，process observation 不再进入长期知识。
+- 内容去重改为归一化指纹；冲突要求共同实体、来源范围与双方 evidence。
+- freshness 与 health 分离，health 按 lifecycle/review/publication/validation 正交报告。
+- judge 输出完整 `requiredDecisionCount`、有界 `previewCount` 和 `quarantinedCount`；
+  blocked 条目不进入 judge；defer 绑定证据指纹。
+- knowledge publication gate 与 archive release status 解耦，legacy gate 仅在可证明时修复。
+- judge/rollback 等 JSON 报告采用 content-addressed 文件、`latest-*` 指针与有界保留；
+  rollback snapshot 使用 gzip。
+- validator 建议输出 `eligible/selected/applied/remaining/unavailable`。
 
 ## v1.7 补充能力
 

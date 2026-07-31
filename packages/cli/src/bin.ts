@@ -252,6 +252,11 @@ export async function runCli(
     .option("--project <path>", "项目根目录")
     .option("--profile <profile>", "interactive | general | java", "interactive")
     .option("--progress <mode>", "jsonl | text | none", "jsonl")
+    .option("--check", "完整、纯只读评估所有组件（--dry-run 兼容别名）")
+    .option("--apply <mode>", "执行安全修复；当前支持 safe")
+    .option("--fix <remediation-id>", "执行指定 remediation")
+    .option("--verbose", "在 JSON 中包含完整组件 receipts")
+    .option("--include-components", "兼容别名：在 JSON 中包含完整组件 receipts")
     .action(async (options: SyncCommandOptions) => {
       exitCode = await runSync(
         { ...program.opts<SyncCommandOptions>(), ...options },

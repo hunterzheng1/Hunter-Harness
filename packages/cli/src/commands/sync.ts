@@ -24,7 +24,11 @@ import { detectProject } from "./refresh.js";
 import { resolvePythonRuntime, type PythonRuntimeResolution } from "../runtime/python.js";
 import { assessCodeGraphStatus } from "../sync/codegraph-status.js";
 import { observeGitDelta } from "../sync/git-delta.js";
-import { CLI_CAPABILITIES } from "../workflow-data/compatibility.js";
+import {
+  assessWorkflowCompatibility,
+  CLI_CAPABILITIES
+} from "../workflow-data/compatibility.js";
+import { readWorkflowFamilyManifest } from "../workflow-data/resolve.js";
 import { readCliVersion } from "../version.js";
 
 export interface SyncCommandOptions {
@@ -32,12 +36,24 @@ export interface SyncCommandOptions {
   profile?: string;
   json?: boolean;
   dryRun?: boolean;
+  check?: boolean;
+  apply?: "safe";
+  fix?: string;
+  yes?: boolean;
+  verbose?: boolean;
+  includeComponents?: boolean;
   progress?: "jsonl" | "text" | "none";
 }
 
-export type SyncStatus = "OK" | "WARN" | "FAIL" | "BLOCKED" | "UNKNOWN";
+export type SyncStatus =
+  | "OK"
+  | "ADVISORY"
+  | "WARN"
+  | "FAIL"
+  | "BLOCKED"
+  | "UNKNOWN";
 
-interface ComponentReceipt {
+export interface ComponentReceipt {
   component: string;
   status: SyncStatus;
   reasonCode: string;
@@ -53,6 +69,29 @@ interface ComponentReceipt {
     notPersisted: string[];
   };
   details?: unknown;
+}
+
+export interface SyncRemediation {
+  id: string;
+  component: string;
+  severity: "ADVISORY" | "WARN" | "FAIL";
+  title: string;
+  autoFixable: boolean;
+  risk: "low" | "medium" | "high";
+  writes: string[];
+  backup: string | null;
+  rollback: string | null;
+  estimatedDurationMs: number | null;
+  requiresConfirmation: boolean;
+  previewCommand: string;
+  applyCommand: string;
+  affectedCount?: number;
+}
+
+export interface SyncVersions {
+  cliVersion: string;
+  workflowBundleVersion: string | null;
+  adapterBundleVersions: Record<string, string>;
 }
 
 export interface ProcessResult {
@@ -363,15 +402,259 @@ function overallStatus(components: readonly ComponentReceipt[]): SyncStatus {
   if (components.some((item) => item.status === "FAIL")) return "FAIL";
   if (components.some((item) => item.status === "WARN")) return "WARN";
   if (components.some((item) => item.status === "UNKNOWN")) return "WARN";
+  if (components.some((item) => item.status === "ADVISORY")) return "ADVISORY";
   return "OK";
 }
 
 function statusCounts(components: readonly ComponentReceipt[]): Record<string, number> {
   return Object.fromEntries(
-    (["OK", "WARN", "FAIL", "BLOCKED", "UNKNOWN"] as const).map((status) => [
+    (["OK", "ADVISORY", "WARN", "FAIL", "BLOCKED", "UNKNOWN"] as const).map((status) => [
       status.toLowerCase(),
       components.filter((item) => item.status === status).length
     ])
+  );
+}
+
+function adapterName(targetPath: string): string {
+  const match = /^\.(agents|claude|codebuddy|cursor)(?:\/|$)/.exec(
+    targetPath.replaceAll("\\", "/")
+  );
+  return match?.[1] ?? "unknown";
+}
+
+const ADAPTER_REMEDIATION_AGENTS = {
+  agents: "codex",
+  claude: "claude-code",
+  cursor: "cursor",
+  codebuddy: "codebuddy"
+} as const satisfies Record<string, HarnessAgent>;
+
+export function adapterAgentForRemediation(
+  remediationId: string | undefined
+): HarnessAgent | null {
+  const prefix = "refresh-managed-adapters-";
+  if (remediationId === undefined || !remediationId.startsWith(prefix)) return null;
+  const adapter = remediationId.slice(prefix.length);
+  return ADAPTER_REMEDIATION_AGENTS[
+    adapter as keyof typeof ADAPTER_REMEDIATION_AGENTS
+  ] ?? null;
+}
+
+export function buildSyncRemediations(
+  components: readonly ComponentReceipt[]
+): SyncRemediation[] {
+  const remediations: SyncRemediation[] = [];
+  for (const component of components) {
+    if (component.status === "OK") continue;
+    const details = asRecord(component.details);
+    if (component.component === "adapter-projection") {
+      const conflicts = Array.isArray(details?.conflicts)
+        ? details.conflicts.filter((item): item is Record<string, unknown> =>
+            item !== null && typeof item === "object" && !Array.isArray(item)
+          )
+        : [];
+      const grouped = new Map<string, Record<string, unknown>[]>();
+      for (const conflict of conflicts) {
+        const target = typeof conflict.target_path === "string"
+          ? conflict.target_path
+          : "unknown";
+        const adapter = adapterName(target);
+        grouped.set(adapter, [...(grouped.get(adapter) ?? []), conflict]);
+      }
+      for (const [adapter, adapterConflicts] of grouped) {
+        remediations.push({
+          id: `refresh-managed-adapters-${adapter}`,
+          component: component.component,
+          severity: "WARN",
+          title: `${adapter} Adapter bundle drift (${adapterConflicts.length} files)`,
+          autoFixable: adapter !== "unknown",
+          risk: "medium",
+          writes: adapter === "unknown"
+            ? []
+            : [
+                `.${adapter}/**`,
+                ".harness/rules/**",
+                ".harness/runtime/sync/**",
+                ".harness/context-index.json"
+              ],
+          backup: ".harness/state/transactions/<latest-committed-refresh>/before",
+          rollback: "automatic-on-failure; otherwise restore the committed refresh before snapshot before further edits",
+          estimatedDurationMs: 3_000,
+          requiresConfirmation: true,
+          previewCommand:
+            `hunter-harness sync --check --fix refresh-managed-adapters-${adapter} --json`,
+          applyCommand: adapter === "unknown"
+            ? ""
+            : `hunter-harness sync --fix refresh-managed-adapters-${adapter} --yes --json`,
+          affectedCount: adapterConflicts.length
+        });
+      }
+      continue;
+    }
+    if (component.component === "knowledge") {
+      remediations.push({
+        id: "knowledge-maintain",
+        component: component.component,
+        severity: component.status === "FAIL"
+          ? "FAIL"
+          : component.status === "ADVISORY"
+            ? "ADVISORY"
+            : "WARN",
+        title: "Repair and maintain the project knowledge index",
+        autoFixable: component.status !== "FAIL",
+        risk: "low",
+        writes: [
+          ".harness/knowledge/**",
+          ".harness/runtime/sync/**",
+          ".harness/context-index.json"
+        ],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: false,
+        previewCommand: "hunter-harness sync --check --json",
+        applyCommand: "hunter-harness sync --apply safe --json"
+      });
+      continue;
+    }
+    if (component.component === "rules" &&
+        component.reasonCode === "RULE_REVIEW_PENDING") {
+      remediations.push({
+        id: "review-rule-candidates",
+        component: component.component,
+        severity: "ADVISORY",
+        title: "Review pending rule candidates",
+        autoFixable: false,
+        risk: "medium",
+        writes: [".harness/rules/**"],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: true,
+        previewCommand: "hunter-harness rules-review --json",
+        applyCommand: "hunter-harness rules-review --apply <decisions.json> --json"
+      });
+      continue;
+    }
+    remediations.push({
+      id: `resolve-${component.component}`,
+      component: component.component,
+      severity: component.status === "FAIL"
+        ? "FAIL"
+        : component.status === "ADVISORY"
+          ? "ADVISORY"
+          : "WARN",
+      title: `Resolve ${component.reasonCode}`,
+      autoFixable: false,
+      risk: "medium",
+      writes: [],
+      backup: null,
+      rollback: null,
+      estimatedDurationMs: null,
+      requiresConfirmation: true,
+      previewCommand: "hunter-harness sync --check --json",
+      applyCommand: ""
+    });
+  }
+  return remediations.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function buildCompactSyncResult(input: {
+  status: SyncStatus;
+  runId: string;
+  components: readonly ComponentReceipt[];
+  remediations: readonly SyncRemediation[];
+  versions: SyncVersions;
+  reportPath: string | null;
+  reportSha256: string | null;
+  verbose: boolean;
+}): Record<string, unknown> {
+  return {
+    status: input.status,
+    runId: input.runId,
+    components: statusCounts(input.components),
+    versions: input.versions,
+    remediations: input.remediations,
+    reportPath: input.reportPath,
+    reportSha256: input.reportSha256,
+    ...(input.verbose
+      ? {
+          componentOutcomes: input.components,
+          partialEffects: summarizePartialEffects(input.components)
+        }
+      : {})
+  };
+}
+
+async function readJsonRecord(path: string): Promise<Record<string, unknown> | null> {
+  try {
+    const value = JSON.parse(await readFile(path, "utf8")) as unknown;
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readSyncVersions(
+  root: string,
+  resourcesRoot: string,
+  cliVersion: string
+): Promise<SyncVersions> {
+  const workflow = await readJsonRecord(join(resourcesRoot, "hunter-workflow-family.json"));
+  const context = await readJsonRecord(join(root, ".harness", "context-index.json"));
+  const bundles = asRecord(context?.skill_bundles);
+  const adapterBundleVersions: Record<string, string> = {};
+  for (const [adapter, raw] of Object.entries(bundles ?? {})) {
+    const bundle = asRecord(raw);
+    const version = bundle?.registry_version;
+    if (typeof version === "string") adapterBundleVersions[adapter] = version;
+  }
+  return {
+    cliVersion,
+    workflowBundleVersion: typeof workflow?.bundle_version === "string"
+      ? workflow.bundle_version
+      : null,
+    adapterBundleVersions
+  };
+}
+
+function syncExitCode(status: SyncStatus): number {
+  if (status === "OK" || status === "ADVISORY") return 0;
+  if (status === "WARN") return 5;
+  if (status === "BLOCKED") return 7;
+  return 1;
+}
+
+function humanSyncSummary(payload: Record<string, unknown>): string {
+  const counts = asRecord(payload.components) ?? {};
+  const remediations = Array.isArray(payload.remediations)
+    ? payload.remediations
+    : [];
+  const reportPath = typeof payload.reportPath === "string"
+    ? payload.reportPath
+    : "read-only check (no report written)";
+  return [
+    `Sync ${String(payload.status)}: ` +
+      `${String(counts.ok ?? 0)} OK, ` +
+      `${String(counts.advisory ?? 0)} advisory, ` +
+      `${String(counts.warn ?? 0)} WARN, ` +
+      `${String(counts.fail ?? 0)} FAIL.`,
+    `Remediations: ${remediations.length}.`,
+    `Report: ${reportPath}`
+  ].join("\n") + "\n";
+}
+
+function emitSyncResult(
+  dependencies: CommandDependencies,
+  options: SyncCommandOptions,
+  payload: Record<string, unknown>
+): void {
+  dependencies.stdout(
+    options.json === true
+      ? JSON.stringify(payload) + "\n"
+      : humanSyncSummary(payload)
   );
 }
 
@@ -479,6 +762,13 @@ export function classifyKnowledgeResult(
 ): { status: SyncStatus; reasonCode: string } {
   if (result.exitCode === 0 && !result.timedOut) {
     if (outputValid) {
+      const health = asRecord(payload?.health);
+      if (health?.status === "WARN") {
+        return { status: "WARN", reasonCode: "KNOWLEDGE_HEALTH_WARN" };
+      }
+      if (health?.status === "ADVISORY") {
+        return { status: "ADVISORY", reasonCode: "KNOWLEDGE_HEALTH_ADVISORY" };
+      }
       return { status: "OK", reasonCode: "OK" };
     }
     if (isKnowledgeOutboxPending(payload)) {
@@ -516,6 +806,10 @@ export function resolveKnowledgeNextAction(
     return payloadNextAction;
   }
   switch (reasonCode) {
+    case "KNOWLEDGE_HEALTH_WARN":
+      return "Run `hunter-harness sync --apply safe --json` to apply deterministic knowledge repairs, then inspect the freshness and health summaries.";
+    case "KNOWLEDGE_HEALTH_ADVISORY":
+      return "Inspect the knowledge health dimensions; no freshness failure blocks this sync.";
     case "KNOWLEDGE_OUTBOX_PENDING":
       return (
         "Retry `hunter-harness sync`, or run `python harness/harness-knowledge-ingest/" +
@@ -647,6 +941,52 @@ export async function persistSyncPointers(
   }
 }
 
+export function shouldApplyKnowledgeMaintenance(
+  options: Pick<SyncCommandOptions, "apply" | "fix">,
+  checkMode: boolean
+): boolean {
+  return !checkMode &&
+    (options.apply === "safe" || options.fix === "knowledge-maintain");
+}
+
+export interface SyncWritePolicy {
+  adapterReadOnly: boolean;
+  knowledgeMode: "check" | "update" | "auto";
+  rulesReadOnly: boolean;
+}
+
+export function deriveSyncWritePolicy(
+  options: Pick<SyncCommandOptions, "apply" | "fix">,
+  checkMode: boolean
+): SyncWritePolicy {
+  if (checkMode) {
+    return {
+      adapterReadOnly: true,
+      knowledgeMode: "check",
+      rulesReadOnly: true
+    };
+  }
+  if (options.fix?.startsWith("refresh-managed-adapters-") === true) {
+    return {
+      adapterReadOnly: false,
+      knowledgeMode: "check",
+      rulesReadOnly: true
+    };
+  }
+  if (shouldApplyKnowledgeMaintenance(options, checkMode)) {
+    return {
+      adapterReadOnly: true,
+      knowledgeMode: "auto",
+      rulesReadOnly: true
+    };
+  }
+  return {
+    adapterReadOnly: false,
+    knowledgeMode: "update",
+    rulesReadOnly: false
+  };
+}
+
 export async function runSync(
   options: SyncCommandOptions,
   dependencies: CommandDependencies
@@ -656,10 +996,52 @@ export async function runSync(
   const components: ComponentReceipt[] = [];
   const runStartedAt = nowIso();
   const cliVersion = await readCliVersion();
-  components.push(receipt("capabilities", Date.now(), "OK", "OK", {
+  const versions = await readSyncVersions(root, dependencies.resourcesRoot, cliVersion);
+  const checkMode = options.check === true || options.dryRun === true;
+  const writePolicy = deriveSyncWritePolicy(options, checkMode);
+  const verbose = options.verbose === true || options.includeComponents === true;
+  const requestedApplyMode = (options as { apply?: unknown }).apply;
+  if (requestedApplyMode !== undefined && requestedApplyMode !== "safe") {
+    dependencies.stderr(`SYNC_APPLY_MODE_INVALID: ${String(requestedApplyMode)}\n`);
+    return 3;
+  }
+  if (
+    options.fix !== undefined &&
+    options.fix !== "knowledge-maintain" &&
+    adapterAgentForRemediation(options.fix) === null
+  ) {
+    dependencies.stderr(`SYNC_REMEDIATION_UNKNOWN: ${options.fix}\n`);
+    return 3;
+  }
+  const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
+  const compatibility = assessWorkflowCompatibility(workflowManifest, {
     cliVersion,
     capabilities: CLI_CAPABILITIES
+  });
+  components.push(receipt(
+    "capabilities",
+    Date.now(),
+    compatibility.compatible ? "OK" : "BLOCKED",
+    compatibility.reasonCode,
+    {
+    ...versions,
+    capabilities: CLI_CAPABILITIES,
+    compatibility
   }));
+  if (!compatibility.compatible) {
+    const compact = buildCompactSyncResult({
+      status: "BLOCKED",
+      runId,
+      components,
+      remediations: buildSyncRemediations(components),
+      versions,
+      reportPath: null,
+      reportSha256: null,
+      verbose
+    });
+    emitSyncResult(dependencies, options, compact);
+    return 7;
+  }
 
   const runtimeStarted = Date.now();
   const runtime = await resolvePythonRuntime({
@@ -674,17 +1056,18 @@ export async function runSync(
     runtime
   ));
   if (!runtime.available) {
-    const partialEffects = summarizePartialEffects(components);
-    const compact = {
-      status: "BLOCKED",
+    const remediations = buildSyncRemediations(components);
+    const compact = buildCompactSyncResult({
+      status: "BLOCKED" as const,
       runId,
-      components: statusCounts(components),
-      componentOutcomes: components,
-      partialEffects,
+      components,
+      remediations,
+      versions,
       reportPath: null,
-      reportSha256: null
-    };
-    dependencies.stdout(JSON.stringify(compact) + "\n");
+      reportSha256: null,
+      verbose
+    });
+    emitSyncResult(dependencies, options, compact);
     return 7;
   }
 
@@ -696,16 +1079,17 @@ export async function runSync(
       "BLOCKED",
       detection.status === "absent" ? "PROJECT_NOT_INITIALIZED" : "PROJECT_CONFIG_INVALID"
     ));
-    const partialEffects = summarizePartialEffects(components);
-    dependencies.stdout(JSON.stringify({
-      status: "BLOCKED",
+    const compact = buildCompactSyncResult({
+      status: "BLOCKED" as const,
       runId,
-      components: statusCounts(components),
-      componentOutcomes: components,
-      partialEffects,
+      components,
+      remediations: buildSyncRemediations(components),
+      versions,
       reportPath: null,
-      reportSha256: null
-    }) + "\n");
+      reportSha256: null,
+      verbose
+    });
+    emitSyncResult(dependencies, options, compact);
     return 7;
   }
   const agents = configuredAgents(detection.config.adapters.enabled);
@@ -727,6 +1111,22 @@ export async function runSync(
     selectedProfile,
     primaryAgent
   );
+  const adapterFixRequested = options.fix?.startsWith(
+    "refresh-managed-adapters-"
+  ) === true;
+  const adapterFixAgent = adapterAgentForRemediation(options.fix);
+  if (adapterFixRequested && !checkMode && options.yes !== true) {
+    dependencies.stderr(
+      "SYNC_REMEDIATION_CONFIRMATION_REQUIRED: adapter refresh requires --yes\n"
+    );
+    return 3;
+  }
+  if (adapterFixAgent !== null && !agents.includes(adapterFixAgent)) {
+    dependencies.stderr(
+      `SYNC_REMEDIATION_UNAVAILABLE: ${options.fix} is not enabled in this project\n`
+    );
+    return 3;
+  }
 
   const gitStarted = Date.now();
   const gitDelta = await observeGitDelta(root);
@@ -744,10 +1144,10 @@ export async function runSync(
       projectRoot: root,
       resourcesRoot: dependencies.resourcesRoot,
       profile: selectedProfile,
-      agents,
+      agents: adapterFixAgent === null ? agents : [adapterFixAgent],
       codebuddySurface: surface,
-      dryRun: options.dryRun === true,
-      forceManaged: false
+      dryRun: writePolicy.adapterReadOnly,
+      forceManaged: adapterFixRequested && options.yes === true
     });
     const promotionCandidates = buildPromoteCandidates(result.conflicts);
     components.push(receipt(
@@ -759,24 +1159,24 @@ export async function runSync(
         applied: result.applied.length,
         removed: result.removed.length,
         preserved: result.preserved.length,
-        conflicts: result.conflicts.slice(0, 20),
+        conflicts: result.conflicts,
         promotionCandidates
       },
       result.conflicts.length === 0
         ? null
         : "Review the source/adapter hashes and diff summaries in this receipt. For each intended patch, modify the matching `harness/` source of truth, run focused tests, then refresh adapters; do not overwrite local adapter edits.",
       {
-        persisted: options.dryRun === true
+        persisted: writePolicy.adapterReadOnly
           ? []
           : [
               ...(result.applied.length > 0 ? [`adapter projection applied ${result.applied.length} change(s)`] : []),
               ...(result.removed.length > 0 ? [`adapter projection removed ${result.removed.length} clean target(s)`] : [])
             ],
         notPersisted: [
-          ...(options.dryRun === true && result.applied.length > 0
+          ...(writePolicy.adapterReadOnly && result.applied.length > 0
             ? [`adapter projection previewed ${result.applied.length} change(s)`]
             : []),
-          ...(options.dryRun === true && result.removed.length > 0
+          ...(writePolicy.adapterReadOnly && result.removed.length > 0
             ? [`adapter projection previewed removal of ${result.removed.length} clean target(s)`]
             : []),
           ...(result.conflicts.length === 0
@@ -804,18 +1204,25 @@ export async function runSync(
     "scripts",
     "harness_knowledge.py"
   );
+  const knowledgeArgs = writePolicy.knowledgeMode === "auto"
+    ? [
+        "auto",
+        "--project",
+        root
+      ]
+    : [
+        "sync",
+        "--project",
+        root,
+        ...(writePolicy.knowledgeMode === "check" ? ["--check"] : ["--update"]),
+        "--json",
+        "--progress",
+        options.progress ?? "jsonl"
+      ];
   const knowledge = await runPythonComponent(
     runtime,
     knowledgeScript,
-    [
-      "sync",
-      "--project",
-      root,
-      ...(options.dryRun === true ? [] : ["--update"]),
-      "--json",
-      "--progress",
-      options.progress ?? "jsonl"
-    ],
+    knowledgeArgs,
     root,
     dependencies,
     options.progress,
@@ -880,10 +1287,10 @@ export async function runSync(
     },
     knowledgeNextAction,
     {
-      persisted: knowledgeOutputValid && options.dryRun !== true
+      persisted: knowledgeOutputValid && writePolicy.knowledgeMode !== "check"
         ? ["knowledge sync returned verified output"]
         : [],
-      notPersisted: knowledgeOutputValid || options.dryRun === true
+      notPersisted: knowledgeOutputValid || writePolicy.knowledgeMode === "check"
         ? []
         : ["knowledge output was not verified"]
     }
@@ -891,32 +1298,54 @@ export async function runSync(
 
   const rulesStarted = Date.now();
   try {
-    if (options.dryRun !== true) {
-      const projections = await synchronizeProjectRules(root, agents, surface);
-      const candidates = await synchronizeRuleCandidates(root);
-      components.push(receipt(
-        "rules",
-        rulesStarted,
-        projections.conflicts.length === 0 ? "OK" : "WARN",
-        projections.conflicts.length === 0 ? "OK" : "RULE_PROJECTION_CONFLICT",
-        {
-          applied: projections.written.length,
-          conflicts: projections.conflicts.slice(0, 5),
-          pendingReview: candidates.candidates
-        },
-        undefined,
-        {
-          persisted: projections.written.length > 0
-            ? [`rule projection wrote ${projections.written.length} file(s)`]
-            : [],
-          notPersisted: projections.conflicts.length > 0
+    const projections = await synchronizeProjectRules(
+      root,
+      agents,
+      surface,
+      { dryRun: writePolicy.rulesReadOnly }
+    );
+    const candidates = await synchronizeRuleCandidates(
+      root,
+      { dryRun: writePolicy.rulesReadOnly }
+    );
+    const rulesStatus: SyncStatus = projections.conflicts.length > 0
+      ? "WARN"
+      : candidates.candidates > 0
+        ? "ADVISORY"
+        : "OK";
+    const rulesReason = projections.conflicts.length > 0
+      ? "RULE_PROJECTION_CONFLICT"
+      : candidates.candidates > 0
+        ? "RULE_REVIEW_PENDING"
+        : "OK";
+    components.push(receipt(
+      "rules",
+      rulesStarted,
+      rulesStatus,
+      rulesReason,
+      {
+        projected: projections.written.length,
+        preview: writePolicy.rulesReadOnly,
+        conflicts: projections.conflicts,
+        pendingReview: candidates.candidates,
+        guidanceReachability: "evaluated",
+        semanticQuality: "not-evaluated"
+      },
+      undefined,
+      {
+        persisted: !writePolicy.rulesReadOnly && projections.written.length > 0
+          ? [`rule projection wrote ${projections.written.length} file(s)`]
+          : [],
+        notPersisted: [
+          ...(writePolicy.rulesReadOnly && projections.written.length > 0
+            ? [`rule projection previewed ${projections.written.length} file(s)`]
+            : []),
+          ...(projections.conflicts.length > 0
             ? [`${projections.conflicts.length} rule projection conflict(s) need review`]
-            : []
-        }
-      ));
-    } else {
-      components.push(receipt("rules", rulesStarted, "UNKNOWN", "DRY_RUN_NOT_EXECUTED"));
-    }
+            : [])
+        ]
+      }
+    ));
   } catch (error) {
     components.push(receipt(
       "rules",
@@ -956,7 +1385,11 @@ export async function runSync(
     ),
     {
       entrypointIntegrity: instructions.entrypointIntegrity,
-      effectiveGuidanceTopics: instructions.effectiveGuidanceTopics,
+      guidanceReachability: {
+        topics: instructions.effectiveGuidanceTopics,
+        status: instructions.status
+      },
+      semanticQuality: "not-evaluated",
       reachableFileCount: instructions.reachableFiles.length,
       reachableFileSamples: instructions.reachableFiles.slice(0, 20),
       unresolvedReferenceCount: instructions.diagnostics.unresolvedCount,
@@ -964,7 +1397,7 @@ export async function runSync(
       cycleCount: instructions.cycles.length,
       cycleSamples: instructions.cycles.slice(0, 10),
       edgeTypeCounts: instructions.diagnostics.edgeTypeCounts,
-      diagnosticsPath: options.dryRun === true
+      diagnosticsPath: checkMode
         ? null
         : instructionDiagnosticsRelative
     }
@@ -1023,6 +1456,7 @@ export async function runSync(
 
   const status = overallStatus(components);
   const partialEffects = summarizePartialEffects(components);
+  const remediations = buildSyncRemediations(components);
   const reportRelative = `.harness/runtime/sync/${runId}/reports/sync-report.json`;
   const reportAbsolute = join(root, reportRelative);
   const report = {
@@ -1033,20 +1467,24 @@ export async function runSync(
     status,
     projectRoot: root,
     headCommit: gitDelta.headCommit,
+    versions,
     components,
-    partialEffects
+    partialEffects,
+    remediations
   };
-  if (options.dryRun === true) {
-    dependencies.stdout(JSON.stringify({
+  if (checkMode) {
+    const compact = buildCompactSyncResult({
       status,
       runId,
-      components: statusCounts(components),
-      componentOutcomes: components,
-      partialEffects,
+      components,
+      remediations,
+      versions,
       reportPath: null,
-      reportSha256: null
-    }) + "\n");
-    return status === "OK" ? 0 : status === "WARN" ? 5 : status === "BLOCKED" ? 7 : 1;
+      reportSha256: null,
+      verbose
+    });
+    emitSyncResult(dependencies, options, compact);
+    return syncExitCode(status);
   }
   await mkdir(join(root, `.harness/runtime/sync/${runId}/reports`), { recursive: true });
   await atomicWriteJson(
@@ -1064,7 +1502,8 @@ export async function runSync(
     reportSha256,
     headCommit: gitDelta.headCommit
   };
-  const successful = status === "OK" || status === "WARN";
+  const successful =
+    status === "OK" || status === "ADVISORY" || status === "WARN";
   await persistSyncPointers(root, pointer, successful);
   await updateContextIndexMetadata(
     root,
@@ -1075,14 +1514,16 @@ export async function runSync(
     pointer,
     successful
   );
-  dependencies.stdout(JSON.stringify({
+  const compact = buildCompactSyncResult({
     status,
     runId,
-    components: statusCounts(components),
-    componentOutcomes: components,
-    partialEffects,
+    components,
+    remediations,
+    versions,
     reportPath: reportRelative,
-    reportSha256
-  }) + "\n");
-  return status === "OK" ? 0 : status === "WARN" ? 5 : status === "BLOCKED" ? 7 : 1;
+    reportSha256,
+    verbose
+  });
+  emitSyncResult(dependencies, options, compact);
+  return syncExitCode(status);
 }

@@ -8,15 +8,14 @@ import {
 } from "../../../scripts/skill-command-contract.mjs";
 
 describe("packaged Skill command contract", () => {
-  it("extracts the fail-fast capability handshake and unified sync entrypoint", async () => {
+  it("uses sync as the single entrypoint with its internal capability gate", async () => {
     const skill = await readFile(
       join(process.cwd(), "harness", "harness-sync", "SKILL.md"),
       "utf8"
     );
     const commands = extractHunterHarnessCommands(skill);
 
-    expect(commands).toContain("capabilities");
-    expect(commands).toContain("sync");
+    expect(commands).toEqual(["sync"]);
   });
 
   it("deduplicates npx and direct CLI examples", () => {

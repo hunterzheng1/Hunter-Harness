@@ -194,4 +194,27 @@ describe("project rule projections", () => {
     expect(agents).toContain("# User instructions");
     expect(agents).not.toContain("hunter-harness-project-rules");
   });
+
+  it("previews every rule projection without writing project files", async () => {
+    const root = await mkdtemp(join(tmpdir(), "harness-rules-check-"));
+    await mkdir(join(root, ".harness", "rules"), { recursive: true });
+    await writeFile(join(root, ".harness", "rules", "team.md"), "shared\n", "utf8");
+
+    const result = await synchronizeProjectRules(
+      root,
+      ["claude-code", "codex", "cursor"],
+      "both",
+      { dryRun: true }
+    );
+
+    expect(result.written).toEqual([
+      ".claude/rules/team.md",
+      ".cursor/rules/team.mdc",
+      "AGENTS.md"
+    ]);
+    await expect(readFile(join(root, ".claude", "rules", "team.md"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(root, ".harness", "state", "local", "rule-projections.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
 });

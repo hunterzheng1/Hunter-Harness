@@ -111,4 +111,119 @@ describe("CodeGraph status assessment", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("uses CodeGraph status as the authoritative pending source", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-api-"));
+    const graph = join(root, ".codegraph");
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(graph, { recursive: true });
+    try {
+      const indexed = new Date(NOW.getTime() - 1_000);
+      await writeFile(join(root, "src", "app.ts"), "export const value = 1;\n");
+      await writeFile(join(graph, "codegraph.db"), "index");
+      await writeFile(
+        join(graph, "daemon.pid"),
+        JSON.stringify({ pid: 42, socketPath: "\\\\.\\pipe\\codegraph-test" })
+      );
+      await writeFile(
+        join(graph, "daemon.log"),
+        "[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n"
+      );
+      await utimes(join(root, "src", "app.ts"), indexed, indexed);
+      await utimes(join(graph, "codegraph.db"), indexed, indexed);
+
+      const result = await assessCodeGraphStatus(root, {
+        now: () => NOW,
+        socketProbe: async () => true,
+        statusProbe: async () => ({
+          initialized: true,
+          lastIndexed: indexed.toISOString(),
+          pendingChanges: { added: 1, modified: 2, removed: 1 },
+          index: { state: "complete" }
+        })
+      });
+
+      expect(result.pendingSource).toBe("codegraph-api");
+      expect(result.pendingFileCount).toBe(4);
+      expect(result.coverage).toBe("PENDING");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not use daemon log mtime as index observation time", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-log-"));
+    const graph = join(root, ".codegraph");
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(graph, { recursive: true });
+    try {
+      const databaseTime = new Date(NOW.getTime() - 60_000);
+      const sourceTime = new Date(NOW.getTime() - 30_000);
+      const logTime = new Date(NOW.getTime() - 1_000);
+      await writeFile(join(root, "src", "app.ts"), "export const value = 2;\n");
+      await writeFile(join(graph, "codegraph.db"), "index");
+      await writeFile(
+        join(graph, "daemon.pid"),
+        JSON.stringify({ pid: 42, socketPath: "\\\\.\\pipe\\codegraph-test" })
+      );
+      await writeFile(
+        join(graph, "daemon.log"),
+        "[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n"
+      );
+      await utimes(join(graph, "codegraph.db"), databaseTime, databaseTime);
+      await utimes(join(root, "src", "app.ts"), sourceTime, sourceTime);
+      await utimes(join(graph, "daemon.log"), logTime, logTime);
+
+      const result = await assessCodeGraphStatus(root, {
+        now: () => NOW,
+        socketProbe: async () => true,
+        statusProbe: async () => null
+      });
+
+      expect(result.pendingSource).toBe("database-scan");
+      expect(result.indexObservedAt).toBe(databaseTime.toISOString());
+      expect(result.pendingFileCount).toBe(1);
+      expect(result.coverage).toBe("PENDING");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores adapter and non-indexable files in the database fallback scan", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-ignore-"));
+    const graph = join(root, ".codegraph");
+    await mkdir(join(root, ".agents", "skills", "example"), { recursive: true });
+    await mkdir(graph, { recursive: true });
+    try {
+      const databaseTime = new Date(NOW.getTime() - 60_000);
+      const changed = new Date(NOW.getTime() - 1_000);
+      await writeFile(join(graph, "codegraph.db"), "index");
+      await writeFile(
+        join(graph, "daemon.pid"),
+        JSON.stringify({ pid: 42, socketPath: "\\\\.\\pipe\\codegraph-test" })
+      );
+      await writeFile(
+        join(graph, "daemon.log"),
+        "[CodeGraph MCP] File watcher active — graph will auto-sync on changes\n"
+      );
+      const adapter = join(root, ".agents", "skills", "example", "SKILL.md");
+      await writeFile(adapter, "# refreshed adapter\n");
+      await writeFile(join(root, "README.md"), "# changed docs\n");
+      await utimes(join(graph, "codegraph.db"), databaseTime, databaseTime);
+      await utimes(adapter, changed, changed);
+      await utimes(join(root, "README.md"), changed, changed);
+
+      const result = await assessCodeGraphStatus(root, {
+        now: () => NOW,
+        socketProbe: async () => true,
+        statusProbe: async () => null
+      });
+
+      expect(result.pendingSource).toBe("database-scan");
+      expect(result.pendingFileCount).toBe(0);
+      expect(result.coverage).toBe("CURRENT");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

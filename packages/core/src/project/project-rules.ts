@@ -34,6 +34,10 @@ export interface ProjectRuleSyncResult {
   conflicts: string[];
 }
 
+export interface ProjectRuleSyncOptions {
+  dryRun?: boolean;
+}
+
 interface RuleImportCandidate {
   source: string;
   destination: string;
@@ -176,8 +180,10 @@ async function importAgentRules(
   root: string,
   canonicalRoot: string,
   previous: ProjectionReceipt,
-  result: ProjectRuleSyncResult
-): Promise<void> {
+  result: ProjectRuleSyncResult,
+  options: ProjectRuleSyncOptions
+): Promise<Map<string, string>> {
+  const virtualMigrations = new Map<string, string>();
   const grouped = new Map<string, RuleImportCandidate[]>();
   for (const candidate of await collectImportCandidates(root, previous, result)) {
     const values = grouped.get(candidate.destination) ?? [];
@@ -193,7 +199,10 @@ async function importAgentRules(
     const representative = candidates.at(0);
     if (representative === undefined) continue;
     if (current === null && distinct.size === 1) {
-      await atomicWrite(destinationPath, representative.content);
+      if (options.dryRun !== true) {
+        await atomicWrite(destinationPath, representative.content);
+      }
+      virtualMigrations.set(basename(destination), representative.content);
       result.migrated.push(destination);
       continue;
     }
@@ -204,6 +213,7 @@ async function importAgentRules(
     }
     result.conflicts.push(...candidates.map((candidate) => candidate.source));
   }
+  return virtualMigrations;
 }
 
 function targetsFor(
@@ -241,22 +251,36 @@ async function atomicWrite(path: string, content: string): Promise<void> {
 export async function synchronizeProjectRules(
   projectRoot: string,
   agents: readonly HarnessAgent[],
-  surface: CodeBuddySurface = "both"
+  surface: CodeBuddySurface = "both",
+  options: ProjectRuleSyncOptions = {}
 ): Promise<ProjectRuleSyncResult> {
   const root = resolve(projectRoot);
   const canonicalRoot = join(root, RULES_ROOT);
   const result: ProjectRuleSyncResult = {
     migrated: [], agent_specific: [], written: [], removed: [], unchanged: [], conflicts: []
   };
-  await mkdir(canonicalRoot, { recursive: true });
+  if (options.dryRun !== true) {
+    await mkdir(canonicalRoot, { recursive: true });
+  }
 
   const previous = await readReceipt(root);
-  await importAgentRules(root, canonicalRoot, previous, result);
+  const virtualMigrations = await importAgentRules(
+    root,
+    canonicalRoot,
+    previous,
+    result,
+    options
+  );
   const next: ProjectionReceipt = { schema_version: 1, source_hashes: {}, targets: {} };
   const desired = new Map<string, string>();
-  for (const name of await markdownFiles(canonicalRoot)) {
+  const canonicalNames = new Set([
+    ...await markdownFiles(canonicalRoot),
+    ...virtualMigrations.keys()
+  ]);
+  for (const name of [...canonicalNames].sort()) {
     const sourcePath = `${RULES_ROOT}/${name}`;
-    const content = await readFile(join(canonicalRoot, name), "utf8");
+    const content = virtualMigrations.get(name) ??
+      await readFile(join(canonicalRoot, name), "utf8");
     next.source_hashes[sourcePath] = sha256(content);
     for (const target of targetsFor(name, agents, surface)) desired.set(target, content);
   }
@@ -271,7 +295,9 @@ export async function synchronizeProjectRules(
       next.targets[target] = current === null ? incomingHash : sha256(current);
     } else if (current === null || previous.targets[target] === sha256(current)) {
       const projected = projectionContent(target, current, content);
-      await atomicWrite(path, projected);
+      if (options.dryRun !== true) {
+        await atomicWrite(path, projected);
+      }
       result.written.push(target);
       next.targets[target] = sha256(projected);
     } else {
@@ -287,7 +313,9 @@ export async function synchronizeProjectRules(
     const current = await optionalText(path);
     if (current === null) continue;
     if (sha256(current) === trustedHash) {
-      await unlink(path);
+      if (options.dryRun !== true) {
+        await unlink(path);
+      }
       result.removed.push(target);
     } else {
       result.conflicts.push(target);
@@ -311,7 +339,9 @@ export async function synchronizeProjectRules(
       current.replace(/\r\n/g, "\n").trimEnd();
     if (semanticallyEqual) result.unchanged.push(target);
     else {
-      await atomicWrite(agentsPath, updated);
+      if (options.dryRun !== true) {
+        await atomicWrite(agentsPath, updated);
+      }
       result.written.push(target);
     }
     if (rules.length > 0) {
@@ -323,13 +353,17 @@ export async function synchronizeProjectRules(
     if (current !== null) {
       const updated = removeManagedBlockById(current, CODEX_BLOCK_ID);
       if (updated !== current) {
-        await atomicWrite(agentsPath, updated);
+        if (options.dryRun !== true) {
+          await atomicWrite(agentsPath, updated);
+        }
         result.written.push("AGENTS.md");
       }
     }
   }
 
-  await atomicWrite(join(root, RECEIPT_PATH), JSON.stringify(next, null, 2) + "\n");
+  if (options.dryRun !== true) {
+    await atomicWrite(join(root, RECEIPT_PATH), JSON.stringify(next, null, 2) + "\n");
+  }
   result.migrated.sort();
   result.agent_specific.sort();
   result.written.sort();

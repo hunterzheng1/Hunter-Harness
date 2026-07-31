@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -42,8 +44,8 @@ ENTRY_TYPES = {
 }
 
 ENTRY_ID_SCHEMA_VERSION = 2
-ARCHIVE_CACHE_SCHEMA_VERSION = 2
-EXTRACTOR_SCHEMA_VERSION = 2
+ARCHIVE_CACHE_SCHEMA_VERSION = 3
+EXTRACTOR_SCHEMA_VERSION = 3
 _GIT_REPO_CACHE: dict[str, bool] = {}
 _GIT_COMMIT_CACHE: dict[tuple[str, str], bool] = {}
 _GIT_DIFF_CACHE: dict[tuple[str, str, tuple[str, ...]], list[str] | None] = {}
@@ -131,6 +133,92 @@ def write_text_if_changed(path: Path, text: str) -> bool:
 
 def json_clone(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def normalize_knowledge_text(value: Any) -> str:
+    """Canonical text used for identity-independent duplicate detection."""
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not text:
+        return ""
+    if text[:1] in {"{", "["}:
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        else:
+            return json.dumps(
+                parsed,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).casefold()
+    text = text.translate(str.maketrans({
+        "，": ",",
+        "。": ".",
+        "；": ";",
+        "：": ":",
+        "！": "!",
+        "？": "?",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+    }))
+    text = " ".join(text.split()).casefold()
+    return re.sub(r"\s*([,.;:!?])\s*", r"\1", text)
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _report_hash_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    stable = json_clone(payload)
+    stable.pop("generatedAt", None)
+    stable.pop("exportPath", None)
+    stable.pop("judgement", None)
+    return stable
+
+
+def update_latest_report_pointer(
+    knowledge: Path,
+    kind: str,
+    report_path: Path,
+    digest: str,
+) -> None:
+    latest_path = knowledge / "reports" / "latest.json"
+    latest: dict[str, Any] = {"schemaVersion": 1, "reports": {}}
+    if latest_path.exists():
+        try:
+            current = read_json(latest_path)
+            if isinstance(current, dict) and isinstance(current.get("reports"), dict):
+                latest = current
+        except (OSError, json.JSONDecodeError):
+            pass
+    reports = dict(latest.get("reports") or {})
+    reports[kind] = {
+        "path": str(report_path.relative_to(knowledge)).replace("\\", "/"),
+        "sha256": digest,
+    }
+    write_json_if_changed(
+        latest_path,
+        {"schemaVersion": 1, "reports": dict(sorted(reports.items()))},
+    )
+
+
+def write_content_addressed_json_report(
+    knowledge: Path,
+    kind: str,
+    payload: dict[str, Any],
+) -> tuple[Path, str]:
+    stable = _report_hash_payload(payload)
+    digest = sha256_text(
+        json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    path = knowledge / "reports" / f"{kind}-{digest}.json"
+    write_json_if_changed(path, payload)
+    update_latest_report_pointer(knowledge, kind, path, digest)
+    return path, digest
 
 
 def load_config(knowledge: Path) -> dict[str, Any]:
@@ -612,12 +700,48 @@ def discover_archive_summary_paths(project: Path) -> list[Path]:
     return selected
 
 
+def legacy_publication_attestation(
+    project: Path,
+    archive_rel: str,
+    summary_sha256: str,
+) -> dict[str, Any] | None:
+    path = project / ".harness" / "knowledge" / "publication-attestations.json"
+    if not path.exists():
+        return None
+    try:
+        payload = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    records = payload.get("records") if isinstance(payload, dict) else None
+    record = records.get(archive_rel) if isinstance(records, dict) else None
+    if (
+        isinstance(record, dict)
+        and record.get("status") == "verified"
+        and record.get("summarySha256") == summary_sha256
+    ):
+        return record
+    return None
+
+
 def _publication_status_from_resolution(
     project: Path,
     archive_dir: Path,
     resolution: dict[str, Any],
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"status": "missing", "allowed": False, "reasons": []}
+    result: dict[str, Any] = {
+        "status": "missing",
+        "allowed": False,
+        "reasons": [],
+        "archiveReleaseEligibility": {
+            "status": "UNKNOWN",
+            "eligible": False,
+        },
+        "knowledgePublicationEligibility": {
+            "status": "missing",
+            "allowed": False,
+            "reasons": [],
+        },
+    }
     if resolution.get("version"):
         result["authoritativeVersion"] = resolution["version"]
 
@@ -652,10 +776,58 @@ def _publication_status_from_resolution(
         result["reasons"].append("summary-data.json must be an object")
         return result
 
+    final_status = str(summary.get("finalStatus") or "").upper()
+    result["archiveReleaseEligibility"] = {
+        "status": final_status or "UNKNOWN",
+        "eligible": final_status in {"OK", "CONDITIONAL_OK"},
+    }
+    explicit_gate = summary.get("knowledgePublicationEligibility")
+    if isinstance(explicit_gate, dict):
+        explicit_allowed = explicit_gate.get("allowed") is True
+        explicit_reasons = [
+            str(reason) for reason in (explicit_gate.get("reasons") or [])
+        ]
+        result["knowledgePublicationEligibility"] = {
+            "status": str(explicit_gate.get("status") or (
+                "ok" if explicit_allowed else "unverified"
+            )).lower(),
+            "allowed": explicit_allowed,
+            "reasons": explicit_reasons,
+        }
+        result["status"] = (
+            "ok" if explicit_allowed
+            else result["knowledgePublicationEligibility"]["status"]
+        )
+        result["allowed"] = explicit_allowed
+        result["reasons"] = explicit_reasons
+        return result
+
     consistency = (summary.get("reportPipeline") or {}).get("sourceConsistency")
     if consistency is None:
+        archive_rel = rel_to_project(project, archive_dir)
+        attestation = legacy_publication_attestation(
+            project,
+            archive_rel,
+            summary_hash,
+        )
+        if attestation is not None:
+            result["status"] = "ok"
+            result["allowed"] = True
+            result["knowledgePublicationEligibility"] = {
+                "status": "ok",
+                "allowed": True,
+                "reasons": [],
+                "evidence": "legacy-publication-attestation",
+                "attestationSha256": attestation.get("attestationSha256"),
+            }
+            return result
         result["status"] = "unverified"
         result["reasons"].append("source consistency never ran")
+        result["knowledgePublicationEligibility"] = {
+            "status": "unverified",
+            "allowed": False,
+            "reasons": list(result["reasons"]),
+        }
         return result
     if not consistency.get("ok"):
         result["status"] = "failed"
@@ -667,18 +839,24 @@ def _publication_status_from_resolution(
         result["reasons"].append(
             "source consistency failed" + (f": {', '.join(codes)}" if codes else "")
         )
-        return result
-
-    final_status = str(summary.get("finalStatus") or "").upper()
-    if final_status not in {"OK", "CONDITIONAL_OK"}:
-        result["status"] = "degraded" if final_status == "DEGRADED" else "unverified"
-        result["reasons"].append(
-            f"authoritative finalStatus is not publishable: {final_status or 'missing'}"
-        )
+        result["knowledgePublicationEligibility"] = {
+            "status": "failed",
+            "allowed": False,
+            "reasons": list(result["reasons"]),
+        }
         return result
 
     result["status"] = "ok"
     result["allowed"] = True
+    result["knowledgePublicationEligibility"] = {
+        "status": "ok",
+        "allowed": True,
+        "reasons": [],
+    }
+    if final_status not in {"OK", "CONDITIONAL_OK"}:
+        result["archiveReleaseEligibility"]["advisory"] = (
+            "Archive release status does not blanket-block source-consistent knowledge."
+        )
     return result
 
 
@@ -1061,10 +1239,97 @@ def keyword_candidates(summary: dict[str, Any], extra: list[str] | None = None) 
     return tokens[:40]
 
 
+def looks_like_process_observation(text: str) -> bool:
+    normalized = normalize_knowledge_text(text).lower()
+    process_markers = (
+        "worktree",
+        "preflight",
+        "reviewer path",
+        "git diff",
+        "git status",
+        "commit status",
+        "baseline dirty",
+        "user baseline",
+        "test slow threshold",
+        ".gitattributes",
+        "harness execution",
+    )
+    return any(marker in normalized for marker in process_markers)
+
+
+def extract_explicit_knowledge_candidates(
+    project: Path,
+    project_name: str,
+    summary_path: Path,
+    summary: dict[str, Any],
+    summary_hash: str,
+    fallback_files: list[str],
+) -> list[dict[str, Any]] | None:
+    raw_candidates = summary.get("knowledgeCandidates")
+    if not isinstance(raw_candidates, list):
+        return None
+    entries: list[dict[str, Any]] = []
+    for item in raw_candidates:
+        if not isinstance(item, dict):
+            continue
+        category = str(item.get("category") or "").strip().lower()
+        title = str(item.get("title") or "").strip()
+        body = str(item.get("body") or item.get("summary") or "").strip()
+        if category == "process-observation" or looks_like_process_observation(
+            f"{title} {body}"
+        ):
+            continue
+        entry_type = str(item.get("type") or "implementation")
+        if entry_type not in ENTRY_TYPES or not title or not body:
+            continue
+        raw_files = item.get("sourceFiles")
+        source_files = (
+            [str(path) for path in raw_files if path]
+            if isinstance(raw_files, list)
+            else fallback_files
+        )
+        raw_keywords = item.get("keywords")
+        keywords = keyword_candidates(
+            summary,
+            [str(value) for value in raw_keywords if value]
+            if isinstance(raw_keywords, list)
+            else [entry_type],
+        )
+        confidence = str(item.get("confidence") or "medium")
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "medium"
+        entries.append(
+            make_entry(
+                project=project,
+                project_name=project_name,
+                summary_path=summary_path,
+                summary_hash=summary_hash,
+                summary=summary,
+                entry_type=entry_type,
+                title=title,
+                body=body,
+                source_files=source_files,
+                keywords=keywords,
+                confidence=confidence,
+            )
+        )
+    return entries
+
+
 def extract_entries(project: Path, project_name: str, summary_path: Path) -> list[dict[str, Any]]:
     summary = read_json(summary_path)
     summary_hash = sha256_file(summary_path)
     files = changed_file_paths(summary)
+    explicit = extract_explicit_knowledge_candidates(
+        project,
+        project_name,
+        summary_path,
+        summary,
+        summary_hash,
+        files,
+    )
+    if explicit is not None:
+        return explicit
     entries: list[dict[str, Any]] = []
     goal = str(summary.get("businessGoal") or "").strip()
 
@@ -1087,7 +1352,7 @@ def extract_entries(project: Path, project_name: str, summary_path: Path) -> lis
 
     for idx, note in enumerate(summary.get("maintenanceNotes") or [], start=1):
         text = str(note).strip()
-        if not text:
+        if not text or looks_like_process_observation(text):
             continue
         entry_type = "decision" if looks_like_decision(text) else "implementation"
         entries.append(
@@ -1188,7 +1453,11 @@ def extract_entries(project: Path, project_name: str, summary_path: Path) -> lis
         )
 
     review = summary.get("reviewSummary")
-    if isinstance(review, dict) and review.get("summary"):
+    if (
+        isinstance(review, dict)
+        and review.get("summary")
+        and not looks_like_process_observation(str(review.get("summary")))
+    ):
         body = str(review.get("summary"))
         entries.append(
             make_entry(
@@ -1831,6 +2100,39 @@ def subject_terms(entry: dict[str, Any]) -> set[str]:
     return {term for term in terms if term not in stop}
 
 
+def entity_keys(entry: dict[str, Any]) -> set[str]:
+    text = " ".join(
+        str(value or "")
+        for value in (entry.get("title"), entry.get("summary"), entry.get("body"))
+    )
+    keys = {
+        match.strip()
+        for match in re.findall(r"`([^`\n]{2,120})`", text)
+        if match.strip()
+    }
+    keys.update(
+        re.findall(
+            r"\b[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\b",
+            text,
+        )
+    )
+    keys.update(
+        token
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{3,}\b", text)
+        if "_" in token or any(character.isupper() for character in token[1:])
+    )
+    stop = {
+        "Harness",
+        "README",
+        "SKILL",
+        "changeName",
+        "finalStatus",
+        "sourceFiles",
+        "summaryData",
+    }
+    return {key for key in keys if key not in stop}
+
+
 def has_replacement_signal(text: str) -> bool:
     needles = [
         "不再",
@@ -1854,61 +2156,70 @@ def has_stability_signal(text: str) -> bool:
     return any(needle in text for needle in needles)
 
 
-def entries_conflict(left: dict[str, Any], right: dict[str, Any]) -> bool:
+def conflict_evidence(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> dict[str, Any] | None:
     comparable_types = {"requirement", "decision", "api-contract"}
     if left.get("type") != right.get("type") or left.get("type") not in comparable_types:
-        return False
+        return None
+    if (
+        str(left.get("category") or "") == "process-observation"
+        or str(right.get("category") or "") == "process-observation"
+        or looks_like_process_observation(normalized_entry_text(left))
+        or looks_like_process_observation(normalized_entry_text(right))
+    ):
+        return None
+    left_files = set(left.get("scope", {}).get("sourceFiles") or [])
+    right_files = set(right.get("scope", {}).get("sourceFiles") or [])
+    if not left_files or not right_files or not (left_files & right_files):
+        return None
+    shared_entities = sorted(entity_keys(left) & entity_keys(right))
+    if not shared_entities:
+        return None
+    left_text = normalized_entry_text(left)
+    right_text = normalized_entry_text(right)
+    mutually_exclusive = (
+        has_replacement_signal(left_text)
+        and has_stability_signal(right_text)
+    ) or (
+        has_replacement_signal(right_text)
+        and has_stability_signal(left_text)
+    )
+    if not mutually_exclusive:
+        return None
+    return {
+        "sharedEntities": shared_entities,
+        "sharedSourceFiles": sorted(left_files & right_files),
+        "mutuallyExclusiveAssertions": True,
+        "leftSignals": {
+            "replacement": has_replacement_signal(left_text),
+            "stability": has_stability_signal(left_text),
+        },
+        "rightSignals": {
+            "replacement": has_replacement_signal(right_text),
+            "stability": has_stability_signal(right_text),
+        },
+    }
+
+
+def entries_conflict(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left.get("status") in {"active", "stale", "superseded", "conflicted"}:
         return False
     if right.get("status") in {"active", "stale", "superseded", "conflicted"}:
         return False
-
-    left_files = set(left.get("scope", {}).get("sourceFiles") or [])
-    right_files = set(right.get("scope", {}).get("sourceFiles") or [])
-    if not left_files or not right_files or not (left_files & right_files):
-        return False
-
-    shared_terms = subject_terms(left) & subject_terms(right)
-    if not shared_terms:
-        return False
-
-    left_text = normalized_entry_text(left)
-    right_text = normalized_entry_text(right)
-    return (
-        has_replacement_signal(left_text)
-        and has_stability_signal(right_text)
-    ) or (
-        has_replacement_signal(right_text)
-        and has_stability_signal(left_text)
-    )
+    return conflict_evidence(left, right) is not None
 
 
 def entries_conflict_for_review(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    comparable_types = {"requirement", "decision", "api-contract"}
-    if left.get("type") != right.get("type") or left.get("type") not in comparable_types:
-        return False
-
-    left_files = set(left.get("scope", {}).get("sourceFiles") or [])
-    right_files = set(right.get("scope", {}).get("sourceFiles") or [])
-    if not left_files or not right_files or not (left_files & right_files):
-        return False
-
-    shared_terms = subject_terms(left) & subject_terms(right)
-    if not shared_terms:
-        return False
-
-    left_text = normalized_entry_text(left)
-    right_text = normalized_entry_text(right)
-    return (
-        has_replacement_signal(left_text)
-        and has_stability_signal(right_text)
-    ) or (
-        has_replacement_signal(right_text)
-        and has_stability_signal(left_text)
-    )
+    return conflict_evidence(left, right) is not None
 
 
-def mark_conflict(left: dict[str, Any], right: dict[str, Any]) -> None:
+def mark_conflict(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
+) -> None:
     for entry, other in [(left, right), (right, left)]:
         entry["status"] = "conflicted"
         lifecycle = entry.setdefault("lifecycle", {})
@@ -1919,6 +2230,8 @@ def mark_conflict(left: dict[str, Any], right: dict[str, Any]) -> None:
         reason = "potential conflict with: " + other["id"]
         if reason not in reasons:
             reasons.append(reason)
+        if evidence is not None:
+            lifecycle.setdefault("conflictEvidence", {})[other["id"]] = evidence
         lifecycle["lastCheckedAt"] = now_iso()
 
 
@@ -1926,8 +2239,9 @@ def mark_conflicting_generated_entries(entries: list[dict[str, Any]]) -> None:
     ordered = sorted(entries, key=archive_sort_key)
     for idx, left in enumerate(ordered):
         for right in ordered[idx + 1 :]:
+            evidence = conflict_evidence(left, right)
             if entries_conflict(left, right):
-                mark_conflict(left, right)
+                mark_conflict(left, right, evidence)
 
 
 def number_value(value: Any) -> int | None:
@@ -2523,6 +2837,9 @@ def compute_inputs_hash_from_preserved(
     schema_fingerprint = json.dumps(
         {
             "entrySchemaVersion": 1,
+            "entryIdentitySchemaVersion": ENTRY_ID_SCHEMA_VERSION,
+            "archiveCacheSchemaVersion": ARCHIVE_CACHE_SCHEMA_VERSION,
+            "extractorSchemaVersion": EXTRACTOR_SCHEMA_VERSION,
             "indexSchemaVersion": 1,
             "sqliteSchemaVersion": SQLITE_SCHEMA_VERSION,
         },
@@ -2701,6 +3018,52 @@ def restore_unchanged_entry_state(
         return
     entry["status"] = previous.get("status", entry.get("status"))
     entry["lifecycle"] = json_clone(previous.get("lifecycle", entry.get("lifecycle", {})))
+
+
+def deduplicate_normalized_entries(
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    exact_seen: set[str] = set()
+    normalized_seen: set[str] = set()
+    normalized_body_seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    exact_removed = 0
+    normalized_removed = 0
+    for entry in entries:
+        archive = str((entry.get("source") or {}).get("archive") or "")
+        entry_type = str(entry.get("type") or "")
+        exact = json.dumps(
+            (entry_type, entry.get("title"), entry.get("body"), archive),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        normalized_title = normalize_knowledge_text(entry.get("title"))
+        normalized_body = normalize_knowledge_text(entry.get("body"))
+        normalized = json.dumps(
+            (archive, entry_type, normalized_title, normalized_body),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        body_only = json.dumps(
+            (archive, entry_type, normalized_body),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if exact in exact_seen:
+            exact_removed += 1
+            continue
+        if normalized in normalized_seen or body_only in normalized_body_seen:
+            normalized_removed += 1
+            continue
+        exact_seen.add(exact)
+        normalized_seen.add(normalized)
+        normalized_body_seen.add(body_only)
+        unique.append(entry)
+    return {
+        "entries": unique,
+        "exactDuplicatesRemoved": exact_removed,
+        "normalizedDuplicatesRemoved": normalized_removed,
+    }
 
 
 def build_index(
@@ -2890,22 +3253,13 @@ def build_index(
     ingest_mode["activeAutoDemoted"] += publication_reconciliation["demoted"]
     ingest_mode["entriesWritten"] += publication_reconciliation["written"]
 
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    duplicates = 0
-    for entry in entries:
-        fingerprint = (
-            entry["type"],
-            entry["title"],
-            entry["body"],
-            entry["source"]["archive"],
-        )
-        fp = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True)
-        if fp in seen:
-            duplicates += 1
-            continue
-        seen.add(fp)
-        deduped.append(entry)
+    normalized_dedupe = deduplicate_normalized_entries(entries)
+    deduped = normalized_dedupe["entries"]
+    exact_duplicates = normalized_dedupe["exactDuplicatesRemoved"]
+    normalized_duplicates = normalized_dedupe["normalizedDuplicatesRemoved"]
+    duplicates = exact_duplicates + normalized_duplicates
+    ingest_mode["exactDuplicatesRemoved"] = exact_duplicates
+    ingest_mode["normalizedDuplicatesRemoved"] = normalized_duplicates
 
     freshness_entries = [
         entry
@@ -3179,27 +3533,32 @@ def audit_entries(project: Path, limit: int = 10) -> dict[str, Any]:
     if not sync["upToDate"]:
         build_index(project)
     entries = load_indexed_entries(project)
-    candidates = sorted(
+    all_candidates = sorted(
         [entry for entry in entries if entry["status"] == "candidate"],
         key=lambda entry: score_entry(entry, " ".join(entry.get("keywords") or [])),
         reverse=True,
-    )[:limit]
-    stale = sorted(
+    )
+    candidates = all_candidates[:limit]
+    all_stale = sorted(
         [entry for entry in entries if entry["status"] == "stale"],
         key=lambda entry: (len(entry.get("lifecycle", {}).get("staleReasons") or []), score_entry(entry, "")),
         reverse=True,
-    )[:limit]
-    superseded = sorted(
+    )
+    stale = all_stale[:limit]
+    all_superseded = sorted(
         [entry for entry in entries if entry["status"] == "superseded"],
         key=archive_sort_key,
         reverse=True,
-    )[:limit]
-    conflicted = sorted(
+    )
+    superseded = all_superseded[:limit]
+    all_conflicted = sorted(
         [entry for entry in entries if entry["status"] == "conflicted"],
         key=archive_sort_key,
         reverse=True,
-    )[:limit]
+    )
+    conflicted = all_conflicted[:limit]
     active_review = active_review_items(entries, limit)
+    judge = collect_judge_work(entries, limit=limit)
     report_path = knowledge / "reports" / f"audit-report-{timestamp()}.md"
     lines = [
         "# Harness Knowledge Audit Report",
@@ -3245,6 +3604,14 @@ def audit_entries(project: Path, limit: int = 10) -> dict[str, Any]:
         "supersededReview": [audit_summary(entry) for entry in superseded],
         "conflictReview": [audit_summary(entry) for entry in conflicted],
         "activeReview": [audit_summary(entry) for entry in active_review],
+        "counts": {
+            **judge["counts"],
+            "totalStaleEntries": len(all_stale),
+            "totalSupersededEntries": len(all_superseded),
+            "displayedStaleEntries": len(stale),
+            "displayedSupersededEntries": len(superseded),
+            "displayedConflictEntries": len(conflicted),
+        },
     }
 
 
@@ -3344,6 +3711,12 @@ def make_manifest(
         "stats": stats,
         "byType": by_type,
         "duplicatesSkipped": duplicates,
+        "health": summarize_knowledge_health(
+            entries,
+            duplicate_groups=int(
+                (ingest_mode or {}).get("normalizedDuplicatesRemoved") or 0
+            ),
+        ),
         "ingestMode": ingest_mode or {
             "incremental": False,
             "archivesExtracted": len(summary_paths) - len(failures),
@@ -3985,11 +4358,17 @@ def suggest_validators(
     if not (knowledge / "index.json").exists():
         build_index(project)
     selected_statuses = statuses or ["active", "candidate"]
-    suggestions: list[dict[str, Any]] = []
+    eligible: list[dict[str, Any]] = []
+    unavailable = 0
+    covered = 0
     applied = 0
     for entry_path, entry in load_entry_files(knowledge, selected_statuses):
+        if isinstance(entry.get("validators"), list) and entry["validators"]:
+            covered += 1
+            continue
         validators = suggest_validators_for_entry(project, entry)
         if not validators:
+            unavailable += 1
             continue
         item = {
             "id": entry["id"],
@@ -3998,21 +4377,27 @@ def suggest_validators(
             "path": str(entry_path),
             "validators": validators,
         }
-        suggestions.append(item)
+        eligible.append(item)
+    selected = eligible[: max(0, limit)]
+    for item in selected:
         if apply:
-            entry["validators"] = validators
-            write_json(entry_path, entry)
+            entry = read_json(Path(item["path"]))
+            entry["validators"] = item["validators"]
+            write_json(Path(item["path"]), entry)
             applied += 1
-        if len(suggestions) >= max(1, limit):
-            break
     summary = {
         "generatedAt": now_iso(),
         "project": str(project),
         "statuses": selected_statuses,
         "limit": limit,
-        "suggested": len(suggestions),
+        "eligible": len(eligible),
+        "selected": len(selected),
+        "suggested": len(selected),
         "applied": applied,
-        "entries": suggestions,
+        "remaining": max(0, len(eligible) - len(selected)),
+        "unavailable": unavailable,
+        "covered": covered,
+        "entries": selected,
     }
     report = write_validator_suggestions_report(knowledge, summary)
     if apply and applied:
@@ -4054,7 +4439,10 @@ def auto_knowledge(
     verification = verify_knowledge(project)
     audit = audit_entries(project, limit=audit_limit)
     ingest_mode = sync.get("index", {}).get("ingestMode", {}) if isinstance(sync.get("index"), dict) else {}
+    judge_counts = audit.get("counts") or {}
+    final_status = sync_status(project, check=True)
     return {
+        "command": "auto",
         "project": str(project),
         "generatedAt": now_iso(),
         "mode": {
@@ -4065,6 +4453,10 @@ def auto_knowledge(
             "incremental": incremental,
         },
         "config": config_summary,
+        "ok": final_status["freshness"]["status"] == "OK",
+        "upToDate": final_status["freshness"]["status"] == "OK",
+        "freshness": final_status["freshness"],
+        "health": final_status["health"],
         "sync": {
             "upToDate": sync["upToDate"],
             "action": sync["action"],
@@ -4073,8 +4465,13 @@ def auto_knowledge(
             "paths": sync["paths"],
         },
         "suggestions": {
+            "eligible": suggestions["eligible"],
+            "selected": suggestions["selected"],
             "suggested": suggestions["suggested"],
             "applied": suggestions["applied"],
+            "remaining": suggestions["remaining"],
+            "unavailable": suggestions["unavailable"],
+            "covered": suggestions["covered"],
             "report": suggestions["report"],
         },
         "verification": {
@@ -4092,7 +4489,9 @@ def auto_knowledge(
             "supersededReview": len(audit["supersededReview"]),
             "conflictReview": len(audit["conflictReview"]),
             "activeReview": len(audit["activeReview"]),
+            "counts": audit.get("counts", {}),
         },
+        "judge": judge_counts,
         "lifecycle": {
             "validatorsApplied": suggestions["applied"],
             "candidateAutoPromoted": ingest_mode.get(
@@ -4100,7 +4499,15 @@ def auto_knowledge(
             ),
             "activeAutoDemoted": ingest_mode.get("activeAutoDemoted", 0),
             "validationAutoDemoted": ingest_mode.get("validationAutoDemoted", verification["autoDemoted"]),
-            "pendingAgentJudge": len(audit["conflictReview"]) + len(audit["candidateReview"]),
+            "pendingAgentJudge": judge_counts.get("requiredDecisionCount", 0),
+            "pendingAgentJudgeSummary": {
+                "requiredDecisionCount": judge_counts.get("requiredDecisionCount", 0),
+                "pendingWorkItemCount": judge_counts.get("pendingWorkItemCount", 0),
+                "previewCount": judge_counts.get("previewCount", 0),
+                "previewEntryCount": judge_counts.get("previewEntryCount", 0),
+                "deferredByLimitCount": judge_counts.get("deferredByLimitCount", 0),
+                "quarantinedCount": judge_counts.get("quarantinedCount", 0),
+            },
         },
     }
 
@@ -4211,6 +4618,7 @@ def sync_status(
     incremental: bool = True,
     *,
     progress: ProgressReporter | None = None,
+    check: bool = False,
 ) -> dict[str, Any]:
     project = project.resolve()
     snapshot = build_snapshot(project)
@@ -4269,6 +4677,7 @@ def sync_status(
         )
         action = "ingested"
         reasons = []
+        index = refreshed
 
     # HH-KNOW-20260730-001: an up-to-date index is not the whole story --
     # maintenance-outbox items enqueued by `harness archive` still need to be
@@ -4288,7 +4697,27 @@ def sync_status(
         "maintain --project <project> --drain"
     )
 
-    if index_current:
+    if check:
+        pending_count = len(list((outbox_root / "pending").glob("*.json"))) if outbox_root.is_dir() else 0
+        failed_count = len(list((outbox_root / "failed").glob("*.json"))) if outbox_root.is_dir() else 0
+        running_count = len(list((outbox_root / "running").glob("*.json"))) if outbox_root.is_dir() else 0
+        outbox_ok = pending_count == 0 and failed_count == 0 and running_count == 0
+        maintenance = {
+            "attempted": False,
+            "skipped": True,
+            "readOnly": True,
+            "skippedReason": "read-only check",
+            "ok": outbox_ok,
+            "pending": pending_count,
+            "failed": failed_count,
+            "running": running_count,
+        }
+        if not outbox_ok:
+            next_action = (
+                "Read-only check found maintenance work. Run the default auto workflow "
+                "or `hunter-harness sync --apply safe`."
+            )
+    elif index_current:
         drain_result = drain_maintenance_outbox(project)
         outbox_ok = bool(drain_result.get("ok")) and drain_result.get("remaining", 0) == 0
         maintenance = {
@@ -4326,6 +4755,24 @@ def sync_status(
 
     ok = index_current and bool(maintenance.get("ok"))
 
+    indexed_count = (
+        int((index.get("archives") or {}).get("indexed") or 0)
+        if isinstance(index, dict)
+        else 0
+    )
+    freshness = {
+        "status": "OK" if index_current else "WARN",
+        "archivesScanned": len(current_records),
+        "archivesIndexed": indexed_count,
+        "headCurrent": index_current,
+    }
+    entries = [entry for _, entry in load_entry_files(knowledge)]
+    ingest_mode = index.get("ingestMode", {}) if isinstance(index, dict) else {}
+    duplicate_groups = int(ingest_mode.get("normalizedDuplicatesRemoved") or 0)
+    health = summarize_knowledge_health(
+        entries,
+        duplicate_groups=duplicate_groups,
+    )
     result = {
         "project": str(project),
         "upToDate": not reasons,
@@ -4337,6 +4784,8 @@ def sync_status(
             "sqlite": str(sqlite_path),
         },
         "maintenance": maintenance,
+        "freshness": freshness,
+        "health": health,
         "ok": ok,
         "nextAction": next_action,
     }
@@ -5169,6 +5618,250 @@ def reverify_stale_knowledge(project: Path) -> dict[str, Any]:
     }
 
 
+def review_evidence_fingerprints(entry: dict[str, Any]) -> dict[str, str]:
+    source = entry.get("source") or {}
+    lifecycle = entry.get("lifecycle") or {}
+    return {
+        "summarySha256": str(source.get("summarySha256") or ""),
+        "entryBodySha256": sha256_text(normalize_knowledge_text(entry.get("body"))),
+        "publicationGateFingerprint": sha256_text(
+            json.dumps(
+                {
+                    "publishBlocked": lifecycle.get("publishBlocked") or [],
+                    "publicationState": lifecycle.get("publicationState"),
+                    "finalStatus": source.get("finalStatus"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+        "validatorFingerprint": sha256_text(
+            json.dumps(
+                entry.get("validators") or [],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+        "conflictFingerprint": sha256_text(
+            json.dumps(
+                {
+                    "status": entry.get("status"),
+                    "conflictsWith": sorted(lifecycle.get("conflictsWith") or []),
+                    "conflictEvidence": lifecycle.get("conflictEvidence") or [],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        ),
+    }
+
+
+def defer_is_current(entry: dict[str, Any]) -> bool:
+    lifecycle = entry.get("lifecycle") or {}
+    if lifecycle.get("judgeAction") != "defer":
+        return False
+    recorded = lifecycle.get("deferEvidence")
+    if not isinstance(recorded, dict):
+        return False
+    if recorded != review_evidence_fingerprints(entry):
+        return False
+    review_after = str(lifecycle.get("reviewAfter") or "")
+    return bool(review_after and review_after > dt.date.today().isoformat())
+
+
+def judge_entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": entry.get("id"),
+        "type": entry.get("type"),
+        "status": entry.get("status"),
+        "title": entry.get("title"),
+        "body": entry.get("body"),
+        "summary": entry.get("summary"),
+        "source": entry.get("source"),
+        "scope": entry.get("scope"),
+        "confidence": entry.get("confidence"),
+        "lifecycle": {
+            "conflictsWith": entry.get("lifecycle", {}).get("conflictsWith") or [],
+            "conflictEvidence": entry.get("lifecycle", {}).get("conflictEvidence") or {},
+            "staleReasons": entry.get("lifecycle", {}).get("staleReasons") or [],
+        },
+    }
+
+
+def collect_judge_work(
+    entries: list[dict[str, Any]],
+    limit: int = 100,
+) -> dict[str, Any]:
+    by_id = {
+        str(entry.get("id")): entry
+        for entry in entries
+        if entry.get("id")
+    }
+    blocked_ids = {
+        entry_id
+        for entry_id, entry in by_id.items()
+        if (entry.get("lifecycle") or {}).get("publishBlocked")
+    }
+    all_conflicts: list[tuple[tuple[str, str], dict[str, Any], dict[str, Any] | None]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for entry in entries:
+        if entry.get("status") != "conflicted":
+            continue
+        for other_id in entry.get("lifecycle", {}).get("conflictsWith") or []:
+            pair = tuple(sorted([str(entry["id"]), str(other_id)]))
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            all_conflicts.append((pair, entry, by_id.get(str(other_id))))
+
+    eligible_conflicts = []
+    for pair, left, right in all_conflicts:
+        pair_entries = [item for item in (left, right) if item is not None]
+        if any(entry_id in blocked_ids for entry_id in pair):
+            continue
+        if pair_entries and all(
+            (item.get("lifecycle") or {}).get("judgeAction") == "keep-conflict"
+            or defer_is_current(item)
+            for item in pair_entries
+        ):
+            continue
+        eligible_conflicts.append(
+            {
+                "kind": "conflict",
+                "ids": list(pair),
+                "entries": [judge_entry_payload(item) for item in pair_entries],
+            }
+        )
+
+    candidates = [entry for entry in entries if entry.get("status") == "candidate"]
+    eligible_candidates = [
+        entry
+        for entry in candidates
+        if str(entry.get("id")) not in blocked_ids and not defer_is_current(entry)
+    ]
+    bounded_limit = max(0, limit)
+    displayed_conflicts = eligible_conflicts[:bounded_limit]
+    displayed_candidates = eligible_candidates[:bounded_limit]
+    conflict_entry_ids = {
+        entry_id
+        for item in eligible_conflicts
+        for entry_id in item["ids"]
+    }
+    required_ids = conflict_entry_ids | {
+        str(entry["id"]) for entry in eligible_candidates
+    }
+    displayed_ids = {
+        entry_id
+        for item in displayed_conflicts
+        for entry_id in item["ids"]
+    } | {
+        str(entry["id"]) for entry in displayed_candidates
+    }
+    pending_work_item_count = len(eligible_conflicts) + len(eligible_candidates)
+    preview_count = len(displayed_conflicts) + len(displayed_candidates)
+    all_conflict_entry_ids = {
+        entry_id for pair, _, _ in all_conflicts for entry_id in pair
+    }
+    return {
+        "conflicts": displayed_conflicts,
+        "promoteCandidates": [
+            {"kind": "promote-candidate", **judge_entry_payload(entry)}
+            for entry in displayed_candidates
+        ],
+        "counts": {
+            "totalCandidateEntries": len(candidates),
+            "totalConflictGroups": len(all_conflicts),
+            "totalConflictEntries": len(all_conflict_entry_ids),
+            "requiredDecisionCount": len(required_ids),
+            "pendingWorkItemCount": pending_work_item_count,
+            "previewCount": preview_count,
+            "previewEntryCount": len(displayed_ids),
+            "deferredByLimitCount": max(0, pending_work_item_count - preview_count),
+            "displayedCandidateEntries": len(displayed_candidates),
+            "displayedConflictGroups": len(displayed_conflicts),
+            "quarantinedEntries": len(blocked_ids),
+            "quarantinedCount": len(blocked_ids),
+        },
+    }
+
+
+def summarize_knowledge_health(
+    entries: list[dict[str, Any]],
+    *,
+    duplicate_groups: int = 0,
+) -> dict[str, Any]:
+    lifecycle_names = [
+        "active",
+        "candidate",
+        "stale",
+        "superseded",
+        "conflicted",
+    ]
+    content_lifecycle = {
+        status: sum(1 for entry in entries if entry.get("status") == status)
+        for status in lifecycle_names
+    }
+    review_state = {
+        "pending": 0,
+        "deferred": 0,
+        "decided": 0,
+        "quarantined": 0,
+    }
+    publication_state = {"publishable": 0, "blocked": 0, "unverified": 0}
+    validation_state = {"covered": 0, "uncovered": 0, "failed": 0}
+    for entry in entries:
+        lifecycle = entry.get("lifecycle") or {}
+        blocked = bool(lifecycle.get("publishBlocked"))
+        if blocked:
+            review_state["quarantined"] += 1
+            publication_state["blocked"] += 1
+        elif lifecycle.get("publicationState") == "unverified":
+            publication_state["unverified"] += 1
+        else:
+            publication_state["publishable"] += 1
+
+        if not blocked and defer_is_current(entry):
+            review_state["deferred"] += 1
+        elif lifecycle.get("judgeAction") and lifecycle.get("judgeAction") != "defer":
+            review_state["decided"] += 1
+        elif not blocked and entry.get("status") in {"candidate", "conflicted"}:
+            review_state["pending"] += 1
+
+        validation = lifecycle.get("validation") or {}
+        if validation.get("status") == "failed":
+            validation_state["failed"] += 1
+        if isinstance(entry.get("validators"), list) and entry["validators"]:
+            validation_state["covered"] += 1
+        else:
+            validation_state["uncovered"] += 1
+
+    status = "OK"
+    if (
+        publication_state["blocked"] > 0
+        or content_lifecycle["conflicted"] > 0
+        or validation_state["failed"] > 0
+        or duplicate_groups > 0
+    ):
+        status = "WARN"
+    elif (
+        review_state["pending"] > 0
+        or review_state["deferred"] > 0
+        or validation_state["uncovered"] > 0
+    ):
+        status = "ADVISORY"
+    return {
+        "status": status,
+        "contentLifecycle": content_lifecycle,
+        "reviewState": review_state,
+        "publicationState": publication_state,
+        "validationState": validation_state,
+        "duplicateGroups": duplicate_groups,
+    }
+
+
 def snapshot_entry_state(entry: dict[str, Any]) -> dict[str, Any]:
     return json_clone(
         {
@@ -5196,104 +5889,33 @@ def judge_export(project: Path) -> dict[str, Any]:
     if not (knowledge / "index.json").exists():
         build_index(project)
     entries = [entry for _, entry in load_entry_files(knowledge)]
-    by_id = {entry["id"]: entry for entry in entries}
-
-    conflicts: list[dict[str, Any]] = []
-    seen_pairs: set[tuple[str, str]] = set()
-    for entry in entries:
-        if entry.get("status") != "conflicted":
-            continue
-        if entry.get("lifecycle", {}).get("judgeAction") in {"keep-conflict", "defer"}:
-            continue
-        for other_id in entry.get("lifecycle", {}).get("conflictsWith") or []:
-            pair = tuple(sorted([entry["id"], str(other_id)]))
-            if pair in seen_pairs:
-                continue
-            seen_pairs.add(pair)
-            other = by_id.get(str(other_id))
-            conflicts.append(
-                {
-                    "kind": "conflict",
-                    "ids": list(pair),
-                    "entries": [
-                        {
-                            "id": entry["id"],
-                            "type": entry.get("type"),
-                            "status": entry.get("status"),
-                            "title": entry.get("title"),
-                            "body": entry.get("body"),
-                            "summary": entry.get("summary"),
-                            "source": entry.get("source"),
-                            "scope": entry.get("scope"),
-                            "lifecycle": {
-                                "conflictsWith": entry.get("lifecycle", {}).get("conflictsWith") or [],
-                                "staleReasons": entry.get("lifecycle", {}).get("staleReasons") or [],
-                            },
-                        },
-                        {
-                            "id": other.get("id") if other else other_id,
-                            "type": other.get("type") if other else None,
-                            "status": other.get("status") if other else None,
-                            "title": other.get("title") if other else None,
-                            "body": other.get("body") if other else None,
-                            "summary": other.get("summary") if other else None,
-                            "source": other.get("source") if other else None,
-                            "scope": other.get("scope") if other else None,
-                            "lifecycle": {
-                                "conflictsWith": (other.get("lifecycle", {}) or {}).get("conflictsWith") or [],
-                                "staleReasons": (other.get("lifecycle", {}) or {}).get("staleReasons") or [],
-                            }
-                            if other
-                            else {},
-                        },
-                    ],
-                }
-            )
-
-    promote_candidates: list[dict[str, Any]] = []
-    for entry in entries:
-        if entry.get("status") != "candidate":
-            continue
-        if entry.get("lifecycle", {}).get("judgeAction") == "defer":
-            review_after = str(entry.get("lifecycle", {}).get("reviewAfter") or "")
-            if not review_after or review_after > dt.date.today().isoformat():
-                continue
-        promote_candidates.append(
-            {
-                "kind": "promote-candidate",
-                "id": entry["id"],
-                "type": entry.get("type"),
-                "status": entry.get("status"),
-                "title": entry.get("title"),
-                "body": entry.get("body"),
-                "summary": entry.get("summary"),
-                "source": entry.get("source"),
-                "scope": entry.get("scope"),
-                "confidence": entry.get("confidence"),
-                "lifecycle": {
-                    "staleReasons": entry.get("lifecycle", {}).get("staleReasons") or [],
-                    "conflictsWith": entry.get("lifecycle", {}).get("conflictsWith") or [],
-                },
-            }
-        )
+    max_candidates = judge_config(load_config(knowledge))["maxCandidatesPerRun"]
+    work = collect_judge_work(entries, limit=max_candidates)
+    counts = {
+        **work["counts"],
+        # Compatibility aliases retained for two releases.
+        "conflicts": work["counts"]["displayedConflictGroups"],
+        "promoteCandidates": work["counts"]["displayedCandidateEntries"],
+        "pending": work["counts"]["pendingWorkItemCount"],
+    }
 
     payload = {
         "schemaVersion": 1,
         "generatedAt": now_iso(),
         "project": str(project),
         "manualReview": manual_review_enabled(project),
-        "counts": {
-            "conflicts": len(conflicts),
-            "promoteCandidates": len(promote_candidates),
-            "pending": len(conflicts) + len(promote_candidates),
-        },
-        "conflicts": conflicts,
-        "promoteCandidates": promote_candidates,
+        "counts": counts,
+        "conflicts": work["conflicts"],
+        "promoteCandidates": work["promoteCandidates"],
         "actions": sorted(JUDGE_ACTIONS),
     }
-    export_path = knowledge / "reports" / f"judge-export-{timestamp()}.json"
-    write_json(export_path, payload)
+    export_path, digest = write_content_addressed_json_report(
+        knowledge,
+        "judge-export",
+        payload,
+    )
     payload["exportPath"] = str(export_path)
+    payload["exportSha256"] = digest
     return payload
 
 
@@ -5370,6 +5992,7 @@ def apply_judge_decision(
         lifecycle["judgeReason"] = reason
         lifecycle["deferredAt"] = now_iso()
         lifecycle["reviewAfter"] = decision.get("reviewAfter")
+        lifecycle["deferEvidence"] = review_evidence_fingerprints(entry)
         lifecycle["lastCheckedAt"] = now_iso()
         relocate_entry_file(knowledge, entry, source_path)
         path_by_id[entry["id"]] = (
@@ -5418,6 +6041,48 @@ def persist_judge_decisions(knowledge: Path, applied: list[dict[str, Any]]) -> P
     return path
 
 
+def store_rollback_snapshot(
+    knowledge: Path,
+    snapshot: dict[str, Any],
+) -> dict[str, str]:
+    raw = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    relative = Path("reports") / "blobs" / f"rollback-{digest}.json.gz"
+    path = knowledge / relative
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(gzip.compress(raw, compresslevel=9, mtime=0))
+    return {
+        "path": str(relative).replace("\\", "/"),
+        "sha256": digest,
+    }
+
+
+def load_rollback_snapshot(
+    knowledge: Path,
+    pointer: dict[str, Any],
+) -> dict[str, Any] | None:
+    relative = str(pointer.get("path") or "")
+    expected = str(pointer.get("sha256") or "")
+    path = (knowledge / relative).resolve()
+    reports_root = (knowledge / "reports").resolve()
+    if not _path_is_within(path, reports_root) or not path.is_file():
+        return None
+    try:
+        raw = gzip.decompress(path.read_bytes())
+        if hashlib.sha256(raw).hexdigest() != expected:
+            return None
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, gzip.BadGzipFile, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def judge_apply(project: Path, decisions_path: Path, force: bool = False) -> dict[str, Any]:
     project = project.resolve()
     knowledge = project / ".harness" / "knowledge"
@@ -5456,6 +6121,8 @@ def judge_apply(project: Path, decisions_path: Path, force: bool = False) -> dic
             continue
         try:
             record = apply_judge_decision(knowledge, found, source_path, item, by_id, path_by_id)
+            before = record.pop("before")
+            record["beforeSnapshot"] = store_rollback_snapshot(knowledge, before)
             applied.append(record)
         except ValueError as exc:
             errors.append({"id": entry_id, "error": str(exc)})
@@ -5470,14 +6137,18 @@ def judge_apply(project: Path, decisions_path: Path, force: bool = False) -> dic
         "applied": applied,
         "errors": errors,
     }
-    judgement_path = knowledge / "reports" / f"judgements-{timestamp()}.json"
-    write_json(judgement_path, judgement)
+    judgement_path, judgement_sha256 = write_content_addressed_json_report(
+        knowledge,
+        "judgements",
+        judgement,
+    )
     decisions_ledger = persist_judge_decisions(knowledge, applied)
     index = refresh_outputs_from_entry_files(project, knowledge)
     return {
         "project": str(project),
         "generatedAt": judgement["generatedAt"],
         "judgement": str(judgement_path),
+        "judgementSha256": judgement_sha256,
         "decisionsLedger": str(decisions_ledger),
         "applied": len(applied),
         "errors": errors,
@@ -5533,6 +6204,13 @@ def rollback_judgement(project: Path, judgement_path: Path) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         before = item.get("before")
+        if not isinstance(before, dict):
+            pointer = item.get("beforeSnapshot")
+            before = (
+                load_rollback_snapshot(knowledge, pointer)
+                if isinstance(pointer, dict)
+                else None
+            )
         if not isinstance(before, dict) or not before.get("id"):
             continue
         entry_id = str(before["id"])
@@ -5726,7 +6404,217 @@ def drain_maintenance_outbox(
     }
 
 
+def repair_legacy_publication_gates(
+    project: Path,
+    *,
+    apply: bool = True,
+) -> dict[str, Any]:
+    project = project.resolve()
+    knowledge = project / ".harness" / "knowledge"
+    path = knowledge / "publication-attestations.json"
+    records: dict[str, Any] = {}
+    if path.exists():
+        try:
+            current = read_json(path)
+            if isinstance(current, dict) and isinstance(current.get("records"), dict):
+                records = dict(current["records"])
+        except (OSError, json.JSONDecodeError):
+            pass
+    verified: list[str] = []
+    needs_confirmation: list[str] = []
+    for summary_path in discover_archive_summary_paths(project):
+        try:
+            summary = read_json(summary_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(summary, dict):
+            continue
+        consistency = (summary.get("reportPipeline") or {}).get("sourceConsistency")
+        if consistency is not None:
+            continue
+        resolution = resolve_archive_summary(summary_path)
+        archive_dir = archive_dir_from_summary(summary_path)
+        archive_rel = rel_to_project(project, archive_dir)
+        summary_hash = str(resolution.get("summarySha256") or "")
+        source_commit = str(
+            summary.get("finalCommit") or summary.get("final_commit") or ""
+        )
+        source_commit_verified = bool(
+            source_commit
+            and is_git_repo(project)
+            and git_commit_exists(project, source_commit)
+        )
+        authority_verified = bool(resolution.get("allowed") and summary_hash)
+        if not (authority_verified and source_commit_verified):
+            needs_confirmation.append(archive_rel)
+            continue
+        record = {
+            "status": "verified",
+            "summarySha256": summary_hash,
+            "sourceCommit": source_commit,
+            "authorityStatus": resolution.get("status"),
+            "verifiedAt": now_iso(),
+            "method": "authoritative-pointer-and-source-commit",
+        }
+        record["attestationSha256"] = sha256_text(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        records[archive_rel] = record
+        verified.append(archive_rel)
+    if apply and verified:
+        write_json(
+            path,
+            {
+                "schemaVersion": 1,
+                "updatedAt": now_iso(),
+                "records": dict(sorted(records.items())),
+            },
+        )
+    return {
+        "verified": len(verified),
+        "verifiedArchives": verified,
+        "needsConfirmation": len(needs_confirmation),
+        "needsConfirmationArchives": needs_confirmation,
+        "applied": apply and bool(verified),
+        "path": str(path),
+    }
+
+
+def prune_knowledge_reports(knowledge: Path, keep: int = 10) -> dict[str, int]:
+    reports = knowledge / "reports"
+    pinned: set[Path] = set()
+    latest_path = reports / "latest.json"
+    if latest_path.exists():
+        try:
+            latest = read_json(latest_path)
+            latest_reports = (
+                latest.get("reports")
+                if isinstance(latest, dict)
+                else None
+            )
+            if isinstance(latest_reports, dict):
+                for pointer in latest_reports.values():
+                    if not isinstance(pointer, dict):
+                        continue
+                    relative = str(pointer.get("path") or "")
+                    candidate = (knowledge / relative).resolve()
+                    if _path_is_within(candidate, reports.resolve()):
+                        pinned.add(candidate)
+        except (OSError, json.JSONDecodeError):
+            pass
+    removed: dict[str, int] = {}
+    for prefix in (
+        "audit-report-",
+        "ingest-report-",
+        "validator-suggestions-",
+        "verification-report-",
+        "judge-export-",
+        "judgements-",
+    ):
+        paths = sorted(
+            reports.glob(f"{prefix}*"),
+            key=lambda item: item.stat().st_mtime_ns,
+            reverse=True,
+        )
+        removed[prefix.rstrip("-")] = 0
+        retained = set(paths[: max(0, keep)]) | pinned
+        for path in paths:
+            if path.resolve() in {item.resolve() for item in retained}:
+                continue
+            path.unlink()
+            removed[prefix.rstrip("-")] += 1
+
+    referenced_blobs: set[Path] = set()
+    for path in reports.glob("judgements-*.json"):
+        try:
+            judgement = read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(judgement, dict):
+            continue
+        for item in judgement.get("applied") or []:
+            if not isinstance(item, dict):
+                continue
+            pointer = item.get("beforeSnapshot")
+            if not isinstance(pointer, dict):
+                continue
+            relative = str(pointer.get("path") or "")
+            candidate = (knowledge / relative).resolve()
+            if _path_is_within(candidate, reports.resolve()):
+                referenced_blobs.add(candidate)
+    removed["rollback-blobs"] = 0
+    for path in (reports / "blobs").glob("rollback-*.json.gz"):
+        if path.resolve() in referenced_blobs:
+            continue
+        path.unlink()
+        removed["rollback-blobs"] += 1
+    return removed
+
+
+def repair_knowledge(
+    project: Path,
+    action: str = "all",
+    *,
+    apply: bool = True,
+) -> dict[str, Any]:
+    project = project.resolve()
+    if action not in {"all", "legacy-publication-gates"}:
+        raise ValueError(f"unsupported repair action: {action}")
+    legacy = repair_legacy_publication_gates(project, apply=apply)
+    index = (
+        build_index(project, incremental=False)
+        if action == "all" and apply
+        else None
+    )
+    retention = (
+        prune_knowledge_reports(project / ".harness" / "knowledge")
+        if action == "all" and apply
+        else {}
+    )
+    status = sync_status(project, check=True)
+    return {
+        "command": "repair",
+        "project": str(project),
+        "action": action,
+        "applied": apply,
+        "legacyPublicationGates": legacy,
+        "dedupe": {
+            "exactDuplicatesRemoved": (
+                index.get("ingestMode", {}).get("exactDuplicatesRemoved", 0)
+                if isinstance(index, dict)
+                else 0
+            ),
+            "normalizedDuplicatesRemoved": (
+                index.get("ingestMode", {}).get("normalizedDuplicatesRemoved", 0)
+                if isinstance(index, dict)
+                else 0
+            ),
+            "nearDuplicatesMerged": (
+                index.get("ingestMode", {}).get("nearDuplicatesMerged", 0)
+                if isinstance(index, dict)
+                else 0
+            ),
+        },
+        "reportRetentionRemoved": retention,
+        "freshness": status["freshness"],
+        "health": status["health"],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if not effective_argv:
+        effective_argv = ["auto"]
+    if effective_argv[0] == "admin":
+        effective_argv = effective_argv[1:]
+        if not effective_argv:
+            print("admin requires an advanced command", file=sys.stderr)
+            return 2
     parser = argparse.ArgumentParser(description="Build and query Harness knowledge indexes.")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -5747,6 +6635,11 @@ def main(argv: list[str] | None = None) -> int:
     sync = sub.add_parser("sync", help="Check whether .harness/knowledge is current")
     sync.add_argument("--project", default=".", help="Project root containing .harness/archive")
     sync.add_argument("--update", action="store_true", help="Rebuild the index when it is out of date")
+    sync.add_argument(
+        "--check",
+        action="store_true",
+        help="Perform a complete read-only freshness and health check",
+    )
     sync.add_argument(
         "--no-incremental",
         action="store_true",
@@ -5781,6 +6674,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Do not write validator suggestions into entry JSON files (default applies them)",
     )
     auto.add_argument("--no-incremental", action="store_true", help="Refresh without reusing the archive entry cache")
+
+    status = sub.add_parser("status", help="Read-only knowledge freshness and health")
+    status.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
+
+    repair = sub.add_parser("repair", help="Repair legacy gates, duplicates, conflicts, and report retention")
+    repair.add_argument(
+        "repair_action",
+        nargs="?",
+        default="all",
+        choices=["all", "legacy-publication-gates"],
+    )
+    repair.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
+    repair.add_argument("--no-apply", action="store_true", help="Diagnose without writing repairs")
 
     audit = sub.add_parser("audit", help="Generate review lists for candidate, stale, and superseded entries")
     audit.add_argument("--project", default=".", help="Project root containing .harness/knowledge")
@@ -5871,7 +6777,7 @@ def main(argv: list[str] | None = None) -> int:
     maintain.add_argument("--limit", type=int, default=50, help="Maximum items processed by --drain")
     maintain.add_argument("--json", action="store_true", help="Emit machine-readable JSON (default behavior)")
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
     if args.command == "ingest":
         index = build_index(
             Path(args.project),
@@ -5886,7 +6792,24 @@ def main(argv: list[str] | None = None) -> int:
             args.update,
             incremental=not args.no_incremental,
             progress=ProgressReporter(args.progress),
+            check=args.check,
         )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "status":
+        result = sync_status(Path(args.project), check=True)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "repair":
+        try:
+            result = repair_knowledge(
+                Path(args.project),
+                args.repair_action,
+                apply=not args.no_apply,
+            )
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "auto":
