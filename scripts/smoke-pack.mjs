@@ -86,7 +86,25 @@ try {
   // clean checkout where contracts/core dist directories do not exist yet.
   run(process.execPath, [tsc, "-b", "packages/contracts", "packages/core"]);
 
+  const workflowFamilyManifestPath = join(
+    rootDir,
+    "packages",
+    "workflow-data-harness",
+    "hunter-workflow-family.json"
+  );
+  const workflowFamilyBeforePack = await readFile(
+    workflowFamilyManifestPath,
+    "utf8"
+  );
   run(process.execPath, [npmCli, "pack", "-w", "packages/workflow-data-harness", "--pack-destination", temporary]);
+  const workflowFamilyAfterPack = await readFile(
+    workflowFamilyManifestPath,
+    "utf8"
+  );
+  assert(
+    workflowFamilyAfterPack === workflowFamilyBeforePack,
+    "workflow prepack changed the tracked family manifest; run `npm run sync:harness` and commit the generated manifest before packing"
+  );
   const dataArchive = (await readdir(temporary)).find((name) =>
     name.startsWith("hunter-harness-workflow-harness-") && name.endsWith(".tgz")
   );

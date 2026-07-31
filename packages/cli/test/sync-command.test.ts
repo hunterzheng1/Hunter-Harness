@@ -20,6 +20,15 @@ describe("hunter-harness sync", () => {
       config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
+    const projectedSkill = join(
+      root,
+      ".claude",
+      "skills",
+      "harness-sync",
+      "SKILL.md"
+    );
+    await stat(projectedSkill);
+    await rm(projectedSkill);
     const stdout: string[] = [];
     try {
       const code = await runCli([
@@ -38,9 +47,29 @@ describe("hunter-harness sync", () => {
       const payload = JSON.parse(stdout.join("")) as {
         reportPath: string | null;
         reportSha256: string | null;
+        componentOutcomes: Array<{
+          component: string;
+          details?: { applied?: number };
+        }>;
+        partialEffects: {
+          persisted: string[];
+          notPersisted: string[];
+          summary: string;
+        };
       };
       expect(payload.reportPath).toBeNull();
       expect(payload.reportSha256).toBeNull();
+      expect(payload.componentOutcomes.find((item) =>
+        item.component === "adapter-projection"
+      )?.details?.applied).toBeGreaterThan(0);
+      expect(payload.partialEffects.persisted).toEqual([]);
+      expect(payload.partialEffects.notPersisted).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/adapter projection previewed \d+ change/)
+        ])
+      );
+      expect(payload.partialEffects.summary).toContain("No durable sync effects");
+      await expect(stat(projectedSkill)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(stat(join(root, ".harness", "runtime", "sync"))).rejects.toMatchObject({
         code: "ENOENT"
       });

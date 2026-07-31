@@ -263,6 +263,54 @@ describe("instruction graph validator", () => {
     }
   });
 
+  it("SYNC-PATH-05 treats a missing bare inline-code filename as prose, not a required include", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-inline-prose-"));
+    try {
+      await writeFile(
+        join(root, "CLAUDE.md"),
+        [
+          "# architecture testing coding style build stack",
+          "Worktree verification depends on `build-profile.json`; report WARN when it is absent."
+        ].join("\n") + "\n"
+      );
+
+      const result = await validateInstructionGraph(root, "CLAUDE.md");
+      const edge = result.edges.find((candidate) =>
+        candidate.resolutionTrace?.rawToken === "build-profile.json"
+      );
+
+      expect(result.status).toBe("OK");
+      expect(result.entrypointIntegrity.status).toBe("OK");
+      expect(result.unresolvedReferences).toEqual([]);
+      expect(edge).toMatchObject({
+        traversed: false,
+        reason: "informational-inline-code-missing"
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("SYNC-PATH-06 still rejects a missing path-qualified inline-code reference", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-instruction-inline-path-"));
+    try {
+      await writeFile(
+        join(root, "CLAUDE.md"),
+        "Architecture, testing, coding style, build and stack are defined in `docs/ai/missing.json`.\n"
+      );
+
+      const result = await validateInstructionGraph(root, "CLAUDE.md");
+
+      expect(result.status).toBe("FAIL");
+      expect(result.entrypointIntegrity.reasonCodes).toContain(
+        "INSTRUCTION_REFERENCE_MISSING"
+      );
+      expect(result.unresolvedReferences).toContain("docs/ai/missing.json");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("SYNC-003 rejects an oversized include before reading it", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-instruction-budget-"));
     try {
