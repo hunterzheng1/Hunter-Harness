@@ -78,6 +78,8 @@ python harness/scripts/harness_test_runner.py unittest --profile safe --tests-di
 
 Runner 强制同项目单实例、低调度优先级、逐命令超时、正常结束和异常结束的进程树清理。`HARNESS_TEST_MAX_WORKERS` 默认且最高为 `2`，只能调低，不能调高；技术栈自身的并发参数也必须收敛到该值。Windows detached-service 模块在执行前先做 nested-breakaway 能力探测，受限沙箱不支持时立即返回 `DETACHED_PROCESS_CAPABILITY_UNAVAILABLE`，不得让每个服务用例逐一超时。出现该错误、`TEST_RUN_ALREADY_ACTIVE`、`PROCESS_TREE_ISOLATION_UNAVAILABLE` 或 `TEST_COMMAND_TIMEOUT` 必须停止，不得绕过 Runner 重跑裸命令。完整约束见 `checklist.md`「0.0-A 资源安全档位」。
 
+动态数据库/Redis/令牌字段必须先由 `harness_environment.py prepare` 生成 secret-free receipt，再用 `exec --environment-receipt <file> --required-environment-field <NAME>` 闭包注入；缺失或指纹变化在启动测试前返回 `VERIFICATION_ENVIRONMENT_INCOMPLETE`。复杂 JSON、Docker template 或含引号参数不得跨多层 `-Command` 传递，改用 `exec --argv-file <utf8-json> --runtime-receipt <file>`；参数文件记录 PowerShell edition/version，运行回执只存 argv hash。`harness_service.py ensure` 属于正式持久服务模式，禁止从 bounded runner 内启动；命中时返回 `PERSISTENT_SERVICE_MODE_REQUIRED`。
+
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
 先 `harness_context.py prepare --phase test --executor <tool> [--change <id>] --json`，再 `harness_context.py begin --phase test --change <id> --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。

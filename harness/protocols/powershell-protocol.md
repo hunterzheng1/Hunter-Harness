@@ -195,3 +195,24 @@ Windows 默认常为 Windows PowerShell **5.1**。下列特性在 5.1 不可用�
 
 - 非 ASCII 路径（含中文）仓库：git/构建/文件操作一律 PowerShell；Bash 被 hook 拒绝（如 `Denied: non-ASCII path`）后**立即**改用 PowerShell 重发等价命令，禁止原样重试 Bash。
 - Maven `-D` 参数在 PowerShell 中加引号：`"-Dmaven.test.skip=true"`。
+
+## 13. PS5/PS7 原生参数合同
+
+复杂 JSON、Docker Go template、here-string 内容及多层引号不得作为 native process 的内联参数跨 `Bash → powershell -Command → native executable` 传递。统一写 UTF-8 JSON 参数文件：
+
+```json
+{
+  "schemaVersion": 1,
+  "transport": "utf8-json-argument-file",
+  "argv": ["python", "tool.py", "--template", "{{json .State}}"],
+  "powershell": {"edition": "Desktop", "version": "5.1"}
+}
+```
+
+执行入口：
+
+```powershell
+python harness/scripts/harness_test_runner.py exec --argv-file <file> --runtime-receipt <receipt>
+```
+
+Runner 直接把 `argv[]` 传给 native process（`shell=False`），不重新拼接或解析命令文本。PowerShell Desktop 5.1 与 Core 7 使用同一参数文件必须产生相同 argv。运行回执记录 edition/version、参数数量和 argv SHA-256，不写原始参数，避免凭证或模板内容泄漏。

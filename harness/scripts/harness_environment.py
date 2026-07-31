@@ -12,9 +12,12 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+import harness_service as hservice
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -43,6 +46,17 @@ FINGERPRINT_CANDIDATES = (
     "docker-compose.yaml",
     "compose.yml",
     "compose.yaml",
+)
+
+REQUIRED_CONTENT_EVIDENCE_FIELDS = (
+    "instanceId",
+    "instanceStartedAt",
+    "migrationHead",
+    "seedVersion",
+    "apiBuildIdentity",
+    "redisPing",
+    "databaseIndex",
+    "isolationPrefixHash",
 )
 
 
@@ -128,6 +142,141 @@ def compute_environment_hash(
     return "sha256:" + _sha256_bytes(payload)
 
 
+def _canonical_content_evidence(raw: dict[str, Any]) -> dict[str, Any]:
+    content = {
+        key: str(raw.get(key) or "").strip()
+        for key in (
+            "instanceId",
+            "instanceStartedAt",
+            "migrationHead",
+            "seedVersion",
+            "apiBuildIdentity",
+            "redisPing",
+            "databaseIndex",
+            "isolationPrefixHash",
+        )
+        if str(raw.get(key) or "").strip()
+    }
+    canaries_raw = raw.get("canaries")
+    canaries: list[dict[str, str]] = []
+    if isinstance(canaries_raw, list):
+        for index, item in enumerate(canaries_raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"content canaries[{index}] must be an object")
+            name = str(item.get("name") or "").strip()
+            status = str(item.get("status") or "").strip().upper()
+            identity = str(item.get("identity") or "").strip()
+            if not name or status not in {"PASS", "FAIL", "UNKNOWN"}:
+                raise ValueError(
+                    f"content canaries[{index}] requires name and PASS/FAIL/UNKNOWN status"
+                )
+            canonical = {"name": name, "status": status}
+            if identity:
+                canonical["identity"] = identity
+            canaries.append(canonical)
+    content["canaries"] = sorted(
+        canaries,
+        key=lambda item: (item["name"], item.get("identity", "")),
+    )
+    return content
+
+
+def create_environment_receipt(
+    project: Path,
+    *,
+    stack_id: str,
+    content_evidence: dict[str, Any],
+    environment_values: dict[str, str] | None = None,
+    powershell: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Create a typed, secret-free receipt for reusable environment contents."""
+    content = _canonical_content_evidence(content_evidence)
+    canonical_content = json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    fields = {
+        str(name): "sha256:" + _sha256_bytes(str(value).encode("utf-8"))
+        for name, value in sorted((environment_values or {}).items())
+        if str(name).strip() and value is not None
+    }
+    shell = {
+        key: str((powershell or {}).get(key) or "").strip()
+        for key in ("edition", "version")
+        if str((powershell or {}).get(key) or "").strip()
+    }
+    receipt = {
+        "schemaVersion": 1,
+        "stackId": stack_id,
+        "preparedAt": now_iso(),
+        "environmentHash": compute_environment_hash(project),
+        "content": content,
+        "contentFingerprint": "sha256:" + _sha256_bytes(canonical_content),
+        "environmentFields": fields,
+        "powershell": shell,
+    }
+    identity_payload = json.dumps(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key not in {"preparedAt", "receiptId"}
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    receipt["receiptId"] = "sha256:" + _sha256_bytes(identity_payload)
+    return receipt
+
+
+def resolve_verification_environment(
+    receipt: dict[str, Any],
+    *,
+    required_fields: list[str],
+    source_environment: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Close a verification's dynamic environment over a typed receipt."""
+    source = source_environment if source_environment is not None else dict(os.environ)
+    identities = receipt.get("environmentFields")
+    if receipt.get("schemaVersion") != 1 or not isinstance(identities, dict):
+        return {
+            "ok": False,
+            "code": "VERIFICATION_ENVIRONMENT_INCOMPLETE",
+            "message": "environment receipt is missing typed environmentFields",
+            "missing": sorted(set(required_fields)),
+            "changed": [],
+        }
+    required = sorted({str(item).strip() for item in required_fields if str(item).strip()})
+    missing = [
+        field
+        for field in required
+        if field not in identities or field not in source or source[field] == ""
+    ]
+    changed = [
+        field
+        for field in required
+        if field not in missing
+        and identities.get(field)
+        != "sha256:" + _sha256_bytes(str(source[field]).encode("utf-8"))
+    ]
+    if missing or changed:
+        return {
+            "ok": False,
+            "code": "VERIFICATION_ENVIRONMENT_INCOMPLETE",
+            "message": "required dynamic environment fields are missing or changed",
+            "missing": missing,
+            "changed": changed,
+        }
+    return {
+        "ok": True,
+        "code": "VERIFICATION_ENVIRONMENT_READY",
+        "environment": {field: str(source[field]) for field in required},
+        "receiptId": receipt.get("receiptId"),
+    }
+
+
 def _lease_path(lease_root: Path, stack_id: str) -> Path:
     safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in stack_id)
     return lease_root / f"{safe}.json"
@@ -147,12 +296,137 @@ def list_leases(lease_root: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _parse_expiry(value: Any) -> dt.datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def classify_leases(lease_root: Path) -> list[dict[str, Any]]:
+    """Classify leases without mutating or terminating any owner process."""
+    results: list[dict[str, Any]] = []
+    if not lease_root.is_dir():
+        return results
+    now = dt.datetime.now(dt.timezone.utc)
+    for path in sorted(lease_root.glob("*.json")):
+        try:
+            lease = _read_json(path)
+        except (OSError, json.JSONDecodeError) as exc:
+            results.append(
+                {
+                    "stackId": path.stem,
+                    "classification": "LEASE_UNREADABLE",
+                    "message": str(exc),
+                    "sourcePath": str(path),
+                }
+            )
+            continue
+        if not isinstance(lease, dict):
+            continue
+        item = {
+            "stackId": str(lease.get("stackId") or path.stem),
+            "changeId": lease.get("changeId"),
+            "expiresAt": lease.get("expiresAt"),
+            "sourcePath": str(path),
+        }
+        expires_at = _parse_expiry(lease.get("expiresAt"))
+        if expires_at is None:
+            item["classification"] = "LEASE_EXPIRY_INVALID"
+            results.append(item)
+            continue
+        if now < expires_at:
+            item["classification"] = (
+                "STALE_CONTENT"
+                if lease.get("status") == "STALE_CONTENT"
+                else "ACTIVE"
+            )
+            results.append(item)
+            continue
+        owner = lease.get("owner")
+        if not isinstance(owner, dict) or any(
+            not owner.get(field) for field in ("pid", "executable", "startedAt")
+        ):
+            item["classification"] = "OWNER_IDENTITY_INCOMPLETE"
+            results.append(item)
+            continue
+        try:
+            owner_pid = int(owner["pid"])
+        except (TypeError, ValueError):
+            item["classification"] = "OWNER_IDENTITY_INCOMPLETE"
+            results.append(item)
+            continue
+        if not hservice.is_pid_alive(owner_pid):
+            item["classification"] = "RECLAIMABLE"
+            results.append(item)
+            continue
+        identity = hservice.verify_process_identity(
+            {
+                "pid": owner_pid,
+                "startedAt": owner["startedAt"],
+                "processIdentity": {"executable": owner["executable"]},
+            }
+        )
+        item["classification"] = (
+            "OWNER_ACTIVE"
+            if identity is True
+            else (
+                "OWNER_IDENTITY_UNCONFIRMED"
+                if identity is None
+                else "OWNER_IDENTITY_MISMATCH"
+            )
+        )
+        results.append(item)
+    return results
+
+
+def reap_expired_leases(lease_root: Path) -> dict[str, Any]:
+    """Remove only expired leases whose recorded owner is definitely gone."""
+    leases = classify_leases(lease_root)
+    reaped: list[str] = []
+    for item in leases:
+        if item.get("classification") != "RECLAIMABLE":
+            continue
+        path = Path(str(item["sourcePath"]))
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        reaped.append(str(item["stackId"]))
+    receipt = {
+        "schemaVersion": 1,
+        "action": "environment-lease-reap",
+        "completedAt": now_iso(),
+        "reaped": reaped,
+        "leases": leases,
+    }
+    receipt_path = (
+        lease_root
+        / "reap-receipts"
+        / f"{dt.datetime.now().strftime('%Y%m%dT%H%M%S')}-{os.getpid()}.json"
+    )
+    _write_json(receipt_path, receipt)
+    return {
+        "ok": True,
+        "code": "LEASE_REAP_COMPLETE",
+        "reaped": reaped,
+        "leases": leases,
+        "receiptPath": str(receipt_path),
+    }
+
+
 def require_writable_lease(
     project: Path,
     *,
     change_id: str,
     stack_id: str,
     lease_root: Path | None = None,
+    environment_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate: a writable stack may be used only with an active matching lease."""
     root = lease_root or default_lease_root(project)
@@ -190,28 +464,8 @@ def require_writable_lease(
     # Review Y2: expired leases must not remain writable.
     expires_raw = lease.get("expiresAt")
     if isinstance(expires_raw, str) and expires_raw.strip():
-        try:
-            raw = expires_raw.strip().replace("Z", "+00:00")
-            expires_at = dt.datetime.fromisoformat(raw)
-            # Normalize both sides to UTC so naive/aware/offset mixes compare safely.
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=dt.timezone.utc)
-            else:
-                expires_at = expires_at.astimezone(dt.timezone.utc)
-            now_utc = dt.datetime.now(dt.timezone.utc)
-            if now_utc >= expires_at:
-                return {
-                    "ok": False,
-                    "code": "ENVIRONMENT_LEASE_EXPIRED",
-                    "message": (
-                        f"lease for stack={stack_id} expired at {expires_raw}; "
-                        "re-acquire before writable use"
-                    ),
-                    "changeId": change_id,
-                    "stackId": stack_id,
-                    "expiresAt": expires_raw,
-                }
-        except ValueError:
+        expires_at = _parse_expiry(expires_raw)
+        if expires_at is None:
             return {
                 "ok": False,
                 "code": "ENVIRONMENT_LEASE_REQUIRED",
@@ -219,6 +473,62 @@ def require_writable_lease(
                 "changeId": change_id,
                 "stackId": stack_id,
             }
+        if dt.datetime.now(dt.timezone.utc) >= expires_at:
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_LEASE_EXPIRED",
+                "message": (
+                    f"lease for stack={stack_id} expired at {expires_raw}; "
+                    "re-acquire before writable use"
+                ),
+                "changeId": change_id,
+                "stackId": stack_id,
+                "expiresAt": expires_raw,
+            }
+    if lease.get("status") == "STALE_CONTENT":
+        return {
+            "ok": False,
+            "code": "STALE_CONTENT",
+            "message": "lease content was previously marked stale; prepare again",
+            "lease": lease,
+        }
+    expected_content = str(lease.get("contentFingerprint") or "").strip()
+    if expected_content:
+        if not isinstance(environment_receipt, dict):
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_RECEIPT_REQUIRED",
+                "message": "current typed environment receipt is required before reuse",
+                "changeId": change_id,
+                "stackId": stack_id,
+            }
+        observed_content = str(
+            environment_receipt.get("contentFingerprint") or ""
+        ).strip()
+        canaries = (
+            environment_receipt.get("content", {}).get("canaries")
+            if isinstance(environment_receipt.get("content"), dict)
+            else None
+        )
+        canaries_ok = isinstance(canaries, list) and all(
+            isinstance(item, dict) and item.get("status") == "PASS"
+            for item in canaries
+        )
+        if observed_content != expected_content or not canaries_ok:
+            lease["status"] = "STALE_CONTENT"
+            lease["staleAt"] = now_iso()
+            lease["expectedContentFingerprint"] = expected_content
+            lease["observedContentFingerprint"] = observed_content
+            _write_json(path, lease)
+            return {
+                "ok": False,
+                "code": "STALE_CONTENT",
+                "message": "environment content fingerprint or canary changed",
+                "expectedContentFingerprint": expected_content,
+                "observedContentFingerprint": observed_content,
+            }
+    lease["heartbeatAt"] = now_iso()
+    _write_json(path, lease)
     return {"ok": True, "code": "LEASE_HELD", "lease": lease}
 
 
@@ -231,6 +541,7 @@ def acquire_lease(
     lease_root: Path | None = None,
     writable_volumes: list[str] | None = None,
     ttl_seconds: int = 3600,
+    environment_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Acquire a lease; reject cross-change sharing of the same writable volume."""
     root = lease_root or default_lease_root(project)
@@ -284,16 +595,55 @@ def acquire_lease(
 
     started = dt.datetime.now().astimezone()
     expires = started + dt.timedelta(seconds=max(60, int(ttl_seconds)))
+    if environment_receipt is not None:
+        if (
+            environment_receipt.get("schemaVersion") != 1
+            or environment_receipt.get("stackId") != stack_id
+            or not str(environment_receipt.get("contentFingerprint") or "").strip()
+        ):
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_RECEIPT_INVALID",
+                "message": "environment receipt identity does not match requested stack",
+            }
+        canaries = (
+            environment_receipt.get("content", {}).get("canaries")
+            if isinstance(environment_receipt.get("content"), dict)
+            else None
+        )
+        if not isinstance(canaries, list) or not canaries or any(
+            not isinstance(item, dict) or item.get("status") != "PASS"
+            for item in canaries
+        ):
+            return {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_NOT_READY",
+                "message": "all environment content canaries must pass before acquire",
+            }
     lease = {
-        "schemaVersion": 1,
+        "schemaVersion": 2 if environment_receipt is not None else 1,
         "changeId": change_id,
         "stackId": stack_id,
         "environmentHash": environment_hash,
         "writableVolumes": volumes,
         "acquiredAt": started.isoformat(timespec="seconds"),
+        "heartbeatAt": started.isoformat(timespec="seconds"),
         "expiresAt": expires.isoformat(timespec="seconds"),
         "projectRoot": str(project.resolve()),
+        "status": "ACTIVE",
+        "owner": {
+            "pid": os.getpid(),
+            "executable": hservice.get_process_executable(os.getpid())
+            or str(Path(sys.executable).resolve()),
+            "startedAt": (
+                hservice.get_process_create_time(os.getpid())
+                or started
+            ).isoformat(timespec="seconds"),
+        },
     }
+    if environment_receipt is not None:
+        lease["contentFingerprint"] = environment_receipt["contentFingerprint"]
+        lease["environmentReceiptId"] = environment_receipt.get("receiptId")
     _write_json(path, lease)
     return {"ok": True, "code": "LEASE_ACQUIRED", "lease": lease, "path": str(path)}
 
@@ -344,20 +694,155 @@ def cmd_fingerprint(args: argparse.Namespace) -> int:
     )
 
 
+def _load_receipt_arg(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    path = Path(value).resolve()
+    data = _read_json(path)
+    if not isinstance(data, dict):
+        raise ValueError(f"environment receipt must be a JSON object: {path}")
+    return data
+
+
+def cmd_prepare(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    evidence_path = Path(args.content_evidence_file).resolve()
+    try:
+        evidence = _read_json(evidence_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_EVIDENCE_INVALID",
+                "message": str(exc),
+            },
+            ok=False,
+        )
+    if not isinstance(evidence, dict):
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_EVIDENCE_INVALID",
+                "message": "content evidence must be a JSON object",
+            },
+            ok=False,
+        )
+    try:
+        canonical_evidence = _canonical_content_evidence(evidence)
+    except ValueError as exc:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_EVIDENCE_INVALID",
+                "message": str(exc),
+            },
+            ok=False,
+        )
+    missing_content = [
+        field
+        for field in REQUIRED_CONTENT_EVIDENCE_FIELDS
+        if not canonical_evidence.get(field)
+    ]
+    if not canonical_evidence.get("canaries"):
+        missing_content.append("canaries")
+    if missing_content:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_EVIDENCE_INCOMPLETE",
+                "message": "formal environment receipts require complete content evidence",
+                "missing": missing_content,
+            },
+            ok=False,
+        )
+    field_names = sorted(
+        {str(item).strip() for item in (args.environment_field or []) if str(item).strip()}
+    )
+    missing = [field for field in field_names if not os.environ.get(field)]
+    if missing:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "VERIFICATION_ENVIRONMENT_INCOMPLETE",
+                "message": "declared environment fields are missing",
+                "missing": missing,
+            },
+            ok=False,
+        )
+    powershell = {
+        "edition": str(
+            args.powershell_edition
+            or os.environ.get("HARNESS_POWERSHELL_EDITION")
+            or ""
+        ),
+        "version": str(
+            args.powershell_version
+            or os.environ.get("HARNESS_POWERSHELL_VERSION")
+            or ""
+        ),
+    }
+    if bool(powershell["edition"]) != bool(powershell["version"]):
+        return emit_json(
+            {
+                "ok": False,
+                "code": "POWERSHELL_RUNTIME_INCOMPLETE",
+                "message": "PowerShell edition and version must be recorded together",
+            },
+            ok=False,
+        )
+    try:
+        receipt = create_environment_receipt(
+            project,
+            stack_id=args.stack_id,
+            content_evidence=evidence,
+            environment_values={field: os.environ[field] for field in field_names},
+            powershell=powershell,
+        )
+    except ValueError as exc:
+        return emit_json(
+            {
+                "ok": False,
+                "code": "ENVIRONMENT_CONTENT_EVIDENCE_INVALID",
+                "message": str(exc),
+            },
+            ok=False,
+        )
+    output = Path(args.output).resolve()
+    _write_json(output, receipt)
+    return emit_json(
+        {
+            "ok": True,
+            "code": "ENVIRONMENT_RECEIPT_PREPARED",
+            "receiptId": receipt["receiptId"],
+            "contentFingerprint": receipt["contentFingerprint"],
+            "output": str(output),
+        }
+    )
+
+
 def cmd_acquire(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     root = Path(args.lease_root).resolve() if args.lease_root else default_lease_root(project)
     env_hash = args.environment_hash or compute_environment_hash(project)
     volumes = [v for v in (args.writable_volume or []) if v]
-    result = acquire_lease(
-        project,
-        change_id=args.change,
-        stack_id=args.stack_id,
-        environment_hash=env_hash,
-        lease_root=root,
-        writable_volumes=volumes,
-        ttl_seconds=int(args.ttl_seconds or 3600),
-    )
+    try:
+        receipt = _load_receipt_arg(args.environment_receipt)
+        result = acquire_lease(
+            project,
+            change_id=args.change,
+            stack_id=args.stack_id,
+            environment_hash=env_hash,
+            lease_root=root,
+            writable_volumes=volumes,
+            ttl_seconds=int(args.ttl_seconds or 3600),
+            environment_receipt=receipt,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        result = {
+            "ok": False,
+            "code": "ENVIRONMENT_RECEIPT_INVALID",
+            "message": str(exc),
+        }
     return emit_json(result, ok=bool(result.get("ok")))
 
 
@@ -376,12 +861,21 @@ def cmd_release(args: argparse.Namespace) -> int:
 def cmd_require(args: argparse.Namespace) -> int:
     project = Path(args.project).resolve()
     root = Path(args.lease_root).resolve() if args.lease_root else default_lease_root(project)
-    result = require_writable_lease(
-        project,
-        change_id=args.change,
-        stack_id=args.stack_id,
-        lease_root=root,
-    )
+    try:
+        receipt = _load_receipt_arg(args.environment_receipt)
+        result = require_writable_lease(
+            project,
+            change_id=args.change,
+            stack_id=args.stack_id,
+            lease_root=root,
+            environment_receipt=receipt,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        result = {
+            "ok": False,
+            "code": "ENVIRONMENT_RECEIPT_INVALID",
+            "message": str(exc),
+        }
     return emit_json(result, ok=bool(result.get("ok")))
 
 
@@ -394,7 +888,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             "action": "status",
             "projectRoot": str(project),
             "environmentHash": compute_environment_hash(project),
-            "leases": list_leases(root),
+            "leases": classify_leases(root),
             "leaseRoot": str(root),
             "contract": [
                 "prepare",
@@ -409,9 +903,25 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_reap_expired(args: argparse.Namespace) -> int:
+    project = Path(args.project).resolve()
+    root = Path(args.lease_root).resolve() if args.lease_root else default_lease_root(project)
+    return emit_json(reap_expired_leases(root))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_environment.py")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    prep = sub.add_parser("prepare")
+    prep.add_argument("--project", required=True)
+    prep.add_argument("--stack-id", required=True)
+    prep.add_argument("--content-evidence-file", required=True)
+    prep.add_argument("--environment-field", action="append", default=[])
+    prep.add_argument("--powershell-edition")
+    prep.add_argument("--powershell-version")
+    prep.add_argument("--output", required=True)
+    prep.set_defaults(func=cmd_prepare)
 
     fp = sub.add_parser("fingerprint")
     fp.add_argument("--project", required=True)
@@ -422,6 +932,7 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--change", required=True)
     ac.add_argument("--stack-id", required=True)
     ac.add_argument("--environment-hash")
+    ac.add_argument("--environment-receipt")
     ac.add_argument("--lease-root")
     ac.add_argument("--writable-volume", action="append", default=[])
     ac.add_argument("--ttl-seconds", type=int, default=3600)
@@ -439,12 +950,18 @@ def build_parser() -> argparse.ArgumentParser:
     req.add_argument("--change", required=True)
     req.add_argument("--stack-id", required=True)
     req.add_argument("--lease-root")
+    req.add_argument("--environment-receipt")
     req.set_defaults(func=cmd_require)
 
     st = sub.add_parser("status")
     st.add_argument("--project", required=True)
     st.add_argument("--lease-root")
     st.set_defaults(func=cmd_status)
+
+    reap = sub.add_parser("reap-expired")
+    reap.add_argument("--project", required=True)
+    reap.add_argument("--lease-root")
+    reap.set_defaults(func=cmd_reap_expired)
 
     return parser
 

@@ -351,3 +351,15 @@ v2 契约下 `record` 写入前强制解析并校验顶层身份字段，缺失�
 ### 10.4 原子写入
 
 `write_ledger` 采用 tmp → fsync → `os.replace`；replace 失败时旧账本字节不变、不留 `.tmp` 残骸。所有写路径（record / 其他命令）统一走原子写。
+
+### 10.5 写前透明迁移
+
+Reader 继续读取当前 v3 与前一支持窗口 v2（并保守识别无 schema 的 v1）。已有 schemaVersion 2 ledger，或显式携带 identity 参数的 legacy ledger，再次 `record` 时必须先完成身份迁移再修改任何 evidence；无 schema 且未显式请求 identity 的旧调用继续保持兼容行为：
+
+- 解析 repository/change/base/current/diff/ownership identity，目标固定为 schemaVersion 3；
+- 对 `validations`、`verificationTargets`、`integration`、`artifacts` 生成迁移前 evidence identity；
+- 迁移只增加 schema/identity 元数据，迁移后 evidence identity 必须完全相同；
+- 把 receipt 原子嵌入 `migrationHistory[]`，记录 original/target schema、before/after identity 与 `receiptId`；
+- 版本超出支持窗口、仓库/ownership/diff 无法确认、或 evidence identity 漂移时不写文件，返回 `LEDGER_MIGRATION_REQUIRED` 与参数数组形式的 `rerecordCommand`。
+
+submit/review/test/archive 只能通过 `harness_ledger.py` 读取/写入，禁止各自实现 schema 猜测或手工改 ledger。

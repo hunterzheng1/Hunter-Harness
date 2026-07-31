@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.43] — hunter-harness / [0.2.41] — @hunter-harness/workflow-harness
+
+### Fixed（2026-07-31 本地状态耐久性与执行证据闭环）
+
+- **局部状态 fail closed**：项目检测扩展为 absent/partial/invalid/valid/recovery-required；archive、change、project-local knowledge、managed block、Adapter marker 或恢复事务任一残留时，普通 configure/refresh/rules 操作都会给出 `PARTIAL_HARNESS_STATE_DETECTED` 或恢复诊断，不再把成熟项目静默重置为首次安装。
+- **受保护根事务收据**：事务 journal 记录 `.harness/archive`、`.harness/changes` 与 `.harness/knowledge/project-local` 的文件/目录/字节/Merkle inventory；未声明写权限的增减或改写会失败并回滚，保留可审计的前后身份。
+- **耐久归档**：归档新增工作区外内容寻址存储、写后回读、retention policy、durable receipt 与无覆盖恢复；仅本地归档明确标记 `ARCHIVED_LOCAL_ONLY`，取得耐久收据后才标记 `ARCHIVED_DURABLE`。
+- **场景到执行证据闭环**：计划中的 required scenario 必须绑定精确 test ID、文件和标题；runner receipt 与 Ledger 分别记录 declared/selected/collected/executed/passed/skipped，Gate 独立拒绝漏收集、过滤、跳过、同名跨文件冒充或失败 attempt，最终摘要展示覆盖关系。
+- **Windows 服务树所有权**：launcher 使用 kill-on-close Job Object，service session 记录 job、launcher/root PID、可执行文件、命令哈希、启动时间、父链和端口；stop 仅终止身份完全匹配的树，并同时确认进程与端口释放，无法确认时保留 session 和 `UNCONFIRMED` 结论。
+- **环境内容与动态变量**：正式环境收据强制记录 instance/start、migration、seed、API build、Redis、database index、隔离前缀与 canary；租约绑定内容指纹并在漂移时返回 `STALE_CONTENT`，runner 只从脱敏收据注入声明字段，缺失时在测试启动前返回 `VERIFICATION_ENVIRONMENT_INCOMPLETE`。
+- **跨 PowerShell 参数协议**：复杂 argv 改用 UTF-8 JSON argument file，runtime receipt 记录 PowerShell edition/version 与 argv hash，不持久化原始敏感参数；持久服务命令从有界 test runner 中拒绝并要求正式 service mode。
+- **迁移与异常收尾**：Ledger v2 或显式 identity 的 legacy 写入先原子迁移到 v3，保持 evidence identity 并嵌入 migration receipt，失败返回确定性重录命令且不改原文件；测试锁和环境租约具备精确 owner、heartbeat、expiry、分类、安全回收和 closeout receipt。
+- workflow bundle 提升至 `0.2.30`，最低 CLI 版本提升至 `0.2.43`。
+
 ## [0.2.42] — hunter-harness / [0.2.40] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-07-31 Sync 指令图与发布收据修复）

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -147,5 +147,51 @@ describe("protocol state", () => {
       "utf8"
     )) as { state: string };
     expect(status.state).toBe("rolled_back");
+  });
+
+  it("refuses undeclared writes to protected local roots and records invariant inventories", async () => {
+    const archiveFile = join(
+      root,
+      ".harness",
+      "archive",
+      "existing",
+      "reports",
+      "final",
+      "summary-data.json"
+    );
+    await mkdir(join(archiveFile, ".."), { recursive: true });
+    await writeFile(archiveFile, "{\"preserve\":true}\n", "utf8");
+
+    await expect(runTransaction(root, [
+      { operation: "delete", path: ".harness/archive/existing/reports/final/summary-data.json" }
+    ], { id: "tx_forbidden_archive", kind: "refresh" })).rejects.toMatchObject({
+      code: "PROTECTED_LOCAL_ROOT_WRITE_FORBIDDEN"
+    });
+    expect(await readFile(archiveFile, "utf8")).toBe("{\"preserve\":true}\n");
+
+    const result = await runTransaction(root, [
+      { operation: "add", path: "managed.txt", content: "ok" }
+    ], { id: "tx_preserves_archive", kind: "refresh" });
+    expect(result.protectedLocalRoots.before).toEqual(result.protectedLocalRoots.after);
+    expect(result.protectedLocalRoots.before).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: ".harness/archive",
+        files: 1
+      })
+    ]));
+    const journal = JSON.parse(await readFile(
+      join(stateLayout(root).transactions, "tx_preserves_archive", "journal.json"),
+      "utf8"
+    )) as {
+      protected_local_roots: {
+        before: unknown[];
+        after: unknown[];
+        unchanged: boolean;
+      };
+    };
+    expect(journal.protected_local_roots.unchanged).toBe(true);
+    expect(journal.protected_local_roots.before).toEqual(
+      journal.protected_local_roots.after
+    );
   });
 });

@@ -81,7 +81,7 @@ def _table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
+def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, Any]]:
     """C9: parse test-scenarios.md tables, extracting scenario rows.
 
     Returns a list of dicts with keys: id / priority / scenario / verification /
@@ -89,7 +89,7 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
     """
     text = Path(scenarios_path).read_text(encoding="utf-8-sig")
     lines = text.splitlines()
-    scenarios: list[dict[str, str]] = []
+    scenarios: list[dict[str, Any]] = []
     i = 0
     while i < len(lines):
         line = lines[i].strip()
@@ -127,6 +127,35 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
                 "tier",
             )
             expected_index = _column_index(headers, "预期", "expected")
+            executable_id_index = _column_index(
+                headers,
+                "executable test ID",
+                "executableTestId",
+                "可执行测试 ID",
+                "测试 ID",
+            )
+            test_file_index = _column_index(
+                headers,
+                "test file",
+                "testFile",
+                "测试文件",
+                "spec path",
+            )
+            test_title_index = _column_index(
+                headers,
+                "test title",
+                "testTitle",
+                "测试标题",
+                "用例标题",
+            )
+            executable_mapping_declared = any(
+                index is not None
+                for index in (
+                    executable_id_index,
+                    test_file_index,
+                    test_title_index,
+                )
+            )
 
             row_index = i + 2
             while row_index < len(lines):
@@ -175,6 +204,7 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
                         priority,
                         "advisory",
                     ),
+                    "executableMappingDeclared": executable_mapping_declared,
                 }
                 if category_index is not None and category_index < len(cells):
                     if cells[category_index].strip():
@@ -183,6 +213,9 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
                     ("verification", verification_index),
                     ("executionTier", execution_tier_index),
                     ("expected", expected_index),
+                    ("executableTestId", executable_id_index),
+                    ("testFile", test_file_index),
+                    ("testTitle", test_title_index),
                 ):
                     if (
                         complete_row
@@ -197,6 +230,23 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, str]]:
             continue
         i += 1
     return scenarios
+
+
+def scenario_manifest_schema_version(scenarios: list[dict[str, Any]]) -> int:
+    required = [
+        item
+        for item in scenarios
+        if str(item.get("requiredEvidenceKind") or "") == "ledger"
+    ]
+    if required and all(
+        all(
+            str(item.get(field) or "").strip()
+            for field in ("executableTestId", "testFile", "testTitle")
+        )
+        for item in required
+    ):
+        return 2
+    return 1
 
 
 def parse_plan_tasks(plan_path: Path) -> list[dict[str, str]]:
@@ -530,6 +580,21 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
                 "PLAN_SCENARIO_OWNER_PHASE_INVALID",
                 f"scenario {scenario.get('id', '?')}: unsupported ownerPhase '{owner}'",
             )
+        if (
+            scenario.get("requiredEvidenceKind") == "ledger"
+            and scenario.get("executableMappingDeclared")
+        ):
+            missing_mapping = [
+                field
+                for field in ("executableTestId", "testFile", "testTitle")
+                if not str(scenario.get(field) or "").strip()
+            ]
+            if missing_mapping:
+                return _result_error(
+                    "PLAN_SCENARIO_EXECUTABLE_MAPPING_MISSING",
+                    f"scenario {scenario.get('id', '?')}: missing executable mapping fields: "
+                    + ", ".join(missing_mapping),
+                )
 
     digest = hashlib.sha256()
     artifact_names: list[str] = []
@@ -827,9 +892,16 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
         )
 
     expected_manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": scenario_manifest_schema_version(expected_scenarios),
         "changeName": change_name,
-        "scenarios": expected_scenarios,
+        "scenarios": [
+            {
+                key: value
+                for key, value in scenario.items()
+                if key != "executableMappingDeclared"
+            }
+            for scenario in expected_scenarios
+        ],
     }
     if manifest != expected_manifest:
         return _result_error(
@@ -1138,9 +1210,16 @@ def finalize_plan(
         scenarios = validation.get("scenarios") or []
         manifest_path = change_dir / "meta" / "scenario-manifest.json"
         manifest_payload = {
-            "schemaVersion": 1,
+            "schemaVersion": scenario_manifest_schema_version(scenarios),
             "changeName": change_name,
-            "scenarios": scenarios,
+            "scenarios": [
+                {
+                    key: value
+                    for key, value in scenario.items()
+                    if key != "executableMappingDeclared"
+                }
+                for scenario in scenarios
+            ],
         }
         _atomic_write_json(manifest_path, manifest_payload)
         created.append(manifest_path)

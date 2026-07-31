@@ -24,6 +24,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import harness_environment as henv
+
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_TIMEOUT_SECONDS = 300.0
 RESOURCE_INTENSIVE_PROFILES = frozenset({"system", "full"})
@@ -161,6 +167,115 @@ def _pid_is_running(pid: int) -> bool:
     return True
 
 
+def classify_test_lock(path: Path) -> dict[str, object]:
+    """Classify one lock without mutating it or terminating a process."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"classification": "ABSENT", "path": str(path)}
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "classification": "LOCK_UNREADABLE",
+            "path": str(path),
+            "message": str(exc),
+        }
+    if not isinstance(payload, dict):
+        return {"classification": "LOCK_UNREADABLE", "path": str(path)}
+    owner = payload.get("owner")
+    expires = payload.get("expiresAtUnix")
+    if not isinstance(expires, (int, float)) or isinstance(expires, bool):
+        return {
+            "classification": "OWNER_IDENTITY_INCOMPLETE",
+            "path": str(path),
+            "token": payload.get("token"),
+        }
+    if time.time() < float(expires):
+        return {
+            "classification": "ACTIVE",
+            "path": str(path),
+            "token": payload.get("token"),
+            "owner": owner,
+        }
+    if not isinstance(owner, dict) or any(
+        not owner.get(field) for field in ("pid", "executable", "startedAt")
+    ):
+        return {
+            "classification": "OWNER_IDENTITY_INCOMPLETE",
+            "path": str(path),
+            "token": payload.get("token"),
+        }
+    try:
+        owner_pid = int(owner["pid"])
+    except (TypeError, ValueError):
+        return {
+            "classification": "OWNER_IDENTITY_INCOMPLETE",
+            "path": str(path),
+            "token": payload.get("token"),
+        }
+    if not _pid_is_running(owner_pid):
+        return {
+            "classification": "RECLAIMABLE",
+            "path": str(path),
+            "token": payload.get("token"),
+            "owner": owner,
+        }
+    verified = henv.hservice.verify_process_identity(
+        {
+            "pid": owner_pid,
+            "startedAt": owner["startedAt"],
+            "processIdentity": {"executable": owner["executable"]},
+        }
+    )
+    classification = (
+        "OWNER_ACTIVE"
+        if verified is True
+        else (
+            "OWNER_IDENTITY_UNCONFIRMED"
+            if verified is None
+            else "OWNER_IDENTITY_MISMATCH"
+        )
+    )
+    return {
+        "classification": classification,
+        "path": str(path),
+        "token": payload.get("token"),
+        "owner": owner,
+    }
+
+
+def reap_test_lock(path: Path) -> dict[str, object]:
+    """Reap only an expired lock whose exact recorded owner is absent."""
+    classification = classify_test_lock(path)
+    reaped = classification.get("classification") == "RECLAIMABLE"
+    if reaped:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        receipt = {
+            "schemaVersion": 1,
+            "action": "test-run-lock-reap",
+            "status": "REAPED",
+            "completedAtUnix": time.time(),
+            "lockPath": str(path),
+            "prior": classification,
+        }
+        receipt_dir = path.parent / "receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        target = receipt_dir / f"{path.stem}-reap-{uuid.uuid4().hex}.json"
+        target.write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    return {
+        "ok": True,
+        "code": "TEST_RUN_LOCK_REAPED" if reaped else "TEST_RUN_LOCK_REPORT_ONLY",
+        "reaped": reaped,
+        "lock": classification,
+    }
+
+
 class TestRunLock:
     """Atomic per-project single-instance lock with stale-owner recovery."""
 
@@ -182,6 +297,7 @@ class TestRunLock:
         self.path = root / f"{digest}.lock"
         self.token = uuid.uuid4().hex
         self._owned = False
+        self._ttl_seconds = 3600.0
 
     def _owner(self) -> dict[str, object]:
         try:
@@ -199,34 +315,42 @@ class TestRunLock:
                     0o600,
                 )
             except FileExistsError:
-                owner = self._owner()
-                try:
-                    owner_pid = int(owner.get("pid", 0))
-                except (TypeError, ValueError):
-                    owner_pid = 0
-                try:
-                    age_seconds = time.time() - self.path.stat().st_mtime
-                except OSError:
-                    age_seconds = 0
-                if _pid_is_running(owner_pid) or age_seconds < 30:
+                classification = classify_test_lock(self.path)
+                if classification.get("classification") != "RECLAIMABLE":
                     raise TestRunAlreadyActive(
                         "TEST_RUN_ALREADY_ACTIVE: "
-                        f"lock={self.path} ownerPid={owner_pid or 'unknown'}"
+                        f"lock={self.path} "
+                        f"classification={classification.get('classification')}"
                     )
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
+                reap_test_lock(self.path)
                 if attempt == 0:
                     continue
                 raise TestRunAlreadyActive(
                     f"TEST_RUN_ALREADY_ACTIVE: could not reclaim {self.path}"
                 )
             else:
+                now = time.time()
+                created = henv.hservice.get_process_create_time(os.getpid())
+                executable = (
+                    henv.hservice.get_process_executable(os.getpid())
+                    or str(Path(sys.executable).resolve())
+                )
                 payload = {
-                    "pid": os.getpid(),
+                    "schemaVersion": 2,
                     "token": self.token,
-                    "startedAtUnix": time.time(),
+                    "status": "ACTIVE",
+                    "createdAtUnix": now,
+                    "heartbeatAtUnix": now,
+                    "expiresAtUnix": now + self._ttl_seconds,
+                    "owner": {
+                        "pid": os.getpid(),
+                        "executable": executable,
+                        "startedAt": (
+                            created.isoformat(timespec="seconds")
+                            if created is not None
+                            else ""
+                        ),
+                    },
                 }
                 with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                     json.dump(payload, stream, ensure_ascii=False)
@@ -235,11 +359,49 @@ class TestRunLock:
                 return
         raise TestRunAlreadyActive(f"TEST_RUN_ALREADY_ACTIVE: {self.path}")
 
-    def release(self) -> None:
+    def heartbeat(self) -> None:
+        if not self._owned:
+            return
+        owner = self._owner()
+        if owner.get("token") != self.token:
+            raise TestRunAlreadyActive(
+                f"TEST_RUN_LOCK_OWNERSHIP_LOST: lock={self.path}"
+            )
+        now = time.time()
+        owner["heartbeatAtUnix"] = now
+        owner["expiresAtUnix"] = now + self._ttl_seconds
+        with self.path.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(owner, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def _write_closeout_receipt(self, *, status: str) -> None:
+        receipt = {
+            "schemaVersion": 1,
+            "action": "test-run-lock-closeout",
+            "status": status,
+            "token": self.token,
+            "lockPath": str(self.path),
+            "closedAtUnix": time.time(),
+            "ownerPid": os.getpid(),
+        }
+        receipt_dir = self.path.parent / "receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        target = receipt_dir / f"{self.path.stem}-{self.token}.json"
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(temporary, target)
+
+    def release(self, *, status: str = "COMPLETED") -> None:
         if not self._owned:
             return
         owner = self._owner()
         if owner.get("token") == self.token:
+            self._write_closeout_receipt(status=status)
             try:
                 self.path.unlink()
             except FileNotFoundError:
@@ -251,7 +413,7 @@ class TestRunLock:
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
-        self.release()
+        self.release(status="ABNORMAL" if exc_type is not None else "COMPLETED")
 
 
 def lower_process_priority() -> bool:
@@ -709,6 +871,81 @@ def _execution_environment(profile: str, max_workers: int) -> dict[str, str]:
     }
 
 
+def load_argv_envelope(path: Path) -> tuple[list[str], dict[str, str]]:
+    """Load a shell-neutral UTF-8 argument file without reparsing command text."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"argument file is unreadable: {exc}") from exc
+    argv = raw.get("argv") if isinstance(raw, dict) else None
+    powershell = raw.get("powershell") if isinstance(raw, dict) else None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schemaVersion") != 1
+        or raw.get("transport") != "utf8-json-argument-file"
+        or not isinstance(argv, list)
+        or not argv
+        or any(not isinstance(item, str) or "\0" in item for item in argv)
+        or not isinstance(powershell, dict)
+    ):
+        raise ValueError(
+            "argument file must declare schemaVersion=1, "
+            "transport=utf8-json-argument-file, argv[], and powershell metadata"
+        )
+    shell = {
+        field: str(powershell.get(field) or "").strip()
+        for field in ("edition", "version")
+    }
+    if not all(shell.values()):
+        raise ValueError("argument file powershell edition/version are required")
+    return list(argv), shell
+
+
+def _is_persistent_service_command(command: Sequence[str]) -> bool:
+    """Recognize formal service-manager launches that must outlive this runner."""
+    normalized = [str(item).replace("\\", "/").lower() for item in command]
+    return "ensure" in normalized and any(
+        item.rsplit("/", 1)[-1] == "harness_service.py" for item in normalized
+    )
+
+
+def _write_exec_runtime_receipt(
+    path: Path,
+    *,
+    command: Sequence[str],
+    powershell: Mapping[str, str],
+    result: CommandResult,
+) -> None:
+    canonical_argv = json.dumps(
+        list(command),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    payload = {
+        "schemaVersion": 1,
+        "action": "managed-exec",
+        "transport": "utf8-json-argument-file",
+        "completedAtEpochSeconds": int(time.time()),
+        "argvHash": "sha256:" + hashlib.sha256(canonical_argv).hexdigest(),
+        "argumentCount": len(command),
+        "powershell": {
+            "edition": str(powershell["edition"]),
+            "version": str(powershell["version"]),
+        },
+        "returncode": result.returncode,
+        "timedOut": result.timed_out,
+        "processTreeIsolated": result.process_tree_isolated,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    os.replace(temporary, path)
+
+
 def _print_plan(profile: str, plan: Sequence[TestModule]) -> None:
     payload = {
         "profile": profile,
@@ -757,8 +994,9 @@ def _run_unittest(args: argparse.Namespace) -> int:
     detached_service_modules = set(args.detached_service_module)
     detached_capability_checked = False
     try:
-        with TestRunLock(project):
+        with TestRunLock(project) as run_lock:
             for index, module in enumerate(plan, start=1):
+                run_lock.heartbeat()
                 if (
                     module.name in detached_service_modules
                     and not detached_capability_checked
@@ -800,6 +1038,7 @@ def _run_unittest(args: argparse.Namespace) -> int:
                     capture_output=args.verbosity == 0,
                     allow_detached_processes=module.name in detached_service_modules,
                 )
+                run_lock.heartbeat()
                 executed_count += 1
                 module_failure_count = len(failures)
                 if result.timed_out:
@@ -837,11 +1076,45 @@ def _run_unittest(args: argparse.Namespace) -> int:
 
 def _run_exec(args: argparse.Namespace) -> int:
     command = list(args.command)
-    if command and command[0] == "--":
+    powershell: dict[str, str] | None = None
+    if args.runtime_receipt and not args.argv_file:
+        print(
+            "RUNTIME_RECEIPT_REQUIRES_ARGUMENT_FILE: "
+            "--runtime-receipt requires --argv-file",
+            file=sys.stderr,
+        )
+        return 2
+    if args.argv_file:
+        if command:
+            print(
+                "ARGUMENT_TRANSPORT_CONFLICT: use either --argv-file or a command",
+                file=sys.stderr,
+            )
+            return 2
+        argv_file = Path(args.argv_file)
+        project_for_path = Path(args.project).resolve()
+        if not argv_file.is_absolute():
+            argv_file = project_for_path / argv_file
+        try:
+            command, powershell = load_argv_envelope(argv_file)
+        except ValueError as exc:
+            print(f"ARGUMENT_FILE_INVALID: {exc}", file=sys.stderr)
+            return 2
+    elif command and command[0] == "--":
         command = command[1:]
     if not command:
-        print("managed exec requires a command after --", file=sys.stderr)
+        print(
+            "managed exec requires a command after -- or --argv-file",
+            file=sys.stderr,
+        )
         return 2
+    if _is_persistent_service_command(command):
+        print(
+            "PERSISTENT_SERVICE_MODE_REQUIRED: invoke harness_service.py ensure "
+            "outside the bounded test runner",
+            file=sys.stderr,
+        )
+        return 7
     if not resource_profile_allowed(
         args.profile,
         args.confirm_resource_intensive,
@@ -855,8 +1128,46 @@ def _run_exec(args: argparse.Namespace) -> int:
         return 2
     project = Path(args.project).resolve()
     environment = _execution_environment(args.profile, args.max_workers)
+    required_environment = list(args.required_environment_field or [])
+    if required_environment and not args.environment_receipt:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "VERIFICATION_ENVIRONMENT_INCOMPLETE",
+                    "missing": sorted(set(required_environment)),
+                    "changed": [],
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 6
+    if args.environment_receipt:
+        receipt_path = Path(args.environment_receipt)
+        if not receipt_path.is_absolute():
+            receipt_path = project / receipt_path
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                "VERIFICATION_ENVIRONMENT_INCOMPLETE: "
+                f"environment receipt is unreadable: {exc}",
+                file=sys.stderr,
+            )
+            return 6
+        resolved = henv.resolve_verification_environment(
+            receipt,
+            required_fields=required_environment,
+            source_environment=dict(os.environ),
+        )
+        if not resolved.get("ok"):
+            print(json.dumps(resolved, ensure_ascii=False), file=sys.stderr)
+            return 6
+        environment.update(resolved["environment"])
     try:
-        with TestRunLock(project):
+        with TestRunLock(project) as run_lock:
+            run_lock.heartbeat()
             if args.allow_detached_processes:
                 available, detail = detached_process_capability(project)
                 if not available:
@@ -874,6 +1185,7 @@ def _run_exec(args: argparse.Namespace) -> int:
                 environ=environment,
                 allow_detached_processes=args.allow_detached_processes,
             )
+            run_lock.heartbeat()
     except TestRunAlreadyActive as exc:
         print(str(exc), file=sys.stderr)
         return 3
@@ -886,7 +1198,40 @@ def _run_exec(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 124
+    if args.runtime_receipt:
+        assert powershell is not None
+        receipt_path = Path(args.runtime_receipt)
+        if not receipt_path.is_absolute():
+            receipt_path = project / receipt_path
+        _write_exec_runtime_receipt(
+            receipt_path,
+            command=command,
+            powershell=powershell,
+            result=result,
+        )
     return result.returncode
+
+
+def _run_lock_status(args: argparse.Namespace) -> int:
+    lock = TestRunLock(Path(args.project).resolve())
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "action": "lock-status",
+                "lock": classify_test_lock(lock.path),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _run_lock_reap(args: argparse.Namespace) -> int:
+    lock = TestRunLock(Path(args.project).resolve())
+    print(json.dumps(reap_test_lock(lock.path), ensure_ascii=False, indent=2))
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -952,20 +1297,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exec_parser.add_argument("command", nargs=argparse.REMAINDER)
     exec_parser.add_argument(
+        "--argv-file",
+        help=(
+            "Read argv from a UTF-8 JSON parameter file so PowerShell 5.1 and 7 "
+            "use identical native-process argument semantics."
+        ),
+    )
+    exec_parser.add_argument(
+        "--runtime-receipt",
+        help="Write a secret-free argv hash and PowerShell runtime receipt.",
+    )
+    exec_parser.add_argument(
+        "--environment-receipt",
+        help="Typed environment receipt created by harness_environment.py prepare.",
+    )
+    exec_parser.add_argument(
+        "--required-environment-field",
+        action="append",
+        default=[],
+        help="Dynamic environment field required by the command; may be repeated.",
+    )
+    exec_parser.add_argument(
         "--allow-detached-processes",
         action="store_true",
         help="Use exact Windows PID-lineage tracking instead of a Job Object.",
     )
     exec_parser.set_defaults(handler=_run_exec)
+
+    lock_status = subparsers.add_parser(
+        "lock-status",
+        help="Classify the project test lock without mutating it.",
+    )
+    lock_status.add_argument("--project", default=".")
+    lock_status.set_defaults(handler=_run_lock_status)
+
+    lock_reap = subparsers.add_parser(
+        "lock-reap",
+        help="Reap only an expired lock whose exact owner is absent.",
+    )
+    lock_reap.add_argument("--project", default=".")
+    lock_reap.set_defaults(handler=_run_lock_reap)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.timeout_seconds <= 0:
+    if getattr(args, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS) <= 0:
         parser.error("--timeout-seconds must be positive")
-    if args.max_workers <= 0:
+    if getattr(args, "max_workers", DEFAULT_MAX_WORKERS) <= 0:
         parser.error("--max-workers must be positive")
     return int(args.handler(args))
 

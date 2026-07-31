@@ -48,6 +48,8 @@ const identity = Object.keys(record(normalized.identity)).length
 const verification = Object.keys(record(normalized.verification)).length
   ? record(normalized.verification)
   : record(data.verification);
+const scenarioCoverage = record(data.scenarioCoverage);
+const unexecutedScenarios = list(scenarioCoverage.unexecuted);
 const timing = Object.keys(record(normalized.timing)).length
   ? record(normalized.timing)
   : record(data.timing);
@@ -200,6 +202,21 @@ const remoteCost = record(measurements.remoteCost);
 const remoteCostTotals = record(remoteCost.totals);
 const storage = record(measurements.artifactStorage);
 const projection = record(data.projection);
+const durability = record(data.archiveDurability);
+const durabilityStatus = durability.status || "ARCHIVED_LOCAL_ONLY";
+const scenarioCoverageStatus = scenarioCoverage.skipped
+  ? "SKIPPED"
+  : scenarioCoverage.ok
+  ? "OK"
+  : scenarioCoverage.code || "NOT_RUN";
+const scenarioCoverageHtml = `
+  <article class="card"><h2>场景执行闭环</h2>
+    <div class="fact"><span>结构化运行回执</span>${pill(scenarioCoverageStatus)}</div>
+    <div class="fact"><span>已执行并通过</span><strong>${list(scenarioCoverage.passed).length}</strong></div>
+    <div class="fact"><span>未执行 / 未通过</span><span>${unexecutedScenarios.length
+      ? `<code>${esc(unexecutedScenarios.join(", "))}</code>`
+      : "无"}</span></div>
+  </article>`;
 
 const html = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -227,12 +244,14 @@ const html = `<!doctype html>
   <article class="metric"><small>代码范围</small><strong>${esc(record(data.diffStat).filesChanged ?? files.length)} 个文件</strong><small class="positive">+${esc(record(data.diffStat).insertions ?? 0)} · <span class="negative">-${esc(record(data.diffStat).deletions ?? 0)}</span></small></article>
 </section>
 <article class="card"><h2>验证概览</h2><div class="verification-grid">${groupHtml}</div></article>
+${scenarioCoverageHtml}
 <section class="two-column">
   <article class="card"><h2>风险与动作</h2><div class="risk-actions"><section><h3>当前风险</h3><ul>${risksHtml}</ul></section><section><h3>人工动作</h3><ul>${actionsHtml}</ul></section></div></article>
   <div>
     ${releaseHtml}
     <article class="card"><h2>事实完整性</h2>
       <div class="fact"><span>归档完整性</span>${pill(record(data.archiveIntegrity).ok === false ? "FAIL" : record(data.archiveManifest).checksumStatus || "UNKNOWN")}</div>
+      <div class="fact"><span>归档持久性</span><span>${pill(durabilityStatus === "ARCHIVED_DURABLE" ? "OK" : "WARN")} <code>${esc(durabilityStatus)}</code></span></div>
       <div class="fact"><span>时间守恒</span>${pill(numeric(timing.conservationDeltaMs) === 0 ? "OK" : "WARN")}</div>
     </article>
   </div>
@@ -259,6 +278,9 @@ const html = `<!doctype html>
   <dt>基线提交</dt><dd><code>${esc(identity.baseCommit || data.baseCommit || "N/A")}</code></dd>
   <dt>报告数据版本</dt><dd>${esc(data.schemaVersion || "N/A")}</dd>
   <dt>归档意图</dt><dd title="${esc(release.intent)}">${recordOnly ? "仅记录（未请求发布）" : esc(release.intent || "未声明")}</dd>
+  <dt>归档持久性</dt><dd><code>${esc(durabilityStatus)}</code>${durability.risk ? ` · ${esc(durability.risk)}` : ""}</dd>
+  <dt>保留策略</dt><dd>${esc(durability.retentionPolicy || "N/A")}</dd>
+  <dt>场景回执状态</dt><dd><code>${esc(scenarioCoverage.code || scenarioCoverageStatus)}</code></dd>
   <dt>尝试记录</dt><dd>${attempts.length}</dd>
   <dt>历史质量</dt><dd>${numeric(timing.unclosedAttemptCount) === 0 ? "无未闭合尝试" : `${esc(timing.unclosedAttemptCount ?? "N/A")} 个未闭合尝试`}</dd>
   <dt>投影状态</dt><dd title="Projection / Fallback"><code>${esc(projection.code || projection.mode || "N/A")}</code></dd>

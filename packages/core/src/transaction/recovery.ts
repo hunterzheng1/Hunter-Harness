@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { stateLayout } from "../state/layout.js";
 import { sha256File } from "../fs/hash.js";
+import { collectProtectedLocalRootsInventory } from "../project/local-state.js";
 import { uuidV7 } from "../project/uuid-v7.js";
 import type { TransactionJournal } from "./journal.js";
 import {
@@ -20,7 +21,16 @@ export async function recoverTransaction(
     "utf8"
   )) as TransactionJournal;
   if (journal.state === "committed") {
-    return { transactionId, status: "committed" };
+    const current = await collectProtectedLocalRootsInventory(projectRoot);
+    return {
+      transactionId,
+      status: "committed",
+      protectedLocalRoots: journal.protected_local_roots ?? {
+        before: current,
+        after: current,
+        unchanged: true
+      }
+    };
   }
   return rollbackTransaction(projectRoot, transactionId);
 }

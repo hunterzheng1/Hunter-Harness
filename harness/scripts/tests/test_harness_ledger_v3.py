@@ -269,11 +269,31 @@ class IdentityEnforcementTests(LedgerV3Fixture):
         )
         self.assertNotEqual(written.get("schemaVersion"), 3)
 
-    def test_legacy_contract_rejects_explicit_identity_instead_of_dropping_it(self) -> None:
+    def test_legacy_ledger_migrates_explicit_identity_without_changing_evidence(
+        self,
+    ) -> None:
         legacy_dir = self.project / ".harness" / "changes" / "legacy-explicit"
         (legacy_dir / "meta").mkdir(parents=True)
         (legacy_dir / "meta" / "change-context.json").write_text(
             json.dumps({"schemaVersion": 1, "changeId": "legacy-explicit"}),
+            encoding="utf-8",
+        )
+        ledger_path = legacy_dir / "evidence" / "verification-ledger.json"
+        ledger_path.parent.mkdir(parents=True)
+        existing_compile = {
+            "status": "OK",
+            "command": "python -m compileall src",
+            "evidence": "legacy compile passed",
+            "inputsHash": "sha256:legacy-evidence",
+        }
+        ledger_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeName": "legacy-explicit",
+                    "validations": {"compile": existing_compile},
+                }
+            ),
             encoding="utf-8",
         )
         code, out, err = self.run_cli(
@@ -289,11 +309,65 @@ class IdentityEnforcementTests(LedgerV3Fixture):
                 "--scope", "module",
                 "--files", str(self.project / "src" / "app.py"),
                 "--diff-hash", "sha256:deadbeef",
+                "--verbose",
             ]
         )
+        self.assertEqual(code, 0, err)
+        written = json.loads(ledger_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["schemaVersion"], 3)
+        self.assertEqual(written["diffHash"], "sha256:deadbeef")
+        self.assertEqual(written["validations"]["compile"], existing_compile)
+        receipt = written["migrationHistory"][-1]
+        self.assertEqual(receipt["originalSchemaVersion"], 2)
+        self.assertEqual(receipt["targetSchemaVersion"], 3)
+        self.assertEqual(
+            receipt["evidenceIdentityBefore"],
+            receipt["evidenceIdentityAfter"],
+        )
+        payload = json.loads(out)
+        self.assertEqual(payload["migrationReceipt"]["receiptId"], receipt["receiptId"])
+
+    def test_migration_failure_preserves_legacy_ledger_and_gives_rerecord_command(
+        self,
+    ) -> None:
+        legacy_dir = self.project / ".harness" / "changes" / "legacy-failure"
+        (legacy_dir / "meta").mkdir(parents=True)
+        (legacy_dir / "meta" / "change-context.json").write_text(
+            json.dumps({"schemaVersion": 1, "changeId": "legacy-failure"}),
+            encoding="utf-8",
+        )
+        ledger_path = legacy_dir / "evidence" / "verification-ledger.json"
+        ledger_path.parent.mkdir(parents=True)
+        original = json.dumps(
+            {
+                "schemaVersion": 2,
+                "changeName": "legacy-failure",
+                "validations": {"compile": {"status": "OK"}},
+            }
+        )
+        ledger_path.write_text(original, encoding="utf-8")
+        with mock.patch.object(ledger, "_git_text", return_value=None):
+            code, out, err = self.run_cli(
+                [
+                    "--json", "record",
+                    "--change-dir", str(legacy_dir),
+                    "--verification", "unitTest",
+                    "--status", "ok",
+                    "--command", "pytest -q",
+                    "--exit-code", "0",
+                    "--duration-ms", "100",
+                    "--evidence", "1 passed",
+                    "--scope", "module",
+                    "--files", str(self.project / "src" / "app.py"),
+                    "--diff-hash", "sha256:deadbeef",
+                ]
+            )
         self.assertNotEqual(code, 0)
-        self.assertIn("IDENTITY_UNSUPPORTED", err)
-        self.assertFalse((legacy_dir / "evidence" / "verification-ledger.json").exists())
+        payload = json.loads(err)
+        self.assertEqual(payload["code"], "LEDGER_MIGRATION_REQUIRED")
+        self.assertIsInstance(payload["rerecordCommand"], list)
+        self.assertIn("record", payload["rerecordCommand"])
+        self.assertEqual(ledger_path.read_text(encoding="utf-8"), original)
 
     def test_record_resolves_relative_files_against_explicit_project(self) -> None:
         code, out, err = self.run_cli(

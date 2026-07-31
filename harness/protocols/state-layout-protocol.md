@@ -4,6 +4,17 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 
 # State Layout Protocol
 
+## 升级与本地状态保护边界
+
+`.harness/archive/`、`.harness/changes/`、`.harness/knowledge/project-local/` 是 protected local roots。CLI init/configure/refresh/rules 操作前必须：
+
+1. 综合 project marker、adapter `.harness-build.json`、managed block、恢复事务和非空 `.harness` 判断 `absent / valid / partial / recovery-required`；
+2. 对 protected roots 记录文件数、目录数、字节数、Merkle root，以及 archive 首末 identity；
+3. 事务 journal 声明每个允许修改的路径；任何未声明的 protected-root mutation 立即回滚；
+4. partial 或 recovery-required 状态 fail closed，输出 sentinels、inventory 与恢复指引，禁止当成空项目自动 init。
+
+事务提交前后 protected inventory 必须一致；除非当前命令显式以该 protected root 为操作目标。删除 `project.yaml` 但保留 archive，或删除 `.harness` 但保留 adapter marker，均属于 partial state，不是首次安装。
+
 ## 目标
 
 `.harness/changes/<change-name>/` 是变更状态真相源，但根目录不得继续堆放所有文件。新产物按子目录分层；旧路径保留读取兼容。

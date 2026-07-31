@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 
@@ -13,6 +15,204 @@ SPEC.loader.exec_module(LEDGER)
 
 
 class LedgerTargetTest(unittest.TestCase):
+    def _scenario_record_args(
+        self,
+        *,
+        change: Path,
+        source: Path,
+        receipt: Path | None = None,
+    ) -> list[str]:
+        args = [
+            "record",
+            "--change-dir",
+            str(change),
+            "--verification",
+            "compile",
+            "--status",
+            "ok",
+            "--command",
+            "npm run typecheck",
+            "--exit-code",
+            "0",
+            "--duration-ms",
+            "10",
+            "--files",
+            str(source),
+            "--evidence",
+            "typecheck passed",
+            "--scope",
+            "module",
+            "--scenario-ids",
+            "SC-001",
+            "--json",
+        ]
+        if receipt is not None:
+            args.extend(["--scenario-receipt-file", str(receipt)])
+        return args
+
+    def _write_scenario_manifest(self, change: Path) -> None:
+        manifest = {
+            "schemaVersion": 2,
+            "changeName": change.name,
+            "scenarios": [
+                {
+                    "id": "SC-001",
+                    "priority": "P0",
+                    "scenario": "compile succeeds",
+                    "ownerPhase": "test",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "compile::happy-path",
+                    "testFile": "tests/compile.spec.ts",
+                    "testTitle": "compiles the project",
+                }
+            ],
+        }
+        (change / "meta").mkdir(parents=True)
+        (change / "meta/scenario-manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    def test_schema_v2_scenario_binding_requires_structured_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            change = root / "change"
+            change.mkdir()
+            self._write_scenario_manifest(change)
+            source = root / "source.ts"
+            source.write_text("export const value = 1\n", encoding="utf-8")
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = LEDGER.main(
+                    self._scenario_record_args(change=change, source=source)
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("SCENARIO_RECEIPT_REQUIRED", stderr.getvalue())
+            self.assertFalse(
+                (change / "evidence/verification-ledger.json").exists()
+            )
+
+    def test_schema_v2_scenario_receipt_records_exact_execution_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            change = root / "change"
+            change.mkdir()
+            self._write_scenario_manifest(change)
+            source = root / "source.ts"
+            source.write_text("export const value = 1\n", encoding="utf-8")
+            receipt = root / "scenario-receipt.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "runner": {"name": "vitest", "version": "3.2.4"},
+                        "attempt": 1,
+                        "declared": ["compile::happy-path"],
+                        "selected": ["compile::happy-path"],
+                        "collected": [
+                            {
+                                "testId": "compile::happy-path",
+                                "file": "tests/compile.spec.ts",
+                                "title": "compiles the project",
+                            }
+                        ],
+                        "executed": [
+                            {
+                                "testId": "compile::happy-path",
+                                "file": "tests/compile.spec.ts",
+                                "title": "compiles the project",
+                                "attempt": 1,
+                                "status": "PASSED",
+                                "secret": "must not be persisted",
+                            }
+                        ],
+                        "secret": "must not be persisted",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = LEDGER.main(
+                self._scenario_record_args(
+                    change=change,
+                    source=source,
+                    receipt=receipt,
+                )
+            )
+
+            self.assertEqual(code, 0)
+            ledger = json.loads(
+                (change / "evidence/verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            entry = ledger["validations"]["compile"]
+            self.assertEqual(entry["scenarioCoverage"]["passed"], ["SC-001"])
+            self.assertEqual(
+                entry["scenarioReceipt"]["executed"][0],
+                {
+                    "testId": "compile::happy-path",
+                    "file": "tests/compile.spec.ts",
+                    "title": "compiles the project",
+                    "attempt": 1,
+                    "status": "PASSED",
+                },
+            )
+            self.assertNotIn("secret", entry["scenarioReceipt"])
+
+    def test_schema_v2_ok_record_rejects_skipped_required_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            change = root / "change"
+            change.mkdir()
+            self._write_scenario_manifest(change)
+            source = root / "source.ts"
+            source.write_text("export const value = 1\n", encoding="utf-8")
+            receipt = root / "scenario-receipt.json"
+            receipt.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "runner": {"name": "vitest"},
+                        "attempt": 1,
+                        "declared": ["compile::happy-path"],
+                        "selected": ["compile::happy-path"],
+                        "collected": [
+                            {
+                                "testId": "compile::happy-path",
+                                "file": "tests/compile.spec.ts",
+                                "title": "compiles the project",
+                            }
+                        ],
+                        "executed": [
+                            {
+                                "testId": "compile::happy-path",
+                                "file": "tests/compile.spec.ts",
+                                "title": "compiles the project",
+                                "attempt": 1,
+                                "status": "SKIPPED",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = LEDGER.main(
+                    self._scenario_record_args(
+                        change=change,
+                        source=source,
+                        receipt=receipt,
+                    )
+                )
+
+            self.assertEqual(code, 1)
+            self.assertIn("REQUIRED_SCENARIO_NOT_EXECUTED", stderr.getvalue())
+
     def test_record_writes_dynamic_target_and_legacy_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

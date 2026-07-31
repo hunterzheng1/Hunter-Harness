@@ -72,6 +72,75 @@ describe("hunter-harness initialization", () => {
     expect(output).toMatchObject({ dry_run: true, command: "configure" });
   });
 
+  it("fails closed when project.yaml is missing but local archive state remains", async () => {
+    const archivePath = join(
+      root,
+      ".harness",
+      "archive",
+      "existing",
+      "reports",
+      "final",
+      "summary-data.json"
+    );
+    await mkdir(join(archivePath, ".."), { recursive: true });
+    await writeFile(archivePath, "{\"preserve\":true}\n", "utf8");
+
+    const code = await run([
+      "--profile", "general",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ]);
+
+    expect(code).toBe(6);
+    expect(await readFile(archivePath, "utf8")).toBe("{\"preserve\":true}\n");
+    expect(await pathExists(join(root, ".harness", "project.yaml"))).toBe(false);
+    const output = JSON.parse(stdout.join("")) as {
+      errors: Array<{
+        code: string;
+        reasonCode: string;
+        sentinels: string[];
+        protectedLocalRoots: Array<{ path: string; files: number; bytes: number }>;
+      }>;
+    };
+    expect(output.errors[0]).toMatchObject({
+      code: "PARTIAL_HARNESS_STATE_DETECTED",
+      reasonCode: "PARTIAL_HARNESS_STATE_DETECTED"
+    });
+    expect(output.errors[0]?.sentinels).toContain(".harness/archive");
+    expect(output.errors[0]?.protectedLocalRoots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: ".harness/archive", files: 1 })
+    ]));
+  });
+
+  it("detects an adapter build marker as partial state without recreating .harness", async () => {
+    const marker = join(
+      root,
+      ".agents",
+      "skills",
+      "harness-run",
+      ".harness-build.json"
+    );
+    await mkdir(join(marker, ".."), { recursive: true });
+    await writeFile(marker, "{\"schemaVersion\":1}\n", "utf8");
+
+    const code = await run([
+      "--profile", "general",
+      "--non-interactive",
+      "--dry-run",
+      "--json"
+    ]);
+
+    expect(code).toBe(6);
+    expect(await pathExists(join(root, ".harness"))).toBe(false);
+    const output = JSON.parse(stdout.join("")) as {
+      errors: Array<{ sentinels: string[] }>;
+    };
+    expect(output.errors[0]?.sentinels).toContain(
+      ".agents/skills/harness-run/.harness-build.json"
+    );
+  });
+
   it("fails non-interactively when profile is missing", async () => {
     const code = await run(["--non-interactive", "--yes"]);
     expect(code).toBe(3);

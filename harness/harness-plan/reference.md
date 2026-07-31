@@ -228,35 +228,35 @@ status: approved
 
 #### 1.1 <类名.方法名>
 
-| ID | 优先级 | 分类 | 场景描述 | 输入 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:------:|:----:|----------|------|------|----------|----------|----------|------|------------|
-| UT-001 | P0 | 正常 | ... | ... | ... | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
-| UT-002 | P0 | 异常 | ... | ... | 抛 xxxException | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command |
-| UT-003 | P1 | 边界 | ... | ... | ... | module | ≤60s | ≤50% CPU / ≤1GB | 120s | ledger identity |
+| ID | 优先级 | 分类 | 场景描述 | 输入 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 | 可执行测试 ID | 测试文件 | 测试标题 |
+|:--:|:------:|:----:|----------|------|------|----------|----------|----------|------|------------|----------------|----------|----------|
+| UT-001 | P0 | 正常 | ... | ... | ... | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command | service::happy-path | tests/service.test.ts | returns expected result |
+| UT-002 | P0 | 异常 | ... | ... | 抛 xxxException | affected | ≤10s | 1 worker / ≤512MB | 30s | inputsHash + command | service::invalid-input | tests/service.test.ts | rejects invalid input |
+| UT-003 | P1 | 边界 | ... | ... | ... | module | ≤60s | ≤50% CPU / ≤1GB | 120s | ledger identity | service::boundary | tests/service.test.ts | handles boundary |
 
 ### 二、接口测试场景
 
 #### 2.1 POST /xxx
 
-| ID | 优先级 | 分类 | 场景描述 | 关键字段 | HTTP | code | message | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:------:|:----:|----------|----------|:----:|:----:|--------|----------|----------|----------|------|------------|
-| API-001 | P0 | 正常 | ... | ... | 200 | 0 | 成功 | module | ≤60s | 1 service / ≤1GB | 120s | environmentHash + ledger |
-| API-002 | P1 | 校验 | ... | ... | 200 | xxx | ... | affected | ≤20s | 1 service / ≤1GB | 60s | environmentHash + ledger |
+| ID | 优先级 | 分类 | 场景描述 | 关键字段 | HTTP | code | message | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 | 可执行测试 ID | 测试文件 | 测试标题 |
+|:--:|:------:|:----:|----------|----------|:----:|:----:|--------|----------|----------|----------|------|------------|----------------|----------|----------|
+| API-001 | P0 | 正常 | ... | ... | 200 | 0 | 成功 | module | ≤60s | 1 service / ≤1GB | 120s | environmentHash + ledger | api::success | tests/api.spec.ts | creates resource |
+| API-002 | P1 | 校验 | ... | ... | 200 | xxx | ... | affected | ≤20s | 1 service / ≤1GB | 60s | environmentHash + ledger | api::validation | tests/api.spec.ts | rejects invalid body |
 
 ### 三、数据兼容场景
 
-| ID | 优先级 | 分类 | 场景描述 | 操作 | 数据特征 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:------:|:----:|----------|:----:|----------|------|----------|----------|----------|------|------------|
-| COM-001 | P1 | 旧数据 | ... | ... | ... | ... | module | ≤60s | isolated DB / ≤1GB | 120s | dbSchemaHash + ledger |
+| ID | 优先级 | 分类 | 场景描述 | 操作 | 数据特征 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 | 可执行测试 ID | 测试文件 | 测试标题 |
+|:--:|:------:|:----:|----------|:----:|----------|------|----------|----------|----------|------|------------|----------------|----------|----------|
+| COM-001 | P1 | 旧数据 | ... | ... | ... | ... | module | ≤60s | isolated DB / ≤1GB | 120s | dbSchemaHash + ledger | db::legacy-row | tests/db-compat.spec.ts | reads legacy row |
 
 ### 四、集成场景
 
-| ID | 优先级 | 分类 | 场景描述 | 前置条件 | 步骤 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 |
-|:--:|:------:|:----:|----------|----------|------|------|----------|----------|----------|------|------------|
-| INT-001 | P0 | 端到端 | ... | ... | N 步操作 | ... | candidate | ≤10m | ≤50% CPU / ≤2GB | 15m | verification identity |
+| ID | 优先级 | 分类 | 场景描述 | 前置条件 | 步骤 | 预期 | 执行层级 | 预计时长 | 资源预算 | 超时 | 可复用证据 | 可执行测试 ID | 测试文件 | 测试标题 |
+|:--:|:------:|:----:|----------|----------|------|------|----------|----------|----------|------|------------|----------------|----------|----------|
+| INT-001 | P0 | 端到端 | ... | ... | N 步操作 | ... | candidate | ≤10m | ≤50% CPU / ≤2GB | 15m | verification identity | e2e::workflow | tests/workflow.e2e.ts | completes workflow |
 ```
 
-新计划必须显式使用 `ID` 和 `优先级` 列；`P0/P1` 都要求 ledger 证据，`P2` 才是 advisory。解析器兼容旧的 `#`、`分类`、`场景描述` 表头，旧表缺优先级时保守按 `P1` 处理。执行层级固定为 `affected`（快速反馈）、`module`（变更模块门禁）、`candidate`（产品候选）。禁止所有场景默认跑全仓库；无法给出预算或超时时必须说明原因，并拆分或隔离高成本场景。只有 command、inputs/toolchain/environment 身份一致的成功 ledger 证据可以复用。
+新计划必须显式使用 `ID`、`优先级`、`可执行测试 ID`、`测试文件`、`测试标题` 列；每个 P0/P1 场景都必须填写稳定的三元测试身份，缺任一字段时 plan finalize 返回 `PLAN_SCENARIO_EXECUTABLE_MAPPING_MISSING`。`P0/P1` 都要求结构化 runner receipt + ledger 证据，`P2` 才是 advisory。解析器兼容旧的 `#`、`分类`、`场景描述` 表头，旧表缺优先级时保守按 `P1` 处理。执行层级固定为 `affected`（快速反馈）、`module`（变更模块门禁）、`candidate`（产品候选）。禁止所有场景默认跑全仓库；无法给出预算或超时时必须说明原因，并拆分或隔离高成本场景。只有 command、inputs/toolchain/environment 身份一致，且 declared/selected/collected/executed/passed 闭环完整的成功 ledger 证据可以复用。
 
 ## 产物保存规则（跨阶段：阶段0.5/4/6/8）
 

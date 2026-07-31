@@ -18,6 +18,11 @@ import {
   normalizeManagedPath
 } from "../fs/path-safety.js";
 import { sha256Bytes, sha256File } from "../fs/hash.js";
+import {
+  collectProtectedLocalRootsInventory,
+  PROTECTED_LOCAL_ROOTS,
+  type ProtectedLocalRootInventory
+} from "../project/local-state.js";
 import { atomicWriteJson } from "../state/atomic.js";
 import { ensureStateLayout, stateLayout } from "../state/layout.js";
 import type {
@@ -32,11 +37,31 @@ export interface TransactionOptions {
   kind?: TransactionJournal["kind"];
   failAfterApply?: number;
   interruptAfterApply?: number;
+  allowedProtectedLocalRoots?: readonly typeof PROTECTED_LOCAL_ROOTS[number][];
 }
 
 export interface TransactionResult {
   transactionId: string;
   status: "committed" | "rolled_back";
+  protectedLocalRoots: {
+    before: ProtectedLocalRootInventory[];
+    after: ProtectedLocalRootInventory[];
+    unchanged: boolean;
+  };
+}
+
+export class ProtectedLocalRootMutationError extends Error {
+  readonly code = "PROTECTED_LOCAL_ROOT_WRITE_FORBIDDEN";
+  readonly paths: string[];
+
+  constructor(paths: string[]) {
+    super(
+      "transaction does not declare write permission for protected local paths: " +
+      paths.join(", ")
+    );
+    this.name = "ProtectedLocalRootMutationError";
+    this.paths = paths;
+  }
 }
 
 class InterruptedTransactionError extends Error {
@@ -67,6 +92,21 @@ function affectedPaths(operation: TransactionOperation): string[] {
     return [operation.from_path, operation.to_path];
   }
   return [operation.path];
+}
+
+function protectedRootForPath(
+  path: string
+): typeof PROTECTED_LOCAL_ROOTS[number] | null {
+  return PROTECTED_LOCAL_ROOTS.find((root) =>
+    path === root || path.startsWith(root + "/")
+  ) ?? null;
+}
+
+function inventoriesEqual(
+  left: readonly ProtectedLocalRootInventory[],
+  right: readonly ProtectedLocalRootInventory[]
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function writeJournal(
@@ -217,8 +257,14 @@ export async function rollbackTransaction(
   const journal = JSON.parse(
     await readFile(join(transactionRoot, "journal.json"), "utf8")
   ) as TransactionJournal;
+  const currentProtectedRoots = await collectProtectedLocalRootsInventory(projectRoot);
+  const protectedLocalRoots = journal.protected_local_roots ?? {
+    before: currentProtectedRoots,
+    after: currentProtectedRoots,
+    unchanged: true
+  };
   if (journal.state === "committed") {
-    return { transactionId, status: "committed" };
+    return { transactionId, status: "committed", protectedLocalRoots };
   }
 
   journal.state = "rolling_back";
@@ -237,7 +283,16 @@ export async function rollbackTransaction(
     }
     journal.state = "rolled_back";
     await writeJournal(transactionRoot, journal);
-    return { transactionId, status: "rolled_back" };
+    const afterRollback = await collectProtectedLocalRootsInventory(projectRoot);
+    return {
+      transactionId,
+      status: "rolled_back",
+      protectedLocalRoots: {
+        before: protectedLocalRoots.before,
+        after: afterRollback,
+        unchanged: inventoriesEqual(protectedLocalRoots.before, afterRollback)
+      }
+    };
   } catch (error) {
     journal.state = "recovery_required";
     journal.failure = error instanceof Error ? error.message : String(error);
@@ -272,10 +327,19 @@ export async function runTransaction(
   });
   const paths = operations.flatMap(affectedPaths);
   assertNoCaseCollisions(paths);
+  const allowedProtectedRoots = new Set(options.allowedProtectedLocalRoots ?? []);
+  const forbiddenProtectedPaths = paths.filter((path) => {
+    const protectedRoot = protectedRootForPath(path);
+    return protectedRoot !== null && !allowedProtectedRoots.has(protectedRoot);
+  });
+  if (forbiddenProtectedPaths.length > 0) {
+    throw new ProtectedLocalRootMutationError(forbiddenProtectedPaths);
+  }
   for (const path of paths) {
     await assertNoSymlinks(projectRoot, path);
   }
 
+  const protectedBefore = await collectProtectedLocalRootsInventory(projectRoot);
   const snapshots = await snapshotPaths(projectRoot, transactionRoot, paths);
   await stageOperations(transactionRoot, operations);
   const journal: TransactionJournal = {
@@ -287,7 +351,12 @@ export async function runTransaction(
     operations: operations.map(journalOperation),
     snapshots,
     applied_count: 0,
-    failure: null
+    failure: null,
+    protected_local_roots: {
+      before: protectedBefore,
+      after: protectedBefore,
+      unchanged: true
+    }
   };
   await writeJournal(transactionRoot, journal);
 
@@ -326,6 +395,19 @@ export async function runTransaction(
       });
     }
     await atomicWriteJson(join(transactionRoot, "after", "manifest.json"), after);
+    const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
+    const protectedUnchanged = inventoriesEqual(protectedBefore, protectedAfter);
+    journal.protected_local_roots = {
+      before: protectedBefore,
+      after: protectedAfter,
+      unchanged: protectedUnchanged
+    };
+    if (!protectedUnchanged) {
+      throw new Error(
+        "PROTECTED_LOCAL_ROOT_INVENTORY_CHANGED: protected local state changed " +
+        "without a declared transaction operation"
+      );
+    }
     journal.state = "committed";
     await writeJournal(transactionRoot, journal);
   } catch (error) {
@@ -341,7 +423,15 @@ export async function runTransaction(
   // 并按 kind 保留最新成功事务，剪除更早的同 kind committed 事务。
   await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
   await pruneOlderSuccessful(layout, transactionId, options.kind);
-  return { transactionId, status: "committed" };
+  return {
+    transactionId,
+    status: "committed",
+    protectedLocalRoots: journal.protected_local_roots ?? {
+      before: protectedBefore,
+      after: protectedBefore,
+      unchanged: true
+    }
+  };
 }
 
 export async function verifyStagedContent(

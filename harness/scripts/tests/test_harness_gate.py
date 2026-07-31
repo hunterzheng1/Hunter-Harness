@@ -1181,10 +1181,15 @@ class ScenarioCoverageTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.project, ignore_errors=True)
 
-    def _write_manifest(self, scenarios: list[dict]) -> None:
+    def _write_manifest(
+        self,
+        scenarios: list[dict],
+        *,
+        schema_version: int = 1,
+    ) -> None:
         (self.change_dir / "meta" / "scenario-manifest.json").write_text(
             json.dumps({
-                "schemaVersion": 1,
+                "schemaVersion": schema_version,
                 "changeName": "demo",
                 "scenarios": scenarios,
             }) + "\n",
@@ -1307,6 +1312,119 @@ class ScenarioCoverageTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["missing"], ["UT-ADVISORY"])
+
+    def test_schema_v2_rejects_scenario_ids_without_execution_receipt(self) -> None:
+        self._write_manifest(
+            [
+                {
+                    "id": "UT-RECEIPT",
+                    "priority": "P0",
+                    "ownerPhase": "test",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "unit::receipt",
+                    "testFile": "tests/unit.spec.ts",
+                    "testTitle": "records exact execution",
+                }
+            ],
+            schema_version=2,
+        )
+        self._write_ledger(["UT-RECEIPT"])
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "REQUIRED_SCENARIO_NOT_EXECUTED")
+        self.assertEqual(result["unexecuted"], ["UT-RECEIPT"])
+
+    def test_schema_v2_accepts_exact_passed_execution_receipt(self) -> None:
+        scenario = {
+            "id": "UT-RECEIPT",
+            "priority": "P0",
+            "ownerPhase": "test",
+            "requiredEvidenceKind": "ledger",
+            "executableTestId": "unit::receipt",
+            "testFile": "tests/unit.spec.ts",
+            "testTitle": "records exact execution",
+        }
+        self._write_manifest([scenario], schema_version=2)
+        self._write_ledger(["UT-RECEIPT"])
+        ledger_path = self.change_dir / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"]["unitTest"]["scenarioReceipt"] = {
+            "schemaVersion": 1,
+            "runner": {"name": "vitest", "version": "3.2.4"},
+            "attempt": 2,
+            "declared": ["unit::receipt"],
+            "selected": ["unit::receipt"],
+            "collected": [
+                {
+                    "testId": "unit::receipt",
+                    "file": "tests/unit.spec.ts",
+                    "title": "records exact execution",
+                }
+            ],
+            "executed": [
+                {
+                    "testId": "unit::receipt",
+                    "file": "tests/unit.spec.ts",
+                    "title": "records exact execution",
+                    "attempt": 2,
+                    "status": "PASSED",
+                }
+            ],
+        }
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["passed"], ["UT-RECEIPT"])
+        self.assertEqual(result["attempts"]["UT-RECEIPT"], [2])
+
+    def test_schema_v2_requires_exact_file_and_title_identity(self) -> None:
+        scenario = {
+            "id": "UT-EXACT",
+            "priority": "P0",
+            "ownerPhase": "test",
+            "requiredEvidenceKind": "ledger",
+            "executableTestId": "unit::exact",
+            "testFile": "tests/expected.spec.ts",
+            "testTitle": "same title",
+        }
+        self._write_manifest([scenario], schema_version=2)
+        self._write_ledger(["UT-EXACT"])
+        ledger_path = self.change_dir / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"]["unitTest"]["scenarioReceipt"] = {
+            "schemaVersion": 1,
+            "runner": {"name": "vitest"},
+            "attempt": 1,
+            "declared": ["unit::exact"],
+            "selected": ["unit::exact"],
+            "collected": [
+                {
+                    "testId": "unit::exact",
+                    "file": "tests/other.spec.ts",
+                    "title": "same title",
+                }
+            ],
+            "executed": [
+                {
+                    "testId": "unit::exact",
+                    "file": "tests/other.spec.ts",
+                    "title": "same title",
+                    "attempt": 1,
+                    "status": "PASSED",
+                }
+            ],
+        }
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
+        result = gate._validate_scenario_coverage(self.change_dir)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "REQUIRED_SCENARIO_NOT_EXECUTED")
+        self.assertEqual(result["unexecuted"], ["UT-EXACT"])
 
     def test_scenario_coverage_uses_routed_ledger_loader(self) -> None:
         self._write_manifest([

@@ -11,6 +11,7 @@ import { parse as parseYaml } from "yaml";
 
 import {
   collectFreshness,
+  inspectHarnessStateEvidence,
   refreshProject,
   uuidV7,
   type HarnessProfile,
@@ -35,6 +36,19 @@ export interface RefreshCommandOptions {
 
 export type ProjectDetection =
   | { status: "absent" }
+  | {
+    status: "partial";
+    reasonCode: "PARTIAL_HARNESS_STATE_DETECTED";
+    sentinels: string[];
+    protectedLocalRoots: Awaited<ReturnType<typeof inspectHarnessStateEvidence>>["protectedLocalRoots"];
+  }
+  | {
+    status: "recovery-required";
+    reasonCode: "LOCAL_HARNESS_RECOVERY_REQUIRED";
+    sentinels: string[];
+    protectedLocalRoots: Awaited<ReturnType<typeof inspectHarnessStateEvidence>>["protectedLocalRoots"];
+    recoveryTransactions: string[];
+  }
   | { status: "invalid" }
   | { status: "valid"; config: ProjectConfig };
 
@@ -44,6 +58,24 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
     content = await readFile(join(root, ".harness", "project.yaml"), "utf8");
   } catch (error) {
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      const evidence = await inspectHarnessStateEvidence(root);
+      if (evidence.recoveryRequired) {
+        return {
+          status: "recovery-required",
+          reasonCode: "LOCAL_HARNESS_RECOVERY_REQUIRED",
+          sentinels: evidence.sentinels,
+          protectedLocalRoots: evidence.protectedLocalRoots,
+          recoveryTransactions: evidence.recoveryTransactions
+        };
+      }
+      if (evidence.sentinels.length > 0) {
+        return {
+          status: "partial",
+          reasonCode: "PARTIAL_HARNESS_STATE_DETECTED",
+          sentinels: evidence.sentinels,
+          protectedLocalRoots: evidence.protectedLocalRoots
+        };
+      }
       return { status: "absent" };
     }
     throw error;
@@ -150,6 +182,10 @@ export async function runRefresh(
   if (detection.status === "invalid") {
     dependencies.stderr("PROJECT_CONFIG_INVALID：.harness/project.yaml 无效\n");
     return 3;
+  }
+  if (detection.status === "partial" || detection.status === "recovery-required") {
+    dependencies.stderr(`${detection.reasonCode}：需要先恢复本地 Harness 主状态\n`);
+    return 6;
   }
 
   const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;

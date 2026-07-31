@@ -45,6 +45,15 @@ class RunnerPresenceTests(unittest.TestCase):
 
 @unittest.skipIf(runner is None, "resource-safe runner is not implemented yet")
 class RunnerContractTests(unittest.TestCase):
+    @staticmethod
+    def _successful_command_result():
+        return runner.CommandResult(
+            returncode=0,
+            timed_out=False,
+            duration_seconds=0.01,
+            process_tree_isolated=True,
+        )
+
     def test_profiles_partition_regular_and_resource_intensive_modules(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harness-runner-plan-") as raw_tmp:
             tests_dir = Path(raw_tmp)
@@ -113,6 +122,91 @@ class RunnerContractTests(unittest.TestCase):
                 with self.assertRaises(runner.TestRunAlreadyActive):
                     with runner.TestRunLock(project, lock_root=lock_root):
                         pass
+
+    def test_lock_records_exact_owner_heartbeat_expiry_and_closeout_receipt(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-lock-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            lock_root = tmp / "locks"
+            lock = runner.TestRunLock(tmp / "project", lock_root=lock_root)
+            lock.acquire()
+            payload = json.loads(lock.path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schemaVersion"], 2)
+            self.assertEqual(payload["status"], "ACTIVE")
+            self.assertTrue(payload["owner"]["executable"])
+            self.assertTrue(payload["owner"]["startedAt"])
+            self.assertGreater(payload["expiresAtUnix"], payload["heartbeatAtUnix"])
+            lock.release()
+            receipts = list((lock_root / "receipts").glob("*.json"))
+            self.assertEqual(len(receipts), 1)
+            closeout = json.loads(receipts[0].read_text(encoding="utf-8"))
+            self.assertEqual(closeout["status"], "COMPLETED")
+            self.assertEqual(closeout["token"], lock.token)
+
+    def test_expired_dead_owner_lock_is_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-lock-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            lock_root = tmp / "locks"
+            lock = runner.TestRunLock(tmp / "project", lock_root=lock_root)
+            lock.path.parent.mkdir(parents=True)
+            lock.path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "token": "dead-owner",
+                        "status": "ACTIVE",
+                        "heartbeatAtUnix": time.time() - 7200,
+                        "expiresAtUnix": time.time() - 3600,
+                        "owner": {
+                            "pid": 99999999,
+                            "executable": sys.executable,
+                            "startedAt": "2000-01-01T00:00:00+00:00",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lock.acquire()
+            try:
+                self.assertEqual(
+                    runner.classify_test_lock(lock.path)["classification"],
+                    "ACTIVE",
+                )
+                reap_receipts = list((lock_root / "receipts").glob("*-reap-*.json"))
+                self.assertEqual(len(reap_receipts), 1)
+                self.assertEqual(
+                    json.loads(reap_receipts[0].read_text(encoding="utf-8"))[
+                        "status"
+                    ],
+                    "REAPED",
+                )
+            finally:
+                lock.release()
+
+    def test_expired_incomplete_owner_lock_is_report_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-lock-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            lock = runner.TestRunLock(tmp / "project", lock_root=tmp / "locks")
+            lock.path.parent.mkdir(parents=True)
+            lock.path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "token": "incomplete-owner",
+                        "status": "ACTIVE",
+                        "expiresAtUnix": time.time() - 3600,
+                        "owner": {"pid": 99999999},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                runner.TestRunAlreadyActive,
+                "OWNER_IDENTITY_INCOMPLETE",
+            ):
+                lock.acquire()
+            self.assertTrue(lock.path.is_file())
 
     def test_timeout_terminates_managed_process(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harness-runner-timeout-") as raw_tmp:
@@ -280,6 +374,200 @@ class RunnerContractTests(unittest.TestCase):
                 )
             self.assertEqual(code, 5)
             self.assertIn("DETACHED_PROCESS_CAPABILITY_UNAVAILABLE", stderr.getvalue())
+
+    def test_exec_requires_declared_dynamic_environment_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-env-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            receipt = runner.henv.create_environment_receipt(
+                tmp,
+                stack_id="stack-a",
+                content_evidence={
+                    "instanceId": "db-1",
+                    "canaries": [{"name": "db", "status": "PASS"}],
+                },
+                environment_values={"REDIS_URL": "redis://127.0.0.1/4"},
+            )
+            receipt_path = tmp / "environment-receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            stderr = io.StringIO()
+            with (
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(runner, "run_managed_command") as managed,
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = runner.main(
+                    [
+                        "exec",
+                        "--project",
+                        raw_tmp,
+                        "--environment-receipt",
+                        str(receipt_path),
+                        "--required-environment-field",
+                        "REDIS_URL",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        "print('must-not-run')",
+                    ]
+                )
+            self.assertEqual(code, 6)
+            self.assertIn("VERIFICATION_ENVIRONMENT_INCOMPLETE", stderr.getvalue())
+            managed.assert_not_called()
+
+    def test_exec_injects_only_receipted_dynamic_environment_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-env-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            values = {
+                "DATABASE_URL": "postgresql://example/test",
+                "REDIS_URL": "redis://example/7",
+            }
+            receipt = runner.henv.create_environment_receipt(
+                tmp,
+                stack_id="stack-a",
+                content_evidence={
+                    "instanceId": "db-1",
+                    "canaries": [{"name": "db", "status": "PASS"}],
+                },
+                environment_values=values,
+            )
+            receipt_path = tmp / "environment-receipt.json"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            with (
+                mock.patch.dict(os.environ, values, clear=True),
+                mock.patch.object(
+                    runner,
+                    "run_managed_command",
+                    return_value=self._successful_command_result(),
+                ) as managed,
+            ):
+                code = runner.main(
+                    [
+                        "exec",
+                        "--project",
+                        raw_tmp,
+                        "--environment-receipt",
+                        str(receipt_path),
+                        "--required-environment-field",
+                        "DATABASE_URL",
+                        "--required-environment-field",
+                        "REDIS_URL",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        "print('ok')",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            child_env = managed.call_args.kwargs["environ"]
+            self.assertEqual(child_env["DATABASE_URL"], values["DATABASE_URL"])
+            self.assertEqual(child_env["REDIS_URL"], values["REDIS_URL"])
+
+    def test_exec_refuses_persistent_service_launches(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-service-") as raw_tmp:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(runner, "run_managed_command") as managed,
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = runner.main(
+                    [
+                        "exec",
+                        "--project",
+                        raw_tmp,
+                        "--",
+                        sys.executable,
+                        "harness/scripts/harness_service.py",
+                        "ensure",
+                        "--project",
+                        raw_tmp,
+                    ]
+                )
+            self.assertEqual(code, 7)
+            self.assertIn("PERSISTENT_SERVICE_MODE_REQUIRED", stderr.getvalue())
+            managed.assert_not_called()
+
+    def test_parameter_file_preserves_argv_and_records_powershell_runtime(
+        self,
+    ) -> None:
+        expected = [
+            sys.executable,
+            "-c",
+            "import sys; print(sys.argv[1])",
+            '{"template":"{{ value }}","unicode":"环境"}',
+        ]
+        with tempfile.TemporaryDirectory(prefix="harness-runner-argv-") as raw_tmp:
+            tmp = Path(raw_tmp)
+            observed: list[list[str]] = []
+            for edition, version in (("Desktop", "5.1"), ("Core", "7.5.2")):
+                envelope_path = tmp / f"argv-{edition}.json"
+                runtime_path = tmp / f"runtime-{edition}.json"
+                envelope_path.write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "transport": "utf8-json-argument-file",
+                            "argv": expected,
+                            "powershell": {
+                                "edition": edition,
+                                "version": version,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                with mock.patch.object(
+                    runner,
+                    "run_managed_command",
+                    return_value=self._successful_command_result(),
+                ) as managed:
+                    code = runner.main(
+                        [
+                            "exec",
+                            "--project",
+                            raw_tmp,
+                            "--argv-file",
+                            str(envelope_path),
+                            "--runtime-receipt",
+                            str(runtime_path),
+                        ]
+                    )
+                self.assertEqual(code, 0)
+                observed.append(list(managed.call_args.args[0]))
+                runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+                self.assertEqual(runtime["powershell"]["edition"], edition)
+                self.assertEqual(runtime["powershell"]["version"], version)
+                self.assertNotIn(expected[-1], json.dumps(runtime))
+            self.assertEqual(observed, [expected, expected])
+
+    def test_runtime_receipt_without_argument_file_fails_before_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-receipt-") as raw_tmp:
+            stderr = io.StringIO()
+            with (
+                mock.patch.object(runner, "run_managed_command") as managed,
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = runner.main(
+                    [
+                        "exec",
+                        "--project",
+                        raw_tmp,
+                        "--runtime-receipt",
+                        str(Path(raw_tmp) / "runtime.json"),
+                        "--",
+                        sys.executable,
+                        "-c",
+                        "print('must-not-run')",
+                    ]
+                )
+            self.assertEqual(code, 2)
+            self.assertIn(
+                "RUNTIME_RECEIPT_REQUIRES_ARGUMENT_FILE",
+                stderr.getvalue(),
+            )
+            managed.assert_not_called()
 
 
 class WorkflowContractTests(unittest.TestCase):
