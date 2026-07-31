@@ -35,8 +35,17 @@ export type TransactionJournalOperation =
       operation: "rename";
       from_path: string;
       to_path: string;
-      content_sha256?: string;
+      content_sha256: string;
     };
+
+export interface CompletedTargetState {
+  operation_index: number;
+  targets: Array<{
+    path: string;
+    exists: boolean;
+    hash: string | null;
+  }>;
+}
 
 export interface SnapshotRecord {
   path: string;
@@ -48,11 +57,14 @@ export interface TransactionJournal {
   schema_version: 1 | 2 | 3;
   transaction_id: string;
   recovery_id?: string;
-  recovery_store_path?: string;
   kind?: "init" | "push-binding" | "update" | "refresh" | "rollback" | "other";
   state: TransactionState;
   created_at: string;
   updated_at?: string;
+  operations: TransactionJournalOperation[];
+  snapshots: SnapshotRecord[];
+  applied_count: number;
+  failure: string | null;
   project_identity?: string | null;
   cli_version?: string | null;
   target_bundle_version?: string | null;
@@ -61,12 +73,12 @@ export interface TransactionJournal {
   snapshot_digest?: string;
   completed_operations?: number[];
   pending_operations?: number[];
-  failure_reason_code?: string | null;
-  safe_actions?: string[];
-  operations: TransactionJournalOperation[];
-  snapshots: SnapshotRecord[];
-  applied_count: number;
-  failure: string | null;
+  completed_target_states?: CompletedTargetState[];
+  verification_outcomes?: Array<{
+    name: string;
+    status: "passed" | "failed";
+    detail?: string;
+  }>;
   protected_local_roots?: {
     before: ProtectedLocalRootInventory[];
     after: ProtectedLocalRootInventory[];

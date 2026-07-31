@@ -13,6 +13,7 @@ import {
   collectFreshness,
   inspectHarnessStateEvidence,
   refreshProject,
+  resolveRecoveryRoot,
   uuidV7,
   type HarnessProfile,
   type RefreshResult
@@ -21,6 +22,7 @@ import {
 import type { CommandDependencies } from "./configure.js";
 import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
+import { readCliVersion } from "../version.js";
 
 export interface RefreshCommandOptions {
   agents?: string;
@@ -32,6 +34,7 @@ export interface RefreshCommandOptions {
   json?: boolean;
   forceManaged?: boolean;
   confirmed?: boolean;
+  recoveryRoot?: string;
 }
 
 export type ProjectDetection =
@@ -142,7 +145,9 @@ function summarize(result: RefreshResult): CliResult {
     },
     items,
     warnings: result.conflicts,
-    errors: []
+    errors: [],
+    plan_hash: result.plan_hash,
+    recovery_id: result.recovery_id
   };
 }
 
@@ -204,29 +209,40 @@ export async function runRefresh(
   }
 
   const dryRun = options.dryRun === true;
+  const planTimestamp = new Date().toISOString();
+  const cliVersion = await readCliVersion();
+  const recoveryStore = {
+    root: options.recoveryRoot ?? resolveRecoveryRoot(dependencies.env)
+  };
+  let guardedPreview: RefreshResult;
+  try {
+    guardedPreview = await refreshProject({
+      projectRoot: dependencies.cwd,
+      resourcesRoot: dependencies.resourcesRoot,
+      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
+      agents: targetAgents,
+      codebuddySurface: codebuddySurface(
+        detection.config,
+        options.codebuddySurface
+      ),
+      dryRun: true,
+      forceManaged: options.forceManaged === true,
+      planTimestamp,
+      cliVersion
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    dependencies.stderr(message + "\n");
+    return 1;
+  }
   if (((targetProfile !== undefined && targetProfile !== currentProfile) ||
       targetAgents.some((agent, index) => agent !== refreshAgents(detection.config)[index]) ||
       targetAgents.length !== refreshAgents(detection.config).length) && !dryRun) {
-    try {
-      const preview = await refreshProject({
-        projectRoot: dependencies.cwd,
-        resourcesRoot: dependencies.resourcesRoot,
-        ...(targetProfile === undefined ? {} : { profile: targetProfile }),
-        agents: targetAgents,
-        codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface),
-        dryRun: true,
-        forceManaged: options.forceManaged === true
-      });
-      const rendered = renderProfileTransitionPreview(preview);
-      if (options.json === true) {
-        dependencies.stderr(rendered);
-      } else {
-        dependencies.stdout(rendered);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      dependencies.stderr(message + "\n");
-      return 1;
+    const rendered = renderProfileTransitionPreview(guardedPreview);
+    if (options.json === true) {
+      dependencies.stderr(rendered);
+    } else {
+      dependencies.stdout(rendered);
     }
   }
   if (options.confirmed !== true) {
@@ -255,15 +271,24 @@ export async function runRefresh(
   }
 
   try {
-    const result = await refreshProject({
-      projectRoot: dependencies.cwd,
-      resourcesRoot: dependencies.resourcesRoot,
-      ...(targetProfile === undefined ? {} : { profile: targetProfile }),
-      agents: targetAgents,
-      codebuddySurface: codebuddySurface(detection.config, options.codebuddySurface),
-      dryRun,
-      forceManaged: options.forceManaged === true
-    });
+    const result = dryRun
+      ? guardedPreview
+      : await refreshProject({
+        projectRoot: dependencies.cwd,
+        resourcesRoot: dependencies.resourcesRoot,
+        ...(targetProfile === undefined ? {} : { profile: targetProfile }),
+        agents: targetAgents,
+        codebuddySurface: codebuddySurface(
+          detection.config,
+          options.codebuddySurface
+        ),
+        dryRun: false,
+        forceManaged: options.forceManaged === true,
+        expectedPlanHash: guardedPreview.plan_hash,
+        planTimestamp,
+        cliVersion,
+        recoveryStore
+      });
     const output = summarize(result);
     // per-agent identity + freshness 六态（task 12）：legacy 字段不动，新增 freshness 数组。
     const freshness = await collectFreshness({

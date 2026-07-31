@@ -2233,6 +2233,11 @@ def cmd_record(args: argparse.Namespace) -> int:
                 "finishedAt": now_iso(),
             }
         )
+        # A fresh successful execution supersedes the prior target's fixback
+        # invalidation. Carrying these projection-only fields forward would
+        # make every rerecord permanently non-reusable.
+        entry.pop("reusable", None)
+        entry.pop("invalidation", None)
         metrics_raw = getattr(args, "metrics_json", None)
         metrics_file = getattr(args, "metrics_file", None)
         if metrics_file and metrics_raw is not None and str(metrics_raw).strip():

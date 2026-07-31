@@ -1,6 +1,7 @@
 import { updateProject, UpdateWorkflowError, uuidV7 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
+import { runRefresh } from "./refresh.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 
 export interface UpdateOptions {
@@ -13,6 +14,8 @@ export interface UpdateOptions {
   conflictStrategy?: "manual" | "keep-local" | "accept-remote";
   /** Repeatable `--resolve path=keep-local|accept-remote` */
   resolve?: string[];
+  guarded?: boolean;
+  recoveryRoot?: string;
 }
 
 function parseResolveOverrides(
@@ -47,6 +50,27 @@ export async function runUpdate(
   options: UpdateOptions,
   dependencies: CommandDependencies
 ): Promise<number> {
+  if (options.guarded === true) {
+    if (options.serverUrl !== undefined || options.tokenEnv !== undefined ||
+        options.conflictStrategy !== undefined ||
+        (options.resolve?.length ?? 0) > 0) {
+      dependencies.stderr(
+        "GUARDED_UPDATE_OPTION_CONFLICT: --guarded 不接受服务端更新参数\n"
+      );
+      return 3;
+    }
+    return runRefresh({
+      ...(options.nonInteractive === undefined
+        ? {}
+        : { nonInteractive: options.nonInteractive }),
+      ...(options.yes === undefined ? {} : { yes: options.yes }),
+      ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+      ...(options.json === undefined ? {} : { json: options.json }),
+      ...(options.recoveryRoot === undefined
+        ? {}
+        : { recoveryRoot: options.recoveryRoot })
+    }, dependencies);
+  }
   const requestId = uuidV7();
   if (options.nonInteractive === true && options.yes !== true &&
       options.dryRun !== true) {

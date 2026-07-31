@@ -1,6 +1,7 @@
 import {
   initializeProject,
   readInstalledAgentConfiguration,
+  resolveRecoveryRoot,
   uuidV7
 } from "@hunter-harness/core";
 import {
@@ -27,6 +28,7 @@ import {
   runRefresh,
   type RefreshCommandOptions
 } from "./refresh.js";
+import { readCliVersion } from "../version.js";
 
 export interface ConfigureOptions extends InitFlagValues {
   nonInteractive?: boolean;
@@ -34,6 +36,7 @@ export interface ConfigureOptions extends InitFlagValues {
   dryRun?: boolean;
   json?: boolean;
   forceManaged?: boolean;
+  recoveryRoot?: string;
 }
 
 export interface CommandDependencies {
@@ -150,12 +153,34 @@ async function runFirstInstall(
       dependencies.stderr("非交互模式执行写入操作需要 --yes\n");
       return 2;
     }
-    const result = await initializeProject({
+    const planTimestamp = new Date().toISOString();
+    const localProjectKey = uuidV7();
+    const cliVersion = await readCliVersion();
+    const recoveryStore = {
+      root: options.recoveryRoot ?? resolveRecoveryRoot(dependencies.env)
+    };
+    const preview = await initializeProject({
       projectRoot: dependencies.cwd,
       resourcesRoot: dependencies.resourcesRoot,
       config,
-      dryRun: options.dryRun === true
+      dryRun: true,
+      localProjectKey,
+      planTimestamp,
+      cliVersion
     });
+    const result = options.dryRun === true
+      ? preview
+      : await initializeProject({
+        projectRoot: dependencies.cwd,
+        resourcesRoot: dependencies.resourcesRoot,
+        config,
+        dryRun: false,
+        expectedPlanHash: preview.planHash,
+        localProjectKey,
+        planTimestamp,
+        cliVersion,
+        recoveryStore
+      });
     await configureCodeBuddyExtras(
       config.agents,
       config.codebuddy_surface,
@@ -173,7 +198,9 @@ async function runFirstInstall(
       summary: { planned: result.paths.length, applied: options.dryRun === true ? 0 : result.paths.length },
       items: result.paths.map((path) => ({ path, status: options.dryRun === true ? "planned" : "applied" })),
       warnings: [],
-      errors: []
+      errors: [],
+      plan_hash: result.planHash,
+      recovery_id: result.recoveryId
     };
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
@@ -224,6 +251,9 @@ async function runExistingProject(
   if (options.dryRun !== undefined) refreshOptions.dryRun = options.dryRun;
   if (options.json !== undefined) refreshOptions.json = options.json;
   if (options.forceManaged !== undefined) refreshOptions.forceManaged = options.forceManaged;
+  if (options.recoveryRoot !== undefined) {
+    refreshOptions.recoveryRoot = options.recoveryRoot;
+  }
   const installed = await readInstalledAgentConfiguration(dependencies.cwd);
   const currentAgents = installed.agents.length > 0
     ? installed.agents
@@ -355,4 +385,36 @@ export async function runConfigure(
     return runExistingProject(options, dependencies, currentProfile, currentSurface);
   }
   return runFirstInstall(options, dependencies);
+}
+
+export async function runInit(
+  options: ConfigureOptions,
+  dependencies: CommandDependencies
+): Promise<number> {
+  const detection = await detectProject(dependencies.cwd);
+  if (detection.status !== "valid") {
+    return runConfigure(options, dependencies);
+  }
+  const message = "Hunter Harness is already initialized; use refresh instead";
+  dependencies.stderr("PROJECT_ALREADY_INITIALIZED: " + message + "\n");
+  if (options.json === true) {
+    dependencies.stdout(serializeCliResult({
+      schema_version: 1,
+      command: "configure",
+      request_id: uuidV7(),
+      dry_run: options.dryRun === true,
+      ok: false,
+      exit_code: 6,
+      project_id: detection.config.project.project_id,
+      summary: { planned: 0, applied: 0 },
+      items: [],
+      warnings: [],
+      errors: [{
+        code: "PROJECT_ALREADY_INITIALIZED",
+        reasonCode: "PROJECT_ALREADY_INITIALIZED",
+        message
+      }]
+    }));
+  }
+  return 6;
 }

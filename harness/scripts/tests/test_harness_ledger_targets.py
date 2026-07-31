@@ -255,6 +255,73 @@ class LedgerTargetTest(unittest.TestCase):
             self.assertEqual(target["verification"], "compile")
             self.assertEqual(target["command"], "npm run typecheck")
 
+    def test_rerecord_does_not_inherit_prior_invalidation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            change = root / "change"
+            (change / "evidence").mkdir(parents=True)
+            source = root / "source.ts"
+            source.write_text("export const value = 1\n", encoding="utf-8")
+            stale = {
+                "status": "OK",
+                "command": "npm run typecheck",
+                "exitCode": 0,
+                "durationMs": 10,
+                "evidence": "superseded evidence",
+                "inputsHash": "sha256:stale",
+                "inputsFiles": [str(source)],
+                "scope": "module",
+                "coverage": "module",
+                "algorithmVersion": LEDGER.LEDGER_VERSION,
+                "reusable": False,
+                "invalidation": {
+                    "code": "FIXBACK_INVALIDATED",
+                    "transitionHash": "sha256:old-transition",
+                },
+            }
+            (change / "evidence/verification-ledger.json").write_text(
+                json.dumps({"validations": {"compile": stale}}),
+                encoding="utf-8",
+            )
+
+            code = LEDGER.main(
+                [
+                    "record",
+                    "--change-dir",
+                    str(change),
+                    "--verification",
+                    "compile",
+                    "--status",
+                    "ok",
+                    "--command",
+                    "npm run typecheck",
+                    "--exit-code",
+                    "0",
+                    "--duration-ms",
+                    "20",
+                    "--files",
+                    str(source),
+                    "--evidence",
+                    "fresh evidence",
+                    "--scope",
+                    "module",
+                    "--json",
+                ]
+            )
+
+            self.assertEqual(code, 0)
+            ledger = json.loads(
+                (change / "evidence/verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            entry = ledger["validations"]["compile"]
+            self.assertNotIn("reusable", entry)
+            self.assertNotIn("invalidation", entry)
+            target = next(iter(ledger["verificationTargets"].values()))
+            self.assertNotIn("reusable", target)
+            self.assertNotIn("invalidation", target)
+
     def test_reuse_prefers_latest_dynamic_target_over_stale_mirror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp) / "change"

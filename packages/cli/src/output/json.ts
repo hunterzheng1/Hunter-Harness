@@ -19,6 +19,9 @@ export interface CliResult {
   items: unknown[];
   warnings: unknown[];
   errors: unknown[];
+  /** Guarded local mutation contract. */
+  plan_hash?: string;
+  recovery_id?: string | null;
   /** refresh 专用：per-agent identity + freshness 六态（task 12/RET-29..33）。 */
   freshness?: unknown[];
 }
