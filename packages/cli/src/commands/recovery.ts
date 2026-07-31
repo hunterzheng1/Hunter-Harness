@@ -13,6 +13,7 @@ import {
   recoverTransaction,
   resolveRecoveryRoot,
   resumeTransaction,
+  rollbackCommittedUpdate,
   rollbackLatestCommittedUpdate,
   sha256Bytes,
   type RecoveryInspection
@@ -525,10 +526,13 @@ async function runRecoveryCommandUnchecked(
       }
       return 2;
     }
-    const result = await recoverTransaction(dependencies.cwd, selectedId, {
-      recoveryRoot,
-      ...(projectIdentity === undefined ? {} : { projectIdentity })
-    });
+    const result = inspection.state === "committed" &&
+      inspection.kind === "update"
+      ? await rollbackCommittedUpdate(dependencies.cwd, selectedId)
+      : await recoverTransaction(dependencies.cwd, selectedId, {
+          recoveryRoot,
+          ...(projectIdentity === undefined ? {} : { projectIdentity })
+        });
     emitRecoveryResult({
       schemaVersion: 1,
       status: result.status === "rolled_back" ? "ROLLED_BACK" : "COMMITTED",
@@ -727,15 +731,10 @@ export async function runRecoveryMenuIfApplicable(
     ].join("\n"));
     try {
       if (answer.trim() === "1") {
-        const result = await recoverTransaction(
-          dependencies.cwd,
-          selectedRecoveryId,
-          {
+        return runRecoveryCommand(selectedRecoveryId, {
+          action: "resume",
           recoveryRoot
-          }
-        );
-        dependencies.stdout("恢复完成：" + result.status + "。\n");
-        return 0;
+        }, dependencies);
       }
       if (answer.trim() === "2") {
         const result = await rollbackLatestCommittedUpdate(dependencies.cwd);
