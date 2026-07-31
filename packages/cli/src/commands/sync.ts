@@ -766,13 +766,23 @@ export async function runSync(
         ? null
         : "Review the source/adapter hashes and diff summaries in this receipt. For each intended patch, modify the matching `harness/` source of truth, run focused tests, then refresh adapters; do not overwrite local adapter edits.",
       {
-        persisted: [
-          ...(result.applied.length > 0 ? [`adapter projection applied ${result.applied.length} change(s)`] : []),
-          ...(result.removed.length > 0 ? [`adapter projection removed ${result.removed.length} clean target(s)`] : [])
-        ],
-        notPersisted: result.conflicts.length === 0
+        persisted: options.dryRun === true
           ? []
-          : [`${result.conflicts.length} locally modified adapter target(s) were preserved`]
+          : [
+              ...(result.applied.length > 0 ? [`adapter projection applied ${result.applied.length} change(s)`] : []),
+              ...(result.removed.length > 0 ? [`adapter projection removed ${result.removed.length} clean target(s)`] : [])
+            ],
+        notPersisted: [
+          ...(options.dryRun === true && result.applied.length > 0
+            ? [`adapter projection previewed ${result.applied.length} change(s)`]
+            : []),
+          ...(options.dryRun === true && result.removed.length > 0
+            ? [`adapter projection previewed removal of ${result.removed.length} clean target(s)`]
+            : []),
+          ...(result.conflicts.length === 0
+            ? []
+            : [`${result.conflicts.length} locally modified adapter target(s) were preserved`])
+        ]
       }
     ));
   } catch (error) {

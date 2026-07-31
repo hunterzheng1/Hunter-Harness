@@ -459,6 +459,21 @@ export async function validateInstructionGraph(
         continue;
       }
       if (!(await existsFile(target))) {
+        if (
+          typedReference.tokenType === "inline-code"
+          && !reference.includes("/")
+        ) {
+          edges.push({
+            from: rel,
+            to: targetRelative,
+            type: typedReference.type,
+            sourceField: typedReference.sourceField,
+            traversed: false,
+            reason: "informational-inline-code-missing",
+            resolutionTrace: trace
+          });
+          continue;
+        }
         addUnresolved(targetRelative);
         reasonCodes.add("INSTRUCTION_REFERENCE_MISSING");
         edges.push({

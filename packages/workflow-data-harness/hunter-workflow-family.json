@@ -7,7 +7,7 @@
     "java"
   ],
   "bundle_version": "0.2.29",
-  "content_sha256": "sha256:e23a08212f979eebbf32de7cc803389a105dee47fa8c3ff27905240ad1914ced",
+  "content_sha256": "sha256:2ae4e1a446c4aefec03048ea52627a8c7724fcf45d44fc50d8416eb80246d0e8",
   "minimumCliVersion": "0.2.41",
   "capabilities": [
     "sync@1",
