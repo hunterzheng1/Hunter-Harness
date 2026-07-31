@@ -1666,6 +1666,38 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
     }
     if not required_ids:
         return {"ok": True, "code": "NO_LEDGER_REQUIRED_SCENARIOS"}
+    raw_schema_version = (
+        manifest.get("schemaVersion") if isinstance(manifest, dict) else None
+    )
+    if (
+        not isinstance(raw_schema_version, int)
+        or isinstance(raw_schema_version, bool)
+        or raw_schema_version < 1
+    ):
+        return {
+            "ok": False,
+            "code": "SCENARIO_MANIFEST_INVALID",
+            "message": "scenario-manifest.json schemaVersion must be a positive integer",
+        }
+    schema_version = raw_schema_version
+    if schema_version >= 2:
+        missing_mappings = sorted(
+            str(s.get("id"))
+            for s in scenarios
+            if isinstance(s, dict)
+            and str(s.get("id")) in required_ids
+            and any(
+                not str(s.get(field) or "").strip()
+                for field in ("executableTestId", "testFile", "testTitle")
+            )
+        )
+        if missing_mappings:
+            return {
+                "ok": False,
+                "code": "SCENARIO_MANIFEST_INVALID",
+                "message": "required scenarios are missing executable test identities",
+                "missingMappings": missing_mappings,
+            }
 
     try:
         ledger, ledger_path = hl.load_ledger(change_dir)
@@ -1683,6 +1715,119 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
             "message": "ledger missing; cannot verify required scenario coverage",
             "missing": sorted(required_ids),
         }
+    if schema_version >= 2:
+        coverage_sets: dict[str, set[str]] = {
+            key: set()
+            for key in (
+                "declared",
+                "selected",
+                "collected",
+                "executed",
+                "passed",
+                "skipped",
+                "failed",
+            )
+        }
+        bound: set[str] = set()
+        attempts: dict[str, set[int]] = {}
+        invalid_receipts: list[dict[str, str]] = []
+        validations = ledger.get("validations") or {}
+        if isinstance(validations, dict):
+            for verification, entry in validations.items():
+                if not isinstance(entry, dict):
+                    continue
+                ids = entry.get("scenarioIds")
+                if not isinstance(ids, list):
+                    continue
+                entry_ids = sorted(
+                    {
+                        str(item).strip()
+                        for item in ids
+                        if str(item).strip() in required_ids
+                    }
+                )
+                if not entry_ids:
+                    continue
+                bound.update(entry_ids)
+                receipt = entry.get("scenarioReceipt")
+                if not isinstance(receipt, dict):
+                    invalid_receipts.append(
+                        {
+                            "verification": str(verification),
+                            "code": "SCENARIO_RECEIPT_REQUIRED",
+                        }
+                    )
+                    continue
+                result = hl.validate_scenario_execution_receipt(
+                    change_dir=change_dir,
+                    scenario_ids=entry_ids,
+                    receipt=receipt,
+                )
+                if not result.get("ok"):
+                    invalid_receipts.append(
+                        {
+                            "verification": str(verification),
+                            "code": str(
+                                result.get("code") or "SCENARIO_RECEIPT_INVALID"
+                            ),
+                        }
+                    )
+                    continue
+                receipt_coverage = result["coverage"]
+                for key in coverage_sets:
+                    if (
+                        key == "passed"
+                        and str(entry.get("status") or "").upper() != "OK"
+                    ):
+                        continue
+                    values = receipt_coverage.get(key)
+                    if isinstance(values, list):
+                        coverage_sets[key].update(
+                            str(item) for item in values if str(item) in required_ids
+                        )
+                receipt_attempt = result["receipt"].get("attempt")
+                if isinstance(receipt_attempt, int):
+                    for scenario_id in receipt_coverage.get("executed") or []:
+                        attempts.setdefault(str(scenario_id), set()).add(
+                            receipt_attempt
+                        )
+
+        passed = coverage_sets["passed"]
+        missing = sorted(required_ids - bound)
+        unexecuted = sorted(required_ids - passed)
+        detail = {
+            key: sorted(values & required_ids)
+            for key, values in coverage_sets.items()
+        }
+        detail.update(
+            {
+                "missing": missing,
+                "unexecuted": unexecuted,
+                "attempts": {
+                    scenario_id: sorted(values)
+                    for scenario_id, values in sorted(attempts.items())
+                },
+                "invalidReceipts": invalid_receipts,
+                "schemaVersion": schema_version,
+            }
+        )
+        if unexecuted:
+            return {
+                "ok": False,
+                "code": "REQUIRED_SCENARIO_NOT_EXECUTED",
+                "message": (
+                    "required scenarios without exact passed execution receipts: "
+                    + ", ".join(unexecuted)
+                ),
+                **detail,
+            }
+        return {
+            "ok": True,
+            "code": "SCENARIO_COVERAGE_OK",
+            "covered": sorted(passed),
+            **detail,
+        }
+
     covered: set[str] = set()
     validations = ledger.get("validations") or {}
     if isinstance(validations, dict):

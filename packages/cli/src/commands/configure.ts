@@ -293,6 +293,43 @@ export async function runConfigure(
   dependencies: CommandDependencies
 ): Promise<number> {
   const detection = await detectProject(dependencies.cwd);
+  if (detection.status === "partial" || detection.status === "recovery-required") {
+    const code = detection.reasonCode;
+    const message = detection.status === "partial"
+      ? "mature Harness evidence remains but .harness/project.yaml is missing; refusing automatic initialization"
+      : "unfinished Harness transactions require recovery before configure can continue";
+    dependencies.stderr(`${code}: ${message}\n`);
+    if (options.json === true) {
+      dependencies.stdout(serializeCliResult({
+        schema_version: 1,
+        command: "configure",
+        request_id: uuidV7(),
+        dry_run: options.dryRun === true,
+        ok: false,
+        exit_code: 6,
+        project_id: null,
+        summary: { planned: 0, applied: 0 },
+        items: [],
+        warnings: [],
+        errors: [{
+          code,
+          reasonCode: code,
+          message,
+          sentinels: detection.sentinels,
+          protectedLocalRoots: detection.protectedLocalRoots,
+          recoveryActions: [
+            "restore .harness/project.yaml from a trusted backup",
+            "inspect protected local roots before choosing explicit recovery",
+            "run the recovery command for unfinished transactions"
+          ],
+          ...(detection.status === "recovery-required"
+            ? { recoveryTransactions: detection.recoveryTransactions }
+            : {})
+        }]
+      }));
+    }
+    return 6;
+  }
   if (detection.status === "invalid") {
     dependencies.stderr("PROJECT_CONFIG_INVALID: .harness/project.yaml is invalid; not initializing over it.\n");
     if (options.json === true) {

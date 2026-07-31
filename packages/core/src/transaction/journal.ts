@@ -1,3 +1,5 @@
+import type { ProtectedLocalRootInventory } from "../project/local-state.js";
+
 export type TransactionState =
   | "prepared"
   | "applying"
@@ -43,4 +45,9 @@ export interface TransactionJournal {
   snapshots: SnapshotRecord[];
   applied_count: number;
   failure: string | null;
+  protected_local_roots?: {
+    before: ProtectedLocalRootInventory[];
+    after: ProtectedLocalRootInventory[];
+    unchanged: boolean;
+  };
 }

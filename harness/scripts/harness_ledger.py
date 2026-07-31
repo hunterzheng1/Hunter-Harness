@@ -888,6 +888,181 @@ def ownership_hash(contract: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+class LedgerMigrationError(ValueError):
+    """A legacy ledger could not be upgraded without inventing identity."""
+
+
+def ledger_evidence_identity(ledger: dict[str, Any]) -> str:
+    """Stable identity of evidence-bearing fields, excluding schema metadata."""
+    evidence = {
+        key: ledger[key]
+        for key in (
+            "validations",
+            "verificationTargets",
+            "integration",
+            "artifacts",
+        )
+        if key in ledger
+    }
+    canonical = json.dumps(
+        evidence,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def migrate_ledger_for_write(
+    change_dir: Path,
+    ledger: dict[str, Any],
+    *,
+    project_root: Path | None,
+    base_commit: str | None,
+    diff_hash: str | None,
+    record_migration: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Upgrade one supported legacy window to v3 before the caller mutates evidence."""
+    raw_schema = ledger.get("schemaVersion")
+    source_schema = raw_schema if isinstance(raw_schema, int) else 1
+    if source_schema not in {1, 2, LEDGER_SCHEMA_VERSION}:
+        raise LedgerMigrationError(
+            f"unsupported ledger schemaVersion={raw_schema!r}; "
+            f"supported source versions are 1, 2, and {LEDGER_SCHEMA_VERSION}"
+        )
+    repo_probe = project_root or change_dir
+    repo_root_raw = _git_text(repo_probe, "rev-parse", "--show-toplevel")
+    current_head = _git_text(repo_probe, "rev-parse", "--verify", "HEAD")
+    if not repo_root_raw or not current_head:
+        raise LedgerMigrationError(
+            "repository root/current HEAD could not be established"
+        )
+    repo_root = Path(repo_root_raw).resolve()
+    try:
+        contract = harness_paths.load_change_contract(change_dir)
+    except (OSError, ValueError) as exc:
+        raise LedgerMigrationError(
+            f"change ownership contract could not be loaded: {exc}"
+        ) from exc
+
+    resolved_base = base_commit
+    if not _nonempty_str(resolved_base):
+        resolved_base = ledger.get("baseCommit")
+    if not _nonempty_str(resolved_base):
+        resolved_base = current_head
+    resolved_diff = diff_hash
+    if not _nonempty_str(resolved_diff):
+        try:
+            resolved_diff = compute_ownership_diff(
+                repo_root,
+                base=str(resolved_base).strip(),
+                change_dir=change_dir,
+            )["diffHash"]
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise LedgerMigrationError(
+                f"ownership diff identity could not be computed: {exc}"
+            ) from exc
+
+    before_identity = ledger_evidence_identity(ledger)
+    migrated = dict(ledger)
+    migrated["schemaVersion"] = LEDGER_SCHEMA_VERSION
+    try:
+        migrated["repositoryId"] = harness_paths.repository_identity(repo_root)
+        migrated["ownershipHash"] = ownership_hash(contract)
+    except (OSError, TypeError, ValueError, RuntimeError) as exc:
+        raise LedgerMigrationError(
+            f"repository/ownership identity could not be established: {exc}"
+        ) from exc
+    migrated["changeName"] = change_dir.name
+    migrated["baseCommit"] = str(resolved_base).strip()
+    migrated["currentHead"] = str(current_head).strip()
+    migrated["diffHash"] = str(resolved_diff).strip()
+    missing = validate_ledger_identity(migrated)
+    if missing:
+        raise LedgerMigrationError(
+            "migrated ledger identity is incomplete: " + ", ".join(missing)
+        )
+
+    receipt: dict[str, Any] | None = None
+    if source_schema != LEDGER_SCHEMA_VERSION and record_migration:
+        after_identity = ledger_evidence_identity(migrated)
+        if after_identity != before_identity:
+            raise LedgerMigrationError(
+                "migration changed pre-existing evidence identity"
+            )
+        receipt = {
+            "schemaVersion": 1,
+            "action": "ledger-schema-migration",
+            "originalSchemaVersion": source_schema,
+            "targetSchemaVersion": LEDGER_SCHEMA_VERSION,
+            "migratedAt": now_iso(),
+            "evidenceIdentityBefore": before_identity,
+            "evidenceIdentityAfter": after_identity,
+            "repositoryId": migrated["repositoryId"],
+            "baseCommit": migrated["baseCommit"],
+            "currentHead": migrated["currentHead"],
+            "diffHash": migrated["diffHash"],
+        }
+        receipt_identity = json.dumps(
+            receipt,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        receipt["receiptId"] = (
+            "sha256:" + hashlib.sha256(receipt_identity).hexdigest()
+        )
+        history = migrated.get("migrationHistory")
+        if history is None:
+            history = []
+        if not isinstance(history, list):
+            raise LedgerMigrationError("migrationHistory must be an array")
+        migrated["migrationHistory"] = [*history, receipt]
+    return migrated, receipt
+
+
+def _deterministic_rerecord_command(
+    args: argparse.Namespace,
+    *,
+    files: list[str],
+    project_root: Path | None,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--json",
+        "record",
+        "--change-dir",
+        str(resolve_path(args.change_dir)),
+        "--verification",
+        str(args.verification),
+        "--status",
+        str(args.status),
+        "--command",
+        str(args.command),
+        "--exit-code",
+        str(args.exit_code),
+        "--duration-ms",
+        str(args.duration_ms),
+        "--evidence",
+        str(args.evidence),
+        "--files",
+        ",".join(sorted(str(Path(item).resolve()) for item in files)),
+    ]
+    if project_root is not None:
+        command.extend(["--project", str(project_root)])
+    for flag, attr in (
+        ("--scope", "scope"),
+        ("--coverage", "coverage"),
+        ("--base-commit", "base_commit"),
+        ("--diff-hash", "diff_hash"),
+    ):
+        value = getattr(args, attr, None)
+        if _nonempty_str(value):
+            command.extend([flag, str(value).strip()])
+    return command
+
+
 _METRICS_SCHEMAS: dict[str, dict[str, tuple[str, ...]]] = {
     "unitTest": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
     "unitTestFull": {"required": ("total", "passed", "failed"), "optional": ("errors", "skipped")},
@@ -1123,6 +1298,266 @@ def evidence_summary(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _scenario_receipt_error(code: str, message: str) -> dict[str, Any]:
+    return {"ok": False, "code": code, "error": message}
+
+
+def _canonical_string_list(
+    receipt: dict[str, Any],
+    field: str,
+) -> tuple[list[str] | None, dict[str, Any] | None]:
+    raw = receipt.get(field)
+    if not isinstance(raw, list) or any(not _nonempty_str(item) for item in raw):
+        return None, _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            f"scenario receipt field '{field}' must be an array of non-empty strings",
+        )
+    values = [str(item).strip() for item in raw]
+    if len(values) != len(set(values)):
+        return None, _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            f"scenario receipt field '{field}' contains duplicate test IDs",
+        )
+    return values, None
+
+
+def validate_scenario_execution_receipt(
+    *,
+    change_dir: Path,
+    scenario_ids: list[str],
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and minimize runner output before it can satisfy scenario evidence."""
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return _scenario_receipt_error(
+            "SCENARIO_MANIFEST_MISSING",
+            f"scenario manifest does not exist: {manifest_path}",
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return _scenario_receipt_error("SCENARIO_MANIFEST_INVALID", str(exc))
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("scenarios"), list):
+        return _scenario_receipt_error(
+            "SCENARIO_MANIFEST_INVALID",
+            "scenario-manifest.json must contain a scenarios array",
+        )
+    if int(manifest.get("schemaVersion") or 0) < 2:
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_UNSUPPORTED",
+            "structured scenario receipts require scenario-manifest schemaVersion 2",
+        )
+    if receipt.get("schemaVersion") != 1:
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            "scenario receipt schemaVersion must be 1",
+        )
+    runner = receipt.get("runner")
+    if not isinstance(runner, dict) or not _nonempty_str(runner.get("name")):
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            "scenario receipt runner.name is required",
+        )
+    if "version" in runner and not _nonempty_str(runner.get("version")):
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            "scenario receipt runner.version must be a non-empty string when present",
+        )
+    attempt = receipt.get("attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            "scenario receipt attempt must be a positive integer",
+        )
+
+    declared, error = _canonical_string_list(receipt, "declared")
+    if error:
+        return error
+    selected, error = _canonical_string_list(receipt, "selected")
+    if error:
+        return error
+    assert declared is not None and selected is not None
+
+    collected_raw = receipt.get("collected")
+    executed_raw = receipt.get("executed")
+    if not isinstance(collected_raw, list) or not isinstance(executed_raw, list):
+        return _scenario_receipt_error(
+            "SCENARIO_RECEIPT_INVALID",
+            "scenario receipt collected and executed fields must be arrays",
+        )
+
+    collected: list[dict[str, str]] = []
+    collected_keys: set[tuple[str, str, str]] = set()
+    for index, item in enumerate(collected_raw):
+        if not isinstance(item, dict) or any(
+            not _nonempty_str(item.get(field))
+            for field in ("testId", "file", "title")
+        ):
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt collected[{index}] has an invalid test identity",
+            )
+        canonical = {
+            "testId": str(item["testId"]).strip(),
+            "file": str(item["file"]).strip(),
+            "title": str(item["title"]).strip(),
+        }
+        key = (canonical["testId"], canonical["file"], canonical["title"])
+        if key in collected_keys:
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt collected[{index}] duplicates a test identity",
+            )
+        collected_keys.add(key)
+        collected.append(canonical)
+
+    executed: list[dict[str, Any]] = []
+    executed_keys: set[tuple[str, str, str, int]] = set()
+    allowed_statuses = {"PASSED", "FAILED", "SKIPPED"}
+    for index, item in enumerate(executed_raw):
+        if not isinstance(item, dict) or any(
+            not _nonempty_str(item.get(field))
+            for field in ("testId", "file", "title", "status")
+        ):
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt executed[{index}] has an invalid test identity",
+            )
+        item_attempt = item.get("attempt")
+        if (
+            not isinstance(item_attempt, int)
+            or isinstance(item_attempt, bool)
+            or item_attempt != attempt
+        ):
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt executed[{index}].attempt must equal receipt attempt",
+            )
+        item_status = str(item["status"]).strip().upper()
+        if item_status not in allowed_statuses:
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt executed[{index}].status is unsupported",
+            )
+        canonical = {
+            "testId": str(item["testId"]).strip(),
+            "file": str(item["file"]).strip(),
+            "title": str(item["title"]).strip(),
+            "attempt": item_attempt,
+            "status": item_status,
+        }
+        key = (
+            canonical["testId"],
+            canonical["file"],
+            canonical["title"],
+            item_attempt,
+        )
+        if key in executed_keys:
+            return _scenario_receipt_error(
+                "SCENARIO_RECEIPT_INVALID",
+                f"scenario receipt executed[{index}] duplicates a test attempt",
+            )
+        executed_keys.add(key)
+        executed.append(canonical)
+
+    manifest_scenarios = {
+        str(item.get("id") or "").strip(): item
+        for item in manifest["scenarios"]
+        if isinstance(item, dict) and _nonempty_str(item.get("id"))
+    }
+    unknown = sorted(set(scenario_ids) - set(manifest_scenarios))
+    if unknown:
+        return _scenario_receipt_error(
+            "SCENARIO_ID_UNKNOWN",
+            "scenario IDs are not declared in scenario-manifest.json: "
+            + ", ".join(unknown),
+        )
+
+    coverage = {
+        key: []
+        for key in (
+            "declared",
+            "selected",
+            "collected",
+            "executed",
+            "passed",
+            "skipped",
+            "failed",
+            "unexecuted",
+        )
+    }
+    for scenario_id in scenario_ids:
+        scenario = manifest_scenarios[scenario_id]
+        if scenario.get("requiredEvidenceKind") != "ledger":
+            continue
+        if any(
+            not _nonempty_str(scenario.get(field))
+            for field in ("executableTestId", "testFile", "testTitle")
+        ):
+            return _scenario_receipt_error(
+                "SCENARIO_MANIFEST_INVALID",
+                f"scenario {scenario_id} is missing its executable test identity",
+            )
+        test_id = str(scenario["executableTestId"]).strip()
+        identity = (
+            test_id,
+            str(scenario["testFile"]).strip(),
+            str(scenario["testTitle"]).strip(),
+        )
+        if test_id in declared:
+            coverage["declared"].append(scenario_id)
+        if test_id in selected:
+            coverage["selected"].append(scenario_id)
+        if identity in collected_keys:
+            coverage["collected"].append(scenario_id)
+        selection_closed = (
+            test_id in declared
+            and test_id in selected
+            and identity in collected_keys
+        )
+        matches = [
+            item
+            for item in executed
+            if (
+                item["testId"],
+                item["file"],
+                item["title"],
+            )
+            == identity
+        ]
+        if matches:
+            coverage["executed"].append(scenario_id)
+            terminal = matches[-1]["status"]
+            if terminal == "PASSED" and selection_closed:
+                coverage["passed"].append(scenario_id)
+            elif terminal == "SKIPPED":
+                coverage["skipped"].append(scenario_id)
+            elif terminal == "FAILED":
+                coverage["failed"].append(scenario_id)
+            if not selection_closed:
+                coverage["unexecuted"].append(scenario_id)
+        else:
+            coverage["unexecuted"].append(scenario_id)
+
+    canonical_runner = {"name": str(runner["name"]).strip()}
+    if _nonempty_str(runner.get("version")):
+        canonical_runner["version"] = str(runner["version"]).strip()
+    return {
+        "ok": True,
+        "receipt": {
+            "schemaVersion": 1,
+            "runner": canonical_runner,
+            "attempt": attempt,
+            "declared": declared,
+            "selected": selected,
+            "collected": collected,
+            "executed": executed,
+        },
+        "coverage": coverage,
+    }
 
 
 def _scope_covers(ledger_scope: Any, requested_scope: str | None) -> bool:
@@ -1702,14 +2137,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     change_dir = resolve_path(args.change_dir)
     verification = args.verification
     contract_v2 = _contract_is_v2(change_dir)
-    if not contract_v2 and any(
-        _nonempty_str(getattr(args, field, None))
-        for field in ("base_commit", "diff_hash")
-    ):
-        return emit_error(
-            "IDENTITY_UNSUPPORTED: explicit ledger identity requires a v2 change contract",
-            as_json=as_json,
-        )
+    migration_receipt: dict[str, Any] | None = None
     try:
         files, project_root = input_files_from_args(args)
     except (OSError, ValueError) as exc:
@@ -1742,7 +2170,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         inputs_hash, inputs_files = compute_inputs_hash(
             files, project_root=project_root
         )
-        ledger, _existing_path = load_ledger(change_dir)
+        ledger, existing_path = load_ledger(change_dir)
         if ledger is None:
             ledger = {
                 "changeName": change_dir.name,
@@ -1751,6 +2179,41 @@ def cmd_record(args: argparse.Namespace) -> int:
             }
         elif not isinstance(ledger.get("validations"), dict):
             ledger["validations"] = {}
+        explicit_identity = any(
+            _nonempty_str(getattr(args, field, None))
+            for field in ("base_commit", "diff_hash")
+        )
+        existing_schema = ledger.get("schemaVersion")
+        identity_write = (
+            contract_v2
+            or explicit_identity
+            or existing_schema in {2, LEDGER_SCHEMA_VERSION}
+        )
+        if identity_write:
+            try:
+                ledger, migration_receipt = migrate_ledger_for_write(
+                    change_dir,
+                    ledger,
+                    project_root=project_root,
+                    base_commit=getattr(args, "base_commit", None),
+                    diff_hash=getattr(args, "diff_hash", None),
+                    record_migration=existing_path is not None,
+                )
+            except LedgerMigrationError as exc:
+                return emit_error(
+                    f"ledger migration failed: {exc}",
+                    as_json=as_json,
+                    error_code="LEDGER_MIGRATION_REQUIRED",
+                    extra={
+                        "originalSchemaVersion": ledger.get("schemaVersion", 1),
+                        "targetSchemaVersion": LEDGER_SCHEMA_VERSION,
+                        "rerecordCommand": _deterministic_rerecord_command(
+                            args,
+                            files=files,
+                            project_root=project_root,
+                        ),
+                    },
+                )
 
         # Preserve top-level diffHash and all other existing fields (backward compatible).
         entry = {}
@@ -1857,13 +2320,115 @@ def cmd_record(args: argparse.Namespace) -> int:
 
         # C9: bind scenario IDs from --scenario-ids to this ledger entry.
         scenario_ids_raw = getattr(args, "scenario_ids", None)
+        scenario_receipt_file = getattr(args, "scenario_receipt_file", None)
+        if _nonempty_str(scenario_receipt_file) and not _nonempty_str(
+            scenario_ids_raw
+        ):
+            return emit_error(
+                "--scenario-receipt-file requires --scenario-ids",
+                as_json=as_json,
+                error_code="SCENARIO_IDS_REQUIRED",
+            )
         if _nonempty_str(scenario_ids_raw):
             ids = [s.strip() for s in str(scenario_ids_raw).split(",") if s.strip()]
+            if len(ids) != len(set(ids)):
+                return emit_error(
+                    "scenario IDs must be unique",
+                    as_json=as_json,
+                    error_code="SCENARIO_ID_DUPLICATE",
+                )
             if ids:
                 entry["scenarioIds"] = ids
+                receipt_file = scenario_receipt_file
+                manifest_path = change_dir / "meta" / "scenario-manifest.json"
+                manifest_schema = 0
+                if manifest_path.is_file():
+                    try:
+                        manifest_probe = json.loads(
+                            manifest_path.read_text(encoding="utf-8-sig")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        return emit_error(
+                            f"invalid scenario manifest: {exc}",
+                            as_json=as_json,
+                            error_code="SCENARIO_MANIFEST_INVALID",
+                        )
+                    raw_schema = (
+                        manifest_probe.get("schemaVersion")
+                        if isinstance(manifest_probe, dict)
+                        else None
+                    )
+                    if (
+                        isinstance(raw_schema, int)
+                        and not isinstance(raw_schema, bool)
+                    ):
+                        manifest_schema = raw_schema
+                if manifest_schema >= 2 and not _nonempty_str(receipt_file):
+                    return emit_error(
+                        "scenario-manifest schemaVersion 2 requires "
+                        "--scenario-receipt-file",
+                        as_json=as_json,
+                        error_code="SCENARIO_RECEIPT_REQUIRED",
+                    )
+                if _nonempty_str(receipt_file):
+                    try:
+                        receipt_payload = json.loads(
+                            Path(str(receipt_file))
+                            .expanduser()
+                            .resolve()
+                            .read_text(encoding="utf-8-sig")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        return emit_error(
+                            f"invalid scenario receipt: {exc}",
+                            as_json=as_json,
+                            error_code="SCENARIO_RECEIPT_INVALID",
+                        )
+                    if not isinstance(receipt_payload, dict):
+                        return emit_error(
+                            "scenario receipt top level must be an object",
+                            as_json=as_json,
+                            error_code="SCENARIO_RECEIPT_INVALID",
+                        )
+                    scenario_result = validate_scenario_execution_receipt(
+                        change_dir=change_dir,
+                        scenario_ids=ids,
+                        receipt=receipt_payload,
+                    )
+                    if not scenario_result.get("ok"):
+                        return emit_error(
+                            str(scenario_result.get("error") or "invalid scenario receipt"),
+                            as_json=as_json,
+                            error_code=str(
+                                scenario_result.get("code")
+                                or "SCENARIO_RECEIPT_INVALID"
+                            ),
+                        )
+                    entry["scenarioReceipt"] = scenario_result["receipt"]
+                    entry["scenarioCoverage"] = scenario_result["coverage"]
+                    if status == "OK":
+                        passed = set(scenario_result["coverage"]["passed"])
+                        required = set(ids)
+                        missing = sorted(required - passed)
+                        if missing:
+                            return emit_error(
+                                "required scenarios were not executed successfully: "
+                                + ", ".join(missing),
+                                as_json=as_json,
+                                error_code="REQUIRED_SCENARIO_NOT_EXECUTED",
+                                extra={
+                                    "missing": missing,
+                                    "scenarioCoverage": scenario_result["coverage"],
+                                },
+                            )
+                else:
+                    entry.pop("scenarioReceipt", None)
+                    entry.pop("scenarioCoverage", None)
         elif "scenarioIds" in entry:
             # Fresh record without scenario-ids must not keep stale ids from prev.
             entry.pop("scenarioIds", None)
+            entry.pop("scenarioReceipt", None)
+            entry.pop("scenarioCoverage", None)
 
         target_identity = {
             "verification": verification,
@@ -1908,52 +2473,6 @@ def cmd_record(args: argparse.Namespace) -> int:
             ledger["stateDir"] = str(change_dir)
 
         out_path = preferred_write_path(change_dir)
-        if contract_v2:
-            # Ledger v3: forced top-level identity (RET-15/16, COM-002).
-            repo_probe = project_root or change_dir
-            repo_root_raw = _git_text(repo_probe, "rev-parse", "--show-toplevel")
-            if not repo_root_raw:
-                return emit_error(
-                    "record failed: change dir is not inside a git repository",
-                    as_json=as_json,
-                )
-            repo_root = Path(repo_root_raw).resolve()
-            try:
-                contract = harness_paths.load_change_contract(change_dir)
-            except (OSError, ValueError) as exc:
-                return emit_error(f"record failed: {exc}", as_json=as_json)
-            base_commit = getattr(args, "base_commit", None)
-            if not _nonempty_str(base_commit):
-                base_commit = ledger.get("baseCommit")
-            if not _nonempty_str(base_commit):
-                base_commit = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
-            current_head = _git_text(repo_root, "rev-parse", "--verify", "HEAD")
-            diff_hash = getattr(args, "diff_hash", None)
-            if not _nonempty_str(diff_hash) and _nonempty_str(base_commit):
-                try:
-                    diff_hash = compute_ownership_diff(
-                        repo_root, base=str(base_commit).strip(), change_dir=change_dir
-                    )["diffHash"]
-                except (OSError, ValueError, RuntimeError):
-                    diff_hash = None
-            ledger["schemaVersion"] = LEDGER_SCHEMA_VERSION
-            ledger["repositoryId"] = harness_paths.repository_identity(repo_root)
-            ledger["changeName"] = change_dir.name
-            if _nonempty_str(base_commit):
-                ledger["baseCommit"] = str(base_commit).strip()
-            if _nonempty_str(current_head):
-                ledger["currentHead"] = str(current_head).strip()
-            if _nonempty_str(diff_hash):
-                ledger["diffHash"] = str(diff_hash).strip()
-            ledger["ownershipHash"] = ownership_hash(contract)
-            missing = validate_ledger_identity(ledger)
-            if missing:
-                return emit_error(
-                    "ledger identity incomplete: " + ", ".join(missing),
-                    as_json=as_json,
-                    error_code="LEDGER_IDENTITY_INVALID",
-                    extra={"missing": missing},
-                )
         write_ledger(out_path, ledger)
         try:
             upsert_verification_graph_node(
@@ -2004,6 +2523,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         "ledger_path": str(out_path),
         "diffHash": ledger.get("diffHash"),
         "resolvedProjectRoot": str(project_root) if project_root else None,
+        "scenarioCoverage": entry.get("scenarioCoverage"),
+        "migrationReceipt": migration_receipt,
     }
     emit_compact_or_verbose(
         payload, as_json=as_json, verbose=verbose,
@@ -2208,6 +2729,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--scenario-ids",
         default=None,
         help="comma-separated scenario IDs from scenario-manifest.json to bind to this entry",
+    )
+    p_record.add_argument(
+        "--scenario-receipt-file",
+        default=None,
+        help="UTF-8 JSON runner receipt proving declared/selected/collected/executed tests",
     )
     p_record.add_argument(
         "--verbose",

@@ -533,7 +533,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 
 > 这样 harness-test 的 Phase 1 可读取 ledger 判断是否复用 run 的 unitTest（diffHash commit-invariant + reuse 规则 #2 允许 HEAD 前移 → run 的 checkpoint commit 不破坏复用），submit 也可复用 compile 结果。详见 `../protocols/ledger-protocol.md`。
 >
-> **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 自动解析并强制顶层身份（`schemaVersion=3/repositoryId/changeName/baseCommit/currentHead/diffHash/ownershipHash`），缺字段非零退出、不写账本；`--metrics-json` 必须通过 typed schema（unit=`total/passed/failed`，apiContract=`scenariosTotal/passed/failed`，browserE2E=`total/passed/failed`，dbCompatibility=`applicability(+reason)`）；新增 `--base-commit/--diff-hash/--applicability/--applicability-reason`。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
+> **Ledger v3**：`record` 自动解析并强制顶层身份（`schemaVersion=3/repositoryId/changeName/baseCommit/currentHead/diffHash/ownershipHash`），缺字段非零退出、不写账本；已有 v1/v2 ledger 在写前透明迁移，`migrationHistory` 回执记录原/目标 schema 与迁移前后 evidence identity。无法迁移时返回 `LEDGER_MIGRATION_REQUIRED` 和确定性 `rerecordCommand`，不得半升级。v2 契约下 `--metrics-json` 必须通过 typed schema（unit=`total/passed/failed`，apiContract=`scenariosTotal/passed/failed`，browserE2E=`total/passed/failed`，dbCompatibility=`applicability(+reason)`）。详见 `../protocols/ledger-protocol.md` 第十节。
 
 阶段边界：`harness_gate.py begin/close`；测试跟踪：`harness_test_guard.py begin/close`。close 失败不得用自然语言覆盖。
 

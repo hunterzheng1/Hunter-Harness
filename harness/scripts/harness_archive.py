@@ -3864,6 +3864,7 @@ def collect_summary_data(
             "timing",
             "skillCalls",
             "verification",
+            "scenarioCoverage",
             "timeline",
             "changedFiles",
             "artifacts",
@@ -3887,6 +3888,7 @@ def collect_summary_data(
             "changeIdentity",
             "artifactStorage",
             "retention",
+            "archiveDurability",
             "remoteCost",
             "projection",
         ):
@@ -3976,6 +3978,9 @@ def collect_summary_data(
         ver.setdefault("dbCompatibility", ver.get("dbCompatibility", NOT_AVAILABLE))
         ver.setdefault("dbCompatibilityEvidence", {})
         ver.setdefault("coverageDisplay", ver.get("coverageDisplay", NOT_AVAILABLE))
+
+    if not for_replay or not isinstance(data.get("scenarioCoverage"), dict):
+        data["scenarioCoverage"] = hgate._validate_scenario_coverage(change_dir)
 
     # stageStatus / finalStatus
     if not for_replay or not isinstance(data.get("stageStatus"), dict):
@@ -4801,6 +4806,18 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
     remote_totals = rec(remote.get("totals"))
     projection = rec(summary.get("projection"))
     archive_integrity = rec(summary.get("archiveIntegrity"))
+    durability = rec(summary.get("archiveDurability"))
+    durability_status = str(
+        durability.get("status") or "ARCHIVED_LOCAL_ONLY"
+    )
+    scenario_coverage = rec(summary.get("scenarioCoverage"))
+    unexecuted_scenarios = [
+        str(item) for item in seq(scenario_coverage.get("unexecuted"))
+    ]
+    scenario_status = str(
+        scenario_coverage.get("code")
+        or ("SCENARIO_COVERAGE_OK" if scenario_coverage.get("ok") else "NOT_RUN")
+    )
     total_files = rec(summary.get("archiveManifest")).get("totalArchiveFiles")
     total_files_text = "" if total_files is None else str(total_files)
 
@@ -4823,6 +4840,9 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
 <article class="metric"><small>全流程耗时</small><strong>{esc(timing.get("workflowWallClockMs") or "N/A")}</strong></article>
 <article class="metric"><small>归档文件</small><strong>{esc(total_files_text or "N/A")}</strong></article></section>
 <article class="card"><h2>验证概览</h2><div class="groups">{"".join(groups)}</div></article>
+<article class="card"><h2>场景执行闭环</h2>
+<p>结构化运行回执：{esc(scenario_status)}</p>
+<p>未执行 / 未通过：{esc(", ".join(unexecuted_scenarios) or "无")}</p></article>
 <article class="card"><h2>风险与动作</h2><div class="risk"><section><h3>当前风险</h3><ul>{risk_rows}</ul></section><section><h3>人工动作</h3><ul>{action_rows}</ul></section></div></article>
 {release_card}
 <details><summary>技术证据 · 时间守恒</summary><div><p>conservationDeltaMs={esc(timing.get("conservationDeltaMs") if "conservationDeltaMs" in timing else "N/A")}</p>
@@ -4833,8 +4853,10 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
 <p>远端 runner 成本：{esc(measurement_label(remote_totals.get("runnerMinutes") or remote.get("runnerMinutes")))}</p>
 <p>新增制品字节：{esc(measurement_label(storage.get("bytesAdded")))}</p></div></details>
 <details><summary>技术证据 · 发布与归档治理</summary><div>
-<p>归档完整性：{esc(archive_integrity.get("code") or rec(summary.get("archiveManifest")).get("checksumStatus") or "N/A")}</p>
-<p>历史质量：未闭合尝试 {esc(timing.get("unclosedAttemptCount") if "unclosedAttemptCount" in timing else "N/A")}</p>
+    <p>归档完整性：{esc(archive_integrity.get("code") or rec(summary.get("archiveManifest")).get("checksumStatus") or "N/A")}</p>
+    <p>归档持久性：{esc(durability_status)} · {esc(durability.get("risk") or "已通过持久介质回读校验")}</p>
+    <p>保留策略：{esc(durability.get("retentionPolicy") or "N/A")}</p>
+    <p>历史质量：未闭合尝试 {esc(timing.get("unclosedAttemptCount") if "unclosedAttemptCount" in timing else "N/A")}</p>
 <p>投影状态：{esc(projection.get("code") or projection.get("mode") or "N/A")}</p></div></details>
 <details><summary>技术证据 · 变更文件</summary><div><table><tbody>{file_rows}</tbody></table></div></details>
 <details><summary>技术证据 · 命令</summary><div><table><tbody>{command_rows}</tbody></table></div></details>
@@ -6896,6 +6918,262 @@ def run_service_stop(change_dir: Path) -> dict[str, Any]:
         return {"ran": True, "skipped": False, "ok": False, "warning": str(exc)}
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _archive_tree_digest(root: Path) -> str:
+    """Hash a complete archive tree without following links.
+
+    Directory entries are included so an empty directory cannot disappear
+    unnoticed.  Durable archives reject links rather than copying data from
+    outside the finalized archive boundary.
+    """
+    root = root.resolve()
+    if not root.is_dir():
+        raise OSError(f"archive payload directory not found: {root}")
+    digest = hashlib.sha256()
+    for directory, dir_names, file_names in os.walk(root, followlinks=False):
+        current = Path(directory)
+        dir_names.sort()
+        file_names.sort()
+        for name in dir_names:
+            child = current / name
+            if child.is_symlink():
+                raise OSError(f"durable archive refuses directory link: {child}")
+            relative = child.relative_to(root).as_posix()
+            digest.update(b"D\0")
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+        for name in file_names:
+            child = current / name
+            if child.is_symlink():
+                raise OSError(f"durable archive refuses file link: {child}")
+            relative = child.relative_to(root).as_posix()
+            file_hash = hashlib.sha256()
+            size = 0
+            with child.open("rb") as handle:
+                while True:
+                    chunk = handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    file_hash.update(chunk)
+            digest.update(b"F\0")
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(size).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(file_hash.digest())
+            digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    encoded = (
+        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def write_durable_archive(
+    archive_payload: Path,
+    durable_root: Path,
+    *,
+    archive_id: str,
+    retention_policy: str,
+) -> dict[str, Any]:
+    """Publish and read back a content-addressed durable archive.
+
+    The receipt is outside the payload so the payload hash is not
+    self-referential.  An existing object is reusable only when its full tree
+    hash matches the requested content.
+    """
+    source = archive_payload.resolve()
+    root = durable_root.resolve()
+    if not retention_policy.strip():
+        raise ValueError("retention policy must not be empty")
+    if (
+        not archive_id
+        or archive_id in {".", ".."}
+        or Path(archive_id).name != archive_id
+    ):
+        raise ValueError(f"invalid durable archive id: {archive_id!r}")
+
+    payload_hash = _archive_tree_digest(source)
+    digest_hex = payload_hash.removeprefix("sha256:")
+    object_dir = root / "objects" / "sha256" / digest_hex
+    durable_payload = object_dir / "payload"
+    receipt_path = root / "receipts" / f"{archive_id}.json"
+    staging_root = root / ".staging" / f"d-{uuid.uuid4().hex}"
+    staged_payload = staging_root / "payload"
+    object_reused = False
+
+    try:
+        if durable_payload.exists():
+            if not durable_payload.is_dir():
+                raise OSError(f"durable object path is not a directory: {durable_payload}")
+            readback_hash = _archive_tree_digest(durable_payload)
+            if readback_hash != payload_hash:
+                raise OSError(
+                    "existing durable object failed readback verification: "
+                    f"expected {payload_hash}, got {readback_hash}"
+                )
+            object_reused = True
+        else:
+            staging_root.mkdir(parents=True, exist_ok=False)
+            shutil.copytree(source, staged_payload, copy_function=shutil.copy2)
+            staged_hash = _archive_tree_digest(staged_payload)
+            if staged_hash != payload_hash:
+                raise OSError(
+                    "durable staging readback mismatch: "
+                    f"expected {payload_hash}, got {staged_hash}"
+                )
+            object_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.replace(staged_payload, durable_payload)
+            except OSError:
+                # A concurrent writer may have published the same object.
+                if not durable_payload.is_dir():
+                    raise
+                readback_hash = _archive_tree_digest(durable_payload)
+                if readback_hash != payload_hash:
+                    raise
+                object_reused = True
+
+        verified_hash = _archive_tree_digest(durable_payload)
+        if verified_hash != payload_hash:
+            raise OSError(
+                "durable object verification failed: "
+                f"expected {payload_hash}, got {verified_hash}"
+            )
+
+        receipt = {
+            "schemaVersion": 1,
+            "archiveId": archive_id,
+            "status": "ARCHIVED_DURABLE",
+            "payloadHash": payload_hash,
+            "payloadPath": str(durable_payload),
+            "retentionPolicy": retention_policy,
+            "verifiedAt": now_iso(),
+            "verification": {
+                "algorithm": "sha256-tree-v1",
+                "readBack": True,
+            },
+            "sourceDeletion": {
+                "authorizedOnlyAfterVerification": True,
+            },
+        }
+        if receipt_path.exists():
+            existing = read_json(receipt_path)
+            if (
+                not isinstance(existing, dict)
+                or existing.get("payloadHash") != payload_hash
+                or existing.get("archiveId") != archive_id
+            ):
+                raise OSError(
+                    f"durable receipt already exists for different content: {receipt_path}"
+                )
+            receipt = existing
+        else:
+            _atomic_write_json(receipt_path, receipt)
+
+        return {
+            "status": "ARCHIVED_DURABLE",
+            "payloadHash": payload_hash,
+            "payloadPath": str(durable_payload),
+            "receiptPath": str(receipt_path),
+            "retentionPolicy": retention_policy,
+            "readBackVerified": True,
+            "objectReused": object_reused,
+        }
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        staging_parent = root / ".staging"
+        try:
+            staging_parent.rmdir()
+        except OSError:
+            pass
+
+
+def restore_durable_archive(receipt_path: Path, target_root: Path) -> dict[str, Any]:
+    """Restore a verified durable object without overwriting an existing archive."""
+    receipt_file = receipt_path.resolve()
+    receipt = read_json(receipt_file)
+    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != 1:
+        raise ValueError(f"invalid durable archive receipt: {receipt_file}")
+    if receipt.get("status") != "ARCHIVED_DURABLE":
+        raise ValueError(f"receipt is not durable: {receipt_file}")
+
+    archive_id = str(receipt.get("archiveId") or "")
+    payload_hash = str(receipt.get("payloadHash") or "")
+    if (
+        not archive_id
+        or Path(archive_id).name != archive_id
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", payload_hash)
+    ):
+        raise ValueError(f"invalid durable archive receipt fields: {receipt_file}")
+
+    durable_root = receipt_file.parent.parent.resolve()
+    expected_payload = (
+        durable_root
+        / "objects"
+        / "sha256"
+        / payload_hash.removeprefix("sha256:")
+        / "payload"
+    ).resolve()
+    declared_payload = Path(str(receipt.get("payloadPath") or "")).resolve()
+    if declared_payload != expected_payload or not _path_is_within(
+        expected_payload, durable_root / "objects"
+    ):
+        raise ValueError("durable receipt payload path is outside its object store")
+    actual_hash = _archive_tree_digest(expected_payload)
+    if actual_hash != payload_hash:
+        raise OSError(
+            f"durable payload hash mismatch: expected {payload_hash}, got {actual_hash}"
+        )
+
+    restore_root = target_root.resolve()
+    destination = restore_root / archive_id
+    if destination.exists():
+        raise FileExistsError(f"restore destination already exists: {destination}")
+    restore_root.mkdir(parents=True, exist_ok=True)
+    staging = restore_root / f".restore-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(expected_payload, staging, copy_function=shutil.copy2)
+        restored_hash = _archive_tree_digest(staging)
+        if restored_hash != payload_hash:
+            raise OSError(
+                f"restored payload hash mismatch: expected {payload_hash}, got {restored_hash}"
+            )
+        os.replace(staging, destination)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    return {
+        "ok": True,
+        "action": "restore-durable",
+        "archiveId": archive_id,
+        "payloadHash": payload_hash,
+        "readBackVerified": True,
+        "restoredArchive": str(destination),
+    }
+
+
 # ---------------------------------------------------------------------------
 # finalize
 # ---------------------------------------------------------------------------
@@ -6905,6 +7183,8 @@ def cmd_finalize(
     change_dir: Path,
     archive_root: Path,
     *,
+    durable_root: Path | None = None,
+    retention_policy: str = "unspecified",
     skip_ingest: bool = False,
     allow_missing_review: bool = False,
     archive_intent: str = "release-candidate",
@@ -6923,6 +7203,26 @@ def cmd_finalize(
     archive_root.mkdir(parents=True, exist_ok=True)
     archive_dir = archive_root / f"{today_date()}-{change_name}"
     project_root = find_project_root(original_change_dir)
+    if durable_root is not None:
+        durable_root = durable_root.resolve()
+        if _path_is_within(durable_root, project_root):
+            return 1, {
+                "ok": False,
+                "action": "finalize",
+                "change_dir": str(original_change_dir),
+                "archive_dir": str(archive_dir),
+                "issues": [
+                    {
+                        "code": "DURABLE_ROOT_NOT_INDEPENDENT",
+                        "severity": "error",
+                        "message": (
+                            "durable root must be outside the project so project-local "
+                            "state loss cannot delete both copies"
+                        ),
+                    }
+                ],
+                "error": "durable root is inside the project",
+            }
     try:
         resolved_state_dir = hp.resolve_state_dir_for_contract(
             original_change_dir, project_root
@@ -7281,6 +7581,29 @@ def cmd_finalize(
             for_replay=False,
         )
         summary_path = work_dir / "reports" / "final" / "summary-data.json"
+        summary["archiveDurability"] = {
+            "status": (
+                "ARCHIVED_DURABLE"
+                if durable_root is not None
+                else "ARCHIVED_LOCAL_ONLY"
+            ),
+            "retentionPolicy": (
+                retention_policy if durable_root is not None else "project-local"
+            ),
+            "readBackRequiredBeforeSourceDeletion": durable_root is not None,
+            "risk": (
+                None
+                if durable_root is not None
+                else (
+                    "The archive exists only under the project-local .harness tree "
+                    "and may be lost with that workspace."
+                )
+            ),
+        }
+        payload["archiveDurability"] = _deepcopy_json(
+            summary["archiveDurability"]
+        )
+        write_json(summary_path, summary)
         if allow_missing_review:
             reasons = list(summary.get("finalStatusReasons") or [])
             reason = "review missing on full tier (allowed by user)"
@@ -7606,6 +7929,43 @@ def cmd_finalize(
         payload["ok"] = False
         return 1, payload
 
+    # A durable sink, when requested, is committed and read back before either
+    # publishing the local archive or deleting the source change directory.
+    if durable_root is not None:
+        try:
+            durability = write_durable_archive(
+                operation_temp_dir,
+                durable_root,
+                archive_id=archive_dir.name,
+                retention_policy=retention_policy,
+            )
+            payload["archiveDurability"] = durability
+            payload["steps"]["durable_archive"] = {
+                "ok": True,
+                **durability,
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            payload["error"] = f"durable archive write failed: {exc}"
+            payload["issues"] = [
+                {
+                    "code": "DURABLE_ARCHIVE_WRITE_FAILED",
+                    "severity": "error",
+                    "message": str(exc),
+                }
+            ]
+            payload["steps"]["durable_archive"] = {
+                "ok": False,
+                "error": str(exc),
+            }
+            payload["steps"]["delete_original"] = {
+                "ok": False,
+                "deleted": False,
+            }
+            _restore_finalize_failure()
+            payload["warnings"] = warnings
+            payload["ok"] = False
+            return 1, payload
+
     # Publish only after every validator passes. The archive path is never used
     # as mutable staging, so a failed attempt cannot poison the next retry.
     try:
@@ -7679,6 +8039,7 @@ def cmd_finalize(
                 "manifestSha256": sha256_file(
                     archive_dir / "evidence" / "archive-manifest-after.json"
                 ),
+                "archiveDurability": payload.get("archiveDurability"),
             },
         )
     except OSError as exc:
@@ -7854,13 +8215,41 @@ def cmd_certify_local_cli(args: argparse.Namespace) -> int:
 def cmd_finalize_cli(args: argparse.Namespace) -> int:
     change_dir = resolve_path(args.change_dir)
     archive_root = resolve_path(args.archive_root)
+    durable_root = (
+        resolve_path(args.durable_root)
+        if getattr(args, "durable_root", None)
+        else None
+    )
     code, payload = cmd_finalize(
         change_dir,
         archive_root,
+        durable_root=durable_root,
+        retention_policy=str(
+            getattr(args, "retention_policy", "unspecified")
+        ),
         skip_ingest=bool(args.skip_ingest),
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
         archive_intent=str(getattr(args, "intent", "release-candidate")),
     )
+    emit_json(payload)
+    return code
+
+
+def cmd_restore_durable_cli(args: argparse.Namespace) -> int:
+    receipt_path = resolve_path(args.receipt)
+    target_root = resolve_path(args.target_root)
+    try:
+        payload = restore_durable_archive(receipt_path, target_root)
+        code = 0
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        code = 1
+        payload = {
+            "ok": False,
+            "action": "restore-durable",
+            "receipt": str(receipt_path),
+            "targetRoot": str(target_root),
+            "error": str(exc),
+        }
     emit_json(payload)
     return code
 
@@ -8087,6 +8476,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_fin = sub.add_parser("finalize", help="single-process archive finalize")
     p_fin.add_argument("--change-dir", required=True)
     p_fin.add_argument("--archive-root", required=True)
+    p_fin.add_argument(
+        "--durable-root",
+        default=None,
+        help=(
+            "independent content-addressed archive store; it must be outside "
+            "the project and is verified before source deletion"
+        ),
+    )
+    p_fin.add_argument(
+        "--retention-policy",
+        default="unspecified",
+        help="retention policy recorded in the durable archive receipt",
+    )
     p_fin.add_argument("--skip-ingest", action="store_true")
     p_fin.add_argument(
         "--allow-missing-review",
@@ -8101,6 +8503,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)
+
+    p_restore = sub.add_parser(
+        "restore-durable",
+        help="verify a durable receipt and restore its archive without overwriting",
+    )
+    p_restore.add_argument("--receipt", required=True)
+    p_restore.add_argument("--target-root", required=True)
+    p_restore.add_argument("--json", action="store_true", default=True)
+    p_restore.set_defaults(func=cmd_restore_durable_cli)
 
     p_rep = sub.add_parser("replay", help="read-only re-collect + validate")
     p_rep.add_argument("--archive-dir", required=True)

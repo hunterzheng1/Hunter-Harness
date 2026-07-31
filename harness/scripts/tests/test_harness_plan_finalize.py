@@ -569,14 +569,14 @@ class ScenarioManifestTests(unittest.TestCase):
             "---\n\n"
             "# Test Scenarios\n\n"
             "## C5: CLI 默认 compact 输出\n\n"
-            "| ID | 优先级 | 场景 | 验证方式 | owner phase |\n"
-            "|---|---|---|---|---|\n"
-            "| C5-S1 | P0 | knowledge query 默认返回 compact JSON | assert matches not in compact output | test |\n"
-            "| C5-S2 | P1 | knowledge query --verbose 返回完整 matches | assert matches in verbose output | test |\n\n"
+            "| ID | 优先级 | 场景 | 验证方式 | owner phase | executable test ID | test file | test title |\n"
+            "|---|---|---|---|---|---|---|---|\n"
+            "| C5-S1 | P0 | knowledge query 默认返回 compact JSON | assert matches not in compact output | test | tests/query.spec.ts::compact | tests/query.spec.ts | compact output |\n"
+            "| C5-S2 | P1 | knowledge query --verbose 返回完整 matches | assert matches in verbose output | test | tests/query.spec.ts::verbose | tests/query.spec.ts | verbose output |\n\n"
             "## C7: common profile\n\n"
-            "| ID | 优先级 | 场景 | 验证方式 | owner phase |\n"
-            "|---|---|---|---|---|\n"
-            "| C7-S1 | P0 | common_root 从 git common dir 解析 | assert common_root(worktree) == main project root | test |\n"
+            "| ID | 优先级 | 场景 | 验证方式 | owner phase | executable test ID | test file | test title |\n"
+            "|---|---|---|---|---|---|---|---|\n"
+            "| C7-S1 | P0 | common_root 从 git common dir 解析 | assert common_root(worktree) == main project root | test | tests/worktree.spec.ts::common-root | tests/worktree.spec.ts | common root |\n"
         )
 
     def test_finalize_outputs_scenario_manifest(self) -> None:
@@ -604,6 +604,7 @@ class ScenarioManifestTests(unittest.TestCase):
             manifest_path = change_dir / "meta" / "scenario-manifest.json"
             self.assertTrue(manifest_path.is_file(), "scenario-manifest.json missing")
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(data["schemaVersion"], 2)
             self.assertIn("scenarios", data)
             self.assertEqual(len(data["scenarios"]), 3)
             # Each scenario has id/priority/ownerPhase
@@ -613,6 +614,41 @@ class ScenarioManifestTests(unittest.TestCase):
             self.assertEqual(s1["ownerPhase"], "test")
             # P0 scenario has requiredEvidenceKind
             self.assertIn("requiredEvidenceKind", s1)
+            self.assertEqual(
+                s1["executableTestId"],
+                "tests/query.spec.ts::compact",
+            )
+            self.assertEqual(s1["testFile"], "tests/query.spec.ts")
+            self.assertEqual(s1["testTitle"], "compact output")
+
+    def test_finalize_rejects_partial_executable_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change = "demo-partial-mapping"
+            change_dir = root / ".harness" / "changes" / change
+            seed_staging(staging, change)
+            write(
+                staging / "plans" / f"{change}-test-scenarios.md",
+                valid_markdown(change, "Scenarios")
+                + "\n| ID | 优先级 | 场景 | executable test ID | test file | test title |\n"
+                "|---|---|---|---|---|---|\n"
+                "| INT-001 | P0 | required browser flow | tests/admin.spec.ts::flow | tests/admin.spec.ts | |\n",
+            )
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name=change,
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(
+                result["code"],
+                "PLAN_SCENARIO_EXECUTABLE_MAPPING_MISSING",
+            )
 
     def test_parse_supports_hash_category_and_description_headers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

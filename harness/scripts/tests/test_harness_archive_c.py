@@ -67,15 +67,34 @@ def _authorize_release_fixture(change_dir: Path, project: Path) -> None:
         check=True,
         capture_output=True,
     )
-    _write(project / "README.md", "release fixture\n")
     subprocess.run(
-        ["git", "add", ".gitattributes", "README.md"],
+        ["git", "add", ".gitattributes"],
         cwd=project,
         check=True,
         capture_output=True,
     )
     subprocess.run(
-        ["git", "commit", "-m", "release fixture"],
+        ["git", "commit", "-m", "release fixture base"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    base_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _write(project / "README.md", "release fixture\n")
+    subprocess.run(
+        ["git", "add", "README.md"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "release fixture product"],
         cwd=project,
         check=True,
         capture_output=True,
@@ -96,7 +115,7 @@ def _authorize_release_fixture(change_dir: Path, project: Path) -> None:
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     ledger.update(
         {
-            "baseCommit": commit,
+            "baseCommit": base_commit,
             "finalCommit": commit,
             "productCommit": commit,
             "productTreeHash": tree_hash,
@@ -268,6 +287,10 @@ class FreezeFirstTests(_FinalizeFixture):
                     "contractRoot": ".harness/changes/demo-change",
                     "runtimeRoot": ".harness/state/changes/demo-change",
                 },
+                "ownership": {
+                    "productPaths": ["README.md"],
+                    "staticEvidencePaths": [".harness/changes/demo-change/"],
+                },
             },
         )
         state = self.project / ".harness" / "state" / "changes" / "demo-change"
@@ -303,6 +326,10 @@ class FreezeFirstTests(_FinalizeFixture):
                 "stateOwnership": {
                     "contractRoot": ".harness/changes/demo-change",
                     "runtimeRoot": ".harness/state/changes/demo-change",
+                },
+                "ownership": {
+                    "productPaths": ["README.md"],
+                    "staticEvidencePaths": [".harness/changes/demo-change/"],
                 },
             },
         )

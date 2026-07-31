@@ -51,6 +51,10 @@ export async function runRulesSync(
     dependencies.stderr("PROJECT_CONFIG_INVALID：.harness/project.yaml 无效\n");
     return 3;
   }
+  if (detection.status === "partial" || detection.status === "recovery-required") {
+    dependencies.stderr(`${detection.reasonCode}：需要先恢复本地 Harness 主状态\n`);
+    return 6;
+  }
   try {
     const agents = options.agents === undefined
       ? configuredAgents(detection.config)

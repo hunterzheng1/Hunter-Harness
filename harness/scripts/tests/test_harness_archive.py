@@ -83,10 +83,15 @@ def _seed_change_dir(change_dir: Path) -> None:
         change_dir / "evidence" / "verification-ledger.json",
         {
             "changeName": change_dir.name,
-            # H-12: base!=final with filesChanged=0 is an adequacy error; empty
-            # product fixtures keep identity equal so finalize stays green.
-            "baseCommit": "bbbbbbbb",
-            "finalCommit": "bbbbbbbb",
+            # The archive boundary must cover a real product delta.  A fixture
+            # with base == productCommit now fails closed because it models the
+            # exact merge-only/truncated archive boundary that the adequacy
+            # checks are intended to detect.
+            "baseCommit": "aaaaaaaa",
+            # Synthetic non-git fixtures use a neutral archive checkpoint for
+            # base/final while productCommit identifies the independently
+            # verified product candidate.
+            "finalCommit": "aaaaaaaa",
             "productCommit": "bbbbbbbb",
             "archiveCommit": "bbbbbbbb",
             "validations": {
@@ -108,6 +113,13 @@ def _seed_change_dir(change_dir: Path) -> None:
                     "failed": 0,
                     "blocked": 0,
                     "passRate": "1/1",
+                },
+                "dbCompatibility": {
+                    "status": "OK",
+                    "metrics": {
+                        "applicability": "NOT_APPLICABLE",
+                        "reason": "archive unit fixture has no database surface",
+                    },
                 },
             },
         },
@@ -217,6 +229,11 @@ class FinalizeSuccessTests(unittest.TestCase):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         self.assertEqual(summary["schemaVersion"], "2.3")
         self.assertEqual(summary["changeName"], "demo-change")
+        self.assertEqual(
+            summary["archiveDurability"]["status"],
+            "ARCHIVED_LOCAL_ONLY",
+        )
+        self.assertEqual(payload["archiveDurability"]["status"], "ARCHIVED_LOCAL_ONLY")
         self.assertEqual(summary["maintenanceNotes"], [])
         self.assertEqual(summary["knownRisks"], [])
         self.assertEqual(summary["manualActions"], [])
@@ -231,6 +248,93 @@ class FinalizeSuccessTests(unittest.TestCase):
         self.assertIn(str(summary["archiveManifest"]["totalArchiveFiles"]), html.read_text(encoding="utf-8"))
         html_text = html.read_text(encoding="utf-8")
         self.assertIn("demo-change", html_text)
+        self.assertIn("ARCHIVED_LOCAL_ONLY", html_text)
+
+    def test_finalize_writes_and_verifies_durable_archive_before_source_deletion(
+        self,
+    ) -> None:
+        durable_root = self.tmp / "durable"
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--durable-root",
+                str(durable_root),
+                "--retention-policy",
+                "keep-365-days",
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        durability = payload["archiveDurability"]
+        self.assertEqual(durability["status"], "ARCHIVED_DURABLE")
+        receipt_path = Path(durability["receiptPath"])
+        self.assertTrue(receipt_path.is_file())
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["retentionPolicy"], "keep-365-days")
+        self.assertTrue(Path(receipt["payloadPath"]).is_dir())
+        self.assertFalse(self.change.exists())
+        archive_dir = Path(payload["archive_dir"])
+        self.assertIn(
+            "ARCHIVED_DURABLE",
+            (archive_dir / "reports" / "final" / "final-summary.html").read_text(
+                encoding="utf-8"
+            ),
+        )
+
+        restore_root = self.tmp / "restored"
+        restore_code, restore_payload = _run(
+            [
+                "restore-durable",
+                "--receipt",
+                str(receipt_path),
+                "--target-root",
+                str(restore_root),
+                "--json",
+            ]
+        )
+        self.assertEqual(restore_code, 0, msg=restore_payload)
+        restored = Path(restore_payload["restoredArchive"])
+        self.assertTrue(
+            (restored / "reports" / "final" / "summary-data.json").is_file()
+        )
+
+    def test_durable_write_failure_keeps_source_change(self) -> None:
+        with mock.patch.object(
+            ha,
+            "write_durable_archive",
+            side_effect=OSError("durable sink unavailable"),
+        ):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--intent",
+                    "record-only",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--durable-root",
+                    str(self.tmp / "durable"),
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+
+        self.assertNotEqual(code, 0)
+        self.assertEqual(
+            payload["issues"][0]["code"],
+            "DURABLE_ARCHIVE_WRITE_FAILED",
+        )
+        self.assertTrue(self.change.is_dir())
+        self.assertFalse(Path(payload["archive_dir"]).exists())
 
 
 class FallbackRenderTests(unittest.TestCase):
@@ -836,8 +940,8 @@ class ConditionalOkTests(unittest.TestCase):
 
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
-    """API-013: archive finalize 是唯一归档路径。harness_archive.py CLI 只暴露
-    status/certify-local/finalize/replay/repair；不存在 collect/validate 子命令（已废弃的旧编排路径，
+    """API-013: archive finalize 是唯一归档路径。恢复只消费已验证的持久化
+    receipt；不存在 collect/validate 子命令（已废弃的旧编排路径，
     report-pipeline-protocol §标准命令 仅保留 finalize/replay，模型不得手写等价
     summary-data.json）。repair 为 RET-40 新增显式修复子命令（不改写原归档）。"""
 
@@ -850,7 +954,15 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
         choices = set(getattr(sub_action, "choices", {}).keys())
         self.assertEqual(
             choices,
-            {"status", "certify-local", "finalize", "replay", "repair"},
+            {
+                "status",
+                "auto-gate",
+                "certify-local",
+                "finalize",
+                "restore-durable",
+                "replay",
+                "repair",
+            },
             f"archive CLI commands changed unexpectedly: {choices}",
         )
         # 废弃的 collect/validate 不得作为子命令存在（旧编排路径已删）
@@ -1769,8 +1881,10 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
             self.change / "evidence" / "verification-ledger.json",
             {
                 "changeName": self.change.name,
-                "baseCommit": "bbbbbbbb",
-                "finalCommit": "bbbbbbbb",
+                "baseCommit": "aaaaaaaa",
+                "finalCommit": "aaaaaaaa",
+                "productCommit": "bbbbbbbb",
+                "archiveCommit": "bbbbbbbb",
                 "validations": {
                     "unitTest": {
                         "status": "OK",
@@ -1781,7 +1895,13 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
                         "status": "OK",
                         "evidence": "api finished",
                     },
-                    "dbCompatibility": {"status": "OK"},
+                    "dbCompatibility": {
+                        "status": "OK",
+                        "metrics": {
+                            "applicability": "NOT_APPLICABLE",
+                            "reason": "pipeline fixture has no database surface",
+                        },
+                    },
                 },
             },
         )

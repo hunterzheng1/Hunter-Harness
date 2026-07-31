@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
+import io
 import json
 import shutil
 import subprocess
@@ -764,6 +766,208 @@ class EnvironmentManagerTests(unittest.TestCase):
         self.assertFalse(result.get("ok"))
         self.assertEqual(result.get("code"), "ENVIRONMENT_LEASE_EXPIRED")
         self.assertNotEqual(result.get("code"), "LEASE_HELD")
+
+    def test_environment_receipt_fingerprints_content_without_persisting_secrets(
+        self,
+    ) -> None:
+        receipt = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T12:00:00Z",
+                "migrationHead": "005_ready",
+                "seedVersion": "seed-v4",
+                "canaries": [
+                    {"name": "table:users", "status": "PASS", "identity": "users-v1"},
+                    {"name": "redis:ping", "status": "PASS", "identity": "PONG"},
+                ],
+            },
+            environment_values={
+                "DATABASE_URL": "postgres://secret@localhost/db",
+                "REDIS_URL": "redis://:secret@localhost:6380/4",
+            },
+            powershell={"edition": "Core", "version": "7.5.2"},
+        )
+
+        serialized = json.dumps(receipt)
+        self.assertNotIn("postgres://secret", serialized)
+        self.assertNotIn("redis://:secret", serialized)
+        self.assertEqual(receipt["powershell"]["edition"], "Core")
+        self.assertTrue(receipt["contentFingerprint"].startswith("sha256:"))
+        self.assertEqual(
+            sorted(receipt["environmentFields"]),
+            ["DATABASE_URL", "REDIS_URL"],
+        )
+
+    def test_prepare_cli_refuses_incomplete_content_evidence(self) -> None:
+        evidence = self.tmp / "content-evidence.json"
+        output = self.tmp / "environment-receipt.json"
+        _write_json(
+            evidence,
+            {
+                "instanceId": "postgis-1",
+                "canaries": [{"name": "db", "status": "PASS"}],
+            },
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = henv.main(
+                [
+                    "prepare",
+                    "--project",
+                    str(self.project),
+                    "--stack-id",
+                    "db-main",
+                    "--content-evidence-file",
+                    str(evidence),
+                    "--output",
+                    str(output),
+                ]
+            )
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            payload["code"],
+            "ENVIRONMENT_CONTENT_EVIDENCE_INCOMPLETE",
+        )
+        self.assertIn("migrationHead", payload["missing"])
+        self.assertFalse(output.exists())
+
+    def test_content_change_marks_lease_stale_instead_of_reusing(self) -> None:
+        first = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T12:00:00Z",
+                "migrationHead": "005_ready",
+                "canaries": [
+                    {"name": "table:users", "status": "PASS", "identity": "users-v1"}
+                ],
+            },
+        )
+        acquired = henv.acquire_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            environment_hash=henv.compute_environment_hash(self.project),
+            environment_receipt=first,
+            lease_root=self.leases,
+        )
+        self.assertTrue(acquired["ok"], acquired)
+        after_restart = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T13:00:00Z",
+                "migrationHead": "005_ready",
+                "canaries": [
+                    {
+                        "name": "table:users",
+                        "status": "FAIL",
+                        "identity": "missing",
+                    }
+                ],
+            },
+        )
+
+        result = henv.require_writable_lease(
+            self.project,
+            change_id="change-a",
+            stack_id="db-main",
+            lease_root=self.leases,
+            environment_receipt=after_restart,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "STALE_CONTENT")
+        stored = json.loads(
+            (self.leases / "db-main.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(stored["status"], "STALE_CONTENT")
+
+    def test_verification_environment_fails_before_run_when_field_missing(
+        self,
+    ) -> None:
+        receipt = henv.create_environment_receipt(
+            self.project,
+            stack_id="db-main",
+            content_evidence={
+                "instanceId": "postgis-1",
+                "instanceStartedAt": "2026-07-31T12:00:00Z",
+                "migrationHead": "005_ready",
+                "canaries": [],
+            },
+            environment_values={"DATABASE_URL": "postgres://local/db"},
+        )
+
+        result = henv.resolve_verification_environment(
+            receipt,
+            required_fields=["DATABASE_URL", "REDIS_URL"],
+            source_environment={"DATABASE_URL": "postgres://local/db"},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "VERIFICATION_ENVIRONMENT_INCOMPLETE")
+        self.assertEqual(result["missing"], ["REDIS_URL"])
+
+    def test_expired_dead_owner_lease_is_classified_then_safely_reaped(self) -> None:
+        self.leases.mkdir(parents=True, exist_ok=True)
+        past = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
+        ).isoformat(timespec="seconds")
+        _write_json(
+            self.leases / "db-main.json",
+            {
+                "schemaVersion": 2,
+                "changeId": "change-a",
+                "stackId": "db-main",
+                "environmentHash": "sha256:env",
+                "status": "ACTIVE",
+                "acquiredAt": past,
+                "heartbeatAt": past,
+                "expiresAt": past,
+                "owner": {
+                    "pid": 99999999,
+                    "executable": sys.executable,
+                    "startedAt": past,
+                },
+            },
+        )
+
+        classified = henv.classify_leases(self.leases)
+        reaped = henv.reap_expired_leases(self.leases)
+
+        self.assertEqual(classified[0]["classification"], "RECLAIMABLE")
+        self.assertEqual(reaped["reaped"], ["db-main"])
+        self.assertFalse((self.leases / "db-main.json").exists())
+        self.assertTrue(Path(reaped["receiptPath"]).is_file())
+
+    def test_expired_lease_with_incomplete_owner_is_report_only(self) -> None:
+        self.leases.mkdir(parents=True, exist_ok=True)
+        past = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
+        ).isoformat(timespec="seconds")
+        _write_json(
+            self.leases / "db-main.json",
+            {
+                "schemaVersion": 1,
+                "changeId": "change-a",
+                "stackId": "db-main",
+                "expiresAt": past,
+            },
+        )
+
+        reaped = henv.reap_expired_leases(self.leases)
+
+        self.assertEqual(reaped["reaped"], [])
+        self.assertEqual(
+            reaped["leases"][0]["classification"],
+            "OWNER_IDENTITY_INCOMPLETE",
+        )
+        self.assertTrue((self.leases / "db-main.json").is_file())
 
 
 class FallbackHtmlTimingTests(unittest.TestCase):

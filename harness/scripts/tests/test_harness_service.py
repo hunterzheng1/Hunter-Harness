@@ -15,6 +15,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -1095,6 +1096,89 @@ class ResolveServiceStartTests(unittest.TestCase):
             hs.resolve_service_start(
                 profile, change_name="new-change", worktree_root=self.tmp
             )
+
+
+class ServiceOwnershipContractTests(unittest.TestCase):
+    def test_windows_launcher_owns_child_job_until_service_exits(self) -> None:
+        source = hs._WIN_LAUNCHER_SOURCE
+
+        self.assertIn("CreateJobObjectW", source)
+        self.assertIn("AssignProcessToJobObject", source)
+        self.assertIn("JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE", source)
+        self.assertIn("proc.wait()", source)
+
+    def test_session_records_creation_identity_and_owned_ports(self) -> None:
+        session = hs.build_session(
+            pid=4321,
+            module_inputs_hash="sha256:inputs",
+            module_inputs_files=["Svc.java"],
+            command="npm run dev",
+            service_start={
+                "profile": "local",
+                "port": 4173,
+                "healthUrl": "http://127.0.0.1:4173/health",
+            },
+            started_at="2026-07-31T12:00:00+00:00",
+            service_pid=4322,
+            job_id="harness-job-1",
+        )
+
+        self.assertEqual(session["ownedPorts"], [4173])
+        self.assertEqual(session["servicePid"], 4322)
+        self.assertEqual(session["jobId"], "harness-job-1")
+        identity = session["processIdentity"]
+        self.assertEqual(identity["commandHash"], hs.sha256_text("npm run dev"))
+        self.assertEqual(identity["startedAt"], session["startedAt"])
+        self.assertTrue(identity["executable"])
+        self.assertTrue(identity["parentChain"])
+
+    def test_stop_retains_session_when_process_tree_exit_is_unconfirmed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            session = {
+                "pid": 4321,
+                "startedBy": "AI",
+                "startedAt": "2026-07-31T12:00:00+00:00",
+                "ownedPorts": [4173],
+            }
+            hs.write_session(change, session)
+            with (
+                mock.patch.object(hs, "verify_process_identity", return_value=True),
+                mock.patch.object(hs, "terminate_process_tree"),
+                mock.patch.object(hs, "is_pid_alive", return_value=True),
+                mock.patch.object(hs, "is_port_in_use", return_value=False),
+                mock.patch.object(hs, "STOP_CONFIRM_TIMEOUT_SEC", 0),
+            ):
+                result = hs.stop_ai_session(change, session)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PROCESS_TREE_EXIT_UNCONFIRMED")
+            self.assertFalse(result["sessionCleared"])
+            self.assertTrue(hs.session_path(change).is_file())
+
+    def test_stop_retains_session_when_owned_port_is_still_bound(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            session = {
+                "pid": 4321,
+                "startedBy": "AI",
+                "startedAt": "2026-07-31T12:00:00+00:00",
+                "ownedPorts": [4173],
+            }
+            hs.write_session(change, session)
+            with (
+                mock.patch.object(hs, "verify_process_identity", return_value=True),
+                mock.patch.object(hs, "terminate_process_tree"),
+                mock.patch.object(hs, "is_pid_alive", return_value=False),
+                mock.patch.object(hs, "is_port_in_use", return_value=True),
+                mock.patch.object(hs, "STOP_CONFIRM_TIMEOUT_SEC", 0),
+            ):
+                result = hs.stop_ai_session(change, session)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "OWNED_PORT_RELEASE_UNCONFIRMED")
+            self.assertEqual(result["occupiedPorts"], [4173])
+            self.assertTrue(hs.session_path(change).is_file())
 
 
 if __name__ == "__main__":

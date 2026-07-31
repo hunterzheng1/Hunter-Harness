@@ -27,6 +27,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -58,6 +59,7 @@ FATAL_KEYWORDS = (
 
 # Process create-time vs session.startedAt tolerance (seconds).
 IDENTITY_TOLERANCE_SEC = 5.0
+STOP_CONFIRM_TIMEOUT_SEC = 5.0
 
 # Windows process flags
 _DETACHED_PROCESS = 0x00000008
@@ -344,6 +346,35 @@ def get_process_create_time(pid: int) -> dt.datetime | None:
     return _posix_process_create_time(pid)
 
 
+def get_process_executable(pid: int) -> str | None:
+    """Best-effort executable identity for PID-reuse protection."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return None
+            try:
+                capacity = wintypes.DWORD(32768)
+                buffer = ctypes.create_unicode_buffer(capacity.value)
+                if not kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, ctypes.byref(capacity)
+                ):
+                    return None
+                return str(Path(buffer.value).resolve())
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return None
+    try:
+        return str(Path(f"/proc/{pid}/exe").resolve(strict=True))
+    except OSError:
+        return None
+
+
 def _windows_process_create_time(pid: int) -> dt.datetime | None:
     try:
         import ctypes
@@ -454,7 +485,26 @@ def verify_process_identity(session: dict[str, Any]) -> bool | None:
     started_utc = started_at.astimezone(dt.timezone.utc)
     create_utc = create_time.astimezone(dt.timezone.utc)
     delta = abs((create_utc - started_utc).total_seconds())
-    return delta <= IDENTITY_TOLERANCE_SEC
+    if delta > IDENTITY_TOLERANCE_SEC:
+        return False
+    process_identity = session.get("processIdentity")
+    if isinstance(process_identity, dict):
+        expected_executable = str(
+            process_identity.get("executable") or ""
+        ).strip()
+        if not expected_executable:
+            return None
+        actual_executable = get_process_executable(pid)
+        if actual_executable is None:
+            return None
+        try:
+            if Path(actual_executable).resolve() != Path(
+                expected_executable
+            ).resolve():
+                return False
+        except OSError:
+            return None
+    return True
 
 
 def terminate_process_tree(pid: int) -> None:
@@ -902,23 +952,83 @@ _WIN_LAUNCHER_SOURCE = """\
 \"\"\"Harness Windows service launcher (internal).\"\"\"
 from __future__ import annotations
 
+import ctypes
 import subprocess
 import sys
 from pathlib import Path
 
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
-_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+
+class _BasicLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _ExtendedLimitInformation(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _BasicLimitInformation),
+        ("IoInfo", _IoCounters),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+def _create_job(name: str) -> int:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    handle = kernel32.CreateJobObjectW(None, name)
+    if not handle:
+        raise OSError("CreateJobObjectW failed")
+    info = _ExtendedLimitInformation()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    configured = kernel32.SetInformationJobObject(
+        ctypes.c_void_p(handle),
+        _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not configured:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise OSError("SetInformationJobObject failed")
+    return int(handle)
 
 
 def main() -> int:
     log_path = Path(sys.argv[1])
     command_path = Path(sys.argv[2])
     pid_path = Path(sys.argv[3])
+    job_name = sys.argv[4]
     command = command_path.read_text(encoding="utf-8").strip()
     if not command:
         raise SystemExit("empty service command")
 
+    job_handle = _create_job(job_name)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_handle = log_path.open("w", encoding="utf-8", errors="replace")
     try:
@@ -928,21 +1038,26 @@ def main() -> int:
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            creationflags=(
-                _CREATE_NEW_PROCESS_GROUP
-                | _CREATE_NO_WINDOW
-                | _CREATE_BREAKAWAY_FROM_JOB
-            ),
+            creationflags=(_CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW),
             close_fds=False,
         )
     finally:
         log_handle.close()
 
+    kernel32 = ctypes.windll.kernel32
+    assigned = kernel32.AssignProcessToJobObject(
+        ctypes.c_void_p(job_handle),
+        ctypes.c_void_p(int(proc._handle)),
+    )
+    if not assigned:
+        proc.terminate()
+        kernel32.CloseHandle(ctypes.c_void_p(job_handle))
+        raise OSError("AssignProcessToJobObject failed")
     pid_path.write_text(str(proc.pid), encoding="utf-8")
-    # Exit immediately: the detached service (shell) continues on its own.
-    # Staying alive to wait() would keep the launcher process running and
-    # trigger ResourceWarning when the harness_service Popen is GC'd.
-    return 0
+    try:
+        return int(proc.wait())
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(job_handle))
 
 
 if __name__ == "__main__":
@@ -958,6 +1073,14 @@ def _runtime_dir(change_dir: Path) -> Path:
 
 def _launcher_pid_path(change_dir: Path) -> Path:
     return _runtime_dir(change_dir) / "_harness_service.launcher.pid"
+
+
+def _job_id_path(change_dir: Path) -> Path:
+    return _runtime_dir(change_dir) / "_harness_service.job.id"
+
+
+def _child_pid_path(change_dir: Path) -> Path:
+    return _runtime_dir(change_dir) / "_harness_service.child.pid"
 
 
 def _cleanup_windows_launcher(change_dir: Path) -> None:
@@ -994,6 +1117,22 @@ def _wait_for_child_pid(pid_path: Path, *, timeout_sec: float = 15.0) -> int:
     raise TimeoutError(f"service child pid not recorded within {timeout_sec:.0f}s ({pid_path})")
 
 
+def _read_positive_int(path: Path) -> int | None:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() and int(text) > 0 else None
+
+
+def _read_optional_text(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def _start_detached_service_windows(
     command: str,
     *,
@@ -1004,8 +1143,10 @@ def _start_detached_service_windows(
     runtime = _runtime_dir(change_dir)
     launcher = _write_windows_launcher(change_dir)
     command_path = runtime / "_harness_service.command.txt"
-    pid_path = runtime / "_harness_service.child.pid"
+    pid_path = _child_pid_path(change_dir)
+    job_id = f"HunterHarnessService-{uuid.uuid4()}"
     command_path.write_text(command, encoding="utf-8", newline="\n")
+    _job_id_path(change_dir).write_text(job_id, encoding="utf-8", newline="\n")
     if pid_path.exists():
         pid_path.unlink()
 
@@ -1015,6 +1156,7 @@ def _start_detached_service_windows(
         str(log_file),
         str(command_path),
         str(pid_path),
+        job_id,
     ]
     win_flags = (
         _DETACHED_PROCESS
@@ -1032,13 +1174,15 @@ def _start_detached_service_windows(
         close_fds=False,
     )
     _launcher_pid_path(change_dir).write_text(str(launcher_proc.pid), encoding="utf-8")
-    # Reap the short-lived launcher (it exits right after recording the child
-    # pid) so its Popen does not ResourceWarning at GC.
-    try:
-        launcher_proc.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        pass
-    return _wait_for_child_pid(pid_path)
+    _wait_for_child_pid(pid_path)
+    root_pid = int(launcher_proc.pid)
+    # The launcher intentionally remains alive as the Job Object owner. Close
+    # only this controller's process handle so Popen does not warn at teardown.
+    launcher_handle = getattr(launcher_proc, "_handle", None)
+    if launcher_handle is not None:
+        launcher_handle.Close()
+        launcher_proc.returncode = 0
+    return root_pid
 
 
 def start_detached_service(
@@ -1095,9 +1239,28 @@ def build_session(
     execution_root: Path | None = None,
     change_id: str | None = None,
     attempt_id: str | None = None,
+    service_pid: int | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     profile_name = service_start.get("profile") or "local-dev"
     overlay = service_start.get("overlayPath") or ""
+    effective_started_at = started_at or now_iso()
+    executable = get_process_executable(pid) or (
+        sys.executable if os.name == "nt" else os.environ.get("SHELL", "/bin/sh")
+    )
+    owned_ports: set[int] = set()
+    port = extract_port(service_start)
+    if port is not None:
+        owned_ports.add(port)
+    configured_ports = service_start.get("ownedPorts")
+    if isinstance(configured_ports, list):
+        for item in configured_ports:
+            try:
+                candidate = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 0 < candidate < 65536:
+                owned_ports.add(candidate)
     session = {
         "pid": pid,
         "startedBy": "AI",
@@ -1106,9 +1269,25 @@ def build_session(
         "profile": profile_name,
         "startCommandHash": sha256_text(command),
         "overlayPath": overlay,
-        "startedAt": started_at or now_iso(),
+        "startedAt": effective_started_at,
         "command": command,
+        "ownedPorts": sorted(owned_ports),
+        "processIdentity": {
+            "executable": str(executable),
+            "commandHash": sha256_text(command),
+            "startedAt": effective_started_at,
+            "parentChain": [
+                {
+                    "pid": os.getpid(),
+                    "executable": str(Path(sys.executable).resolve()),
+                }
+            ],
+        },
     }
+    if isinstance(service_pid, int) and service_pid > 0:
+        session["servicePid"] = service_pid
+    if job_id:
+        session["jobId"] = str(job_id)
     if isinstance(service_start.get("leasedPort"), int):
         session["leasedPort"] = service_start["leasedPort"]
         session["leaseOwner"] = service_start.get("leaseOwner")
@@ -1155,6 +1334,57 @@ def needs_user_decision(
     return 0
 
 
+def _confirm_service_shutdown(session: dict[str, Any]) -> dict[str, Any]:
+    tracked_pids = sorted(
+        {
+            value
+            for value in (session.get("pid"), session.get("servicePid"))
+            if isinstance(value, int) and value > 0
+        }
+    )
+    ports = sorted(
+        {
+            int(value)
+            for value in (session.get("ownedPorts") or [])
+            if isinstance(value, int) and 0 < value < 65536
+        }
+    )
+    deadline = time.monotonic() + STOP_CONFIRM_TIMEOUT_SEC
+    while True:
+        alive_pids = [pid for pid in tracked_pids if is_pid_alive(pid)]
+        occupied_ports = [port for port in ports if is_port_in_use(port)]
+        if not alive_pids and not occupied_ports:
+            return {
+                "ok": True,
+                "alivePids": [],
+                "occupiedPorts": [],
+            }
+        if time.monotonic() >= deadline:
+            return {
+                "ok": False,
+                "alivePids": alive_pids,
+                "occupiedPorts": occupied_ports,
+            }
+        time.sleep(0.05)
+
+
+def _remove_windows_service_metadata(change_dir: Path) -> None:
+    if os.name != "nt":
+        return
+    runtime = change_dir / "runtime"
+    for name in (
+        "_harness_service.launcher.pid",
+        "_harness_service.child.pid",
+        "_harness_service.job.id",
+        "_harness_service.command.txt",
+        "_harness_service_launcher.py",
+    ):
+        try:
+            (runtime / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def stop_ai_session(
     change_dir: Path,
     session: dict[str, Any],
@@ -1179,14 +1409,40 @@ def stop_ai_session(
             }
     if isinstance(pid, int) and is_pid_alive(pid):
         terminate_process_tree(pid)
-    _cleanup_windows_launcher(change_dir)
+    confirmation = _confirm_service_shutdown(session)
+    if confirmation["alivePids"]:
+        return {
+            "ok": False,
+            "code": "PROCESS_TREE_EXIT_UNCONFIRMED",
+            "action": "cleanup-unconfirmed",
+            "pid": pid,
+            "alivePids": confirmation["alivePids"],
+            "occupiedPorts": confirmation["occupiedPorts"],
+            "killed": True,
+            "sessionCleared": False,
+        }
+    if confirmation["occupiedPorts"]:
+        return {
+            "ok": False,
+            "code": "OWNED_PORT_RELEASE_UNCONFIRMED",
+            "action": "cleanup-unconfirmed",
+            "pid": pid,
+            "alivePids": [],
+            "occupiedPorts": confirmation["occupiedPorts"],
+            "killed": True,
+            "sessionCleared": False,
+        }
+    _remove_windows_service_metadata(change_dir)
     clear_session(change_dir)
     return {
         "ok": True,
+        "code": "SERVICE_STOP_CONFIRMED",
         "action": "stopped",
         "pid": pid,
         "killed": True,
         "sessionCleared": True,
+        "alivePids": [],
+        "occupiedPorts": [],
     }
 
 
@@ -1313,6 +1569,9 @@ def cmd_ensure(args: argparse.Namespace) -> int:
             if stop_result.get("action") == "needs-user-decision":
                 emit_json(stop_result, as_json=as_json)
                 return 0
+            if not stop_result.get("ok"):
+                emit_json(stop_result, as_json=as_json)
+                return 1
 
             return _start_and_record(
                 change_dir=change_dir,
@@ -1428,6 +1687,16 @@ def _start_and_record(
         execution_root=execution_root,
         change_id=change_id,
         attempt_id=attempt_id,
+        service_pid=(
+            _read_positive_int(_child_pid_path(change_dir))
+            if os.name == "nt"
+            else pid
+        ),
+        job_id=(
+            _read_optional_text(_job_id_path(change_dir))
+            if os.name == "nt"
+            else None
+        ),
     )
     write_session(change_dir, session)
 
@@ -1583,7 +1852,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
     result = stop_ai_session(change_dir, session, require_identity=True)
     emit_json(result, as_json=as_json)
-    return 0
+    return 0 if result.get("ok") else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
