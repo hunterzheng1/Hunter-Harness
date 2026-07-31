@@ -109,3 +109,6 @@ CODEBUDDY.md
 # ===== 需求/设计文档 =====
 requirements/
 docs/
+
+# local exact-tarball lock dirs
+release-lock-*/
