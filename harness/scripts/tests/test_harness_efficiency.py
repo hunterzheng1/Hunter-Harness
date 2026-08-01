@@ -124,6 +124,101 @@ class EfficiencySummaryTests(unittest.TestCase):
         self.assertEqual(view["progress"], "1/2")
         self.assertEqual(view["resourceWait"], ["database:test-stack:write"])
 
+    def test_summary_contains_progress_and_budget_counts(self) -> None:
+        module = load_module()
+        summary = module.build_efficiency_summary(
+            run_sessions=[
+                {
+                    "status": "RUNNING",
+                    "progressState": "SLOW_PROGRESSING",
+                    "budgetState": "OVER_BUDGET",
+                },
+                {
+                    "status": "INCOMPLETE",
+                    "progressState": "HEARTBEAT_LOST",
+                    "budgetState": "OVER_BUDGET",
+                },
+            ],
+            environment_receipts=[],
+            invalidations=[],
+        )
+        self.assertEqual(summary["progressStates"]["SLOW_PROGRESSING"], 1)
+        self.assertEqual(summary["progressStates"]["HEARTBEAT_LOST"], 1)
+        self.assertEqual(summary["budgetStates"]["OVER_BUDGET"], 2)
+
+
+class ProgressClassificationTests(unittest.TestCase):
+    def test_resource_wait_state(self) -> None:
+        module = load_module()
+        result = module.classify_progress(
+            {
+                "status": "RUNNING",
+                "resourceLocks": ["database:test-stack:write"],
+                "resourceWaitMs": 20,
+                "startedAt": "2026-07-31T10:00:00+00:00",
+                "lastHeartbeatAt": "2026-07-31T10:00:01+00:00",
+                "expectedDurationSeconds": 60,
+            },
+            now="2026-07-31T10:00:02+00:00",
+        )
+        self.assertEqual(result["progressState"], "RESOURCE_WAIT")
+
+    def test_slow_progressing_state(self) -> None:
+        module = load_module()
+        result = module.classify_progress(
+            {
+                "status": "RUNNING",
+                "startedAt": "2026-07-31T10:00:00+00:00",
+                "lastHeartbeatAt": "2026-07-31T10:02:00+00:00",
+                "lastOutputAt": "2026-07-31T10:02:00+00:00",
+                "expectedDurationSeconds": 60,
+                "timeoutSeconds": 300,
+                "completedItems": 1,
+                "plannedItems": 2,
+            },
+            now="2026-07-31T10:02:00+00:00",
+        )
+        self.assertEqual(result["progressState"], "SLOW_PROGRESSING")
+        self.assertEqual(result["budgetState"], "OVER_BUDGET")
+
+    def test_no_output_heartbeat_loss_and_timeout(self) -> None:
+        module = load_module()
+        no_output = module.classify_progress(
+            {
+                "status": "RUNNING",
+                "startedAt": "2026-07-31T10:00:00+00:00",
+                "lastHeartbeatAt": "2026-07-31T10:00:59+00:00",
+                "lastOutputAt": "2026-07-31T10:00:59+00:00",
+                "heartbeatGraceSeconds": 30,
+                "timeoutSeconds": 300,
+            },
+            now="2026-07-31T10:02:00+00:00",
+        )
+        self.assertEqual(no_output["progressState"], "NO_OUTPUT_PROCESS_ACTIVE")
+        heartbeat_lost = module.classify_progress(
+            {
+                "status": "RUNNING",
+                "startedAt": "2026-07-31T10:00:00+00:00",
+                "lastHeartbeatAt": "2026-07-31T10:00:00+00:00",
+                "heartbeatGraceSeconds": 30,
+                "timeoutSeconds": 300,
+            },
+            now="2026-07-31T10:02:00+00:00",
+        )
+        self.assertEqual(heartbeat_lost["progressState"], "HEARTBEAT_LOST")
+        timeout = module.classify_progress(
+            {
+                "status": "RUNNING",
+                "startedAt": "2026-07-31T10:00:00+00:00",
+                "lastHeartbeatAt": "2026-07-31T10:04:59+00:00",
+                "lastOutputAt": "2026-07-31T10:04:59+00:00",
+                "heartbeatGraceSeconds": 30,
+                "timeoutSeconds": 300,
+            },
+            now="2026-07-31T10:05:00+00:00",
+        )
+        self.assertEqual(timeout["progressState"], "TIMEOUT")
+
 
 if __name__ == "__main__":
     unittest.main()
