@@ -56,3 +56,5 @@ export * from "./transaction/transaction.js";
 export * from "./update/conflicts.js";
 export * from "./update/update.js";
 export * from "./verification/capability-graph.js";
+export * from "./runtime/python.js";
+export * from "./runtime/managed-execution.js";

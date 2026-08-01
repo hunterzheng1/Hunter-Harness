@@ -6,6 +6,8 @@ export * from "./commands/capabilities.js";
 export * from "./commands/config-origins.js";
 export * from "./commands/doctor.js";
 export * from "./commands/sync.js";
+export * from "./commands/run.js";
+export * from "./commands/service.js";
 export * from "./runtime/python.js";
 export * from "./workflow-data/compatibility.js";
 export * from "./commands/push.js";

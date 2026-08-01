@@ -260,6 +260,38 @@ class RunnerContractTests(unittest.TestCase):
             self.assertTrue(result.process_tree_isolated)
             self.assertLess(time.monotonic() - started, 5)
 
+    def test_keeps_test_runner_and_environment_lifecycle_on_the_shared_process_provider(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-provider-") as raw_tmp:
+            with mock.patch.object(
+                runner.hprocess,
+                "spawn_structured_argv",
+                wraps=runner.hprocess.spawn_structured_argv,
+            ) as spawn:
+                result = runner.run_managed_command(
+                    [sys.executable, "-c", "print('provider')"],
+                    cwd=Path(raw_tmp),
+                    timeout_seconds=5,
+                    environ={},
+                    capture_output=True,
+                )
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(spawn.called)
+            self.assertIs(runner.henv.hprocess, runner.hprocess)
+
+    def test_keeps_test_runner_and_environment_compatible_through_process_provider_migration(
+        self,
+    ) -> None:
+        self.assertIs(runner.henv.hprocess, runner.hprocess)
+        self.assertNotIn("hservice.terminate_process_tree", runner.henv.__dict__)
+
+    def test_keeps_environment_and_test_runner_service_lifecycle_on_the_shared_provider(
+        self,
+    ) -> None:
+        self.assertTrue(callable(runner.hprocess.observe_process_identity))
+        self.assertTrue(callable(runner.hprocess.terminate_owned_tree))
+
     def test_captured_output_is_available_for_failure_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory(prefix="harness-runner-output-") as raw_tmp:
             result = runner.run_managed_command(

@@ -2394,5 +2394,55 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertIn("no AskQuestion", result["nextAction"])
 
 
+class SensitiveEvidencePublicationGateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-secret-gate-"))
+        self.project = self.tmp / "proj"
+        self.change = self.project / ".harness" / "changes" / "secret-demo"
+        self.change.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_gate_rejects_plaintext_sensitive_evidence_before_copy(self) -> None:
+        source = self.change / "runtime" / "legacy.txt"
+        source.parent.mkdir(parents=True)
+        source.write_text("password=never-publish", encoding="utf-8")
+
+        result = ha.validate_sensitive_evidence_publication_gate(self.change)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reasonCode"], "SENSITIVE_EVIDENCE_UNQUARANTINED")
+        self.assertTrue(source.is_file())
+
+    def test_gate_binds_quarantine_receipt_to_tree_digest_and_excludes_private_path(self) -> None:
+        source = self.change / "runtime" / "legacy.txt"
+        source.parent.mkdir(parents=True)
+        source.write_text("token=never-publish", encoding="utf-8")
+        quarantined = ha.hruntime.quarantine_sensitive_evidence(
+            source,
+            change_root=self.change,
+            private_root=self.tmp / "private",
+        )
+        self.assertTrue(quarantined["ok"], quarantined)
+
+        allowed = ha.validate_sensitive_evidence_publication_gate(
+            self.change,
+            copy_root=self.project / ".harness" / "archive-operation-staging",
+            require_receipt=True,
+        )
+        self.assertTrue(allowed["ok"], allowed)
+        receipt_path = self.change / "meta" / "secret-scan-receipt.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["publishableTreeDigest"] = "sha256:" + "0" * 64
+        _write_json(receipt_path, receipt)
+        denied = ha.validate_sensitive_evidence_publication_gate(
+            self.change,
+            require_receipt=True,
+        )
+        self.assertFalse(denied["ok"])
+        self.assertEqual(denied["reasonCode"], "SECRET_SCAN_GATE_BLOCKED")
+
+
 if __name__ == "__main__":
     unittest.main()

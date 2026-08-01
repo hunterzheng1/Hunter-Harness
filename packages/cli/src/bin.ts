@@ -30,6 +30,21 @@ import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins
 import { runDoctor, type DoctorCommandOptions } from "./commands/doctor.js";
 import { runSync, type SyncCommandOptions } from "./commands/sync.js";
 import {
+  runRunCancel,
+  runRunLog,
+  runRunStart,
+  runRunStatus,
+  type RunCommandOptions
+} from "./commands/run.js";
+import {
+  runServiceEnsure,
+  runServiceLinkSuperseder,
+  runServiceRetireStale,
+  runServiceStatus,
+  runServiceStop,
+  type ServiceCommandOptions
+} from "./commands/service.js";
+import {
   runRecoveryCommand,
   runRecoveryMenuIfApplicable,
   runRecoveryStatus,
@@ -298,6 +313,100 @@ export async function runCli(
     .option("--json")
     .action(async (options: DoctorCommandOptions) => {
       exitCode = await runDoctor(options, dependencies);
+    });
+  const run = program.command("run")
+    .description("管理可重连的受管后台执行会话");
+  run.command("start [argv...]")
+    .description("以结构化 argv 启动受管 run session")
+    .requiredOption("--verification <name>")
+    .option("--state-root <path>")
+    .option("--working-directory <path>")
+    .option("--timeout-seconds <seconds>", "wall timeout", (value: string) => Number(value))
+    .option("--heartbeat-seconds <seconds>", "heartbeat interval", (value: string) => Number(value))
+    .option("--expected-duration-seconds <seconds>", "expected duration", (value: string) => Number(value))
+    .option("--product-identity <identity>")
+    .option("--resource-lock <name>", "重复指定独占资源", (value: string, previous: string[]) => [...previous, value], [] as string[])
+    .option("--json")
+    .allowUnknownOption(true)
+    .action(async (argv: string[], options: RunCommandOptions) => {
+      exitCode = await runRunStart(options, argv, dependencies);
+    });
+  run.command("status")
+    .description("读取受管 run session 状态")
+    .requiredOption("--session-id <id>")
+    .option("--state-root <path>")
+    .option("--json")
+    .action(async (options: RunCommandOptions) => {
+      exitCode = await runRunStatus(options, dependencies);
+    });
+  run.command("log")
+    .description("按 byte cursor 读取受管 run 日志")
+    .requiredOption("--session-id <id>")
+    .option("--state-root <path>")
+    .option("--stream <stream>", "stdout | stderr", "stdout")
+    .option("--cursor <cursor>", "byte cursor", (value: string) => Number(value), 0)
+    .option("--max-bytes <bytes>", "maximum bytes", (value: string) => Number(value), 64 * 1024)
+    .option("--json")
+    .action(async (options: RunCommandOptions) => {
+      exitCode = await runRunLog(options, dependencies);
+    });
+  run.command("cancel")
+    .description("取消已证明归属的受管 run session")
+    .requiredOption("--session-id <id>")
+    .option("--state-root <path>")
+    .option("--json")
+    .action(async (options: RunCommandOptions) => {
+      exitCode = await runRunCancel(options, dependencies);
+    });
+
+  const service = program.command("service")
+    .description("管理受管后台服务身份与生命周期");
+  service.command("ensure")
+    .description("按 profile argvTemplate 启动或复用服务")
+    .requiredOption("--change-dir <path>")
+    .requiredOption("--project <path>")
+    .option("--files <csv>")
+    .option("--change-name <name>")
+    .option("--overlay <path>")
+    .option("--leased-port <port>", "leased port", (value: string) => Number(value))
+    .option("--lease-owner <runId>")
+    .option("--worktree-root <path>")
+    .option("--execution-root <path>")
+    .option("--attempt-id <id>")
+    .option("--json")
+    .action(async (options: ServiceCommandOptions) => {
+      exitCode = await runServiceEnsure(options, dependencies);
+    });
+  service.command("status")
+    .description("读取服务会话与身份状态")
+    .requiredOption("--change-dir <path>")
+    .option("--files <csv>")
+    .option("--json")
+    .action(async (options: ServiceCommandOptions) => {
+      exitCode = await runServiceStatus(options, dependencies);
+    });
+  service.command("stop")
+    .description("只停止已证明归属的服务")
+    .requiredOption("--change-dir <path>")
+    .option("--if-started-by-ai")
+    .option("--json")
+    .action(async (options: ServiceCommandOptions) => {
+      exitCode = await runServiceStop(options, dependencies);
+    });
+  service.command("retire-stale")
+    .description("退休 stale Harness 状态，不触碰未知进程")
+    .requiredOption("--change-dir <path>")
+    .option("--json")
+    .action(async (options: ServiceCommandOptions) => {
+      exitCode = await runServiceRetireStale(options, dependencies);
+    });
+  service.command("link-superseder")
+    .description("以 receipt CAS 链接未来服务 generation")
+    .requiredOption("--change-dir <path>")
+    .requiredOption("--retirement-receipt <path>")
+    .option("--json")
+    .action(async (options: ServiceCommandOptions) => {
+      exitCode = await runServiceLinkSuperseder(options, dependencies);
     });
   const config = program.command("config")
     .description("查看 Harness 配置来源");

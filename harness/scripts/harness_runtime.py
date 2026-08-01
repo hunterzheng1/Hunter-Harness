@@ -33,6 +33,12 @@ SCHEMA_VERSION = 1
 RUN_SESSION_SCHEMA_VERSION = 1
 RUN_TERMINAL_STATUSES = {"OK", "FAIL", "INCOMPLETE", "CANCELLED"}
 _CHANGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SECRET_SCAN_RULES_VERSION = "secret-scan-v1"
+SECRET_SCAN_RECEIPT_REL = Path("meta") / "secret-scan-receipt.json"
+_SENSITIVE_ASSIGNMENT = re.compile(
+    rb"(?i)[\"']?(?:password|passwd|token|secret|cookie|authorization|database[_-]?url)"
+    rb"[\"']?\s*[:=]\s*[\"']?[^\s\"']{4,}"
+)
 _ADAPTERS = {
     "claude-code": (".worktrees", "harness/"),
     "codex": (".worktrees", "harness/"),
@@ -116,6 +122,248 @@ def _sha256_json(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _publishable_tree_digest(root: Path) -> str:
+    """Hash publishable bytes while excluding the self-referential scan receipt."""
+    root = root.expanduser().resolve()
+    digest = hashlib.sha256()
+    receipt = (root / SECRET_SCAN_RECEIPT_REL).resolve()
+    if not root.is_dir():
+        raise OSError(f"publishable evidence root not found: {root}")
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == receipt:
+            continue
+        relative = path.relative_to(root).as_posix()
+        data = path.read_bytes()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(data)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(data).digest())
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
+
+
+def _sensitive_evidence_receipt_path(change_root: Path) -> Path:
+    return change_root.expanduser().resolve() / SECRET_SCAN_RECEIPT_REL
+
+
+def _private_evidence_root(explicit: Path | None = None) -> Path:
+    configured = os.environ.get("HARNESS_PRIVATE_EVIDENCE_ROOT")
+    return (explicit if explicit is not None else Path(configured) if configured else
+            Path.home() / ".harness" / "private-evidence").expanduser().resolve()
+
+
+def _secure_private_path(path: Path, *, directory: bool) -> str:
+    """Best-effort owner-only permissions, with an explicit ACL result on Windows."""
+    mode = 0o700 if directory else 0o600
+    try:
+        path.chmod(mode)
+    except OSError:
+        pass
+    if os.name != "nt":
+        return "POSIX_OWNER_ONLY"
+    try:
+        account = os.environ.get("USERNAME") or os.environ.get("USER")
+        if not account:
+            account = subprocess.check_output(
+                ["whoami"], stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
+            ).strip()
+        result = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:F"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=10,
+        )
+        return "WINDOWS_CURRENT_USER_ONLY" if result.returncode == 0 else "WINDOWS_ACL_UNVERIFIED"
+    except (OSError, subprocess.SubprocessError):
+        return "WINDOWS_ACL_UNVERIFIED"
+
+
+def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
+    """Find high-confidence plaintext assignments without treating prose as a secret."""
+    receipt = _sensitive_evidence_receipt_path(root)
+    candidates: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == receipt.resolve():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        match = _SENSITIVE_ASSIGNMENT.search(raw)
+        if match is None:
+            continue
+        candidates.append({
+            "path": path.relative_to(root).as_posix(),
+            "reasonCode": "PLAINTEXT_SENSITIVE_ASSIGNMENT",
+            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        })
+    return candidates
+
+
+def publishable_tree_digest(root: Path) -> str:
+    """Public digest helper shared by the archive publication gate."""
+    return _publishable_tree_digest(root)
+
+
+def sensitive_evidence_receipt_path(change_root: Path) -> Path:
+    return _sensitive_evidence_receipt_path(change_root)
+
+
+def sensitive_evidence_candidates(root: Path) -> list[dict[str, Any]]:
+    return _sensitive_candidates(root)
+
+
+def _write_sensitive_scan_receipt(
+    change_root: Path,
+    *,
+    entries: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+    status: str,
+) -> dict[str, Any]:
+    change_root = change_root.expanduser().resolve()
+    receipt = {
+        "schemaVersion": 1,
+        "rulesVersion": SECRET_SCAN_RULES_VERSION,
+        "changeId": change_root.name,
+        "status": status,
+        "unresolvedFailures": unresolved,
+        "entries": entries,
+        "publishableTreeDigest": _publishable_tree_digest(change_root),
+        "publicationExcluded": True,
+        "recordedAt": now_iso(),
+    }
+    atomic_write_json(_sensitive_evidence_receipt_path(change_root), receipt)
+    return receipt
+
+
+def quarantine_sensitive_evidence(
+    source: Path,
+    *,
+    change_root: Path,
+    reason: str = "sensitive evidence",
+    private_root: Path | None = None,
+) -> dict[str, Any]:
+    """Atomically move legacy plaintext evidence outside any publishable tree."""
+    source = source.expanduser().resolve()
+    change_root = change_root.expanduser().resolve()
+    private = _private_evidence_root(private_root)
+    if not source.is_file():
+        return {"ok": False, "reasonCode": "SENSITIVE_EVIDENCE_SOURCE_MISSING", "sourcePath": str(source)}
+    if private == change_root or private.is_relative_to(change_root):
+        return {
+            "ok": False,
+            "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+            "error": "private quarantine root must be outside the publishable change root",
+        }
+    try:
+        raw_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+        quarantine_dir = private / uuid.uuid4().hex
+        quarantine_dir.mkdir(parents=True, exist_ok=False)
+        acl_dir = _secure_private_path(quarantine_dir, directory=True)
+        target = quarantine_dir / "payload.bin"
+        os.replace(source, target)
+        acl_file = _secure_private_path(target, directory=False)
+        if os.name == "nt" and (
+            acl_dir != "WINDOWS_CURRENT_USER_ONLY"
+            or acl_file != "WINDOWS_CURRENT_USER_ONLY"
+        ):
+            os.replace(target, source)
+            shutil.rmtree(quarantine_dir, ignore_errors=True)
+            return {
+                "ok": False,
+                "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+                "error": "private quarantine ACL could not be restricted to the current user",
+            }
+        moved_digest = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        if moved_digest != raw_digest:
+            os.replace(target, source)
+            shutil.rmtree(quarantine_dir, ignore_errors=True)
+            return {
+                "ok": False,
+                "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+                "error": "quarantine digest verification failed",
+            }
+        try:
+            prior = json.loads(
+                _sensitive_evidence_receipt_path(change_root).read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            prior = {}
+        entries = list(prior.get("entries") or []) if isinstance(prior, dict) else []
+        entries.append({
+            "sourcePath": (
+                source.relative_to(change_root).as_posix()
+                if source.is_relative_to(change_root)
+                else source.name
+            ),
+            "sourceDigest": raw_digest,
+            "privatePath": str(target),
+            "reason": reason[:160],
+            "status": "QUARANTINED",
+            "acl": {"directory": acl_dir, "file": acl_file},
+            "movedAt": now_iso(),
+        })
+        try:
+            receipt = _write_sensitive_scan_receipt(
+                change_root,
+                entries=entries,
+                unresolved=[],
+                status="QUARANTINED",
+            )
+        except BaseException as exc:
+            try:
+                os.replace(target, source)
+            except OSError:
+                pass
+            shutil.rmtree(quarantine_dir, ignore_errors=True)
+            return {
+                "ok": False,
+                "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+                "error": str(exc),
+            }
+        return {
+            "ok": True,
+            "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINED",
+            "sourceDigest": raw_digest,
+            "privatePath": str(target),
+            "receiptPath": str(_sensitive_evidence_receipt_path(change_root)),
+            "receipt": receipt,
+        }
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # No copy is retained on failure.  If os.replace crossed filesystems it
+        # fails before removing the source, which is the required fail-closed path.
+        return {
+            "ok": False,
+            "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+            "error": str(exc),
+        }
+
+
+def ensure_sensitive_evidence_scan_receipt(change_root: Path) -> dict[str, Any]:
+    """Create a digest-bound scan receipt for a tree with no plaintext findings."""
+    change_root = change_root.expanduser().resolve()
+    unresolved = _sensitive_candidates(change_root)
+    if unresolved:
+        return _write_sensitive_scan_receipt(
+            change_root,
+            entries=[],
+            unresolved=unresolved,
+            status="FAIL",
+        )
+    return _write_sensitive_scan_receipt(
+        change_root,
+        entries=[],
+        unresolved=[],
+        status="OK",
+    )
+
+
 def _run_sessions_root(state_root: Path) -> Path:
     return state_root.expanduser().resolve() / "runtime" / "run-sessions"
 
@@ -130,15 +378,112 @@ def _run_receipt_path(state_root: Path, session_id: str) -> Path:
     return _run_session_root(state_root, session_id) / "session.json"
 
 
+def _resource_lock_secrets_path(state_root: Path, session_id: str) -> Path:
+    return _run_session_root(state_root, session_id) / "resource-lock-secrets.json"
+
+
 def _load_run_receipt(state_root: Path, session_id: str) -> dict[str, Any]:
     path = _run_receipt_path(state_root, session_id)
-    try:
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except FileNotFoundError as exc:
-        raise ValueError(f"RUN_SESSION_NOT_FOUND: {session_id}") from exc
+    last_error: OSError | None = None
+    for attempt in range(20):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            break
+        except FileNotFoundError as exc:
+            raise ValueError(f"RUN_SESSION_NOT_FOUND: {session_id}") from exc
+        except PermissionError as exc:
+            last_error = exc
+            if attempt == 19:
+                raise ValueError(
+                    f"RUN_SESSION_RECEIPT_BUSY: {session_id}"
+                ) from exc
+            time.sleep(0.01 * (attempt + 1))
+    else:
+        raise ValueError(f"RUN_SESSION_RECEIPT_BUSY: {session_id}") from last_error
     if not isinstance(value, dict):
         raise ValueError(f"RUN_SESSION_CORRUPT: {session_id}")
     return value
+
+
+def _load_resource_lock_tokens(
+    state_root: Path,
+    session_id: str,
+    receipt: dict[str, Any],
+) -> dict[str, str]:
+    """Load lock tokens from a private sidecar; legacy receipts may inline them."""
+    path = _resource_lock_secrets_path(state_root, session_id)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(value, dict) and isinstance(value.get("tokens"), dict):
+            return {
+                str(name): str(token)
+                for name, token in value["tokens"].items()
+                if isinstance(name, str) and isinstance(token, str)
+            }
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    legacy = receipt.get("resourceLockTokens")
+    if isinstance(legacy, dict):
+        return {
+            str(name): str(token)
+            for name, token in legacy.items()
+            if isinstance(name, str) and isinstance(token, str)
+        }
+    return {}
+
+
+def _receipt_identity_state(
+    receipt: dict[str, Any],
+    *,
+    field: str = "workerIdentity",
+) -> bool | None:
+    """Verify a canonical provider attestation, with legacy facade fallback."""
+    identity = receipt.get(field)
+    pid = identity.get("pid") if isinstance(identity, dict) else receipt.get("workerPid")
+    if isinstance(identity, dict) and {
+        "schemaVersion",
+        "createdAt",
+        "fieldProvenance",
+        "capabilities",
+    } <= set(identity):
+        from harness_process import observe_process_identity, verify_process_identity
+
+        observed = observe_process_identity(pid)
+        decision = verify_process_identity(identity, observed)
+        if decision.get("ok") is True:
+            return True
+        if decision.get("reasonCode") == "IDENTITY_UNVERIFIABLE":
+            return None
+        return False
+    from harness_service import verify_process_identity
+
+    legacy = {
+        "pid": pid,
+        "startedAt": (
+            identity.get("startedAt")
+            if isinstance(identity, dict)
+            else None
+        ),
+        "processIdentity": {
+            "executable": (
+                identity.get("executable")
+                if isinstance(identity, dict)
+                else None
+            )
+        },
+    }
+    return verify_process_identity(legacy)
+
+
+def _capture_provider_members(spawned: Any) -> None:
+    """Persist current provider-owned members before a later cleanup."""
+    proof = getattr(spawned, "ownershipProof", None)
+    leader = getattr(spawned, "attestation", None)
+    if not isinstance(proof, dict) or not isinstance(leader, dict):
+        return
+    from harness_process import capture_owned_members
+
+    capture_owned_members(spawned)
 
 
 def _resource_lock_root() -> Path:
@@ -366,25 +711,86 @@ def _acquire_resource_locks(
 
 
 def _write_run_receipt(state_root: Path, receipt: dict[str, Any]) -> None:
+    _update_receipt_contract(receipt)
+    publishable = json.loads(json.dumps(receipt, ensure_ascii=False))
+    raw_tokens = publishable.pop("resourceLockTokens", {})
+    if isinstance(raw_tokens, dict):
+        publishable["resourceLockTokenHashes"] = {
+            str(name): _sha256_json(str(token))
+            for name, token in raw_tokens.items()
+            if isinstance(name, str) and isinstance(token, str)
+        }
     atomic_write_json(
         _run_receipt_path(state_root, str(receipt["sessionId"])),
-        receipt,
+        publishable,
     )
 
 
 def _process_identity(pid: int, executable_hint: str) -> dict[str, Any]:
-    from harness_service import get_process_create_time, get_process_executable
+    from harness_process import observe_process_identity
 
-    created = get_process_create_time(pid)
-    executable = get_process_executable(pid)
+    observed = observe_process_identity(pid)
+    if not observed.get("executable"):
+        observed["executable"] = _absolute_executable(executable_hint)
+        observed["fieldProvenance"]["executable"] = "ATTESTED"
+    if not observed.get("createdAt"):
+        observed["createdAt"] = now_iso()
+        observed["fieldProvenance"]["createdAt"] = "ATTESTED"
+    # ``startedAt`` is a compatibility alias used by legacy session readers;
+    # canonical identity comparisons use ``createdAt`` and provenance.
+    observed["startedAt"] = observed.get("createdAt")
+    return observed
+
+
+def _log_contract(path: Path) -> dict[str, Any]:
+    raw = b""
+    if path.is_file():
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            raw = b""
+    try:
+        raw.decode("utf-8")
+        decode_status = "OK"
+    except UnicodeDecodeError:
+        decode_status = "LOG_DECODE_DEGRADED"
     return {
-        "pid": pid,
-        "startedAt": (
-            created.astimezone().isoformat(timespec="milliseconds")
-            if created is not None
-            else now_iso()
+        "cursor": len(raw),
+        "rawDigest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "decodeStatus": decode_status,
+    }
+
+
+def _update_receipt_contract(receipt: dict[str, Any]) -> None:
+    worker = receipt.get("workerIdentity")
+    writer_source = worker if isinstance(worker, dict) else {
+        "pid": receipt.get("workerPid") or receipt.get("launcherPid")
+    }
+    heartbeat_kind = "WORKER" if isinstance(worker, dict) else "SUPERVISOR"
+    receipt["heartbeat"] = {
+        "kind": heartbeat_kind,
+        "writerIdentity": _sha256_json(writer_source),
+        "lastSeenAt": str(receipt.get("lastHeartbeatAt") or now_iso()),
+        "ttlSeconds": max(1, int(float(receipt.get("heartbeatSeconds") or 30))),
+        "staleReason": (
+            "SERVICE_HEARTBEAT_STALE"
+            if receipt.get("reasonCode") == "HEARTBEAT_LOST"
+            else None
         ),
-        "executable": executable or _absolute_executable(executable_hint),
+    }
+    receipt["logs"] = {
+        "stdout": _log_contract(Path(str(receipt.get("stdoutPath") or ""))),
+        "stderr": _log_contract(Path(str(receipt.get("stderrPath") or ""))),
+    }
+    cleanup_status = str(receipt.get("cleanupStatus") or "")
+    complete = cleanup_status in {
+        "NO_CHILD",
+        "PROCESS_EXITED",
+        "PROCESS_TREE_TERMINATED",
+    }
+    receipt["cleanup"] = {
+        "complete": complete,
+        "reasonCode": None if complete else receipt.get("reasonCode"),
     }
 
 
@@ -537,6 +943,14 @@ def start_run_session(
         _write_run_receipt(state_root, receipt)
         return receipt
     receipt["resourceLockTokens"] = lock_tokens
+    atomic_write_json(
+        _resource_lock_secrets_path(state_root, session_id),
+        {"schemaVersion": 1, "tokens": lock_tokens},
+    )
+    try:
+        _resource_lock_secrets_path(state_root, session_id).chmod(0o600)
+    except OSError:
+        pass
     _write_run_receipt(state_root, receipt)
     atomic_write_json(
         spec_path,
@@ -575,6 +989,7 @@ def start_run_session(
         )
     except OSError as exc:
         spec_path.unlink(missing_ok=True)
+        _resource_lock_secrets_path(state_root, session_id).unlink(missing_ok=True)
         locks_released = _release_resource_locks(
             state_root,
             session_id,
@@ -613,22 +1028,32 @@ def start_run_session(
 def _terminate_managed_child(
     process: subprocess.Popen[bytes],
     job: Any,
+    *,
+    attestation: dict[str, Any] | None = None,
+    ownership_proof: dict[str, Any] | None = None,
 ) -> bool:
-    from harness_service import is_pid_alive, terminate_process_tree
+    from harness_process import terminate_owned_tree
 
-    if job is not None and getattr(job, "handle", None) is not None:
-        job.terminate_and_wait()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
+    if isinstance(attestation, dict) and isinstance(ownership_proof, dict):
+        result = terminate_owned_tree(
+            attestation,
+            ownership_proof,
+            {"graceSeconds": 3.0},
+        )
+        if not result.get("cleanupComplete"):
             return False
-        return not is_pid_alive(process.pid)
-    terminate_process_tree(process.pid)
+    elif job is not None and getattr(job, "handle", None) is not None:
+        # Compatibility for callers still passing the old Windows job object;
+        # this branch is only used for an already-owned handle, never a PID.
+        job.terminate_and_wait()
+    else:
+        # PID-only cleanup is intentionally forbidden by the process provider.
+        return False
     try:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         return False
-    return not is_pid_alive(process.pid)
+    return process.poll() is not None
 
 
 def _run_session_worker(state_root: Path, session_id: str) -> int:
@@ -637,6 +1062,11 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
     session_root = _run_session_root(state_root, session_id)
     spec_path = session_root / "launch-spec.json"
     receipt = _load_run_receipt(state_root, session_id)
+    receipt["resourceLockTokens"] = _load_resource_lock_tokens(
+        state_root,
+        session_id,
+        receipt,
+    )
     try:
         spec = json.loads(spec_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -690,27 +1120,32 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
     stderr_path = Path(str(receipt["stderrPath"]))
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     job = None
+    spawned = None
+    ownership_proof: dict[str, Any] | None = None
+    identity: dict[str, Any] | None = None
     process: subprocess.Popen[bytes] | None = None
     try:
         with stdout_path.open("wb", buffering=0) as stdout, stderr_path.open(
             "wb", buffering=0
         ) as stderr:
-            popen_kwargs: dict[str, Any] = {
-                "cwd": str(receipt["workingDirectory"]),
-                "env": os.environ.copy(),
-                "stdin": subprocess.DEVNULL,
-                "stdout": stdout,
-                "stderr": stderr,
-                "shell": False,
-                "close_fds": True,
-            }
-            if os.name == "nt":
-                popen_kwargs["creationflags"] = 0x00000200
-            else:
-                popen_kwargs["start_new_session"] = True
             try:
-                process = subprocess.Popen(argv, **popen_kwargs)
-            except OSError as exc:
+                from harness_process import spawn_structured_argv
+
+                spawned = spawn_structured_argv(
+                    argv,
+                    cwd=Path(str(receipt["workingDirectory"])),
+                    environment={
+                        "PYTHONUTF8": "1",
+                        "PYTHONIOENCODING": "utf-8",
+                    },
+                    owner_token=f"run:{session_id}",
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                process = spawned.process
+                ownership_proof = spawned.ownershipProof
+                _capture_provider_members(spawned)
+            except (OSError, ValueError, RuntimeError) as exc:
                 receipt.update(
                     {
                         "status": "INCOMPLETE",
@@ -723,56 +1158,19 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
                     }
                 )
                 return 1
-            identity = _process_identity(process.pid, argv[0])
-            if os.name == "nt":
-                from harness_test_runner import _WindowsKillOnCloseJob
-
-                candidate = _WindowsKillOnCloseJob()
-                if candidate.assign(process):
-                    job = candidate
-                else:
-                    identity_session = {
-                        "pid": process.pid,
-                        "startedAt": identity["startedAt"],
-                        "processIdentity": {
-                            "executable": identity["executable"],
-                        },
-                    }
-                    verified = verify_process_identity(identity_session) is True
-                    terminated = (
-                        _terminate_managed_child(process, None)
-                        if verified
-                        else False
-                    )
-                    receipt.update(
-                        {
-                            "servicePid": process.pid,
-                            "processIdentity": identity,
-                            "startedAt": identity["startedAt"],
-                            "status": "INCOMPLETE",
-                            "reasonCode": "PROCESS_TREE_ISOLATION_UNAVAILABLE",
-                            "stage": "spawn",
-                            "testProcessStarted": True,
-                            "processTreeIsolated": False,
-                            "exitCode": process.poll(),
-                            "cleanupStatus": (
-                                "PROCESS_TREE_TERMINATED"
-                                if terminated
-                                else "PROCESS_TERMINATION_UNCONFIRMED"
-                            ),
-                        }
-                    )
-                    return 1
+            assert spawned is not None and process is not None
+            identity = spawned.attestation
+            receipt["processOwnershipProof"] = ownership_proof
             _stage_transition(receipt, "execute")
             receipt.update(
                 {
                     "servicePid": process.pid,
                     "processIdentity": identity,
-                    "startedAt": identity["startedAt"],
+                    "startedAt": identity.get("createdAt"),
                     "status": "RUNNING",
                     "reasonCode": "CHILD_RUNNING",
                     "testProcessStarted": True,
-                    "processTreeIsolated": job is not None or os.name != "nt",
+                    "processTreeIsolated": ownership_proof is not None,
                 }
             )
             _write_run_receipt(state_root, receipt)
@@ -791,15 +1189,18 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
                     termination_reason = "CANCEL_REQUESTED"
                 if termination_reason is not None:
                     diagnostic_path = session_root / "diagnostic.json"
-                    identity_session = {
-                        "pid": process.pid,
-                        "startedAt": identity["startedAt"],
-                        "processIdentity": {
-                            "executable": identity["executable"],
-                        },
-                    }
-                    verified = verify_process_identity(identity_session) is True
-                    job_owned = job is not None
+                    from harness_process import (
+                        observe_process_identity,
+                        verify_process_identity as verify_attestation,
+                    )
+
+                    verified = verify_attestation(
+                        identity,
+                        observe_process_identity(process.pid),
+                    ).get("ok") is True
+                    job_owned = ownership_proof is not None
+                    if spawned is not None:
+                        _capture_provider_members(spawned)
                     diagnostic = {
                         "schemaVersion": 1,
                         "sessionId": session_id,
@@ -825,8 +1226,13 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
                     }
                     atomic_write_json(diagnostic_path, diagnostic)
                     receipt["diagnosticPath"] = str(diagnostic_path)
-                    if job_owned or verified:
-                        terminated = _terminate_managed_child(process, job)
+                    if job_owned and verified:
+                        terminated = _terminate_managed_child(
+                            process,
+                            job,
+                            attestation=identity,
+                            ownership_proof=ownership_proof,
+                        )
                         job = None
                         if not terminated:
                             receipt.update(
@@ -864,7 +1270,14 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
                                 "cleanupStatus": "PROCESS_TREE_TERMINATION_REQUIRED",
                             }
                         )
-                        _terminate_managed_child(process, job)
+                        if spawned is not None:
+                            _capture_provider_members(spawned)
+                        _terminate_managed_child(
+                            process,
+                            job,
+                            attestation=identity,
+                            ownership_proof=ownership_proof,
+                        )
                         job = None
                         break
                     _write_run_receipt(state_root, receipt)
@@ -914,8 +1327,15 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
             }
         )
     finally:
-        if job is not None:
-            tree_drained = job.terminate_and_wait()
+        if process is not None and process.poll() is None and ownership_proof is not None:
+            if spawned is not None:
+                _capture_provider_members(spawned)
+            tree_drained = _terminate_managed_child(
+                process,
+                job,
+                attestation=identity if isinstance(identity, dict) else None,
+                ownership_proof=ownership_proof,
+            )
             if not tree_drained:
                 receipt.update(
                     {
@@ -944,6 +1364,10 @@ def _run_session_worker(state_root: Path, session_id: str) -> int:
             session_id,
             dict(receipt.get("resourceLockTokens") or {}),
         )
+        try:
+            _resource_lock_secrets_path(state_root, session_id).unlink(missing_ok=True)
+        except OSError:
+            locks_released = False
         if not locks_released:
             receipt.update(
                 {
@@ -977,32 +1401,17 @@ def _run_session_worker_with_log(state_root: Path, session_id: str) -> int:
 
 
 def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
-    from harness_service import is_pid_alive, verify_process_identity
+    from harness_service import is_pid_alive
 
     receipt = _load_run_receipt(state_root, session_id)
     worker_pid = receipt.get("workerPid")
     worker_identity = receipt.get("workerIdentity")
-    worker_session = {
-        "pid": worker_pid,
-        "startedAt": (
-            worker_identity.get("startedAt")
-            if isinstance(worker_identity, dict)
-            else None
-        ),
-        "processIdentity": {
-            "executable": (
-                worker_identity.get("executable")
-                if isinstance(worker_identity, dict)
-                else None
-            )
-        },
-    }
     if receipt.get("status") in RUN_TERMINAL_STATUSES:
         if (
             isinstance(worker_pid, int)
             and worker_pid > 0
             and is_pid_alive(worker_pid)
-            and verify_process_identity(worker_session) is True
+            and _receipt_identity_state(receipt) is True
         ):
             finalizing = dict(receipt)
             finalizing.update(
@@ -1036,7 +1445,7 @@ def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
         and heartbeat_age < startup_grace
     ):
         return receipt
-    identity_state = verify_process_identity(worker_session)
+    identity_state = _receipt_identity_state(receipt)
     worker_gone = (
         isinstance(worker_pid, int)
         and worker_pid > 0
@@ -1079,6 +1488,7 @@ def read_run_session_log(
     receipt = _load_run_receipt(state_root, session_id)
     path = Path(str(receipt[f"{stream}Path"]))
     raw = b""
+    decode_status = "OK"
     size = path.stat().st_size if path.is_file() else 0
     if path.is_file() and cursor < size:
         with path.open("rb") as handle:
@@ -1090,8 +1500,25 @@ def read_run_session_log(
                 break
             except UnicodeDecodeError as exc:
                 if exc.end != len(raw):
+                    # An invalid sequence in the middle is durable evidence,
+                    # so consume it and expose replacement text instead of
+                    # silently dropping bytes from the cursor stream.
                     text = raw.decode("utf-8", errors="replace")
+                    decode_status = "LOG_DECODE_DEGRADED"
                     break
+                if (
+                    receipt.get("status") in RUN_TERMINAL_STATUSES
+                    and cursor + len(raw) >= size
+                ):
+                    # Once the producer is terminal, an incomplete trailing
+                    # sequence cannot be completed by a later write. Preserve
+                    # and consume it with an explicit degraded status.
+                    text = raw.decode("utf-8", errors="replace")
+                    decode_status = "LOG_DECODE_DEGRADED"
+                    break
+                # A live writer may have split a multibyte character across
+                # this read. Keep the incomplete suffix for the next cursor
+                # request so callers never see duplicate replacement glyphs.
                 raw = raw[: exc.start]
         else:
             text = ""
@@ -1108,6 +1535,8 @@ def read_run_session_log(
         "text": text,
         "eof": terminal and next_cursor >= size,
         "status": receipt.get("status"),
+        "rawDigest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+        "decodeStatus": decode_status,
     }
 
 
@@ -1117,28 +1546,10 @@ def cancel_run_session(
     *,
     reason: str = "CANCEL_REQUESTED",
 ) -> dict[str, Any]:
-    from harness_service import verify_process_identity
-
     receipt = _load_run_receipt(state_root, session_id)
     if receipt.get("status") in RUN_TERMINAL_STATUSES:
         return receipt
-    worker_identity = receipt.get("workerIdentity")
-    worker_session = {
-        "pid": receipt.get("workerPid"),
-        "startedAt": (
-            worker_identity.get("startedAt")
-            if isinstance(worker_identity, dict)
-            else None
-        ),
-        "processIdentity": {
-            "executable": (
-                worker_identity.get("executable")
-                if isinstance(worker_identity, dict)
-                else None
-            )
-        },
-    }
-    if verify_process_identity(worker_session) is not True:
+    if _receipt_identity_state(receipt) is not True:
         return {
             **receipt,
             "ok": False,

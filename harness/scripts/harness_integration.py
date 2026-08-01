@@ -36,6 +36,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import harness_change  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths  # noqa: E402
+import harness_process  # noqa: E402
 import harness_service  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -603,22 +604,7 @@ def load_journal(project_root: Path, transaction_id: str) -> dict[str, Any]:
 
 
 def _pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    # On Windows, os.kill(pid, 0) can transiently report EINVAL for the
-    # current low-priority/background process. The current process is
-    # unambiguously alive, so avoid reclaiming its lock on that platform race.
-    if pid == os.getpid():
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+    return harness_process.is_pid_alive(pid)
 
 
 def _acquire_journal_lock(lock_path: Path, journal_path: Path) -> int:

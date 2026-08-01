@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -6,6 +5,9 @@ import { join, resolve } from "node:path";
 import {
   assessCodebaseMapOnDisk,
   atomicWriteJson,
+  runManagedProcess,
+  type ManagedProcessBudget,
+  type ManagedProcessResult,
   refreshProject,
   sha256File,
   synchronizeProjectRules,
@@ -94,29 +96,8 @@ export interface SyncVersions {
   adapterBundleVersions: Record<string, string>;
 }
 
-export interface ProcessResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  startedAt: string;
-  completedAt: string;
-  durationMs: number;
-  lastActivityAt: string;
-  timedOut: boolean;
-  timeoutKind: "wall" | "stall" | null;
-  termination: "exited" | "spawn-error" | "terminated" | "killed";
-  signal: NodeJS.Signals | null;
-  heartbeatCount: number;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-}
-
-export interface ProcessBudget {
-  wallTimeoutMs: number;
-  stallTimeoutMs?: number;
-  heartbeatMs?: number;
-  terminateGraceMs?: number;
-}
+export type ProcessResult = ManagedProcessResult;
+export type ProcessBudget = ManagedProcessBudget;
 
 export interface SyncPointer {
   schemaVersion: 1;
@@ -139,148 +120,7 @@ export async function runProcess(
   onStderr: (value: string) => void,
   budgetInput: number | ProcessBudget = 15 * 60 * 1000
 ): Promise<ProcessResult> {
-  const budget: ProcessBudget = typeof budgetInput === "number"
-    ? { wallTimeoutMs: budgetInput }
-    : budgetInput;
-  const startedAtMs = Date.now();
-  const startedAt = new Date(startedAtMs).toISOString();
-  const executable = argv[0];
-  if (executable === undefined) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: "empty process argv",
-      startedAt,
-      completedAt: startedAt,
-      durationMs: 0,
-      lastActivityAt: startedAt,
-      timedOut: false,
-      timeoutKind: null,
-      termination: "spawn-error",
-      signal: null,
-      heartbeatCount: 0,
-      stdoutTruncated: false,
-      stderrTruncated: false
-    };
-  }
-  return new Promise((resolveProcess) => {
-    const child = spawn(executable, argv.slice(1), {
-      cwd,
-      env: { ...process.env, ...env },
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let stderr = "";
-    let stdoutTruncated = false;
-    let stderrTruncated = false;
-    let lastActivityMs = startedAtMs;
-    let activityObserved = false;
-    let timedOut = false;
-    let timeoutKind: ProcessResult["timeoutKind"] = null;
-    let hardKillRequested = false;
-    let settled = false;
-    let heartbeatCount = 0;
-    const heartbeatMs = Math.max(10, budget.heartbeatMs ?? 30_000);
-    const stallTimeoutMs = budget.stallTimeoutMs;
-    const terminateGraceMs = Math.max(10, budget.terminateGraceMs ?? 2_000);
-    let killTimer: NodeJS.Timeout | undefined;
-
-    const stopTimers = (): void => {
-      clearTimeout(wallTimer);
-      clearInterval(heartbeatTimer);
-      if (stallTimer !== undefined) clearInterval(stallTimer);
-      if (killTimer !== undefined) clearTimeout(killTimer);
-    };
-    const terminate = (kind: "wall" | "stall"): void => {
-      if (timedOut || settled) return;
-      timedOut = true;
-      timeoutKind = kind;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        if (settled) return;
-        hardKillRequested = true;
-        child.kill("SIGKILL");
-      }, terminateGraceMs);
-    };
-    const wallTimer = setTimeout(
-      () => terminate("wall"),
-      Math.max(1, budget.wallTimeoutMs)
-    );
-    const heartbeatTimer = setInterval(() => {
-      heartbeatCount += 1;
-      onStderr(JSON.stringify({
-        type: "process.heartbeat",
-        elapsedMs: Date.now() - startedAtMs,
-        idleMs: Date.now() - lastActivityMs
-      }) + "\n");
-    }, heartbeatMs);
-    const stallTimer = stallTimeoutMs === undefined
-      ? undefined
-      : setInterval(() => {
-          if (Date.now() - lastActivityMs >= stallTimeoutMs) terminate("stall");
-        }, Math.max(10, Math.min(heartbeatMs, Math.floor(stallTimeoutMs / 2))));
-
-    const finish = (
-      exitCode: number,
-      termination: ProcessResult["termination"],
-      signal: NodeJS.Signals | null
-    ): void => {
-      if (settled) return;
-      settled = true;
-      stopTimers();
-      const completedAtMs = Date.now();
-      const reportedActivityMs = activityObserved
-        ? Math.max(lastActivityMs, startedAtMs + 1)
-        : lastActivityMs;
-      resolveProcess({
-        exitCode,
-        stdout,
-        stderr,
-        startedAt,
-        completedAt: new Date(completedAtMs).toISOString(),
-        durationMs: completedAtMs - startedAtMs,
-        lastActivityAt: new Date(reportedActivityMs).toISOString(),
-        timedOut,
-        timeoutKind,
-        termination,
-        signal,
-        heartbeatCount,
-        stdoutTruncated,
-        stderrTruncated
-      });
-    };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      activityObserved = true;
-      lastActivityMs = Date.now();
-      if (stdout.length < 16 * 1024 * 1024) {
-        stdout += chunk.slice(0, 16 * 1024 * 1024 - stdout.length);
-      }
-      if (stdout.length >= 16 * 1024 * 1024) stdoutTruncated = true;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      activityObserved = true;
-      lastActivityMs = Date.now();
-      if (stderr.length < 4 * 1024 * 1024) {
-        stderr += chunk.slice(0, 4 * 1024 * 1024 - stderr.length);
-      }
-      if (stderr.length >= 4 * 1024 * 1024) stderrTruncated = true;
-      onStderr(chunk);
-    });
-    child.on("error", (error) => {
-      stderr += error.message;
-      finish(1, "spawn-error", null);
-    });
-    child.on("close", (code, signal) => {
-      finish(
-        code ?? (timedOut ? 124 : 1),
-        timedOut ? (hardKillRequested ? "killed" : "terminated") : "exited",
-        signal
-      );
-    });
-  });
+  return runManagedProcess(argv, cwd, env, onStderr, budgetInput);
 }
 
 function configuredAgents(values: readonly string[]): HarnessAgent[] {

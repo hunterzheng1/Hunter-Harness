@@ -27,7 +27,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Mapping
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
@@ -586,12 +586,14 @@ def _claim_lease_locked(
     run_id: str,
     ttl_seconds: int,
     steal: bool = False,
+    expected_generation: int | None = None,
 ) -> dict[str, Any]:
     path = _lease_path(project_root, change_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now().astimezone()
     expires = now + dt.timedelta(seconds=max(1, ttl_seconds))
     new_lease = {
+        "leaseId": str(uuid.uuid4()),
         "changeId": change_id,
         "phase": phase,
         "runId": run_id,
@@ -599,6 +601,7 @@ def _claim_lease_locked(
         "acquiredAt": now.isoformat(timespec="milliseconds"),
         "expiresAt": expires.isoformat(timespec="milliseconds"),
         "ttlSeconds": ttl_seconds,
+        "generation": 1,
     }
     if path.is_file():
         try:
@@ -606,6 +609,12 @@ def _claim_lease_locked(
         except (OSError, json.JSONDecodeError):
             existing = None
         if isinstance(existing, dict) and not _lease_expired(existing):
+            if expected_generation is not None and existing.get("generation") != expected_generation:
+                return {
+                    "ok": False,
+                    "code": "LEASE_GENERATION_CONFLICT",
+                    "holder": existing,
+                }
             same_owner = str(existing.get("runId")) == run_id
             if same_owner:
                 existing.update(
@@ -614,6 +623,7 @@ def _claim_lease_locked(
                         "pid": os.getpid(),
                         "expiresAt": expires.isoformat(timespec="milliseconds"),
                         "refreshedAt": now.isoformat(timespec="milliseconds"),
+                        "generation": int(existing.get("generation") or 1) + 1,
                     }
                 )
                 _write_json(path, existing)
@@ -637,6 +647,7 @@ def claim_lease(
     run_id: str,
     ttl_seconds: int,
     steal: bool = False,
+    expected_generation: int | None = None,
 ) -> dict[str, Any]:
     path = _lease_path(project_root, change_id)
     with _exclusive_file_lock(path.with_suffix(".lock")):
@@ -647,6 +658,7 @@ def claim_lease(
             run_id=run_id,
             ttl_seconds=ttl_seconds,
             steal=steal,
+            expected_generation=expected_generation,
         )
 
 
@@ -656,6 +668,8 @@ def _release_lease_locked(
     change_id: str,
     phase: str,
     run_id: str,
+    lease_id: str | None = None,
+    generation: int | None = None,
 ) -> dict[str, Any]:
     path = _lease_path(project_root, change_id)
     if not path.is_file():
@@ -688,6 +702,18 @@ def _release_lease_locked(
             "message": f"lease phase is {existing.get('phase')}, not {phase}",
             "holder": existing,
         }
+    if lease_id is not None and str(existing.get("leaseId")) != lease_id:
+        return {
+            "ok": False,
+            "code": "LEASE_ID_MISMATCH",
+            "holder": existing,
+        }
+    if generation is not None and existing.get("generation") != generation:
+        return {
+            "ok": False,
+            "code": "LEASE_GENERATION_CONFLICT",
+            "holder": existing,
+        }
     path.unlink(missing_ok=True)
     return {"ok": True, "code": "LEASE_RELEASED", "changeId": change_id, "phase": phase}
 
@@ -698,11 +724,18 @@ def release_lease(
     change_id: str,
     phase: str,
     run_id: str,
+    lease_id: str | None = None,
+    generation: int | None = None,
 ) -> dict[str, Any]:
     path = _lease_path(project_root, change_id)
     with _exclusive_file_lock(path.with_suffix(".lock")):
         return _release_lease_locked(
-            project_root, change_id=change_id, phase=phase, run_id=run_id
+            project_root,
+            change_id=change_id,
+            phase=phase,
+            run_id=run_id,
+            lease_id=lease_id,
+            generation=generation,
         )
 
 
@@ -712,6 +745,8 @@ def lease_port(
     change_id: str,
     run_id: str,
     port_range: tuple[int, int],
+    generation: int = 1,
+    listener_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     start, end = port_range
     if start > end:
@@ -749,6 +784,7 @@ def lease_port(
                     "leaseId": lease_id,
                     "changeId": change_id,
                     "runId": run_id,
+                    "generation": generation,
                     "pid": os.getpid(),
                     "port": port,
                     "acquiredAt": now_iso(),
@@ -756,6 +792,9 @@ def lease_port(
                         dt.datetime.now().astimezone() + dt.timedelta(hours=4)
                     ).isoformat(timespec="milliseconds"),
                 }
+                if isinstance(listener_identity, Mapping):
+                    entry["listenerIdentity"] = dict(listener_identity)
+                    entry["listenerProofRequired"] = True
                 leases.append(entry)
                 registry["leases"] = leases
                 _write_json(registry_path, registry)
@@ -774,6 +813,9 @@ def release_port(
     run_id: str,
     port: int | None = None,
     lease_id: str | None = None,
+    generation: int | None = None,
+    listener_identity: Mapping[str, Any] | None = None,
+    listener_observer: Callable[[int], Mapping[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Release port leases by subset (retro §5.16).
 
@@ -802,6 +844,12 @@ def release_port(
             ]
             # Validate that the lease belongs to this change
             for item in to_release:
+                if generation is not None and item.get("generation") != generation:
+                    return {
+                        "ok": False,
+                        "code": "PORT_LEASE_GENERATION_CONFLICT",
+                        "holder": item,
+                    }
                 if str(item.get("changeId")) != change_id:
                     return {
                         "ok": False,
@@ -818,6 +866,12 @@ def release_port(
             ]
             # Validate runId matches
             for item in to_release:
+                if generation is not None and item.get("generation") != generation:
+                    return {
+                        "ok": False,
+                        "code": "PORT_LEASE_GENERATION_CONFLICT",
+                        "holder": item,
+                    }
                 if str(item.get("runId")) != run_id:
                     return {
                         "ok": False,
@@ -840,6 +894,47 @@ def release_port(
                 and str(item.get("changeId")) == change_id
                 and str(item.get("runId")) == run_id
             ]
+            if generation is not None:
+                mismatched = [
+                    item for item in to_release if item.get("generation") != generation
+                ]
+                if mismatched:
+                    return {
+                        "ok": False,
+                        "code": "PORT_LEASE_GENERATION_CONFLICT",
+                        "holder": mismatched[0],
+                    }
+
+        for item in to_release:
+            expected_listener = item.get("listenerIdentity")
+            if not isinstance(expected_listener, Mapping):
+                continue
+            observed_listener = (
+                listener_observer(int(item["port"]))
+                if listener_observer is not None and isinstance(item.get("port"), int)
+                else listener_identity
+            )
+            if not isinstance(observed_listener, Mapping):
+                return {
+                    "ok": False,
+                    "code": "LISTENER_IDENTITY_UNVERIFIABLE",
+                    "message": "listener identity could not be independently observed",
+                    "holder": item,
+                }
+            try:
+                from harness_process import verify_process_identity
+
+                decision = verify_process_identity(expected_listener, observed_listener)
+            except (ImportError, TypeError, ValueError):
+                decision = {"ok": False, "reasonCode": "IDENTITY_UNVERIFIABLE"}
+            if decision.get("ok") is not True:
+                return {
+                    "ok": False,
+                    "code": "LISTENER_IDENTITY_UNVERIFIABLE",
+                    "message": "listener identity did not match the leased service",
+                    "details": decision,
+                    "holder": item,
+                }
 
         if not to_release:
             # Check if there are other leases under this changeId (different runId)
@@ -1011,6 +1106,7 @@ def cmd_claim(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         ttl_seconds=int(args.ttl_seconds),
         steal=bool(args.steal),
+        expected_generation=getattr(args, "expected_generation", None),
     )
     if payload.get("ok"):
         emit(payload, as_json=bool(args.json))
@@ -1030,6 +1126,8 @@ def cmd_release(args: argparse.Namespace) -> int:
         change_id=args.change,
         phase=args.phase,
         run_id=args.run_id,
+        lease_id=getattr(args, "lease_id", None),
+        generation=getattr(args, "generation", None),
     )
     if payload.get("ok"):
         emit(payload, as_json=bool(args.json))
@@ -1051,11 +1149,26 @@ def cmd_lease_port(args: argparse.Namespace) -> int:
             f"expected --range <start-end>, got {args.range!r}",
             as_json=bool(args.json),
         )
+    listener_identity = None
+    if getattr(args, "listener_identity_json", None):
+        try:
+            parsed_listener = json.loads(args.listener_identity_json)
+            if not isinstance(parsed_listener, dict):
+                raise ValueError("listener identity must be an object")
+            listener_identity = parsed_listener
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return emit_error(
+                "LISTENER_IDENTITY_UNVERIFIABLE",
+                str(exc),
+                as_json=bool(args.json),
+            )
     payload = lease_port(
         project,
         change_id=args.change,
         run_id=args.run_id,
         port_range=parsed,
+        generation=int(getattr(args, "generation", 1)),
+        listener_identity=listener_identity,
     )
     if payload.get("ok"):
         emit(payload, as_json=bool(args.json))
@@ -1070,12 +1183,27 @@ def cmd_lease_port(args: argparse.Namespace) -> int:
 
 def cmd_release_port(args: argparse.Namespace) -> int:
     project = resolve_main_project_root()
+    listener_identity = None
+    if getattr(args, "listener_identity_json", None):
+        try:
+            parsed_listener = json.loads(args.listener_identity_json)
+            if not isinstance(parsed_listener, dict):
+                raise ValueError("listener identity must be an object")
+            listener_identity = parsed_listener
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return emit_error(
+                "LISTENER_IDENTITY_UNVERIFIABLE",
+                str(exc),
+                as_json=bool(args.json),
+            )
     payload = release_port(
         project,
         change_id=args.change,
         run_id=args.run_id,
         port=getattr(args, "port", None),
         lease_id=getattr(args, "lease_id", None),
+        generation=getattr(args, "generation", None),
+        listener_identity=listener_identity,
     )
     if payload.get("ok"):
         emit(payload, as_json=bool(args.json))
@@ -1329,18 +1457,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_claim.add_argument("--run-id", required=True)
     p_claim.add_argument("--ttl-seconds", type=int, default=3600)
     p_claim.add_argument("--steal", action="store_true")
+    p_claim.add_argument("--expected-generation", type=int, default=None)
     p_claim.set_defaults(func=cmd_claim)
 
     p_release = sub.add_parser("release", parents=[shared])
     p_release.add_argument("--change", required=True)
     p_release.add_argument("--phase", required=True)
     p_release.add_argument("--run-id", required=True)
+    p_release.add_argument("--lease-id", default=None)
+    p_release.add_argument("--generation", type=int, default=None)
     p_release.set_defaults(func=cmd_release)
 
     p_port = sub.add_parser("lease-port", parents=[shared])
     p_port.add_argument("--change", required=True)
     p_port.add_argument("--run-id", required=True)
     p_port.add_argument("--range", required=True)
+    p_port.add_argument("--generation", type=int, default=1)
+    p_port.add_argument("--listener-identity-json", default=None)
     p_port.set_defaults(func=cmd_lease_port)
 
     p_port_release = sub.add_parser("release-port", parents=[shared])
@@ -1348,6 +1481,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_port_release.add_argument("--run-id", required=True)
     p_port_release.add_argument("--port", type=int, default=None)
     p_port_release.add_argument("--lease-id", default=None)
+    p_port_release.add_argument("--generation", type=int, default=None)
+    p_port_release.add_argument("--listener-identity-json", default=None)
     p_port_release.set_defaults(func=cmd_release_port)
 
     p_lock = sub.add_parser("integration-lock", parents=[shared])

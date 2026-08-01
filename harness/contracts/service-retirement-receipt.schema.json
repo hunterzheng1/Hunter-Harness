@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.dev/contracts/service-retirement-receipt.schema.json",
+  "title": "Hunter Harness service retirement receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "operationId",
+    "serviceId",
+    "oldSessionId",
+    "oldGeneration",
+    "state",
+    "retirementStateCommit",
+    "leaseCleanup",
+    "cleanupComplete",
+    "awaitingSuperseder",
+    "supersededBySessionId",
+    "receiptDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "receiptId": { "type": "string", "minLength": 1 },
+    "operationId": { "type": "string", "minLength": 1 },
+    "serviceId": { "type": "string", "minLength": 1 },
+    "oldSessionId": { "type": "string", "minLength": 1 },
+    "oldGeneration": { "type": "integer", "minimum": 1 },
+    "state": { "enum": ["PENDING", "FINALIZED"] },
+    "retirementStateCommit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasonCode"],
+      "properties": {
+        "status": { "enum": ["PENDING", "COMMITTED", "CONFLICT"] },
+        "reasonCode": { "type": "string", "minLength": 1 }
+      }
+    },
+    "leaseCleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reasonCode", "leaseId"],
+      "properties": {
+        "status": { "enum": ["PENDING", "RELEASED", "RETAINED", "UNVERIFIED"] },
+        "reasonCode": { "type": "string", "minLength": 1 },
+        "leaseId": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "cleanupComplete": { "type": "boolean" },
+    "awaitingSuperseder": { "type": "boolean" },
+    "supersededBySessionId": { "type": ["string", "null"], "minLength": 1 },
+    "receiptDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "leaseCleanup": {
+            "properties": { "status": { "const": "RELEASED" } },
+            "required": ["status"]
+          }
+        },
+        "required": ["leaseCleanup"]
+      },
+      "then": {
+        "properties": { "cleanupComplete": { "const": true } }
+      },
+      "else": {
+        "properties": { "cleanupComplete": { "const": false } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "awaitingSuperseder": { "const": true } },
+        "required": ["awaitingSuperseder"]
+      },
+      "then": {
+        "properties": { "supersededBySessionId": { "type": "null" } }
+      }
+    }
+  ]
+}

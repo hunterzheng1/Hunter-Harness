@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.dev/contracts/run-session.schema.json",
+  "title": "Hunter Harness managed run session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sessionId",
+    "status",
+    "reasonCode",
+    "exitCode",
+    "processIdentity",
+    "heartbeat",
+    "logs",
+    "cleanup",
+    "resultDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "PREPARING",
+        "STARTING",
+        "RUNNING",
+        "FINALIZING",
+        "OK",
+        "FAIL",
+        "CANCELLED",
+        "INCOMPLETE"
+      ]
+    },
+    "reasonCode": { "$ref": "#/$defs/reasonCode" },
+    "exitCode": { "type": ["integer", "null"] },
+    "processIdentity": { "type": ["object", "null"] },
+    "heartbeat": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/heartbeat" }
+      ]
+    },
+    "logs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stdout", "stderr"],
+      "properties": {
+        "stdout": { "$ref": "#/$defs/logStream" },
+        "stderr": { "$ref": "#/$defs/logStream" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete", "reasonCode"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "reasonCode": {
+          "oneOf": [
+            { "$ref": "#/$defs/reasonCode" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "resultDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "enum": ["OK", "FAIL"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "exitCode": { "type": "integer" },
+          "resultDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "INCOMPLETE" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "exitCode": { "type": "null" },
+          "resultDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reasonCode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "writerIdentity",
+        "lastSeenAt",
+        "ttlSeconds",
+        "staleReason"
+      ],
+      "properties": {
+        "kind": { "enum": ["WORKER", "SUPERVISOR", "OBSERVER"] },
+        "writerIdentity": { "$ref": "#/$defs/digest" },
+        "lastSeenAt": { "type": "string", "minLength": 1 },
+        "ttlSeconds": { "type": "integer", "minimum": 1 },
+        "staleReason": {
+          "oneOf": [
+            { "$ref": "#/$defs/reasonCode" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "logStream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cursor", "rawDigest", "decodeStatus"],
+      "properties": {
+        "cursor": { "type": "integer", "minimum": 0 },
+        "rawDigest": { "$ref": "#/$defs/digest" },
+        "decodeStatus": { "enum": ["OK", "LOG_DECODE_DEGRADED"] }
+      }
+    }
+  }
+}
