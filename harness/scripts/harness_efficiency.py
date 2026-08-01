@@ -30,6 +30,131 @@ def _integer(value: Any) -> int:
         return 0
 
 
+def _timestamp(value: Any) -> dt.datetime | None:
+    if isinstance(value, dt.datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _now_timestamp(value: Any = None) -> dt.datetime:
+    return _timestamp(value) or dt.datetime.now(dt.timezone.utc)
+
+
+def _seconds(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def classify_progress(
+    session: dict[str, Any],
+    *,
+    now: Any = None,
+    historical_durations: list[int | float] | None = None,
+) -> dict[str, Any]:
+    """Classify observable run state without changing execution policy.
+
+    The classifier is intentionally conservative: incomplete clock/heartbeat
+    data produces explicit ``INCOMPLETE``/``NO_BUDGET`` facts instead of an
+    invented ETA or a guessed failure cause.
+    """
+    status = str(session.get("status") or "RUNNING").upper()
+    terminal = {
+        "OK": "COMPLETED",
+        "PASS": "COMPLETED",
+        "COMPLETED": "COMPLETED",
+        "FAIL": "FAILED",
+        "FAILED": "FAILED",
+        "CANCELLED": "CANCELLED",
+        "CANCELED": "CANCELLED",
+        "INCOMPLETE": "INCOMPLETE",
+    }
+    started = _timestamp(session.get("startedAt") or session.get("createdAt"))
+    current = _now_timestamp(now)
+    elapsed_seconds: float | None = None
+    if started is not None:
+        elapsed_seconds = max(0.0, (current - started).total_seconds())
+
+    timeout_seconds = _seconds(session.get("timeoutSeconds"))
+    expected_seconds = _seconds(
+        session.get("expectedDurationSeconds")
+        or session.get("estimatedDurationSeconds")
+    )
+    budget_seconds = _seconds(
+        session.get("budgetSeconds")
+        or session.get("maxDurationSeconds")
+        or expected_seconds
+        or timeout_seconds
+    )
+    if elapsed_seconds is None or budget_seconds is None:
+        budget_state = "NO_BUDGET"
+    elif elapsed_seconds >= budget_seconds:
+        budget_state = "OVER_BUDGET"
+    else:
+        budget_state = "WITHIN_BUDGET"
+
+    progress_state = terminal.get(status)
+    diagnostic_required = False
+    heartbeat_grace = _seconds(
+        session.get("heartbeatGraceSeconds")
+        or session.get("heartbeatTimeoutSeconds")
+        or 60
+    ) or 60
+    heartbeat = _timestamp(session.get("lastHeartbeatAt"))
+    output = _timestamp(
+        session.get("lastOutputAt") or session.get("lastLogAt")
+    )
+    heartbeat_gap = (
+        max(0.0, (current - heartbeat).total_seconds())
+        if heartbeat is not None
+        else None
+    )
+    output_gap = (
+        max(0.0, (current - output).total_seconds()) if output is not None else None
+    )
+
+    if progress_state is None:
+        progress_state = "RUNNING"
+        if timeout_seconds is not None and elapsed_seconds is not None and elapsed_seconds >= timeout_seconds:
+            progress_state = "TIMEOUT"
+        elif output_gap is not None and output_gap > heartbeat_grace:
+            progress_state = "NO_OUTPUT_PROCESS_ACTIVE"
+        elif heartbeat_gap is None or heartbeat_gap > heartbeat_grace:
+            progress_state = "HEARTBEAT_LOST"
+        elif _integer(session.get("resourceWaitMs")) > 0 or session.get("resourceWaitActive") is True:
+            progress_state = "RESOURCE_WAIT"
+        elif expected_seconds is not None and elapsed_seconds is not None and elapsed_seconds > expected_seconds:
+            progress_state = "SLOW_PROGRESSING"
+        diagnostic_required = progress_state in {
+            "TIMEOUT",
+            "HEARTBEAT_LOST",
+            "NO_OUTPUT_PROCESS_ACTIVE",
+        } or budget_state == "OVER_BUDGET"
+    elif progress_state not in {"COMPLETED", "FAILED", "CANCELLED"}:
+        diagnostic_required = True
+
+    return {
+        "progressState": progress_state,
+        "budgetState": budget_state,
+        "diagnosticRequired": diagnostic_required,
+        "elapsedSeconds": int(elapsed_seconds) if elapsed_seconds is not None else None,
+        "budgetSeconds": budget_seconds,
+        "heartbeatGapSeconds": int(heartbeat_gap) if heartbeat_gap is not None else None,
+        "outputGapSeconds": int(output_gap) if output_gap is not None else None,
+    }
+
+
 def _failure_class(session: dict[str, Any]) -> str | None:
     status = str(session.get("status") or "").upper()
     reason = str(session.get("reasonCode") or "").upper()
@@ -128,10 +253,27 @@ def build_efficiency_summary(
     invalidations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     failure_counts = {key: 0 for key in FAILURE_CLASSES}
+    progress_states: Counter[str] = Counter()
+    budget_states: Counter[str] = Counter()
+    slow_stages: Counter[str] = Counter()
     for session in run_sessions:
         classification = _failure_class(session)
         if classification is not None:
             failure_counts[classification] += 1
+        progress = str(
+            session.get("progressState")
+            or classify_progress(session).get("progressState")
+            or "INCOMPLETE"
+        ).upper()
+        budget = str(
+            session.get("budgetState")
+            or classify_progress(session).get("budgetState")
+            or "NO_BUDGET"
+        ).upper()
+        progress_states[progress] += 1
+        budget_states[budget] += 1
+        if progress == "SLOW_PROGRESSING":
+            slow_stages[str(session.get("stage") or session.get("verification") or "unknown")] += 1
     environment_actions: Counter[str] = Counter()
     for item in environment_receipts:
         action = str(item.get("action") or "").lower()
@@ -183,6 +325,9 @@ def build_efficiency_summary(
             for item in run_sessions
         ),
         "failureClasses": failure_counts,
+        "progressStates": dict(sorted(progress_states.items())),
+        "budgetStates": dict(sorted(budget_states.items())),
+        "slowStages": dict(sorted(slow_stages.items())),
         "invalidationReasons": _counts(
             str(item.get("reasonCode") or "UNKNOWN")
             for item in invalidations
@@ -226,6 +371,10 @@ def compact_progress_view(
             "typicalSeconds": int(median(durations)),
             "highSeconds": durations[-1],
         }
+    classification = classify_progress(
+        session,
+        historical_durations=historical_durations,
+    )
     return {
         "verification": session.get("verification"),
         "stage": session.get("stage"),
@@ -235,6 +384,10 @@ def compact_progress_view(
         "eta": eta,
         "resourceWait": list(session.get("resourceLocks") or []),
         "status": session.get("status", "RUNNING"),
+        "progressState": classification["progressState"],
+        "budgetState": classification["budgetState"],
+        "diagnosticRequired": classification["diagnosticRequired"],
+        "elapsedSeconds": classification["elapsedSeconds"],
     }
 
 

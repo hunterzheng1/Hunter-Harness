@@ -232,6 +232,32 @@ class VerificationSelectionTest(unittest.TestCase):
         self.assertEqual(by_id["browser"]["decision"], "SKIP")
         self.assertEqual(by_id["package"]["decision"], "EXECUTE")
         self.assertIn("depends-on:compile", by_id["package"]["reasonCodes"])
+        self.assertTrue(all(item["explanation"] for item in result["plan"]))
+
+    def test_unknown_command_declaration_blocks_closed(self) -> None:
+        result = VERIFICATION.schedule_verifications(
+            {
+                "productIdentity": "sha256:frozen",
+                "commands": {"compile": {"argv": ["python", "-c", "pass"]}},
+                "targets": [
+                    {
+                        "id": "compile",
+                        "commandKey": "compile",
+                        "argvTemplate": ["python", "-c", "pass"],
+                    },
+                    {
+                        "id": "api",
+                        "commandKey": "api",
+                        "dependsOn": ["compile"],
+                        "argvTemplate": ["python", "-c", "pass"],
+                    },
+                ],
+            }
+        )
+        by_id = {item["id"]: item for item in result["plan"]}
+        self.assertEqual(by_id["api"]["decision"], "BLOCKED")
+        self.assertIn("COMMAND_NOT_DECLARED", by_id["api"]["reasonCodes"])
+        self.assertFalse(result["ok"])
 
     def test_executor_consumes_waves_and_propagates_resource_locks(self) -> None:
         starts: list[dict] = []

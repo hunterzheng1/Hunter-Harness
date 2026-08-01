@@ -7,11 +7,62 @@ import argparse
 import fnmatch
 import json
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
 _COVERAGE_RANK = {"incremental": 0, "module": 1, "module-am": 2, "full": 3}
+
+_REASON_EXPLANATIONS = {
+    "PRODUCT_IDENTITY_REQUIRED": "A product identity is required before a verification can run.",
+    "CAPABILITY_MISSING": "A required execution capability is not available.",
+    "REQUIRED_COVERAGE_INVALID": "The required coverage declaration is invalid.",
+    "COVERAGE_DECLARATION_REQUIRED": "The target does not declare the coverage level needed for this gate.",
+    "COVERAGE_INSUFFICIENT": "The target coverage is below the required gate level.",
+    "NOT_APPLICABLE": "The target is explicitly not applicable to this change.",
+    "FROZEN_IDENTITY_REQUIRED": "The target requires a frozen product identity.",
+    "FROZEN_IDENTITY_DRIFT": "The current product identity differs from the frozen identity.",
+    "REUSE_POLICY_NEVER": "The target policy explicitly requires a fresh execution.",
+    "REUSE_EVIDENCE_INVALID": "Ledger evidence does not match the target and product identity exactly.",
+    "REUSE_ELIGIBLE": "Identity-matched ledger evidence permits reuse.",
+    "SELECTED_FOR_EXECUTION": "The target was selected for execution and passed its gate checks.",
+    "COMMAND_NOT_DECLARED": "The target command key is absent from the authoritative command declaration map.",
+    "COMMAND_DECLARATION_INVALID": "The authoritative command declaration is empty or malformed.",
+    "DEPENDENCY_UNKNOWN": "The target depends on a node that is not in the verification graph.",
+    "DEPENDENCY_BLOCKED": "A dependency was skipped or blocked, so this target cannot run.",
+    "DEPENDENCY_CYCLE": "The verification graph contains a dependency cycle.",
+    "VERIFICATION_REUSED": "The target reused an identity-matched verification receipt.",
+    "VERIFICATION_ARGV_NOT_CONCRETE": "The target command arguments are not concrete and executable.",
+}
+
+
+def _reason_explanation(reason_codes: list[str], decision: str) -> str:
+    explanations: list[str] = []
+    for raw in reason_codes:
+        code = str(raw).split(":", 1)[0]
+        explanation = _REASON_EXPLANATIONS.get(code)
+        if explanation is None:
+            if raw.startswith("depends-on:"):
+                explanation = f"The target waits for dependency {raw.split(':', 1)[1]} to complete."
+            elif raw.startswith("consumer-of:"):
+                explanation = f"The target is included because it consumes {raw.split(':', 1)[1]}."
+            elif raw.startswith("input-match:"):
+                explanation = f"A changed input matched {raw.split(':', 1)[1]}."
+            elif raw.startswith("CAPABILITY_MISSING:"):
+                explanation = f"Capability {raw.split(':', 1)[1]} is unavailable."
+            else:
+                explanation = f"Verification decision reason: {raw}."
+        if explanation not in explanations:
+            explanations.append(explanation)
+    if explanations:
+        return " ".join(explanations)
+    return {
+        "EXECUTE": "The target passed all declared gate checks and is ready to execute.",
+        "REUSE": "The target has valid identity-matched reusable evidence.",
+        "SKIP": "The target is not applicable to this change.",
+        "BLOCKED": "The target cannot execute until its blocking conditions are resolved.",
+    }.get(decision, "The target has no executable decision.")
 
 
 def _normalize_targets(raw_targets: Any) -> list[dict[str, Any]]:
@@ -133,10 +184,26 @@ def _target_decision(
     frozen_identity: str,
     available_capabilities: set[str],
     verification_ledger: list[dict[str, Any]],
+    command_declarations: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     blockers: list[str] = []
     if not product_identity:
         return "BLOCKED", ["PRODUCT_IDENTITY_REQUIRED"]
+    if command_declarations is not None:
+        command_key = str(target.get("commandKey") or "").strip()
+        declaration = command_declarations.get(command_key) if command_key else None
+        if declaration is None:
+            blockers.append("COMMAND_NOT_DECLARED")
+        elif isinstance(declaration, dict):
+            argv = declaration.get("argv") or declaration.get("argvTemplate")
+            if not isinstance(argv, list) or not argv or not all(
+                isinstance(item, str) and item for item in argv
+            ):
+                blockers.append("COMMAND_DECLARATION_INVALID")
+        elif not isinstance(declaration, list) or not declaration or not all(
+            isinstance(item, str) and item for item in declaration
+        ):
+            blockers.append("COMMAND_DECLARATION_INVALID")
     required_capabilities = {
         str(item).strip()
         for item in target.get("requiredCapabilities", [])
@@ -238,6 +305,12 @@ def schedule_verifications(payload: dict[str, Any]) -> dict[str, Any]:
         for item in payload.get("verificationLedger", [])
         if isinstance(item, dict)
     ]
+    raw_commands = payload.get("commands")
+    command_declarations = (
+        {str(key): value for key, value in raw_commands.items()}
+        if isinstance(raw_commands, dict)
+        else None
+    )
     decisions: dict[str, tuple[str, list[str]]] = {
         target_id: _target_decision(
             target,
@@ -245,6 +318,7 @@ def schedule_verifications(payload: dict[str, Any]) -> dict[str, Any]:
             frozen_identity=frozen_identity,
             available_capabilities=available_capabilities,
             verification_ledger=verification_ledger,
+            command_declarations=command_declarations,
         )
         for target_id, target in by_id.items()
     }
@@ -345,10 +419,14 @@ def schedule_verifications(payload: dict[str, Any]) -> dict[str, Any]:
                 "id": target_id,
                 "decision": decision,
                 "reasonCodes": reason_codes,
+                "explanation": _reason_explanation(reason_codes, decision),
                 "resourceLocks": _resource_locks(target),
                 "wave": placed[target_id],
             }
         )
+    decision_counts = dict(
+        sorted(Counter(item["decision"] for item in plan).items())
+    )
     return {
         "ok": all(item["decision"] != "BLOCKED" for item in plan),
         "code": (
@@ -359,6 +437,7 @@ def schedule_verifications(payload: dict[str, Any]) -> dict[str, Any]:
         "productIdentity": product_identity,
         "frozenIdentity": frozen_identity,
         "plan": plan,
+        "decisionCounts": decision_counts,
         "waves": [
             {"wave": index, "targets": target_ids}
             for index, target_ids in enumerate(waves)
