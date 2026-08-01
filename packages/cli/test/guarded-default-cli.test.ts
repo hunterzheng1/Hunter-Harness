@@ -5,7 +5,8 @@ import {
   readdir,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,11 @@ import { describe, expect, it } from "vitest";
 import { stateLayout } from "@hunter-harness/core";
 
 import { runCli } from "../src/bin.js";
+
+// Windows CI may expose TEMP through a junction; canonicalize it before
+// creating a recovery root, which the production boundary intentionally
+// rejects when any path component is linked.
+const tmpdir = (): string => realpathSync(osTmpdir());
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)

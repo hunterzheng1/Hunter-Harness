@@ -8,7 +8,8 @@ import {
   symlink,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -23,6 +24,11 @@ import {
   runTransaction,
   stateLayout
 } from "../src/index.js";
+
+// GitHub's Windows runner may expose TEMP through a junction. Durable
+// recovery roots intentionally reject linked path components, so tests must
+// create their temporary fixtures below the canonical temp directory.
+const tmpdir = (): string => realpathSync(osTmpdir());
 
 const identity = {
   projectIdentity: "sha256:recovery-project",

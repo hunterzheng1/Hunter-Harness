@@ -6,7 +6,8 @@ import {
   rm,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
+import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,6 +21,11 @@ import { canonicalJson } from "@hunter-harness/contracts";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/bin.js";
+
+// Windows hosted runners can expose TEMP through a junction. Use its
+// canonical target so explicit durable recovery roots exercise the contract,
+// rather than the runner's temp-path alias.
+const tmpdir = (): string => realpathSync(osTmpdir());
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
