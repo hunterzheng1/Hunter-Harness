@@ -1,6 +1,6 @@
 import {
   mkdir,
-  mkdtemp,
+  mkdtemp as osMkdtemp,
   readFile,
   readdir,
   writeFile
@@ -20,6 +20,10 @@ import { runCli } from "../src/bin.js";
 // creating a recovery root, which the production boundary intentionally
 // rejects when any path component is linked.
 const tmpdir = (): string => realpathSync(osTmpdir());
+
+async function mkdtemp(prefix: string): Promise<string> {
+  return realpathSync(await osMkdtemp(prefix));
+}
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)

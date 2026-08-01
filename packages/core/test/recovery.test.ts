@@ -1,4 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp as osMkdtemp,
+  readFile,
+  rm,
+  writeFile
+} from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir as osTmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +22,10 @@ import {
 // Keep durable recovery fixtures outside junction aliases used by some
 // Windows CI temp directories; production recovery roots remain fail-closed.
 const tmpdir = (): string => realpathSync(osTmpdir());
+
+async function mkdtemp(prefix: string): Promise<string> {
+  return realpathSync(await osMkdtemp(prefix));
+}
 
 describe("transaction recovery", () => {
   it("recovers an interrupted update from its journal", async () => {

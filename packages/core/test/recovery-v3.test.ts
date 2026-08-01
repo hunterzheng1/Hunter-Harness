@@ -1,7 +1,7 @@
 import {
   link,
   mkdir,
-  mkdtemp,
+  mkdtemp as osMkdtemp,
   readFile,
   readdir,
   rm,
@@ -29,6 +29,10 @@ import {
 // recovery roots intentionally reject linked path components, so tests must
 // create their temporary fixtures below the canonical temp directory.
 const tmpdir = (): string => realpathSync(osTmpdir());
+
+async function mkdtemp(prefix: string): Promise<string> {
+  return realpathSync(await osMkdtemp(prefix));
+}
 
 const identity = {
   projectIdentity: "sha256:recovery-project",
