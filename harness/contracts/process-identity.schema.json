@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.dev/contracts/process-identity.schema.json",
+  "title": "Hunter Harness process identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "pid",
+    "alive",
+    "createdAt",
+    "executable",
+    "argvHash",
+    "workingDirectory",
+    "parentIdentity",
+    "ownerTokenHash",
+    "treeIdentity",
+    "fieldProvenance",
+    "capabilities"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "pid": { "type": "integer", "minimum": 1 },
+    "alive": { "type": "boolean" },
+    "createdAt": { "type": ["string", "null"], "minLength": 1 },
+    "executable": { "type": ["string", "null"], "minLength": 1 },
+    "argvHash": { "$ref": "#/$defs/nullableDigest" },
+    "workingDirectory": { "type": ["string", "null"], "minLength": 1 },
+    "parentIdentity": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pid", "createdAt", "executable"],
+          "properties": {
+            "pid": { "type": "integer", "minimum": 1 },
+            "createdAt": { "type": ["string", "null"], "minLength": 1 },
+            "executable": { "type": ["string", "null"], "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "ownerTokenHash": { "$ref": "#/$defs/nullableDigest" },
+    "commandHash": { "$ref": "#/$defs/digest" },
+    "parentChain": { "type": "array" },
+    "startedAt": { "type": "string", "minLength": 1 },
+    "treeIdentity": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["platform", "proofKind", "memberPids", "complete"],
+          "properties": {
+            "platform": { "enum": ["WINDOWS", "LINUX", "POSIX"] },
+            "proofKind": { "type": "string", "minLength": 1 },
+            "memberPids": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "uniqueItems": true
+            },
+            "complete": { "type": "boolean" },
+            "groupId": { "type": "integer", "minimum": 1 },
+            "sessionId": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ]
+    },
+    "fieldProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "createdAt",
+        "executable",
+        "argvHash",
+        "workingDirectory",
+        "parentIdentity",
+        "ownerTokenHash",
+        "treeIdentity"
+      ],
+      "properties": {
+        "pid": { "const": "OBSERVED" },
+        "createdAt": { "$ref": "#/$defs/provenance" },
+        "executable": { "$ref": "#/$defs/provenance" },
+        "argvHash": { "$ref": "#/$defs/provenance" },
+        "workingDirectory": { "$ref": "#/$defs/provenance" },
+        "parentIdentity": { "$ref": "#/$defs/provenance" },
+        "ownerTokenHash": { "$ref": "#/$defs/provenance" },
+        "treeIdentity": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canObserveCreateTime",
+        "canObserveExecutable",
+        "canObserveArgv",
+        "canObserveWorkingDirectory",
+        "canObserveParent",
+        "canEnumerateTree",
+        "canVerifyOwnership"
+      ],
+      "properties": {
+        "canObserveCreateTime": { "type": "boolean" },
+        "canObserveExecutable": { "type": "boolean" },
+        "canObserveArgv": { "type": "boolean" },
+        "canObserveWorkingDirectory": { "type": "boolean" },
+        "canObserveParent": { "type": "boolean" },
+        "canEnumerateTree": { "type": "boolean" },
+        "canVerifyOwnership": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/digest" },
+        { "type": "null" }
+      ]
+    },
+    "provenance": {
+      "enum": ["OBSERVED", "ATTESTED", "UNAVAILABLE"]
+    }
+  }
+}

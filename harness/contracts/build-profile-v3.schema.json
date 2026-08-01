@@ -197,6 +197,106 @@
           }
         }
       }
+    },
+    "serviceStart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "healthUrl",
+        "startTimeoutSec",
+        "inputFiles",
+        "source",
+        "profile",
+        "overlayPath"
+      ],
+      "properties": {
+        "argvTemplate": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "healthUrl": {
+          "type": "string"
+        },
+        "healthFile": {
+          "type": "string"
+        },
+        "startTimeoutSec": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "inputFiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source": {
+          "enum": [
+            "detected",
+            "user"
+          ]
+        },
+        "profile": {
+          "type": "string"
+        },
+        "overlayPath": {
+          "type": "string"
+        },
+        "legacyWarning": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reasonCode",
+            "platform",
+            "message"
+          ],
+          "properties": {
+            "reasonCode": {
+              "const": "PROFILE_MIGRATION_UNSAFE"
+            },
+            "platform": {
+              "enum": [
+                "windows",
+                "posix"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "argvTemplate"
+          ],
+          "not": {
+            "required": [
+              "command"
+            ]
+          }
+        },
+        {
+          "required": [
+            "command",
+            "legacyWarning"
+          ],
+          "not": {
+            "required": [
+              "argvTemplate"
+            ]
+          }
+        }
+      ]
     }
   }
 }

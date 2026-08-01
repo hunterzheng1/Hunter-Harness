@@ -1,0 +1,341 @@
+{
+  "schemaVersion": 1,
+  "corpusHash": "sha256:31fe3f111d35e37b7c0f067d2757d2e1b7bf7969fcee81f66276e87b321680d5",
+  "fixtures": [
+    {
+      "id": "process-valid-complete",
+      "contract": "process-identity",
+      "valid": true,
+      "payload": {
+        "schemaVersion": 1,
+        "pid": 4200,
+        "alive": true,
+        "createdAt": "2026-07-31T12:00:00Z",
+        "executable": "C:\\Python\\python.exe",
+        "argvHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workingDirectory": "C:\\工作区\\managed run",
+        "parentIdentity": {
+          "pid": 4100,
+          "createdAt": "2026-07-31T11:59:59Z",
+          "executable": "C:\\PowerShell\\pwsh.exe"
+        },
+        "ownerTokenHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "treeIdentity": {
+          "platform": "WINDOWS",
+          "proofKind": "NAMED_JOB",
+          "memberPids": [4200, 4210],
+          "complete": true
+        },
+        "fieldProvenance": {
+          "pid": "OBSERVED",
+          "createdAt": "OBSERVED",
+          "executable": "OBSERVED",
+          "argvHash": "ATTESTED",
+          "workingDirectory": "ATTESTED",
+          "parentIdentity": "OBSERVED",
+          "ownerTokenHash": "ATTESTED",
+          "treeIdentity": "OBSERVED"
+        },
+        "capabilities": {
+          "canObserveCreateTime": true,
+          "canObserveExecutable": true,
+          "canObserveArgv": false,
+          "canObserveWorkingDirectory": false,
+          "canObserveParent": true,
+          "canEnumerateTree": true,
+          "canVerifyOwnership": true
+        }
+      }
+    },
+    {
+      "id": "process-invalid-self-attested-pid",
+      "contract": "process-identity",
+      "valid": false,
+      "payload": {
+        "schemaVersion": 1,
+        "pid": 4200,
+        "alive": true,
+        "createdAt": null,
+        "executable": null,
+        "argvHash": null,
+        "workingDirectory": null,
+        "parentIdentity": null,
+        "ownerTokenHash": null,
+        "treeIdentity": null,
+        "fieldProvenance": {
+          "pid": "ATTESTED",
+          "createdAt": "UNAVAILABLE",
+          "executable": "UNAVAILABLE",
+          "argvHash": "UNAVAILABLE",
+          "workingDirectory": "UNAVAILABLE",
+          "parentIdentity": "UNAVAILABLE",
+          "ownerTokenHash": "UNAVAILABLE",
+          "treeIdentity": "UNAVAILABLE"
+        },
+        "capabilities": {
+          "canObserveCreateTime": false,
+          "canObserveExecutable": false,
+          "canObserveArgv": false,
+          "canObserveWorkingDirectory": false,
+          "canObserveParent": false,
+          "canEnumerateTree": false,
+          "canVerifyOwnership": false
+        }
+      }
+    },
+    {
+      "id": "run-valid-ok",
+      "contract": "run-session",
+      "valid": true,
+      "payload": {
+        "schemaVersion": 1,
+        "sessionId": "run-valid-ok",
+        "status": "OK",
+        "reasonCode": "CHILD_EXIT_ZERO",
+        "exitCode": 0,
+        "processIdentity": null,
+        "heartbeat": null,
+        "logs": {
+          "stdout": {
+            "cursor": 12,
+            "rawDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "decodeStatus": "OK"
+          },
+          "stderr": {
+            "cursor": 0,
+            "rawDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "decodeStatus": "OK"
+          }
+        },
+        "cleanup": {
+          "complete": true,
+          "reasonCode": null
+        },
+        "resultDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "id": "run-invalid-terminal-exit",
+      "contract": "run-session",
+      "valid": false,
+      "payload": {
+        "schemaVersion": 1,
+        "sessionId": "run-invalid-terminal-exit",
+        "status": "FAIL",
+        "reasonCode": "CHILD_EXIT_NONZERO",
+        "exitCode": null,
+        "processIdentity": null,
+        "heartbeat": null,
+        "logs": {
+          "stdout": {
+            "cursor": 0,
+            "rawDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "decodeStatus": "OK"
+          },
+          "stderr": {
+            "cursor": 4,
+            "rawDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "decodeStatus": "OK"
+          }
+        },
+        "cleanup": {
+          "complete": true,
+          "reasonCode": null
+        },
+        "resultDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "id": "run-valid-incomplete",
+      "contract": "run-session",
+      "valid": true,
+      "payload": {
+        "schemaVersion": 1,
+        "sessionId": "run-valid-incomplete",
+        "status": "INCOMPLETE",
+        "reasonCode": "HEARTBEAT_LOST",
+        "exitCode": null,
+        "processIdentity": null,
+        "heartbeat": {
+          "kind": "WORKER",
+          "writerIdentity": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "lastSeenAt": "2026-07-31T12:00:30Z",
+          "ttlSeconds": 30,
+          "staleReason": "HEARTBEAT_LOST"
+        },
+        "logs": {
+          "stdout": {
+            "cursor": 2,
+            "rawDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "decodeStatus": "LOG_DECODE_DEGRADED"
+          },
+          "stderr": {
+            "cursor": 0,
+            "rawDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "decodeStatus": "OK"
+          }
+        },
+        "cleanup": {
+          "complete": false,
+          "reasonCode": "IDENTITY_UNVERIFIABLE"
+        },
+        "resultDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "id": "run-invalid-incomplete-exit",
+      "contract": "run-session",
+      "valid": false,
+      "payload": {
+        "schemaVersion": 1,
+        "sessionId": "run-invalid-incomplete-exit",
+        "status": "INCOMPLETE",
+        "reasonCode": "HEARTBEAT_LOST",
+        "exitCode": 9,
+        "processIdentity": null,
+        "heartbeat": null,
+        "logs": {
+          "stdout": {
+            "cursor": 0,
+            "rawDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "decodeStatus": "OK"
+          },
+          "stderr": {
+            "cursor": 0,
+            "rawDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "decodeStatus": "OK"
+          }
+        },
+        "cleanup": {
+          "complete": false,
+          "reasonCode": "IDENTITY_UNVERIFIABLE"
+        },
+        "resultDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "id": "service-valid-ready",
+      "contract": "service-session",
+      "valid": true,
+      "payload": {
+        "schemaVersion": 1,
+        "serviceId": "preview",
+        "sessionId": "service-preview-generation-2",
+        "status": "READY",
+        "reasonCode": "SERVICE_READY",
+        "serviceGeneration": 2,
+        "stateRevision": 3,
+        "operationId": "ensure-02",
+        "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "processIdentity": null,
+        "heartbeat": {
+          "kind": "SUPERVISOR",
+          "writerIdentity": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "generation": 2,
+          "lastSeenAt": "2026-07-31T12:01:00Z",
+          "ttlSeconds": 30,
+          "staleReason": null
+        },
+        "leaseIdentity": {
+          "leaseId": "lease-preview-2",
+          "changeId": "change-preview",
+          "runId": "run-preview",
+          "expiresAt": "2026-07-31T13:00:00Z",
+          "generation": 2
+        },
+        "transitionHistory": [
+          {
+            "from": null,
+            "to": "STARTING",
+            "reasonCode": "SERVICE_START_REQUESTED",
+            "revision": 1
+          },
+          {
+            "from": "STARTING",
+            "to": "READY",
+            "reasonCode": "SERVICE_READY",
+            "revision": 3
+          }
+        ],
+        "cleanupComplete": false,
+        "supersedesSessionId": null
+      }
+    },
+    {
+      "id": "service-invalid-revision",
+      "contract": "service-session",
+      "valid": false,
+      "payload": {
+        "schemaVersion": 1,
+        "serviceId": "preview",
+        "sessionId": "service-preview-generation-2",
+        "status": "READY",
+        "reasonCode": "SERVICE_READY",
+        "serviceGeneration": 2,
+        "stateRevision": 0,
+        "operationId": "ensure-02",
+        "fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "processIdentity": null,
+        "heartbeat": null,
+        "leaseIdentity": null,
+        "transitionHistory": [],
+        "cleanupComplete": false,
+        "supersedesSessionId": null
+      }
+    },
+    {
+      "id": "retirement-valid-retained",
+      "contract": "service-retirement-receipt",
+      "valid": true,
+      "payload": {
+        "schemaVersion": 1,
+        "receiptId": "retirement-preview-1",
+        "operationId": "retire-operation-1",
+        "serviceId": "preview",
+        "oldSessionId": "service-preview-generation-1",
+        "oldGeneration": 1,
+        "state": "FINALIZED",
+        "retirementStateCommit": {
+          "status": "COMMITTED",
+          "reasonCode": "SERVICE_RETIRED"
+        },
+        "leaseCleanup": {
+          "status": "RETAINED",
+          "reasonCode": "LISTENER_IDENTITY_UNVERIFIABLE",
+          "leaseId": "lease-preview-1"
+        },
+        "cleanupComplete": false,
+        "awaitingSuperseder": true,
+        "supersededBySessionId": null,
+        "receiptDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    },
+    {
+      "id": "retirement-invalid-cleanup-claim",
+      "contract": "service-retirement-receipt",
+      "valid": false,
+      "payload": {
+        "schemaVersion": 1,
+        "receiptId": "retirement-preview-1",
+        "operationId": "retire-operation-1",
+        "serviceId": "preview",
+        "oldSessionId": "service-preview-generation-1",
+        "oldGeneration": 1,
+        "state": "FINALIZED",
+        "retirementStateCommit": {
+          "status": "COMMITTED",
+          "reasonCode": "SERVICE_RETIRED"
+        },
+        "leaseCleanup": {
+          "status": "RETAINED",
+          "reasonCode": "LISTENER_IDENTITY_UNVERIFIABLE",
+          "leaseId": "lease-preview-1"
+        },
+        "cleanupComplete": true,
+        "awaitingSuperseder": true,
+        "supersededBySessionId": null,
+        "receiptDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    }
+  ]
+}

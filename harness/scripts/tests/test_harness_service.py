@@ -23,6 +23,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_service as hs  # noqa: E402
+import harness_execution_contracts as hec  # noqa: E402
 
 
 def _write(path: Path, text: str) -> None:
@@ -1099,6 +1100,45 @@ class ResolveServiceStartTests(unittest.TestCase):
 
 
 class ServiceOwnershipContractTests(unittest.TestCase):
+    def test_rejects_health_checks_that_do_not_prove_service_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "health.marker"
+            marker.write_text("foreign-instance", encoding="utf-8")
+            service_start = {
+                "healthFile": str(marker),
+                "requireInstanceToken": True,
+                "instanceToken": "owned-token",
+            }
+            self.assertFalse(
+                hs.probe_health(
+                    service_start,
+                    expected_instance_token="owned-token",
+                )
+            )
+            marker.write_text("owned-token", encoding="utf-8")
+            self.assertTrue(
+                hs.probe_health(
+                    service_start,
+                    expected_instance_token="owned-token",
+                )
+            )
+
+    def test_tokenless_listener_reuse_requires_owned_tree_proof(self) -> None:
+        service_start = {
+            "healthUrl": "tcp://127.0.0.1:4173/health",
+            "port": 4173,
+        }
+        self.assertFalse(hs._listener_identity_is_owned({}, service_start))
+        session = {
+            "processAttestation": {"pid": 1234},
+            "ownershipProof": {"proofId": "proof-1"},
+        }
+        with (
+            mock.patch.object(hs._process_provider, "_observe_proof_members", return_value=[{"pid": 1234}]),
+            mock.patch.object(hs._process_provider, "validate_ownership_proof", return_value={"ok": True}),
+        ):
+            self.assertTrue(hs._listener_identity_is_owned(session, service_start))
+
     def test_windows_launcher_owns_child_job_until_service_exits(self) -> None:
         source = hs._WIN_LAUNCHER_SOURCE
 
@@ -1180,6 +1220,111 @@ class ServiceOwnershipContractTests(unittest.TestCase):
             self.assertEqual(result["occupiedPorts"], [4173])
             self.assertTrue(hs.session_path(change).is_file())
 
+    def test_serializes_service_mutations_with_generation_compare_and_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            first = hs.ServiceMutationLock(change, operation="ensure")
+            self.assertIsNone(first.acquire())
+            try:
+                second = hs.ServiceMutationLock(change, operation="stop")
+                conflict = second.acquire()
+                self.assertIsNotNone(conflict)
+                self.assertEqual(conflict["code"], "SERVICE_MUTATION_CONFLICT")
+                self.assertEqual(conflict["owner"]["operation"], "ensure")
+            finally:
+                first.release()
+            third = hs.ServiceMutationLock(change, operation="retire")
+            self.assertIsNone(third.acquire())
+            third.release()
+
+    def test_validates_every_service_transition_and_generation_rule(self) -> None:
+        session = {"serviceGeneration": "generation-old", "stateRevision": 0}
+        hs._ensure_session_state(session, operation_id="op-1")
+        generation = session["serviceGeneration"]
+        hs._transition(
+            session,
+            "STARTING",
+            reason_code="SERVICE_STARTING",
+            operation_id="op-1",
+        )
+        hs._transition(
+            session,
+            "READY",
+            reason_code="SERVICE_READY",
+            operation_id="op-1",
+        )
+        self.assertEqual(session["serviceGeneration"], generation)
+        self.assertEqual(session["stateRevision"], 2)
+        self.assertEqual(
+            [item["to"] for item in session["transitionHistory"]],
+            ["STARTING", "READY"],
+        )
+        revision_before = session["stateRevision"]
+        conflict = hs._transition(
+            session,
+            "STARTING",
+            reason_code="SERVICE_START_REQUESTED",
+            operation_id="op-conflict",
+        )
+        self.assertEqual(conflict["code"], "SERVICE_TRANSITION_CONFLICT")
+        self.assertEqual(session["stateRevision"], revision_before)
+
+    def test_durable_service_session_accepts_operational_projection_fields(self) -> None:
+        attestation = hs._process_provider.observe_process_identity(os.getpid())
+        session = hs.build_session(
+            pid=os.getpid(),
+            module_inputs_hash="sha256:" + "a" * 64,
+            module_inputs_files=["src/app.py"],
+            command="python src/app.py",
+            argv=["python", "src/app.py"],
+            service_start={"serviceId": "preview", "profile": "local-dev"},
+            process_attestation=attestation,
+        )
+        hs._ensure_session_state(session, operation_id="op-contract", generation=1)
+        hs._transition(
+            session,
+            "READY",
+            reason_code="SERVICE_READY",
+            operation_id="op-contract",
+        )
+        parsed = hec.parse_execution_contract("service-session", session)
+        self.assertTrue(parsed["ok"], parsed)
+
+    def test_stop_refuses_unlisted_transition_before_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            session = {
+                "pid": 999999,
+                "startedBy": "AI",
+                "startedAt": "2026-08-01T00:00:00+00:00",
+                "status": "FAILED",
+                "processIdentity": {"executable": str(Path(sys.executable).resolve())},
+                "serviceGeneration": 1,
+                "stateRevision": 1,
+            }
+            with (
+                mock.patch.object(hs, "verify_process_identity", return_value=True),
+                mock.patch.object(hs, "terminate_process_tree") as terminate,
+            ):
+                result = hs.stop_ai_session(change, session)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "SERVICE_TRANSITION_CONFLICT")
+            self.assertFalse(result["killed"])
+            terminate.assert_not_called()
+            self.assertEqual(session["status"], "FAILED")
+
+    def test_never_treats_heartbeat_as_process_ownership_authority(self) -> None:
+        session = {
+            "serviceGeneration": "generation-1",
+            "stateRevision": 1,
+        }
+        hs._ensure_session_state(session, operation_id="op-1")
+        session["heartbeat"]["lastSeenAt"] = "2000-01-01T00:00:00+00:00"
+        heartbeat = hs._heartbeat_status(session)
+        self.assertTrue(heartbeat["stale"])
+        self.assertEqual(heartbeat["reasonCode"], "SERVICE_HEARTBEAT_STALE")
+        self.assertNotIn("killed", heartbeat)
+
 
 class StaleSessionRetirementTests(unittest.TestCase):
     def test_retire_stale_preserves_evidence_without_touching_unknown_process(
@@ -1210,6 +1355,58 @@ class StaleSessionRetirementTests(unittest.TestCase):
                 json.loads(retired.read_text(encoding="utf-8"))["sessionId"],
                 "stale-session",
             )
+            receipt_files = list((change_dir / "runtime" / "retired-service-sessions").glob("*.receipt.json"))
+            self.assertEqual(len(receipt_files), 1)
+            receipt = json.loads(receipt_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(receipt["state"], "FINALIZED")
+            self.assertEqual(receipt["retirementStateCommit"]["status"], "COMMITTED")
+            self.assertFalse(receipt["cleanupComplete"])
+            repeated = retire(change_dir)
+            self.assertTrue(repeated["ok"])
+            self.assertEqual(repeated["code"], "SERVICE_RETIRED")
+
+    def test_links_exactly_one_future_service_generation_to_a_retirement_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            retired_root = change_dir / "runtime" / "retired-service-sessions"
+            retired_root.mkdir(parents=True)
+            receipt_path = retired_root / "retired.receipt.json"
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "oldGeneration": 7,
+                        "awaitingSuperseder": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            new_session = {
+                "pid": 99999999,
+                "startedBy": "AI",
+                "startedAt": "2026-08-01T00:00:00+00:00",
+                "sessionId": "session-new",
+                "serviceGeneration": 8,
+            }
+            linked = hs.link_superseder(
+                change_dir,
+                retirement_receipt=receipt_path,
+                new_session=new_session,
+                operation_id="link-op-1",
+            )
+            self.assertTrue(linked["ok"], linked)
+            self.assertEqual(linked["code"], "SUPERSEDER_LINKED")
+            self.assertFalse(linked["receipt"]["awaitingSuperseder"])
+            persisted = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["supersededBySessionId"], "session-new")
+            self.assertEqual(persisted["oldGeneration"], 7)
+            repeated = hs.link_superseder(
+                change_dir,
+                retirement_receipt=receipt_path,
+                new_session=new_session,
+                operation_id="link-op-1",
+            )
+            self.assertEqual(repeated["code"], "SUPERSEDER_ALREADY_LINKED")
 
 
 if __name__ == "__main__":

@@ -23,8 +23,29 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-import harness_service as hservice
+import harness_process as hprocess
 from harness_paths import resolve_state_dir_for_contract
+
+
+def _verify_recorded_owner(owner: dict[str, Any]) -> bool | None:
+    try:
+        pid = int(owner.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    observed = hprocess.observe_process_identity(pid)
+    decision = hprocess.verify_process_identity(
+        {
+            "pid": pid,
+            "createdAt": owner.get("startedAt"),
+            "executable": owner.get("executable"),
+        },
+        observed,
+    )
+    if decision.get("ok") is True:
+        return True
+    if decision.get("reasonCode") == "IDENTITY_UNVERIFIABLE":
+        return None
+    return False
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -358,7 +379,7 @@ def _lease_registry_guard(lease_root: Path) -> Iterator[None]:
             except (OSError, json.JSONDecodeError):
                 holder = {}
             pid = holder.get("pid") if isinstance(holder, dict) else None
-            if isinstance(pid, int) and pid > 0 and not hservice.is_pid_alive(pid):
+            if isinstance(pid, int) and pid > 0 and not hprocess.is_pid_alive(pid):
                 try:
                     lock_path.unlink()
                     continue
@@ -444,22 +465,40 @@ def execute_provider_operation(
         raise ValueError("ENVIRONMENT_PROVIDER_LEASE_INVALID")
     executable = shutil.which(argv[0]) or str(Path(argv[0]).expanduser().resolve())
     started_at = now_iso()
-    process = subprocess.Popen(
+    spawned = hprocess.spawn_structured_argv(
         argv,
-        cwd=str(project.resolve()),
-        stdin=subprocess.DEVNULL,
+        cwd=project.resolve(),
+        environment={},
+        owner_token=f"environment:{change_id}:{stack_id}:{uuid.uuid4().hex}",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        shell=False,
     )
-    created = hservice.get_process_create_time(process.pid)
+    process = spawned.process
+    created = hprocess.get_process_create_time(process.pid)
+    cleanup_complete = False
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
         timed_out = False
     except subprocess.TimeoutExpired:
         timed_out = True
-        hservice.terminate_process_tree(process.pid)
+        hprocess.capture_owned_members(spawned)
+        cleanup = hprocess.terminate_owned_tree(
+            spawned.attestation,
+            spawned.ownershipProof,
+            {"graceSeconds": 3.0},
+        )
+        cleanup_complete = bool(cleanup.get("cleanupComplete"))
         stdout, stderr = process.communicate()
+    finally:
+        if process.poll() is None:
+            hprocess.capture_owned_members(spawned)
+            cleanup = hprocess.terminate_owned_tree(
+                spawned.attestation,
+                spawned.ownershipProof,
+                {"graceSeconds": 3.0},
+            )
+            cleanup_complete = bool(cleanup.get("cleanupComplete"))
+        spawned.close()
     operation_id = uuid.uuid4().hex
     receipt_path = _provider_operation_root(root) / f"{operation}-{operation_id}.json"
     receipt: dict[str, Any] = {
@@ -490,6 +529,9 @@ def execute_provider_operation(
                     "utf-8"
                 )
             ),
+            "processAttestation": spawned.attestation,
+            "ownershipProof": spawned.ownershipProof,
+            "cleanupComplete": cleanup_complete or process.poll() is not None,
         },
         "exitCode": process.returncode,
         "timedOut": timed_out,
@@ -716,7 +758,7 @@ def classify_leases(lease_root: Path) -> list[dict[str, Any]]:
             item["classification"] = "OWNER_IDENTITY_INCOMPLETE"
             results.append(item)
             continue
-        if not hservice.is_pid_alive(owner_pid):
+        if not hprocess.is_pid_alive(owner_pid):
             item["classification"] = "RECLAIMABLE"
             results.append(item)
             continue
@@ -728,13 +770,7 @@ def classify_leases(lease_root: Path) -> list[dict[str, Any]]:
             )
             results.append(item)
             continue
-        identity = hservice.verify_process_identity(
-            {
-                "pid": owner_pid,
-                "startedAt": owner["startedAt"],
-                "processIdentity": {"executable": owner["executable"]},
-            }
-        )
+        identity = _verify_recorded_owner(owner)
         item["classification"] = (
             "OWNER_ACTIVE"
             if identity is True
@@ -1021,13 +1057,7 @@ def _acquire_lease_locked(
             owner_pid = int(owner.get("pid"))
         except (TypeError, ValueError):
             owner_pid = 0
-        owner_verified = hservice.verify_process_identity(
-            {
-                "pid": owner_pid,
-                "startedAt": owner.get("startedAt"),
-                "processIdentity": {"executable": owner.get("executable")},
-            }
-        ) is True
+        owner_verified = _verify_recorded_owner(owner) is True
     expires_at = _parse_expiry(current.get("expiresAt"))
     unexpired = (
         expires_at is not None
@@ -1106,10 +1136,10 @@ def _acquire_lease_locked(
         "resetCount": reset_count + (1 if is_reset else 0),
         "owner": {
             "pid": os.getpid(),
-            "executable": hservice.get_process_executable(os.getpid())
+            "executable": hprocess.get_process_executable(os.getpid())
             or str(Path(sys.executable).resolve()),
             "startedAt": (
-                hservice.get_process_create_time(os.getpid())
+                hprocess.get_process_create_time(os.getpid())
                 or started
             ).isoformat(timespec="seconds"),
         },

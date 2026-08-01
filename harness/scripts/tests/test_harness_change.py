@@ -304,6 +304,102 @@ class HarnessChangeTests(unittest.TestCase):
         )
         self.assertEqual(second["port"], first["port"])
 
+    def test_releases_a_port_lease_only_with_matching_identity_and_generation(self) -> None:
+        leased = change.lease_port(
+            self.project,
+            change_id="cas-change",
+            run_id="cas-run",
+            port_range=(43201, 43201),
+            generation=7,
+        )
+        self.assertTrue(leased["ok"], leased)
+        wrong = change.release_port(
+            self.project,
+            change_id="cas-change",
+            run_id="cas-run",
+            lease_id=leased["leaseId"],
+            generation=6,
+        )
+        self.assertFalse(wrong["ok"])
+        self.assertEqual(wrong["code"], "PORT_LEASE_GENERATION_CONFLICT")
+        released = change.release_port(
+            self.project,
+            change_id="cas-change",
+            run_id="cas-run",
+            lease_id=leased["leaseId"],
+            generation=7,
+        )
+        self.assertTrue(released["ok"], released)
+
+    def test_lease_claim_and_release_reject_stale_generation(self) -> None:
+        first = change.claim_lease(
+            self.project,
+            change_id="generation-change",
+            phase="run",
+            run_id="generation-run",
+            ttl_seconds=3600,
+        )
+        self.assertTrue(first["ok"], first)
+        generation = first["lease"]["generation"]
+        stale = change.claim_lease(
+            self.project,
+            change_id="generation-change",
+            phase="run",
+            run_id="generation-run",
+            ttl_seconds=3600,
+            expected_generation=generation - 1,
+        )
+        self.assertFalse(stale["ok"])
+        self.assertEqual(stale["code"], "LEASE_GENERATION_CONFLICT")
+        released = change.release_lease(
+            self.project,
+            change_id="generation-change",
+            phase="run",
+            run_id="generation-run",
+            lease_id=first["lease"]["leaseId"],
+            generation=generation,
+        )
+        self.assertTrue(released["ok"], released)
+
+    def test_port_listener_identity_is_required_when_lease_records_one(self) -> None:
+        listener = {
+            "pid": 4100,
+            "alive": True,
+            "createdAt": "2026-07-31T10:00:00+00:00",
+            "executable": "C:/Python/python.exe",
+            "fieldProvenance": {
+                "createdAt": "OBSERVED",
+                "executable": "OBSERVED",
+            },
+        }
+        leased = change.lease_port(
+            self.project,
+            change_id="listener-change",
+            run_id="listener-run",
+            port_range=(43202, 43202),
+            generation=3,
+            listener_identity=listener,
+        )
+        self.assertTrue(leased["ok"], leased)
+        missing = change.release_port(
+            self.project,
+            change_id="listener-change",
+            run_id="listener-run",
+            lease_id=leased["leaseId"],
+            generation=3,
+        )
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["code"], "LISTENER_IDENTITY_UNVERIFIABLE")
+        released = change.release_port(
+            self.project,
+            change_id="listener-change",
+            run_id="listener-run",
+            lease_id=leased["leaseId"],
+            generation=3,
+            listener_identity=listener,
+        )
+        self.assertTrue(released["ok"], released)
+
     def test_integration_lock_serializes_submit(self) -> None:
         first = change.integration_lock_acquire(self.project, run_id="submit-a")
         second = change.integration_lock_acquire(self.project, run_id="submit-b")

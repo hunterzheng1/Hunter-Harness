@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
@@ -103,6 +104,37 @@ class RuntimeDoctorTests(unittest.TestCase):
 
 
 class ManagedRunSessionTests(unittest.TestCase):
+    def _write_log_receipt(
+        self,
+        state_root: Path,
+        session_id: str = "run-log-fixture",
+        *,
+        status: str = "OK",
+    ) -> tuple[Path, Path]:
+        session_root = runtime._run_session_root(state_root, session_id)
+        session_root.mkdir(parents=True, exist_ok=True)
+        stdout_path = session_root / "stdout.log"
+        stderr_path = session_root / "stderr.log"
+        runtime._write_run_receipt(
+            state_root,
+            {
+                "schemaVersion": 1,
+                "sessionId": session_id,
+                "status": status,
+                "reasonCode": "CHILD_EXIT_ZERO",
+                "exitCode": 0 if status == "OK" else None,
+                "resultDigest": "sha256:" + "0" * 64,
+                "workerPid": None,
+                "workerIdentity": None,
+                "lastHeartbeatAt": runtime.now_iso(),
+                "heartbeatSeconds": 1,
+                "stdoutPath": str(stdout_path),
+                "stderrPath": str(stderr_path),
+                "cleanupStatus": "PROCESS_EXITED",
+            },
+        )
+        return stdout_path, stderr_path
+
     def _wait_for_terminal(
         self,
         state_root: Path,
@@ -157,6 +189,140 @@ class ManagedRunSessionTests(unittest.TestCase):
             terminal = runtime.run_session_status(Path("."), "run-finalizing")
 
         self.assertEqual(terminal["status"], "OK")
+
+    def test_reads_utf8_logs_by_byte_cursor_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout_path, _ = self._write_log_receipt(root)
+            stdout_path.write_bytes("甲乙丙".encode("utf-8"))
+
+            first = runtime.read_run_session_log(
+                root,
+                "run-log-fixture",
+                stream="stdout",
+                cursor=0,
+                max_bytes=4,
+            )
+            second = runtime.read_run_session_log(
+                root,
+                "run-log-fixture",
+                stream="stdout",
+                cursor=first["nextCursor"],
+                max_bytes=64,
+            )
+
+            self.assertEqual(first["text"], "甲")
+            self.assertEqual(second["text"], "乙丙")
+            self.assertEqual(first["decodeStatus"], "OK")
+            self.assertEqual(second["decodeStatus"], "OK")
+            self.assertEqual(
+                first["rawDigest"],
+                "sha256:" + hashlib.sha256("甲".encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(first["nextCursor"], len("甲".encode("utf-8")))
+            self.assertTrue(second["eof"])
+
+    def test_preserves_raw_evidence_on_decode_degradation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout_path, _ = self._write_log_receipt(root)
+            raw = b"prefix\xffsuffix"
+            stdout_path.write_bytes(raw)
+
+            detail = runtime.read_run_session_log(
+                root,
+                "run-log-fixture",
+                stream="stdout",
+                cursor=0,
+                max_bytes=64,
+            )
+
+            self.assertEqual(detail["decodeStatus"], "LOG_DECODE_DEGRADED")
+            self.assertIn("\ufffd", detail["text"])
+            self.assertEqual(detail["nextCursor"], len(raw))
+            self.assertEqual(
+                detail["rawDigest"],
+                "sha256:" + hashlib.sha256(raw).hexdigest(),
+            )
+
+    def test_quarantines_legacy_sensitive_bytes_without_publishing_plaintext(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            private = Path(tmp) / "private-evidence"
+            source = root / "runtime" / "legacy-secret.txt"
+            source.parent.mkdir(parents=True)
+            raw = b"password=do-not-publish\n"
+            source.write_bytes(raw)
+
+            result = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=root,
+                private_root=private,
+                reason="legacy crash evidence",
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(source.exists())
+            private_path = Path(result["privatePath"])
+            self.assertEqual(private_path.read_bytes(), raw)
+            self.assertEqual(
+                result["sourceDigest"],
+                "sha256:" + hashlib.sha256(raw).hexdigest(),
+            )
+            receipt_path = runtime.sensitive_evidence_receipt_path(root)
+            receipt_text = receipt_path.read_text(encoding="utf-8")
+            self.assertNotIn("do-not-publish", receipt_text)
+            self.assertEqual(
+                json.loads(receipt_text)["status"],
+                "QUARANTINED",
+            )
+
+    def test_quarantine_rejects_private_root_inside_publishable_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            source = root / "legacy.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("token=blocked", encoding="utf-8")
+            result = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=root,
+                private_root=root / "private",
+            )
+            self.assertFalse(result["ok"])
+            self.assertEqual(
+                result["reasonCode"],
+                "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+            )
+            self.assertTrue(source.is_file())
+
+    def test_classifies_worker_loss_as_incomplete(self) -> None:
+        receipt = {
+            "sessionId": "run-worker-lost",
+            "status": "RUNNING",
+            "reasonCode": "CHILD_RUNNING",
+            "workerPid": 4321,
+            "workerIdentity": {
+                "pid": 4321,
+                "startedAt": "2026-07-31T00:00:00+00:00",
+                "executable": sys.executable,
+            },
+            "lastHeartbeatAt": "2026-07-31T00:00:00+00:00",
+            "heartbeatSeconds": 0.1,
+            "cleanupStatus": "PROCESS_TREE_ISOLATED",
+        }
+        with (
+            mock.patch.object(runtime, "_load_run_receipt", return_value=receipt),
+            mock.patch.object(runtime, "_receipt_identity_state", return_value=True),
+            mock.patch("harness_service.is_pid_alive", return_value=False),
+            mock.patch.object(runtime, "_write_run_receipt"),
+        ):
+            result = runtime.run_session_status(Path("."), "run-worker-lost")
+
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(result["reasonCode"], "HEARTBEAT_LOST")
+        self.assertEqual(
+            result["cleanupStatus"], "WORKER_EXITED_WITHOUT_FINAL_RECEIPT"
+        )
 
     def test_detached_session_supports_unicode_paths_incremental_logs_and_receipt(
         self,

@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hunter-harness.dev/contracts/service-session.schema.json",
+  "title": "Hunter Harness managed service session",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "serviceId",
+    "sessionId",
+    "status",
+    "reasonCode",
+    "serviceGeneration",
+    "stateRevision",
+    "operationId",
+    "fingerprint",
+    "processIdentity",
+    "heartbeat",
+    "leaseIdentity",
+    "transitionHistory",
+    "cleanupComplete",
+    "supersedesSessionId"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "serviceId": { "type": "string", "minLength": 1 },
+    "sessionId": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "STARTING",
+        "READY",
+        "STOPPING",
+        "STOPPED",
+        "FAILED",
+        "STALE_IDENTITY_MISMATCH",
+        "RETIRED"
+      ]
+    },
+    "reasonCode": { "type": "string", "minLength": 1 },
+    "serviceGeneration": { "type": "integer", "minimum": 1 },
+    "stateRevision": { "type": "integer", "minimum": 1 },
+    "operationId": { "type": "string", "minLength": 1 },
+    "fingerprint": { "$ref": "#/$defs/digest" },
+    "processIdentity": { "type": ["object", "null"] },
+    "heartbeat": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "writerIdentity",
+            "generation",
+            "lastSeenAt",
+            "ttlSeconds",
+            "staleReason"
+          ],
+          "properties": {
+            "kind": { "enum": ["SUPERVISOR", "OBSERVER"] },
+            "writerIdentity": { "$ref": "#/$defs/digest" },
+            "generation": { "type": "integer", "minimum": 1 },
+            "lastSeenAt": { "type": "string", "minLength": 1 },
+            "ttlSeconds": { "type": "integer", "minimum": 1 },
+            "staleReason": { "type": ["string", "null"] }
+          }
+        }
+      ]
+    },
+    "leaseIdentity": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "leaseId",
+            "changeId",
+            "runId",
+            "expiresAt",
+            "generation"
+          ],
+          "properties": {
+            "leaseId": { "type": "string", "minLength": 1 },
+            "changeId": { "type": "string", "minLength": 1 },
+            "runId": { "type": "string", "minLength": 1 },
+            "expiresAt": { "type": "string", "minLength": 1 },
+            "generation": { "type": "integer", "minimum": 1 },
+            "listenerIdentity": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "transitionHistory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "reasonCode", "revision"],
+        "properties": {
+          "from": {
+            "type": ["string", "null"]
+          },
+            "to": { "type": "string", "minLength": 1 },
+            "reasonCode": { "type": "string", "minLength": 1 },
+            "revision": { "type": "integer", "minimum": 1 },
+            "operationId": { "type": "string", "minLength": 1 },
+            "at": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cleanupComplete": { "type": "boolean" },
+    "supersedesSessionId": { "type": ["string", "null"], "minLength": 1 },
+    "pid": { "type": "integer", "minimum": 1 },
+    "startedBy": { "type": "string", "minLength": 1 },
+    "moduleInputsHash": { "$ref": "#/$defs/digest" },
+    "moduleInputsFiles": { "type": "array", "items": { "type": "string" } },
+    "profile": { "type": "string", "minLength": 1 },
+    "startCommandHash": { "$ref": "#/$defs/digest" },
+    "overlayPath": { "type": "string" },
+    "startedAt": { "type": "string", "minLength": 1 },
+    "command": { "type": "string" },
+    "argv": { "type": "array", "items": { "type": "string" } },
+    "ownedPorts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+    },
+    "processAttestation": { "type": "object" },
+    "ownershipProof": { "type": "object" },
+    "servicePid": { "type": "integer", "minimum": 1 },
+    "jobId": { "type": "string", "minLength": 1 },
+    "leasedPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "leaseOwner": { "type": ["string", "null"] },
+    "worktreeRoot": { "type": "string", "minLength": 1 },
+    "executionRoot": { "type": "string", "minLength": 1 },
+    "changeId": { "type": "string", "minLength": 1 },
+    "attemptId": { "type": "string", "minLength": 1 },
+    "instanceTokenHash": { "$ref": "#/$defs/digest" },
+    "identityCompleteness": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

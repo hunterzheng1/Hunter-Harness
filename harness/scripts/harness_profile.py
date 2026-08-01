@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,212 @@ if hasattr(sys.stderr, "reconfigure"):
 
 SCHEMA_VERSION = 3
 PROFILE_REL = Path(".harness") / "config" / "build-profile.json"
+
+
+def _legacy_command_has_shell_operator(command: str, *, platform: str) -> bool:
+    """Return whether direct argv migration would change shell semantics."""
+
+    quote: str | None = None
+    escaped = False
+    windows = platform == "windows"
+    for character in command:
+        if escaped:
+            escaped = False
+            continue
+        if not windows and character == "\\" and quote != "'":
+            escaped = True
+            continue
+        if character == '"' or (not windows and character == "'"):
+            quote = None if quote == character else (character if quote is None else quote)
+            continue
+        if quote is None and character in {"&", "|", "<", ">", ";"}:
+            return True
+    return False
+
+
+def _parse_windows_command_line(command: str) -> list[str]:
+    """Parse CreateProcess-style argv without POSIX ``shlex`` semantics."""
+
+    argv: list[str] = []
+    length = len(command)
+    index = 0
+    while index < length:
+        while index < length and command[index] in {" ", "\t"}:
+            index += 1
+        if index >= length:
+            break
+        token: list[str] = []
+        token_started = False
+        quoted = False
+        while index < length:
+            character = command[index]
+            if character in {" ", "\t"} and not quoted:
+                break
+            if character == "\\":
+                slash_start = index
+                while index < length and command[index] == "\\":
+                    index += 1
+                slash_count = index - slash_start
+                if index < length and command[index] == '"':
+                    token.extend("\\" for _ in range(slash_count // 2))
+                    if slash_count % 2:
+                        token.append('"')
+                        index += 1
+                    else:
+                        quoted = not quoted
+                        token_started = True
+                        index += 1
+                else:
+                    token.extend("\\" for _ in range(slash_count))
+                    token_started = True
+                continue
+            if character == '"':
+                quoted = not quoted
+                token_started = True
+                index += 1
+                continue
+            token.append(character)
+            token_started = True
+            index += 1
+        if quoted:
+            raise ValueError("PROFILE_MIGRATION_UNSAFE: unclosed Windows quote")
+        if token_started:
+            argv.append("".join(token))
+        while index < length and command[index] in {" ", "\t"}:
+            index += 1
+    return argv
+
+
+def parse_legacy_service_command(
+    command: str,
+    *,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Classify and parse a legacy service command without invoking a shell."""
+
+    normalized_platform = (
+        platform or ("windows" if os.name == "nt" else "posix")
+    ).strip().lower()
+    if normalized_platform not in {"windows", "posix"}:
+        return {
+            "ok": False,
+            "reasonCode": "PROFILE_INVALID",
+            "message": f"unsupported command platform: {normalized_platform}",
+            "platform": normalized_platform,
+        }
+    if not isinstance(command, str) or not command.strip():
+        return {
+            "ok": False,
+            "reasonCode": "PROFILE_INVALID",
+            "message": "legacy service command must be a non-empty string",
+            "platform": normalized_platform,
+        }
+    if _legacy_command_has_shell_operator(
+        command, platform=normalized_platform
+    ):
+        return {
+            "ok": False,
+            "reasonCode": "PROFILE_MIGRATION_UNSAFE",
+            "message": "legacy command contains shell operators",
+            "platform": normalized_platform,
+        }
+    try:
+        argv = (
+            _parse_windows_command_line(command)
+            if normalized_platform == "windows"
+            else shlex.split(command, posix=True)
+        )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "reasonCode": "PROFILE_MIGRATION_UNSAFE",
+            "message": str(exc),
+            "platform": normalized_platform,
+        }
+    if not argv or any("\0" in item for item in argv):
+        return {
+            "ok": False,
+            "reasonCode": "PROFILE_MIGRATION_UNSAFE",
+            "message": "legacy command cannot be represented as a safe argv array",
+            "platform": normalized_platform,
+        }
+    return {
+        "ok": True,
+        "reasonCode": None,
+        "message": "",
+        "platform": normalized_platform,
+        "argv": argv,
+    }
+
+
+def normalize_service_start(
+    service_start: dict[str, Any] | None,
+    *,
+    platform: str | None = None,
+) -> dict[str, Any]:
+    """Normalize serviceStart while preserving unsafe legacy strings verbatim."""
+
+    source = json.loads(json.dumps(service_start or {}))
+    has_command = isinstance(source.get("command"), str) and bool(
+        source["command"].strip()
+    )
+    has_argv = isinstance(source.get("argvTemplate"), list)
+    if has_command and has_argv:
+        raise ValueError(
+            "PROFILE_MIGRATION_UNSAFE: serviceStart.command and "
+            "serviceStart.argvTemplate are mutually exclusive"
+        )
+    if has_argv:
+        argv = source["argvTemplate"]
+        if any(not isinstance(item, str) or "\0" in item for item in argv):
+            raise ValueError(
+                "PROFILE_INVALID: serviceStart.argvTemplate must contain strings"
+            )
+        source.pop("command", None)
+        source.pop("legacyWarning", None)
+        return source
+    if has_command:
+        parsed = parse_legacy_service_command(
+            source["command"], platform=platform
+        )
+        if parsed["ok"]:
+            source["argvTemplate"] = parsed["argv"]
+            source.pop("command", None)
+            source.pop("legacyWarning", None)
+        else:
+            source["legacyWarning"] = {
+                "reasonCode": parsed["reasonCode"],
+                "platform": parsed["platform"],
+                "message": parsed["message"],
+            }
+        return source
+    source.pop("command", None)
+    source["argvTemplate"] = []
+    source.pop("legacyWarning", None)
+    return source
+
+
+def resolve_service_argv(
+    service_start: dict[str, Any],
+    replacements: dict[str, str] | None = None,
+    *,
+    platform: str | None = None,
+) -> list[str]:
+    """Resolve placeholders per argv element; never reparse a joined string."""
+
+    normalized = normalize_service_start(service_start, platform=platform)
+    argv = normalized.get("argvTemplate")
+    if not isinstance(argv, list):
+        warning = normalized.get("legacyWarning") or {}
+        reason = warning.get("reasonCode") or "PROFILE_MIGRATION_UNSAFE"
+        raise ValueError(f"{reason}: legacy service command requires review")
+    resolved: list[str] = []
+    for element in argv:
+        value = element
+        for placeholder, replacement in (replacements or {}).items():
+            value = value.replace(placeholder, replacement)
+        resolved.append(value)
+    return resolved
 
 
 def recommend(project: Path) -> dict[str, Any]:
@@ -147,7 +354,11 @@ def recommend(project: Path) -> dict[str, Any]:
     }
 
 
-def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
+def project_profile_v3(
+    profile: dict[str, Any],
+    *,
+    platform: str | None = None,
+) -> dict[str, Any]:
     """Compatibility projection for review before a protected v3 update."""
     projected = json.loads(json.dumps(profile))
     source_version = projected.get("schemaVersion")
@@ -195,6 +406,16 @@ def project_profile_v3(profile: dict[str, Any]) -> dict[str, Any]:
             if isinstance(command, dict) and command.get("source") == "user"
         ),
     }
+    projected["serviceStart"] = normalize_service_start(
+        projected.get("serviceStart")
+        if isinstance(projected.get("serviceStart"), dict)
+        else None,
+        platform=platform,
+    )
+    legacy_warning = projected["serviceStart"].get("legacyWarning")
+    if isinstance(legacy_warning, dict):
+        projected["migration"]["needsReview"] = True
+        projected["migration"]["serviceStartWarning"] = legacy_warning
     projected["defaultsFingerprint"] = profile_defaults_fingerprint()
     _derive_verification_inputs(projected)
     projected["verificationInputs"] = {
@@ -673,7 +894,7 @@ def empty_profile_skeleton(excluded: tuple[str, ...] | list[str]) -> dict[str, A
             "targets": {},
         },
         "serviceStart": {
-            "command": "",
+            "argvTemplate": [],
             "healthUrl": "",
             "startTimeoutSec": 120,
             "inputFiles": [],
@@ -1352,8 +1573,27 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
             if isinstance(val, str) and val.strip():
                 dropped.append(f"serviceStart.{field}（无 provenance，已备份；请用 record-quirk 重配）")
 
+    projected: dict[str, Any] | None = None
+    if sv == 2:
+        try:
+            projected = project_profile_v3(existing)
+        except ValueError as exc:
+            code = str(exc).split(":", 1)[0]
+            return {
+                "ok": False,
+                "code": (
+                    code
+                    if code in {"PROFILE_INVALID", "PROFILE_MIGRATION_UNSAFE"}
+                    else "PROFILE_MIGRATION_UNSAFE"
+                ),
+                "action": "migrate",
+                "dry_run": dry_run,
+                "needsMigration": True,
+                "error": str(exc),
+                "profilePath": str(profile_path),
+            }
+
     if dry_run:
-        projected = project_profile_v3(existing) if sv == 2 else None
         return {
             "ok": True,
             "code": "PROFILE_MIGRATION_PLANNED",
@@ -1376,7 +1616,7 @@ def migrate(project: Path, *, dry_run: bool = True) -> dict[str, Any]:
     if not backup.is_file():
         backup.write_text(profile_path.read_text(encoding="utf-8-sig"), encoding="utf-8", newline="\n")
     if sv == 2:
-        projected = project_profile_v3(existing)
+        assert projected is not None
         projected.setdefault("migration", {})["appliedAt"] = now_iso()
         write_json(profile_path, projected)
     else:

@@ -29,6 +29,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 import harness_environment as henv
+import harness_process as hprocess
 
 DEFAULT_MAX_WORKERS = 2
 DEFAULT_TIMEOUT_SECONDS = 300.0
@@ -139,35 +140,30 @@ def build_unittest_plan(
 
 
 def _pid_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    if os.name == "nt":
-        process_query_limited_information = 0x1000
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        handle = kernel32.OpenProcess(
-            process_query_limited_information,
-            False,
-            pid,
-        )
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_uint32()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return int(exit_code.value) == 259
-        finally:
-            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    return hprocess.is_pid_alive(pid)
+
+
+def _verify_recorded_owner(owner: Mapping[str, object]) -> bool | None:
+    """Verify a legacy lock owner through the canonical process provider."""
+
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        pid = int(owner.get("pid") or 0)
+    except (TypeError, ValueError):
+        return None
+    observed = hprocess.observe_process_identity(pid)
+    decision = hprocess.verify_process_identity(
+        {
+            "pid": pid,
+            "createdAt": owner.get("startedAt"),
+            "executable": owner.get("executable"),
+        },
+        observed,
+    )
+    if decision.get("ok") is True:
         return True
-    return True
+    if decision.get("reasonCode") == "IDENTITY_UNVERIFIABLE":
+        return None
+    return False
 
 
 def classify_test_lock(path: Path) -> dict[str, object]:
@@ -237,13 +233,7 @@ def classify_test_lock(path: Path) -> dict[str, object]:
             "token": payload.get("token"),
             "owner": owner,
         }
-    verified = henv.hservice.verify_process_identity(
-        {
-            "pid": owner_pid,
-            "startedAt": owner["startedAt"],
-            "processIdentity": {"executable": owner["executable"]},
-        }
-    )
+    verified = _verify_recorded_owner(owner)
     classification = (
         "OWNER_ACTIVE"
         if verified is True
@@ -348,9 +338,9 @@ class TestRunLock:
                 )
             else:
                 now = time.time()
-                created = henv.hservice.get_process_create_time(os.getpid())
+                created = hprocess.get_process_create_time(os.getpid())
                 executable = (
-                    henv.hservice.get_process_executable(os.getpid())
+                    hprocess.get_process_executable(os.getpid())
                     or str(Path(sys.executable).resolve())
                 )
                 payload = {
@@ -794,35 +784,12 @@ def _terminate_process_tree(
     *,
     windows_job: _WindowsKillOnCloseJob | None,
 ) -> None:
+    """Legacy seam retained for callers; ownership must be provider-backed."""
+
     if windows_job is not None and windows_job.handle is not None:
         windows_job.terminate_and_wait()
-    elif os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=10,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
     else:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-    if process.poll() is None:
-        process.kill()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+        raise RuntimeError("PROCESS_OWNERSHIP_REQUIRED")
 
 
 def _cleanup_descendants_after_success(
@@ -832,12 +799,7 @@ def _cleanup_descendants_after_success(
 ) -> bool:
     if windows_job is not None and windows_job.handle is not None:
         return windows_job.terminate_and_wait()
-    if os.name != "nt":
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    return os.name != "nt"
+    return False
 
 
 def run_managed_command(
@@ -859,74 +821,84 @@ def run_managed_command(
     child_env.setdefault("PYTHONUNBUFFERED", "1")
     lower_process_priority()
 
-    popen_kwargs: dict[str, object] = {
-        "cwd": str(Path(cwd).resolve()),
-        "env": child_env,
-        "shell": False,
-    }
     output_stream = tempfile.TemporaryFile(mode="w+b") if capture_output else None
-    if output_stream is not None:
-        popen_kwargs["stdout"] = output_stream
-        popen_kwargs["stderr"] = subprocess.STDOUT
-    if os.name == "nt":
-        popen_kwargs["creationflags"] = getattr(
-            subprocess,
-            "CREATE_NEW_PROCESS_GROUP",
-            0,
-        )
-    else:
-        popen_kwargs["start_new_session"] = True
-
     started = time.monotonic()
+    spawned = None
+    process: subprocess.Popen[object] | None = None
+    cleanup_complete = False
     try:
-        process = subprocess.Popen(list(argv), **popen_kwargs)
-        windows_job = (
-            _WindowsKillOnCloseJob(allow_breakaway=allow_detached_processes)
-            if os.name == "nt"
-            else None
+        spawned = hprocess.spawn_structured_argv(
+            list(argv),
+            cwd=Path(cwd).resolve(),
+            environment=child_env,
+            owner_token=f"test-runner:{uuid.uuid4().hex}",
+            stdout=output_stream,
+            stderr=(subprocess.STDOUT if output_stream is not None else None),
         )
-        isolated = bool(windows_job and windows_job.assign(process))
-        known_windows_descendants: set[int] = set()
-        windows_snapshot_ok = True
-        if os.name != "nt":
-            isolated = True
+        process = spawned.process
+        isolated = bool(
+            isinstance(spawned.ownershipProof, dict)
+            and spawned.ownershipProof.get("membersComplete") is True
+        )
+
+        def provider_cleanup() -> bool:
+            hprocess.capture_owned_members(spawned)
+            result = hprocess.terminate_owned_tree(
+                spawned.attestation,
+                spawned.ownershipProof,
+                {"graceSeconds": 3.0},
+            )
+            return bool(result.get("cleanupComplete"))
+
+        def wait_owned_members_gone() -> bool:
+            proof = spawned.ownershipProof
+            if not isinstance(proof, dict):
+                return False
+            members = proof.get("members")
+            if not isinstance(members, list):
+                return False
+            pids = {
+                int(item["pid"])
+                for item in members
+                if isinstance(item, dict) and isinstance(item.get("pid"), int)
+            }
+            deadline = time.monotonic() + 5.0
+            while pids and time.monotonic() < deadline:
+                pids = {pid for pid in pids if hprocess.is_pid_alive(pid)}
+                if pids:
+                    time.sleep(0.05)
+            return not pids
+
         timed_out = False
         try:
             deadline = time.monotonic() + max(0.01, float(timeout_seconds))
             while True:
-                if os.name == "nt":
-                    windows_snapshot_ok = (
-                        _update_windows_descendants(
-                            process.pid,
-                            known_windows_descendants,
-                        )
-                        and windows_snapshot_ok
-                    )
                 polled = process.poll()
                 if polled is not None:
                     returncode = polled
                     break
                 if time.monotonic() >= deadline:
                     timed_out = True
-                    _terminate_process_tree(process, windows_job=windows_job)
+                    cleanup_complete = provider_cleanup()
                     returncode = 124
                     break
                 time.sleep(0.05)
         except KeyboardInterrupt:
-            _terminate_process_tree(process, windows_job=windows_job)
-            if os.name == "nt":
-                _terminate_tracked_windows_descendants(known_windows_descendants)
+            cleanup_complete = provider_cleanup()
             raise
-        descendants_drained = True
         if not timed_out:
-            descendants_drained = _cleanup_descendants_after_success(
-                process,
-                windows_job=windows_job,
-            )
-        if os.name == "nt":
-            _update_windows_descendants(process.pid, known_windows_descendants)
-            _terminate_tracked_windows_descendants(known_windows_descendants)
-            isolated = isolated and windows_snapshot_ok and descendants_drained
+            cleanup_complete = provider_cleanup()
+            # A named Windows Job remains an owned capability after the leader
+            # exits. Closing that provider handle drains any attested children;
+            # PID-only or POSIX group fallbacks stay fail-closed.
+            if not cleanup_complete and os.name == "nt":
+                spawned.close()
+                cleanup_complete = wait_owned_members_gone()
+        if process.poll() is None:
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                cleanup_complete = False
         duration = time.monotonic() - started
         output_tail = ""
         if output_stream is not None:
@@ -939,10 +911,28 @@ def run_managed_command(
             returncode=returncode,
             timed_out=timed_out,
             duration_seconds=duration,
-            process_tree_isolated=isolated,
+            process_tree_isolated=isolated and cleanup_complete,
             output_tail=output_tail,
         )
     finally:
+        if (
+            not cleanup_complete
+            and process is not None
+            and process.poll() is None
+            and spawned is not None
+        ):
+            try:
+                hprocess.capture_owned_members(spawned)
+                cleanup = hprocess.terminate_owned_tree(
+                    spawned.attestation,
+                    spawned.ownershipProof,
+                    {"graceSeconds": 3.0},
+                )
+                cleanup_complete = bool(cleanup.get("cleanupComplete"))
+            except Exception:
+                cleanup_complete = False
+        if spawned is not None:
+            spawned.close()
         if output_stream is not None:
             output_stream.close()
 

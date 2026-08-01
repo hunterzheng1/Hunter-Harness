@@ -77,6 +77,7 @@ import harness_paths as hp  # noqa: E402
 import harness_phase as hphase  # noqa: E402
 import harness_report_model as hrm  # noqa: E402
 import harness_review as hr  # noqa: E402
+import harness_runtime as hruntime  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1957,6 +1958,131 @@ def check_archive_exact_byte_policy(project_root: Path) -> dict[str, Any]:
     }
 
 
+def validate_sensitive_evidence_publication_gate(
+    change_dir: Path,
+    *,
+    copy_root: Path | None = None,
+    require_receipt: bool = False,
+) -> dict[str, Any]:
+    """Fail closed before freeze/copy when plaintext evidence is unresolved.
+
+    The receipt is deliberately self-excluded from the tree digest.  It may
+    therefore bind the exact publishable bytes without creating a recursive
+    digest.  Private quarantine paths are evidence metadata only and must be
+    outside both the project/copy roots.
+    """
+    change_dir = change_dir.expanduser().resolve()
+    copy_root = (copy_root or change_dir).expanduser().resolve()
+    receipt_path = hruntime.sensitive_evidence_receipt_path(change_dir)
+    candidates = hruntime.sensitive_evidence_candidates(change_dir)
+    if candidates:
+        return {
+            "ok": False,
+            "reasonCode": "SENSITIVE_EVIDENCE_UNQUARANTINED",
+            "receiptPath": str(receipt_path),
+            "unresolvedFailures": candidates,
+            "nextAction": "Quarantine the original bytes before archive publication.",
+        }
+    if not receipt_path.is_file():
+        if require_receipt:
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_MISSING",
+                "receiptPath": str(receipt_path),
+                "unresolvedFailures": [],
+            }
+        return {
+            "ok": True,
+            "reasonCode": "SECRET_SCAN_NOT_APPLICABLE",
+            "receiptPath": str(receipt_path),
+            "receiptRequired": False,
+            "unresolvedFailures": [],
+        }
+    try:
+        receipt = read_json(receipt_path)
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        return {
+            "ok": False,
+            "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+            "receiptPath": str(receipt_path),
+            "error": str(exc),
+        }
+    if not isinstance(receipt, dict):
+        return {
+            "ok": False,
+            "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+            "receiptPath": str(receipt_path),
+            "error": "receipt must be an object",
+        }
+    issues: list[dict[str, Any]] = []
+    if receipt.get("schemaVersion") != 1:
+        issues.append({"code": "SECRET_SCAN_SCHEMA_INVALID"})
+    if receipt.get("rulesVersion") != hruntime.SECRET_SCAN_RULES_VERSION:
+        issues.append({"code": "SECRET_SCAN_RULES_MISMATCH"})
+    if receipt.get("changeId") != change_dir.name:
+        issues.append({"code": "SECRET_SCAN_CHANGE_ID_MISMATCH"})
+    if str(receipt.get("status") or "").upper() not in {"OK", "QUARANTINED"}:
+        issues.append({"code": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED"})
+    unresolved = receipt.get("unresolvedFailures")
+    if isinstance(unresolved, list) and unresolved:
+        issues.append({"code": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED", "count": len(unresolved)})
+    elif unresolved not in (None, []):
+        issues.append({"code": "SECRET_SCAN_UNRESOLVED_INVALID"})
+    try:
+        actual_digest = hruntime.publishable_tree_digest(change_dir)
+    except OSError as exc:
+        actual_digest = None
+        issues.append({"code": "SECRET_SCAN_TREE_UNREADABLE", "error": str(exc)})
+    if actual_digest is not None and receipt.get("publishableTreeDigest") != actual_digest:
+        issues.append({
+            "code": "SECRET_SCAN_TREE_DIGEST_MISMATCH",
+            "expected": receipt.get("publishableTreeDigest"),
+            "actual": actual_digest,
+        })
+    if receipt.get("publicationExcluded") is not True:
+        issues.append({"code": "SECRET_SCAN_PUBLICATION_NOT_EXCLUDED"})
+    project_root = find_project_root(change_dir)
+    for entry in receipt.get("entries") or []:
+        if not isinstance(entry, dict):
+            issues.append({"code": "SECRET_SCAN_ENTRY_INVALID"})
+            continue
+        private_raw = entry.get("privatePath")
+        if not isinstance(private_raw, str) or not private_raw.strip():
+            issues.append({"code": "SECRET_SCAN_PRIVATE_PATH_MISSING"})
+            continue
+        private_path = Path(private_raw).expanduser().resolve()
+        if (
+            _path_is_within(private_path, copy_root)
+            or _path_is_within(private_path, project_root)
+            or _path_is_within(private_path, change_dir)
+        ):
+            issues.append({
+                "code": "SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT",
+                "privatePath": str(private_path),
+            })
+        if not private_path.is_file():
+            issues.append({
+                "code": "SECRET_SCAN_PRIVATE_PATH_MISSING",
+                "privatePath": str(private_path),
+            })
+        source_raw = entry.get("sourcePath")
+        if isinstance(source_raw, str) and source_raw.strip():
+            source_path = (change_dir / source_raw).resolve()
+            if _path_is_within(source_path, change_dir) and source_path.exists():
+                issues.append({
+                    "code": "SENSITIVE_EVIDENCE_SOURCE_REMAINS",
+                    "sourcePath": source_raw,
+                })
+    return {
+        "ok": not issues,
+        "reasonCode": "SECRET_SCAN_GATE_SATISFIED" if not issues else "SECRET_SCAN_GATE_BLOCKED",
+        "receiptPath": str(receipt_path),
+        "receipt": receipt,
+        "issues": issues,
+        "treeDigest": actual_digest,
+    }
+
+
 # ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
@@ -2000,6 +2126,22 @@ def check_status(
                 "message": str(exact_byte["remediation"]),
             }
         )
+
+    sensitive_gate = validate_sensitive_evidence_publication_gate(
+        change_dir,
+        copy_root=change_dir,
+        require_receipt=False,
+    )
+    checks["sensitive_evidence_publication"] = sensitive_gate
+    if not sensitive_gate.get("ok"):
+        blockers.append({
+            "code": str(sensitive_gate.get("reasonCode") or "SECRET_SCAN_GATE_BLOCKED"),
+            "message": str(
+                sensitive_gate.get("nextAction")
+                or sensitive_gate.get("error")
+                or "sensitive evidence publication gate failed"
+            ),
+        })
 
     # --- H-4 formal-layer minimum set ---
     plans_dir = change_dir / "plans"
@@ -7321,6 +7463,32 @@ def cmd_finalize(
         payload["error"] = f"archive target already exists: {archive_dir}"
         return 1, payload
 
+    source_sensitive_gate = validate_sensitive_evidence_publication_gate(
+        original_change_dir,
+        copy_root=original_change_dir,
+        require_receipt=False,
+    )
+    payload["steps"]["sensitive_evidence_source_gate"] = source_sensitive_gate
+    if not source_sensitive_gate.get("ok"):
+        payload["error"] = str(
+            source_sensitive_gate.get("nextAction")
+            or source_sensitive_gate.get("error")
+            or "sensitive evidence publication gate failed"
+        )
+        payload["issues"] = [
+            {
+                "code": str(
+                    source_sensitive_gate.get("reasonCode")
+                    or "SECRET_SCAN_GATE_BLOCKED"
+                ),
+                "severity": "error",
+                "message": payload["error"],
+            }
+        ]
+        payload["original_preserved"] = original_change_dir.is_dir()
+        payload["finalStatus"] = "FAIL"
+        return 1, payload
+
     exact_byte = check_archive_exact_byte_policy(project_root)
     payload["steps"]["archive_exact_byte"] = exact_byte
     if not exact_byte["ok"]:
@@ -7407,6 +7575,38 @@ def cmd_finalize(
 
     work_dir = operation_temp_dir
     before_manifest: dict[str, Any] | None = None
+
+    # A source tree without sensitive evidence still receives a digest-bound
+    # receipt in the isolated staging tree.  This keeps legacy archives
+    # compatible while making every published archive auditable.
+    try:
+        staged_receipt = hruntime.sensitive_evidence_receipt_path(work_dir)
+        if not staged_receipt.is_file():
+            hruntime.ensure_sensitive_evidence_scan_receipt(work_dir)
+        staged_sensitive_gate = validate_sensitive_evidence_publication_gate(
+            work_dir,
+            copy_root=work_dir,
+            require_receipt=True,
+        )
+        payload["steps"]["sensitive_evidence_publication"] = staged_sensitive_gate
+        if not staged_sensitive_gate.get("ok"):
+            payload["error"] = "sensitive evidence publication gate failed before freeze"
+            payload["issues"] = [
+                {
+                    "code": str(
+                        staged_sensitive_gate.get("reasonCode")
+                        or "SECRET_SCAN_GATE_BLOCKED"
+                    ),
+                    "severity": "error",
+                    "message": payload["error"],
+                }
+            ]
+            _restore_finalize_failure()
+            return 1, payload
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        payload["error"] = f"sensitive evidence publication gate failed: {exc}"
+        _restore_finalize_failure()
+        return 1, payload
 
     if split_state_dir is not None and split_state_dir.is_dir():
         _merge_runtime_state(split_state_dir, work_dir)

@@ -879,5 +879,109 @@ class ResolveCommandPlaceholderTests(unittest.TestCase):
         self.assertIn(str(exec_root), resolved["command"])
 
 
+class StructuredServiceStartProfileTests(unittest.TestCase):
+    def test_generates_structured_service_argv_and_migrates_legacy_profiles_safely(
+        self,
+    ) -> None:
+        skeleton = hp.empty_profile_skeleton([])
+        service = skeleton["serviceStart"]
+        self.assertNotIn("command", service)
+        self.assertEqual(service["argvTemplate"], [])
+
+        projected = hp.project_profile_v3(
+            {
+                "schemaVersion": 2,
+                "commands": {},
+                "serviceStart": {
+                    "command": 'python -m demo --root "C:\\工作 目录"',
+                    "healthUrl": "http://127.0.0.1:9000/health",
+                    "startTimeoutSec": 30,
+                    "inputFiles": ["src/**"],
+                    "source": "detected",
+                    "profile": "{changeName}",
+                    "overlayPath": "{overlayPath}",
+                },
+            },
+            platform="windows",
+        )
+        migrated = projected["serviceStart"]
+        self.assertNotIn("command", migrated)
+        self.assertEqual(
+            migrated["argvTemplate"],
+            ["python", "-m", "demo", "--root", "C:\\工作 目录"],
+        )
+        resolved = hp.resolve_service_argv(
+            migrated,
+            {
+                "{changeName}": "feature-a",
+                "{overlayPath}": "C:\\运行\\overlay.json",
+            },
+        )
+        self.assertEqual(resolved[-2:], ["--root", "C:\\工作 目录"])
+        self.assertEqual(migrated["profile"], "{changeName}")
+
+    def test_migrates_legacy_service_profiles_without_changing_command_semantics(
+        self,
+    ) -> None:
+        unsafe = hp.normalize_service_start(
+            {
+                "command": "python server.py && echo unsafe",
+                "healthUrl": "",
+                "startTimeoutSec": 10,
+                "inputFiles": [],
+                "source": "user",
+                "profile": "",
+                "overlayPath": "",
+            },
+            platform="windows",
+        )
+        self.assertEqual(unsafe["command"], "python server.py && echo unsafe")
+        self.assertNotIn("argvTemplate", unsafe)
+        self.assertEqual(
+            unsafe["legacyWarning"]["reasonCode"],
+            "PROFILE_MIGRATION_UNSAFE",
+        )
+        with self.assertRaisesRegex(ValueError, "PROFILE_MIGRATION_UNSAFE"):
+            hp.normalize_service_start(
+                {
+                    "command": "python server.py",
+                    "argvTemplate": ["python", "server.py"],
+                },
+                platform="windows",
+            )
+
+        parsed = hp.parse_legacy_service_command(
+            'python server.py --name "a b" "" "tail\\\\"',
+            platform="windows",
+        )
+        self.assertTrue(parsed["ok"])
+        self.assertEqual(
+            parsed["argv"],
+            ["python", "server.py", "--name", "a b", "", "tail\\"],
+        )
+
+        with tempfile.TemporaryDirectory(prefix="profile-service-both-") as tmp:
+            project = Path(tmp)
+            profile_path = project / ".harness" / "config" / "build-profile.json"
+            _write(
+                profile_path,
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "commands": {},
+                        "serviceStart": {
+                            "command": "python server.py",
+                            "argvTemplate": ["python", "server.py"],
+                        },
+                    }
+                ),
+            )
+            before = profile_path.read_bytes()
+            result = hp.migrate(project, dry_run=True)
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "PROFILE_MIGRATION_UNSAFE")
+            self.assertEqual(profile_path.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
