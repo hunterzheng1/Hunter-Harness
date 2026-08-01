@@ -25,9 +25,9 @@ import {
   stateLayout
 } from "../src/index.js";
 
-// GitHub's Windows runner may expose TEMP through a junction. Durable
-// recovery roots intentionally reject linked path components, so tests must
-// create their temporary fixtures below the canonical temp directory.
+// GitHub's Windows runner may expose TEMP through a junction. Canonicalize
+// fixture roots so tests are independent of that parent alias; production
+// still rejects a linked root itself and any linked internal component.
 const tmpdir = (): string => realpathSync(osTmpdir());
 
 async function mkdtemp(prefix: string): Promise<string> {
@@ -215,6 +215,42 @@ describe("schema v3 durable recovery", () => {
     await expect(readFile(join(root, "managed.md"))).rejects.toMatchObject({
       code: "ENOENT"
     });
+  });
+
+  it("accepts a real recovery root below a parent junction", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-parent-junction-project-"));
+    const junctionTarget = await mkdtemp(join(
+      tmpdir(),
+      "hunter-parent-junction-target-"
+    ));
+    const junctionContainer = await mkdtemp(join(
+      tmpdir(),
+      "hunter-parent-junction-container-"
+    ));
+    const linkedParent = join(junctionContainer, "linked-parent");
+    await symlink(
+      junctionTarget,
+      linkedParent,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    const recoveryRoot = join(linkedParent, "recovery");
+
+    const result = await runTransaction(root, [{
+      operation: "add",
+      path: "managed.md",
+      content: "managed"
+    }], {
+      id: "tx_parent_junction",
+      kind: "update",
+      recoveryStore: {
+        root: recoveryRoot,
+        managedPaths: ["managed.md"]
+      },
+      ...identity
+    });
+
+    expect(result.status).toBe("committed");
+    expect(await readFile(join(root, "managed.md"), "utf8")).toBe("managed");
   });
 
   it("keeps legacy journals inspect-and-rollback only", async () => {

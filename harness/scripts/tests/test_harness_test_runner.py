@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,27 @@ def load_runner():
 
 
 runner = load_runner()
+
+
+@contextlib.contextmanager
+def temporary_directory_with_windows_cleanup_retry(prefix: str):
+    """Allow terminated Windows children a bounded interval to release cwd handles."""
+
+    raw_tmp = tempfile.mkdtemp(prefix=prefix)
+    try:
+        yield raw_tmp
+    finally:
+        deadline = time.monotonic() + (5.0 if os.name == "nt" else 0.0)
+        while True:
+            try:
+                shutil.rmtree(raw_tmp)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
 
 class RunnerPresenceTests(unittest.TestCase):
@@ -344,7 +366,9 @@ class RunnerContractTests(unittest.TestCase):
                         os.kill(child_pid, 9)
 
     def test_detached_service_mode_uses_pid_lineage_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="harness-runner-lineage-") as raw_tmp:
+        with temporary_directory_with_windows_cleanup_retry(
+            "harness-runner-lineage-"
+        ) as raw_tmp:
             tmp = Path(raw_tmp)
             pid_file = tmp / "child.pid"
             script = (
@@ -383,7 +407,9 @@ class RunnerContractTests(unittest.TestCase):
     def test_detached_service_mode_contains_ordinary_child_when_lineage_scan_misses(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="harness-runner-lineage-race-") as raw_tmp:
+        with temporary_directory_with_windows_cleanup_retry(
+            "harness-runner-lineage-race-"
+        ) as raw_tmp:
             tmp = Path(raw_tmp)
             pid_file = tmp / "child.pid"
             script = (

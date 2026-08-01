@@ -20,7 +20,8 @@ import {
 } from "../src/index.js";
 
 // Keep durable recovery fixtures outside junction aliases used by some
-// Windows CI temp directories; production recovery roots remain fail-closed.
+// Windows CI temp directories; production still fails closed on linked roots
+// and linked internal components.
 const tmpdir = (): string => realpathSync(osTmpdir());
 
 async function mkdtemp(prefix: string): Promise<string> {

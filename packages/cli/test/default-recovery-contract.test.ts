@@ -23,8 +23,8 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../src/bin.js";
 
 // Windows hosted runners can expose TEMP through a junction. Use its
-// canonical target so explicit durable recovery roots exercise the contract,
-// rather than the runner's temp-path alias.
+// canonical target so explicit durable recovery roots exercise the contract;
+// production still rejects linked roots and internal path components.
 const tmpdir = (): string => realpathSync(osTmpdir());
 
 async function mkdtemp(prefix: string): Promise<string> {

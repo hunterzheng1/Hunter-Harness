@@ -16,9 +16,9 @@ import { stateLayout } from "@hunter-harness/core";
 
 import { runCli } from "../src/bin.js";
 
-// Windows CI may expose TEMP through a junction; canonicalize it before
-// creating a recovery root, which the production boundary intentionally
-// rejects when any path component is linked.
+// Windows CI may expose TEMP through a junction. Canonicalize it before
+// creating a recovery root; production rejects linked roots and internal
+// path components while allowing a safe parent alias.
 const tmpdir = (): string => realpathSync(osTmpdir());
 
 async function mkdtemp(prefix: string): Promise<string> {

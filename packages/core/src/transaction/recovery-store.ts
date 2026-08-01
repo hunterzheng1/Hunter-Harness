@@ -385,10 +385,6 @@ function pathIsWithin(parent: string, candidate: string): boolean {
     !isAbsolute(child));
 }
 
-function comparablePath(value: string): string {
-  return process.platform === "win32" ? value.toLowerCase() : value;
-}
-
 interface RecoveryRootBoundary {
   resolvedRoot: string;
   realRoot: string;
@@ -406,11 +402,10 @@ async function inspectRecoveryRoot(
     );
   }
   const realRoot = await realpath(resolvedRoot);
-  if (comparablePath(realRoot) !== comparablePath(resolvedRoot)) {
-    throw new RecoveryStoreBoundaryError(
-      "durable recovery root must not traverse a symbolic link or junction"
-    );
-  }
+  // The root itself must be a real directory, but its parent may be a
+  // runner-managed junction (common on Windows). Keep the canonical path as
+  // the boundary used by all child containment checks instead of rejecting a
+  // safe parent alias before the transaction can start.
   return { resolvedRoot, realRoot };
 }
 
