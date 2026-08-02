@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.47] — hunter-harness / [0.2.45] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-02 归档敏感证据收据一致性）
+
+- **可重试的敏感证据收据**：归档 finalize 在源树和隔离暂存树各执行一次即时重扫与摘要刷新；失败事件追加、`events.ndjson.lock` 排除不再造成确定性摘要漂移。
+- **隔离审计保持**：刷新保留既有 quarantine entries、private path、原始摘要与 ACL 元数据；损坏收据或后来出现的明文敏感候选继续失败关闭。
+- **真实消费回归**：新增 runtime 与 archive 集成场景，覆盖多次刷新、非法收据、明文重现和带 lock 的 record-only finalize。
+- **工作流 bundle**：版本提升至 `0.2.34`，最低 CLI 版本提升至 `0.2.47`。
+
 ## [0.2.46] — hunter-harness / [0.2.44] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-01 托管执行与环境验证编排）

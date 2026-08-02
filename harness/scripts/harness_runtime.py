@@ -217,7 +217,7 @@ def sensitive_evidence_candidates(root: Path) -> list[dict[str, Any]]:
     return _sensitive_candidates(root)
 
 
-def _write_sensitive_scan_receipt(
+def _build_sensitive_scan_receipt(
     change_root: Path,
     *,
     entries: list[dict[str, Any]],
@@ -225,7 +225,7 @@ def _write_sensitive_scan_receipt(
     status: str,
 ) -> dict[str, Any]:
     change_root = change_root.expanduser().resolve()
-    receipt = {
+    return {
         "schemaVersion": 1,
         "rulesVersion": SECRET_SCAN_RULES_VERSION,
         "changeId": change_root.name,
@@ -236,6 +236,22 @@ def _write_sensitive_scan_receipt(
         "publicationExcluded": True,
         "recordedAt": now_iso(),
     }
+
+
+def _write_sensitive_scan_receipt(
+    change_root: Path,
+    *,
+    entries: list[dict[str, Any]],
+    unresolved: list[dict[str, Any]],
+    status: str,
+) -> dict[str, Any]:
+    change_root = change_root.expanduser().resolve()
+    receipt = _build_sensitive_scan_receipt(
+        change_root,
+        entries=entries,
+        unresolved=unresolved,
+        status=status,
+    )
     atomic_write_json(_sensitive_evidence_receipt_path(change_root), receipt)
     return receipt
 
@@ -362,6 +378,93 @@ def ensure_sensitive_evidence_scan_receipt(change_root: Path) -> dict[str, Any]:
         unresolved=[],
         status="OK",
     )
+
+
+def refresh_sensitive_evidence_scan_receipt(
+    change_root: Path,
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Rescan current bytes while preserving valid quarantine audit entries."""
+    change_root = change_root.expanduser().resolve()
+    receipt_path = _sensitive_evidence_receipt_path(change_root)
+    entries: list[dict[str, Any]] = []
+    if receipt_path.is_file():
+        try:
+            prior = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                "receiptPath": str(receipt_path),
+                "error": str(exc),
+            }
+        if not isinstance(prior, dict):
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                "receiptPath": str(receipt_path),
+                "error": "receipt must be an object",
+            }
+        prior_entries = prior.get("entries")
+        prior_unresolved = prior.get("unresolvedFailures")
+        valid_identity = (
+            prior.get("schemaVersion") == 1
+            and prior.get("rulesVersion") == SECRET_SCAN_RULES_VERSION
+            and prior.get("changeId") == change_root.name
+            and prior.get("publicationExcluded") is True
+            and str(prior.get("status") or "").upper()
+            in {"OK", "QUARANTINED", "FAIL"}
+        )
+        if (
+            not valid_identity
+            or not isinstance(prior_entries, list)
+            or not isinstance(prior_unresolved, list)
+        ):
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                "receiptPath": str(receipt_path),
+                "error": "receipt identity or collection fields are invalid",
+            }
+        entries = list(prior_entries)
+
+    unresolved = _sensitive_candidates(change_root)
+    status = "FAIL" if unresolved else "QUARANTINED" if entries else "OK"
+    if persist:
+        try:
+            receipt = _write_sensitive_scan_receipt(
+                change_root,
+                entries=entries,
+                unresolved=unresolved,
+                status=status,
+            )
+        except OSError as exc:
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_REFRESH_FAILED",
+                "receiptPath": str(receipt_path),
+                "error": str(exc),
+            }
+    else:
+        receipt = _build_sensitive_scan_receipt(
+            change_root,
+            entries=entries,
+            unresolved=unresolved,
+            status=status,
+        )
+    return {
+        "ok": not unresolved,
+        "reasonCode": (
+            "SENSITIVE_EVIDENCE_UNQUARANTINED"
+            if unresolved
+            else "SECRET_SCAN_RECEIPT_REFRESHED"
+        ),
+        "receiptPath": str(receipt_path),
+        "receipt": receipt,
+        "persisted": persist,
+        "unresolvedFailures": unresolved,
+    }
 
 
 def _run_sessions_root(state_root: Path) -> Path:

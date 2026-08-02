@@ -295,6 +295,94 @@ class ManagedRunSessionTests(unittest.TestCase):
             )
             self.assertTrue(source.is_file())
 
+    def test_refresh_preserves_quarantine_entries_and_rebinds_current_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            private = Path(tmp) / "private-evidence"
+            source = root / "runtime" / "legacy-secret.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("token=never-publish", encoding="utf-8")
+            quarantined = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=root,
+                private_root=private,
+            )
+            self.assertTrue(quarantined["ok"], quarantined)
+            original_entry = quarantined["receipt"]["entries"][0]
+            (root / "events.ndjson").write_text("event-after-receipt\n", encoding="utf-8")
+            (root / "events.ndjson.lock").write_text("lock", encoding="utf-8")
+
+            refreshed = runtime.refresh_sensitive_evidence_scan_receipt(root)
+            repeated = runtime.refresh_sensitive_evidence_scan_receipt(root)
+
+            self.assertTrue(refreshed["ok"], refreshed)
+            self.assertTrue(repeated["ok"], repeated)
+            receipt = repeated["receipt"]
+            self.assertEqual(receipt["status"], "QUARANTINED")
+            self.assertEqual(receipt["entries"], [original_entry])
+            self.assertEqual(
+                receipt["publishableTreeDigest"],
+                runtime.publishable_tree_digest(root),
+            )
+
+    def test_refresh_fails_closed_when_plaintext_reappears(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            private = Path(tmp) / "private-evidence"
+            source = root / "runtime" / "legacy-secret.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("token=first-sensitive-value", encoding="utf-8")
+            quarantined = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=root,
+                private_root=private,
+            )
+            self.assertTrue(quarantined["ok"], quarantined)
+            reintroduced = root / "runtime" / "reintroduced.txt"
+            reintroduced.write_text("token=second-sensitive-value", encoding="utf-8")
+
+            refreshed = runtime.refresh_sensitive_evidence_scan_receipt(root)
+
+            self.assertFalse(refreshed["ok"])
+            self.assertEqual(
+                refreshed["reasonCode"],
+                "SENSITIVE_EVIDENCE_UNQUARANTINED",
+            )
+            self.assertEqual(refreshed["receipt"]["status"], "FAIL")
+            self.assertTrue(refreshed["receipt"]["unresolvedFailures"])
+            self.assertEqual(
+                refreshed["receipt"]["entries"],
+                quarantined["receipt"]["entries"],
+            )
+
+    def test_refresh_rejects_invalid_entries_without_overwriting_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            receipt_path = runtime.sensitive_evidence_receipt_path(root)
+            receipt_path.parent.mkdir(parents=True)
+            receipt_path.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "rulesVersion": runtime.SECRET_SCAN_RULES_VERSION,
+                        "changeId": root.name,
+                        "status": "QUARANTINED",
+                        "unresolvedFailures": [],
+                        "entries": {"invalid": "shape"},
+                        "publishableTreeDigest": "sha256:" + "0" * 64,
+                        "publicationExcluded": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = receipt_path.read_bytes()
+
+            refreshed = runtime.refresh_sensitive_evidence_scan_receipt(root)
+
+            self.assertFalse(refreshed["ok"])
+            self.assertEqual(refreshed["reasonCode"], "SECRET_SCAN_RECEIPT_INVALID")
+            self.assertEqual(receipt_path.read_bytes(), before)
+
     def test_classifies_worker_loss_as_incomplete(self) -> None:
         receipt = {
             "sessionId": "run-worker-lost",

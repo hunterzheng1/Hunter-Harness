@@ -327,7 +327,9 @@ class RunnerContractTests(unittest.TestCase):
             self.assertIn("managed-output-marker", result.output_tail)
 
     def test_normal_exit_also_cleans_up_descendants(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="harness-runner-descendant-") as raw_tmp:
+        with temporary_directory_with_windows_cleanup_retry(
+            "harness-runner-descendant-"
+        ) as raw_tmp:
             tmp = Path(raw_tmp)
             pid_file = tmp / "child.pid"
             script = (
