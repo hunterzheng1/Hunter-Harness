@@ -1963,6 +1963,7 @@ def validate_sensitive_evidence_publication_gate(
     *,
     copy_root: Path | None = None,
     require_receipt: bool = False,
+    receipt_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fail closed before freeze/copy when plaintext evidence is unresolved.
 
@@ -1983,7 +1984,7 @@ def validate_sensitive_evidence_publication_gate(
             "unresolvedFailures": candidates,
             "nextAction": "Quarantine the original bytes before archive publication.",
         }
-    if not receipt_path.is_file():
+    if receipt_override is None and not receipt_path.is_file():
         if require_receipt:
             return {
                 "ok": False,
@@ -1998,15 +1999,18 @@ def validate_sensitive_evidence_publication_gate(
             "receiptRequired": False,
             "unresolvedFailures": [],
         }
-    try:
-        receipt = read_json(receipt_path)
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
-        return {
-            "ok": False,
-            "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
-            "receiptPath": str(receipt_path),
-            "error": str(exc),
-        }
+    if receipt_override is None:
+        try:
+            receipt = read_json(receipt_path)
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            return {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                "receiptPath": str(receipt_path),
+                "error": str(exc),
+            }
+    else:
+        receipt = receipt_override
     if not isinstance(receipt, dict):
         return {
             "ok": False,
@@ -7463,10 +7467,35 @@ def cmd_finalize(
         payload["error"] = f"archive target already exists: {archive_dir}"
         return 1, payload
 
+    source_sensitive_refresh = hruntime.refresh_sensitive_evidence_scan_receipt(
+        original_change_dir,
+        persist=False,
+    )
+    payload["steps"]["sensitive_evidence_source_refresh"] = source_sensitive_refresh
+    if not source_sensitive_refresh.get("ok"):
+        payload["error"] = str(
+            source_sensitive_refresh.get("error")
+            or "sensitive evidence source receipt refresh failed"
+        )
+        payload["issues"] = [
+            {
+                "code": str(
+                    source_sensitive_refresh.get("reasonCode")
+                    or "SECRET_SCAN_RECEIPT_REFRESH_FAILED"
+                ),
+                "severity": "error",
+                "message": payload["error"],
+            }
+        ]
+        payload["original_preserved"] = original_change_dir.is_dir()
+        payload["finalStatus"] = "FAIL"
+        return 1, payload
+
     source_sensitive_gate = validate_sensitive_evidence_publication_gate(
         original_change_dir,
         copy_root=original_change_dir,
-        require_receipt=False,
+        require_receipt=True,
+        receipt_override=source_sensitive_refresh.get("receipt"),
     )
     payload["steps"]["sensitive_evidence_source_gate"] = source_sensitive_gate
     if not source_sensitive_gate.get("ok"):
@@ -7580,9 +7609,38 @@ def cmd_finalize(
     # receipt in the isolated staging tree.  This keeps legacy archives
     # compatible while making every published archive auditable.
     try:
-        staged_receipt = hruntime.sensitive_evidence_receipt_path(work_dir)
-        if not staged_receipt.is_file():
-            hruntime.ensure_sensitive_evidence_scan_receipt(work_dir)
+        # Split-v1 runtime state becomes part of the publishable archive.  Merge
+        # it before the final scan so no late runtime byte can bypass the
+        # sensitive-evidence gate or invalidate the receipt digest.
+        if split_state_dir is not None and split_state_dir.is_dir():
+            _merge_runtime_state(split_state_dir, work_dir)
+            payload["steps"]["split_state_merge"] = {
+                "ok": True,
+                "stateDir": str(split_state_dir),
+            }
+        staged_sensitive_refresh = hruntime.refresh_sensitive_evidence_scan_receipt(
+            work_dir
+        )
+        payload["steps"][
+            "sensitive_evidence_staging_refresh"
+        ] = staged_sensitive_refresh
+        if not staged_sensitive_refresh.get("ok"):
+            payload["error"] = str(
+                staged_sensitive_refresh.get("error")
+                or "sensitive evidence staging receipt refresh failed"
+            )
+            payload["issues"] = [
+                {
+                    "code": str(
+                        staged_sensitive_refresh.get("reasonCode")
+                        or "SECRET_SCAN_RECEIPT_REFRESH_FAILED"
+                    ),
+                    "severity": "error",
+                    "message": payload["error"],
+                }
+            ]
+            _restore_finalize_failure()
+            return 1, payload
         staged_sensitive_gate = validate_sensitive_evidence_publication_gate(
             work_dir,
             copy_root=work_dir,
@@ -7607,13 +7665,6 @@ def cmd_finalize(
         payload["error"] = f"sensitive evidence publication gate failed: {exc}"
         _restore_finalize_failure()
         return 1, payload
-
-    if split_state_dir is not None and split_state_dir.is_dir():
-        _merge_runtime_state(split_state_dir, work_dir)
-        payload["steps"]["split_state_merge"] = {
-            "ok": True,
-            "stateDir": str(split_state_dir),
-        }
 
     def _safe_append(**kwargs: Any) -> None:
         nonlocal work_dir

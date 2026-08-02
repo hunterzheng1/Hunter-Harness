@@ -2443,6 +2443,56 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
         self.assertFalse(denied["ok"])
         self.assertEqual(denied["reasonCode"], "SECRET_SCAN_GATE_BLOCKED")
 
+    def test_finalize_refreshes_quarantine_receipt_across_event_and_lock_drift(self) -> None:
+        _seed_change_dir(self.change)
+        archive_root = self.project / ".harness" / "archive"
+        archive_root.mkdir(parents=True)
+        source = self.change / "runtime" / "legacy.txt"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("token=never-publish", encoding="utf-8")
+        quarantined = ha.hruntime.quarantine_sensitive_evidence(
+            source,
+            change_root=self.change,
+            private_root=self.tmp / "private",
+        )
+        self.assertTrue(quarantined["ok"], quarantined)
+        with (self.change / "events.ndjson").open(
+            "a", encoding="utf-8", newline="\n"
+        ) as handle:
+            handle.write(
+                '{"phase":"submit","type":"decision","note":"after receipt"}\n'
+            )
+        (self.change / "events.ndjson.lock").write_text("lock", encoding="utf-8")
+
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        self.assertTrue(payload["steps"]["sensitive_evidence_source_refresh"]["ok"])
+        self.assertTrue(payload["steps"]["sensitive_evidence_staging_refresh"]["ok"])
+        self.assertTrue(payload["steps"]["sensitive_evidence_publication"]["ok"])
+        archive_dir = Path(payload["archive_dir"])
+        self.assertFalse((archive_dir / "events.ndjson.lock").exists())
+        receipt = json.loads(
+            (archive_dir / "meta" / "secret-scan-receipt.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(receipt["status"], "QUARANTINED")
+        self.assertEqual(len(receipt["entries"]), 1)
+        self.assertNotIn("never-publish", json.dumps(receipt))
+
 
 if __name__ == "__main__":
     unittest.main()

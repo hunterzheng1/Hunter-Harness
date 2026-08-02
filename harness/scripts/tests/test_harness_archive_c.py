@@ -316,6 +316,44 @@ class FreezeFirstTests(_FinalizeFixture):
         self.assertIn("evidence/runtime-marker.json", paths)
         self.assertFalse(state.exists(), "split runtime state must be consumed on success")
 
+    def test_split_v1_runtime_sensitive_evidence_is_scanned_before_archive(self) -> None:
+        (self.change / "meta").mkdir(exist_ok=True)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeId": "demo-change",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo-change",
+                    "runtimeRoot": ".harness/state/changes/demo-change",
+                },
+                "ownership": {
+                    "productPaths": ["README.md"],
+                    "staticEvidencePaths": [".harness/changes/demo-change/"],
+                },
+            },
+        )
+        state = self.project / ".harness" / "state" / "changes" / "demo-change"
+        state.mkdir(parents=True)
+        for name in ("events.ndjson", "logs", "evidence", "reports"):
+            source = self.change / name
+            if source.exists():
+                shutil.move(str(source), str(state / name))
+        sensitive = state / "evidence" / "late-secret.txt"
+        sensitive.parent.mkdir(parents=True, exist_ok=True)
+        sensitive.write_text("token=split-state-must-not-publish", encoding="utf-8")
+
+        code, payload, archive_dir = self._finalize()
+
+        self.assertNotEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(
+            payload["steps"]["sensitive_evidence_staging_refresh"]["reasonCode"],
+            "SENSITIVE_EVIDENCE_UNQUARANTINED",
+        )
+        self.assertTrue(self.change.is_dir())
+        self.assertTrue(state.is_dir())
+        self.assertFalse(archive_dir.exists())
+
     def test_split_v1_failure_restores_separate_contract_and_runtime(self) -> None:
         (self.change / "meta").mkdir(exist_ok=True)
         _write_json(
