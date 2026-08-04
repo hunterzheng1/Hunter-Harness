@@ -72,6 +72,29 @@ describe("hunter-harness initialization", () => {
     expect(output).toMatchObject({ dry_run: true, command: "configure" });
   });
 
+  it("initializes when only generated workflow cache remains", async () => {
+    const cacheMarker = join(
+      root,
+      ".harness",
+      "cache",
+      "workflow-packages",
+      "@hunter-harness+workflow-harness",
+      "package.json"
+    );
+    await mkdir(join(cacheMarker, ".."), { recursive: true });
+    await writeFile(cacheMarker, "{\"generated\":true}\n", "utf8");
+
+    const code = await run([
+      "--profile", "general",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ]);
+
+    expect(code).toBe(0);
+    expect(await pathExists(join(root, ".harness", "project.yaml"))).toBe(true);
+  });
+
   it("fails closed when project.yaml is missing but local archive state remains", async () => {
     const archivePath = join(
       root,
