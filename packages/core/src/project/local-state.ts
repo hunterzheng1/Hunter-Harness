@@ -195,7 +195,7 @@ async function collectHarnessDirectorySentinels(projectRoot: string): Promise<st
   }
   const sentinels: string[] = [];
   for (const entry of entries) {
-    if (entry.name === "project.yaml") continue;
+    if (entry.name === "project.yaml" || entry.name === "cache") continue;
     const relativePath = `.harness/${entry.name}`;
     const absolute = join(harnessRoot, entry.name);
     if (entry.isDirectory()) {

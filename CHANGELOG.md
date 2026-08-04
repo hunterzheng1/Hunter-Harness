@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.48] — hunter-harness / [0.2.46] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-04 初始化 partial-state 误判）
+
+- **初始化 cache 自污染修复**：workflow 资源解析在项目状态检测前生成的 `.harness/cache` 不再被当作成熟 Harness 证据；空项目和 cache-only 项目可以继续初始化。
+- **安全边界保持**：archive、changes、project-local knowledge、恢复事务、adapter build marker 和 managed instruction marker 仍然在缺少 `project.yaml` 时失败关闭。
+- **工作流 bundle**：版本提升至 `0.2.35`，最低 CLI 版本提升至 `0.2.48`。
+
 ## [0.2.47] — hunter-harness / [0.2.45] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-02 归档敏感证据收据一致性）
