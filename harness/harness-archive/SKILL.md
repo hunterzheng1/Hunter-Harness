@@ -139,7 +139,7 @@ disallowed-tools:
 
 ### 四、数据化归档门禁（先数据后渲染）
 
-必须通过 `harness_archive.py finalize` 生成 `reports/final/summary-data.json` 与 `final-summary.html` 并完成 validate；**禁止模型临场写 500+ 行 HTML**。统计数字只能来自 summary-data、events、ledger 或 manifest。详见 `../protocols/report-pipeline-protocol.md`、`../protocols/archive-report-protocol.md`、`reference.md`。
+必须通过 `harness_archive.py finalize` 生成权威 `reports/final/summary-data.json` 并完成 validate；`final-summary.html` 为可选展示投影（默认渲染；渲染失败只记 warning、不回滚归档；`finalize --no-html` 可完全跳过本地 HTML）。**禁止模型临场写 500+ 行 HTML**。统计数字只能来自 summary-data、events、ledger 或 manifest。详见 `../protocols/report-pipeline-protocol.md`、`../protocols/archive-report-protocol.md`、`reference.md`。
 
 ### 五、manifest/checksum 必须存在
 

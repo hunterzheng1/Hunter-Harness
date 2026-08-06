@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.50] — hunter-harness / [0.2.48] — @hunter-harness/workflow-harness
+
+### Changed（2026-08-07 门禁默认 lenient + 文档对齐）
+
+- **门禁默认 `lenient`**：`gate_severity_mode` 在无 env / `gate-policy.json` 时默认 `"lenient"`；可再生 soft site（plan-handoff / capsule / scenario-coverage / test-guard）失败记 WARN 收据而不阻断阶段。发布阶段（submit/merge/archive/release/deploy）与 3 类硬不变量仍 fail-closed；可用 `HUNTER_HARNESS_GATE_MODE` 或 `severityMode` 强制 `strict`。
+- **文档对齐**：README 生命周期 skill 标为手动触发；archive SKILL / README 明确 `final-summary.html` 可选，支持 `finalize --no-html`。
+- **工作流 bundle**：版本提升至 `0.2.37`，最低 CLI 版本提升至 `0.2.50`。
+
 ## [0.2.49] — hunter-harness / [0.2.47] — @hunter-harness/workflow-harness
 
 ### Added（2026-08-06 Harness/Platform 协同优化 P1–P5）

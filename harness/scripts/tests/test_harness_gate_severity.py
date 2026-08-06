@@ -34,14 +34,27 @@ class GateSeverityModeTests(unittest.TestCase):
         self.change_dir = self.project / ".harness" / "changes" / "demo"
         (self.change_dir / "meta").mkdir(parents=True)
 
-    def test_default_mode_is_strict(self) -> None:
+    def test_default_mode_is_lenient(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
+            self.assertEqual(
+                gate.gate_severity_mode(self.project, self.change_dir), "lenient"
+            )
+
+    def test_env_override_wins(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"HUNTER_HARNESS_GATE_MODE": "strict"}, clear=False
+        ):
             self.assertEqual(
                 gate.gate_severity_mode(self.project, self.change_dir), "strict"
             )
 
-    def test_env_override_wins(self) -> None:
+    def test_env_can_force_lenient(self) -> None:
+        config_path = self.project / ".harness" / "config" / "gate-policy.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"severityMode": "strict"}), encoding="utf-8"
+        )
         with mock.patch.dict(
             os.environ, {"HUNTER_HARNESS_GATE_MODE": "lenient"}, clear=False
         ):
@@ -50,34 +63,6 @@ class GateSeverityModeTests(unittest.TestCase):
             )
 
     def test_change_gate_policy_severity_mode(self) -> None:
-        (self.change_dir / "meta" / "gate-policy.json").write_text(
-            json.dumps({"schemaVersion": 1, "severityMode": "lenient"}),
-            encoding="utf-8",
-        )
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
-            self.assertEqual(
-                gate.gate_severity_mode(self.project, self.change_dir), "lenient"
-            )
-
-    def test_project_config_severity_mode(self) -> None:
-        config_path = self.project / ".harness" / "config" / "gate-policy.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            json.dumps({"severityMode": "lenient"}), encoding="utf-8"
-        )
-        with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
-            self.assertEqual(
-                gate.gate_severity_mode(self.project, self.change_dir), "lenient"
-            )
-
-    def test_change_policy_overrides_project_config(self) -> None:
-        config_path = self.project / ".harness" / "config" / "gate-policy.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            json.dumps({"severityMode": "lenient"}), encoding="utf-8"
-        )
         (self.change_dir / "meta" / "gate-policy.json").write_text(
             json.dumps({"schemaVersion": 1, "severityMode": "strict"}),
             encoding="utf-8",
@@ -88,7 +73,35 @@ class GateSeverityModeTests(unittest.TestCase):
                 gate.gate_severity_mode(self.project, self.change_dir), "strict"
             )
 
-    def test_invalid_mode_value_falls_back_to_strict(self) -> None:
+    def test_project_config_severity_mode(self) -> None:
+        config_path = self.project / ".harness" / "config" / "gate-policy.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"severityMode": "strict"}), encoding="utf-8"
+        )
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
+            self.assertEqual(
+                gate.gate_severity_mode(self.project, self.change_dir), "strict"
+            )
+
+    def test_change_policy_overrides_project_config(self) -> None:
+        config_path = self.project / ".harness" / "config" / "gate-policy.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps({"severityMode": "strict"}), encoding="utf-8"
+        )
+        (self.change_dir / "meta" / "gate-policy.json").write_text(
+            json.dumps({"schemaVersion": 1, "severityMode": "lenient"}),
+            encoding="utf-8",
+        )
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
+            self.assertEqual(
+                gate.gate_severity_mode(self.project, self.change_dir), "lenient"
+            )
+
+    def test_invalid_mode_value_falls_back_to_lenient(self) -> None:
         (self.change_dir / "meta" / "gate-policy.json").write_text(
             json.dumps({"schemaVersion": 1, "severityMode": "yolo"}),
             encoding="utf-8",
@@ -96,7 +109,7 @@ class GateSeverityModeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HUNTER_HARNESS_GATE_MODE", None)
             self.assertEqual(
-                gate.gate_severity_mode(self.project, self.change_dir), "strict"
+                gate.gate_severity_mode(self.project, self.change_dir), "lenient"
             )
 
 

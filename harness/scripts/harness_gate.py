@@ -150,7 +150,13 @@ GATE_WARNINGS_REL = Path("evidence") / "gate-warnings.ndjson"
 
 
 def gate_severity_mode(project: Path, change_dir: Path | None = None) -> str:
-    """Resolve gate severity mode: env > change gate-policy > project config."""
+    """Resolve gate severity mode: env > change gate-policy > project config.
+
+    Default is ``lenient`` (soft regenerable sites → WARN). Release phases and
+    the three hard invariants stay fail-closed; set ``HUNTER_HARNESS_GATE_MODE``
+    or ``gate-policy.json`` ``severityMode`` to ``strict`` to force fail-closed
+    soft sites as well.
+    """
     env_mode = str(os.environ.get("HUNTER_HARNESS_GATE_MODE") or "").strip().lower()
     if env_mode in {"strict", "lenient"}:
         return env_mode
@@ -170,7 +176,7 @@ def gate_severity_mode(project: Path, change_dir: Path | None = None) -> str:
         value = str(document.get("severityMode") or "").strip().lower()
         if value in {"strict", "lenient"}:
             return value
-    return "strict"
+    return "lenient"
 
 
 def gate_soft_allowed(mode: str, phase: str, site: str) -> bool:

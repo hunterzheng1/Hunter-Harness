@@ -221,17 +221,18 @@ harness-skills/
 |-------|----------|------|:--------:|:--------:|----------|
 | harness-sync | `/harness-sync` | 10 项元数据检查（7 核心 + 3 辅助） | 初始化检查 | ✅ | 控制台报告 + 自动更新 |
 | harness-codebase-map | `/harness-codebase-map` | 生成代码库地图（7 类文档 + summary + manifest） | `sync`/独立 | ✅ | `.harness/codebase/map/` |
-| harness-plan | `/harness-plan` | 需求→设计→任务拆分→**测试场景表** + 自动命名变更名 | `sync` | ✅ | `.harness/changes/<cn>/plans/` |
-| harness-run | `/harness-run` | TDD 循环 变更簇编码 | `plan` | ✅ | `.harness/changes/<cn>/sqls/` |
-| harness-test | `/harness-test` | 单元测试+接口测试+30条避坑 | `run` | ✅ | `.harness/changes/<cn>/reports/test/` |
-| harness-review | `/harness-review` | 6维度参考性审查（不阻塞后续流程） | `test` | ✅ | `.harness/changes/<cn>/reports/review/` |
-| harness-submit | `/harness-submit` 或 `/harness-merge`（别名） | commit+push（主目录）/ worktree：本地 commit→--no-ff 合并→push 主分支 | `review` | ✅ | ledger `mergeFinalHash` + 控制台报告 |
-| harness-archive | `/harness-archive` | 归档产出到 archive/YYYY-MM-DD-<cn>，释放工作区 | `submit` | ✅ | `.harness/archive/YYYY-MM-DD-<cn>/` |
+| harness-plan | `/harness-plan` | 需求→设计→任务拆分→**测试场景表** + 自动命名变更名 | `sync` | 手动 | `.harness/changes/<cn>/plans/` |
+| harness-run | `/harness-run` | TDD 循环 变更簇编码 | `plan` | 手动 | `.harness/changes/<cn>/sqls/` |
+| harness-test | `/harness-test` | 单元测试+接口测试+30条避坑 | `run` | 手动 | `.harness/changes/<cn>/reports/test/` |
+| harness-review | `/harness-review` | 6维度参考性审查（不阻塞后续流程） | `test` | 手动 | `.harness/changes/<cn>/reports/review/` |
+| harness-submit | `/harness-submit` 或 `/harness-merge`（别名） | commit+push（主目录）/ worktree：本地 commit→--no-ff 合并→push 主分支 | `review` | 手动 | ledger `mergeFinalHash` + 控制台报告 |
+| harness-archive | `/harness-archive` | 归档产出到 archive/YYYY-MM-DD-<cn>，释放工作区 | `submit` | 手动 | `.harness/archive/YYYY-MM-DD-<cn>/` |
 | harness-knowledge-query | `/harness-knowledge-query` | 查询 .harness/knowledge 历史上下文，生成需求 context pack | `sync`/独立 | ✅ | `.harness/knowledge/context-packs/` |
 | harness-knowledge-ingest | `/harness-knowledge-ingest` | 从 archive 整理/同步/维护知识索引（promote/demote/audit） | `archive` | ✅ | `.harness/knowledge/index.json` |
 
-> 所有 harness skill 均支持被其他 skill 调用。`harness-run`、`harness-submit`、`harness-archive` 涉及 git 写操作、文件移动或归档，被其他 skill 调用时必须确保前置条件已满足。
+> 生命周期 skill（plan → run → test → review → submit → archive）为**手动触发**：单阶段结束后停止，不自动接续下一阶段（已设 `disable-model-invocation`）。sync / codebase-map / knowledge 等辅助 skill 仍可按需被调用。`harness-run`、`harness-submit`、`harness-archive` 涉及 git 写操作、文件移动或归档，调用前必须确保前置条件已满足。
 > `<cn>` = change-name，由 harness-plan 阶段7确定。其他 skill 自动扫描未归档变更定位。
+> 门禁默认 `gate_severity_mode=lenient`（可再生 soft site → WARN）；发布阶段与 3 类硬不变量仍 fail-closed。可用 `HUNTER_HARNESS_GATE_MODE` 或 `gate-policy.json` 的 `severityMode` 强制 `strict`。
 
 ## 关键合规约束（强制）
 
@@ -279,7 +280,7 @@ harness-skills/
 | **submit hash 记录** | pre-pull local hash + final pushed hash 双标注（主目录）；worktree 模式 submit 段只本地 commit，合并段产生 `mergeFinalHash`，archive 以 `mergeFinalHash` 为准（无则回退 final pushed hash） |
 | **archive 阶段 1** | 归档前确认 commit 已 push、hash 与 submit/merge 记录一致、test/review 报告状态；阶段边界由 finalize 单进程维护，调用者不额外 append |
 | **archive 文件移动** | 只用 PowerShell 或 Read+Write+验证，**禁止 Bash mv/cp/rm**；移动失败时不删除原目录 |
-| **archive final-summary.html** | 默认运行 `harness_archive.py finalize`：由 events/ledger/log/manifest 生成 `summary-data.json`，再由 `templates/render-summary.mjs` 渲染 `final-summary.html`，内嵌 validate。无测试或无 review 时必须在 JSON 中标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。必须真实展示状态演进（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
+| **archive final-summary** | 必须运行 `harness_archive.py finalize` 生成权威 `summary-data.json` 并完成 validate；`final-summary.html` 为可选展示投影（默认渲染，失败只记 warning 不回滚；`finalize --no-html` 可跳过）。无测试或无 review 时必须在 JSON 中标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
 
 ### 敏感信息脱敏
 
