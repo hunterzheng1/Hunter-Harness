@@ -285,7 +285,7 @@ async function copyMigrations() {
 }
 
 // Mirrors packages/contracts/src/canonical-json.ts normalize()/canonicalJson() so this
-// hash matches apps/server/src/npm/publisher.ts buildWorkflowFamilyManifest exactly.
+// hash matches hunter-platform apps/server/src/npm/publisher.ts buildWorkflowFamilyManifest exactly.
 function normalizeForCanonicalJson(value) {
   if (Array.isArray(value)) return value.map(normalizeForCanonicalJson);
   if (value !== null && typeof value === "object") {

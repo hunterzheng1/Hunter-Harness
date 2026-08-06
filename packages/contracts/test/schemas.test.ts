@@ -937,7 +937,7 @@ describe("aiJobState schema (dedup key: slug+agent)", () => {
 describe("OpenAPI v1", () => {
   it("covers every required client/server route", async () => {
     const path = fileURLToPath(
-      new URL("../../../apps/server/openapi/hunter-harness-v1.yaml", import.meta.url)
+      new URL("../openapi/hunter-harness-v1.yaml", import.meta.url)
     );
     const document = parseYaml(await readFile(path, "utf8")) as {
       openapi: string;

@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*",
-    "apps/*"
+    "packages/*"
   ],
   "engines": {
     "node": ">=24.0.0",
@@ -16,8 +15,8 @@
   },
   "scripts": {
     "build": "node node_modules/typescript/bin/tsc -b && npm run build:artifacts",
-    "build:artifacts": "npm run bundle -w packages/cli && npm run bundle -w packages/skill-cli && npm run build -w apps/web",
-    "typecheck": "node node_modules/typescript/bin/tsc -b && npm run typecheck -w apps/web",
+    "build:artifacts": "npm run bundle -w packages/cli && npm run bundle -w packages/skill-cli",
+    "typecheck": "node node_modules/typescript/bin/tsc -b",
     "pretest": "npm run sync:harness && npm run bundle -w packages/cli",
     "test": "node node_modules/vitest/vitest.mjs run --maxWorkers=2",
     "test:watch": "node node_modules/vitest/vitest.mjs",

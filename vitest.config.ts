@@ -51,8 +51,6 @@ export default defineConfig({
           hookTimeout: 30000,
           include: [
             "packages/**/*.test.ts",
-            "apps/**/*.test.ts",
-            "apps/**/*.test.tsx",
             "tests/**/*.test.ts"
           ],
           exclude: integrationTestFiles

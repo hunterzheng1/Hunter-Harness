@@ -77,42 +77,23 @@ npx @hunter-harness/skill-cli upload <directory-or-zip> --agent claude-code
 ## 仓库结构
 
 ```text
-packages/contracts  wire/schema 合同
-packages/core       文件策略、Skill IR、扫描、事务、push/update
-packages/cli        项目级 Harness CLI
-packages/skill-cli  独立 Skill install/upload CLI
-apps/server         Fastify API、PostgreSQL repository、artifact storage
-apps/web            Next.js 治理控制台
-resources           bootstrap Skill IR
-tests/e2e           治理闭环测试
-docs                实施、部署与验收文档
+packages/contracts              wire/schema 合同（含 OpenAPI 副本）
+packages/core                   文件策略、Skill IR、扫描、事务、push/update
+packages/cli                    项目级 Harness CLI
+packages/skill-cli              独立 Skill install/upload CLI
+packages/workflow-data-harness  工作流数据包（npm）
+resources                       bootstrap Skill IR
+tests                           CLI / core 验证
+docs                            实施与验收文档
 ```
 
 ## Web 治理控制台
 
-控制台提供总览、项目、Workflow、Skill Center、审核队列和 Artifact 历史：
+Web Console（`apps/web` + `apps/server`）已拆到独立仓库 **hunter-platform**（`E:\MyProject\AI Related\hunter-platform` / GitHub `hunterzheng1/hunter-platform`）。本仓只保留 CLI 与 npm 发布相关包。
 
-- Skill Center：搜索、标签/Agent/状态筛选、ZIP 或文件夹上传、Canonical IR、adapter 输出、版本历史与 Diff、标签管理、安装命令和 ZIP 下载。
-- Skill 内容上传/修改：Web demo 可本地暂存未发布 Skill；真实服务端链路通过 Skill proposal 创建，owner 人工 approve/reject 后才发布版本与 adapter artifact。
-- Workflow：直接 CRUD、启停、删除保护和有序 Skill binding，不进入 proposal，但保留审计与 revision 冲突保护。
-- 标签：创建、重命名、合并、停用和 Skill 绑定直接生效，保留审计。
-- 项目详情：展示并直接绑定 Workflow；项目受管文件仍沿用原有 proposal/review/update 治理协议。
-- Dark 与 Light 使用同一套语义设计 token；技能中心在两套主题下保持一致的信息层级和卡片区分，首次遵循系统主题，用户选择后写入本地偏好。
+浏览、审核、Skill Center、服务端部署见 hunter-platform 的 README 与 compose。
 
-### 连接真实服务端
-
-生产模式不会静默回退到 mock。侧栏设置中填写 API Token，控制台先执行真实认证探测，成功后仅将 token 保存到当前浏览器 session storage。
-
-```bash
-npm run dev -w apps/web -- -p 3000
-```
-
-如仅需本地 UI 演示，必须显式启用只读 demo 模式，页面会持续显示“演示数据”标识：
-
-```powershell
-$env:NEXT_PUBLIC_HUNTER_HARNESS_DEMO='true'
-npm run dev -w apps/web -- -p 3000
-```
+OpenAPI 合同副本保留在 [packages/contracts/openapi/hunter-harness-v1.yaml](packages/contracts/openapi/hunter-harness-v1.yaml)（权威实现随 hunter-platform）。
 
 ## 本地开发与验证
 
@@ -123,7 +104,7 @@ npm ci
 npm run check
 ```
 
-`npm run check` 依次执行 lint、TypeScript、全部测试、生产构建和两个 npm 包的 pack/install smoke test。
+`npm run check` 依次执行 lint、TypeScript、全部测试、CLI 构建与两个 npm 包的 pack/install smoke test。
 
 在本 monorepo 内 dogfood CLI（勿依赖全局 PATH）可用：
 
@@ -135,50 +116,7 @@ npx hunter-harness --help
 
 `npm run hh` 直接跑 `packages/cli/dist/bin.js`；改 CLI 源码后需先 `npm run bundle -w packages/cli`。
 
-PostgreSQL 实库测试需要单独设置：
-
-```powershell
-$env:HUNTER_HARNESS_TEST_DATABASE_URL='postgresql://...'
-npm run test:postgres -w apps/server
-```
-
-部署、TLS、secrets、备份、恢复、升级与回滚见 [SERVER-DEPLOYMENT.md](docs/SERVER-DEPLOYMENT.md)。完整 API 合同见 [hunter-harness-v1.yaml](apps/server/openapi/hunter-harness-v1.yaml)。
-
-## Semantic MCP（只读）
-
-治理服务端在 `/mcp` 暴露只读 Semantic MCP（Streamable HTTP），复用 API Bearer Token，不提供写入口。Agent 可查询跨项目语义索引；单项目本地知识写入仍走 CLI push。
-
-可用工具：
-
-| 工具 | 作用 |
-|---|---|
-| `search_knowledge` | 按关键词搜索知识文档（可按 `project_id` 限定） |
-| `get_project_overview` | 项目语义索引概览计数 |
-| `get_knowledge_entry` | 按 `document_id` 或 `source_path` 取单条知识 |
-| `list_recent_changes` | 列出项目 archive 变更记录 |
-
-Cursor / Claude Desktop 示例（把 `YOUR_TOKEN` 换成真实 `hh_…` token）：
-
-```json
-{
-  "mcpServers": {
-    "hunter-harness-semantic": {
-      "url": "http://127.0.0.1:3001/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      }
-    }
-  }
-}
-```
-
-## External Skill（策展列表）
-
-技能中心可混排展示第三方 External Skill：从 npm 包名或 GitHub 仓库 URL 录入后，服务端只抓取公开元数据快照（名称/描述/版本/README/安装命令/license），并保存 owner 策展笔记。
-
-- **不做二次分发**：永不托管、安装或 republish 上游内容；安装始终走官方渠道命令。
-- **上游刷新**：详情页手动刷新 + 每日定时任务（`HUNTER_HARNESS_EXTERNAL_SKILL_REFRESH_MS`，默认 24h；`0` 关闭）。只更新 snapshot 与「有更新」徽章，**绝不改** `curationNote`。
-- **可选 GitHub token**：`HUNTER_HARNESS_GITHUB_TOKEN` 或 `GITHUB_TOKEN`，仅提升公开 API 限额。
+Semantic MCP、External Skill 策展列表、服务端部署与控制台能力见 **hunter-platform**。
 
 ## 安全边界
 
