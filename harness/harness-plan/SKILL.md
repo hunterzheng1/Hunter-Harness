@@ -1,6 +1,7 @@
 ---
 name: harness-plan
-description: "将需求转化为设计文档+实施计划+完整测试场景表，必须在编码前完成。使用场景：需求分析、feature plan、技术方案设计、实现方案规划"
+description: "将需求转化为设计文档+实施计划+完整测试场景表，必须在编码前完成。仅当用户显式调用 /harness-plan 或明确要求进入 Harness 规划阶段时使用；不得因用户描述需求就自动触发。"
+disable-model-invocation: true
 argument-hint: "需求描述 | --adversarial"
 effort: medium
 allowed-tools: [Read, Glob, Grep, Edit, Write, Agent, Bash(powershell.exe:*)]
@@ -31,7 +32,9 @@ disallowed-tools:
 
 ## When to Use
 
-`/harness-plan`、新功能设计、技术方案、测试场景表规划。
+仅当用户显式调用 `/harness-plan`（或明确说"用 harness 规划这个需求"）时执行。用户只是描述需求、提问或讨论方案时，**不得**自动进入本 skill。
+
+**单阶段原则**：本 skill 只负责 plan 阶段。plan finalize + verify 完成后必须停止并交还用户，仅提示下一步可执行 `/harness-run`；禁止自动开始编码或调用其他 harness 阶段 skill。
 
 <!-- @include shared/read-protocol.md -->
 > 片段：[[shared/read-protocol.md|read-protocol]] · plan 额外写 `meta/worktree.json`、`meta/change-context.json`

@@ -1,6 +1,7 @@
 ---
 name: harness-review
-description: "6维度代码审查（架构/安全/规范/兼容/测试/性能），对照项目规则（见 .harness/context-index.json）和测试场景表，在隔离上下文运行。使用场景：代码审查、提交前检查、合并评审"
+description: "6维度代码审查（架构/安全/规范/兼容/测试/性能），对照项目规则（见 .harness/context-index.json）和测试场景表，在隔离上下文运行。仅当用户显式调用 /harness-review 时使用；不得在 test 结束后自动接续执行。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: high
 allowed-tools: [Read, Write, Edit, Glob, Grep, Agent, Bash(powershell.exe:*)]
@@ -30,11 +31,9 @@ disallowed-tools:
 
 ## When to Use
 
-使用此 Skill 当：
-- 代码变更完成后需要审查
-- 提交前需要质量检查
-- 合并评审时需要系统性检查
-- 用户说"审查代码"、"review"、"检查代码质量"
+仅当用户显式调用 `/harness-review` 时执行。test 阶段结束后**不自动**进入本阶段；用户口头提到"审查/review"而未调用本 skill 时，先确认是否走 Harness 审查阶段。
+
+**单阶段原则**：review 关门（报告 + fixback 产出）后必须停止并交还用户，仅提示下一步可执行 `/harness-run --fixback`（有待修项）或 `/harness-submit`；禁止自动接续执行。
 
 ## Inputs
 

@@ -11,7 +11,12 @@ export const AGENTS_MANAGED_BLOCK_CONTENT = [
   "Use `.harness/context-index.json` to locate the instructions, skills, knowledge,",
   "and codebase map for the active agent.",
   "Treat installed `harness-*` skills as editable adapter working copies.",
-  "Do not modify `.harness/state` or `.harness/cache` directly."
+  "Do not modify `.harness/state` or `.harness/cache` directly.",
+  "",
+  "Lifecycle skills (harness-plan/run/test/review/submit/archive/package/apidoc)",
+  "are manual-trigger only: invoke them only on an explicit user command such as",
+  "`/harness-run`. Never start the next lifecycle phase automatically after the",
+  "current one finishes; stop and suggest the next command instead."
 ].join("\n");
 
 export const CLAUDE_MANAGED_BLOCK_CONTENT = [
@@ -39,15 +44,20 @@ export const CODEBUDDY_MANAGED_BLOCK_CONTENT = [
   "- Codebase map: .harness/codebase/map/"
 ].join("\n");
 
-export const HARNESS_GENERAL_RULES_CONTENT =
-  "# Hunter Harness Rules\n\n- Report evidence honestly.\n- Do not execute destructive actions without confirmation.\n";
+const HARNESS_GENERAL_RULES_BODY =
+  "# Hunter Harness Rules\n\n- Report evidence honestly.\n" +
+  "- Do not execute destructive actions without confirmation.\n" +
+  "- Lifecycle skills (harness-plan/run/test/review/submit/archive/package/apidoc) are manual-trigger only: run them only on an explicit user command (e.g. `/harness-run`).\n" +
+  "- Single-stage principle: when a lifecycle phase completes, stop and hand control back to the user; suggest the next command but never invoke it automatically.\n";
+
+export const HARNESS_GENERAL_RULES_CONTENT = HARNESS_GENERAL_RULES_BODY;
 
 export const HARNESS_JAVA_RULES_CONTENT =
   "# Java Profile\n\n- Verify builds and tests with the project build tool.\n";
 
 export const CURSOR_GENERAL_RULES_CONTENT =
   "---\ndescription: Hunter Harness project-wide safety and evidence rules\nglobs:\nalwaysApply: true\n---\n\n" +
-  "# Hunter Harness Rules\n\n- Report evidence honestly.\n- Do not execute destructive actions without confirmation.\n";
+  HARNESS_GENERAL_RULES_BODY;
 
 export const CURSOR_JAVA_RULES_CONTENT =
   "---\ndescription: Hunter Harness Java profile rules\nglobs:\nalwaysApply: true\n---\n\n" +

@@ -5024,6 +5024,14 @@ def render_fallback_html(summary: dict[str, Any]) -> str:
 """
 
 
+
+# P1 slim-files: final-summary.html is a regenerable presentation layer over
+# summary-data.json. `finalize --no-html` skips local HTML rendering entirely
+# (a remote platform can render from summary-data.json); render failures are
+# downgraded to warnings instead of rolling back the archive.
+RENDER_HTML_ENABLED = True
+
+
 def render_final_summary(
     change_dir: Path,
     summary_path: Path,
@@ -5034,9 +5042,18 @@ def render_final_summary(
     - Node success -> renderer="node".
     - Node unavailable/timeout/non-zero/no-file -> Python fallback; success ->
       renderer="python-fallback" (fallbackReason carries the node failure cause).
-    - Both fail or produce no file -> ok=False (caller must restore + exit non-0).
+    - Both fail or produce no file -> ok=False (caller downgrades to warning).
+    - Rendering disabled (--no-html) -> ok=True with renderer="skipped".
     """
     out_path = change_dir / "reports" / "final" / "final-summary.html"
+    if not RENDER_HTML_ENABLED:
+        return {
+            "ok": True,
+            "renderer": "skipped",
+            "fallbackReason": "",
+            "out_path": str(out_path),
+            "skipped": True,
+        }
     project = find_project_root(change_dir)
     node = resolve_node_path(project)
     fallback_reason = ""
@@ -5418,12 +5435,14 @@ def validate_summary(
                 }
             )
     else:
-        # Task 2 (§4.1 rule 5): 不再存在"没有 HTML 但只 warning"的分支。
-        # 缺 final-summary 恒为 error；finalize 会 restore + exit 非 0。
+        # P1 slim-files: final-summary.html 是 summary-data.json 的可再生展示
+        # 投影，不再是硬产物（summary-data + manifest + adequacy 仍 fail-closed）。
+        # 缺 HTML 恒为 warning，不阻断归档收尾；平台端可按 summary-data 渲染。
+        _ = render_skipped  # kept for call-site compatibility
         issues.append(
             {
                 "code": "missing-final-report",
-                "severity": "error",
+                "severity": "warning",
                 "message": "reports/final/final-summary.html not found",
             }
         )
@@ -7996,13 +8015,10 @@ def cmd_finalize(
     render_result = render_final_summary(work_dir, summary_path)
     payload["steps"]["render"] = render_result
     if not render_result.get("ok"):
-        # 永不关闭一个没有 final-summary 的归档。
+        # final-summary.html 是 summary-data.json 的可再生展示层：渲染失败
+        # 降级为 warning，归档继续（平台端可按 summary-data 重新渲染）。
         msg = str(render_result.get("fallbackReason") or "render failed")
-        payload["error"] = f"final-summary render failed: {msg}"
-        _restore_finalize_failure()
-        payload["warnings"] = warnings
-        payload["ok"] = False
-        return 1, payload
+        warnings.append(f"final-summary render failed (archive continues): {msg}")
     renderer = render_result.get("renderer")
     if renderer == "python-fallback" and render_result.get("fallbackReason"):
         warnings.append(
@@ -8053,9 +8069,10 @@ def cmd_finalize(
     write_json(summary_path, summary)
     render_result = render_final_summary(work_dir, summary_path)
     if not render_result.get("ok"):
-        payload["error"] = f"final summary re-render failed: {render_result.get('error')}"
-        _restore_finalize_failure()
-        return 1, payload
+        warnings.append(
+            "final summary re-render failed (archive continues): "
+            f"{render_result.get('fallbackReason') or render_result.get('error')}"
+        )
     summary = read_json(summary_path)
     validate_result = validate_summary(summary, html_path if html_path.is_file() else None)
     payload["steps"]["validate"] = validate_result
@@ -8092,11 +8109,10 @@ def cmd_finalize(
         write_json(summary_path, summary)
         render_result = render_final_summary(work_dir, summary_path)
         if not render_result.get("ok"):
-            payload["error"] = (
-                f"post-manifest summary render failed: {render_result.get('error')}"
+            warnings.append(
+                "post-manifest summary render failed (archive continues): "
+                f"{render_result.get('fallbackReason') or render_result.get('error')}"
             )
-            _restore_finalize_failure()
-            return 1, payload
         coverage = verify_manifest_byte_coverage(
             work_dir,
             after_manifest,
@@ -8345,12 +8361,135 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"could not persist completed archive operation: {exc}")
 
+    # P4: when remote credentials exist, auto-push the core four
+    # (design/plan/summary-data/knowledge) via the existing push channel.
+    push_result = auto_push_archive_core(project_root, archive_dir)
+    payload["steps"]["archive_push"] = push_result
+    if push_result.get("warning"):
+        warnings.append(str(push_result["warning"]))
+
     payload["ok"] = True
     payload["finalStatus"] = "OK"
     payload["warnings"] = warnings
     payload["summary_data"] = str(summary_path)
     payload["final_summary"] = str(html_path) if html_path.is_file() else None
     return 0, payload
+
+
+def _remote_credentials_configured(project_root: Path) -> bool:
+    creds = project_root / ".harness" / "credentials.local.yaml"
+    if not creds.is_file():
+        return False
+    text = creds.read_text(encoding="utf-8", errors="ignore")
+    has_url = bool(re.search(r"(?m)^[ \t]*server_url:\s*\S+", text))
+    has_token = bool(re.search(r"(?m)^[ \t]*token:\s*\S+", text))
+    return has_url and has_token
+
+
+def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[str]:
+    """Relative paths for the P4 core four push set."""
+    root = project_root.resolve()
+    archive = archive_dir.resolve()
+    paths: list[str] = []
+
+    def add_if_exists(absolute: Path) -> None:
+        if absolute.is_file():
+            paths.append(absolute.relative_to(root).as_posix())
+
+    add_if_exists(archive / "reports" / "final" / "summary-data.json")
+    for folder in ("spec", "plans"):
+        base = archive / folder
+        if base.is_dir():
+            for path in sorted(base.rglob("*")):
+                if path.is_file():
+                    paths.append(path.relative_to(root).as_posix())
+    knowledge = root / ".harness" / "knowledge" / "entries"
+    for status in ("active", "candidate"):
+        folder = knowledge / status
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                paths.append(path.relative_to(root).as_posix())
+    return paths
+
+
+def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, Any]:
+    """Best-effort remote push of archive core artifacts after finalize.
+
+    Skips silently when credentials are absent. Failures become warnings so
+    archive success is never rolled back by a push outage.
+    """
+    project_root = project_root.resolve()
+    if not _remote_credentials_configured(project_root):
+        return {"skipped": True, "reason": "no remote credentials"}
+    core_paths = collect_archive_core_paths(project_root, archive_dir)
+    pending = {
+        "schemaVersion": 1,
+        "generatedAt": now_iso(),
+        "archiveDir": str(archive_dir),
+        "paths": core_paths,
+    }
+    pending_path = project_root / ".harness" / "state" / "archive-push-pending.json"
+    try:
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(pending_path, pending)
+    except OSError as exc:
+        return {
+            "skipped": False,
+            "ok": False,
+            "paths": core_paths,
+            "warning": f"could not write archive-push-pending.json: {exc}",
+        }
+
+    # Prefer the published CLI; fall back to recording the pending receipt only.
+    command = [
+        "npx",
+        "--yes",
+        "hunter-harness",
+        "push",
+        "--yes",
+        "--non-interactive",
+        "--json",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(project_root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "skipped": False,
+            "ok": False,
+            "paths": core_paths,
+            "pending": str(pending_path),
+            "warning": f"archive auto-push deferred: {exc}",
+        }
+    ok = completed.returncode == 0
+    result: dict[str, Any] = {
+        "skipped": False,
+        "ok": ok,
+        "paths": core_paths,
+        "pending": str(pending_path),
+        "exitCode": completed.returncode,
+    }
+    if not ok:
+        result["warning"] = (
+            "archive auto-push failed (exit "
+            + str(completed.returncode)
+            + "); pending receipt kept for retry via `hunter-harness push`"
+        )
+        if completed.stderr.strip():
+            result["stderr"] = completed.stderr.strip()[:500]
+    else:
+        try:
+            pending_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return result
 
 
 def _merge_runtime_state(state_dir: Path, contract_dir: Path) -> None:
@@ -8513,6 +8652,9 @@ def cmd_certify_local_cli(args: argparse.Namespace) -> int:
 
 
 def cmd_finalize_cli(args: argparse.Namespace) -> int:
+    global RENDER_HTML_ENABLED
+    if getattr(args, "no_html", False):
+        RENDER_HTML_ENABLED = False
     change_dir = resolve_path(args.change_dir)
     archive_root = resolve_path(args.archive_root)
     durable_root = (
@@ -8800,6 +8942,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("release-candidate", "record-only"),
         default="release-candidate",
         help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
+    )
+    p_fin.add_argument(
+        "--no-html",
+        action="store_true",
+        help="skip local final-summary.html rendering (summary-data.json stays canonical)",
     )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)

@@ -1424,6 +1424,34 @@ def write_execution_log(change_dir: Path, content: str) -> Path:
     return path
 
 
+def execution_log_render_enabled(change_dir: Path) -> bool:
+    """P1 slim-files: execution-log.md auto-render policy.
+
+    `.harness/config/render-policy.json` with ``{"executionLog": "on-demand"}``
+    disables the automatic render on ``phase.end``/auto-seal; the explicit
+    ``harness_events.py render`` subcommand rebuilds the projection at any
+    time. Default stays "auto" (render on phase.end).
+    """
+    current = change_dir.resolve()
+    for candidate in [current, *current.parents]:
+        if candidate.name == ".harness":
+            config = candidate / "config" / "render-policy.json"
+        else:
+            config = candidate / ".harness" / "config" / "render-policy.json"
+        if not config.is_file():
+            continue
+        try:
+            document = json.loads(config.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            return True
+        if isinstance(document, dict):
+            mode = str(document.get("executionLog") or "").strip().lower()
+            if mode == "on-demand":
+                return False
+        return True
+    return True
+
+
 def build_summary(change_dir: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
     phases: dict[str, Any] = {}
     issues: list[dict[str, Any]] = []
@@ -1774,7 +1802,8 @@ def cmd_append(args: argparse.Namespace) -> int:
     rendered = False
     log_path = None
     log_lines = None
-    if args.type == "phase.end" or auto_sealed_events:
+    if (args.type == "phase.end" or auto_sealed_events) and \
+            execution_log_render_enabled(change_dir):
         try:
             events = load_events(path)
             content = render_execution_log(events)

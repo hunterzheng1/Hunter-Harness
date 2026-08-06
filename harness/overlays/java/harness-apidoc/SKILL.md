@@ -1,6 +1,7 @@
 ---
 name: harness-apidoc
-description: "从 Java 后端代码生成结构化前端 API 文档（Controller/VO/ErrorCode）。使用场景：接口文档、前端接口文档、API 文档生成"
+description: "从 Java 后端代码生成结构化前端 API 文档（Controller/VO/ErrorCode）。仅当用户显式调用 /harness-apidoc 时使用，不得自动触发。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: medium
 allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]

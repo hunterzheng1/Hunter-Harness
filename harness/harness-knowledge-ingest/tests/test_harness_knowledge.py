@@ -4120,5 +4120,132 @@ class QueryCompactOutputTests(unittest.TestCase):
             self.assertIn("planInput", payload)
 
 
+class RemoteModeTests(unittest.TestCase):
+    """P3: credentials.local.yaml 启用远端后跳过本地 sqlite/outbox。"""
+
+    def setUp(self) -> None:
+        self._cli = HarnessKnowledgeCliTest()
+        # Import the module under test for unit-level helpers.
+        sys.path.insert(0, str(SCRIPT.parent))
+        import harness_knowledge as hk  # type: ignore
+
+        self.hk = hk
+
+    def _enable_remote(self, project: Path) -> None:
+        (project / ".harness").mkdir(parents=True, exist_ok=True)
+        (project / ".harness" / "credentials.local.yaml").write_text(
+            "server_url: https://platform.example.test\n"
+            "token: hh_test_key\n"
+            "project_id: prj_remote_demo\n",
+            encoding="utf-8",
+        )
+        (project / ".harness" / "project.yaml").write_text(
+            "project:\n  project_id: prj_remote_demo\n  name: sample\n",
+            encoding="utf-8",
+        )
+
+    def test_resolve_remote_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            self.assertIsNone(self.hk.resolve_remote_endpoint(project))
+            self._enable_remote(project)
+            endpoint = self.hk.resolve_remote_endpoint(project)
+            self.assertIsNotNone(endpoint)
+            assert endpoint is not None
+            self.assertEqual(endpoint["project_id"], "prj_remote_demo")
+            self.assertEqual(endpoint["server_url"], "https://platform.example.test")
+
+    def test_ingest_skips_sqlite_and_posts_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._cli.make_project(Path(tmp))
+            self._enable_remote(project)
+            posted: list[dict] = []
+
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def read(self):
+                    return json.dumps(
+                        {"accepted": 1, "created": 1, "updated": 0, "duplicates": 0}
+                    ).encode("utf-8")
+
+            def fake_urlopen(request, timeout=30.0):  # noqa: ARG001
+                body = json.loads(request.data.decode("utf-8"))
+                posted.append(body)
+                return FakeResponse()
+
+            original = self.hk.urllib.request.urlopen
+            self.hk.urllib.request.urlopen = fake_urlopen  # type: ignore[method-assign]
+            try:
+                index = self.hk.build_index(project)
+            finally:
+                self.hk.urllib.request.urlopen = original  # type: ignore[method-assign]
+
+            mode = index.get("ingestMode") or {}
+            self.assertTrue(mode.get("remote"))
+            self.assertEqual(mode.get("mode"), "remote")
+            self.assertTrue(mode.get("remoteOk"))
+            self.assertFalse((project / ".harness" / "knowledge" / "index.sqlite").exists())
+            self.assertTrue((project / ".harness" / "knowledge" / "index.json").exists())
+            self.assertEqual(len(posted), 1)
+            self.assertGreaterEqual(len(posted[0]["entries"]), 1)
+
+    def test_maintain_drain_skips_in_remote_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            self._enable_remote(project)
+            result = self.hk.drain_maintenance_outbox(project)
+            self.assertTrue(result.get("ok"))
+            self.assertTrue(result.get("skipped"))
+            self.assertEqual(result.get("mode"), "remote")
+
+    def test_offline_query_falls_back_to_grep(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._cli.make_project(Path(tmp))
+            self._enable_remote(project)
+
+            class Boom:
+                def __enter__(self):
+                    raise OSError("offline")
+
+                def __exit__(self, *args):
+                    return False
+
+            # First build with a successful remote post so entry files exist.
+            class FakeResponse:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def read(self):
+                    return b'{"accepted":1,"created":1,"updated":0,"duplicates":0}'
+
+            original = self.hk.urllib.request.urlopen
+            self.hk.urllib.request.urlopen = (  # type: ignore[method-assign]
+                lambda *a, **k: FakeResponse()
+            )
+            try:
+                self.hk.build_index(project)
+            finally:
+                self.hk.urllib.request.urlopen = (  # type: ignore[method-assign]
+                    lambda *a, **k: Boom()
+                )
+            try:
+                result = self.hk.query_index(project, "异步 AI 检查 job")
+            finally:
+                self.hk.urllib.request.urlopen = original  # type: ignore[method-assign]
+            self.assertEqual(result.get("mode"), "remote")
+            self.assertEqual(result.get("source"), "offline-grep")
+            self.assertGreaterEqual(result.get("matchCount", 0), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

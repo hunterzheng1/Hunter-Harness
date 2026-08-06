@@ -186,7 +186,8 @@ async function walkArchiveSummaries(root: string, output: string[]): Promise<voi
       throw new PushWorkflowError("symlink is not pushable", 6, "UNSAFE_SYMLINK");
     }
     if (!item.isDirectory()) continue;
-    const summaryPath = join(archiveRoot, item.name, "reports", "final", "summary-data.json");
+    const archiveDir = join(archiveRoot, item.name);
+    const summaryPath = join(archiveDir, "reports", "final", "summary-data.json");
     try {
       const stats = await lstat(summaryPath);
       if (stats.isSymbolicLink()) {
@@ -202,6 +203,10 @@ async function walkArchiveSummaries(root: string, output: string[]): Promise<voi
     );
     if (ARCHIVE_SUMMARY_PATH.test(relativePath)) {
       output.push(relativePath);
+    }
+    // P4 core four: also include design (spec/) and plan (plans/) docs.
+    for (const folder of ["spec", "plans"] as const) {
+      await walkFiles(root, join(archiveDir, folder), output);
     }
   }
 }

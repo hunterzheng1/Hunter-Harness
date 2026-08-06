@@ -368,8 +368,8 @@ class FinalizeSuccessTests(unittest.TestCase):
 
 
 class FallbackRenderTests(unittest.TestCase):
-    """Task 2 (REMEDIATION-DESIGN §4): Node 不可用走 Python fallback；
-    所有 renderer 失败则恢复原 change 目录并 exit 非 0。"""
+    """Node 不可用走 Python fallback；P1 slim-files 后 HTML 是可选投影：
+    所有 renderer 失败仅记 warning，归档继续（summary-data.json 仍是硬产物）。"""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-fb-"))
@@ -408,7 +408,8 @@ class FallbackRenderTests(unittest.TestCase):
         self.assertTrue(render_step.get("ok"))
         self.assertIn("fb-change", html.read_text(encoding="utf-8"))
 
-    def test_fallback_failure_restores_original(self) -> None:
+    def test_fallback_failure_downgrades_to_warning(self) -> None:
+        """P1 slim-files: renderer 全灭不再回滚归档，只记 warning。"""
         def _boom(_summary: dict) -> str:
             raise OSError("simulated fallback failure")
 
@@ -428,21 +429,28 @@ class FallbackRenderTests(unittest.TestCase):
                     "--json",
                 ]
             )
-        self.assertNotEqual(code, 0)
-        self.assertFalse(payload.get("ok"))
-        self.assertTrue(self.change.is_dir(), "original change dir must be restored")
-        archive_dir = Path(payload.get("archive_dir") or "")
-        self.assertFalse(archive_dir.exists(), "archive target must not exist after restore")
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        self.assertTrue(payload.get("ok"))
+        archive_dir = Path(payload["archive_dir"])
+        self.assertTrue(archive_dir.is_dir(), "archive must complete despite render failure")
+        self.assertTrue(
+            (archive_dir / "reports" / "final" / "summary-data.json").is_file(),
+            "summary-data.json stays mandatory",
+        )
+        render_warnings = [
+            w for w in payload.get("warnings") or [] if "render" in str(w).lower()
+        ]
+        self.assertTrue(render_warnings, "render failure must surface as warning")
 
-    def test_validate_missing_html_is_error_even_when_node_missing(self) -> None:
+    def test_validate_missing_html_is_warning_when_render_skipped(self) -> None:
         summary = {"changeName": "x", "finalStatus": "OK", "verification": {}}
-        # render_skipped=True 模拟 node 不可用场景；旧实现只给 warning，必须改成 error。
+        # P1 slim-files: HTML 是可选投影，缺失一律 warning 而非 error。
         result = ha.validate_summary(summary, None, render_skipped=True)
         codes = {i.get("code") for i in result.get("issues") or []}
         self.assertIn("missing-final-report", codes)
         errors = [i for i in result.get("issues") or [] if i.get("severity") == "error"]
-        self.assertTrue(errors, "missing html must be error even when render was skipped")
-        self.assertFalse(result.get("ok"))
+        self.assertFalse(errors, "missing html must not be a hard error")
+        self.assertTrue(result.get("ok"))
 
 
 class ValidateErrorKeepsOriginalTests(unittest.TestCase):
@@ -2492,6 +2500,40 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "QUARANTINED")
         self.assertEqual(len(receipt["entries"]), 1)
         self.assertNotIn("never-publish", json.dumps(receipt))
+
+
+class ArchiveCorePushTests(unittest.TestCase):
+    """P4: collect core four paths; skip auto-push without credentials."""
+
+    def test_collect_archive_core_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "2026-08-06-demo"
+            (archive / "reports" / "final").mkdir(parents=True)
+            (archive / "spec").mkdir(parents=True)
+            (archive / "plans").mkdir(parents=True)
+            (archive / "reports" / "final" / "summary-data.json").write_text("{}", encoding="utf-8")
+            (archive / "spec" / "design.md").write_text("# d\n", encoding="utf-8")
+            (archive / "plans" / "plan.md").write_text("# p\n", encoding="utf-8")
+            (root / ".harness" / "knowledge" / "entries" / "active").mkdir(parents=True)
+            (root / ".harness" / "knowledge" / "entries" / "active" / "kn.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            paths = ha.collect_archive_core_paths(root, archive)
+            joined = "\n".join(paths)
+            self.assertIn("summary-data.json", joined)
+            self.assertIn("spec/design.md", joined)
+            self.assertIn("plans/plan.md", joined)
+            self.assertIn("knowledge/entries/active/kn.json", joined)
+
+    def test_auto_push_skips_without_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            archive.mkdir(parents=True)
+            result = ha.auto_push_archive_core(root, archive)
+            self.assertTrue(result.get("skipped"))
+            self.assertIn("credentials", str(result.get("reason")))
 
 
 if __name__ == "__main__":

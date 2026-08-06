@@ -124,6 +124,87 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+# ---------------------------------------------------------------------------
+# Gate severity tiering (P1 controllability)
+#
+# Hard invariants stay fail-closed in every mode:
+#   1. submit/merge identity & final-hash consistency (ledger/integration);
+#   2. archive integrity (manifest/minimal set, enforced in harness_archive);
+#   3. destructive-action protection (cleanup topology / protected paths).
+# The sites listed in SOFT_GATE_SITES guard regenerable bookkeeping
+# (plan-handoff projections, phase capsules, scenario coverage receipts,
+# test-guard tracking). In "lenient" mode a failure at one of those sites is
+# recorded as a WARN receipt (evidence/gate-warnings.ndjson) instead of
+# blocking the phase. Release phases (submit/merge/archive/release/deploy)
+# never downgrade.
+# ---------------------------------------------------------------------------
+
+GATE_RELEASE_PHASES = frozenset({"submit", "merge", "archive", "release", "deploy"})
+SOFT_GATE_SITES = frozenset({
+    "plan-handoff",
+    "capsule",
+    "scenario-coverage",
+    "test-guard",
+})
+GATE_WARNINGS_REL = Path("evidence") / "gate-warnings.ndjson"
+
+
+def gate_severity_mode(project: Path, change_dir: Path | None = None) -> str:
+    """Resolve gate severity mode: env > change gate-policy > project config."""
+    env_mode = str(os.environ.get("HUNTER_HARNESS_GATE_MODE") or "").strip().lower()
+    if env_mode in {"strict", "lenient"}:
+        return env_mode
+    candidates: list[Path] = []
+    if change_dir is not None:
+        candidates.append(change_dir / "meta" / "gate-policy.json")
+    candidates.append(project / ".harness" / "config" / "gate-policy.json")
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            document = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        value = str(document.get("severityMode") or "").strip().lower()
+        if value in {"strict", "lenient"}:
+            return value
+    return "strict"
+
+
+def gate_soft_allowed(mode: str, phase: str, site: str) -> bool:
+    return (
+        mode == "lenient"
+        and phase not in GATE_RELEASE_PHASES
+        and site in SOFT_GATE_SITES
+    )
+
+
+def record_gate_warning(
+    change_dir: Path,
+    *,
+    phase: str,
+    site: str,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    """Append a downgraded-gate receipt; the phase continues with WARN."""
+    entry = {
+        "ts": he.now_iso(),
+        "phase": phase,
+        "site": site,
+        "code": code,
+        "message": message,
+        "mode": "lenient",
+    }
+    path = change_dir / GATE_WARNINGS_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+    return entry
+
+
 def _write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -1561,7 +1642,8 @@ def append_phase_event(
         he.atomic_append_line(events_file, line)
     rendered = False
     log_path = None
-    if type_ == "phase.end" or auto_sealed:
+    if (type_ == "phase.end" or auto_sealed) and \
+            he.execution_log_render_enabled(change_dir):
         events = he.load_events(events_file)
         content = he.render_execution_log(events)
         log_path = he.write_execution_log(change_dir, content)
@@ -1882,6 +1964,8 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
         )
     change_dir = Path(resolved["changeDir"])
+    severity_mode = gate_severity_mode(project, change_dir)
+    gate_warnings: list[dict[str, Any]] = []
     plan_verification: dict[str, Any] | None = None
     if args.phase == "run":
         plan_verification = validate_plan_handoff(change_dir)
@@ -1894,16 +1978,25 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 or plan_verification.get("message")
                 or "finalized plan verification failed"
             )
-            return emit_error(
-                code,
-                message,
-                as_json=as_json,
-                extra={
-                    key: value
-                    for key, value in plan_verification.items()
-                    if key not in {"ok", "code", "error", "message"}
-                },
-            )
+            if gate_soft_allowed(severity_mode, args.phase, "plan-handoff"):
+                gate_warnings.append(record_gate_warning(
+                    change_dir,
+                    phase=args.phase,
+                    site="plan-handoff",
+                    code=code,
+                    message=message,
+                ))
+            else:
+                return emit_error(
+                    code,
+                    message,
+                    as_json=as_json,
+                    extra={
+                        key: value
+                        for key, value in plan_verification.items()
+                        if key not in {"ok", "code", "error", "message"}
+                    },
+                )
     concurrency_block = hc.check_concurrency_block(project, resolved["changeId"])
     if concurrency_block is not None:
         record_blocked_attempt(
@@ -1998,7 +2091,18 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 skills_root=Path(args.skills_root).expanduser(),
             )
         except ValueError as exc:
-            return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
+            if gate_soft_allowed(severity_mode, args.phase, "capsule"):
+                gate_warnings.append(record_gate_warning(
+                    change_dir,
+                    phase=args.phase,
+                    site="capsule",
+                    code="PHASE_CAPSULE_MISMATCH",
+                    message=str(exc),
+                ))
+                # Stale capsule is regenerable state: rebuild it below.
+                capsule = None
+            else:
+                return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
     claim = hc.claim_lease(
         project,
         change_id=resolved["changeId"],
@@ -2022,18 +2126,27 @@ def cmd_begin(args: argparse.Namespace) -> int:
             if args.phase in {"run", "test"}:
                 guard_result = htg.begin(execution_root, change_dir)
                 if not guard_result.get("ok"):
-                    hc.release_lease(
-                        project,
-                        change_id=resolved["changeId"],
-                        phase=args.phase,
-                        run_id=run_id,
-                    )
-                    return emit_error(
-                        str(guard_result.get("code", "TEST_GUARD_BEGIN_FAILED")),
-                        "test guard begin failed",
-                        as_json=as_json,
-                        extra=guard_result,
-                    )
+                    if gate_soft_allowed(severity_mode, args.phase, "test-guard"):
+                        gate_warnings.append(record_gate_warning(
+                            change_dir,
+                            phase=args.phase,
+                            site="test-guard",
+                            code=str(guard_result.get("code", "TEST_GUARD_BEGIN_FAILED")),
+                            message="test guard begin failed (downgraded to WARN)",
+                        ))
+                    else:
+                        hc.release_lease(
+                            project,
+                            change_id=resolved["changeId"],
+                            phase=args.phase,
+                            run_id=run_id,
+                        )
+                        return emit_error(
+                            str(guard_result.get("code", "TEST_GUARD_BEGIN_FAILED")),
+                            "test guard begin failed",
+                            as_json=as_json,
+                            extra=guard_result,
+                        )
             state_root = Path(hp.resolve_state_dir_for_contract(change_dir)).resolve()
             current_head = _git_text(execution_root, "rev-parse", "--verify", "HEAD")
             ledger, _ = hl.load_ledger(change_dir)
@@ -2091,6 +2204,8 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "planVerification": plan_verification,
         "projection": projection,
         "executionRootSource": execution_hint["source"],
+        "gateSeverityMode": severity_mode,
+        "gateWarnings": gate_warnings,
     }
     emit(payload, as_json=as_json)
     return 0
@@ -2108,6 +2223,8 @@ def cmd_close(args: argparse.Namespace) -> int:
             extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
         )
     change_dir = Path(resolved["changeDir"])
+    severity_mode = gate_severity_mode(project, change_dir)
+    gate_warnings: list[dict[str, Any]] = []
     blocked = foundation_gate_blocks(getattr(args, "task", None), change_dir)
     if blocked:
         return emit_error(
@@ -2204,18 +2321,27 @@ def cmd_close(args: argparse.Namespace) -> int:
                 allow_head_advance=args.phase in {"run", "submit", "merge"},
             )
         except ValueError as exc:
-            persist_close_failure(
-                change_dir,
-                args.phase,
-                run_id,
-                capsule,
-                status="CAPSULE_VALIDATION_FAILED",
-                error={
-                    "code": "PHASE_CAPSULE_MISMATCH",
-                    "message": str(exc),
-                },
-            )
-            return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
+            if gate_soft_allowed(severity_mode, args.phase, "capsule"):
+                gate_warnings.append(record_gate_warning(
+                    change_dir,
+                    phase=args.phase,
+                    site="capsule",
+                    code="PHASE_CAPSULE_MISMATCH",
+                    message=str(exc),
+                ))
+            else:
+                persist_close_failure(
+                    change_dir,
+                    args.phase,
+                    run_id,
+                    capsule,
+                    status="CAPSULE_VALIDATION_FAILED",
+                    error={
+                        "code": "PHASE_CAPSULE_MISMATCH",
+                        "message": str(exc),
+                    },
+                )
+                return emit_error("PHASE_CAPSULE_MISMATCH", str(exc), as_json=as_json)
 
     projection = evaluate_projection_gate(project, args.phase)
     if not projection.get("ok"):
@@ -2294,20 +2420,29 @@ def cmd_close(args: argparse.Namespace) -> int:
     if args.phase in {"run", "test"}:
         coverage = _validate_scenario_coverage(change_dir)
         if not coverage.get("ok"):
-            persist_close_failure(
-                change_dir,
-                args.phase,
-                run_id,
-                capsule,
-                status="SCENARIO_VALIDATION_FAILED",
-                error=coverage,
-            )
-            return emit_error(
-                str(coverage.get("code", "SCENARIO_COVERAGE_FAILED")),
-                str(coverage.get("message", "scenario coverage validation failed")),
-                as_json=as_json,
-                extra={k: v for k, v in coverage.items() if k not in {"ok", "message", "code"}},
-            )
+            if gate_soft_allowed(severity_mode, args.phase, "scenario-coverage"):
+                gate_warnings.append(record_gate_warning(
+                    change_dir,
+                    phase=args.phase,
+                    site="scenario-coverage",
+                    code=str(coverage.get("code", "SCENARIO_COVERAGE_FAILED")),
+                    message=str(coverage.get("message", "scenario coverage validation failed")),
+                ))
+            else:
+                persist_close_failure(
+                    change_dir,
+                    args.phase,
+                    run_id,
+                    capsule,
+                    status="SCENARIO_VALIDATION_FAILED",
+                    error=coverage,
+                )
+                return emit_error(
+                    str(coverage.get("code", "SCENARIO_COVERAGE_FAILED")),
+                    str(coverage.get("message", "scenario coverage validation failed")),
+                    as_json=as_json,
+                    extra={k: v for k, v in coverage.items() if k not in {"ok", "message", "code"}},
+                )
 
     close_status = args.status
     close_code = "PHASE_CLOSED"
@@ -2316,6 +2451,12 @@ def cmd_close(args: argparse.Namespace) -> int:
         # Degraded close: phase.end status must not exceed WARN (OK → WARN).
         if close_status == "OK":
             close_status = "WARN"
+    if gate_warnings:
+        # Lenient-mode downgrades: phase closes, but never better than WARN.
+        if close_status == "OK":
+            close_status = "WARN"
+        if close_code == "PHASE_CLOSED":
+            close_code = "CLOSED_WITH_WARNINGS"
 
     close_transaction: dict[str, Any] = {}
     if capsule is not None:
@@ -2340,20 +2481,29 @@ def cmd_close(args: argparse.Namespace) -> int:
         else:
             guard_result = htg.close(execution_root, change_dir)
             if not guard_result.get("ok"):
-                if capsule is not None:
-                    close_transaction.update({
-                        "status": "GUARD_CLOSE_FAILED",
-                        "lastError": guard_result,
-                        "updatedAt": he.now_iso(),
-                    })
-                    write_phase_capsule(change_dir, args.phase, run_id, capsule)
-                return emit_error(
-                    str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
-                    "test guard close failed",
-                    as_json=as_json,
-                    extra=guard_result,
-                )
-            if capsule is not None:
+                if gate_soft_allowed(severity_mode, args.phase, "test-guard"):
+                    gate_warnings.append(record_gate_warning(
+                        change_dir,
+                        phase=args.phase,
+                        site="test-guard",
+                        code=str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
+                        message="test guard close failed (downgraded to WARN)",
+                    ))
+                else:
+                    if capsule is not None:
+                        close_transaction.update({
+                            "status": "GUARD_CLOSE_FAILED",
+                            "lastError": guard_result,
+                            "updatedAt": he.now_iso(),
+                        })
+                        write_phase_capsule(change_dir, args.phase, run_id, capsule)
+                    return emit_error(
+                        str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
+                        "test guard close failed",
+                        as_json=as_json,
+                        extra=guard_result,
+                    )
+            if guard_result.get("ok") and capsule is not None:
                 close_transaction["guardClosed"] = True
                 close_transaction["updatedAt"] = he.now_iso()
                 write_phase_capsule(change_dir, args.phase, run_id, capsule)
@@ -2437,6 +2587,8 @@ def cmd_close(args: argparse.Namespace) -> int:
         "testGuard": guard_result,
         "event": event_result,
         "lease": release,
+        "gateSeverityMode": severity_mode,
+        "gateWarnings": gate_warnings,
     }
     emit(payload, as_json=as_json)
     return 0

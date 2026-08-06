@@ -1,6 +1,7 @@
 ---
 name: harness-package
-description: "增量模块打包：拉取最新→编译验证→mvn package→汇总 jar/war。使用场景：打包、package、发版准备"
+description: "增量模块打包：拉取最新→编译验证→mvn package→汇总 jar/war。仅当用户显式调用 /harness-package 时使用，不得自动触发。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: medium
 allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]

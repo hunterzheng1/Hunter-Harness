@@ -1,6 +1,7 @@
 ---
 name: harness-run
-description: "按变更簇执行 TDD 编码循环（RED→GREEN→REFACTOR→编译验证），逐变更簇实现计划中的任务。使用场景：开始编码、实现功能、写代码、TDD 编码"
+description: "按变更簇执行 TDD 编码循环（RED→GREEN→REFACTOR→编译验证），逐变更簇实现计划中的任务。仅当用户显式调用 /harness-run 时使用；不得因用户提到编码/实现就自动触发，也不得被其他阶段 skill 自动接续。"
+disable-model-invocation: true
 argument-hint: "变更名 | --subagent | --inline | --fixback | 留空自动检测"
 effort: medium
 allowed-tools: [Read, Edit, Write, Glob, Grep, Bash(powershell.exe:*)]
@@ -30,7 +31,9 @@ disallowed-tools:
 
 ## When to Use
 
-触发语："开始编码""实现功能""写代码""TDD编码"。参数：`--subagent` 强制 Subagent-Driven；`--inline` 等同默认；`--fixback` 读最新 review fixback。**默认 Inline，不询问执行模式**。
+仅当用户显式调用 `/harness-run` 时执行；plan 完成后**不自动**进入本阶段。参数：`--subagent` 强制 Subagent-Driven；`--inline` 等同默认；`--fixback` 读最新 review fixback。**默认 Inline，不询问执行模式**。
+
+**单阶段原则**：run 关门（步骤 4 的 gate close + context close）完成后必须停止并交还用户，仅提示下一步可执行 `/harness-test`；禁止自动开始执行测试、review 或 submit。
 
 ## 前置条件
 

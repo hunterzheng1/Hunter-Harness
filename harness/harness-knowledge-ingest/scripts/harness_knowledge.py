@@ -22,6 +22,8 @@ import subprocess
 import sys
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -392,6 +394,187 @@ def project_id(project: Path) -> str:
         if match:
             return slugify(match.group(1).strip(), 80)
     return slugify(project.name, 80)
+
+
+def _yaml_scalar(text: str, key: str) -> str | None:
+    """Read a top-level or nested YAML scalar without depending on PyYAML."""
+    pattern = rf"(?m)^[ \t]*{re.escape(key)}:\s*['\"]?([^'\"\n#]+)"
+    match = re.search(pattern, text)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    return value or None
+
+
+def platform_project_id(project: Path) -> str | None:
+    """Platform-bound project id from project.yaml / credentials (not the local slug)."""
+    for relative in (
+        ".harness/credentials.local.yaml",
+        ".harness/project.yaml",
+    ):
+        path = project / relative
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        value = _yaml_scalar(text, "project_id")
+        if value and value.lower() not in {"null", "~", "none"}:
+            return value
+    return None
+
+
+def resolve_remote_endpoint(project: Path) -> dict[str, str] | None:
+    """P3 remote mode: credentials.local.yaml with server_url+token enables platform ingest.
+
+    When configured, local index.json / index.sqlite / judge / maintenance-outbox are
+    not maintained; entries still land under entries/ for offline grep fallback.
+    """
+    creds = project / ".harness" / "credentials.local.yaml"
+    if not creds.is_file():
+        return None
+    text = creds.read_text(encoding="utf-8", errors="ignore")
+    server_url = _yaml_scalar(text, "server_url")
+    token = _yaml_scalar(text, "token")
+    if not server_url or not token:
+        return None
+    project_bound = platform_project_id(project)
+    if not project_bound:
+        return None
+    return {
+        "server_url": server_url.rstrip("/"),
+        "token": token,
+        "project_id": project_bound,
+    }
+
+
+def post_knowledge_ingest(
+    endpoint: dict[str, str],
+    entries: list[dict[str, Any]],
+    *,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """POST entries to the platform knowledge ingest API (idempotent)."""
+    if not entries:
+        return {"accepted": 0, "created": 0, "updated": 0, "duplicates": 0, "skipped": True}
+    url = (
+        f"{endpoint['server_url']}/api/v1/projects/"
+        f"{endpoint['project_id']}/knowledge/ingest"
+    )
+    body = json.dumps(
+        {"schema_version": 1, "entries": entries},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {endpoint['token']}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"knowledge ingest HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"knowledge ingest failed: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("knowledge ingest returned a non-object payload")
+    return payload
+
+
+def query_remote_semantic(
+    endpoint: dict[str, str],
+    query: str,
+    *,
+    limit: int = 10,
+    timeout: float = 20.0,
+) -> list[dict[str, Any]]:
+    """Query the platform semantic search API; empty list when unreachable."""
+    from urllib.parse import urlencode
+
+    params = urlencode({"q": query, "project_id": endpoint["project_id"]})
+    url = f"{endpoint['server_url']}/api/v1/semantic/search?{params}"
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {endpoint['token']}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    matches: list[dict[str, Any]] = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        document = item.get("document") if isinstance(item.get("document"), dict) else item
+        metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+        matches.append(
+            {
+                "id": str(metadata.get("entry_id") or document.get("document_id") or ""),
+                "type": str(metadata.get("entry_type") or "decision"),
+                "status": str(metadata.get("status") or "active"),
+                "title": str(document.get("title") or ""),
+                "source": {
+                    "archive": str(metadata.get("source_archive") or "remote"),
+                },
+                "scope": {
+                    "sourceFiles": list(metadata.get("source_files") or []),
+                },
+                "body": str(document.get("body") or ""),
+                "summary": str(document.get("title") or ""),
+            }
+        )
+    return [match for match in matches if match["id"]]
+
+
+def grep_entry_files(
+    knowledge: Path,
+    query: str,
+    limit: int = 10,
+    statuses: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Offline fallback: substring scan over entries/*.json when remote is down."""
+    needle = query.strip().lower()
+    if not needle:
+        return []
+    selected = set(statuses or ["active", "candidate"])
+    matches: list[dict[str, Any]] = []
+    for status in sorted(selected):
+        folder = knowledge / "entries" / status
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.glob("*.json")):
+            try:
+                entry = read_json(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(entry, dict):
+                continue
+            haystack = " ".join(
+                str(entry.get(key) or "")
+                for key in ("id", "title", "summary", "body", "type", "status")
+            ).lower()
+            keywords = entry.get("keywords") if isinstance(entry.get("keywords"), list) else []
+            haystack += " " + " ".join(str(item) for item in keywords).lower()
+            if needle not in haystack:
+                continue
+            matches.append(entry)
+            if len(matches) >= limit:
+                return matches
+    return matches
 
 
 def git_head(project: Path) -> str | None:
@@ -3110,11 +3293,16 @@ def build_index(
     # so a repeated ingest is a true no-op (design §3.5, cluster 6, UT-025).
     # Also require index.sqlite to exist so a query never sees a stale index.json
     # pointing at a missing sqlite (API-009 single ensure-current).
+    # P3 remote mode does not maintain sqlite; the remote pointer index is enough.
+    remote_endpoint = resolve_remote_endpoint(project)
     if incremental:
         if (
             isinstance(old_index, dict)
             and old_index.get("inputsHash") == inputs_hash
-            and (knowledge / "index.sqlite").exists()
+            and (
+                remote_endpoint is not None
+                or (knowledge / "index.sqlite").exists()
+            )
         ):
             stale_mode = dict(old_index.get("ingestMode", {}))
             stale_mode.update(
@@ -3134,6 +3322,7 @@ def build_index(
                     "archivesChanged": 0,
                     "archivesRemoved": 0,
                     "archivesDelta": 0,
+                    **({"remote": True} if remote_endpoint is not None else {}),
                 }
             )
             result = dict(old_index)
@@ -3363,6 +3552,40 @@ def build_index(
     )
 
     reporter.emit("sqlite", 0, len(indexed_entries), force=True)
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        # P3 remote mode: keep entry JSON files for offline grep; skip local
+        # index.json / index.sqlite / views / outbox projections and push to platform.
+        ingest_mode["mode"] = "remote"
+        ingest_mode["remote"] = True
+        ingest_mode["remoteProjectId"] = remote["project_id"]
+        ingest_mode["sqliteRebuild"] = 0
+        ingest_mode["sqliteUpsert"] = 0
+        ingest_mode["sqliteDelete"] = 0
+        ingest_mode["sqliteRowsTouched"] = 0
+        try:
+            remote_result = post_knowledge_ingest(remote, indexed_entries)
+            ingest_mode["remoteIngest"] = remote_result
+            ingest_mode["remoteOk"] = True
+        except RuntimeError as exc:
+            ingest_mode["remoteOk"] = False
+            ingest_mode["remoteError"] = str(exc)
+        index = make_manifest(
+            project,
+            pname,
+            summary_paths,
+            archive_records,
+            indexed_entries,
+            failures,
+            duplicates,
+            ingest_mode,
+        )
+        # Lightweight pointer only — not a local search index.
+        write_json_if_changed(knowledge / "index.json", index)
+        write_ingest_report(knowledge, index, failures, duplicates)
+        reporter.emit("complete", len(indexed_entries), len(indexed_entries), force=True)
+        return index
+
     sqlite_dirty_entries = [
         entry
         for entry in indexed_entries
@@ -4417,6 +4640,27 @@ def auto_knowledge(
     audit_limit: int = 10,
 ) -> dict[str, Any]:
     project = project.resolve()
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        sync = sync_status(project, update=True, incremental=incremental)
+        return {
+            "command": "auto",
+            "project": str(project),
+            "generatedAt": now_iso(),
+            "mode": "remote",
+            "remote": {
+                "serverUrl": remote["server_url"],
+                "projectId": remote["project_id"],
+            },
+            "sync": sync,
+            "skipped": {
+                "suggestValidators": True,
+                "verify": True,
+                "audit": True,
+                "judge": True,
+                "reason": "remote mode: candidate review happens on the platform",
+            },
+        }
     knowledge = project / ".harness" / "knowledge"
     config_summary = ensure_auto_knowledge_config(knowledge)
     sync = sync_status(project, update=True, incremental=incremental)
@@ -4530,6 +4774,46 @@ def query_index(
 ) -> dict[str, Any]:
     project = project.resolve()
     knowledge = project / ".harness" / "knowledge"
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        # P3: prefer platform semantic search; degrade to local entry grep when offline.
+        entries = query_remote_semantic(remote, query, limit=limit)
+        source = "remote"
+        if not entries:
+            entries = grep_entry_files(knowledge, query, limit=limit, statuses=statuses)
+            source = "offline-grep"
+        context_path = write_context_pack(project, knowledge, query, entries)
+        filters = {
+            "files": file_filters or [],
+            "statuses": statuses or [],
+            "types": types or [],
+        }
+        return {
+            "query": query,
+            "matchCount": len(entries),
+            "contextPack": str(context_path),
+            "filters": filters,
+            "mode": "remote",
+            "source": source,
+            "planInput": {
+                "kind": "harness-knowledge-context-pack",
+                "path": str(context_path),
+                "requiredBefore": "harness-plan",
+                "usage": "Read this context pack before design, planning, code exploration, or implementation.",
+            },
+            "matches": [
+                {
+                    "id": entry.get("id"),
+                    "type": entry.get("type"),
+                    "status": entry.get("status"),
+                    "title": entry.get("title"),
+                    "sourceArchive": (entry.get("source") or {}).get("archive"),
+                    "sourceFiles": (entry.get("scope") or {}).get("sourceFiles") or [],
+                }
+                for entry in entries
+            ],
+        }
+
     sqlite_path = knowledge / "index.sqlite"
     # API-009: one ensure-current. Build the shared snapshot once (inputs_hash
     # computed exactly once) and a single build_index call whose no-op fast path
@@ -4621,6 +4905,45 @@ def sync_status(
     check: bool = False,
 ) -> dict[str, Any]:
     project = project.resolve()
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        # P3: remote mode — local sqlite/outbox are intentionally not maintained.
+        refreshed: dict[str, Any] | None = None
+        action = "none"
+        if update and not check:
+            refreshed = build_index(
+                project,
+                incremental=incremental,
+                progress=progress,
+            )
+            action = "ingested-remote"
+        remote_ok = True
+        remote_error = None
+        if refreshed is not None:
+            mode = refreshed.get("ingestMode") or {}
+            remote_ok = bool(mode.get("remoteOk", True))
+            remote_error = mode.get("remoteError")
+        return {
+            "ok": remote_ok,
+            "current": remote_ok,
+            "action": action,
+            "reasons": [] if remote_ok else [str(remote_error or "remote ingest failed")],
+            "mode": "remote",
+            "remote": {
+                "serverUrl": remote["server_url"],
+                "projectId": remote["project_id"],
+                "ok": remote_ok,
+                **({} if remote_error is None else {"error": remote_error}),
+            },
+            "maintenance": {
+                "attempted": False,
+                "skipped": True,
+                "skippedReason": "remote mode: judge/outbox run on the platform",
+                "ok": True,
+            },
+            "index": refreshed,
+        }
+
     snapshot = build_snapshot(project)
     knowledge = snapshot.knowledge
     index_path = knowledge / "index.json"
@@ -6295,6 +6618,16 @@ def maintain_knowledge(project: Path, archive_id: str) -> dict[str, Any]:
     judge checklist, running->completed (or completed_rules_pending_judge).
     Idempotent for completed items. Failure -> failed, attempts+1, retryable."""
     project = project.resolve()
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        return {
+            "ok": True,
+            "archiveId": archive_id,
+            "status": "skipped-remote",
+            "skipped": True,
+            "skippedReason": "remote mode: maintenance runs on the platform",
+            "remoteProjectId": remote["project_id"],
+        }
     outbox_root = _outbox_root(project)
     outbox_root.mkdir(parents=True, exist_ok=True)
 
@@ -6379,6 +6712,19 @@ def drain_maintenance_outbox(
     simply including the stale id in the drain batch is sufficient recovery.
     """
     project = project.resolve()
+    remote = resolve_remote_endpoint(project)
+    if remote is not None:
+        return {
+            "ok": True,
+            "project": str(project),
+            "processed": 0,
+            "remaining": 0,
+            "staleRunningRecovered": 0,
+            "results": [],
+            "skipped": True,
+            "skippedReason": "remote mode: maintenance outbox is not used",
+            "mode": "remote",
+        }
     root = _outbox_root(project)
     now = time.time()
     retryable_ids = {

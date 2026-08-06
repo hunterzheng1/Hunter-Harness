@@ -13,6 +13,8 @@ import {
   type ConfigureOptions
 } from "./commands/configure.js";
 import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
+import { runConnect, type ConnectOptions } from "./commands/connect.js";
+import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   detectProject,
@@ -260,6 +262,22 @@ export async function runCli(
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
     });
+  program.command("connect <url>")
+    .description("绑定平台：校验项目 API Key 并写入 .harness/credentials.local.yaml")
+    .option("--key <key>", "项目 API Key（省略则交互式输入）")
+    .option("--non-interactive")
+    .option("--json")
+    .action(async (url: string, options: ConnectOptions) => {
+      exitCode = await runConnect(url, options, dependencies);
+    });
+  program.command("events-sync")
+    .description("将本地 events.ndjson 增量上报到平台 Run 监控（batch + heartbeat）")
+    .option("--change-dir <path>", "仅同步指定 change 目录")
+    .option("--heartbeat-only", "只发送心跳，不上报事件")
+    .option("--json")
+    .action(async (options: EventsSyncOptions) => {
+      exitCode = await runEventsSync(options, dependencies);
+    });
   addCommonOptions(program.command("cleanup"))
     .description("清理已完成事务和过期服务端缓存")
     .action(async (options: CleanupCommandOptions) => {
@@ -307,9 +325,10 @@ export async function runCli(
       );
     });
   program.command("doctor")
-    .description("检查 Harness 运行时与受管文件结构")
+    .description("检查 Harness 运行时与受管文件结构；--fix 自动重建可再生状态")
     .option("--runtime")
     .option("--managed-blocks")
+    .option("--fix", "重建可再生投影（execution-log 渲染、知识索引修复）")
     .option("--json")
     .action(async (options: DoctorCommandOptions) => {
       exitCode = await runDoctor(options, dependencies);

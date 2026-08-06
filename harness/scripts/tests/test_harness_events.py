@@ -418,6 +418,80 @@ class HarnessEventsTest(unittest.TestCase):
         self.assertEqual(list(self.change_dir.glob(".events.ndjson.*.tmp")), [])
 
 
+class RenderPolicyTests(unittest.TestCase):
+    """P1 slim-files: render-policy.json 控制 execution-log.md 自动渲染。"""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.project = Path(self._tmpdir.name) / "proj"
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        self.change_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self._tmpdir.cleanup()
+
+    def _write_policy(self, document) -> None:
+        config = self.project / ".harness" / "config"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "render-policy.json").write_text(
+            json.dumps(document), encoding="utf-8"
+        )
+
+    def test_default_is_auto_render(self) -> None:
+        self.assertTrue(he.execution_log_render_enabled(self.change_dir))
+
+    def test_on_demand_disables_auto_render(self) -> None:
+        self._write_policy({"executionLog": "on-demand"})
+        self.assertFalse(he.execution_log_render_enabled(self.change_dir))
+
+    def test_other_values_keep_auto_render(self) -> None:
+        self._write_policy({"executionLog": "auto"})
+        self.assertTrue(he.execution_log_render_enabled(self.change_dir))
+
+    def test_invalid_json_keeps_auto_render(self) -> None:
+        config = self.project / ".harness" / "config"
+        config.mkdir(parents=True, exist_ok=True)
+        (config / "render-policy.json").write_text("{oops", encoding="utf-8")
+        self.assertTrue(he.execution_log_render_enabled(self.change_dir))
+
+    def test_on_demand_skips_phase_end_render(self) -> None:
+        self._write_policy({"executionLog": "on-demand"})
+        code = he.main(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--phase",
+                "plan",
+                "--type",
+                "phase.start",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        code = he.main(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--phase",
+                "plan",
+                "--type",
+                "phase.end",
+                "--json",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(
+            he.execution_log_path(self.change_dir).exists(),
+            "on-demand mode must not auto-render execution-log.md",
+        )
+        # 显式 render 子命令仍可随时重建投影。
+        code = he.main(["render", "--change-dir", str(self.change_dir), "--json"])
+        self.assertEqual(code, 0)
+        self.assertTrue(he.execution_log_path(self.change_dir).exists())
+
+
 class RenderQualityTests(unittest.TestCase):
     """UT-201..UT-213: render note fallback + append semantic hints."""
 

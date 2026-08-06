@@ -9,13 +9,15 @@ export interface CliResult {
     | "refresh"
     | "cleanup"
     | "rules-sync"
-    | "rules-review";
+  | "rules-review"
+  | "connect"
+  | "events-sync";
   request_id: string;
   dry_run: boolean;
   ok: boolean;
   exit_code: CliExitCode;
   project_id: string | null;
-  summary: Record<string, number>;
+  summary: Record<string, number | string>;
   items: unknown[];
   warnings: unknown[];
   errors: unknown[];

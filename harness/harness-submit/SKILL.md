@@ -1,6 +1,7 @@
 ---
 name: harness-submit
-description: "最终提交封装：验证→中文 commit→提交/推送；worktree 模式含 --no-ff 合并回主分支。使用场景：提交代码、commit、push、合并分支、merge to main、完成开发"
+description: "最终提交封装：验证→中文 commit→提交/推送；worktree 模式含 --no-ff 合并回主分支。仅当用户显式调用 /harness-submit（或 /harness-merge 重入合并段）时使用；用户口头说'提交/commit/push'时必须先确认，不得自动触发。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: medium
 allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]
@@ -29,12 +30,9 @@ disallowed-tools:
 
 ## When to Use
 
-- 代码开发完成，准备提交
-- 用户说「提交代码」「commit」「push」「完成开发」
-- worktree 模式：用户说「合并分支」「merge to main」「合入主分支」「/harness-merge」（别名，从合并阶段重入亦可）
-- review 和 test 已通过或已明确跳过
+仅当用户显式调用 `/harness-submit`（或 `/harness-merge` 从合并段重入）时执行。用户口头说「提交代码」「commit」「push」「完成开发」而未调用本 skill 时，先确认是否走 Harness 提交阶段，**不得自动触发**。前置：review 和 test 已通过或已明确跳过。
 
-> **主目录模式**（`worktree.json` requested=false）：commit+push 主分支后直接 `/harness-archive`。**worktree 模式**（requested=true）：worktree 内仅本地 commit，随后本 skill 自动执行合并流程；**push 只在主分支发生一次**。
+> **主目录模式**（`worktree.json` requested=false）：commit+push 主分支后**停止**，仅提示可执行 `/harness-archive`，不自动归档。**worktree 模式**（requested=true）：worktree 内仅本地 commit，随后本 skill 在同一次调用内接续合并流程（这是同一次提交动作的一部分，不属于跨阶段自动推进）；**push 只在主分支发生一次**；合并完成后同样**停止**，仅提示 `/harness-archive`。
 
 ## 前置条件
 

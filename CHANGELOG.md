@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.49] — hunter-harness / [0.2.47] — @hunter-harness/workflow-harness
+
+### Added（2026-08-06 Harness/Platform 协同优化 P1–P5）
+
+- **阶段边界更清晰**：生命周期 skill 改为手动触发；单阶段结束后停止，不再自动接续 archive；门禁仅对 3 类硬不变量 fail-closed，并用 `doctor --fix` 重建可再生状态。
+- **过程产物按需**：execution-log / 阶段报告按需渲染；归档不再强制 final-summary HTML。
+- **平台连接**：新增 `hunter-harness connect`，支持账号 session 与项目级 scoped API Key。
+- **远端知识模式**：已绑定凭证与 project_id 时，知识写入走服务端 ingest，跳过本地 sqlite/outbox。
+- **Run 进度同步**：新增 `events-sync` 与 `harness_events_sync.py`，将 `events.ndjson` 批量上报 Platform；归档 finalize 后自动 push 核心四件套（设计/计划/summary-data/knowledge）。
+- **Headless 契约**：补齐阶段命令 JSON envelope，并新增编排基础设计文档（不实现 orchestrator）。
+- **工作流 bundle**：版本提升至 `0.2.36`，最低 CLI 版本提升至 `0.2.49`；CLI 能力增加 `progress-sync@1`、`headless-stage@1`。
+
 ## [0.2.48] — hunter-harness / [0.2.46] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-04 初始化 partial-state 误判）

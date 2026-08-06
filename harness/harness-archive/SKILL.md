@@ -1,6 +1,7 @@
 ---
 name: harness-archive
-description: "归档所有变更产出（计划/测试报告/审查/SQL/API文档）到 .harness/archive/，含归档元数据和可视化最终总结。使用场景：归档、完成归档、收尾、打包产出物"
+description: "归档所有变更产出（计划/测试报告/审查/SQL/API文档）到 .harness/archive/，含归档元数据。仅当用户显式调用 /harness-archive 时使用；不得被其他阶段 skill 自动接续触发。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: medium
 allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]
@@ -29,11 +30,9 @@ disallowed-tools:
 
 ## When to Use
 
-使用场景：
+仅当用户显式调用 `/harness-archive` 时执行。submit/merge 完成后**不自动**进入本阶段；用户口头说"归档/收尾"而未调用本 skill 时，先确认。
 
-- 用户说"归档 / 完成归档 / 收尾 / 打包产出物"。
-- submit 已推送、test/review 报告已就绪（或已明确标记跳过/未运行），需要封存变更产出。
-- 变更闭环最后一站，归档后从工作区移除 `.harness/changes/<change-name>/`。
+前置：submit 已推送、test/review 报告已就绪（或已明确标记跳过/未运行）。变更闭环最后一站，归档后从工作区移除 `.harness/changes/<change-name>/`。
 
 跳过场景：
 
@@ -42,8 +41,8 @@ disallowed-tools:
 
 自动调用边界：
 
-- 归档涉及移动/删除原变更目录，支持被其他 skill 调用，但调用前必须确保前置条件已满足；也支持用户显式 `/harness-archive` 调用。
-- 默认归档前确认是阻断检查点。若 `harness_archive.py auto-gate` 返回 `ARCHIVE_AUTO_GATE_SATISFIED`（Submit 或 Merge 已终态，archive-boundary snapshot 存在且全部归档门禁满足），后续 Archive 可无 AskQuestion 自动运行；其他情况仍须确认。
+- 归档涉及移动/删除原变更目录，**禁止被其他 skill 自动调用**；只接受用户显式 `/harness-archive` 调用。
+- `harness_archive.py auto-gate` 只影响**本次显式调用内**是否需要归档确认对话：返回 `ARCHIVE_AUTO_GATE_SATISFIED`（Submit 或 Merge 已终态，archive-boundary snapshot 存在且全部归档门禁满足）时可跳过 AskQuestion 直接归档；其他情况仍须确认。auto-gate 不构成跨阶段自动触发的授权。
 
 ## 前置条件
 
@@ -161,7 +160,7 @@ disallowed-tools:
 
 无测试报告 → 显示"未运行测试 / 静态验证"，不得 100% 通过率；无 review → "📝ADVISORY：未运行 review"。状态用 ✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP，复用前一阶段结果显示 🔁REUSED，**不得伪装成重新执行，不得无脑全绿**。
 
-**final-summary 必须产出**：Node 渲染器不可用/超时/exit 非 0/未产出文件时，`harness_archive.py` 自动用内置 Python fallback 渲染（含 changeName/finalStatus/commands/verification/changedFiles/archiveManifest/knownRisks/manualActions/maintenanceNotes，USER_SKIPPED/BLOCKED_BY_DBA/失败状态可见，全部 HTML 转义）。Node 与 Python fallback **都失败**时，finalize 立即恢复原 change 目录并 exit 非 0，**绝不归档一个没有 final-summary.html 的变更**。
+**final-summary 是可再生展示投影，非硬产物**：`summary-data.json` 是最终报告的唯一权威数据源，必须产出并通过 validate/adequacy。HTML 渲染默认执行（Node 渲染器失败时自动 Python fallback），但渲染失败只记 warning，**不再回滚归档**；`finalize --no-html` 可完全跳过本地 HTML（配置远端平台时由平台按 summary-data.json 渲染）。
 
 ### 九、CONDITIONAL_OK 最终状态
 
@@ -192,7 +191,7 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 fi
 - `.harness/archive/YYYY-MM-DD-<change-name>/meta/archive-meta.md` — 归档元数据
 - `.harness/archive/YYYY-MM-DD-<change-name>/events.ndjson` — 结构化事件层（新流程推荐；旧 archive 可缺失）
 - `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/summary-data.json` — 最终报告数据源
-- `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/final-summary.html` — 由 `render-summary.mjs` 渲染（Node 不可用或失败时由 `harness_archive.py` 内置 Python fallback 渲染）；**始终必须存在**，否则 finalize 恢复原 change 目录并 exit 非 0
+- `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/final-summary.html` — 可选展示投影，由 `render-summary.mjs` 渲染（Node 失败时 Python fallback）；渲染失败降级 warning，`--no-html` 可跳过
 - `.harness/archive/YYYY-MM-DD-<change-name>/evidence/archive-manifest-before.json` / `archive-manifest-after.json` — 归档前后 manifest/checksum
 
 ## 渐进披露

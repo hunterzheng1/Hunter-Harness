@@ -13,6 +13,8 @@ export const CREDENTIALS_GITIGNORE_LINES = [
 export interface LocalCredentials {
   token?: string;
   server_url?: string;
+  /** Platform project id bound by `hunter-harness connect` (project API keys). */
+  project_id?: string;
 }
 
 export class InvalidCredentialsError extends Error {
@@ -45,12 +47,17 @@ function validateLocalCredentials(credentials: LocalCredentials): LocalCredentia
     credentials.server_url.trim().length > 0
     ? assertHttpsServerUrl(credentials.server_url)
     : undefined;
+  const projectId = typeof credentials.project_id === "string" &&
+    credentials.project_id.trim().length > 0
+    ? credentials.project_id.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     throw new InvalidCredentialsError("credentials.local must include token and/or server_url");
   }
   return {
     ...(token === undefined ? {} : { token }),
-    ...(serverUrl === undefined ? {} : { server_url: serverUrl })
+    ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
+    ...(projectId === undefined ? {} : { project_id: projectId })
   };
 }
 
@@ -74,12 +81,17 @@ function parseLocalCredentials(raw: unknown): LocalCredentials | null {
       return null;
     }
   }
+  const projectId = typeof record.project_id === "string" &&
+    record.project_id.trim().length > 0
+    ? record.project_id.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     return null;
   }
   return {
     ...(token === undefined ? {} : { token }),
-    ...(serverUrl === undefined ? {} : { server_url: serverUrl })
+    ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
+    ...(projectId === undefined ? {} : { project_id: projectId })
   };
 }
 
@@ -90,6 +102,7 @@ export function mergeLocalCredentials(
   return validateLocalCredentials({
     ...(existing?.token === undefined ? {} : { token: existing.token }),
     ...(existing?.server_url === undefined ? {} : { server_url: existing.server_url }),
+    ...(existing?.project_id === undefined ? {} : { project_id: existing.project_id }),
     ...patch
   });
 }

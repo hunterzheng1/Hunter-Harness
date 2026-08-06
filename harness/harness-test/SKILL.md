@@ -1,6 +1,7 @@
 ---
 name: harness-test
-description: "测试执行：读取场景表，执行单元测试+API接口测试+数据兼容验证，输出测试报告。当用户说'跑测试/验证/跑用例/接口测试/单元测试'时使用"
+description: "测试执行：读取场景表，执行单元测试+API接口测试+数据兼容验证，输出测试报告。仅当用户显式调用 /harness-test 时使用；不得在 run 结束后自动接续执行。"
+disable-model-invocation: true
 argument-hint: "变更名或留空自动检测"
 effort: medium
 allowed-tools: [Read, Glob, Grep, Write, Edit, Agent, Bash(powershell.exe:*)]
@@ -31,7 +32,9 @@ disallowed-tools:
 
 ## When to Use
 
-当用户明确要求运行测试时触发。典型触发语："跑测试""验证""跑用例""接口测试""单元测试"。属于自动调用型 skill（未设 `disable-model-invocation`），默认经 `/harness-test` 显式调用。
+仅当用户显式调用 `/harness-test` 时执行（已设 `disable-model-invocation`）。run 阶段结束后**不自动**进入本阶段；用户口头提到"跑测试"而未调用本 skill 时，先确认是否走 Harness 测试阶段。
+
+**单阶段原则**：test 关门后必须停止并交还用户，仅按风险层级提示下一步（`/harness-review` 或 `/harness-submit`）；禁止自动接续执行。
 
 使用场景：
 - 完成 `/harness-run` 编码后，验证单元测试 + 接口测试 + 数据兼容

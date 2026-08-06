@@ -12,7 +12,9 @@ export const CLI_CAPABILITIES = [
   "codegraph-status@1",
   "codegraph-status@2",
   "doctor-capability@1",
-  "registry-governance@1"
+  "registry-governance@1",
+  "progress-sync@1",
+  "headless-stage@1"
 ] as const;
 
 export interface WorkflowRequirements {

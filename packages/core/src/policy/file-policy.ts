@@ -148,8 +148,13 @@ export function classifyFile(input: string): FilePolicy {
     return USER_DIFF;
   }
   if (/^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u.test(path)) {
-    // Machine-generated archive evidence for server semantic "变更总结";
-    // other files under .harness/archive/ remain external_unmanaged.
+    // Machine-generated archive evidence for server semantic "变更总结".
+    return GENERATED_REVIEWABLE;
+  }
+  // P4 archive auto-push core set: design (spec/) + plan (plans/) under an archive.
+  if (
+    /^\.harness\/archive\/[^/]+\/(spec|plans)\//u.test(path)
+  ) {
     return GENERATED_REVIEWABLE;
   }
   if (
