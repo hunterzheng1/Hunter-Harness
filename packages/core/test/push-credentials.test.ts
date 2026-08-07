@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CREDENTIALS_GITIGNORE_LINES,
+  clearLocalCredentials,
   ensureCredentialsGitignore,
   mergeLocalCredentials,
   readLocalCredentials,
@@ -25,6 +26,18 @@ describe("push credentials.local", () => {
       token: "local-token",
       server_url: "https://server.example.test"
     });
+  });
+
+  it("clears credentials.local.yaml when present", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-cred-clear-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeLocalCredentials(root, {
+      token: "local-token",
+      server_url: "https://server.example.test"
+    });
+    expect(await clearLocalCredentials(root)).toBe(true);
+    expect(await readLocalCredentials(root)).toBeNull();
+    expect(await clearLocalCredentials(root)).toBe(false);
   });
 
   it("prefers env token over credentials.local", () => {

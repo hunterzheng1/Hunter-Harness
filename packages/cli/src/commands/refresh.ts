@@ -22,10 +22,13 @@ import {
 import type { CommandDependencies } from "./configure.js";
 import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
+import { profileLabel } from "../ui/labels.js";
 import { readCliVersion } from "../version.js";
 
 export interface RefreshCommandOptions {
   agents?: string;
+  /** Comma-separated agents to uninstall (clean managed files + adapters.enabled). */
+  removeAgents?: string;
   codebuddySurface?: string;
   profile?: string;
   nonInteractive?: boolean;
@@ -196,11 +199,15 @@ export async function runRefresh(
   const currentProfile = (detection.config.project.profiles[0] ?? "general") as HarnessProfile;
   let targetProfile: HarnessProfile | undefined;
   let targetAgents: ReturnType<typeof refreshAgents>;
+  let removeAgents: ReturnType<typeof refreshAgents> = [];
   try {
     targetProfile = parseProfile(options.profile);
     targetAgents = options.agents === undefined
       ? refreshAgents(detection.config)
       : parseAgentsInput(options.agents);
+    if (options.removeAgents !== undefined && options.removeAgents.trim() !== "") {
+      removeAgents = parseAgentsInput(options.removeAgents);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = error instanceof InitConfigurationError ? error.code : undefined;
@@ -221,6 +228,7 @@ export async function runRefresh(
       resourcesRoot: dependencies.resourcesRoot,
       ...(targetProfile === undefined ? {} : { profile: targetProfile }),
       agents: targetAgents,
+      ...(removeAgents.length === 0 ? {} : { removeAgents }),
       codebuddySurface: codebuddySurface(
         detection.config,
         options.codebuddySurface
@@ -252,11 +260,13 @@ export async function runRefresh(
         return 2;
       }
     } else if (!options.yes && !dryRun) {
-      const label = targetProfile === currentProfile
-        ? `刷新当前配置（${currentProfile}）`
-        : targetProfile === undefined
-          ? "刷新所选工具的当前配置"
-          : `更新所选工具配置：${currentProfile} → ${targetProfile}`;
+      const label = removeAgents.length > 0
+        ? "移除工具并保留其余配置"
+        : targetProfile === currentProfile
+          ? `刷新当前配置（${profileLabel(currentProfile)}）`
+          : targetProfile === undefined
+            ? "刷新所选工具的当前配置"
+            : `更新所选工具配置：${profileLabel(currentProfile)} → ${profileLabel(targetProfile)}`;
       const answer = await dependencies.prompt(`${label}？[y/N]：`);
       if (!/^(?:y|yes)$/i.test(answer.trim())) {
         return 2;
@@ -278,6 +288,7 @@ export async function runRefresh(
         resourcesRoot: dependencies.resourcesRoot,
         ...(targetProfile === undefined ? {} : { profile: targetProfile }),
         agents: targetAgents,
+        ...(removeAgents.length === 0 ? {} : { removeAgents }),
         codebuddySurface: codebuddySurface(
           detection.config,
           options.codebuddySurface
@@ -307,7 +318,9 @@ export async function runRefresh(
       if (result.removed.length > 0) parts.push(`已删除 ${result.removed.length} 个`);
       if (result.preserved.length > 0) parts.push(`已保留 ${result.preserved.length} 个`);
       if (result.unchanged.length > 0) parts.push(`无需变更 ${result.unchanged.length} 个`);
-      dependencies.stdout(`Harness 刷新（${result.profile}）：${parts.join("，") || "没有变更"}。\n`);
+      dependencies.stdout(
+        `Harness 刷新（${profileLabel(result.profile)}）：${parts.join("，") || "没有变更"}。\n`
+      );
     }
     return output.exit_code;
   } catch (error) {

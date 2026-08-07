@@ -544,6 +544,51 @@ describe("Conservative Refresh", () => {
     expect(result.removed.some((entry) => entry.target_path === targetPath)).toBe(false);
     expect(result.conflicts.some((entry) => entry.target_path === targetPath)).toBe(false);
   }, 120_000);
+
+  it("removes a selected agent and its clean managed targets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-remove-agent-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
+    });
+    expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    expect(await exists(join(root, "CLAUDE.md"))).toBe(true);
+
+    const result = await refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      agents: ["claude-code"],
+      removeAgents: ["codex"],
+      dryRun: false,
+      forceManaged: false
+    });
+
+    expect(result.removed.length).toBeGreaterThan(0);
+    expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(false);
+    expect(await exists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
+    const state = await readInstalledState(root);
+    expect(state.adapters).toEqual(["claude-code"]);
+    expect(state.profiles).toEqual({ "claude-code": "general" });
+    const project = await readFile(join(root, ".harness", "project.yaml"), "utf8");
+    expect(project).toContain("claude-code");
+    expect(project).not.toMatch(/^\s*- codex\s*$/m);
+  }, 120_000);
+
+  it("refuses to remove every installed agent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-remove-all-"));
+    await initializeProject({
+      projectRoot: root, resourcesRoot,
+      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
+    });
+    await expect(refreshProject({
+      projectRoot: root,
+      resourcesRoot,
+      agents: [],
+      removeAgents: ["claude-code"],
+      dryRun: false,
+      forceManaged: false
+    })).rejects.toThrow(/不能移除全部工具/);
+  }, 60_000);
 });
 
 // silence unused import in some runs

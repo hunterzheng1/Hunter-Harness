@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -134,6 +134,20 @@ export async function writeLocalCredentials(
     stringifyYaml(normalized, { sortMapEntries: true }) + "\n",
     "utf8"
   );
+}
+
+/** Remove local platform credentials file if present. */
+export async function clearLocalCredentials(projectRoot: string): Promise<boolean> {
+  const path = join(projectRoot, CREDENTIALS_LOCAL_RELATIVE);
+  try {
+    await unlink(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function ensureCredentialsGitignore(projectRoot: string): Promise<void> {

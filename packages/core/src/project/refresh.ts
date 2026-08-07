@@ -112,6 +112,8 @@ export interface RefreshOptions {
   resourcesRoot: string;
   profile?: HarnessProfile;
   agents: HarnessAgent[];
+  /** Explicit uninstall set. Unselected agents remain a no-op; only these are removed. */
+  removeAgents?: HarnessAgent[];
   codebuddySurface?: CodeBuddySurface;
   dryRun: boolean;
   forceManaged: boolean;
@@ -560,16 +562,28 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const oldAgents: HarnessAgent[] = installed.adapters.length > 0
     ? installed.adapters
     : ["claude-code"];
+  const removeSet = new Set<HarnessAgent>(sortHarnessAgents(options.removeAgents ?? []));
   const selectedAgents = sortHarnessAgents(options.agents);
   const selectedSet = new Set<HarnessAgent>(selectedAgents);
-  const agents = sortHarnessAgents([...oldAgents, ...selectedAgents]);
+  const agents = sortHarnessAgents(
+    [...new Set([...oldAgents, ...selectedAgents])].filter((agent) => !removeSet.has(agent))
+  );
+  if (agents.length === 0) {
+    throw new Error("不能移除全部工具，请至少保留一个。");
+  }
   const profiles = new Map(installed.profiles);
+  for (const agent of removeSet) profiles.delete(agent);
   if (options.profile !== undefined) {
-    for (const agent of selectedAgents) profiles.set(agent, options.profile);
+    for (const agent of selectedAgents) {
+      if (!removeSet.has(agent)) profiles.set(agent, options.profile);
+    }
   }
   const profile = options.profile ?? selectedAgents
     .map((agent) => profiles.get(agent))
     .find((value): value is HarnessProfile => value !== undefined) ??
+    agents
+      .map((agent) => profiles.get(agent))
+      .find((value): value is HarnessProfile => value !== undefined) ??
     installed.profile ?? "general";
   const previousProfile = selectedAgents
     .map((agent) => installed.profiles.get(agent))
@@ -630,7 +644,11 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     }
   } else {
     const oldTargets: ProjectedBundleFile[] = [];
-    for (const agent of selectedAgents) {
+    const agentsForOldTargets = sortHarnessAgents([
+      ...selectedAgents,
+      ...[...removeSet].filter((agent) => oldAgents.includes(agent))
+    ]);
+    for (const agent of agentsForOldTargets) {
       const oldProfile = installed.profiles.get(agent) ?? installed.profile;
       if (!oldAgents.includes(agent) || oldProfile === null || oldProfile === undefined) {
         continue;
@@ -650,8 +668,10 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   const unchanged: RefreshItem[] = [];
   const conflicts: RefreshConflict[] = [];
   const ops: TransactionOperation[] = [];
+  const remainingOwnerSet = new Set<HarnessAgent | "shared">(["shared", ...agents]);
   const newStateFiles: InstalledBundleStateV4["files"] = installed.files.filter((entry) =>
-    entry.owner === "shared" || !selectedSet.has(entry.owner)
+    remainingOwnerSet.has(entry.owner) &&
+    (entry.owner === "shared" || !selectedSet.has(entry.owner))
   );
 
   for (const target of newManaged) {
@@ -722,10 +742,14 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   }
 
   await reconcileMarkdownBlock(root, "AGENTS.md", AGENTS_CORE_BLOCK_ID, AGENTS_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
-  if (selectedSet.has("claude-code")) {
+  if (removeSet.has("claude-code")) {
+    await reconcileMarkdownBlock(root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, true, ops, conflicts, preserved);
+  } else if (selectedSet.has("claude-code")) {
     await reconcileMarkdownBlock(root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
   }
-  if (selectedSet.has("codebuddy")) {
+  if (removeSet.has("codebuddy")) {
+    await reconcileMarkdownBlock(root, "CODEBUDDY.md", CODEBUDDY_BLOCK_ID, CODEBUDDY_MANAGED_BLOCK_CONTENT, true, ops, conflicts, preserved);
+  } else if (selectedSet.has("codebuddy")) {
     await reconcileMarkdownBlock(root, "CODEBUDDY.md", CODEBUDDY_BLOCK_ID, CODEBUDDY_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
   }
 

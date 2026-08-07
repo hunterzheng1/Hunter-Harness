@@ -224,7 +224,7 @@ describe("hunter-harness initialization", () => {
     expect(code).toBe(0);
     expect(questions[0]).toContain("请选择目标 Agent");
     expect(questions[0]).toContain("5. 全部");
-    expect(questions[1]).toContain("请选择 Harness 类型");
+    expect(questions[1]).toContain("请选择 Harness 配置");
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { adapters: { enabled: string[] } };
@@ -251,11 +251,12 @@ describe("hunter-harness initialization", () => {
     ]);
   }, 240_000);
 
-  it("existing project refresh menu shows installed labels and all option", async () => {
+  it("existing project home menu shows status and manage-tools labels in Chinese", async () => {
     expect(await run([
       "--agents", "1,2", "--profile", "general", "--non-interactive", "--yes"
     ])).toBe(0);
-    const answers = ["1", "0"];
+    // 2 = 管理工具 → 1 = 新增/刷新 → 0 = 取消
+    const answers = ["2", "1", "0"];
     const questions: string[] = [];
     const code = await runCli([], {
       cwd: root,
@@ -268,11 +269,14 @@ describe("hunter-harness initialization", () => {
       }
     });
     expect(code).toBe(2);
+    expect(questions[0]).toContain("一键刷新已安装工具");
+    expect(questions[0]).toContain("平台连接");
+    expect(stdout.join("")).toContain("Claude Code（通用）");
+    expect(stdout.join("")).toContain("Codex（通用）");
     const agentPrompt = questions.find((q) => q.includes("请选择本次要新增或刷新的工具"));
     expect(agentPrompt).toBeDefined();
-    expect(agentPrompt).toContain("Hunter Harness 当前配置");
-    expect(agentPrompt).toContain("Claude Code（已安装：general）");
-    expect(agentPrompt).toContain("Codex（已安装：general）");
+    expect(agentPrompt).toContain("Claude Code（已安装：通用）");
+    expect(agentPrompt).toContain("Codex（已安装：通用）");
     expect(agentPrompt).toContain("5. 全部");
   }, 120_000);
 

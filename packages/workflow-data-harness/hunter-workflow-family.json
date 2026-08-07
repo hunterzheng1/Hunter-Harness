@@ -7,8 +7,8 @@
     "java"
   ],
   "bundle_version": "0.2.37",
-  "content_sha256": "sha256:ebdbce1acaba09d6f7913500bea6a06fb29436370abd04335d0d07f6e293f7cf",
-  "minimumCliVersion": "0.2.50",
+  "content_sha256": "sha256:05aacd0dee4bece8cd39b79b620421e0821e9b1bd98da5e51abe9cf590c928d0",
+  "minimumCliVersion": "0.2.51",
   "capabilities": [
     "sync@2",
     "rules-sync@1",
@@ -23,7 +23,7 @@
     "registry-governance@1"
   ],
   "requires": {
-    "minimumCliVersion": "0.2.50",
+    "minimumCliVersion": "0.2.51",
     "capabilities": [
       "sync@2",
       "rules-sync@1",

@@ -23,11 +23,13 @@ import {
   applyCodeBuddySetup,
   inspectCodeBuddySetup
 } from "../config/codebuddy-setup.js";
+import { agentLabel, agentMenuLines, profileLabel } from "../ui/labels.js";
 import {
   detectProject,
   runRefresh,
   type RefreshCommandOptions
 } from "./refresh.js";
+import { runInitializedProjectMenu } from "./project-menu.js";
 import { readCliVersion } from "../version.js";
 
 export interface ConfigureOptions extends InitFlagValues {
@@ -48,24 +50,6 @@ export interface CommandDependencies {
   promptSecret?(question: string): Promise<string>;
   fetch: typeof globalThis.fetch;
   env: Readonly<Record<string, string | undefined>>;
-}
-
-const AGENT_LABELS: Record<HarnessAgent, string> = {
-  "claude-code": "Claude Code",
-  codex: "Codex",
-  cursor: "Cursor",
-  codebuddy: "CodeBuddy"
-};
-
-function agentMenuLines(
-  installedProfiles?: Partial<Record<HarnessAgent, string>>
-): string {
-  const lines = HARNESS_AGENT_ORDER.map((agent, index) => {
-    const profile = installedProfiles?.[agent];
-    const suffix = profile === undefined ? "" : `（已安装：${profile}）`;
-    return `  ${index + 1}. ${AGENT_LABELS[agent]}${suffix}`;
-  }).join("\n");
-  return lines + "\n  5. 全部";
 }
 
 async function configureCodeBuddyExtras(
@@ -140,7 +124,7 @@ async function runFirstInstall(
             "\n请输入编号 [1]: "
           ).then((answer) => answer.trim()),
           profile: () => dependencies.prompt(
-            "请选择 Harness 类型：\n1. 通用（默认）\n2. Java\n请输入 1 或 2 [1]: "
+            "请选择 Harness 配置：\n  1. 通用（默认）\n  2. Java\n请输入编号 [1]："
           ).then((answer) => answer.trim())
         },
       warnings
@@ -231,9 +215,11 @@ async function runFirstInstall(
   }
 }
 
-// 既有项目直接展示真实的多 Agent/Profile 状态，再选择本次要新增或刷新的
-// Agent。未选择的命名空间是严格 no-op；不存在隐式停用或卸载。
-async function runExistingProject(
+/**
+ * Interactive / non-interactive flow to add or refresh specific agents.
+ * Unselected namespaces stay a strict no-op (removal is a separate menu path).
+ */
+export async function runConfigureAgentsFlow(
   options: ConfigureOptions,
   dependencies: CommandDependencies,
   currentProfile: "general" | "java",
@@ -271,7 +257,7 @@ async function runExistingProject(
     return code;
   }
   const currentLines = currentAgents.map((agent) =>
-    `- ${AGENT_LABELS[agent]}：${installed.profiles[agent] ?? currentProfile}`
+    `- ${formatAgentStatus(agent, installed.profiles[agent] ?? currentProfile)}`
   ).join("\n");
 
   if (refreshOptions.agents === undefined) {
@@ -279,8 +265,8 @@ async function runExistingProject(
       .map((agent) => String(HARNESS_AGENT_ORDER.indexOf(agent) + 1))
       .join(",");
     const answer = await dependencies.prompt(
-      `Hunter Harness 当前配置：\n${currentLines}\n` +
-      "请选择本次要新增或刷新的工具（可多选，逗号分隔；未选择的工具保持不变）：\n" +
+      `当前已安装：\n${currentLines}\n\n` +
+      "请选择本次要新增或刷新的工具（可多选，逗号分隔；未选中的保持不变）：\n" +
       agentMenuLines(installed.profiles) +
       `\n请输入编号 [${defaultSelection}]，或输入 0 取消：`
     );
@@ -300,7 +286,7 @@ async function runExistingProject(
       ? [...selectedProfiles][0] ?? currentProfile
       : currentProfile;
     const answer = await dependencies.prompt(
-      "请选择所选工具使用的 Harness 配置：\n" +
+      "请选择上述工具使用的 Harness 配置：\n" +
       "  1. 通用\n" +
       "  2. Java\n" +
       `请输入编号 [${defaultProfile === "java" ? "2" : "1"}]：`
@@ -316,6 +302,10 @@ async function runExistingProject(
     await configureCodeBuddyExtras(selectedAgents, surface, options, dependencies);
   }
   return code;
+}
+
+function formatAgentStatus(agent: HarnessAgent, profile: string): string {
+  return `${agentLabel(agent)}：${profileLabel(profile)}`;
 }
 
 export async function runConfigure(
@@ -382,7 +372,14 @@ export async function runConfigure(
   if (detection.status === "valid") {
     const currentProfile = (detection.config.project.profiles[0] ?? "general") as "general" | "java";
     const currentSurface = detection.config.adapter_options?.codebuddy?.surface ?? "both";
-    return runExistingProject(options, dependencies, currentProfile, currentSurface);
+    if (
+      options.nonInteractive === true ||
+      options.agents !== undefined ||
+      options.profile !== undefined
+    ) {
+      return runConfigureAgentsFlow(options, dependencies, currentProfile, currentSurface);
+    }
+    return runInitializedProjectMenu(options, dependencies, currentProfile, currentSurface);
   }
   return runFirstInstall(options, dependencies);
 }

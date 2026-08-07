@@ -198,7 +198,8 @@ describe("hunter-harness refresh CLI", () => {
     ])).toBe(0);
 
     const questions: string[] = [];
-    const answers = ["1", "3", "2"];
+    // 主菜单 2=管理工具 → 1=新增/刷新 → 3=Cursor → 2=Java
+    const answers = ["2", "1", "3", "2"];
     const code = await runCli([], {
       cwd: root,
       resourcesRoot,
@@ -211,9 +212,12 @@ describe("hunter-harness refresh CLI", () => {
     });
 
     expect(code).toBe(0);
-    expect(questions[1]).toContain("Codex：general");
-    expect(questions[1]).toContain("Cursor：general");
-    expect(questions[1]).toContain("未选择的工具保持不变");
+    expect(questions[0]).toContain("一键刷新已安装工具");
+    const agentPrompt = questions.find((q) => q.includes("请选择本次要新增或刷新的工具"));
+    expect(agentPrompt).toBeDefined();
+    expect(agentPrompt).toContain("Codex：通用");
+    expect(agentPrompt).toContain("Cursor：通用");
+    expect(agentPrompt).toContain("未选中的保持不变");
     expect(await pathExists(join(root, ".cursor", "skills", "harness-apidoc", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
     const state = JSON.parse(await readFile(
