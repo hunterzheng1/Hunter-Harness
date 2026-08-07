@@ -25,6 +25,8 @@ disallowed-tools:
 
 从 `.harness/archive/**/reports/final/summary-data.json` 抽取项目知识，生成并维护本地 `.harness/knowledge/` 索引。
 
+> 语言约定：知识条目的 title / summary / body 及一切生成文档优先使用中文（标识符与字段名保持原文）。详见 [[../shared/p0-trust.md|p0-trust]] 的"生成内容语言约定"。
+
 当前实现是本地、离线、无 LLM、无外部服务的 SQLite FTS MVP，已经支持基础生命周期：`candidate`、`stale`、`active`、`superseded`、`conflicted`。按新需求查询历史由独立的 `harness-knowledge-query` 负责。
 
 ## Triggers
