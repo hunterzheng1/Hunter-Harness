@@ -18,6 +18,8 @@ export interface ConnectOptions {
   key?: string;
   nonInteractive?: boolean;
   yes?: boolean;
+  /** Explicitly allow rewriting a different local project_id. `--yes` alone is not enough. */
+  rebind?: boolean;
   json?: boolean;
 }
 
@@ -27,6 +29,27 @@ interface KeyInfo {
   project_id?: string;
   scopes?: string[];
   label?: string;
+}
+
+/** Read project.project_id from .harness/project.yaml when present. */
+async function readLocalProjectId(projectRoot: string): Promise<string | null> {
+  const path = join(projectRoot, ".harness", "project.yaml");
+  let content: string;
+  try {
+    content = await readFile(path, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  const match = content.match(/^[ \t]*project_id:\s*['"]?([^'"\n#]+)/m);
+  if (match === null) return null;
+  const value = match[1]?.trim() ?? "";
+  if (value === "" || value === "null" || value === "~" || value === "none") {
+    return null;
+  }
+  return value;
 }
 
 /** Persist platform project_id into .harness/project.yaml when present. */
@@ -150,6 +173,41 @@ export async function runConnect(
     return fail("NETWORK_ERROR", "无法连接到 " + serverUrl + "：" + message, 3);
   }
 
+  const localProjectId = await readLocalProjectId(dependencies.cwd);
+  const keyProjectId = info.project_id?.trim() || undefined;
+  if (
+    localProjectId !== null &&
+    keyProjectId !== undefined &&
+    localProjectId !== keyProjectId
+  ) {
+    const driftMessage =
+      `本地 project_id（${localProjectId}）与 API Key 对应的项目（${keyProjectId}）不一致。` +
+      "改绑需显式传入 --rebind（--yes 不足以改绑）。";
+    if (options.rebind === true) {
+      dependencies.stderr(
+        `REBIND: 将把本地 project_id 从 ${localProjectId} 改为 ${keyProjectId}。\n`
+      );
+    } else if (options.nonInteractive === true) {
+      return fail("PROJECT_REBIND_REQUIRED", driftMessage, 2);
+    } else {
+      dependencies.stderr(
+        `检测到 project_id 漂移：\n` +
+        `  本地：${localProjectId}\n` +
+        `  Key： ${keyProjectId}\n`
+      );
+      const answer = (await dependencies.prompt(
+        "确认改绑到 Key 对应的项目？需显式确认 [y/N]："
+      )).trim();
+      if (!/^(?:y|yes)$/i.test(answer)) {
+        return fail(
+          "PROJECT_REBIND_REQUIRED",
+          "已取消改绑。如需改绑请重试并传入 --rebind。",
+          2
+        );
+      }
+    }
+  }
+
   try {
     // connect 可在项目 init 之前运行，先确保 .harness/ 存在。
     await mkdir(join(dependencies.cwd, ".harness"), { recursive: true });
@@ -189,7 +247,12 @@ export async function runConnect(
       summary: {
         server_url: serverUrl,
         credential_kind: info.kind,
-        ...(info.scopes === undefined ? {} : { scopes: info.scopes.join(",") })
+        ...(info.scopes === undefined ? {} : { scopes: info.scopes.join(",") }),
+        ...(localProjectId !== null &&
+          keyProjectId !== undefined &&
+          localProjectId !== keyProjectId
+          ? { rebound_from: localProjectId }
+          : {})
       },
       items: [],
       warnings: [],

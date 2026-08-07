@@ -184,6 +184,7 @@ describe("pushProject sensitive scan UX", () => {
       resourcesRoot,
       env: {},
       dryRun: false,
+      allowCreateProject: true,
       fetch
     })).rejects.not.toMatchObject({ code: "TOKEN_INVALID" });
     expect(fetch).toHaveBeenCalled();

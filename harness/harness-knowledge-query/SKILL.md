@@ -25,9 +25,13 @@ disallowed-tools:
 
 并行 change 中查询必须传 `--change <change-id>`；成功后以该 change 的 `meta/knowledge-context.json` 为稳定指针。全局 `context-packs/latest.json` 仅向后兼容，不得用于判断多个 active change 的上下文归属。
 
-根据用户的新需求或排查问题，从项目本地 `.harness/knowledge` 中检索历史需求、决策、实现、风险和测试证据，并生成 AI 可读的 context pack。
+根据用户的新需求或排查问题检索历史需求、决策、实现、风险和测试证据，并生成 AI 可读的 context pack。
 
-此 skill 只负责查询和使用知识。整理、同步和 promote 条目由 `harness-knowledge-ingest` 负责。
+## 远程优先 / 离线回退
+
+1. **默认（已 `hunter-harness connect`）**：优先查询平台语义知识库（与 ingest 上传 + 服务端裁决结果一致）；多机/多人共享同一裁决结果。
+2. **离线回退**：无凭据、网络失败或平台不可用时，回退到本地 `.harness/knowledge`（SQLite FTS / 条目文件）。
+3. 此 skill 只负责查询和使用知识。整理与上传由 `harness-knowledge-ingest` + push/归档负责；**不要**在已连接平台时把本地 promote 当作共享真源。
 
 ## Triggers
 
@@ -42,9 +46,9 @@ disallowed-tools:
 
 ## Automatic Use
 
-当用户提出新功能、改造、排查、设计方案、继续历史任务，且项目存在 `.harness/archive` 或 `.harness/knowledge` 时，AI 应主动运行本 skill，不需要等用户提醒。
+当用户提出新功能、改造、排查、设计方案、继续历史任务，且项目存在平台连接或 `.harness/archive` / `.harness/knowledge` 时，AI 应主动运行本 skill，不需要等用户提醒。
 
-不在 query 前单独执行 sync。`query` 命令内部执行一次 ensure-current：建立一次当前快照，索引新鲜时无操作，过期或缺失时只构建一次，然后在同一调用内完成查询。
+不在 query 前单独执行 sync。`query` 命令内部执行一次 ensure-current：建立一次当前快照，索引新鲜时无操作，过期或缺失时只构建一次，然后在同一调用内完成查询（离线路径）。
 
 ## Commands
 
@@ -56,6 +60,8 @@ disallowed-tools:
 powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py' query --project '<project-root>' --query '<用户需求原文>'"
 ```
 
+已连接平台时，优先使用平台语义搜索（CLI/`hunter-harness` 知识查询路径，若可用）；上述本地命令作为离线回退。
+
 ### Query with metadata filters
 
 ```powershell
@@ -65,7 +71,7 @@ powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py
 可重复使用：
 
 - `--file <path>`：只返回关联到指定文件的知识。
-- `--status active|candidate|stale|superseded|conflicted`：按生命周期过滤。
+- `--status active|candidate|stale|superseded|conflicted`：按生命周期过滤（远程路径通常已排除 deprecated）。
 - `--type requirement|decision|implementation|risk|test-evidence|pitfall|api-contract`：按知识类型过滤。
 - `--limit <n>`：限制返回数量。
 

@@ -148,6 +148,21 @@ export async function runPush(
         ...(options.skipSensitiveScan === true
           ? { sensitiveScanSkip: true }
           : {}),
+        ...(options.yes === true
+          ? { allowCreateProject: true }
+          : options.dryRun === true
+            ? {}
+            : { confirmCreateProject: async (info) => {
+              dependencies.stdout(
+                `本地尚未绑定 project_id。将按 local_project_key 解析/创建平台项目：\n` +
+                `  显示名：${info.displayName}\n` +
+                `  local_project_key：${info.localProjectKey}\n`
+              );
+              const answer = await dependencies.prompt(
+                "确认创建或绑定该项目？[y/N]: "
+              );
+              return /^(?:y|yes)$/i.test(answer.trim());
+            } }),
         ...(options.yes === true || options.nonInteractive === true
           ? {}
           : { confirmProposal: async () => {

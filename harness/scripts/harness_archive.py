@@ -70,6 +70,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events as he  # noqa: E402
+import harness_events_sync as hes  # noqa: E402
 import harness_efficiency as heff  # noqa: E402
 import harness_gate as hgate  # noqa: E402
 import harness_ledger as hl  # noqa: E402
@@ -8284,6 +8285,9 @@ def cmd_finalize(
 
     # Publish only after every validator passes. The archive path is never used
     # as mutable staging, so a failed attempt cannot poison the next retry.
+    # Capture monitoring run_id from the live change path before it is deleted
+    # so archive finalize can report terminal status on the same platform run.
+    monitoring_run_id = hes.run_id_for(original_change_dir)
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(operation_temp_dir), str(archive_dir))
@@ -8368,6 +8372,23 @@ def cmd_finalize(
     if push_result.get("warning"):
         warnings.append(str(push_result["warning"]))
 
+    # C3: best-effort terminal events-sync so platform run ends (succeeded/failed).
+    # Use the pre-delete change-path run_id + original change_key for continuity.
+    try:
+        monitor = hes.auto_events_sync(
+            project_root,
+            archive_dir,
+            run_id=monitoring_run_id,
+            change_key=change_name,
+        )
+        payload["steps"]["platform_events_sync"] = monitor
+        if monitor.get("warning"):
+            warnings.append(str(monitor["warning"]))
+    except Exception as exc:  # noqa: BLE001 — never roll back archive
+        warn = f"events-sync terminal hook failed: {exc}"
+        warnings.append(warn)
+        payload["steps"]["platform_events_sync"] = {"ok": False, "warning": warn}
+
     payload["ok"] = True
     payload["finalStatus"] = "OK"
     payload["warnings"] = warnings
@@ -8387,7 +8408,7 @@ def _remote_credentials_configured(project_root: Path) -> bool:
 
 
 def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[str]:
-    """Relative paths for the P4 core four push set."""
+    """Relative paths for the archive push allowlist (core + optional supporting)."""
     root = project_root.resolve()
     archive = archive_dir.resolve()
     paths: list[str] = []
@@ -8403,6 +8424,15 @@ def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[st
             for path in sorted(base.rglob("*")):
                 if path.is_file():
                     paths.append(path.relative_to(root).as_posix())
+    # C1 optional supporting files.
+    for folder in (("reports", "review"), ("reports", "test")):
+        base = archive.joinpath(*folder)
+        if base.is_dir():
+            for path in sorted(base.rglob("*")):
+                if path.is_file():
+                    paths.append(path.relative_to(root).as_posix())
+    add_if_exists(archive / "meta" / "archive-meta.md")
+    add_if_exists(archive / "meta" / "change-context.json")
     knowledge = root / ".harness" / "knowledge" / "entries"
     for status in ("active", "candidate"):
         folder = knowledge / status

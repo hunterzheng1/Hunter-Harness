@@ -11,7 +11,7 @@ import { pushProject } from "../src/push/push.js";
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("pushProject archive summaries", () => {
-  it("includes archive core four paths (spec/plans/summary-data) and skips other archive files", async () => {
+  it("includes core + optional supporting archive paths and skips diagnostics", async () => {
     const root = await mkdtemp(join(tmpdir(), "hh-push-archive-"));
     await initializeProject({
       projectRoot: root,
@@ -25,10 +25,21 @@ describe("pushProject archive summaries", () => {
       `.harness/archive/${archiveName}/reports/final/summary-data.json`;
     const designRel = `.harness/archive/${archiveName}/spec/design.md`;
     const planRel = `.harness/archive/${archiveName}/plans/sample-plan.md`;
+    const reviewRel = `.harness/archive/${archiveName}/reports/review/review-report.md`;
+    const testRel = `.harness/archive/${archiveName}/reports/test/test-report.md`;
+    const metaRel = `.harness/archive/${archiveName}/meta/archive-meta.md`;
+    const contextRel = `.harness/archive/${archiveName}/meta/change-context.json`;
     const summaryDir = join(root, ".harness", "archive", archiveName, "reports", "final");
     await mkdir(summaryDir, { recursive: true });
     await mkdir(join(root, ".harness", "archive", archiveName, "spec"), { recursive: true });
     await mkdir(join(root, ".harness", "archive", archiveName, "plans"), { recursive: true });
+    await mkdir(join(root, ".harness", "archive", archiveName, "reports", "review"), {
+      recursive: true
+    });
+    await mkdir(join(root, ".harness", "archive", archiveName, "reports", "test"), {
+      recursive: true
+    });
+    await mkdir(join(root, ".harness", "archive", archiveName, "meta"), { recursive: true });
     await writeFile(
       join(summaryDir, "summary-data.json"),
       JSON.stringify({
@@ -49,6 +60,26 @@ describe("pushProject archive summaries", () => {
       "utf8"
     );
     await writeFile(
+      join(root, ".harness", "archive", archiveName, "reports", "review", "review-report.md"),
+      "# Review\n",
+      "utf8"
+    );
+    await writeFile(
+      join(root, ".harness", "archive", archiveName, "reports", "test", "test-report.md"),
+      "# Test\n",
+      "utf8"
+    );
+    await writeFile(
+      join(root, ".harness", "archive", archiveName, "meta", "archive-meta.md"),
+      "# Archive meta\n",
+      "utf8"
+    );
+    await writeFile(
+      join(root, ".harness", "archive", archiveName, "meta", "change-context.json"),
+      JSON.stringify({ changeName: "sample-change" }) + "\n",
+      "utf8"
+    );
+    await writeFile(
       join(root, ".harness", "archive", archiveName, "meta-note.txt"),
       "should not be pushed\n",
       "utf8"
@@ -56,6 +87,12 @@ describe("pushProject archive summaries", () => {
     await writeFile(
       join(summaryDir, "final-summary.html"),
       "<html>should not be pushed</html>\n",
+      "utf8"
+    );
+    await mkdir(join(root, ".harness", "archive", archiveName, "evidence"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "archive", archiveName, "evidence", "blob.bin"),
+      "diagnostic\n",
       "utf8"
     );
 
@@ -70,10 +107,17 @@ describe("pushProject archive summaries", () => {
     expect(proposedPaths).toContain(summaryRel);
     expect(proposedPaths).toContain(designRel);
     expect(proposedPaths).toContain(planRel);
+    expect(proposedPaths).toContain(reviewRel);
+    expect(proposedPaths).toContain(testRel);
+    expect(proposedPaths).toContain(metaRel);
+    expect(proposedPaths).toContain(contextRel);
     expect(proposedPaths.some((path) => path.endsWith("meta-note.txt"))).toBe(false);
     expect(proposedPaths.some((path) => path.endsWith("final-summary.html"))).toBe(false);
+    expect(proposedPaths.some((path) => path.includes("/evidence/"))).toBe(false);
     expect(
       proposedPaths.filter((path) => path.startsWith(".harness/archive/")).sort()
-    ).toEqual([designRel, planRel, summaryRel].sort());
+    ).toEqual(
+      [summaryRel, designRel, planRel, reviewRel, testRel, metaRel, contextRel].sort()
+    );
   });
 });

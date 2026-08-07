@@ -119,12 +119,19 @@ def post_json(endpoint: dict[str, str], path: str, body: dict[str, Any]) -> dict
         return json.loads(response.read().decode("utf-8"))
 
 
-def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False) -> dict[str, Any]:
+def sync_change(
+    project: Path,
+    change_dir: Path,
+    *,
+    heartbeat_only: bool = False,
+    run_id: str | None = None,
+    change_key: str | None = None,
+) -> dict[str, Any]:
     endpoint = load_endpoint(project)
     if endpoint is None:
         return {"ok": True, "skipped": True, "reason": "remote credentials not configured"}
-    change_key = change_dir.name
-    rid = run_id_for(change_dir)
+    resolved_key = change_key or change_dir.name
+    rid = run_id or run_id_for(change_dir)
     project_id = endpoint["project_id"]
 
     # Always heartbeat so the console can separate connection vs run status.
@@ -138,20 +145,26 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
             {
                 "protocol_version": "hunter-progress-sync/v1",
                 "run_id": rid,
-                "change_key": change_key,
+                "change_key": resolved_key,
                 "client_time": client_time,
-                "title": change_key,
+                "title": resolved_key,
             },
         )
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": f"heartbeat failed: {exc}", "run_id": rid}
 
     if heartbeat_only:
-        return {"ok": True, "heartbeat": True, "run_id": rid}
+        return {"ok": True, "heartbeat": True, "run_id": rid, "change_key": resolved_key}
 
     events_file = change_dir / "events.ndjson"
     if not events_file.is_file():
-        return {"ok": True, "run_id": rid, "uploaded": 0, "reason": "no events.ndjson"}
+        return {
+            "ok": True,
+            "run_id": rid,
+            "change_key": resolved_key,
+            "uploaded": 0,
+            "reason": "no events.ndjson",
+        }
 
     lines = events_file.read_text(encoding="utf-8").splitlines()
     acked = load_cursor(change_dir)
@@ -167,7 +180,7 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
             continue
         if not isinstance(event, dict):
             continue
-        event_id = str(event.get("id") or f"{change_key}:{acked + offset}")
+        event_id = str(event.get("id") or f"{resolved_key}:{acked + offset}")
         payload = sanitize(event)
         batch.append(
             {
@@ -181,7 +194,13 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
         )
     if not batch:
         save_cursor(change_dir, len(lines))
-        return {"ok": True, "run_id": rid, "uploaded": 0, "acked_lines": len(lines)}
+        return {
+            "ok": True,
+            "run_id": rid,
+            "change_key": resolved_key,
+            "uploaded": 0,
+            "acked_lines": len(lines),
+        }
 
     # Drop None phase keys for strict schema.
     for item in batch:
@@ -195,8 +214,8 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
             {
                 "protocol_version": "hunter-progress-sync/v1",
                 "run_id": rid,
-                "change_key": change_key,
-                "title": change_key,
+                "change_key": resolved_key,
+                "title": resolved_key,
                 "events": batch,
             },
         )
@@ -222,6 +241,7 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
     return {
         "ok": accepted == len(batch),
         "run_id": rid,
+        "change_key": resolved_key,
         "uploaded": accepted,
         "batch_size": len(batch),
         "acked_lines": acked_lines,
@@ -229,10 +249,62 @@ def sync_change(project: Path, change_dir: Path, *, heartbeat_only: bool = False
     }
 
 
+def auto_events_sync(
+    project_root: Path,
+    change_dir: Path,
+    *,
+    heartbeat_only: bool = False,
+    run_id: str | None = None,
+    change_key: str | None = None,
+) -> dict[str, Any]:
+    """Best-effort platform events sync (same style as auto_push_archive_core).
+
+    Failures become warnings so the caller never rolls back the main workflow.
+    """
+    project_root = project_root.resolve()
+    change_dir = change_dir.resolve()
+    if load_endpoint(project_root) is None:
+        return {"skipped": True, "reason": "no remote credentials"}
+    try:
+        result = sync_change(
+            project_root,
+            change_dir,
+            heartbeat_only=heartbeat_only,
+            run_id=run_id,
+            change_key=change_key,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort never blocks caller
+        return {
+            "skipped": False,
+            "ok": False,
+            "warning": f"events-sync deferred: {exc}",
+        }
+    if result.get("skipped"):
+        return {"skipped": True, "reason": result.get("reason") or "skipped"}
+    if result.get("ok"):
+        return {"skipped": False, "ok": True, **{
+            key: result[key]
+            for key in ("run_id", "change_key", "uploaded", "acked_lines", "heartbeat")
+            if key in result
+        }}
+    return {
+        "skipped": False,
+        "ok": False,
+        "warning": str(result.get("error") or "events-sync failed"),
+        **{
+            key: result[key]
+            for key in ("run_id", "change_key")
+            if key in result
+        },
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync events.ndjson to platform Run monitoring")
     parser.add_argument("--project", default=".", help="Project root")
     parser.add_argument("--change-dir", help="Specific change directory")
+    parser.add_argument("--run-id", help="Override stable run_id (archive finalize continuity)")
+    parser.add_argument("--change-key", help="Override change_key sent to the platform")
     parser.add_argument("--heartbeat-only", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -243,7 +315,13 @@ def main(argv: list[str] | None = None) -> int:
         root = project / ".harness" / "changes"
         changes = sorted(path for path in root.glob("*") if path.is_dir()) if root.is_dir() else []
     results = [
-        sync_change(project, change_dir, heartbeat_only=args.heartbeat_only)
+        sync_change(
+            project,
+            change_dir,
+            heartbeat_only=args.heartbeat_only,
+            run_id=args.run_id,
+            change_key=args.change_key,
+        )
         for change_dir in changes
     ]
     ok = all(item.get("ok") for item in results) if results else True

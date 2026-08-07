@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -110,5 +110,71 @@ describe("hunter-harness connect", () => {
     );
     expect(code).toBe(2);
     expect(stderr.join("")).toContain("KEY_REQUIRED");
+  });
+
+  it("rejects silent project_id rebind without --rebind", async () => {
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "project.yaml"),
+      [
+        "harness:",
+        "  name: hunter-harness",
+        "  schema_version: 1",
+        "project:",
+        "  name: demo",
+        "  root: \".\"",
+        "  project_id: prj_old",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const fetchMock = vi.fn(async () => json({
+      kind: "project-key",
+      actor_id: "actor_owner",
+      project_id: "prj_new",
+      scopes: ["push"]
+    }));
+    const code = await runConnect(
+      "https://platform.example.test",
+      { key: "hh_test_key", nonInteractive: true, yes: true },
+      dependencies(fetchMock as unknown as typeof fetch)
+    );
+    expect(code).toBe(2);
+    expect(stderr.join("")).toContain("PROJECT_REBIND_REQUIRED");
+    const yaml = await readFile(join(root, ".harness", "project.yaml"), "utf8");
+    expect(yaml).toContain("project_id: prj_old");
+  });
+
+  it("allows rebind when --rebind is set", async () => {
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "project.yaml"),
+      [
+        "harness:",
+        "  name: hunter-harness",
+        "  schema_version: 1",
+        "project:",
+        "  name: demo",
+        "  root: \".\"",
+        "  project_id: prj_old",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    const fetchMock = vi.fn(async () => json({
+      kind: "project-key",
+      actor_id: "actor_owner",
+      project_id: "prj_new",
+      scopes: ["push"]
+    }));
+    const code = await runConnect(
+      "https://platform.example.test",
+      { key: "hh_test_key", nonInteractive: true, rebind: true },
+      dependencies(fetchMock as unknown as typeof fetch)
+    );
+    expect(code).toBe(0);
+    const yaml = await readFile(join(root, ".harness", "project.yaml"), "utf8");
+    expect(yaml).toContain("project_id: prj_new");
+    expect(yaml).not.toContain("project_id: prj_old");
   });
 });

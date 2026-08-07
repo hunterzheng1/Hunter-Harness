@@ -2512,9 +2512,16 @@ class ArchiveCorePushTests(unittest.TestCase):
             (archive / "reports" / "final").mkdir(parents=True)
             (archive / "spec").mkdir(parents=True)
             (archive / "plans").mkdir(parents=True)
+            (archive / "reports" / "review").mkdir(parents=True)
+            (archive / "reports" / "test").mkdir(parents=True)
+            (archive / "meta").mkdir(parents=True)
             (archive / "reports" / "final" / "summary-data.json").write_text("{}", encoding="utf-8")
             (archive / "spec" / "design.md").write_text("# d\n", encoding="utf-8")
             (archive / "plans" / "plan.md").write_text("# p\n", encoding="utf-8")
+            (archive / "reports" / "review" / "review.md").write_text("# r\n", encoding="utf-8")
+            (archive / "reports" / "test" / "test.md").write_text("# t\n", encoding="utf-8")
+            (archive / "meta" / "archive-meta.md").write_text("# m\n", encoding="utf-8")
+            (archive / "meta" / "change-context.json").write_text("{}", encoding="utf-8")
             (root / ".harness" / "knowledge" / "entries" / "active").mkdir(parents=True)
             (root / ".harness" / "knowledge" / "entries" / "active" / "kn.json").write_text(
                 "{}", encoding="utf-8"
@@ -2524,6 +2531,10 @@ class ArchiveCorePushTests(unittest.TestCase):
             self.assertIn("summary-data.json", joined)
             self.assertIn("spec/design.md", joined)
             self.assertIn("plans/plan.md", joined)
+            self.assertIn("reports/review/review.md", joined)
+            self.assertIn("reports/test/test.md", joined)
+            self.assertIn("meta/archive-meta.md", joined)
+            self.assertIn("meta/change-context.json", joined)
             self.assertIn("knowledge/entries/active/kn.json", joined)
 
     def test_auto_push_skips_without_credentials(self) -> None:

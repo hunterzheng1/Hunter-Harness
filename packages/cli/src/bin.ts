@@ -265,6 +265,7 @@ export async function runCli(
   program.command("connect <url>")
     .description("绑定平台：校验项目 API Key 并写入 .harness/credentials.local.yaml")
     .option("--key <key>", "项目 API Key（省略则交互式输入）")
+    .option("--rebind", "允许将本地 project_id 改绑到 API Key 对应项目（--yes 不足以改绑）")
     .option("--non-interactive")
     .option("--json")
     .action(async (url: string, options: ConnectOptions) => {

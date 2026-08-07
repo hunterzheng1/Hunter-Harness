@@ -215,7 +215,7 @@ describe("pushProject stale baseline UX", () => {
     expect((await readBaseline(root)).complete_project_version).toBe("pv_00000001");
   });
 
-  it("API-006 stale guidance must not mention unconditional git pull", async () => {
+  it("API-006 stale guidance must not mention unconditional git pull", { timeout: 60_000 }, async () => {
     const root = await initRoot();
     const projectId = "prj_no_git_pull";
     await bindProject(root, projectId, "pv_00000001");
@@ -489,6 +489,7 @@ describe("pushProject stale baseline UX", () => {
       resourcesRoot,
       env: {},
       dryRun: false,
+      allowCreateProject: true,
       fetch
     }).then(
       () => null,

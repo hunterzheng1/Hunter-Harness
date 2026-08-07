@@ -23,11 +23,18 @@ disallowed-tools:
 
 # harness-knowledge-ingest
 
-从 `.harness/archive/**/reports/final/summary-data.json` 抽取项目知识，生成并维护本地 `.harness/knowledge/` 索引。
+从 `.harness/archive/**/reports/final/summary-data.json` **本地抽取**知识条目，产物随归档 push 上传；**裁决与投影以平台为准**（远程优先）。本地 SQLite / Agent judge 仅作离线或未连接平台时的回退。
 
 > 语言约定：知识条目的 title / summary / body 及一切生成文档优先使用中文（标识符与字段名保持原文）。详见 [[../shared/p0-trust.md|p0-trust]] 的"生成内容语言约定"。
 
-当前实现是本地、离线、无 LLM、无外部服务的 SQLite FTS MVP，已经支持基础生命周期：`candidate`、`stale`、`active`、`superseded`、`conflicted`。按新需求查询历史由独立的 `harness-knowledge-query` 负责。
+## 远程优先模式（平台连接后）
+
+1. **本地职责**：抽取 candidate 条目 JSON，写入 `.harness/knowledge/entries/**`（及可选本地 index）。
+2. **上传**：条目随 `hunter-harness push` / 归档 finalize 的 auto-push 上传（见归档分级清单：核心含 `knowledge/entries/active|candidate`）。
+3. **平台职责**：服务端 ingest 后自动裁决 status（promote→active 等启发式），并投影到语义知识库；`deprecate` 粘性不被后续 push 覆盖。
+4. **本地 judge / SQLite**：无平台凭据或离线时仍可用；已连接平台时**不要**把本地裁决当作多人共享真源。
+
+未连接平台时，行为退回本地离线 MVP：`candidate` / `stale` / `active` / `superseded` / `conflicted` + SQLite FTS。按新需求查询历史由独立的 `harness-knowledge-query` 负责（默认远程语义搜索，本地索引离线回退）。
 
 ## Triggers
 
@@ -47,13 +54,16 @@ disallowed-tools:
 - `.harness/knowledge/index.json`
 - `.harness/codebase/map-summary.md`（如存在）
 - design.md
+- （可选）`.harness/credentials.local.yaml` — 已连接平台时走远程裁决
 
 ## Purpose
 
 解决两个问题：
 
 1. **整理知识库内容**：把归档里的 `businessGoal`、`changedFiles`、`maintenanceNotes`、`knownRisks`、`manualActions`、`verification`、`reviewSummary` 抽成知识条目。
-2. **维护知识生命周期**：检查索引是否过期，保留 active 条目；高置信 candidate 由 `autoPromote` 自动提升；其余 candidate/conflicted 由 **Agent judge** 闭环裁决，不再默认输出人工待办清单。
+2. **维护知识生命周期**：
+   - **远程优先**：平台 ingest 后裁决并投影；本地只需保证条目 JSON 可上传。
+   - **离线回退**：检查索引是否过期，保留 active；高置信 candidate 由 `autoPromote` 自动提升；其余由 **Agent judge** 闭环裁决。
 
 ## Outputs
 

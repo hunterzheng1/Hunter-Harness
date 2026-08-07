@@ -52,7 +52,7 @@ disallowed-tools:
 
 ## Workflow 概要
 
-0. 加载上下文：先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，以返回的唯一 change/executionRoot/transition receipt 为准（多 active 缺参 → `ACTIVE_CHANGE_AMBIGUOUS`，禁止按 mtime 猜测）；再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验 Plan artifact/hash/HEAD，读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）
+0. 加载上下文：先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，以返回的唯一 change/executionRoot/transition receipt 为准（多 active 缺参 → `ACTIVE_CHANGE_AMBIGUOUS`，禁止按 mtime 猜测）；再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验 Plan artifact/hash/HEAD，读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）。**C3 钩子**：`harness_gate.py begin` 在已连接平台时会 best-effort 调用 events-sync（注册 run / `running`）；失败只告警，不阻断 begin。
 0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5；进入 TDD 前执行 `harness_test_guard.py begin --project . --change-dir ".harness/changes/<cn>" --json`
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
 2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c

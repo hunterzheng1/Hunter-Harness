@@ -151,9 +151,11 @@ export function classifyFile(input: string): FilePolicy {
     // Machine-generated archive evidence for server semantic "变更总结".
     return GENERATED_REVIEWABLE;
   }
-  // P4 archive auto-push core set: design (spec/) + plan (plans/) under an archive.
+  // Archive push allowlist: core (spec/plans) + optional supporting (review/test/meta).
   if (
-    /^\.harness\/archive\/[^/]+\/(spec|plans)\//u.test(path)
+    /^\.harness\/archive\/[^/]+\/(spec|plans)\//u.test(path) ||
+    /^\.harness\/archive\/[^/]+\/reports\/(review|test)\//u.test(path) ||
+    /^\.harness\/archive\/[^/]+\/meta\/(archive-meta\.md|change-context\.json)$/u.test(path)
   ) {
     return GENERATED_REVIEWABLE;
   }

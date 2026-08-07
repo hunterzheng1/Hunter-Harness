@@ -531,6 +531,7 @@ describe("hunter-harness push", () => {
       stderr: (value) => stderr.push(value),
       prompt: async (question) => {
         prompts.push(question);
+        if (question.includes("确认创建或绑定该项目")) return "y\n";
         if (question.includes("Create this proposal")) return "y\n";
         if (question.includes("是否显式跳过")) return "y\n";
         if (question.includes("跳过原因")) return "interactive-fixture\n";
@@ -632,6 +633,7 @@ describe("hunter-harness push", () => {
       prompt: async (question) => {
         prompts.push(question);
         if (question.includes("URL")) return "https://stored.example.test\n";
+        if (question.includes("确认创建或绑定该项目")) return "y\n";
         if (question.includes("Create this proposal")) return "y\n";
         return "unexpected-regular-prompt\n";
       },

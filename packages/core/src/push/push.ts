@@ -97,6 +97,13 @@ export interface PushProjectOptions {
   confirmedProjectLocal?: readonly string[];
   fetch?: typeof globalThis.fetch;
   confirmProposal?: (preview: ReturnType<typeof generateProposalPreview>) => Promise<boolean>;
+  /** When local project_id is null, allow resolve/create without interactive confirm. */
+  allowCreateProject?: boolean;
+  /** Interactive confirm before first-time project resolve/create. */
+  confirmCreateProject?: (info: {
+    displayName: string;
+    localProjectKey: string;
+  }) => Promise<boolean>;
   sensitiveScanSkip?: boolean;
   sensitiveScanSkipReason?: string;
   confirmSensitiveScanSkip?: (
@@ -136,9 +143,19 @@ const SHARED_MANAGED_FILES = [
   ".harness/context-index.json"
 ];
 
-/** Only final archive summaries are pushable — never the whole archive tree. */
+/** Core + optional supporting archive files are pushable — never the whole tree. */
 const ARCHIVE_SUMMARY_PATH =
   /^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u;
+
+/** Optional supporting files (review/test reports + archive meta). */
+const ARCHIVE_OPTIONAL_SINGLE_FILES = [
+  "meta/archive-meta.md",
+  "meta/change-context.json"
+] as const;
+const ARCHIVE_OPTIONAL_FOLDERS = [
+  ["reports", "review"],
+  ["reports", "test"]
+] as const;
 
 // init 写入的已安装 Harness Bundle 清单：记录 Bundle 安装的受管文件路径。
 // push 对这些文件豁免敏感扫描（Harness 自有文件含教学示例，非用户引入的 secret），
@@ -204,9 +221,29 @@ async function walkArchiveSummaries(root: string, output: string[]): Promise<voi
     if (ARCHIVE_SUMMARY_PATH.test(relativePath)) {
       output.push(relativePath);
     }
-    // P4 core four: also include design (spec/) and plan (plans/) docs.
+    // Core: design (spec/) + plan (plans/) docs.
     for (const folder of ["spec", "plans"] as const) {
       await walkFiles(root, join(archiveDir, folder), output);
+    }
+    // C1 optional supporting files: review/test reports + archive meta.
+    for (const parts of ARCHIVE_OPTIONAL_FOLDERS) {
+      await walkFiles(root, join(archiveDir, ...parts), output);
+    }
+    for (const rel of ARCHIVE_OPTIONAL_SINGLE_FILES) {
+      const absolute = join(archiveDir, ...rel.split("/"));
+      try {
+        const stats = await lstat(absolute);
+        if (stats.isSymbolicLink()) {
+          throw new PushWorkflowError("symlink is not pushable", 6, "UNSAFE_SYMLINK");
+        }
+        if (!stats.isFile()) continue;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+        throw error;
+      }
+      output.push(normalizeManagedPath(
+        relative(root, absolute).replaceAll("\\", "/")
+      ));
     }
   }
 }
@@ -717,6 +754,29 @@ export async function pushProject(options: PushProjectOptions) {
     );
     const requestId = workflow.request_id;
     if (project.project.project_id === null) {
+      // C2: never silently create/bind a platform project.
+      if (options.allowCreateProject !== true) {
+        if (options.confirmCreateProject === undefined) {
+          throw new PushWorkflowError(
+            "local project_id is unset; creating/binding a platform project " +
+              "requires --yes (non-interactive) or interactive confirmation",
+            3,
+            "PROJECT_CREATE_CONFIRMATION_REQUIRED"
+          );
+        }
+        const confirmed = await options.confirmCreateProject({
+          displayName: project.project.name,
+          localProjectKey: project.project.local_project_key
+        });
+        if (!confirmed) {
+          return {
+            preview,
+            proposalId: null,
+            projectId: null,
+            cancelled: true
+          };
+        }
+      }
       const resolved = await client.resolveProject({
         schema_version: 1,
         local_project_key: project.project.local_project_key,

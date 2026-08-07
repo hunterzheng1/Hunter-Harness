@@ -31,6 +31,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import harness_change as hc  # noqa: E402
 import harness_events as he  # noqa: E402
+import harness_events_sync as hes  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_plan_finalize as hpf  # noqa: E402
@@ -2213,6 +2214,22 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "gateSeverityMode": severity_mode,
         "gateWarnings": gate_warnings,
     }
+    # C3: best-effort start platform run monitoring (register + running via heartbeat/events).
+    try:
+        monitor = hes.auto_events_sync(project, change_dir)
+        payload["platformMonitor"] = monitor
+        if monitor.get("warning"):
+            warnings_msg = str(monitor["warning"])
+            gate_warnings.append({
+                "code": "PLATFORM_EVENTS_SYNC_WARN",
+                "message": warnings_msg,
+            })
+            payload["gateWarnings"] = gate_warnings
+    except Exception as exc:  # noqa: BLE001 — never block phase begin
+        payload["platformMonitor"] = {
+            "ok": False,
+            "warning": f"events-sync hook failed: {exc}",
+        }
     emit(payload, as_json=as_json)
     return 0
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.52] — hunter-harness / [0.2.50] — @hunter-harness/workflow-harness
+
+### Added（2026-08-08 平台缺口 CLI 侧 C1–C4）
+
+- **归档可选辅助档随 push**：除核心四件套外，`reports/review/*`、`reports/test/*`、`meta/archive-meta.md`、`meta/change-context.json` 一并上传（仍不传 evidence/events/logs 等诊断类）。
+- **project_id 漂移防护**：`connect` 改绑需 `--rebind`（或交互确认）；`push` 新建项目需确认 / 非交互 `--yes`。
+- **change 生命周期钩子**：gate begin 启动 `events-sync`；archive finalize 后终态上报（best-effort，失败不阻断）。
+- **技能文档对齐**：knowledge ingest/query 标明远程优先与离线回退；run/archive 注明自动上报钩子。
+- **工作流 bundle**：版本提升至 `0.2.38`，最低 CLI 版本提升至 `0.2.52`。
+
 ## [0.2.51] — hunter-harness / [0.2.49] — @hunter-harness/workflow-harness
 
 ### Changed（2026-08-07 已初始化项目交互主菜单）
