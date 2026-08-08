@@ -40,7 +40,7 @@ describe("rule review lifecycle", () => {
       ]
     };
     await writeJson(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       { schema_version: 1, source_hashes: {}, candidates: [candidate] }
     );
 
@@ -54,7 +54,7 @@ describe("rule review lifecycle", () => {
     expect(revision).toMatch(/^[a-f0-9]{64}$/);
 
     await writeJson(
-      join(root, ".harness", "knowledge", "rule-decisions.json"),
+      join(root, ".harness", "state", "local", "rule-decisions.json"),
       {
         schema_version: 1,
         decisions: [{
@@ -89,7 +89,7 @@ describe("rule review lifecycle", () => {
     await mkdir(join(root, ".harness", "rules"), { recursive: true });
     await writeFile(target, before, "utf8");
     await writeJson(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       {
         schema_version: 1,
         source_hashes: {},
@@ -127,7 +127,7 @@ describe("rule review lifecycle", () => {
     expect(result).toMatchObject({ applied: 1, recorded: 1 });
     expect(await readFile(target, "utf8")).toBe(after);
     expect(await readFile(
-      join(root, ".harness", "knowledge", "rule-decisions.json"),
+      join(root, ".harness", "state", "local", "rule-decisions.json"),
       "utf8"
     )).toContain("\"public-rule\"");
   });
@@ -138,7 +138,7 @@ describe("rule review lifecycle", () => {
     await mkdir(join(root, ".harness", "rules"), { recursive: true });
     await writeFile(target, "new local content\n", "utf8");
     await writeJson(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       {
         schema_version: 1,
         source_hashes: {},

@@ -93,7 +93,7 @@ describe("embedded Harness Bundles", () => {
     expect(planSkill).toContain("executionMode=delegated");
     expect(planSkill).toContain("fallbackPolicy=inline-no-retry");
     expect(planSkill.indexOf("harness_context.py prepare --phase plan")).toBeLessThan(
-      planSkill.indexOf("`harness-knowledge-query` 单次 query")
+      planSkill.indexOf("`harness-knowledge-query` 单次远端 query")
     );
 
     for (const text of [planProtocols, planChecklist, planReference, runProtocols]) {
@@ -143,11 +143,13 @@ describe("embedded Harness Bundles", () => {
     }
   );
 
-  it("documents knowledge query as one ensure-current invocation", async () => {
+  it("documents knowledge query as one remote-only invocation", async () => {
     const querySkill = await readFile(
       join(harnessSource, "harness-knowledge-query", "SKILL.md"), "utf8"
     );
-    expect(querySkill).toContain("query 命令内部执行一次 ensure-current");
+    expect(querySkill).toContain("npx hunter-harness knowledge query");
+    expect(querySkill).toContain("不在查询前重建或同步知识");
+    expect(querySkill).not.toContain("ensure-current");
     expect(querySkill).not.toContain("sync --project <root>");
     expect(querySkill).not.toContain("sync --update");
   });

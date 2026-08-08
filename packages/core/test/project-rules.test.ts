@@ -23,9 +23,9 @@ describe("project rule projections", () => {
     );
     const receiptAfter = await stat(receiptPath);
 
-    expect(first.written).toHaveLength(5);
+    expect(first.written).toHaveLength(4);
     expect(second.written).toEqual([]);
-    expect(second.unchanged).toHaveLength(5);
+    expect(second.unchanged).toHaveLength(4);
     expect(receiptAfter.mtimeMs).toBe(receiptBefore.mtimeMs);
     for (const relative of [
       ".claude/rules/team.md",
@@ -36,7 +36,8 @@ describe("project rule projections", () => {
       expect(await readFile(join(root, relative), "utf8")).toBe("# Team\n\nUse TDD.\n");
       expect((await stat(join(root, relative))).isSymbolicLink()).toBe(false);
     }
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain(".harness/rules/team.md");
+    await expect(readFile(join(root, "AGENTS.md"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("updates clean projections but preserves locally modified targets", async () => {
@@ -214,8 +215,7 @@ describe("project rule projections", () => {
 
     expect(result.written).toEqual([
       ".claude/rules/team.md",
-      ".cursor/rules/team.mdc",
-      "AGENTS.md"
+      ".cursor/rules/team.mdc"
     ]);
     await expect(readFile(join(root, ".claude", "rules", "team.md"), "utf8"))
       .rejects.toMatchObject({ code: "ENOENT" });

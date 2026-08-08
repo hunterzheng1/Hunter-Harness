@@ -17,6 +17,20 @@ import { runConnect, type ConnectOptions } from "./commands/connect.js";
 import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
+  runArchiveUpload,
+  type ArchiveUploadOptions
+} from "./commands/archive-upload.js";
+import {
+  runKnowledgeQuery,
+  type KnowledgeQueryOptions
+} from "./commands/knowledge-query.js";
+import {
+  runInstructionApply,
+  runInstructionAudit,
+  type InstructionApplyOptions,
+  type InstructionAuditOptions
+} from "./commands/instructions.js";
+import {
   detectProject,
   runRefresh,
   type RefreshCommandOptions
@@ -262,6 +276,51 @@ export async function runCli(
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
     });
+  const archive = program.command("archive")
+    .description("管理核心变更归档包");
+  addCommonOptions(archive.command("upload"))
+    .description("上传一个确定性 ZIP，并由服务端解包和建立知识索引")
+    .requiredOption("--file <path>", "归档 ZIP 路径")
+    .requiredOption("--change-key <key>", "变更标识")
+    .action(async (options: ArchiveUploadOptions) => {
+      exitCode = await runArchiveUpload(
+        { ...program.opts<ArchiveUploadOptions>(), ...options },
+        dependencies
+      );
+    });
+  const knowledge = program.command("knowledge")
+    .description("访问远端项目知识库（无本地索引或离线回退）");
+  addCommonOptions(knowledge.command("query <query>"))
+    .description("只查询远端语义知识；远端不可用时直接失败")
+    .option("--limit <count>", "最多返回 1-50 条", (value: string) => Number(value), 10)
+    .action(async (query: string, options: KnowledgeQueryOptions) => {
+      exitCode = await runKnowledgeQuery(
+        query,
+        { ...program.opts<KnowledgeQueryOptions>(), ...options },
+        dependencies
+      );
+    });
+  const instructions = program.command("instructions")
+    .description("审计、预览并应用中文项目指令与规则提案");
+  addCommonOptions(instructions.command("audit"))
+    .description("上传小型项目证据，由服务端生成不带托管标记的中文提案")
+    .action(async (options: InstructionAuditOptions) => {
+      exitCode = await runInstructionAudit(
+        { ...program.opts<InstructionAuditOptions>(), ...options },
+        dependencies
+      );
+    });
+  instructions.command("apply")
+    .description("按基线哈希事务式应用已审阅提案")
+    .requiredOption("--proposal <path>", "提案 JSON 路径")
+    .option("--yes")
+    .option("--json")
+    .action(async (options: InstructionApplyOptions) => {
+      exitCode = await runInstructionApply(
+        { ...program.opts<InstructionApplyOptions>(), ...options },
+        dependencies
+      );
+    });
   program.command("connect <url>")
     .description("绑定平台：校验项目 API Key 并写入 .harness/credentials.local.yaml")
     .option("--key <key>", "项目 API Key（省略则交互式输入）")
@@ -288,10 +347,10 @@ export async function runCli(
       );
     });
   program.command("rules-sync")
-    .description("收敛公共规则、刷新 Agent 投影并提炼历史规则候选")
+    .description("兼容入口：远端审计并生成中文规则提案，不直接改写项目文件")
     .option("--agents <csv>")
     .option("--codebuddy-surface <surface>")
-    .option("--no-learn", "只同步规则，不读取历史 review/test 证据")
+    .option("--no-learn", "兼容参数；规则候选始终只作为提案，不自动应用")
     .option("--json")
     .action(async (options: RulesSyncCommandOptions) => {
       exitCode = await runRulesSync(

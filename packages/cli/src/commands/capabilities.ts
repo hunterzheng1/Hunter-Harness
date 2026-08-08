@@ -19,6 +19,9 @@ const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   cleanup: 1,
   "rules-sync": 1,
   "rules-review": 1,
+  archive: 1,
+  knowledge: 1,
+  instructions: 1,
   doctor: 1,
   config: 1
 };

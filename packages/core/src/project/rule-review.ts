@@ -4,8 +4,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 
 import type { RuleCandidate, RuleCandidateManifest } from "./rule-candidates.js";
 
-const CANDIDATE_PATH = ".harness/knowledge/rule-candidates.json";
-const DECISION_PATH = ".harness/knowledge/rule-decisions.json";
+const CANDIDATE_PATH = ".harness/state/local/rule-candidates.json";
+const DECISION_PATH = ".harness/state/local/rule-decisions.json";
 const RULES_ROOT = ".harness/rules";
 
 export type RuleDisposition =

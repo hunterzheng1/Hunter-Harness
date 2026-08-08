@@ -34,7 +34,7 @@ describe("hunter-harness rules-review CLI", () => {
       "--profile", "general", "--agents", "all", "--non-interactive", "--yes"
     ])).toBe(0);
     await writeJson(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       {
         schema_version: 1,
         source_hashes: {},

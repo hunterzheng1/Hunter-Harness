@@ -1,154 +1,72 @@
 ---
 name: harness-knowledge-query
-description: "根据新需求、设计任务、代码修改请求或问题排查，在规划和编码前查询 .harness/knowledge 历史上下文。适用场景：query knowledge、查找历史需求、根据归档理解需求、继续之前类似开发、生成需求上下文包。"
-argument-hint: "<需求文本> [--file <path>] [--status active|candidate|stale]"
-effort: medium
-allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]
+description: "在规划、实现或排查前，通过 hunter-harness CLI 查询远端项目知识库。远端不可用时直接报告不可用，不建立本地索引或离线回退。"
+argument-hint: "<需求或问题原文> [--limit <n>]"
+effort: low
+allowed-tools: [Bash(powershell.exe:*), Read, Glob, Grep]
 disallowed-tools:
   - Bash(git *)
-  - Bash(mvn *)
-  - Bash(ls *)
-  - Bash(find *)
-  - Bash(grep *)
-  - Bash(cat *)
-  - Bash(cp *)
-  - Bash(mv *)
-  - Bash(rm *)
-  - Bash(mkdir *)
-  - Bash(touch *)
-  - Bash(sed *)
-  - Bash(awk *)
   - Bash(curl *)
 ---
 
 # harness-knowledge-query
 
-并行 change 中查询必须传 `--change <change-id>`；成功后以该 change 的 `meta/knowledge-context.json` 为稳定指针。全局 `context-packs/latest.json` 仅向后兼容，不得用于判断多个 active change 的上下文归属。
+项目知识以 Hunter Platform 的服务端索引为唯一真源。客户端只提交查询并消费结果：
 
-根据用户的新需求或排查问题检索历史需求、决策、实现、风险和测试证据，并生成 AI 可读的 context pack。
+- 不创建或读取 `.harness/knowledge`；
+- 不运行本地 Python ingest、SQLite、FTS 或 context-pack 脚本；
+- 不在网络或服务不可用时回退到本地归档；
+- 查询失败只记录“本轮无远端知识”，后续工作必须依靠当前代码和用户提供的信息。
 
-## 远程优先 / 离线回退
-
-1. **默认（已 `hunter-harness connect`）**：优先查询平台语义知识库（与 ingest 上传 + 服务端裁决结果一致）；多机/多人共享同一裁决结果。
-2. **离线回退**：无凭据、网络失败或平台不可用时，回退到本地 `.harness/knowledge`（SQLite FTS / 条目文件）。
-3. 此 skill 只负责查询和使用知识。整理与上传由 `harness-knowledge-ingest` + push/归档负责；**不要**在已连接平台时把本地 promote 当作共享真源。
+所有面向人的总结默认使用中文，代码标识符和原始路径保持原样。
 
 ## Triggers
 
-- query knowledge
-- knowledge query
-- 查找相关历史需求
-- 根据历史归档理解这个需求
+- query knowledge / knowledge query
+- 查询历史需求、决策或实现经验
 - 结合之前做过的内容
-- 继续之前类似开发
-- 生成需求上下文包
-- 在规划前查历史
+- 规划或排查前读取项目知识
 
-## Automatic Use
+## Command
 
-当用户提出新功能、改造、排查、设计方案、继续历史任务，且项目存在平台连接或 `.harness/archive` / `.harness/knowledge` 时，AI 应主动运行本 skill，不需要等用户提醒。
-
-不在 query 前单独执行 sync。`query` 命令内部执行一次 ensure-current：建立一次当前快照，索引新鲜时无操作，过期或缺失时只构建一次，然后在同一调用内完成查询（离线路径）。
-
-## Commands
-
-`<ingest-skill-dir>` 指同级 `harness-knowledge-ingest/` 目录；查询逻辑复用其脚本。所有 python 脚本命令通过 `powershell.exe -Command "..."` 执行，避开 Bash 在 Windows 中文路径下的编码/参数问题。
-
-### Query by requirement
+在项目根目录执行一次：
 
 ```powershell
-powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py' query --project '<project-root>' --query '<用户需求原文>'"
+powershell.exe -Command "npx hunter-harness knowledge query '<用户需求原文>' --limit 10 --json"
 ```
 
-已连接平台时，优先使用平台语义搜索（CLI/`hunter-harness` 知识查询路径，若可用）；上述本地命令作为离线回退。
-
-### Query with metadata filters
-
-```powershell
-powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py' query --project '<project-root>' --query '<需求或关键词>' --file '<source-file>' --status active"
-```
-
-可重复使用：
-
-- `--file <path>`：只返回关联到指定文件的知识。
-- `--status active|candidate|stale|superseded|conflicted`：按生命周期过滤（远程路径通常已排除 deprecated）。
-- `--type requirement|decision|implementation|risk|test-evidence|pitfall|api-contract`：按知识类型过滤。
-- `--limit <n>`：限制返回数量。
+只允许通过 CLI 访问平台，不得直接拼接 HTTP 请求，也不得调用旧的
+本地知识查询脚本（该脚本已从当前分发包移除）。
 
 ## Workflow
 
-1. 确认项目根目录。
-2. 用用户原始需求执行一次 `query`；query 命令内部执行一次 ensure-current。
-3. 如已知道相关文件，在同一次查询中追加 `--file` 过滤。
-4. 读取 JSON 输出中的 `contextPack`。
-5. 在 `harness-plan`、设计、代码探索或实现前，把 context pack 当作必读输入。
+1. 原样保留用户的需求或问题作为查询文本；已知范围较大时可将关键模块名一并放入文本。
+2. 执行一次远端查询，不在查询前重建或同步知识。
+3. 读取 JSON 中的命中项、来源路径、变更键和相关度。
+4. 把命中内容作为历史线索；涉及当前行为时仍以当前代码和验证结果为准。
+5. 若命令返回远端不可达、未绑定或未认证，记录明确 issue 后继续，不重试本地方案。
 
 ## Output Contract
 
-查询输出 JSON 包含：
+必须说明：
 
-- `matchCount`
-- `contextPack`
-- `filters`
-- `planInput`
-- `matches`
-
-`planInput.kind` 必须为 `harness-knowledge-context-pack`。后续 `harness-plan` 应读取 `planInput.path`。
-
-每次查询还会更新稳定指针：
-
-```text
-.harness/knowledge/context-packs/latest.json
-```
-
-该文件包含最新 query、context pack 路径和 `matchIds`，供后续流程快速读取最近一次知识上下文。
-
-## Interpretation Rules
-
-- `active`：可优先采用，但仍要结合当前代码验证。
-- `candidate`：有参考价值，不是当前事实。
-- `stale`：只能作为历史线索，必须重新检查代码和归档。
-- `superseded` / `conflicted`：必须显式提示风险，不得静默采用。
+- 查询文本与 limit；
+- 是否成功访问远端；
+- 命中数量及最相关来源；
+- 远端不可用时，明确写“未使用本地回退”；
+- 下一步是进入规划/实现，还是先核对当前代码。
 
 ## Forbidden Actions
 
-- rebuild_index_without_need
-- pre_sync_before_query
-- query_then_sync_then_query_again
-- treat_candidate_as_current_fact
-- treat_stale_as_current_fact
-- skip_context_pack_before_planning
-- copy_large_archive_content_into_prompt
-
-## Verification
-
-```powershell
-powershell.exe -Command "python -m unittest '<ingest-skill-dir>\tests\test_harness_knowledge.py'"
-powershell.exe -Command "python '<ingest-skill-dir>\scripts\harness_knowledge.py' query --project '<real-project-root>' --query '<真实需求>'"
-```
-
-确认输出中存在 `contextPack`、`planInput.kind=harness-knowledge-context-pack`，且 context pack 文件包含 `Before planning`。
+- create_local_knowledge_index
+- query_local_sqlite_or_archive_as_fallback
+- generate_local_context_pack
+- retry_with_legacy_python_knowledge_script
+- treat_remote_history_as_current_code_fact
+- copy_secrets_into_query
 
 <!-- @include shared/p0-trust.md -->
-> 片段：[[shared/p0-trust.md|p0-trust]] · query 成功须含 `contextPack`/`planInput.kind` 与 `latest.json` 写入
-
-## Output Format
-
-执行完成后展示：
-
-- 用户需求原文与生效的过滤条件（`--file`/`--status`/`--type`/`--limit`）。
-- `matchCount` 与按状态分组的命中数（active/candidate/stale/superseded/conflicted）。
-- `contextPack` 路径与 `latest.json` 指针。
-- 命中 stale/superseded/conflicted 时显式提示风险。
-- 下一步建议（context pack 已就绪 → 进入 `/harness-plan`；ensure-current 失败 → 报告具体 issue，不重复同步或查询）。
-
-## 渐进披露
-
-- 本 skill 暂无 `checklist.md` / `reference.md` 支持文件，规则全部在 SKILL.md。若 Output Contract / Interpretation Rules 后续扩展变重，应拆到 `reference.md`。
-
-## 交互白名单
-
-**无** blocking user confirmation；`stale`/`conflicted` 命中记 `issue`，不阻断 query。
+> 片段：[[shared/p0-trust.md|p0-trust]] · 远端查询成功必须有 CLI JSON 证据；失败不得伪装为已读取历史
 
 <!-- @include shared/logging.md -->
-> 片段：[[shared/logging.md|logging]] · phase=`knowledge-query` · 独立运行时控制台报告；变更上下文写 decision/issue/artifact
+> 片段：[[shared/logging.md|logging]] · phase=`knowledge-query` · 成功记录命中摘要，失败记录远端错误码且不做本地回退

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,11 +86,6 @@ describe("hunter-harness sync", () => {
       config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
-    await mkdir(join(root, ".harness", "knowledge"), { recursive: true });
-    await writeFile(
-      join(root, ".harness", "knowledge", "index.json"),
-      JSON.stringify({ schemaVersion: 1, entries: [] })
-    );
     const stdout: string[] = [];
     try {
       const code = await runCli([
@@ -120,11 +115,15 @@ describe("hunter-harness sync", () => {
       expect(payload.reportSha256).toMatch(/^[a-f0-9]{64}$/);
       const report = JSON.parse(
         await readFile(join(root, payload.reportPath), "utf8")
-      ) as { components: Array<{ status: string; reasonCode: string }> };
+      ) as { components: Array<{ component: string; status: string; reasonCode: string }> };
       expect(report.components.length).toBeGreaterThan(3);
       expect(report.components.every((item) =>
         /^(OK|ADVISORY|WARN|FAIL|BLOCKED|UNKNOWN)$/.test(item.status)
       )).toBe(true);
+      expect(report.components.find((item) => item.component === "knowledge"))
+        .toMatchObject({ status: "OK", reasonCode: "KNOWLEDGE_REMOTE_OWNED" });
+      await expect(stat(join(root, ".harness", "knowledge")))
+        .rejects.toMatchObject({ code: "ENOENT" });
       const lastRun = JSON.parse(
         await readFile(
           join(root, ".harness", "runtime", "sync", "last-run.json"),

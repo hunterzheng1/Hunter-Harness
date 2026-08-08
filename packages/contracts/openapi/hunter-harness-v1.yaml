@@ -692,6 +692,88 @@ paths:
       responses:
         "200": { description: Project workflow family binding updated with optimistic revision }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/instruction-proposals:
+    post:
+      operationId: createInstructionProposal
+      summary: Audit project guidance and generate a Chinese proposal without applying it
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InstructionProposalRequest"
+      responses:
+        "201":
+          description: Marker-free Chinese instruction/rule proposal; rule candidates are never auto-applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstructionProposal"
+        "422": { description: Evidence hash mismatch or sensitive content blocked }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/changes/{change_key}/archive-package:
+    put:
+      operationId: uploadChangeArchivePackage
+      summary: Store one verified core-only ZIP, publish its files, and ingest knowledge server-side
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/ChangeKey"
+        - $ref: "#/components/parameters/RequestId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/zip:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Original ZIP durably stored; receipt includes knowledge indexing status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchivePackageReceipt"
+        "413": { description: Archive package exceeds the configured upload limit }
+        "409": { description: A different immutable ZIP already exists for this change }
+        "415": { description: Request body is not an application/zip buffer }
+        "422": { description: Unsafe ZIP, non-core file, manifest/hash mismatch, or sensitive content }
+        default: { $ref: "#/components/responses/Error" }
+    get:
+      operationId: getChangeArchivePackage
+      summary: Get durable archive and server-side knowledge status
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/ChangeKey"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Current archive package receipt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchivePackageReceipt"
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/changes/{change_key}/archive-package/download:
+    get:
+      operationId: downloadChangeArchivePackage
+      summary: Recover the exact original ZIP stored for a change
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/ChangeKey"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Original immutable ZIP; X-Content-SHA256 carries its package hash
+          headers:
+            X-Content-SHA256:
+              schema: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/semantic/overview:
     get:
       operationId: getProjectSemanticOverview
@@ -785,6 +867,13 @@ components:
       required: true
       schema:
         type: string
+    ChangeKey:
+      name: change_key
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$"
     SessionId:
       name: session_id
       in: path
@@ -1014,6 +1103,161 @@ components:
           type: string
           maxLength: 500
           description: Optional audit reason; requires sensitive_scan_skip=true
+    ArchivePackageReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - archive_id
+        - project_id
+        - change_key
+        - package_sha256
+        - manifest_sha256
+        - artifact_id
+        - archive_status
+        - knowledge_status
+        - stored_files
+        - uploaded_at
+        - request_id
+      properties:
+        schema_version: { type: integer, const: 1 }
+        archive_id: { type: string, pattern: "^arc_" }
+        project_id: { type: string, pattern: "^prj_" }
+        change_key: { type: string }
+        package_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        manifest_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        artifact_id:
+          type: [string, "null"]
+        archive_status: { type: string, const: durable }
+        knowledge_status: { type: string, enum: [indexing, ready, failed] }
+        stored_files: { type: integer, minimum: 0 }
+        uploaded_at: { type: string, format: date-time }
+        request_id: { type: string, format: uuid }
+    InstructionProposalRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, project_profile, adapters, documents, codebase_map, recent_changes]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        language: { type: string, const: zh-CN, default: zh-CN }
+        project_profile: { type: string, minLength: 1, maxLength: 100 }
+        adapters:
+          type: array
+          maxItems: 4
+          items: { type: string, enum: [codex, claude-code, cursor, codebuddy] }
+        documents:
+          type: array
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, content, content_sha256]
+            properties:
+              path:
+                type: string
+                enum:
+                  - AGENTS.md
+                  - CLAUDE.md
+                  - CODEBUDDY.md
+                  - .harness/rules/project-guidance.md
+                  - .cursor/rules/project-guidance.mdc
+                  - package.json
+                  - pom.xml
+                  - build.gradle
+                  - build.gradle.kts
+                  - pyproject.toml
+              content: { type: string, maxLength: 524288 }
+              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        codebase_map:
+          type: object
+          additionalProperties: false
+          required: [status, content]
+          properties:
+            status: { type: string, enum: [missing, stale, fresh] }
+            content: { type: string, maxLength: 524288 }
+        recent_changes:
+          type: array
+          maxItems: 20
+          description: Optional client hints; server-owned archive summaries are merged first.
+          items:
+            type: object
+            additionalProperties: false
+            required: [change_key, summary, decisions]
+            properties:
+              change_key: { type: string, minLength: 1, maxLength: 160 }
+              summary: { type: string, maxLength: 10000 }
+              decisions:
+                type: array
+                maxItems: 50
+                items: { type: string, minLength: 1, maxLength: 2000 }
+    InstructionProposal:
+      type: object
+      additionalProperties: false
+      required: [schema_version, proposal_id, project_id, language, mode, applied, generated_at, findings, files, rule_candidates, basis, request_id]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        proposal_id: { type: string, pattern: "^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$" }
+        project_id: { type: string, pattern: "^prj_" }
+        language: { type: string, const: zh-CN }
+        mode: { type: string, const: audit-propose }
+        applied: { type: boolean, const: false }
+        generated_at: { type: string, format: date-time }
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, severity, path, message]
+            properties:
+              code: { type: string }
+              severity: { type: string, enum: [info, warning] }
+              path: { type: string }
+              message: { type: string }
+        files:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, operation, base_content_sha256, content_sha256, content]
+            properties:
+              path:
+                type: string
+                enum:
+                  - AGENTS.md
+                  - CLAUDE.md
+                  - CODEBUDDY.md
+                  - .harness/rules/project-guidance.md
+                  - .cursor/rules/project-guidance.mdc
+              operation: { type: string, enum: [add, modify] }
+              base_content_sha256:
+                type: [string, "null"]
+                pattern: "^sha256:[a-f0-9]{64}$"
+              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+              content: { type: string, maxLength: 1048576 }
+        rule_candidates:
+          type: array
+          description: Evidence-backed candidates with auto_apply=false; not part of apply operations.
+          items:
+            type: object
+            additionalProperties: false
+            required: [candidate_id, content, evidence, evidence_count, auto_apply, recommendation]
+            properties:
+              candidate_id: { type: string, pattern: "^rc_[a-f0-9]{16}$" }
+              content: { type: string }
+              evidence:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [change_key, summary]
+                  properties:
+                    change_key: { type: string }
+                    summary: { type: string }
+              evidence_count: { type: integer, minimum: 1 }
+              auto_apply: { type: boolean, const: false }
+              recommendation: { type: string, enum: [review, promote] }
+        basis: { type: array, items: { type: string, format: uri } }
+        request_id: { type: string, format: uuid }
     SensitiveFindingSummary:
       type: object
       additionalProperties: false

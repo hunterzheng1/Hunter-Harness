@@ -250,9 +250,6 @@ def run_acceptance(skills_root: Path, out_path: Path | None) -> dict[str, Any]:
 
     # 1. test suites (actually run)
     result["tests"]["harness"] = run_unittest(skills_root / "scripts" / "tests", "test_harness_*.py")
-    result["tests"]["knowledge"] = run_unittest(
-        skills_root / "harness-knowledge-ingest" / "tests", "test_harness_knowledge.py"
-    )
 
     # 2-3. builds + skill counts + determinism + forbidden patterns
     tmp = Path(tempfile.mkdtemp(prefix="harness-acceptance-"))
@@ -316,7 +313,6 @@ def run_acceptance(skills_root: Path, out_path: Path | None) -> dict[str, Any]:
     # overall
     auto_ok = (
         result["tests"]["harness"]["ok"]
-        and result["tests"]["knowledge"]["ok"]
         and result["buildDeterminism"]["genericByteIdentical"]
         and result["buildDeterminism"]["javaByteIdentical"]
         and result["buildDeterminism"]["buildOk"]

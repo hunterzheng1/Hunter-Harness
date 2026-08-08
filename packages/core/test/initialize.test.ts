@@ -23,7 +23,7 @@ async function exists(path: string): Promise<boolean> {
 const REQUIRED_CORE_LAYOUT = [
   ".harness/project.yaml",
   ".harness/context-index.json",
-  ".harness/knowledge/index.json",
+  ".harness/rules/project-guidance.md",
   ".harness/state/baseline/manifest.json",
   ".harness/state/local/installed-harness-bundle.json"
 ];
@@ -33,6 +33,7 @@ const OPTIONAL_MUST_NOT_EXIST = [
   ".harness/cache/server-artifacts",
   ".harness/reports",
   ".harness/codebase/map",
+  ".harness/knowledge",
   ".harness/knowledge/_candidates",
   ".harness/knowledge/project-local",
   ".harness/README.md",
@@ -121,7 +122,8 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".claude"))).toBe(false);
     expect(await exists(join(root, ".codex"))).toBe(false);
     const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(agents).toContain("id=hunter-harness-core");
+    expect(agents).toContain("# 项目协作指南");
+    expect(agents).not.toContain("hunter-harness:start");
   });
 
   it("INS-CURSOR: emits .mdc rules and cursor skills", async () => {
@@ -147,7 +149,8 @@ describe("multi-agent initialize", () => {
       dryRun: false
     });
     const cb = await readFile(join(root, "CODEBUDDY.md"), "utf8");
-    expect(cb).toContain("id=hunter-harness-codebuddy");
+    expect(cb).toContain("# 项目协作说明");
+    expect(cb).not.toContain("hunter-harness:start");
     expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "agents", "harness-reviewer.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "settings.json"))).toBe(false);
@@ -155,7 +158,7 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
   });
 
-  it("installs all four agents with shared AGENTS block, context v2, state v4", async () => {
+  it("installs all four agents with marker-free Chinese docs, context v2, state v4", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-all-"));
     await initializeProject({
       projectRoot: root,
@@ -171,7 +174,8 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".cursor", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
     const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect((agents.match(/hunter-harness:start/g) ?? []).length).toBe(1);
+    expect(agents).toContain("# 项目协作指南");
+    expect(agents).not.toContain("hunter-harness:start");
 
     const index = JSON.parse(
       await readFile(join(root, ".harness", "context-index.json"), "utf8")
@@ -203,7 +207,7 @@ describe("multi-agent initialize", () => {
     expect(owners.has("codebuddy")).toBe(true);
     const targets = state.files.map((f) => f.target_path);
     expect(new Set(targets).size).toBe(targets.length);
-    expect(state.managed_blocks.some((b) => b.block_id === "hunter-harness-core")).toBe(true);
+    expect(state.managed_blocks).toEqual([]);
   }, 240_000);
 
   it("is idempotent across two installs except installed_at", async () => {

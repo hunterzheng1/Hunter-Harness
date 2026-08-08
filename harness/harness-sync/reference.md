@@ -29,7 +29,7 @@ CLI 按以下顺序解析 Python，并在详细报告中记录来源：
 5. `python3`
 6. `python`
 
-所有探测都必须有超时。完全不可用时返回 `PYTHON_RUNTIME_UNAVAILABLE`，且不得进入 knowledge 或 rules 阶段。
+所有探测都必须有超时。完全不可用时返回 `PYTHON_RUNTIME_UNAVAILABLE`，并跳过仍依赖 Python 的变更状态阶段；远端知识和指令审计不允许回退到本地 Python 实现。
 
 ## 3. 统一同步
 
@@ -84,9 +84,8 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 |---|---|---|
 | capability | CLI 版本、必需能力 | 不匹配立即 `BLOCKED` |
 | adapter projection | 事务后的实际文件 hash | 使用 post-transaction 校验；partial refresh 不得把未选 adapter 标成 stale |
-| managed blocks | 全文件解析树 | 重复 ID、嵌套、闭合不匹配为结构错误 |
-| knowledge | manifest、entry 文件、SQLite ID 集合 | 三者不一致为 `FAIL`；进度与性能指标落报告 |
-| rules | 投影收据、冲突、待评审数 | 真实分歧只报告，不覆盖 |
+| knowledge | 远端职责声明 | 固定报告 `remote-only`、`fallback=false`、`localIndex=false`；不运行本地 ingest |
+| rules | 审计—提案—应用契约 | `sync` 只给出 `instructions audit` 下一步，不改写文档或自动应用候选 |
 | codebase map | manifest 文档清单、hash、生成时间 | 真实文件校验，不复用旧 display status |
 | instruction graph | 入口、include 边、环、主题可达性 | 缺失引用或循环为 `FAIL` |
 | config origins | canonical/projection 路径与 hash | 漂移 `WARN`，不静默覆盖 |
@@ -94,8 +93,7 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 | CodeGraph | `codegraph status --json` 的 pending、数据库观察时间、watcher 可达性 | 输出 `CURRENT/PENDING/STALE/INDEX_PRESENT_UNVERIFIED/MISSING/UNKNOWN`；日志 mtime 只证明 watcher 活动，不证明索引完成；不自动全量 reindex |
 
 全局状态优先级：`BLOCKED` → `FAIL` → `WARN` → `ADVISORY` → `OK`。任一 `UNKNOWN`
-至少使全局结果为 `WARN`。knowledge freshness 与 health 分开：索引一致但仍有待裁决候选时
-为 `ADVISORY`，不得误报为过期。
+至少使全局结果为 `WARN`。远端知识可用性由实际 query/upload 收据判断，`sync` 不伪造本地 freshness。
 
 ## 5. Git 与 CodeGraph
 
@@ -136,15 +134,23 @@ npx hunter-harness doctor --managed-blocks --json
 
 change cleanup 由同步报告提供具体动作。只允许已验证的 `ARCHIVED_LEFTOVER` 进入删除路径；`RECOVERABLE` 只能移入隔离区；`ORPHAN`/`INVALID` 保持原状并提示人工处理。
 
-## 9. 规则候选
+## 9. 中文指令与规则提案
 
-非交互 sync 只报告待评审数。用户主动要求评审时，先读取候选：
+`sync` 只报告 `INSTRUCTION_AUDIT_REQUIRED`。需要优化时执行：
 
 ```powershell
-npx hunter-harness rules-review --json
+npx hunter-harness instructions audit --json
 ```
 
-公共规则变更仍需展示 evidence 和 diff，并由用户确认。应用后的 decision 必须绑定 candidate revision 与目标 hash；目标变化返回 `RULE_PATCH_STALE`，不得强制覆盖。
+服务端结合项目类型、现有文档、Codebase Map、近期变更总结和公开最佳实践生成中文提案。
+提案先保存到 `.harness/state/local/instruction-proposals/`，项目文件保持不变。审阅后显式执行：
+
+```powershell
+npx hunter-harness instructions apply --proposal <proposal.json> --yes --json
+```
+
+应用必须校验基线 hash 并使用事务；文件在审计后变化则返回 `INSTRUCTION_PROPOSAL_STALE`。
+近期变更中的经验只形成 rule candidates，`instructions apply` 也不得自动写入这些候选。
 
 ## 10. 完成判定
 
@@ -153,6 +159,7 @@ npx hunter-harness rules-review --json
 - stdout 摘要与详细报告 hash 一致；
 - 没有 `FAIL` 或 `BLOCKED`；
 - 所有自动修复均有 post-transaction 证据；
-- knowledge 的 manifest、文件、SQLite 集合一致；
+- knowledge 组件明确为 remote-only，且未创建或刷新本地索引；
+- 文档和规则组件未直接改写项目文件；
 - 未把 `UNKNOWN` 描述成已验证；
 - 第二次无输入变化的运行不产生投影 churn。

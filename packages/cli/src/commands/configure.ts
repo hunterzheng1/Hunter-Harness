@@ -65,14 +65,13 @@ async function configureCodeBuddyExtras(
       `以下 CodeBuddy 规则与 Claude 源规则内容不同，已保留目标文件：${plan.conflictingClaudeRules.join(", ")}\n`
     );
   }
-  let syncClaudeRules = false;
+  const syncClaudeRules = false;
   let configureCodeGraph = false;
   if (plan.claudeRules.length > 0) {
-    syncClaudeRules = options.nonInteractive === true
-      ? options.yes === true
-      : /^(?:|y|yes)$/i.test((await dependencies.prompt(
-        `发现 ${plan.claudeRules.length} 个 Claude 自定义规则，是否复制到 CodeBuddy（保留源文件且不覆盖目标）？[Y/n]：`
-      )).trim());
+    dependencies.stdout(
+      `发现 ${plan.claudeRules.length} 个 Claude 自定义规则；不会直接复制到其他 Agent。` +
+      "请在初始化后运行 hunter-harness instructions audit 生成统一优化提案。\n"
+    );
   }
   if (plan.hasCodeGraphIndex && !plan.codeGraphConfigured) {
     configureCodeGraph = options.nonInteractive === true

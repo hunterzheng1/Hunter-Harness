@@ -6,7 +6,7 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 
 ## 升级与本地状态保护边界
 
-`.harness/archive/`、`.harness/changes/`、`.harness/knowledge/project-local/` 是 protected local roots。CLI init/configure/refresh/rules 操作前必须：
+`.harness/archive/`、`.harness/changes/` 是 protected local roots。CLI init/configure/refresh/rules 操作前必须：
 
 1. 综合 project marker、adapter `.harness-build.json`、managed block、恢复事务和非空 `.harness` 判断 `absent / valid / partial / recovery-required`；
 2. 对 protected roots 记录文件数、目录数、字节数、Merkle root，以及 archive 首末 identity；
@@ -84,21 +84,27 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 `runtime/retired-service-sessions/`；该动作保留原始回执且不终止进程。受管命令、
 环境会话和 fixback 的完整合同见 `execution-session-protocol.md`。
 
-## knowledge maintenance-outbox（§8）
+## 归档上传重试状态（§8）
 
-归档 close 不再同步执行知识维护；它写一个 pending outbox 项即返回：
+知识 ingest 由 Hunter Platform 在接收归档 ZIP 后执行，本地不再创建 `.harness/knowledge`
+或 maintenance-outbox。尚未被服务端确认持久化的包保存在：
 
 ```text
-.harness/knowledge/maintenance-outbox/
-  pending/<archive-id>.json      # 待维护
-  running/<archive-id>.json      # maintain 正在处理
-  completed/<archive-id>.json    # 已完成（status=completed 或 completed_rules_pending_judge）
-  failed/<archive-id>.json       # 失败（attempts+1，可重试）
+.harness/state/local/archive-packages/
+  <change-key>.zip              # 确定性核心归档包
+  <change-key>.upload.json      # 上传/失败收据（如存在）
 ```
 
-项 schema：`{schemaVersion, archiveId, archivePath, archiveManifestHash, status, attempts, createdAt, lastError, pendingJudgements?, completedAt?}`。
-
-`harness_knowledge.py maintain --project . --archive-id <id>` 单进程顺序：claim pending/failed -> running -> 增量 ingest（`build_index` 内含 in-memory near-dedupe，**不再二次磁盘 dedupe**）-> auto-supersede -> reverify-stale -> 导出残余 judge checklist -> running -> completed（或 `completed_rules_pending_judge` 若 `pendingJudgements>0`）。失败 -> failed（attempts+1，可重试）。completed 项重复 maintain 幂等。`harness-sync` 启动时扫描 pending/failed outbox 并执行 maintain。
+ZIP 只包含 summary、spec、plans、archive-meta、change-context 和包 manifest。上传失败保留；
+每次 finalize 都先生成 ZIP 与对应回执，再按 `credentials.local.yaml` 或
+`project.yaml` 的 `server.url` + `server.token_env` 环境变量解析远端凭据。缺少凭据、
+网络失败、无效收据或知识状态为 `indexing`/`failed` 时均保留这两个按 change 命名的文件，
+因此可枚举 `*.upload.json` 独立重试，不会由后一次归档覆盖前一次。只有 CLI 已核对
+package SHA-256，且服务端同时确认 `archive_status=durable` 与
+`knowledge_status=ready` 时，才清理对应 ZIP 和回执。回执的 `uploadStatus` 为
+`pending|failed|ready`，`reasonCode` 使用 `ARCHIVE_UPLOAD_*` 或
+`ARCHIVE_KNOWLEDGE_*` 稳定错误码；`indexing` 必须映射为 `pending`，不得误报失败。
+远端知识查询失败不得创建本地 fallback。
 
 ## 读取兼容
 

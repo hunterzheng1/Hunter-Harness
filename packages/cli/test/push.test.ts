@@ -127,7 +127,7 @@ describe("hunter-harness push", () => {
     )).toBe(baselineBefore);
   });
 
-  it("excludes every adapter bundle working copy but previews rules and managed blocks", async () => {
+  it("excludes adapter bundle copies and does not invent proposal-owned instruction files", async () => {
     expect(await runCli([
       "--agents", "all", "--non-interactive", "--yes"
     ], {
@@ -150,7 +150,9 @@ describe("hunter-harness push", () => {
     expect(code).toBe(0);
     const paths = (JSON.parse(stdout.join("")) as { items: Array<{ path: string }> })
       .items.map((item) => item.path);
-    expect(paths).toContain("CODEBUDDY.md");
+    expect(paths).toContain("AGENTS.md");
+    expect(paths).toContain("CLAUDE.md");
+    expect(paths).not.toContain("CODEBUDDY.md");
     expect(paths).toContain(".claude/rules/harness-general.md");
     expect(paths).toContain(".cursor/rules/harness-general.mdc");
     expect(paths.some((path) => /^\.claude\/skills\/harness-/.test(path))).toBe(false);

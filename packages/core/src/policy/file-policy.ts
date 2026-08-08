@@ -2,14 +2,6 @@ import type { FilePolicy } from "@hunter-harness/contracts";
 
 import { normalizeManagedPath } from "../fs/path-safety.js";
 
-const USER_MANAGED_BLOCK: FilePolicy = {
-  file_kind: "user_editable",
-  edit_policy: "managed-block-only",
-  push_policy: "diff-proposal",
-  update_policy: "managed-block-only",
-  conflict_policy: "managed-block-skip"
-};
-
 const USER_DIFF: FilePolicy = {
   file_kind: "user_editable",
   edit_policy: "allow",
@@ -21,7 +13,7 @@ const USER_DIFF: FilePolicy = {
 const PROJECT_LOCAL: FilePolicy = {
   file_kind: "user_editable",
   edit_policy: "allow",
-  push_policy: "confirm-before-proposal",
+  push_policy: "never",
   update_policy: "never",
   conflict_policy: "ignore"
 };
@@ -32,6 +24,14 @@ const GENERATED_REVIEWABLE: FilePolicy = {
   push_policy: "full-diff-proposal",
   update_policy: "skip-if-local-dirty",
   conflict_policy: "skip-and-report"
+};
+
+const ARCHIVE_LOCAL_ONLY: FilePolicy = {
+  file_kind: "generated_reviewable",
+  edit_policy: "discourage",
+  push_policy: "never",
+  update_policy: "never",
+  conflict_policy: "ignore"
 };
 
 const CONTEXT_INDEX: FilePolicy = {
@@ -106,7 +106,12 @@ export function classifyFile(input: string): FilePolicy {
     return GENERATED_CACHE;
   }
   if (path === "CLAUDE.md" || path === "AGENTS.md" || path === "CODEBUDDY.md") {
-    return USER_MANAGED_BLOCK;
+    return USER_DIFF;
+  }
+  // Generic project-file push must never carry archive contents. The dedicated
+  // immutable ZIP upload is the only transport for durable archive knowledge.
+  if (under(path, ".harness/archive/")) {
+    return ARCHIVE_LOCAL_ONLY;
   }
   if (
     under(path, ".claude/rules/") ||
@@ -124,9 +129,9 @@ export function classifyFile(input: string): FilePolicy {
   if (under(path, ".harness/knowledge/project-local/")) {
     return PROJECT_LOCAL;
   }
-  // The manifest and terminal lifecycle projections are rebuilt by knowledge
-  // maintenance. Keep active/candidate/conflicted entries governed, but do not
-  // upload redundant history that can exceed the server proposal envelope.
+  // Local knowledge projections are never generic-push inputs. Server knowledge
+  // is rebuilt from dedicated archive/ingest endpoints, including active and
+  // candidate entries, so no lifecycle tier may bypass this boundary.
   if (
     path === ".harness/knowledge/index.json" ||
     path === ".harness/knowledge/index.sqlite" ||
@@ -142,22 +147,10 @@ export function classifyFile(input: string): FilePolicy {
     return REPORT_CACHE;
   }
   if (under(path, ".harness/knowledge/")) {
-    return USER_DIFF;
+    return PROJECT_LOCAL;
   }
   if (under(path, ".harness/rules/")) {
     return USER_DIFF;
-  }
-  if (/^\.harness\/archive\/[^/]+\/reports\/final\/summary-data\.json$/u.test(path)) {
-    // Machine-generated archive evidence for server semantic "变更总结".
-    return GENERATED_REVIEWABLE;
-  }
-  // Archive push allowlist: core (spec/plans) + optional supporting (review/test/meta).
-  if (
-    /^\.harness\/archive\/[^/]+\/(spec|plans)\//u.test(path) ||
-    /^\.harness\/archive\/[^/]+\/reports\/(review|test)\//u.test(path) ||
-    /^\.harness\/archive\/[^/]+\/meta\/(archive-meta\.md|change-context\.json)$/u.test(path)
-  ) {
-    return GENERATED_REVIEWABLE;
   }
   if (
     under(path, ".harness/codebase/map/") ||

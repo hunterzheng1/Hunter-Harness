@@ -222,12 +222,15 @@ try {
     assert(await exists(join(project, ".harness", "README.md")) === false, "must not generate README");
     assert(await exists(join(project, ".harness", "state", "local", "installed-harness-bundle.json")),
       "must write schema-v3 installed state");
-    // 用户 AGENTS/CLAUDE 内容保留。
+    // 用户 AGENTS/CLAUDE 内容逐字保留，不注入托管 marker。
     const claude = await readFile(join(project, "CLAUDE.md"), "utf8");
-    assert(claude.includes("# User Claude") && claude.includes("hunter-harness:start"),
-      "CLAUDE.md user content + managed block not preserved");
+    assert(claude === "# User Claude\nkeep this.\n" && !claude.includes("hunter-harness:"),
+      "CLAUDE.md user content must remain marker-free and byte-for-byte unchanged");
     const agents = await readFile(join(project, "AGENTS.md"), "utf8");
-    assert(agents.includes("# User Agents"), "AGENTS.md user content not preserved");
+    assert(agents === "# User Agents\nkeep this too.\n" && !agents.includes("hunter-harness:"),
+      "AGENTS.md user content must remain marker-free and byte-for-byte unchanged");
+    assert(await exists(join(project, ".gitattributes")) === false,
+      "install must not generate .gitattributes");
 
     // The exact packed CLI must ignore generated Python runtime caches before
     // scanning or proposal construction. This catches worktree builds that

@@ -106,10 +106,10 @@ disallowed-tools:
 
 1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ".harness/changes/<change-name>" --intent release-candidate --json` 前置检查。无 CI 项目若已有完整全量 ledger，先运行 `certify-local`；若用户明确只封存事实，则 status/finalize 均使用 `--intent record-only`。
 2. `meta/archive-meta.md` **由 `harness_archive.py finalize` 自动生成**（与 summary-data `finalStatus` 同源）；**禁止 agent 手写**该文件，手写视为数据丢失。维护者结论写入 events（decision/issue）即可，finalize 会汇总到 summary / archive-meta。
-3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --intent <release-candidate|record-only> --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest 比对、archive-meta）。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 不再同步执行知识维护**（§8.2）：它写一个 `pending` maintenance-outbox 项即返回，`knowledgeMaintenance=QUEUED`；写 outbox 失败时 `NOT_QUEUED`（warning，不回滚 archive，总状态 CONDITIONAL）。后续由 `harness-sync` / `harness_knowledge.py maintain` 异步推进 outbox。**finalize 失败或 validate 报错时不删除原目录**。
-   - **平台钩子（best-effort，不阻断归档）**：
-     1. **归档推送（C1）**：有远程凭据时自动 `hunter-harness push` 上传核心+可选辅助档（spec/plans/summary-data/knowledge + `reports/review/*`、`reports/test/*`、`meta/archive-meta.md`、`meta/change-context.json`）。
-     2. **监控终态（C3）**：auto-push 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；平台依据 `phase.end`/`archive` 将 run 置为 succeeded/failed（含 `ended_at`）。失败只记 warning。
+3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --intent <release-candidate|record-only> --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest 比对、archive-meta、ZIP package、上传与服务端 knowledge status）。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不再执行知识维护，也不写 maintenance-outbox**；服务端在归档 ZIP 持久保存并解包后 ingest。**finalize 失败或 validate 报错时不删除原目录**。
+   - **归档包上传**：始终先生成一个确定性 ZIP；有远程凭据时再调用 `npx hunter-harness archive upload`。ZIP 仅包含 `summary-data.json`、`spec/**/*.md`、`plans/**/*.md`、`archive-meta.md`、`change-context.json` 和稳定 manifest；明确排除 logs、review/test 报告、HTML、缓存、备份、凭据和临时文件。
+   - **失败可恢复**：无论远端凭据是否齐全，都先生成 ZIP 与 `<change-key>.upload.json`；上传或服务端 ingest 失败不破坏本地归档。待上传 ZIP 与逐 change 回执保留在 `.harness/state/local/archive-packages/`，可枚举独立重试。只有 CLI 核验 package hash 且服务端同时返回 `archive_status=durable`、`knowledge_status=ready` 后，才清理对应 ZIP 与回执；`indexing` 记为 pending，不记为失败。
+   - **监控终态（C3）**：auto-upload 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；失败只记 warning。
 
 - **Read `reference.md`** — finalize 输出字段、archive-meta 格式、CONDITIONAL_OK 规则
 - **Read `templates/summary-data-template.json`** — summary-data 数据结构

@@ -11,7 +11,7 @@ import { pushProject } from "../src/push/push.js";
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("pushProject archive summaries", () => {
-  it("includes core + optional supporting archive paths and skips diagnostics", async () => {
+  it("keeps every archive path out of generic push proposals", async () => {
     const root = await mkdtemp(join(tmpdir(), "hh-push-archive-"));
     await initializeProject({
       projectRoot: root,
@@ -104,20 +104,19 @@ describe("pushProject archive summaries", () => {
     });
 
     const proposedPaths = result.preview.operations.map((item) => item.path);
-    expect(proposedPaths).toContain(summaryRel);
-    expect(proposedPaths).toContain(designRel);
-    expect(proposedPaths).toContain(planRel);
-    expect(proposedPaths).toContain(reviewRel);
-    expect(proposedPaths).toContain(testRel);
-    expect(proposedPaths).toContain(metaRel);
-    expect(proposedPaths).toContain(contextRel);
-    expect(proposedPaths.some((path) => path.endsWith("meta-note.txt"))).toBe(false);
-    expect(proposedPaths.some((path) => path.endsWith("final-summary.html"))).toBe(false);
-    expect(proposedPaths.some((path) => path.includes("/evidence/"))).toBe(false);
+    expect(proposedPaths.some((path) => path.startsWith(".harness/archive/"))).toBe(false);
     expect(
-      proposedPaths.filter((path) => path.startsWith(".harness/archive/")).sort()
-    ).toEqual(
-      [summaryRel, designRel, planRel, reviewRel, testRel, metaRel, contextRel].sort()
-    );
+      result.preview.skipped
+        .filter((item) => item.path.startsWith(".harness/archive/"))
+        .map((item) => [item.path, item.reason])
+    ).toEqual(expect.arrayContaining([
+      [summaryRel, "policy-never"],
+      [designRel, "policy-never"],
+      [planRel, "policy-never"],
+      [reviewRel, "policy-never"],
+      [testRel, "policy-never"],
+      [metaRel, "policy-never"],
+      [contextRel, "policy-never"]
+    ]));
   });
 });

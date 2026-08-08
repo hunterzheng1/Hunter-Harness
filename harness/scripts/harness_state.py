@@ -218,11 +218,9 @@ def discover_segment_files(
         project / "harness.json",
     ]
     codebase_map = list((project / ".harness/codebase/map").glob("**/*"))
-    knowledge = [
-        project / ".harness/knowledge/index.json",
-        project / ".harness/knowledge/status.json",
-        project / ".harness/knowledge/config.json",
-    ]
+    # Knowledge is remote-only. Keep the segment for schema compatibility, but
+    # do not discover or fingerprint local indexes/fallback state.
+    knowledge: list[Path] = []
     change_inputs: list[Path] = []
     for folder in ("spec", "plans", "meta"):
         change_inputs.extend((change_dir / folder).glob("**/*"))

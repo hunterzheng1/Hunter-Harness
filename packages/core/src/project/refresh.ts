@@ -13,11 +13,6 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 import { aggregateInstalledContentHash, sha256Bytes } from "../fs/hash.js";
 import { assessCodebaseMapOnDisk } from "../codebase/map.js";
-import {
-  refreshManagedBlockById,
-  removeManagedBlock,
-  removeManagedBlockById
-} from "../managed/managed-block.js";
 import { collectProtectedLocalRootsInventory } from "./local-state.js";
 import type { RecoveryStoreOptions } from "../transaction/recovery-store.js";
 import {
@@ -26,14 +21,6 @@ import {
   transactionPlanHash
 } from "../transaction/transaction.js";
 import type { TransactionOperation } from "../transaction/journal.js";
-import {
-  AGENTS_CORE_BLOCK_ID,
-  AGENTS_MANAGED_BLOCK_CONTENT,
-  CLAUDE_BLOCK_ID,
-  CLAUDE_MANAGED_BLOCK_CONTENT,
-  CODEBUDDY_BLOCK_ID,
-  CODEBUDDY_MANAGED_BLOCK_CONTENT
-} from "./managed-content.js";
 import {
   loadMigrationManifests,
   loadAgentBundle,
@@ -47,7 +34,6 @@ import {
   TargetCollisionError,
   type InstalledBundleStateV4
 } from "./initialize.js";
-import { synchronizeProjectRules } from "./project-rules.js";
 
 // Conservative Refresh：本地安全协调，不触碰 server-backed update 语义（design §2/§3）。
 // 分类依据 design §4.3：absent→add；current==incoming→unchanged；current==trusted→干净替换；
@@ -401,7 +387,11 @@ async function reconcileContextIndex(
         })
       ]))
     },
-    knowledge: { index: ".harness/knowledge/index.json" },
+    knowledge: {
+      source: "remote",
+      local_index: null,
+      query: "npx hunter-harness knowledge query"
+    },
     codebase,
     skill_bundles: Object.fromEntries(manifests.map((manifest) => {
       const ver = verifications.get(manifest.adapter as HarnessAgent);
@@ -509,44 +499,6 @@ function mergeTargets(
       : "shared";
     return { ...first, owner };
   }).sort((left, right) => left.target_path.localeCompare(right.target_path));
-}
-
-async function reconcileMarkdownBlock(
-  root: string, fileName: string, blockId: string, content: string, remove: boolean,
-  ops: TransactionOperation[], conflicts: RefreshConflict[], preserved: RefreshItem[]
-): Promise<void> {
-  const original = await readOptionalText(join(root, fileName));
-  const synthetic: ProjectedBundleFile = {
-    source_path: fileName, target_path: fileName,
-    sha256: createHash("sha256").update(content).digest("hex"),
-    bytes: new TextEncoder().encode(content)
-  };
-  let next: string;
-  try {
-    if (remove) {
-      const hasId = original.includes(`<!-- hunter-harness:start id=${blockId} -->`);
-      next = hasId ? removeManagedBlockById(original, blockId) : removeManagedBlock(original);
-    } else {
-      const refreshed = refreshManagedBlockById(original, blockId, content, { upgradeLegacy: true });
-      if (refreshed.conflict) throw new Error("managed block conflict");
-      next = refreshed.content;
-    }
-  } catch {
-    const current = original === "" ? null : createHash("sha256").update(original).digest("hex");
-    preserved.push(item(synthetic, "preserve", "MALFORMED_MANAGED_BLOCK", current, synthetic.sha256));
-    conflicts.push(await conflict(
-      root,
-      synthetic,
-      "MALFORMED_MANAGED_BLOCK",
-      current,
-      synthetic.sha256,
-      null
-    ));
-    return;
-  }
-  if (next !== original) ops.push({
-    operation: original === "" ? "add" : "modify", path: fileName, content: next
-  });
 }
 
 function stateWithoutInstalledAt(value: unknown): unknown {
@@ -741,18 +693,6 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
     }
   }
 
-  await reconcileMarkdownBlock(root, "AGENTS.md", AGENTS_CORE_BLOCK_ID, AGENTS_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
-  if (removeSet.has("claude-code")) {
-    await reconcileMarkdownBlock(root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, true, ops, conflicts, preserved);
-  } else if (selectedSet.has("claude-code")) {
-    await reconcileMarkdownBlock(root, "CLAUDE.md", CLAUDE_BLOCK_ID, CLAUDE_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
-  }
-  if (removeSet.has("codebuddy")) {
-    await reconcileMarkdownBlock(root, "CODEBUDDY.md", CODEBUDDY_BLOCK_ID, CODEBUDDY_MANAGED_BLOCK_CONTENT, true, ops, conflicts, preserved);
-  } else if (selectedSet.has("codebuddy")) {
-    await reconcileMarkdownBlock(root, "CODEBUDDY.md", CODEBUDDY_BLOCK_ID, CODEBUDDY_MANAGED_BLOCK_CONTENT, false, ops, conflicts, preserved);
-  }
-
   const projectOperation = await projectTransitionOperation(
     root, agents, profiles, codebuddySurface
   );
@@ -808,25 +748,7 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
   );
   if (contextOperation !== null) ops.push(contextOperation);
 
-  const managedBlocks = ([
-    ...installed.managedBlocks.filter((entry) =>
-      entry.owner !== "shared" && !selectedSet.has(entry.owner)
-    ),
-    {
-      owner: "shared", target_path: "AGENTS.md", block_id: AGENTS_CORE_BLOCK_ID,
-      content_sha256: createHash("sha256").update(AGENTS_MANAGED_BLOCK_CONTENT).digest("hex")
-    },
-    ...(selectedSet.has("claude-code") ? [{
-      owner: "claude-code" as const, target_path: "CLAUDE.md", block_id: CLAUDE_BLOCK_ID,
-      content_sha256: createHash("sha256").update(CLAUDE_MANAGED_BLOCK_CONTENT).digest("hex")
-    }] : []),
-    ...(selectedSet.has("codebuddy") ? [{
-      owner: "codebuddy" as const, target_path: "CODEBUDDY.md", block_id: CODEBUDDY_BLOCK_ID,
-      content_sha256: createHash("sha256").update(CODEBUDDY_MANAGED_BLOCK_CONTENT).digest("hex")
-    }] : [])
-  ] satisfies InstalledBundleStateV4["managed_blocks"]).sort((left, right) =>
-    left.target_path.localeCompare(right.target_path) || left.block_id.localeCompare(right.block_id)
-  );
+  const managedBlocks: InstalledBundleStateV4["managed_blocks"] = [];
   const filesByTarget = new Map(newStateFiles.map((entry) => [entry.target_path, entry]));
   const installedState: InstalledBundleStateV4 = {
     schema_version: 4,
@@ -899,7 +821,6 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
         })
     });
     recoveryId = transaction.recoveryId;
-    await synchronizeProjectRules(root, agents, codebuddySurface);
     await pruneEmptyParentDirs(
       root,
       removed.map((item) => item.target_path),

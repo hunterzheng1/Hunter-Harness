@@ -9,35 +9,12 @@ import {
   buildCompactSyncResult,
   buildSyncRemediations,
   buildPromoteCandidates,
-  classifyKnowledgeResult,
-  deriveKnowledgeOutputValid,
   deriveSyncWritePolicy,
   persistSyncPointers,
   probeCodeGraph,
-  resolveKnowledgeNextAction,
   runProcess,
-  shouldApplyKnowledgeMaintenance,
   summarizePartialEffects
 } from "../src/commands/sync.js";
-
-function okProcessResult(stdout: string): Parameters<typeof classifyKnowledgeResult>[0] {
-  return {
-    exitCode: 0,
-    stdout,
-    stderr: "",
-    startedAt: "2026-07-30T00:00:00.000Z",
-    completedAt: "2026-07-30T00:00:01.000Z",
-    durationMs: 1000,
-    lastActivityAt: "2026-07-30T00:00:01.000Z",
-    timedOut: false,
-    timeoutKind: null,
-    termination: "exited",
-    signal: null,
-    heartbeatCount: 0,
-    stdoutTruncated: false,
-    stderrTruncated: false
-  };
-}
 
 describe("sync bounded process runner", () => {
   it("maps adapter remediation ids to one exact projection owner", () => {
@@ -48,47 +25,18 @@ describe("sync bounded process runner", () => {
     expect(adapterAgentForRemediation("refresh-managed-adapters-unknown")).toBeNull();
   });
 
-  it("keeps remediation previews read-only even when a fix id is supplied", () => {
-    expect(shouldApplyKnowledgeMaintenance(
-      { fix: "knowledge-maintain" },
-      true
-    )).toBe(false);
-    expect(shouldApplyKnowledgeMaintenance(
-      { apply: "safe" },
-      true
-    )).toBe(false);
-    expect(shouldApplyKnowledgeMaintenance(
-      { apply: "safe" },
-      false
-    )).toBe(true);
-  });
-
   it("isolates targeted remediation writes from unrelated components", () => {
     expect(deriveSyncWritePolicy({}, true)).toEqual({
-      adapterReadOnly: true,
-      knowledgeMode: "check",
-      rulesReadOnly: true
+      adapterReadOnly: true
     });
     expect(deriveSyncWritePolicy(
       { fix: "refresh-managed-adapters-cursor" },
       false
     )).toEqual({
-      adapterReadOnly: false,
-      knowledgeMode: "check",
-      rulesReadOnly: true
-    });
-    expect(deriveSyncWritePolicy(
-      { fix: "knowledge-maintain" },
-      false
-    )).toEqual({
-      adapterReadOnly: true,
-      knowledgeMode: "auto",
-      rulesReadOnly: true
+      adapterReadOnly: false
     });
     expect(deriveSyncWritePolicy({}, false)).toEqual({
-      adapterReadOnly: false,
-      knowledgeMode: "update",
-      rulesReadOnly: false
+      adapterReadOnly: false
     });
   });
 
@@ -132,10 +80,13 @@ describe("sync bounded process runner", () => {
         {},
         () => undefined,
         {
-          wallTimeoutMs: 1000,
-          stallTimeoutMs: 80,
-          heartbeatMs: 20,
-          terminateGraceMs: 20
+          // Windows process startup can exceed 80 ms when the full suite is
+          // contending for CPU. Keep the timeout relationship under test while
+          // leaving enough time for the child's initial activity to arrive.
+          wallTimeoutMs: 3000,
+          stallTimeoutMs: 500,
+          heartbeatMs: 50,
+          terminateGraceMs: 100
         }
       );
       expect(result.timedOut).toBe(true);
@@ -183,116 +134,9 @@ describe("sync bounded process runner", () => {
       ) as { runId: string };
       expect(lastRun.runId).toBe("failure");
       expect(lastSuccess.runId).toBe("success");
-      expect(classifyKnowledgeResult(
-        {
-          exitCode: 124,
-          stdout: "{}",
-          stderr: "",
-          startedAt: success.completedAt,
-          completedAt: success.completedAt,
-          durationMs: 1,
-          lastActivityAt: success.completedAt,
-          timedOut: true,
-          timeoutKind: "wall",
-          termination: "terminated",
-          signal: null,
-          heartbeatCount: 0,
-          stdoutTruncated: false,
-          stderrTruncated: false
-        },
-        true
-      )).toEqual({
-        status: "WARN",
-        reasonCode: "KNOWLEDGE_SYNC_TIMEOUT_OUTPUT_VALID"
-      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-
-  it("HH-KNOW-20260730-001 treats sync_status ok:true as valid output", () => {
-    const payload = { ok: true, upToDate: true, maintenance: { attempted: true, ok: true } };
-    expect(deriveKnowledgeOutputValid(payload)).toBe(true);
-    expect(classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), true, payload))
-      .toEqual({ status: "OK", reasonCode: "OK" });
-  });
-
-  it("reports knowledge health separately from freshness", () => {
-    const payload = {
-      ok: true,
-      upToDate: true,
-      freshness: {
-        status: "OK",
-        archivesScanned: 5,
-        archivesIndexed: 5,
-        headCurrent: true
-      },
-      health: {
-        status: "WARN",
-        contentLifecycle: { active: 0, candidate: 52, conflicted: 2 },
-        reviewState: { pending: 0, deferred: 54, decided: 0 },
-        publicationState: { publishable: 42, blocked: 108, unverified: 0 },
-        validationState: { covered: 27, uncovered: 123, failed: 0 },
-        duplicateGroups: 64
-      }
-    };
-
-    expect(deriveKnowledgeOutputValid(payload)).toBe(true);
-    expect(classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), true, payload))
-      .toEqual({ status: "WARN", reasonCode: "KNOWLEDGE_HEALTH_WARN" });
-  });
-
-  it("HH-KNOW-20260730-001 flags an un-drained maintenance outbox as WARN with a next action", () => {
-    const payload = {
-      ok: false,
-      upToDate: true,
-      reasons: [],
-      maintenance: {
-        attempted: true,
-        skipped: false,
-        ok: false,
-        processed: 1,
-        remaining: 1,
-        results: [{ ok: false, archiveId: "2026-07-30-example", status: "failed" }]
-      },
-      nextAction: "Retry `hunter-harness sync` to drain the maintenance outbox."
-    };
-    expect(deriveKnowledgeOutputValid(payload)).toBe(false);
-    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
-    expect(outcome).toEqual({ status: "WARN", reasonCode: "KNOWLEDGE_OUTBOX_PENDING" });
-    const nextAction = resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload);
-    expect(nextAction).toBe(payload.nextAction);
-  });
-
-  it("HH-KNOW-20260730-001 falls back to a generic next action when the payload omits one", () => {
-    const payload = {
-      ok: false,
-      upToDate: true,
-      maintenance: { attempted: true, skipped: false, ok: false, processed: 0, remaining: 3 }
-    };
-    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
-    expect(outcome.status).toBe("WARN");
-    expect(outcome.reasonCode).toBe("KNOWLEDGE_OUTBOX_PENDING");
-    const nextAction = resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload);
-    expect(nextAction).toBeTruthy();
-    expect(nextAction).toMatch(/harness_knowledge\.py maintain .*--drain/);
-  });
-
-  it("HH-KNOW-20260730-001 treats a stale index (maintenance skipped) as unverified, not outbox-pending", () => {
-    const payload = {
-      ok: false,
-      upToDate: false,
-      reasons: ["archive added: .harness/archive/2026-07-30-example"],
-      maintenance: { attempted: false, skipped: true, ok: true, pending: 0, failed: 0 }
-    };
-    expect(deriveKnowledgeOutputValid(payload)).toBe(false);
-    const outcome = classifyKnowledgeResult(okProcessResult(JSON.stringify(payload)), false, payload);
-    expect(outcome).toEqual({ status: "WARN", reasonCode: "KNOWLEDGE_OUTPUT_UNVERIFIED" });
-    expect(resolveKnowledgeNextAction(outcome.status, outcome.reasonCode, payload)).toBeTruthy();
-  });
-
-  it("resolveKnowledgeNextAction returns null on OK status", () => {
-    expect(resolveKnowledgeNextAction("OK", "OK", { ok: true })).toBeNull();
   });
 
   it("HH-ADAPTER-20260730-001 groups identical local adapter patches into one promotion proposal", () => {
@@ -423,7 +267,7 @@ describe("sync bounded process runner", () => {
       {
         component: "knowledge",
         status: "FAIL",
-        reasonCode: "KNOWLEDGE_SYNC_FAILED",
+        reasonCode: "KNOWLEDGE_REMOTE_UNAVAILABLE",
         observedAt: "2026-07-30T00:00:00.000Z",
         durationMs: 1,
         inputHash: null,
@@ -431,11 +275,11 @@ describe("sync bounded process runner", () => {
         evidence: [],
         autoFixed: false,
         nextAction: "Retry sync",
-        effects: { persisted: [], notPersisted: ["knowledge output was not verified"] }
+        effects: { persisted: [], notPersisted: ["remote knowledge was unavailable; no local fallback"] }
       }
     ]);
     expect(partial.persisted).toEqual(["adapter projection applied 1 change(s)"]);
-    expect(partial.notPersisted).toEqual(["knowledge output was not verified"]);
+    expect(partial.notPersisted).toEqual(["remote knowledge was unavailable; no local fallback"]);
     expect(partial.summary).toContain("Durable effects already persisted");
   });
 

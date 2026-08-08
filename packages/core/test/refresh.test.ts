@@ -61,9 +61,6 @@ describe("Conservative Refresh", () => {
     const baselineBefore = await readFile(
       join(root, ".harness", "state", "baseline", "manifest.json"), "utf8"
     );
-    const knowledgeBefore = await readFile(
-      join(root, ".harness", "knowledge", "index.json"), "utf8"
-    );
 
     const result = await refreshProject({
       projectRoot: root,
@@ -80,7 +77,7 @@ describe("Conservative Refresh", () => {
     expect(await readFile(
       join(root, ".harness", "state", "baseline", "manifest.json"), "utf8"
     )).toBe(baselineBefore);
-    expect(await readFile(join(root, ".harness", "knowledge", "index.json"), "utf8")).toBe(knowledgeBefore);
+    expect(await exists(join(root, ".harness", "knowledge"))).toBe(false);
     expect(result.conflicts).toHaveLength(0);
   });
 
@@ -364,10 +361,11 @@ describe("Conservative Refresh", () => {
     }
   });
 
-  it("adds only the newly enabled codex projection and keeps one shared AGENTS block", async () => {
+  it("adds only the newly enabled codex projection and leaves AGENTS byte-for-byte", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-add-codex-"));
     await installFirst(root, "general");
     const claudeTarget = await readFile(join(root, REVIEWER_TARGET), "utf8");
+    const agentsBefore = await readFile(join(root, "AGENTS.md"), "utf8");
 
     const result = await refreshProject({
       projectRoot: root, resourcesRoot, profile: "general",
@@ -376,8 +374,7 @@ describe("Conservative Refresh", () => {
 
     expect(result.applied.some((entry) => entry.target_path.startsWith(".agents/skills/"))).toBe(true);
     expect(await readFile(join(root, REVIEWER_TARGET), "utf8")).toBe(claudeTarget);
-    const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(agents.match(/hunter-harness:start id=hunter-harness-core/g)).toHaveLength(1);
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(agentsBefore);
   });
 
   it("touches only selected agents and keeps every unselected namespace byte-for-byte", async () => {
@@ -415,7 +412,7 @@ describe("Conservative Refresh", () => {
     });
   }, 120_000);
 
-  it("upgrades a v2 Claude state and legacy blocks in place to v4", async () => {
+  it("upgrades v2 state but leaves legacy blocks for explicit instruction audit", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-v2-v3-"));
     await installFirst(root, "general");
     const initial = await readInstalledState(root);
@@ -444,7 +441,7 @@ describe("Conservative Refresh", () => {
     expect(state.files.every((entry) => entry.owner === "claude-code")).toBe(true);
     for (const file of ["AGENTS.md", "CLAUDE.md"]) {
       const content = await readFile(join(root, file), "utf8");
-      expect(content).toContain("hunter-harness:start id=");
+      expect(content).toContain("<!-- hunter-harness:start -->");
       expect(content.match(/hunter-harness:start/g)).toHaveLength(1);
     }
   });

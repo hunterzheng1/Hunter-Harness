@@ -21,7 +21,6 @@ import {
 import { aggregateInstalledContentHash } from "../fs/hash.js";
 
 import { sha256Bytes } from "../fs/hash.js";
-import { upsertManagedBlockById } from "../managed/managed-block.js";
 import { collectProtectedLocalRootsInventory } from "./local-state.js";
 import type { TransactionOperation } from "../transaction/journal.js";
 import type { RecoveryStoreOptions } from "../transaction/recovery-store.js";
@@ -32,14 +31,11 @@ import {
 } from "../transaction/transaction.js";
 import { getAdapter, managedTargetsFor } from "./agent-adapters.js";
 import {
-  AGENTS_CORE_BLOCK_ID,
   AGENTS_MANAGED_BLOCK_CONTENT,
-  CLAUDE_BLOCK_ID,
   CLAUDE_MANAGED_BLOCK_CONTENT,
-  CODEBUDDY_BLOCK_ID,
-  CODEBUDDY_MANAGED_BLOCK_CONTENT
+  CODEBUDDY_MANAGED_BLOCK_CONTENT,
+  HARNESS_GENERAL_RULES_CONTENT
 } from "./managed-content.js";
-import { synchronizeProjectRules } from "./project-rules.js";
 import {
   loadAgentBundle,
   type HarnessProfile,
@@ -151,10 +147,6 @@ export class TargetCollisionError extends Error {
     super(`TARGET_COLLISION: conflicting bytes for ${targetPath}`);
     this.name = "TargetCollisionError";
   }
-}
-
-function hex(bytes: Uint8Array | string): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -346,17 +338,7 @@ export async function initializeProject(
 
   const managedBlocks: InstalledBundleStateV3["managed_blocks"] = [];
   let agentsContent = await readOptional(join(root, "AGENTS.md"));
-  agentsContent = upsertManagedBlockById(
-    agentsContent,
-    AGENTS_CORE_BLOCK_ID,
-    AGENTS_MANAGED_BLOCK_CONTENT
-  );
-  managedBlocks.push({
-    owner: "shared",
-    target_path: "AGENTS.md",
-    block_id: AGENTS_CORE_BLOCK_ID,
-    content_sha256: hex(AGENTS_MANAGED_BLOCK_CONTENT)
-  });
+  if (agentsContent.trim() === "") agentsContent = AGENTS_MANAGED_BLOCK_CONTENT + "\n";
 
   const files = new Map<string, string | Uint8Array>([
     [
@@ -375,49 +357,31 @@ export async function initializeProject(
           shared_instructions: "AGENTS.md",
           adapters: adaptersIndex
         },
-        knowledge: { index: ".harness/knowledge/index.json" },
+        knowledge: {
+          source: "remote",
+          local_index: null,
+          query: "npx hunter-harness knowledge query"
+        },
         codebase: { map: ".harness/codebase/map", status: "missing" },
         skill_bundles: skillBundles
       }, null, 2) + "\n"
     ],
-    [
-      ".harness/knowledge/index.json",
-      JSON.stringify({ schema_version: 1, generated_at: null, entries: [] }, null, 2) +
-        "\n"
-    ],
-    ["AGENTS.md", agentsContent]
+    ["AGENTS.md", agentsContent],
+    [".harness/rules/project-guidance.md", HARNESS_GENERAL_RULES_CONTENT]
   ]);
 
   if (enabledAgents.includes("claude-code")) {
     let claudeContent = await readOptional(join(root, "CLAUDE.md"));
-    claudeContent = upsertManagedBlockById(
-      claudeContent,
-      CLAUDE_BLOCK_ID,
-      CLAUDE_MANAGED_BLOCK_CONTENT
-    );
+    if (claudeContent.trim() === "") claudeContent = CLAUDE_MANAGED_BLOCK_CONTENT + "\n";
     files.set("CLAUDE.md", claudeContent);
-    managedBlocks.push({
-      owner: "claude-code",
-      target_path: "CLAUDE.md",
-      block_id: CLAUDE_BLOCK_ID,
-      content_sha256: hex(CLAUDE_MANAGED_BLOCK_CONTENT)
-    });
   }
 
   if (enabledAgents.includes("codebuddy")) {
     let codebuddyContent = await readOptional(join(root, "CODEBUDDY.md"));
-    codebuddyContent = upsertManagedBlockById(
-      codebuddyContent,
-      CODEBUDDY_BLOCK_ID,
-      CODEBUDDY_MANAGED_BLOCK_CONTENT
-    );
+    if (codebuddyContent.trim() === "") {
+      codebuddyContent = CODEBUDDY_MANAGED_BLOCK_CONTENT + "\n";
+    }
     files.set("CODEBUDDY.md", codebuddyContent);
-    managedBlocks.push({
-      owner: "codebuddy",
-      target_path: "CODEBUDDY.md",
-      block_id: CODEBUDDY_BLOCK_ID,
-      content_sha256: hex(CODEBUDDY_MANAGED_BLOCK_CONTENT)
-    });
   }
 
   for (const target of mergedTargets) {
@@ -492,7 +456,6 @@ export async function initializeProject(
     // adapter and enrich context-index so it carries per-file proof, not
     // just the aggregate bundle hash.
     await enrichContextIndexWithVerification(root, enabledAgents, profile, options.resourcesRoot, adapterContext);
-    await synchronizeProjectRules(root, enabledAgents, surface);
   }
   return {
     projectConfig,

@@ -76,4 +76,53 @@ describe("Hunter Harness API client", () => {
     expect(headers.get("Content-Range")).toBe("bytes 3-5/6");
     expect(headers.get("X-Chunk-SHA256")).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
+
+  it("uploads a change archive as one ZIP request", async () => {
+    const fetch = vi.fn().mockResolvedValue(json({
+      schema_version: 1,
+      archive_id: "arc_one",
+      project_id: "prj_one",
+      change_key: "change-one",
+      package_sha256: "sha256:" + "a".repeat(64),
+      manifest_sha256: "sha256:" + "b".repeat(64),
+      artifact_id: "art_one",
+      archive_status: "durable",
+      knowledge_status: "ready",
+      stored_files: 3,
+      uploaded_at: "2026-08-08T00:00:00.000Z",
+      request_id: "request-one"
+    }, 201));
+    const client = new HunterHarnessApiClient({
+      serverUrl: "https://example.test",
+      token: "token",
+      fetch
+    });
+    const method = (client as unknown as {
+      uploadChangeArchivePackage?: (options: {
+        projectId: string;
+        changeKey: string;
+        archive: Uint8Array;
+        requestId: string;
+        idempotencyKey: string;
+      }) => Promise<unknown>;
+    }).uploadChangeArchivePackage;
+    expect(typeof method).toBe("function");
+    if (method === undefined) return;
+
+    await method.call(client, {
+      projectId: "prj_one",
+      changeKey: "change-one",
+      archive: new Uint8Array([0x50, 0x4b, 0x03, 0x04]),
+      requestId: "019ee27b-2a74-7131-a168-32153f38f3c9",
+      idempotencyKey: "019ee27b-2a75-7131-a168-32153f38f3c9"
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      "https://example.test/api/v1/projects/prj_one/changes/change-one/archive-package"
+    );
+    const request = fetch.mock.calls[0]?.[1];
+    expect(request?.method).toBe("PUT");
+    expect(new Headers(request?.headers).get("Content-Type")).toBe("application/zip");
+    expect(request?.body).toBeInstanceOf(Uint8Array);
+  });
 });

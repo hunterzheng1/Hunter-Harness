@@ -49,13 +49,10 @@ class RootCheckScriptTests(unittest.TestCase):
 
         self.assertIn("--maxWorkers=2", package["scripts"]["test"])
 
-    def test_web_build_caps_static_generation_concurrency(self) -> None:
-        config = (
-            REPO_ROOT / "apps" / "web" / "next.config.ts"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("cpus: 2", config)
-        self.assertIn("staticGenerationMaxConcurrency: 2", config)
+    def test_web_runtime_is_not_owned_by_cli_repository(self) -> None:
+        self.assertFalse((REPO_ROOT / "apps" / "web").exists())
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("hunter-platform", readme)
 
     def test_pack_smoke_uses_isolated_npm_cache(self) -> None:
         smoke = (

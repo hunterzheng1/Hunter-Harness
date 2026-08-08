@@ -90,9 +90,8 @@ async function runPython(
 }
 
 /**
- * Rebuild regenerable state: execution-log projections for active changes and
- * the knowledge index. Hard evidence (events.ndjson, ledger, archives) is
- * never touched — every fixer regenerates derived views only.
+ * Rebuild regenerable local execution-log projections. Knowledge is remote
+ * owned and is deliberately never repaired or indexed on the client.
  */
 async function applyFixes(
   root: string,
@@ -138,28 +137,6 @@ async function applyFixes(
     }
   }
 
-  const knowledgeScript = join(
-    skillsRoot,
-    "harness-knowledge-ingest",
-    "scripts",
-    "harness_knowledge.py"
-  );
-  if (
-    (await pathExists(join(root, ".harness", "knowledge"))) &&
-    (await pathExists(knowledgeScript))
-  ) {
-    const result = await runPython(
-      argvPrefix,
-      [knowledgeScript, "repair", "--project", root],
-      root
-    );
-    fixes.push({
-      action: "knowledge-repair",
-      target: join(root, ".harness", "knowledge"),
-      ok: result.ok,
-      detail: result.detail
-    });
-  }
 }
 
 export async function runDoctor(

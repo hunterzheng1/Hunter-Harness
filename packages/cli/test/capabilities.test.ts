@@ -41,6 +41,9 @@ describe("CLI/workflow capability contract", () => {
       expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 2 });
       expect(payload.commands["rules-sync"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands["rules-review"]).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands.archive).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands.knowledge).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands.instructions).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.capabilities).toEqual(expect.arrayContaining([
         "build-profile@3",
         "verification-graph@1",

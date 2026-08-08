@@ -6,14 +6,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 
 import type { CodeBuddySurface, HarnessAgent } from "@hunter-harness/contracts";
 
-import {
-  removeManagedBlockById,
-  upsertManagedBlockById
-} from "../managed/managed-block.js";
-
 const RULES_ROOT = ".harness/rules";
 const RECEIPT_PATH = ".harness/state/local/rule-projections.json";
-const CODEX_BLOCK_ID = "hunter-harness-project-rules";
 const MANAGED_NAMES = new Set([
   "harness-general.md", "harness-general.mdc",
   "harness-profile-java.md", "harness-profile-java.mdc"
@@ -322,44 +316,6 @@ export async function synchronizeProjectRules(
     } else {
       result.conflicts.push(target);
       next.targets[target] = trustedHash;
-    }
-  }
-
-  if (agents.includes("codex")) {
-    const rules = Object.keys(next.source_hashes).sort();
-    const body = [
-        "Before project work, read and follow these shared project rules:",
-        ...rules.map((path) => `- \`${path}\``)
-      ].join("\n");
-    const agentsPath = join(root, "AGENTS.md");
-    const current = await optionalText(agentsPath) ?? "";
-    const updated = rules.length > 0
-      ? upsertManagedBlockById(current, CODEX_BLOCK_ID, body)
-      : removeManagedBlockById(current, CODEX_BLOCK_ID);
-    const target = "AGENTS.md";
-    const semanticallyEqual = updated.replace(/\r\n/g, "\n").trimEnd() ===
-      current.replace(/\r\n/g, "\n").trimEnd();
-    if (semanticallyEqual) result.unchanged.push(target);
-    else {
-      if (options.dryRun !== true) {
-        await atomicWrite(agentsPath, updated);
-      }
-      result.written.push(target);
-    }
-    if (rules.length > 0) {
-      next.targets[target] = sha256(semanticallyEqual ? current : updated);
-    }
-  } else if (Object.prototype.hasOwnProperty.call(previous.targets, "AGENTS.md")) {
-    const agentsPath = join(root, "AGENTS.md");
-    const current = await optionalText(agentsPath);
-    if (current !== null) {
-      const updated = removeManagedBlockById(current, CODEX_BLOCK_ID);
-      if (updated !== current) {
-        if (options.dryRun !== true) {
-          await atomicWrite(agentsPath, updated);
-        }
-        result.written.push("AGENTS.md");
-      }
     }
   }
 

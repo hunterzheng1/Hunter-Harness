@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -18,18 +20,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import harness_archive as ha  # noqa: E402
 import harness_events as he  # noqa: E402
-
-FIXTURE_ARCHIVE = (
-    Path(__file__).resolve().parents[2]
-    / "harness-knowledge-ingest"
-    / "tests"
-    / "fixtures"
-    / "mcp-eval-project"
-    / ".harness"
-    / "archive"
-    / "2026-01-10-ledger-reconciliation"
-)
-
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -714,56 +704,6 @@ class ArchiveFactDerivationTests(unittest.TestCase):
         self.assertIn("failed=3", html)
 
 
-class ReplayOldArchiveTests(unittest.TestCase):
-    def test_replay_fixture_golden_fields(self) -> None:
-        if not FIXTURE_ARCHIVE.is_dir():
-            self.skipTest(f"fixture missing: {FIXTURE_ARCHIVE}")
-        existing = json.loads(
-            (FIXTURE_ARCHIVE / "reports" / "final" / "summary-data.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        out_file = Path(tempfile.mkdtemp(prefix="harness-replay-")) / "out.json"
-        try:
-            code, payload = _run(
-                [
-                    "replay",
-                    "--archive-dir",
-                    str(FIXTURE_ARCHIVE),
-                    "--out",
-                    str(out_file),
-                    "--json",
-                ]
-            )
-            # Replay may exit 1 if validate soft-fails (no html); still check golden fields
-            summary = payload.get("summary_data") or {}
-            self.assertEqual(summary.get("finalStatus"), existing.get("finalStatus"))
-            self.assertEqual(
-                (summary.get("verification") or {}).get("unitTests", {}).get("passRate"),
-                (existing.get("verification") or {}).get("unitTests", {}).get("passRate"),
-            )
-            self.assertEqual(
-                [f.get("path") for f in (summary.get("changedFiles") or [])],
-                [f.get("path") for f in (existing.get("changedFiles") or [])],
-            )
-            # Must not invent events source when absent
-            sources = payload.get("sources") or []
-            self.assertTrue(
-                any("summary-data" in s or "ledger" in s or "execution-log" in s or s == "not_available" for s in sources)
-                or "reports/final/summary-data.json" in sources
-            )
-            # Read-only: fixture summary-data mtime/content unchanged for knownRisks
-            after = json.loads(
-                (FIXTURE_ARCHIVE / "reports" / "final" / "summary-data.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            self.assertEqual(after, existing)
-            self.assertTrue(out_file.is_file())
-        finally:
-            shutil.rmtree(out_file.parent, ignore_errors=True)
-
-
 class StatusTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-status-"))
@@ -861,9 +801,8 @@ class ManifestCompareExcludeTests(unittest.TestCase):
         self.assertEqual(result["generatedFiles"], 1)
 
 
-class MaintenanceOutboxTests(unittest.TestCase):
-    """Task 6 (§8): finalize enqueues a maintenance outbox item instead of
-    synchronously running the four knowledge subprocesses."""
+class RemoteKnowledgeOwnershipTests(unittest.TestCase):
+    """Finalize never creates local knowledge state; ingest follows ZIP upload."""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-outbox-"))
@@ -877,7 +816,7 @@ class MaintenanceOutboxTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_finalize_enqueues_maintenance_without_running_four_commands(self) -> None:
+    def test_finalize_does_not_create_local_knowledge_or_run_legacy_cli(self) -> None:
         with mock.patch.object(ha.subprocess, "run", wraps=ha.subprocess.run) as mock_run:
             code, payload = _run(
                 [
@@ -899,17 +838,11 @@ class MaintenanceOutboxTests(unittest.TestCase):
                 any("harness_knowledge" in str(a) for a in (recorded or [])),
                 f"finalize must not invoke knowledge CLI, got: {recorded}",
             )
-        # a pending maintenance outbox item must exist for the archive
         archive_dir = Path(payload["archive_dir"])
         project_root = ha.find_project_root(archive_dir)
-        pending = project_root / ".harness" / "knowledge" / "maintenance-outbox" / "pending"
-        self.assertTrue(pending.is_dir(), f"pending outbox dir missing: {pending}")
-        items = list(pending.glob("*.json"))
-        self.assertTrue(items, "pending outbox must contain the enqueued archive")
-        item = json.loads(items[0].read_text(encoding="utf-8"))
-        self.assertEqual(item["status"], "pending")
-        self.assertEqual(item["archiveId"], archive_dir.name)
-        self.assertEqual(payload.get("knowledgeMaintenance"), "QUEUED")
+        self.assertFalse((project_root / ".harness" / "knowledge").exists())
+        self.assertEqual(payload.get("knowledgeMaintenance"), "REMOTE_PENDING")
+        self.assertEqual(payload["steps"]["knowledge"]["localIngest"], False)
 
 
 class ConditionalOkTests(unittest.TestCase):
@@ -1731,14 +1664,14 @@ class ArchiveTimingReducerTests(unittest.TestCase):
 
 
 class ArchiveExactBytePolicyTests(unittest.TestCase):
-    def test_arc_cli004_reports_precise_attributes_remediation(self) -> None:
+    def test_arc_cli004_does_not_require_consumer_gitattributes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             result = ha.check_archive_exact_byte_policy(project)
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["requiredRule"], ".harness/archive/** -text")
-        self.assertIn(".harness/archive/** -text", result["remediation"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "zip-content-hash")
+        self.assertFalse((project / ".gitattributes").exists())
 
     def test_arc_cli004_accepts_exact_byte_attributes_rule(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1748,6 +1681,7 @@ class ArchiveExactBytePolicyTests(unittest.TestCase):
             result = ha.check_archive_exact_byte_policy(project)
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "zip-content-hash")
 
 
 class CleanupTransientTests(unittest.TestCase):
@@ -2503,7 +2437,28 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
 
 
 class ArchiveCorePushTests(unittest.TestCase):
-    """P4: collect core four paths; skip auto-push without credentials."""
+    """A finalized change uploads one deterministic, core-only ZIP."""
+
+    def _directory_link(self, link: Path, target: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            completed = subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            if completed.returncode != 0:
+                self.skipTest(
+                    f"junction unavailable: {completed.stderr or completed.stdout}"
+                )
+            return
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable: {exc}")
 
     def test_collect_archive_core_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2531,20 +2486,253 @@ class ArchiveCorePushTests(unittest.TestCase):
             self.assertIn("summary-data.json", joined)
             self.assertIn("spec/design.md", joined)
             self.assertIn("plans/plan.md", joined)
-            self.assertIn("reports/review/review.md", joined)
-            self.assertIn("reports/test/test.md", joined)
+            self.assertNotIn("reports/review/review.md", joined)
+            self.assertNotIn("reports/test/test.md", joined)
             self.assertIn("meta/archive-meta.md", joined)
             self.assertIn("meta/change-context.json", joined)
-            self.assertIn("knowledge/entries/active/kn.json", joined)
+            self.assertNotIn("knowledge/entries/active/kn.json", joined)
+
+    def test_archive_package_is_deterministic_and_core_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "2026-08-08-demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "change_key": "demo", "summary": "服务端入库"},
+            )
+            _write(archive / "spec" / "design.md", "# 设计\n")
+            _write(archive / "plans" / "plan.md", "# 计划\n")
+            _write(archive / "meta" / "archive-meta.md", "# 元数据\n")
+            _write_json(archive / "meta" / "change-context.json", {"branch": "main"})
+            _write(archive / "reports" / "review" / "review.md", "# 临时审查\n")
+            _write(archive / "logs" / "debug.log", "temporary\n")
+            self.assertTrue(hasattr(ha, "build_archive_package"))
+            if not hasattr(ha, "build_archive_package"):
+                return
+
+            first = ha.build_archive_package(root, archive, "demo")
+            first_bytes = Path(first["packagePath"]).read_bytes()
+            second = ha.build_archive_package(root, archive, "demo")
+            second_bytes = Path(second["packagePath"]).read_bytes()
+            self.assertEqual(first_bytes, second_bytes)
+            self.assertEqual(first["packageSha256"], second["packageSha256"])
+            with zipfile.ZipFile(first["packagePath"], "r") as zipped:
+                names = sorted(zipped.namelist())
+                self.assertEqual(
+                    names,
+                    [
+                        "archive-manifest.json",
+                        "archive-meta.md",
+                        "change-context.json",
+                        "plans/plan.md",
+                        "reports/final/summary-data.json",
+                        "spec/design.md",
+                    ],
+                )
+                manifest = json.loads(zipped.read("archive-manifest.json"))
+                self.assertEqual(manifest["profile"], "core-v1")
+                self.assertEqual(manifest["change_key"], "demo")
+                self.assertEqual(len(manifest["files"]), 5)
+
+    def test_archive_package_rejects_linked_archive_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_archive = root / ".harness" / "archive" / "real"
+            _write_json(
+                real_archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            linked_archive = root / ".harness" / "archive" / "linked"
+            self._directory_link(linked_archive, real_archive)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, linked_archive, "demo")
+
+    def test_archive_package_rejects_linked_core_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            outside_spec = Path(outside) / "spec"
+            _write(outside_spec / "secret.md", "never upload\n")
+            self._directory_link(archive / "spec", outside_spec)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, archive, "demo")
+
+    def test_archive_package_rejects_linked_output_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            output_parent = (
+                root / ".harness" / "state" / "local" / "archive-packages"
+            )
+            outside_parent = Path(outside) / "packages"
+            outside_parent.mkdir()
+            self._directory_link(output_parent, outside_parent)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse|outside"):
+                ha.build_archive_package(root, archive, "demo")
+            self.assertFalse((outside_parent / "demo.zip").exists())
+
+    def test_archive_package_rejects_precreated_output_junction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            output = (
+                root
+                / ".harness"
+                / "state"
+                / "local"
+                / "archive-packages"
+                / "demo.zip"
+            )
+            outside_target = Path(outside) / "package-target"
+            outside_target.mkdir()
+            sentinel = outside_target / "keep.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            self._directory_link(output, outside_target)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, archive, "demo")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+    def test_archive_package_rejects_input_and_output_outside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = Path(outside) / "archive"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            with self.assertRaisesRegex(ValueError, "outside"):
+                ha.build_archive_package(root, archive, "demo")
+
+            local_archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                local_archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            outside_output = Path(outside) / "demo.zip"
+            with self.assertRaisesRegex(ValueError, "outside"):
+                ha.build_archive_package(
+                    root,
+                    local_archive,
+                    "demo",
+                    output_path=outside_output,
+                )
+            self.assertFalse(outside_output.exists())
+
+    def test_archive_package_rejects_non_portable_change_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            for change_key in ("..", "contains space", "C:drive", "-leading"):
+                with self.subTest(change_key=change_key):
+                    with self.assertRaisesRegex(ValueError, "portable"):
+                        ha.build_archive_package(root, archive, change_key)
 
     def test_auto_push_skips_without_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / ".harness" / "archive" / "demo"
-            archive.mkdir(parents=True)
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "待上传核心归档"},
+            )
             result = ha.auto_push_archive_core(root, archive)
             self.assertTrue(result.get("skipped"))
-            self.assertIn("credentials", str(result.get("reason")))
+            self.assertEqual(
+                result.get("reasonCode"), "ARCHIVE_UPLOAD_CREDENTIALS_MISSING"
+            )
+            self.assertTrue(Path(str(result["packagePath"])).is_file())
+            self.assertTrue(Path(str(result["pending"])).is_file())
+
+    def test_auto_push_uses_dedicated_archive_upload_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "2026-08-08-change-one"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "远端知识"},
+            )
+            _write(archive / "spec" / "design.md", "# 设计\n")
+            _write(
+                root / ".harness" / "credentials.local.yaml",
+                "server_url: https://platform.example.test\ntoken: token\n",
+            )
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
+                    {
+                        "archive_status": "durable",
+                        "knowledge_status": "ready",
+                    }
+                ),
+                stderr="",
+            )
+            with mock.patch.object(ha.subprocess, "run", return_value=completed) as run:
+                result = ha.auto_push_archive_core(root, archive, change_key="change-one")
+
+            command = run.call_args.args[0]
+            self.assertIn("archive", command)
+            self.assertIn("upload", command)
+            self.assertIn("--file", command)
+            self.assertIn("--change-key", command)
+            self.assertNotIn("push", command)
+            self.assertTrue(result.get("ok"))
+            self.assertEqual(result.get("fileCount"), 2)
+            self.assertFalse(Path(str(result["packagePath"])).exists())
+            self.assertFalse(Path(str(result["pending"])).exists())
+
+    def test_auto_push_keeps_retry_package_when_server_indexing_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "2026-08-08-change-one"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "远端知识"},
+            )
+            _write(
+                root / ".harness" / "credentials.local.yaml",
+                "server_url: https://platform.example.test\ntoken: token\n",
+            )
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
+                    {
+                        "archive_status": "durable",
+                        "knowledge_status": "failed",
+                    }
+                ),
+                stderr="",
+            )
+            with mock.patch.object(ha.subprocess, "run", return_value=completed):
+                result = ha.auto_push_archive_core(root, archive, change_key="change-one")
+
+            self.assertTrue(result.get("ok"))
+            self.assertEqual(result.get("archiveStatus"), "durable")
+            self.assertEqual(result.get("knowledgeStatus"), "failed")
+            self.assertTrue(Path(str(result["packagePath"])).is_file())
+            self.assertTrue(Path(str(result["pending"])).is_file())
+            self.assertIn("索引", str(result.get("warning")))
 
 
 if __name__ == "__main__":
