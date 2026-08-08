@@ -29,7 +29,10 @@ import {
   runRefresh,
   type RefreshCommandOptions
 } from "./refresh.js";
-import { runInitializedProjectMenu } from "./project-menu.js";
+import {
+  runInitializedProjectMenu,
+  runPlatformConnectionMenu
+} from "./project-menu.js";
 import { readCliVersion } from "../version.js";
 
 export interface ConfigureOptions extends InitFlagValues {
@@ -188,6 +191,13 @@ async function runFirstInstall(
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
       : "Hunter Harness 初始化完成，共处理 " + result.paths.length + " 个文件。\n");
+    if (
+      options.nonInteractive !== true &&
+      options.dryRun !== true &&
+      options.json !== true
+    ) {
+      return runPlatformConnectionMenu(options, dependencies, "skip");
+    }
     return 0;
   } catch (error) {
     const info = harnessErrorInfo(error);

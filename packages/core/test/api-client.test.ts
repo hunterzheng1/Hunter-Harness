@@ -10,7 +10,12 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("Hunter Harness API client", () => {
-  it("requires HTTPS and a non-empty API token", () => {
+  it("allows loopback HTTP but requires HTTPS for remote hosts and a non-empty API token", () => {
+    expect(() => new HunterHarnessApiClient({
+      serverUrl: "http://127.0.0.1:3002",
+      token: "token",
+      fetch: vi.fn()
+    })).not.toThrow();
     expect(() => new HunterHarnessApiClient({
       serverUrl: "http://example.test",
       token: "token",

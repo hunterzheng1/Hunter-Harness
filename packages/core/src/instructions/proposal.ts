@@ -186,7 +186,7 @@ export async function auditProjectInstructions(options: {
   const remoteProjectId = credentials?.project_id ?? project.project.project_id;
   if (remoteProjectId === null || remoteProjectId === undefined) {
     throw new InstructionProposalError(
-      "项目尚未绑定远端平台；请先运行 hunter-harness connect",
+      "项目尚未绑定远端平台；请先运行 npx hunter-harness connect",
       "PROJECT_NOT_BOUND",
       3
     );

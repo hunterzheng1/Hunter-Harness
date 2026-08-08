@@ -1,3 +1,5 @@
+import { isAllowedServerUrl } from "@hunter-harness/contracts";
+
 import { sha256Bytes } from "../fs/hash.js";
 import { withRetry } from "./retry.js";
 
@@ -57,8 +59,8 @@ export class HunterHarnessApiClient {
 
   constructor(options: ApiClientOptions) {
     const url = new URL(options.serverUrl);
-    if (url.protocol !== "https:") {
-      throw new Error("server URL must use HTTPS");
+    if (!isAllowedServerUrl(url.toString())) {
+      throw new Error("server URL must use HTTPS unless it targets localhost");
     }
     if (options.token.trim() === "") {
       throw new Error("API token is required");

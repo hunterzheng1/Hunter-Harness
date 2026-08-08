@@ -71,7 +71,7 @@ export async function queryRemoteKnowledge(options: {
   const projectId = credentials?.project_id ?? project.project.project_id;
   if (projectId === null || projectId === undefined) {
     throw new RemoteKnowledgeQueryError(
-      "项目尚未绑定远端平台；请先运行 hunter-harness connect",
+      "项目尚未绑定远端平台；请先运行 npx hunter-harness connect",
       "PROJECT_NOT_BOUND",
       3
     );

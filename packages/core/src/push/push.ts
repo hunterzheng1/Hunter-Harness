@@ -6,6 +6,7 @@ import {
   baselineManifestSchema,
   canonicalJson,
   harnessAgentSchema,
+  isAllowedServerUrl,
   projectConfigSchema,
   type BaselineManifest,
   type HarnessAgent,
@@ -691,8 +692,12 @@ export async function pushProject(options: PushProjectOptions) {
   } catch {
     throw new PushWorkflowError("server_url is invalid", 3, "SERVER_URL_INVALID");
   }
-  if (parsedServerUrl.protocol !== "https:") {
-    throw new PushWorkflowError("server_url must use HTTPS", 3, "SERVER_URL_INVALID");
+  if (!isAllowedServerUrl(parsedServerUrl.toString())) {
+    throw new PushWorkflowError(
+      "server_url must use HTTPS unless it targets localhost",
+      3,
+      "SERVER_URL_INVALID"
+    );
   }
   const client = new HunterHarnessApiClient({
     serverUrl: parsedServerUrl.toString(),

@@ -1,6 +1,7 @@
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { isAllowedServerUrl } from "@hunter-harness/contracts";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 export const CREDENTIALS_LOCAL_RELATIVE = ".harness/credentials.local.yaml";
@@ -24,11 +25,13 @@ export class InvalidCredentialsError extends Error {
   }
 }
 
-export function assertHttpsServerUrl(url: string): string {
+export function assertSecureServerUrl(url: string): string {
   try {
     const parsed = new URL(url.trim());
-    if (parsed.protocol !== "https:") {
-      throw new InvalidCredentialsError("server_url must use HTTPS");
+    if (!isAllowedServerUrl(parsed.toString())) {
+      throw new InvalidCredentialsError(
+        "server_url must use HTTPS unless it targets localhost"
+      );
     }
     return parsed.toString().replace(/\/$/, "");
   } catch (error) {
@@ -39,13 +42,16 @@ export function assertHttpsServerUrl(url: string): string {
   }
 }
 
+/** @deprecated Use assertSecureServerUrl; retained for CLI/API compatibility. */
+export const assertHttpsServerUrl = assertSecureServerUrl;
+
 function validateLocalCredentials(credentials: LocalCredentials): LocalCredentials {
   const token = typeof credentials.token === "string" && credentials.token.trim().length > 0
     ? credentials.token.trim()
     : undefined;
   const serverUrl = typeof credentials.server_url === "string" &&
     credentials.server_url.trim().length > 0
-    ? assertHttpsServerUrl(credentials.server_url)
+    ? assertSecureServerUrl(credentials.server_url)
     : undefined;
   const projectId = typeof credentials.project_id === "string" &&
     credentials.project_id.trim().length > 0
@@ -76,7 +82,7 @@ function parseLocalCredentials(raw: unknown): LocalCredentials | null {
   let serverUrl: string | undefined;
   if (serverUrlRaw !== undefined) {
     try {
-      serverUrl = assertHttpsServerUrl(serverUrlRaw);
+      serverUrl = assertSecureServerUrl(serverUrlRaw);
     } catch {
       return null;
     }

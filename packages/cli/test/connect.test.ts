@@ -92,7 +92,28 @@ describe("hunter-harness connect", () => {
     ).rejects.toThrow();
   });
 
-  it("requires https", async () => {
+  it("allows HTTP when connecting to a loopback Hunter Platform", async () => {
+    const fetchMock = vi.fn(async () => json({
+      kind: "project-key",
+      actor_id: "actor_owner",
+      project_id: "prj_local",
+      scopes: ["push"]
+    }));
+
+    const code = await runConnect(
+      "http://127.0.0.1:3003",
+      { key: "hh_test_key" },
+      dependencies(fetchMock as unknown as typeof fetch)
+    );
+
+    expect(code).toBe(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3003/api/v1/auth/key-info",
+      expect.any(Object)
+    );
+  });
+
+  it("requires https for non-loopback hosts", async () => {
     const code = await runConnect(
       "http://plain.example.test",
       {},

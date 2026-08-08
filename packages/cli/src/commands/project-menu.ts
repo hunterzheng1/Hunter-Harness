@@ -45,9 +45,10 @@ async function toolsStatusLines(cwd: string): Promise<string[]> {
   ];
 }
 
-async function runPlatformMenu(
+export async function runPlatformConnectionMenu(
   options: ConfigureOptions,
-  dependencies: CommandDependencies
+  dependencies: CommandDependencies,
+  defaultAction: "bind" | "skip" = "bind"
 ): Promise<number> {
   const creds = await readLocalCredentials(dependencies.cwd);
   if (creds?.server_url && creds.token) {
@@ -77,19 +78,25 @@ async function runPlatformMenu(
     }
     if (answer !== "1") return 2;
   } else {
-    const skip = (await dependencies.prompt(
-      "尚未绑定平台。现在配置？（可稍后在本菜单再次进入）\n" +
+    const choice = (await dependencies.prompt(
+      (defaultAction === "skip"
+        ? "是否关联 Hunter Platform 项目？（可跳过，稍后再次运行 npx hunter-harness 配置）\n"
+        : "尚未绑定平台。现在配置？（可稍后再次运行 npx hunter-harness 配置）\n") +
       "  1. 立即绑定\n" +
       "  0. 跳过\n" +
-      "请选择 [1]："
+      `请选择 [${defaultAction === "skip" ? "0" : "1"}]：`
     )).trim();
-    if (skip === "0" || /^n/i.test(skip)) {
+    if (choice === "0" || /^n/i.test(choice) ||
+        (choice === "" && defaultAction === "skip")) {
       dependencies.stdout("已跳过平台绑定。\n");
       return 0;
     }
+    if (choice !== "" && choice !== "1") return 2;
   }
 
-  const url = (await dependencies.prompt("平台地址（https://...）：")).trim();
+  const url = (await dependencies.prompt(
+    "平台地址（远端使用 https://...；本机可用 http://127.0.0.1:端口）："
+  )).trim();
   if (url === "") {
     dependencies.stdout("已取消（未输入地址）。\n");
     return 0;
@@ -264,7 +271,7 @@ export async function runInitializedProjectMenu(
     return runManageToolsMenu(options, dependencies, currentProfile, currentSurface);
   }
   if (choice === "3") {
-    return runPlatformMenu(options, dependencies);
+    return runPlatformConnectionMenu(options, dependencies);
   }
   if (choice === "4") {
     return runTransactionMenu(dependencies);

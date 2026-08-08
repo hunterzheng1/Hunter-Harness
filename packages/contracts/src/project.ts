@@ -2,9 +2,30 @@ import { z } from "zod";
 
 const projectIdSchema = z.string().regex(/^prj_[A-Za-z0-9_-]+$/);
 const tokenEnvSchema = z.string().regex(/^[A-Z_][A-Z0-9_]*$/);
-const httpsUrlSchema = z.url().refine(
-  (value) => new URL(value).protocol === "https:",
-  "server URL must use HTTPS"
+const SERVER_URL_PROTOCOL_MESSAGE =
+  "server URL must use HTTPS unless it targets a loopback host";
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  const octets = normalized.split(".");
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet)) &&
+    Number(octets[0]) === 127 && octets.every((octet) => Number(octet) <= 255);
+}
+
+export function isAllowedServerUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" ||
+      (parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname));
+  } catch {
+    return false;
+  }
+}
+
+export const serverUrlSchema = z.url().refine(
+  isAllowedServerUrl,
+  SERVER_URL_PROTOCOL_MESSAGE
 );
 
 export const HARNESS_AGENT_ORDER = [
@@ -37,7 +58,7 @@ export const initConfigSchema = z.object({
   agents: z.array(harnessAgentSchema).min(1),
   profile: z.enum(["general", "java"]),
   codebuddy_surface: codebuddySurfaceSchema.default("both"),
-  server_url: httpsUrlSchema.nullable().optional(),
+  server_url: serverUrlSchema.nullable().optional(),
   token_env: tokenEnvSchema.nullable().optional(),
   project_id: projectIdSchema.nullable().optional(),
   features: z.object({
@@ -59,7 +80,7 @@ export const projectConfigSchema = z.object({
     profiles: z.array(z.string().min(1)).min(1)
   }).strict(),
   server: z.object({
-    url: httpsUrlSchema.nullable(),
+    url: serverUrlSchema.nullable(),
     token_env: tokenEnvSchema
   }).strict(),
   adapters: z.object({

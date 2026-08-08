@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 
 import {
   harnessAgentSchema,
+  isAllowedServerUrl,
   projectConfigSchema,
   type FileOperation
 } from "@hunter-harness/contracts";
@@ -117,8 +118,12 @@ export async function updateProject(
   } catch {
     throw new UpdateWorkflowError("server_url is invalid", 3, "SERVER_URL_INVALID");
   }
-  if (parsedServerUrl.protocol !== "https:") {
-    throw new UpdateWorkflowError("server_url must use HTTPS", 3, "SERVER_URL_INVALID");
+  if (!isAllowedServerUrl(parsedServerUrl.toString())) {
+    throw new UpdateWorkflowError(
+      "server_url must use HTTPS unless it targets localhost",
+      3,
+      "SERVER_URL_INVALID"
+    );
   }
   const client = new HunterHarnessApiClient({
     serverUrl: parsedServerUrl.toString(),

@@ -113,6 +113,21 @@ describe("push credentials.local", () => {
     })).rejects.toThrow(/HTTPS/);
   });
 
+  it("allows HTTP server_url for a loopback Hunter Platform", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-cred-loopback-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+
+    await writeLocalCredentials(root, {
+      token: "local-token",
+      server_url: "http://localhost:3003"
+    });
+
+    expect(await readLocalCredentials(root)).toEqual({
+      token: "local-token",
+      server_url: "http://localhost:3003"
+    });
+  });
+
   it("mergeLocalCredentials preserves existing fields", () => {
     expect(mergeLocalCredentials(
       { server_url: "https://stored.example.test" },

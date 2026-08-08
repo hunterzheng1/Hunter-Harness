@@ -171,6 +171,35 @@ describe("shared contracts", () => {
     expect(parsed.project.project_id).toBeNull();
   });
 
+  it("allows loopback HTTP server URLs while rejecting remote HTTP", () => {
+    const base = {
+      harness: { name: "hunter-harness", schema_version: 1 },
+      project: {
+        name: "sample",
+        root: ".",
+        local_project_key: "018f1f2e-7b5a-7cc0-8c2d-2b320cab1234",
+        project_id: null,
+        profiles: ["general"]
+      },
+      adapters: { enabled: ["claude-code"] }
+    };
+
+    expect(projectConfigSchema.safeParse({
+      ...base,
+      server: { url: "http://127.0.0.1:3003", token_env: "HUNTER_HARNESS_TOKEN" }
+    }).success).toBe(true);
+    expect(initConfigSchema.safeParse({
+      agents: ["claude-code"],
+      profile: "general",
+      codebuddy_surface: "both",
+      server_url: "http://localhost:3003"
+    }).success).toBe(true);
+    expect(projectConfigSchema.safeParse({
+      ...base,
+      server: { url: "http://platform.example.test", token_env: "HUNTER_HARNESS_TOKEN" }
+    }).success).toBe(false);
+  });
+
   it("uses file_kind and policy fields instead of legacy classes", () => {
     expect(filePolicySchema.parse({
       file_kind: "generated_reviewable",

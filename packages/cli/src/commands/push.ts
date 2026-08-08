@@ -1,5 +1,5 @@
 import {
-  assertHttpsServerUrl,
+  assertSecureServerUrl,
   ensureCredentialsGitignore,
   InvalidCredentialsError,
   mergeLocalCredentials,
@@ -104,7 +104,7 @@ async function promptForCredentials(
   }
   if (serverUrl !== undefined && serverUrl !== "") {
     try {
-      assertHttpsServerUrl(serverUrl);
+      assertSecureServerUrl(serverUrl);
     } catch (error) {
       if (error instanceof InvalidCredentialsError) {
         dependencies.stderr(error.message + "\n");

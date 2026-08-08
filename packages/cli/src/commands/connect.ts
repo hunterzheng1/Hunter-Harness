@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
-  assertHttpsServerUrl,
+  assertSecureServerUrl,
   ensureCredentialsGitignore,
   InvalidCredentialsError,
   mergeLocalCredentials,
@@ -133,7 +133,7 @@ export async function runConnect(
 
   let serverUrl: string;
   try {
-    serverUrl = assertHttpsServerUrl(serverUrlArg);
+    serverUrl = assertSecureServerUrl(serverUrlArg);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail("SERVER_URL_INVALID", message, 2);

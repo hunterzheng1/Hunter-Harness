@@ -186,7 +186,11 @@ describe("hunter-harness initialization", () => {
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
-      prompt: async (question) => question.includes("Agent") ? "" : answer
+      prompt: async (question) => {
+        if (question.includes("Agent")) return "";
+        if (question.includes("Hunter Platform")) return "0";
+        return answer;
+      }
     });
     expect(code).toBe(0);
     const project = parseYaml(
@@ -231,6 +235,26 @@ describe("hunter-harness initialization", () => {
     expect(project.adapters.enabled).toEqual(["claude-code", "codex"]);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
+  }, 90_000);
+
+  it("interactive first install offers optional Hunter Platform binding and can skip", async () => {
+    const answers = ["1", "", "0"];
+    const questions: string[] = [];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(questions.some((question) => question.includes("关联 Hunter Platform"))).toBe(true);
+    expect(questions.some((question) => question.includes("0. 跳过"))).toBe(true);
+    expect(await pathExists(join(root, ".harness", "credentials.local.yaml"))).toBe(false);
   }, 90_000);
 
   it("interactive first install with all agents option selects four adapters", async () => {
@@ -278,6 +302,35 @@ describe("hunter-harness initialization", () => {
     expect(agentPrompt).toContain("Claude Code（已安装：通用）");
     expect(agentPrompt).toContain("Codex（已安装：通用）");
     expect(agentPrompt).toContain("5. 全部");
+  }, 120_000);
+
+  it("bound project menu offers rebind or credential removal", async () => {
+    expect(await run([
+      "--agents", "1", "--profile", "general", "--non-interactive", "--yes"
+    ])).toBe(0);
+    await writeFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "project_id: prj_demo\nserver_url: https://platform.example.test\ntoken: test-token\n",
+      "utf8"
+    );
+    const answers = ["3", "0"];
+    const questions: string[] = [];
+
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+
+    expect(code).toBe(0);
+    expect(stdout.join("")).toContain("平台：已连接 https://platform.example.test");
+    expect(questions[1]).toContain("重新绑定");
+    expect(questions[1]).toContain("清除本地凭据");
   }, 120_000);
 
   it("keeps existing agent rules isolated and offers CodeGraph MCP when CodeBuddy is selected", async () => {
