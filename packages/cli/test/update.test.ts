@@ -4,7 +4,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  extractManagedBlock,
   pendingTransactions,
   readBaseline,
   sha256Bytes,
@@ -146,45 +145,45 @@ describe("hunter-harness update", () => {
 
   it("applies mixed add, modify, delete, and rename in one transaction", async () => {
     const before = {
-      ".harness/knowledge/modify.md": "modify-old\n",
-      ".harness/knowledge/delete.md": "delete-old\n",
-      ".harness/knowledge/old-name.md": "rename-old\n"
+      ".harness/rules/modify.md": "modify-old\n",
+      ".harness/rules/delete.md": "delete-old\n",
+      ".harness/rules/old-name.md": "rename-old\n"
     };
     await seedBaseline(before);
     const added = "added\n";
     const modified = "modify-new\n";
-    const renamed = before[".harness/knowledge/old-name.md"];
+    const renamed = before[".harness/rules/old-name.md"];
     const manifest = artifact([
       {
         operation: "add",
-        path: ".harness/knowledge/added.md",
+        path: ".harness/rules/added.md",
         file_kind: "user_editable",
         content_sha256: sha256Bytes(added),
         size_bytes: Buffer.byteLength(added)
       },
       {
         operation: "modify",
-        path: ".harness/knowledge/modify.md",
+        path: ".harness/rules/modify.md",
         file_kind: "user_editable",
-        base_content_sha256: sha256Bytes(before[".harness/knowledge/modify.md"]),
+        base_content_sha256: sha256Bytes(before[".harness/rules/modify.md"]),
         content_sha256: sha256Bytes(modified),
         size_bytes: Buffer.byteLength(modified)
       },
       {
         operation: "delete",
-        path: ".harness/knowledge/delete.md",
+        path: ".harness/rules/delete.md",
         file_kind: "user_editable",
-        base_content_sha256: sha256Bytes(before[".harness/knowledge/delete.md"]),
+        base_content_sha256: sha256Bytes(before[".harness/rules/delete.md"]),
         tombstone: {
           deleted_at: "2026-06-20T00:00:00Z",
           reason: "approved removal",
-          previous_sha256: sha256Bytes(before[".harness/knowledge/delete.md"])
+          previous_sha256: sha256Bytes(before[".harness/rules/delete.md"])
         }
       },
       {
         operation: "rename",
-        from_path: ".harness/knowledge/old-name.md",
-        to_path: ".harness/knowledge/new-name.md",
+        from_path: ".harness/rules/old-name.md",
+        to_path: ".harness/rules/new-name.md",
         file_kind: "user_editable",
         base_content_sha256: sha256Bytes(renamed),
         content_sha256: sha256Bytes(renamed),
@@ -205,18 +204,18 @@ describe("hunter-harness update", () => {
       stderr: (value) => stderr.push(value)
     });
     expect(code).toBe(0);
-    expect(await readFile(join(root, ".harness/knowledge/added.md"), "utf8")).toBe(added);
-    expect(await readFile(join(root, ".harness/knowledge/modify.md"), "utf8")).toBe(modified);
-    expect(await pathExists(join(root, ".harness/knowledge/delete.md"))).toBe(false);
-    expect(await pathExists(join(root, ".harness/knowledge/old-name.md"))).toBe(false);
-    expect(await readFile(join(root, ".harness/knowledge/new-name.md"), "utf8")).toBe(renamed);
+    expect(await readFile(join(root, ".harness/rules/added.md"), "utf8")).toBe(added);
+    expect(await readFile(join(root, ".harness/rules/modify.md"), "utf8")).toBe(modified);
+    expect(await pathExists(join(root, ".harness/rules/delete.md"))).toBe(false);
+    expect(await pathExists(join(root, ".harness/rules/old-name.md"))).toBe(false);
+    expect(await readFile(join(root, ".harness/rules/new-name.md"), "utf8")).toBe(renamed);
     expect((await readBaseline(root)).complete_project_version).toBe("pv_1");
   });
 
   it("skips dirty files, applies eligible files, and leaves complete version unchanged", async () => {
     const rulePath = ".claude/rules/harness-general.md";
     const skillPath = ".claude/skills/harness-review/SKILL.md";
-    const deletePath = ".harness/knowledge/dirty-delete.md";
+    const deletePath = ".harness/rules/dirty-delete.md";
     const originalRule = await readFile(join(root, rulePath), "utf8");
     const originalSkill = await readFile(join(root, skillPath), "utf8");
     const originalDelete = "delete baseline\n";
@@ -375,7 +374,7 @@ describe("hunter-harness update", () => {
     });
   });
 
-  it("updates only the managed block and preserves user-authored guidance", async () => {
+  it("preserves concurrent user guidance by reporting a full-document conflict", async () => {
     const path = "CLAUDE.md";
     const original = [
       "<!-- hunter-harness:start -->",
@@ -385,18 +384,10 @@ describe("hunter-harness update", () => {
       ""
     ].join("\n");
     const baseline = await seedBaseline({ [path]: original });
-    const block = extractManagedBlock(original) ?? "";
-    const baselineEntry = baseline.files[path];
-    if (baselineEntry === undefined) {
-      throw new Error("test baseline entry was not created");
-    }
-    baseline.files[path] = {
-      ...baselineEntry,
-      managed_block_hash: sha256Bytes(block)
-    };
     await writeBaseline(root, baseline);
-    await writeFile(join(root, path), "# User guidance\nKeep this.\n\n" + original);
-    const incoming = original.replace("# Hunter Harness", "# Hunter Harness Updated");
+    const local = "# User guidance\nKeep this.\n\n" + original;
+    await writeFile(join(root, path), local);
+    const incoming = "# Hunter Harness Updated\n\nRemote full document.\n";
     const manifest = artifact([{
       operation: "modify",
       path,
@@ -413,15 +404,13 @@ describe("hunter-harness update", () => {
       stdout: () => undefined,
       stderr: () => undefined
     });
-    expect(code).toBe(0);
-    const result = await readFile(join(root, path), "utf8");
-    expect(result).toContain("# User guidance\nKeep this.");
-    expect(result).toContain("# Hunter Harness Updated");
+    expect(code).toBe(5);
+    expect(await readFile(join(root, path), "utf8")).toBe(local);
   });
 
   it("keeps dry-run write-free and rejects corrupt blobs", async () => {
     const content = "approved content\n";
-    const path = ".harness/knowledge/dry.md";
+    const path = ".harness/rules/dry.md";
     const manifest = artifact([{
       operation: "add",
       path,
@@ -455,9 +444,41 @@ describe("hunter-harness update", () => {
     expect(await pathExists(join(root, path))).toBe(false);
   });
 
+  it("never downloads or applies a rename across a policy-never boundary", async () => {
+    const source = ".harness/knowledge/project-local/secret.md";
+    const target = ".harness/rules/restored.md";
+    const content = "local-only secret\n";
+    await seedBaseline({ [source]: content });
+    const manifest = artifact([{
+      operation: "rename",
+      from_path: source,
+      to_path: target,
+      file_kind: "user_editable",
+      base_content_sha256: sha256Bytes(content),
+      content_sha256: sha256Bytes(content),
+      size_bytes: Buffer.byteLength(content)
+    }]);
+    const fetch = fetchFor(manifest, { [sha256Bytes(content)]: content });
+
+    expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch,
+      env: { TEST_HUNTER_TOKEN: "api-token" },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    })).toBe(0);
+
+    expect(await readFile(join(root, source), "utf8")).toBe(content);
+    expect(await pathExists(join(root, target))).toBe(false);
+    expect(fetch.mock.calls.filter(([input]) =>
+      new URL(typeof input === "string" ? input : input.toString()).pathname.includes("/blobs/")
+    )).toHaveLength(0);
+  });
+
   it("UT-015 recovers files and baseline byte-for-byte after transaction interruption", async () => {
     const content = "interrupted artifact\n";
-    const path = ".harness/knowledge/interrupted.md";
+    const path = ".harness/rules/interrupted.md";
     const manifest = artifact([{
       operation: "add",
       path,
@@ -499,7 +520,7 @@ describe("hunter-harness update", () => {
     )).toBe(baselineBefore);
   });
 
-  it("applies managed-block modify with block_id to AGENTS.md as per-id block (T11)", async () => {
+  it("rejects legacy partial block operations for a full-document AGENTS.md", async () => {
     const existing = "# Project agents\n\nexisting content\n";
     await seedBaseline({ "AGENTS.md": existing });
     const blockBody = "<!-- harness: adapter=codex source_hash=sha256:abc compiler_version=1.0.0 -->\n# harness-review\ncodex skill body";
@@ -520,18 +541,14 @@ describe("hunter-harness update", () => {
       env: { TEST_HUNTER_TOKEN: "api-token" },
       stdout: () => undefined,
       stderr: () => undefined
-    })).toBe(0);
-    const result = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(result).toContain("<!-- hunter-harness:start id=harness-skill-harness-review -->");
-    expect(result).toContain("<!-- hunter-harness:end id=harness-skill-harness-review -->");
-    expect(result).toContain("# Project agents");
-    expect(result).toContain("codex skill body");
+    })).toBe(5);
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(existing);
   });
 
-  it("applies managed-block modify without block_id using legacy marker (T11)", async () => {
+  it("applies a marker-free AGENTS.md as an exact full document", async () => {
     const existing = "# Project agents\n\nexisting\n";
     await seedBaseline({ "AGENTS.md": existing });
-    const blockBody = "managed block content";
+    const blockBody = "# Project agents\n\nmanaged full-document content\n";
     const manifest = artifact([{
       operation: "modify",
       path: "AGENTS.md",
@@ -550,10 +567,8 @@ describe("hunter-harness update", () => {
       stderr: () => undefined
     })).toBe(0);
     const result = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(result).toContain("<!-- hunter-harness:start -->");
-    expect(result).toContain("<!-- hunter-harness:end -->");
-    expect(result).not.toContain("id=harness-skill");
-    expect(result).toContain("# Project agents");
+    expect(result).toBe(blockBody);
+    expect(result).not.toContain("hunter-harness:start");
   });
 
   it("applies multi-adapter artifacts to their target paths in one transaction (INT-004)", async () => {
@@ -561,16 +576,16 @@ describe("hunter-harness update", () => {
     await seedBaseline({ "AGENTS.md": agentsExisting });
     const cursorBody = "---\nadapter: cursor\n---\ncursor body\n";
     const genericBody = "---\nadapter: generic\n---\ngeneric body\n";
-    const codexBlock = "<!-- harness: adapter=codex source_hash=sha256:abc compiler_version=1.0.0 -->\ncodex skill body";
+    const agentsFull = "# Project agents\n\nexisting\n\n## Codex\n\ncodex skill body\n";
     const manifest = artifact([
       { operation: "add", path: ".cursor/rules/harness-review.mdc", file_kind: "user_editable", content_sha256: sha256Bytes(cursorBody), size_bytes: Buffer.byteLength(cursorBody) },
       { operation: "add", path: ".agent-skills/harness-review.md", file_kind: "user_editable", content_sha256: sha256Bytes(genericBody), size_bytes: Buffer.byteLength(genericBody) },
-      { operation: "modify", path: "AGENTS.md", file_kind: "user_editable", base_content_sha256: sha256Bytes(agentsExisting), content_sha256: sha256Bytes(codexBlock), size_bytes: Buffer.byteLength(codexBlock), block_id: "harness-skill-harness-review" }
+      { operation: "modify", path: "AGENTS.md", file_kind: "user_editable", base_content_sha256: sha256Bytes(agentsExisting), content_sha256: sha256Bytes(agentsFull), size_bytes: Buffer.byteLength(agentsFull) }
     ]);
     const fetch = fetchFor(manifest, {
       [sha256Bytes(cursorBody)]: cursorBody,
       [sha256Bytes(genericBody)]: genericBody,
-      [sha256Bytes(codexBlock)]: codexBlock
+      [sha256Bytes(agentsFull)]: agentsFull
     });
     expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
@@ -583,23 +598,21 @@ describe("hunter-harness update", () => {
     expect(await readFile(join(root, ".cursor/rules/harness-review.mdc"), "utf8")).toBe(cursorBody);
     expect(await readFile(join(root, ".agent-skills/harness-review.md"), "utf8")).toBe(genericBody);
     const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(agents).toContain("harness-skill-harness-review");
-    expect(agents).toContain("codex skill body");
-    expect(agents).toContain("# Project agents");
+    expect(agents).toBe(agentsFull);
+    expect(agents).not.toContain("hunter-harness:start");
   });
 
-  it("repeated managed-block modify with same block id replaces without duplication (INT-005)", async () => {
+  it("repeated full-document updates remain marker-free (INT-005)", async () => {
     const existing = "# Project agents\n\nexisting\n";
     await seedBaseline({ "AGENTS.md": existing });
-    const bodyV1 = "codex skill body v1";
+    const bodyV1 = "# Project agents\n\nexisting\n\ncodex skill body v1\n";
     const manifest1 = artifact([{
       operation: "modify",
       path: "AGENTS.md",
       file_kind: "user_editable",
       base_content_sha256: sha256Bytes(existing),
       content_sha256: sha256Bytes(bodyV1),
-      size_bytes: Buffer.byteLength(bodyV1),
-      block_id: "harness-skill-harness-review"
+      size_bytes: Buffer.byteLength(bodyV1)
     }], "pv_1", "art_1");
     await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
@@ -610,16 +623,16 @@ describe("hunter-harness update", () => {
       stderr: () => undefined
     });
     const afterFirst = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(afterFirst.match(/hunter-harness:start id=harness-skill-harness-review/g)).toHaveLength(1);
-    const bodyV2 = "codex skill body v2";
+    expect(afterFirst).toBe(bodyV1);
+    expect(afterFirst).not.toContain("hunter-harness:start");
+    const bodyV2 = "# Project agents\n\nexisting\n\ncodex skill body v2\n";
     const manifest2 = artifact([{
       operation: "modify",
       path: "AGENTS.md",
       file_kind: "user_editable",
       base_content_sha256: sha256Bytes(bodyV1),
       content_sha256: sha256Bytes(bodyV2),
-      size_bytes: Buffer.byteLength(bodyV2),
-      block_id: "harness-skill-harness-review"
+      size_bytes: Buffer.byteLength(bodyV2)
     }], "pv_2", "art_2");
     expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
@@ -630,23 +643,21 @@ describe("hunter-harness update", () => {
       stderr: () => undefined
     })).toBe(0);
     const afterSecond = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(afterSecond.match(/hunter-harness:start id=harness-skill-harness-review/g)).toHaveLength(1);
-    expect(afterSecond).toContain("v2");
-    expect(afterSecond).not.toContain("v1");
+    expect(afterSecond).toBe(bodyV2);
+    expect(afterSecond).not.toContain("hunter-harness:start");
   });
 
-  it("applies two managed-block ops with different block ids to the same AGENTS.md (INT-006)", async () => {
+  it("applies sequential full documents using the previous remote hash (INT-006)", async () => {
     const existing = "# Project agents\n\nexisting\n";
     await seedBaseline({ "AGENTS.md": existing });
-    const bodyA = "skill A body";
+    const bodyA = "# Project agents\n\nexisting\n\nskill A body\n";
     const manifestA = artifact([{
       operation: "modify",
       path: "AGENTS.md",
       file_kind: "user_editable",
       base_content_sha256: sha256Bytes(existing),
       content_sha256: sha256Bytes(bodyA),
-      size_bytes: Buffer.byteLength(bodyA),
-      block_id: "harness-skill-skill-a"
+      size_bytes: Buffer.byteLength(bodyA)
     }], "pv_1", "art_a");
     await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
@@ -656,15 +667,14 @@ describe("hunter-harness update", () => {
       stdout: () => undefined,
       stderr: () => undefined
     });
-    const bodyB = "skill B body";
+    const bodyB = "# Project agents\n\nexisting\n\nskill A body\n\nskill B body\n";
     const manifestB = artifact([{
       operation: "modify",
       path: "AGENTS.md",
       file_kind: "user_editable",
       base_content_sha256: sha256Bytes(bodyA),
       content_sha256: sha256Bytes(bodyB),
-      size_bytes: Buffer.byteLength(bodyB),
-      block_id: "harness-skill-skill-b"
+      size_bytes: Buffer.byteLength(bodyB)
     }], "pv_2", "art_b");
     expect(await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
@@ -675,35 +685,27 @@ describe("hunter-harness update", () => {
       stderr: () => undefined
     })).toBe(0);
     const result = await readFile(join(root, "AGENTS.md"), "utf8");
-    expect(result).toContain("harness-skill-skill-a");
-    expect(result).toContain("harness-skill-skill-b");
-    expect(result).toContain("skill A body");
-    expect(result).toContain("skill B body");
-    expect(result).toContain("# Project agents");
-    expect(result.match(/hunter-harness:start id=harness-skill/g)).toHaveLength(2);
+    expect(result).toBe(bodyB);
+    expect(result).not.toContain("hunter-harness:start");
   });
 
   it("API-001 handles 146 applied plus 433 policy-never entries and advances baseline", async () => {
     const applyFiles = Array.from({ length: 146 }, (_, index) => ({
-      path: `.harness/knowledge/applied-${index}.md`,
+      path: `.harness/rules/applied-${index}.md`,
       local: `apply-old-${index}\n`,
       remote: `apply-new-${index}\n`
     }));
     const policyFiles = Array.from({ length: 433 }, (_, index) => ({
-      path: `.harness/knowledge/project-local/ignored-${index}.md`,
+      path: index % 2 === 0
+        ? `.harness/knowledge/project-local/ignored-${index}.md`
+        : `.harness/archive/change-${index}/spec/core.md`,
       local: `local-${index}\n`,
       remote: `remote-${index}\n`
     }));
-    await mkdir(join(root, ".harness", "knowledge", "project-local"), { recursive: true });
     await seedBaseline(Object.fromEntries([
       ...applyFiles.map((file) => [file.path, file.local]),
       ...policyFiles.map((file) => [file.path, file.local])
     ]));
-    for (const file of policyFiles) {
-      const dir = join(root, ".harness", "knowledge", "project-local");
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(root, file.path), file.local);
-    }
     const manifest = artifact([
       ...applyFiles.map((file) => ({
         operation: "modify",
@@ -713,9 +715,9 @@ describe("hunter-harness update", () => {
         content_sha256: sha256Bytes(file.remote),
         size_bytes: Buffer.byteLength(file.remote)
       } as const)),
-      ...policyFiles.map((file, index) => ({
+      ...policyFiles.map((file) => ({
         operation: "modify" as const,
-        path: `.harness/knowledge/project-local/ignored-${index}.md`,
+        path: file.path,
         file_kind: "user_editable" as const,
         base_content_sha256: sha256Bytes(file.local),
         content_sha256: sha256Bytes(file.remote),
@@ -726,10 +728,11 @@ describe("hunter-harness update", () => {
     for (const file of [...applyFiles, ...policyFiles]) {
       blobs[sha256Bytes(file.remote)] = file.remote;
     }
+    const fetch = fetchFor(manifest, blobs);
     const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
       cwd: root,
       resourcesRoot,
-      fetch: fetchFor(manifest, blobs),
+      fetch,
       env: { TEST_HUNTER_TOKEN: "api-token" },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
@@ -739,6 +742,9 @@ describe("hunter-harness update", () => {
       summary: { applied: number; acknowledged: number; skipped: number };
     };
     expect(output.summary).toMatchObject({ applied: 146, acknowledged: 433, skipped: 0 });
+    expect(fetch.mock.calls.filter(([input]) =>
+      new URL(typeof input === "string" ? input : input.toString()).pathname.includes("/blobs/")
+    )).toHaveLength(146);
     for (const file of applyFiles) {
       expect(await readFile(join(root, file.path), "utf8")).toBe(file.remote);
     }
@@ -754,7 +760,7 @@ describe("hunter-harness update", () => {
 
   it("API-002 applies 146, acknowledges 400, and reports only 33 real conflicts", async () => {
     const applyFiles = Array.from({ length: 146 }, (_, index) => ({
-      path: `.harness/knowledge/mixed-applied-${index}.md`,
+      path: `.harness/rules/mixed-applied-${index}.md`,
       local: `old-${index}\n`, remote: `new-${index}\n`
     }));
     const ignored = Array.from({ length: 400 }, (_, index) => ({
@@ -762,7 +768,7 @@ describe("hunter-harness update", () => {
       local: `local-${index}\n`, remote: `server-${index}\n`
     }));
     const conflicts = Array.from({ length: 33 }, (_, index) => ({
-      path: `.harness/knowledge/conflict-${index}.md`,
+      path: `.harness/rules/conflict-${index}.md`,
       local: `base-${index}\n`, dirty: `dirty-${index}\n`, remote: `remote-${index}\n`
     }));
     await mkdir(join(root, ".harness", "knowledge", "project-local"), { recursive: true });

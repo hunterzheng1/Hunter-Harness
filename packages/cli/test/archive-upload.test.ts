@@ -72,6 +72,7 @@ describe("hunter-harness archive upload", () => {
         });
       }
       if (url.pathname.endsWith("/archive-package")) {
+        const requestId = new Headers(init?.headers).get("x-request-id");
         return json({
           schema_version: 1,
           archive_id: "arc_archive",
@@ -84,7 +85,7 @@ describe("hunter-harness archive upload", () => {
           knowledge_status: "ready",
           stored_files: 5,
           uploaded_at: "2026-08-08T00:00:00.000Z",
-          request_id: "upload-request"
+          request_id: requestId
         }, 201);
       }
       return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
@@ -122,6 +123,56 @@ describe("hunter-harness archive upload", () => {
       project_id: "prj_archive",
       archive_id: "arc_archive",
       knowledge_status: "ready"
+    });
+
+    stdout = [];
+    stderr = [];
+    const mismatchedFetch = vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      const url = new URL(String(input));
+      const requestId = new Headers(init?.headers).get("x-request-id");
+      if (url.pathname.endsWith("/archive-package")) {
+        return json({
+          schema_version: 1,
+          archive_id: "arc_wrong_project",
+          project_id: "prj_other",
+          change_key: "change-one",
+          package_sha256: sha256Bytes(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
+          manifest_sha256: "sha256:" + "b".repeat(64),
+          artifact_id: "art_wrong_project",
+          archive_status: "durable",
+          knowledge_status: "ready",
+          stored_files: 5,
+          uploaded_at: "2026-08-08T00:00:00.000Z",
+          request_id: requestId
+        }, 201);
+      }
+      return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+    const mismatchedCode = await runCli([
+      "archive",
+      "upload",
+      "--file",
+      packagePath,
+      "--change-key",
+      "change-one",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch: mismatchedFetch as unknown as typeof globalThis.fetch,
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+    expect(mismatchedCode).toBe(4);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "ARCHIVE_RECEIPT_SCOPE_MISMATCH" }]
     });
   });
 });

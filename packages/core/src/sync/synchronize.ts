@@ -25,6 +25,7 @@ import {
 } from "../update/conflicts.js";
 import {
   planArtifactRebase,
+  decideStaticOperationUpdate,
   type ArtifactRebasePlan,
   type ConflictStrategy,
   type OperationContext,
@@ -194,13 +195,19 @@ async function buildContexts(
   manifest: ArtifactManifest,
   client: HunterHarnessApiClient,
   requestId: string,
-  dryRun: boolean
+  dryRun: boolean,
+  protocolOnlyPaths?: ReadonlySet<string>
 ): Promise<OperationContext[]> {
   const contexts: OperationContext[] = [];
   for (const operation of manifest.files) {
     const source = operationSourcePath(operation);
     const target = operationTargetPath(operation);
-    const incoming = await loadBlob(root, client, manifest.artifact_id, operation, requestId, dryRun);
+    const staticDecision = decideStaticOperationUpdate(operation, protocolOnlyPaths);
+    // Policy-never and protocol-owned files are acknowledged from their
+    // manifest metadata. Their payload must not be transferred or cached.
+    const incoming = staticDecision.apply
+      ? await loadBlob(root, client, manifest.artifact_id, operation, requestId, dryRun)
+      : null;
     contexts.push({
       operation,
       incomingContent: incoming,
@@ -238,7 +245,14 @@ async function planSingleArtifact(
   if (manifest.project_version === null) {
     throw new Error("artifact manifest missing project_version");
   }
-  const contexts = await buildContexts(root, manifest, client, requestId, dryRun);
+  const contexts = await buildContexts(
+    root,
+    manifest,
+    client,
+    requestId,
+    dryRun,
+    protocolOnlyPaths
+  );
   return planArtifactRebase({
     baseline,
     projectVersion: manifest.project_version,

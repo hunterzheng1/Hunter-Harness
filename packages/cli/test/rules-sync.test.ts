@@ -35,7 +35,12 @@ describe("hunter-harness rules-sync compatibility CLI", () => {
       mode: "audit-propose",
       applied: false,
       generated_at: "2026-08-08T00:00:00.000Z",
-      findings: [{ code: "DOCUMENT_CAN_BE_IMPROVED", path: "AGENTS.md" }],
+      findings: [{
+        code: "DOCUMENT_CAN_BE_IMPROVED",
+        severity: "info",
+        path: "AGENTS.md",
+        message: "可按项目结构补充验证约定"
+      }],
       files: [{
         path: "AGENTS.md",
         operation: "modify",
@@ -44,13 +49,18 @@ describe("hunter-harness rules-sync compatibility CLI", () => {
         content: proposed
       }],
       rule_candidates: [{
-        candidate_id: "rc_rules",
+        candidate_id: "rc_0000000000000002",
         content: "协议变更应提供迁移方案",
+        evidence: [{
+          change_key: "change-rules",
+          summary: "协议调整包含迁移方案"
+        }],
         evidence_count: 1,
-        auto_apply: false
+        auto_apply: false,
+        recommendation: "review"
       }],
       basis: ["https://agents.md/"],
-      request_id: "rules-request"
+      request_id: "00000000-0000-7000-8000-000000000002"
     }), {
       status: 201,
       headers: { "content-type": "application/json" }

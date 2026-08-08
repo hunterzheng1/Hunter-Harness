@@ -67,7 +67,7 @@ npx hunter-harness update
 
 初始化只在文档不存在或为空时创建简洁中文入口，已有 `AGENTS.md` / `CLAUDE.md` / `CODEBUDDY.md` 保持原样。优化通过“审计—提案—确认应用”完成；CLI 不要求也不生成消费项目的 `.gitattributes`。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
 
-配置远端凭据后，归档 finalize 会生成单个 ZIP 并自动上传。日志、测试/审查报告、HTML、缓存、备份和临时文件只留在本地归档，不进入远端核心包；上传或索引失败时 ZIP 与失败收据保留在 `.harness/state/local/archive-packages/` 供重试。本地 Python/SQLite 知识引擎已从当前 Bundle 移除。
+归档 finalize 始终先生成单个 ZIP 与按 change 命名的上传回执；配置远端凭据后自动上传。日志、测试/审查报告、HTML、缓存、备份和临时文件只留在本地归档，不进入远端核心包；缺少凭据、上传失败或索引未就绪时，ZIP 与 `<change-key>.upload.json` 保留在 `.harness/state/local/archive-packages/` 供枚举重试。仅在远端同时确认原包耐久保存和知识索引 ready 后清理。本地 Python/SQLite 知识引擎已从当前 Bundle 移除。
 
 ## 独立 Skill CLI
 

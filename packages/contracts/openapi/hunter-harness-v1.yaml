@@ -1118,6 +1118,7 @@ components:
         - knowledge_status
         - stored_files
         - uploaded_at
+        - request_id
       properties:
         schema_version: { type: integer, const: 1 }
         archive_id: { type: string, pattern: "^arc_" }
@@ -1192,21 +1193,69 @@ components:
     InstructionProposal:
       type: object
       additionalProperties: false
-      required: [schema_version, proposal_id, project_id, language, mode, applied, generated_at, findings, files, rule_candidates, basis]
+      required: [schema_version, proposal_id, project_id, language, mode, applied, generated_at, findings, files, rule_candidates, basis, request_id]
       properties:
         schema_version: { type: integer, const: 1 }
-        proposal_id: { type: string, pattern: "^ipr_" }
+        proposal_id: { type: string, pattern: "^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$" }
         project_id: { type: string, pattern: "^prj_" }
         language: { type: string, const: zh-CN }
         mode: { type: string, const: audit-propose }
         applied: { type: boolean, const: false }
         generated_at: { type: string, format: date-time }
-        findings: { type: array, items: { type: object } }
-        files: { type: array, items: { type: object } }
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [code, severity, path, message]
+            properties:
+              code: { type: string }
+              severity: { type: string, enum: [info, warning] }
+              path: { type: string }
+              message: { type: string }
+        files:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, operation, base_content_sha256, content_sha256, content]
+            properties:
+              path:
+                type: string
+                enum:
+                  - AGENTS.md
+                  - CLAUDE.md
+                  - CODEBUDDY.md
+                  - .harness/rules/project-guidance.md
+                  - .cursor/rules/project-guidance.mdc
+              operation: { type: string, enum: [add, modify] }
+              base_content_sha256:
+                type: [string, "null"]
+                pattern: "^sha256:[a-f0-9]{64}$"
+              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+              content: { type: string, maxLength: 1048576 }
         rule_candidates:
           type: array
           description: Evidence-backed candidates with auto_apply=false; not part of apply operations.
-          items: { type: object }
+          items:
+            type: object
+            additionalProperties: false
+            required: [candidate_id, content, evidence, evidence_count, auto_apply, recommendation]
+            properties:
+              candidate_id: { type: string, pattern: "^rc_[a-f0-9]{16}$" }
+              content: { type: string }
+              evidence:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [change_key, summary]
+                  properties:
+                    change_key: { type: string }
+                    summary: { type: string }
+              evidence_count: { type: integer, minimum: 1 }
+              auto_apply: { type: boolean, const: false }
+              recommendation: { type: string, enum: [review, promote] }
         basis: { type: array, items: { type: string, format: uri } }
         request_id: { type: string, format: uuid }
     SensitiveFindingSummary:

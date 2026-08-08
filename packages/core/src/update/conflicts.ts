@@ -8,7 +8,8 @@ export type UpdateSkipReason =
   | "protocol-only"
   | "local-dirty"
   | "baseline-diverged"
-  | "target-collision";
+  | "target-collision"
+  | "invalid-managed-artifact";
 
 export interface UpdateConflict {
   path: string;

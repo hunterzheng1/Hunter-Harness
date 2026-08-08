@@ -17,6 +17,7 @@ import {
   aiQuotaUsageSchema,
   providerModelSchema,
   apiErrorEnvelopeSchema,
+  archivePackageReceiptSchema,
   artifactManifestSchema,
   canonicalJson,
   checkStatusSchema,
@@ -64,6 +65,32 @@ import {
 } from "../src/index.js";
 
 describe("active Skill target contracts", () => {
+  it("strictly validates durable archive package receipts", () => {
+    const receipt = {
+      schema_version: 1,
+      archive_id: "arc_contract",
+      project_id: "prj_contract",
+      change_key: "change-contract",
+      package_sha256: "sha256:" + "a".repeat(64),
+      manifest_sha256: "sha256:" + "b".repeat(64),
+      artifact_id: "art_contract",
+      archive_status: "durable",
+      knowledge_status: "ready",
+      stored_files: 5,
+      uploaded_at: "2026-08-08T00:00:00.000Z",
+      request_id: "00000000-0000-7000-8000-000000000003"
+    } as const;
+    expect(archivePackageReceiptSchema.parse(receipt).project_id).toBe("prj_contract");
+    expect(archivePackageReceiptSchema.safeParse({
+      ...receipt,
+      request_id: "not-a-uuid"
+    }).success).toBe(false);
+    expect(archivePackageReceiptSchema.safeParse({
+      ...receipt,
+      unexpected: true
+    }).success).toBe(false);
+  });
+
   it.each(["generic", "mcp"])("rejects legacy agent %s for unified publish", (sourceAgent) => {
     expect(skillTargetAgentSchema.safeParse(sourceAgent).success).toBe(false);
     expect(publishUnifiedSkillRequestSchema.safeParse({
@@ -942,6 +969,12 @@ describe("OpenAPI v1", () => {
     const document = parseYaml(await readFile(path, "utf8")) as {
       openapi: string;
       paths: Record<string, unknown>;
+      components: {
+        schemas: Record<string, {
+          required?: string[];
+          properties?: Record<string, unknown>;
+        }>;
+      };
     };
 
     expect(document.openapi).toBe("3.1.0");
@@ -955,6 +988,25 @@ describe("OpenAPI v1", () => {
       "/api/v1/artifacts/{artifact_id}/manifest",
       "/api/v1/artifacts/{artifact_id}/blobs/{content_sha256}"
     ]));
+    expect(document.components.schemas.ArchivePackageReceipt?.required)
+      .toContain("request_id");
+    expect(document.components.schemas.InstructionProposal?.required)
+      .toContain("request_id");
+    expect(document.components.schemas.InstructionProposal?.properties?.proposal_id)
+      .toMatchObject({ pattern: "^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$" });
+    expect(document.components.schemas.InstructionProposal?.properties?.files)
+      .toMatchObject({
+        items: {
+          additionalProperties: false,
+          required: [
+            "path",
+            "operation",
+            "base_content_sha256",
+            "content_sha256",
+            "content"
+          ]
+        }
+      });
   });
 });
 

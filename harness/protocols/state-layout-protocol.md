@@ -96,8 +96,15 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 ```
 
 ZIP 只包含 summary、spec、plans、archive-meta、change-context 和包 manifest。上传失败保留；
-服务端返回匹配的 package SHA-256 且确认原包已保存后才清理。远端知识查询失败不得创建
-本地 fallback。
+每次 finalize 都先生成 ZIP 与对应回执，再按 `credentials.local.yaml` 或
+`project.yaml` 的 `server.url` + `server.token_env` 环境变量解析远端凭据。缺少凭据、
+网络失败、无效收据或知识状态为 `indexing`/`failed` 时均保留这两个按 change 命名的文件，
+因此可枚举 `*.upload.json` 独立重试，不会由后一次归档覆盖前一次。只有 CLI 已核对
+package SHA-256，且服务端同时确认 `archive_status=durable` 与
+`knowledge_status=ready` 时，才清理对应 ZIP 和回执。回执的 `uploadStatus` 为
+`pending|failed|ready`，`reasonCode` 使用 `ARCHIVE_UPLOAD_*` 或
+`ARCHIVE_KNOWLEDGE_*` 稳定错误码；`indexing` 必须映射为 `pending`，不得误报失败。
+远端知识查询失败不得创建本地 fallback。
 
 ## 读取兼容
 

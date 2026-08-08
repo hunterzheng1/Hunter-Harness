@@ -2439,6 +2439,27 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
 class ArchiveCorePushTests(unittest.TestCase):
     """A finalized change uploads one deterministic, core-only ZIP."""
 
+    def _directory_link(self, link: Path, target: Path) -> None:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            completed = subprocess.run(
+                ["cmd.exe", "/c", "mklink", "/J", str(link), str(target)],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            if completed.returncode != 0:
+                self.skipTest(
+                    f"junction unavailable: {completed.stderr or completed.stdout}"
+                )
+            return
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlink unavailable: {exc}")
+
     def test_collect_archive_core_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2513,6 +2534,106 @@ class ArchiveCorePushTests(unittest.TestCase):
                 self.assertEqual(manifest["change_key"], "demo")
                 self.assertEqual(len(manifest["files"]), 5)
 
+    def test_archive_package_rejects_linked_archive_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_archive = root / ".harness" / "archive" / "real"
+            _write_json(
+                real_archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            linked_archive = root / ".harness" / "archive" / "linked"
+            self._directory_link(linked_archive, real_archive)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, linked_archive, "demo")
+
+    def test_archive_package_rejects_linked_core_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            outside_spec = Path(outside) / "spec"
+            _write(outside_spec / "secret.md", "never upload\n")
+            self._directory_link(archive / "spec", outside_spec)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, archive, "demo")
+
+    def test_archive_package_rejects_linked_output_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            output_parent = (
+                root / ".harness" / "state" / "local" / "archive-packages"
+            )
+            outside_parent = Path(outside) / "packages"
+            outside_parent.mkdir()
+            self._directory_link(output_parent, outside_parent)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse|outside"):
+                ha.build_archive_package(root, archive, "demo")
+            self.assertFalse((outside_parent / "demo.zip").exists())
+
+    def test_archive_package_rejects_precreated_output_junction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            output = (
+                root
+                / ".harness"
+                / "state"
+                / "local"
+                / "archive-packages"
+                / "demo.zip"
+            )
+            outside_target = Path(outside) / "package-target"
+            outside_target.mkdir()
+            sentinel = outside_target / "keep.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            self._directory_link(output, outside_target)
+
+            with self.assertRaisesRegex(ValueError, "link|reparse"):
+                ha.build_archive_package(root, archive, "demo")
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+    def test_archive_package_rejects_input_and_output_outside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            archive = Path(outside) / "archive"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            with self.assertRaisesRegex(ValueError, "outside"):
+                ha.build_archive_package(root, archive, "demo")
+
+            local_archive = root / ".harness" / "archive" / "demo"
+            _write_json(
+                local_archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "核心归档"},
+            )
+            outside_output = Path(outside) / "demo.zip"
+            with self.assertRaisesRegex(ValueError, "outside"):
+                ha.build_archive_package(
+                    root,
+                    local_archive,
+                    "demo",
+                    output_path=outside_output,
+                )
+            self.assertFalse(outside_output.exists())
+
     def test_archive_package_rejects_non_portable_change_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2530,10 +2651,17 @@ class ArchiveCorePushTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / ".harness" / "archive" / "demo"
-            archive.mkdir(parents=True)
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {"schema_version": 1, "summary": "待上传核心归档"},
+            )
             result = ha.auto_push_archive_core(root, archive)
             self.assertTrue(result.get("skipped"))
-            self.assertIn("credentials", str(result.get("reason")))
+            self.assertEqual(
+                result.get("reasonCode"), "ARCHIVE_UPLOAD_CREDENTIALS_MISSING"
+            )
+            self.assertTrue(Path(str(result["packagePath"])).is_file())
+            self.assertTrue(Path(str(result["pending"])).is_file())
 
     def test_auto_push_uses_dedicated_archive_upload_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

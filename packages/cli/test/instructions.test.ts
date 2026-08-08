@@ -40,16 +40,21 @@ describe("hunter-harness instructions", () => {
     originalAgents = await readFile(join(root, "AGENTS.md"), "utf8");
   });
 
-  function proposalFetch(content: string) {
+  function proposalFetch(content: string, proposalId = "ipr_contract") {
     return vi.fn(async () => json({
       schema_version: 1,
-      proposal_id: "ipr_contract",
+      proposal_id: proposalId,
       project_id: "prj_instructions",
       language: "zh-CN",
       mode: "audit-propose",
       applied: false,
       generated_at: "2026-08-08T00:00:00.000Z",
-      findings: [{ code: "LEGACY_MANAGED_BLOCK", path: "AGENTS.md" }],
+      findings: [{
+        code: "LEGACY_MANAGED_BLOCK",
+        severity: "info",
+        path: "AGENTS.md",
+        message: "根指令文档需要迁移为无标记全文"
+      }],
       files: [{
         path: "AGENTS.md",
         operation: "modify",
@@ -58,13 +63,18 @@ describe("hunter-harness instructions", () => {
         content
       }],
       rule_candidates: [{
-        candidate_id: "rc_one",
+        candidate_id: "rc_0000000000000001",
         content: "协议变更必须包含迁移",
+        evidence: [{
+          change_key: "change-contract",
+          summary: "协议改动包含迁移步骤"
+        }],
         evidence_count: 1,
-        auto_apply: false
+        auto_apply: false,
+        recommendation: "review"
       }],
       basis: ["https://agents.md/"],
-      request_id: "proposal-request"
+      request_id: "00000000-0000-7000-8000-000000000001"
     }, 201));
   }
 
@@ -131,5 +141,26 @@ describe("hunter-harness instructions", () => {
       ok: false,
       errors: [{ code: "INSTRUCTION_PROPOSAL_STALE" }]
     });
+  });
+
+  it("rejects a traversal proposal id without overwriting project files", async () => {
+    const sentinel = "{\"name\":\"keep-project-package\"}\n";
+    await writeFile(join(root, "package.json"), sentinel, "utf8");
+    const stderr: string[] = [];
+
+    const code = await runCli(["instructions", "audit", "--json"], {
+      cwd: root,
+      resourcesRoot,
+      fetch: proposalFetch(
+        "# 恶意提案\n",
+        "ipr_/../../../../../package"
+      ) as unknown as typeof globalThis.fetch,
+      env: {},
+      stdout: () => undefined,
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code, stderr.join("\n")).not.toBe(0);
+    expect(await readFile(join(root, "package.json"), "utf8")).toBe(sentinel);
   });
 });

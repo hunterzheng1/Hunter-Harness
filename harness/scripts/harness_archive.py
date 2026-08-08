@@ -21,12 +21,14 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -8267,10 +8269,9 @@ def cmd_finalize(
         change_key=change_name,
     )
     payload["steps"]["archive_push"] = push_result
-    if push_result.get("knowledgeStatus") == "ready":
-        payload["knowledgeMaintenance"] = "REMOTE_READY"
-    elif push_result.get("ok"):
-        payload["knowledgeMaintenance"] = "REMOTE_INDEX_FAILED"
+    payload["knowledgeMaintenance"] = _knowledge_maintenance_from_archive_push(
+        push_result
+    )
     if push_result.get("warning"):
         warnings.append(str(push_result["warning"]))
 
@@ -8299,36 +8300,276 @@ def cmd_finalize(
     return 0, payload
 
 
+def _yaml_scalar(raw: str) -> str | None:
+    """Decode the small scalar subset used by Harness-owned YAML files."""
+    value = raw.strip()
+    if not value:
+        return None
+    quote: str | None = None
+    escaped = False
+    end = len(value)
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and character == "\\":
+            escaped = True
+            continue
+        if character in {"'", '"'}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if character == "#" and quote is None:
+            end = index
+            break
+    value = value[:end].strip()
+    if value.lower() in {"", "null", "none", "~"}:
+        return None
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return decoded.strip() if isinstance(decoded, str) and decoded.strip() else None
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        decoded = value[1:-1].replace("''", "'").strip()
+        return decoded or None
+    return value
+
+
+def _yaml_mapping_value(
+    text: str,
+    key: str,
+    *,
+    section: str | None = None,
+) -> str | None:
+    """Read one root or one-level nested scalar without loading arbitrary YAML."""
+    inside_section = section is None
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = re.match(
+            r"^(?P<indent> *)(?P<key>[A-Za-z_][A-Za-z0-9_-]*):(?P<raw>.*)$",
+            line,
+        )
+        if match is None:
+            continue
+        indent = len(match.group("indent"))
+        name = match.group("key")
+        if section is None:
+            if indent == 0 and name == key:
+                return _yaml_scalar(match.group("raw"))
+            continue
+        if section is not None and indent == 0:
+            inside_section = name == section
+            continue
+        if inside_section and name == key and indent > 0:
+            return _yaml_scalar(match.group("raw"))
+    return None
+
+
+def _read_optional_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+
+
+def _resolve_archive_remote_credentials(
+    project_root: Path,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    """Mirror CLI auth precedence without returning or persisting the token."""
+    project_text = _read_optional_text(project_root / ".harness" / "project.yaml")
+    local_text = _read_optional_text(
+        project_root / ".harness" / "credentials.local.yaml"
+    )
+    project_url = _yaml_mapping_value(project_text, "url", section="server")
+    token_env = _yaml_mapping_value(project_text, "token_env", section="server")
+    local_url = _yaml_mapping_value(local_text, "server_url")
+    local_token = _yaml_mapping_value(local_text, "token")
+    server_url = local_url or project_url
+    valid_token_env = (
+        token_env
+        if token_env is not None
+        and re.fullmatch(r"[A-Z_][A-Z0-9_]*", token_env) is not None
+        else None
+    )
+    env_token = (
+        environment.get(valid_token_env, "").strip()
+        if valid_token_env is not None
+        else ""
+    )
+    token_available = bool(env_token or local_token)
+    url_available = bool(
+        server_url
+        and re.fullmatch(r"https://[^\s]+", server_url, flags=re.IGNORECASE)
+    )
+    return {
+        "configured": bool(url_available and token_available),
+        "serverUrl": server_url if url_available else None,
+        "tokenEnv": valid_token_env,
+        "missing": [
+            *([] if url_available else ["url"]),
+            *([] if token_available else ["token"]),
+        ],
+    }
+
+
 def _remote_credentials_configured(project_root: Path) -> bool:
-    creds = project_root / ".harness" / "credentials.local.yaml"
-    if not creds.is_file():
+    """Compatibility predicate backed by the same auth sources as the CLI."""
+    return bool(
+        _resolve_archive_remote_credentials(project_root.resolve(), os.environ)[
+            "configured"
+        ]
+    )
+
+
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(
+    stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
+)
+
+
+def _archive_path_is_link_or_reparse(path: Path) -> bool:
+    """Detect symlinks and Windows junction/reparse points without following them."""
+    try:
+        if path.is_symlink():
+            return True
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
         return False
-    text = creds.read_text(encoding="utf-8", errors="ignore")
-    has_url = bool(re.search(r"(?m)^[ \t]*server_url:\s*\S+", text))
-    has_token = bool(re.search(r"(?m)^[ \t]*token:\s*\S+", text))
-    return has_url and has_token
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _require_archive_project_path(
+    project_root: Path,
+    candidate: Path,
+    *,
+    label: str,
+    must_exist: bool,
+) -> Path:
+    """Return a canonical project-contained path after rejecting link components."""
+    lexical_root = Path(os.path.abspath(os.fspath(project_root)))
+    lexical_candidate = Path(os.path.abspath(os.fspath(candidate)))
+    try:
+        relative = lexical_candidate.relative_to(lexical_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} is outside project root: {candidate}") from exc
+    if not relative.parts:
+        raise ValueError(f"{label} must be strictly inside project root")
+
+    current = lexical_root
+    for part in relative.parts:
+        current = current / part
+        if _archive_path_is_link_or_reparse(current):
+            raise ValueError(f"{label} contains a link or reparse point: {current}")
+
+    try:
+        canonical_root = lexical_root.resolve(strict=True)
+        canonical_candidate = lexical_candidate.resolve(strict=must_exist)
+    except OSError as exc:
+        raise ValueError(f"{label} does not exist or cannot be resolved: {candidate}") from exc
+    try:
+        canonical_relative = canonical_candidate.relative_to(canonical_root)
+    except ValueError as exc:
+        raise ValueError(f"{label} resolves outside project root: {candidate}") from exc
+    if not canonical_relative.parts:
+        raise ValueError(f"{label} must be strictly inside project root")
+    return canonical_candidate
+
+
+def _archive_core_file_specs(
+    project_root: Path,
+    archive_dir: Path,
+) -> tuple[Path, Path, list[tuple[Path, str, str, str]]]:
+    root = Path(os.path.abspath(os.fspath(project_root))).resolve(strict=True)
+    archive = _require_archive_project_path(
+        project_root,
+        archive_dir,
+        label="archive dir",
+        must_exist=True,
+    )
+    if not archive.is_dir():
+        raise ValueError(f"archive dir not found: {archive}")
+
+    file_specs: list[tuple[Path, str, str, str]] = []
+
+    def add_if_file(
+        candidate: Path,
+        package_path: str,
+        role: str,
+        media_type: str,
+    ) -> None:
+        safe = _require_archive_project_path(
+            root,
+            candidate,
+            label=f"archive input {package_path}",
+            must_exist=False,
+        )
+        if safe.is_file():
+            file_specs.append((safe, package_path, role, media_type))
+
+    add_if_file(
+        archive / "reports" / "final" / "summary-data.json",
+        "reports/final/summary-data.json",
+        "summary",
+        "application/json",
+    )
+    for folder, role in (("spec", "spec"), ("plans", "plan")):
+        base = _require_archive_project_path(
+            root,
+            archive / folder,
+            label=f"archive input {folder}",
+            must_exist=False,
+        )
+        if not base.is_dir():
+            continue
+        for directory, directory_names, file_names in os.walk(
+            base, topdown=True, followlinks=False
+        ):
+            current = Path(directory)
+            directory_names.sort()
+            file_names.sort()
+            for name in directory_names:
+                _require_archive_project_path(
+                    root,
+                    current / name,
+                    label=f"archive input {folder}/{name}",
+                    must_exist=True,
+                )
+            for name in file_names:
+                source = _require_archive_project_path(
+                    root,
+                    current / name,
+                    label=f"archive input {folder}/{name}",
+                    must_exist=True,
+                )
+                if source.is_file() and source.suffix.lower() == ".md":
+                    relative = source.relative_to(base).as_posix()
+                    file_specs.append(
+                        (source, f"{folder}/{relative}", role, "text/markdown")
+                    )
+    add_if_file(
+        archive / "meta" / "archive-meta.md",
+        "archive-meta.md",
+        "archive_meta",
+        "text/markdown",
+    )
+    add_if_file(
+        archive / "meta" / "change-context.json",
+        "change-context.json",
+        "change_context",
+        "application/json",
+    )
+    return root, archive, file_specs
 
 
 def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[str]:
     """Return only durable core files; diagnostics and local knowledge stay local."""
-    root = project_root.resolve()
-    archive = archive_dir.resolve()
-    paths: list[str] = []
-
-    def add_if_exists(absolute: Path) -> None:
-        if absolute.is_file():
-            paths.append(absolute.relative_to(root).as_posix())
-
-    add_if_exists(archive / "reports" / "final" / "summary-data.json")
-    for folder in ("spec", "plans"):
-        base = archive / folder
-        if base.is_dir():
-            for path in sorted(base.rglob("*")):
-                if path.is_file() and path.suffix.lower() == ".md":
-                    paths.append(path.relative_to(root).as_posix())
-    add_if_exists(archive / "meta" / "archive-meta.md")
-    add_if_exists(archive / "meta" / "change-context.json")
-    return paths
+    root, _, file_specs = _archive_core_file_specs(project_root, archive_dir)
+    return [source.relative_to(root).as_posix() for source, *_ in file_specs]
 
 
 def _archive_source_identity(project_root: Path) -> dict[str, str | None]:
@@ -8382,40 +8623,24 @@ def build_archive_package(
     output_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build the deterministic core-v1 ZIP uploaded to hunter-platform."""
-    project_root = project_root.resolve()
-    archive_dir = archive_dir.resolve()
-    if not archive_dir.is_dir():
-        raise ValueError(f"archive dir not found: {archive_dir}")
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", change_key) is None:
         raise ValueError("change_key must be a portable path segment")
-
-    file_specs: list[tuple[Path, str, str, str]] = []
-
-    def add(source: Path, package_path: str, role: str, media_type: str) -> None:
-        if source.is_file():
-            file_specs.append((source, package_path, role, media_type))
-
-    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
-    add(summary_path, "reports/final/summary-data.json", "summary", "application/json")
-    for folder, role in (("spec", "spec"), ("plans", "plan")):
-        root = archive_dir / folder
-        if root.is_dir():
-            for source in sorted(root.rglob("*.md")):
-                relative = source.relative_to(root).as_posix()
-                add(source, f"{folder}/{relative}", role, "text/markdown")
-    add(archive_dir / "meta" / "archive-meta.md", "archive-meta.md", "archive_meta", "text/markdown")
-    add(
-        archive_dir / "meta" / "change-context.json",
-        "change-context.json",
-        "change_context",
-        "application/json",
+    project_root, archive_dir, file_specs = _archive_core_file_specs(
+        project_root, archive_dir
     )
-    if not summary_path.is_file():
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    if not any(spec[1] == "reports/final/summary-data.json" for spec in file_specs):
         raise ValueError("archive final summary-data.json is required")
 
     entries: list[dict[str, Any]] = []
     content_by_path: dict[str, bytes] = {}
     for source, package_path, role, media_type in sorted(file_specs, key=lambda item: item[1]):
+        source = _require_archive_project_path(
+            project_root,
+            source,
+            label=f"archive input {package_path}",
+            must_exist=True,
+        )
         raw = source.read_bytes()
         # All semantic archive inputs are text and must round-trip as UTF-8.
         raw.decode("utf-8")
@@ -8459,8 +8684,19 @@ def build_archive_package(
             / "archive-packages"
             / f"{change_key}.zip"
         )
-    output_path = output_path.resolve()
+    output_path = _require_archive_project_path(
+        project_root,
+        output_path,
+        label="archive package output",
+        must_exist=False,
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = _require_archive_project_path(
+        project_root,
+        output_path,
+        label="archive package output",
+        must_exist=False,
+    )
     temporary = output_path.with_name(output_path.name + f".{uuid.uuid4().hex}.tmp")
     try:
         with zipfile.ZipFile(
@@ -8483,6 +8719,12 @@ def build_archive_package(
                     compress_type=zipfile.ZIP_DEFLATED,
                     compresslevel=9,
                 )
+        output_path = _require_archive_project_path(
+            project_root,
+            output_path,
+            label="archive package output",
+            must_exist=False,
+        )
         os.replace(temporary, output_path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -8509,12 +8751,11 @@ def auto_push_archive_core(
 ) -> dict[str, Any]:
     """Build and upload one deterministic core ZIP after finalize.
 
-    Skips silently when credentials are absent. Failures become warnings so
-    archive success is never rolled back by a push outage.
+    The ZIP and its per-change receipt are always created before auth is
+    evaluated. Failures become warnings so archive success is never rolled
+    back by missing credentials or a remote outage.
     """
     project_root = project_root.resolve()
-    if not _remote_credentials_configured(project_root):
-        return {"skipped": True, "reason": "no remote credentials"}
     effective_change_key = change_key or archive_dir.name
     try:
         package = build_archive_package(
@@ -8526,12 +8767,38 @@ def auto_push_archive_core(
         return {
             "skipped": False,
             "ok": False,
-            "warning": f"archive package build failed: {exc}",
+            "reasonCode": "ARCHIVE_PACKAGE_BUILD_FAILED",
+            "warning": f"核心归档 ZIP 生成失败：{exc}",
         }
     core_paths = list(package["paths"])
-    pending = {
+    package_path = Path(str(package["packagePath"]))
+    try:
+        pending_path = _require_archive_project_path(
+            project_root,
+            package_path.with_suffix(".upload.json"),
+            label="archive upload receipt",
+            must_exist=False,
+        )
+    except (OSError, ValueError) as exc:
+        return {
+            "skipped": False,
+            "ok": False,
+            "paths": core_paths,
+            "packagePath": package["packagePath"],
+            "packageSha256": package["packageSha256"],
+            "reasonCode": "ARCHIVE_UPLOAD_RECEIPT_PATH_UNSAFE",
+            "warning": f"归档上传回执路径不安全；已保留 ZIP：{exc}",
+        }
+    credentials = _resolve_archive_remote_credentials(project_root, os.environ)
+    initial_reason_code = (
+        "ARCHIVE_UPLOAD_PENDING"
+        if credentials["configured"]
+        else "ARCHIVE_UPLOAD_CREDENTIALS_MISSING"
+    )
+    pending: dict[str, Any] = {
         "schemaVersion": 1,
         "generatedAt": now_iso(),
+        "updatedAt": now_iso(),
         "archiveDir": str(archive_dir),
         "changeKey": effective_change_key,
         "packagePath": package["packagePath"],
@@ -8539,17 +8806,70 @@ def auto_push_archive_core(
         "manifestSha256": package["manifestSha256"],
         "fileCount": package["fileCount"],
         "paths": core_paths,
+        "uploadStatus": "pending",
+        "reasonCode": initial_reason_code,
+        "archiveStatus": None,
+        "knowledgeStatus": None,
     }
-    pending_path = project_root / ".harness" / "state" / "archive-push-pending.json"
+
+    def persist_receipt(
+        *,
+        upload_status: str,
+        reason_code: str | None,
+        archive_status: str | None = None,
+        knowledge_status: str | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        pending.update(
+            {
+                "updatedAt": now_iso(),
+                "uploadStatus": upload_status,
+                "reasonCode": reason_code,
+                "archiveStatus": archive_status,
+                "knowledgeStatus": knowledge_status,
+                "exitCode": exit_code,
+            }
+        )
+        write_json(pending_path, pending)
+
     try:
         pending_path.parent.mkdir(parents=True, exist_ok=True)
-        write_json(pending_path, pending)
+        persist_receipt(
+            upload_status="pending",
+            reason_code=initial_reason_code,
+        )
     except OSError as exc:
         return {
             "skipped": False,
             "ok": False,
             "paths": core_paths,
-            "warning": f"could not write archive-push-pending.json: {exc}",
+            "packagePath": package["packagePath"],
+            "packageSha256": package["packageSha256"],
+            "reasonCode": "ARCHIVE_UPLOAD_RECEIPT_WRITE_FAILED",
+            "warning": f"无法写入归档上传回执：{exc}",
+        }
+
+    base_result: dict[str, Any] = {
+        "skipped": False,
+        "ok": False,
+        "uploadStatus": "pending",
+        "paths": core_paths,
+        "packagePath": package["packagePath"],
+        "packageSha256": package["packageSha256"],
+        "manifestSha256": package["manifestSha256"],
+        "fileCount": package["fileCount"],
+        "sizeBytes": package["sizeBytes"],
+        "pending": str(pending_path),
+    }
+
+    if not credentials["configured"]:
+        reason_code = "ARCHIVE_UPLOAD_CREDENTIALS_MISSING"
+        return {
+            **base_result,
+            "skipped": True,
+            "reasonCode": reason_code,
+            "missingCredentials": credentials["missing"],
+            "reason": "未配置可用的远端地址或 API Token；已保留 ZIP 等待重试。",
         }
 
     # The published CLI owns credentials, project binding, durable receipt checks,
@@ -8568,6 +8888,9 @@ def auto_push_archive_core(
         "--non-interactive",
         "--json",
     ]
+    command.extend(["--server-url", str(credentials["serverUrl"])])
+    if credentials["tokenEnv"] is not None:
+        command.extend(["--token-env", str(credentials["tokenEnv"])])
     try:
         completed = subprocess.run(
             command,
@@ -8579,62 +8902,172 @@ def auto_push_archive_core(
             shell=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
+        reason_code = "ARCHIVE_UPLOAD_DEFERRED"
+        try:
+            persist_receipt(upload_status="pending", reason_code=reason_code)
+        except OSError:
+            pass
         return {
-            "skipped": False,
-            "ok": False,
-            "paths": core_paths,
-            "packagePath": package["packagePath"],
-            "packageSha256": package["packageSha256"],
-            "fileCount": package["fileCount"],
-            "pending": str(pending_path),
-            "warning": f"archive auto-push deferred: {exc}",
+            **base_result,
+            "reasonCode": reason_code,
+            "warning": f"归档自动上传已延后：{exc}",
         }
-    ok = completed.returncode == 0
-    result: dict[str, Any] = {
-        "skipped": False,
-        "ok": ok,
-        "paths": core_paths,
-        "packagePath": package["packagePath"],
-        "packageSha256": package["packageSha256"],
-        "manifestSha256": package["manifestSha256"],
-        "fileCount": package["fileCount"],
-        "sizeBytes": package["sizeBytes"],
-        "pending": str(pending_path),
-        "exitCode": completed.returncode,
-    }
-    if not ok:
-        result["warning"] = (
-            "archive auto-push failed (exit "
-            + str(completed.returncode)
-            + "); ZIP and pending receipt kept for retry via "
-            + "`hunter-harness archive upload`"
-        )
+
+    try:
+        cli_payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        cli_payload = None
+    if completed.returncode != 0:
+        reason_code = "ARCHIVE_UPLOAD_COMMAND_FAILED"
+        if isinstance(cli_payload, dict):
+            errors = cli_payload.get("errors")
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                cli_code = errors[0].get("code")
+                if (
+                    isinstance(cli_code, str)
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", cli_code.strip())
+                    is not None
+                ):
+                    reason_code = cli_code.strip()
+        try:
+            persist_receipt(
+                upload_status="pending",
+                reason_code=reason_code,
+                exit_code=completed.returncode,
+            )
+        except OSError:
+            pass
+        result = {
+            **base_result,
+            "exitCode": completed.returncode,
+            "reasonCode": reason_code,
+            "warning": (
+                f"归档自动上传失败（退出码 {completed.returncode}）；"
+                "已保留 ZIP 与回执，可重试同一个包。"
+            ),
+        }
         if completed.stderr.strip():
             result["stderr"] = completed.stderr.strip()[:500]
-    else:
+        return result
+
+    if not isinstance(cli_payload, dict):
+        reason_code = "ARCHIVE_UPLOAD_RECEIPT_INVALID"
         try:
-            cli_payload = json.loads(completed.stdout)
-        except json.JSONDecodeError:
-            cli_payload = {}
-        result["archiveId"] = cli_payload.get("archive_id")
-        result["archiveStatus"] = cli_payload.get("archive_status")
-        result["knowledgeStatus"] = cli_payload.get("knowledge_status")
-        fully_ready = (
-            result["archiveStatus"] == "durable"
-            and result["knowledgeStatus"] == "ready"
-        )
-        if fully_ready:
-            try:
-                pending_path.unlink(missing_ok=True)
-                Path(str(package["packagePath"])).unlink(missing_ok=True)
-            except OSError:
-                pass
-        else:
-            result["warning"] = (
-                "归档原包已上传，但服务端知识索引尚未就绪；"
-                "已保留 ZIP 与 pending 回执，可重试同一个 ZIP。"
+            persist_receipt(
+                upload_status="pending",
+                reason_code=reason_code,
+                exit_code=completed.returncode,
             )
+        except OSError:
+            pass
+        return {
+            **base_result,
+            "exitCode": completed.returncode,
+            "reasonCode": reason_code,
+            "warning": "归档上传命令未返回可核验的 JSON 收据；已保留 ZIP 与回执。",
+        }
+
+    archive_status = cli_payload.get("archive_status")
+    knowledge_status = cli_payload.get("knowledge_status")
+    if archive_status != "durable" or knowledge_status not in {
+        "indexing",
+        "ready",
+        "failed",
+    }:
+        reason_code = "ARCHIVE_UPLOAD_RECEIPT_INVALID"
+        try:
+            persist_receipt(
+                upload_status="pending",
+                reason_code=reason_code,
+                archive_status=(
+                    archive_status if isinstance(archive_status, str) else None
+                ),
+                knowledge_status=(
+                    knowledge_status if isinstance(knowledge_status, str) else None
+                ),
+                exit_code=completed.returncode,
+            )
+        except OSError:
+            pass
+        return {
+            **base_result,
+            "exitCode": completed.returncode,
+            "reasonCode": reason_code,
+            "warning": "归档上传收据缺少有效的耐久或知识状态；已保留 ZIP 与回执。",
+        }
+
+    fully_ready = archive_status == "durable" and knowledge_status == "ready"
+    if fully_ready:
+        upload_status = "ready"
+        reason_code = None
+    elif knowledge_status == "failed":
+        upload_status = "failed"
+        reason_code = "ARCHIVE_KNOWLEDGE_INDEX_FAILED"
+    else:
+        upload_status = "pending"
+        reason_code = "ARCHIVE_KNOWLEDGE_INDEXING"
+    try:
+        persist_receipt(
+            upload_status=upload_status,
+            reason_code=reason_code,
+            archive_status=archive_status,
+            knowledge_status=knowledge_status,
+            exit_code=completed.returncode,
+        )
+    except OSError as exc:
+        return {
+            **base_result,
+            "archiveId": cli_payload.get("archive_id"),
+            "archiveStatus": archive_status,
+            "knowledgeStatus": knowledge_status,
+            "reasonCode": "ARCHIVE_UPLOAD_RECEIPT_WRITE_FAILED",
+            "warning": f"服务端已返回状态，但本地上传回执更新失败：{exc}",
+        }
+
+    result = {
+        **base_result,
+        "ok": True,
+        "uploadStatus": upload_status,
+        "exitCode": completed.returncode,
+        "archiveId": cli_payload.get("archive_id"),
+        "archiveStatus": archive_status,
+        "knowledgeStatus": knowledge_status,
+        "reasonCode": reason_code,
+    }
+    if fully_ready:
+        cleanup_warnings: list[str] = []
+        for path in (package_path, pending_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_warnings.append(f"{path.name}: {exc}")
+        if cleanup_warnings:
+            result["warning"] = (
+                "远端归档与知识均已就绪，但本地重试文件清理不完整："
+                + "; ".join(cleanup_warnings)
+            )
+    elif knowledge_status == "failed":
+        result["warning"] = (
+            "归档原包已在服务端持久化，但知识索引失败；"
+            "已保留 ZIP 与上传回执，可重试同一个 ZIP。"
+        )
+    else:
+        result["warning"] = (
+            "归档原包已在服务端持久化，知识索引仍在进行；"
+            "已保留 ZIP 与上传回执，可枚举后重试。"
+        )
     return result
+
+
+def _knowledge_maintenance_from_archive_push(push_result: dict[str, Any]) -> str:
+    if (
+        push_result.get("archiveStatus") == "durable"
+        and push_result.get("knowledgeStatus") == "ready"
+    ):
+        return "REMOTE_READY"
+    if push_result.get("knowledgeStatus") == "failed":
+        return "REMOTE_INDEX_FAILED"
+    return "REMOTE_PENDING"
 
 
 def _merge_runtime_state(state_dir: Path, contract_dir: Path) -> None:

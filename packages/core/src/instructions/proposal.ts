@@ -1,5 +1,5 @@
 import { lstat, readFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { projectConfigSchema } from "@hunter-harness/contracts";
 import { parse as parseYaml } from "yaml";
@@ -17,6 +17,8 @@ import { atomicWriteJson } from "../state/atomic.js";
 import { runTransaction } from "../transaction/transaction.js";
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const portableProposalIdSchema = z.string()
+  .regex(/^ipr_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$/u);
 const proposedFileSchema = z.object({
   path: z.enum([
     "AGENTS.md",
@@ -30,21 +32,58 @@ const proposedFileSchema = z.object({
   content_sha256: sha256Schema,
   content: z.string().max(1024 * 1024)
 }).strict();
+const instructionFindingSchema = z.object({
+  code: z.string(),
+  severity: z.enum(["info", "warning"]),
+  path: z.string(),
+  message: z.string()
+}).strict();
+const ruleCandidateSchema = z.object({
+  candidate_id: z.string().regex(/^rc_[a-f0-9]{16}$/u),
+  content: z.string(),
+  evidence: z.array(z.object({
+    change_key: z.string(),
+    summary: z.string()
+  }).strict()),
+  evidence_count: z.number().int().positive(),
+  auto_apply: z.literal(false),
+  recommendation: z.enum(["review", "promote"])
+}).strict();
 
 export const localInstructionProposalSchema = z.object({
   schema_version: z.literal(1),
-  proposal_id: z.string().regex(/^ipr_/u),
+  proposal_id: portableProposalIdSchema,
   project_id: z.string().regex(/^prj_/u),
   language: z.literal("zh-CN"),
   mode: z.literal("audit-propose"),
   applied: z.literal(false),
-  generated_at: z.string(),
-  findings: z.array(z.record(z.string(), z.unknown())),
+  generated_at: z.iso.datetime(),
+  findings: z.array(instructionFindingSchema),
   files: z.array(proposedFileSchema),
-  rule_candidates: z.array(z.record(z.string(), z.unknown())),
-  basis: z.array(z.string()),
-  request_id: z.string()
+  rule_candidates: z.array(ruleCandidateSchema),
+  basis: z.array(z.url()),
+  request_id: z.uuid()
 }).strict();
+
+function proposalStatePath(root: string, filename: string): string {
+  const stateRoot = resolve(
+    root,
+    ".harness",
+    "state",
+    "local",
+    "instruction-proposals"
+  );
+  const candidate = resolve(stateRoot, filename);
+  const relation = relative(stateRoot, candidate);
+  if (relation === "" || relation.startsWith("..") || isAbsolute(relation)) {
+    throw new InstructionProposalError(
+      "文档提案标识不能用于本地路径",
+      "INSTRUCTION_PROPOSAL_INVALID",
+      6
+    );
+  }
+  return candidate;
+}
 
 export class InstructionProposalError extends Error {
   readonly code: string;
@@ -182,14 +221,7 @@ export async function auditProjectInstructions(options: {
     requestId: uuidV7(),
     idempotencyKey: uuidV7()
   }));
-  const proposalPath = join(
-    root,
-    ".harness",
-    "state",
-    "local",
-    "instruction-proposals",
-    result.proposal_id + ".json"
-  );
+  const proposalPath = proposalStatePath(root, result.proposal_id + ".json");
   await atomicWriteJson(proposalPath, result);
   return { proposal: result, proposalPath };
 }
@@ -251,12 +283,8 @@ export async function applyInstructionProposal(options: {
     });
   }
   const transaction = await runTransaction(root, operations);
-  const receiptPath = join(
+  const receiptPath = proposalStatePath(
     root,
-    ".harness",
-    "state",
-    "local",
-    "instruction-proposals",
     proposal.proposal_id + ".applied.json"
   );
   await atomicWriteJson(receiptPath, {

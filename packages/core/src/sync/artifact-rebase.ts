@@ -25,6 +25,54 @@ import {
 export type ConflictStrategy = "manual" | "keep-local" | "accept-remote";
 export type PerPathResolveStrategy = "keep-local" | "accept-remote";
 
+const FULL_DOCUMENT_INSTRUCTION_PATHS = new Set([
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CODEBUDDY.md"
+]);
+
+class InvalidManagedArtifactError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidManagedArtifactError";
+  }
+}
+
+function isFullDocumentInstruction(path: string): boolean {
+  return FULL_DOCUMENT_INSTRUCTION_PATHS.has(path);
+}
+
+/**
+ * Historical server artifacts may still contain line or inline managed-marker
+ * wrappers. Unwrap valid blocks once while retaining every byte of their body
+ * and all user-authored content outside the wrappers. Malformed wrappers must
+ * never be accepted as full-document content.
+ */
+function migrateLegacyInstructionArtifact(content: string): string {
+  if (!content.includes("<!-- hunter-harness:start") &&
+      !content.includes("<!-- hunter-harness:end")) {
+    return content;
+  }
+  let parsed: ReturnType<typeof parseManagedBlocks>;
+  try {
+    parsed = parseManagedBlocks(content);
+  } catch (error) {
+    throw new InvalidManagedArtifactError(
+      error instanceof Error ? error.message : "invalid managed markers"
+    );
+  }
+  if (parsed.blocks.length === 0) {
+    throw new InvalidManagedArtifactError("unrecognized managed marker syntax");
+  }
+  let migrated = "";
+  let cursor = 0;
+  for (const block of parsed.blocks) {
+    migrated += content.slice(cursor, block.start) + block.content;
+    cursor = block.end;
+  }
+  return migrated + content.slice(cursor);
+}
+
 export interface OperationContext {
   operation: FileOperation;
   incomingContent: string | null;
@@ -71,6 +119,23 @@ export interface PlanArtifactRebaseInput {
   conflictStrategy: ConflictStrategy;
   resolveOverrides?: ReadonlyMap<string, PerPathResolveStrategy>;
   protocolOnlyPaths?: ReadonlySet<string>;
+}
+
+export function decideStaticOperationUpdate(
+  operation: FileOperation,
+  protocolOnlyPaths?: ReadonlySet<string>
+): ReturnType<typeof decideUpdate> {
+  const source = operationSourcePath(operation);
+  const target = operationTargetPath(operation);
+  if (protocolOnlyPaths?.has(source) === true ||
+      protocolOnlyPaths?.has(target) === true) {
+    return { apply: false, reason: "protocol-only" };
+  }
+  for (const path of new Set([source, target])) {
+    const decision = decideUpdate(classifyFile(path), false);
+    if (!decision.apply) return decision;
+  }
+  return { apply: true };
 }
 
 function expectedBase(operation: FileOperation): string | null {
@@ -181,7 +246,10 @@ function computeFinalContent(
   let equivalent = incomingHash !== null && targetContent !== null &&
     sha256Bytes(targetContent) === incomingHash;
   let finalContent = incoming;
-  if (policy.update_policy === "managed-block-only") {
+  if (isFullDocumentInstruction(operationTargetPath(operation)) && incoming !== null) {
+    finalContent = migrateLegacyInstructionArtifact(incoming);
+    equivalent = finalContent === targetContent;
+  } else if (policy.update_policy === "managed-block-only") {
     if (operation.operation === "delete") {
       finalContent = sourceContent === null
         ? null
@@ -241,8 +309,9 @@ function isDirty(
   incoming: string | null
 ): { dirty: boolean; equivalent: boolean } {
   const incomingHash = contentHash(operation);
-  let equivalent = incomingHash !== null && targetContent !== null &&
-    sha256Bytes(targetContent) === incomingHash;
+  let equivalent = targetContent !== null && incoming !== null &&
+    (targetContent === incoming ||
+      (incomingHash !== null && sha256Bytes(targetContent) === incomingHash));
   let dirty = false;
   if (operation.operation === "add") {
     if (targetContent !== null && !equivalent) {
@@ -322,22 +391,63 @@ export function planArtifactRebase(input: PlanArtifactRebaseInput): ArtifactReba
 
   for (const context of input.contexts) {
     const operation = context.operation;
-    const incoming = context.incomingContent;
+    let incoming = context.incomingContent;
     const source = operationSourcePath(operation);
     const target = operationTargetPath(operation);
     const policy = classifyFile(target);
     const incomingHash = contentHash(operation);
 
+    const fullDocumentInstruction = isFullDocumentInstruction(target);
+    if (fullDocumentInstruction &&
+        (operation.operation === "add" || operation.operation === "modify") &&
+        operation.block_id !== undefined) {
+      plan.conflicts.push({
+        path: target,
+        operation: operation.operation,
+        reason: "invalid-managed-artifact"
+      });
+      continue;
+    }
+    if (fullDocumentInstruction && incoming !== null) {
+      try {
+        incoming = migrateLegacyInstructionArtifact(incoming);
+      } catch (error) {
+        if (!(error instanceof InvalidManagedArtifactError)) throw error;
+        plan.conflicts.push({
+          path: target,
+          operation: operation.operation,
+          reason: "invalid-managed-artifact"
+        });
+        continue;
+      }
+    }
+
     if (operationAlreadyApplied(operation, input.baseline, input.projectVersion)) {
+      if (fullDocumentInstruction && incoming !== null &&
+          context.targetContent !== incoming) {
+        const previous = input.baseline.files[source];
+        const targetClean = context.targetContent === null ||
+          previous?.local_hash_at_apply === sha256Bytes(context.targetContent);
+        if (!targetClean) {
+          plan.conflicts.push({
+            path: target,
+            operation: operation.operation,
+            reason: "local-dirty"
+          });
+          continue;
+        }
+        const entry = baselineEntryFor(operation, incoming, input.projectVersion);
+        recordWrite(plan, "applied", operation, target, incoming, false, entry);
+        continue;
+      }
       plan.alreadyApplied.push({ path: target, operation });
       continue;
     }
 
-    const projectionManaged = input.protocolOnlyPaths?.has(source) === true ||
-      input.protocolOnlyPaths?.has(target) === true;
-    const staticDecision = projectionManaged
-      ? { apply: false, reason: "protocol-only" as const }
-      : decideUpdate(policy, false);
+    const staticDecision = decideStaticOperationUpdate(
+      operation,
+      input.protocolOnlyPaths
+    );
     if (!staticDecision.apply) {
       const acknowledgeReason = staticDecision.reason === "protocol-only"
         ? "protocol-only" as const

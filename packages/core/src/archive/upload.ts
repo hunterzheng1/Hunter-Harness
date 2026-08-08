@@ -2,6 +2,7 @@ import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 import {
+  archivePackageReceiptSchema,
   baselineManifestSchema,
   projectConfigSchema
 } from "@hunter-harness/contracts";
@@ -154,13 +155,32 @@ export async function uploadArchivePackage(options: UploadArchivePackageOptions)
 
   const archive = new Uint8Array(await readFile(archivePath));
   const expectedHash = sha256Bytes(archive);
-  const result = await client.uploadChangeArchivePackage({
+  const uploadRequestId = uuidV7();
+  const rawResult = await client.uploadChangeArchivePackage({
     projectId,
     changeKey: options.changeKey,
     archive,
-    requestId: uuidV7(),
+    requestId: uploadRequestId,
     idempotencyKey: uuidV7()
   });
+  const parsed = archivePackageReceiptSchema.safeParse(rawResult);
+  if (!parsed.success) {
+    throw new ArchiveUploadError(
+      "server returned an invalid archive receipt",
+      "ARCHIVE_RECEIPT_INVALID",
+      4
+    );
+  }
+  const result = parsed.data;
+  if (result.project_id !== projectId ||
+      result.change_key !== options.changeKey ||
+      result.request_id !== uploadRequestId) {
+    throw new ArchiveUploadError(
+      "server receipt does not belong to this archive request",
+      "ARCHIVE_RECEIPT_SCOPE_MISMATCH",
+      4
+    );
+  }
   if (result.package_sha256 !== expectedHash) {
     throw new ArchiveUploadError(
       "server receipt does not match the uploaded ZIP",

@@ -13,7 +13,7 @@ describe("proposal diff generation", () => {
     ".harness/state/local/runtime.json": { content_sha256: sha256Bytes("state") }
   };
 
-  it("emits add, modify, tombstone delete, and explicit rename operations", () => {
+  it("emits only editable document changes and excludes all local knowledge", () => {
     const preview = generateProposalPreview({
       baseline,
       files: {
@@ -29,16 +29,8 @@ describe("proposal diff generation", () => {
 
     expect(preview.blocked).toBe(false);
     expect(preview.operations.map((item) => item.operation).sort()).toEqual([
-      "add", "delete", "modify", "rename"
+      "modify", "rename"
     ]);
-    expect(preview.operations.find((item) => item.operation === "delete")).toMatchObject({
-      path: ".harness/knowledge/obsolete.md",
-      tombstone: {
-        deleted_at: "2026-06-20T00:00:00Z",
-        reason: "removed locally",
-        previous_sha256: sha256Bytes(deleted)
-      }
-    });
     expect(preview.operations.find((item) => item.operation === "rename")).toMatchObject({
       from_path: ".claude/rules/old-name.md",
       to_path: ".claude/rules/new-name.md"
@@ -50,12 +42,20 @@ describe("proposal diff generation", () => {
       }),
       expect.objectContaining({
         path: ".harness/knowledge/project-local/private.md",
-        reason: "confirmation-required"
+        reason: "policy-never"
+      }),
+      expect.objectContaining({
+        path: ".harness/knowledge/new.md",
+        reason: "policy-never"
+      }),
+      expect.objectContaining({
+        path: ".harness/knowledge/obsolete.md",
+        reason: "policy-never"
       })
     ]));
   });
 
-  it("includes project-local only after per-path confirmation", () => {
+  it("does not let per-path confirmation bypass the knowledge boundary", () => {
     const path = ".harness/knowledge/project-local/private.md";
     const preview = generateProposalPreview({
       baseline: {},
@@ -64,9 +64,34 @@ describe("proposal diff generation", () => {
       deleteReason: "removed locally",
       confirmedProjectLocal: [path]
     });
-    expect(preview.operations).toEqual([
-      expect.objectContaining({ operation: "add", path })
-    ]);
+    expect(preview.operations).toEqual([]);
+    expect(preview.skipped).toContainEqual({ path, reason: "policy-never" });
+  });
+
+  it("filters current and baseline archive content before diff/rename detection", () => {
+    const archive = ".harness/archive/change/spec/design.md";
+    const report = ".harness/archive/change/reports/test/test-report.md";
+    const preview = generateProposalPreview({
+      baseline: {
+        [archive]: { content_sha256: sha256Bytes("same\n") },
+        [report]: { content_sha256: sha256Bytes("old report\n") }
+      },
+      files: {
+        [archive]: "changed\n",
+        ".harness/archive/change/plans/plan.md": "same\n"
+      },
+      deletedAt: "2026-06-20T00:00:00Z",
+      deleteReason: "removed locally",
+      confirmedProjectLocal: [archive, report]
+    });
+
+    expect(preview.operations).toEqual([]);
+    expect(Object.keys(preview.blobs)).toEqual([]);
+    expect(preview.skipped).toEqual(expect.arrayContaining([
+      { path: archive, reason: "policy-never" },
+      { path: report, reason: "policy-never" },
+      { path: ".harness/archive/change/plans/plan.md", reason: "policy-never" }
+    ]));
   });
 
   it("blocks proposal preview when included content contains high-risk secrets", () => {
