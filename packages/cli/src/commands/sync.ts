@@ -10,8 +10,6 @@ import {
   type ManagedProcessResult,
   refreshProject,
   sha256File,
-  synchronizeProjectRules,
-  synchronizeRuleCandidates,
   validateInstructionGraph
 } from "@hunter-harness/core";
 import {
@@ -333,46 +331,42 @@ export function buildSyncRemediations(
     }
     if (component.component === "knowledge") {
       remediations.push({
-        id: "knowledge-maintain",
+        id: "configure-remote-knowledge",
         component: component.component,
         severity: component.status === "FAIL"
           ? "FAIL"
           : component.status === "ADVISORY"
             ? "ADVISORY"
             : "WARN",
-        title: "Repair and maintain the project knowledge index",
-        autoFixable: component.status !== "FAIL",
-        risk: "low",
-        writes: [
-          ".harness/knowledge/**",
-          ".harness/runtime/sync/**",
-          ".harness/context-index.json"
-        ],
-        backup: null,
-        rollback: null,
-        estimatedDurationMs: null,
-        requiresConfirmation: false,
-        previewCommand: "hunter-harness sync --check --json",
-        applyCommand: "hunter-harness sync --apply safe --json"
-      });
-      continue;
-    }
-    if (component.component === "rules" &&
-        component.reasonCode === "RULE_REVIEW_PENDING") {
-      remediations.push({
-        id: "review-rule-candidates",
-        component: component.component,
-        severity: "ADVISORY",
-        title: "Review pending rule candidates",
+        title: "配置或恢复远端知识服务",
         autoFixable: false,
-        risk: "medium",
-        writes: [".harness/rules/**"],
+        risk: "low",
+        writes: [],
         backup: null,
         rollback: null,
         estimatedDurationMs: null,
         requiresConfirmation: true,
-        previewCommand: "hunter-harness rules-review --json",
-        applyCommand: "hunter-harness rules-review --apply <decisions.json> --json"
+        previewCommand: "hunter-harness knowledge query \"项目概览\" --json",
+        applyCommand: ""
+      });
+      continue;
+    }
+    if (component.component === "rules" &&
+        component.reasonCode === "INSTRUCTION_AUDIT_REQUIRED") {
+      remediations.push({
+        id: "audit-project-instructions",
+        component: component.component,
+        severity: "ADVISORY",
+        title: "生成中文项目文档与规则优化提案",
+        autoFixable: false,
+        risk: "medium",
+        writes: [".harness/state/local/instruction-proposals/**"],
+        backup: null,
+        rollback: null,
+        estimatedDurationMs: null,
+        requiresConfirmation: true,
+        previewCommand: "hunter-harness instructions audit --json",
+        applyCommand: "hunter-harness instructions apply --proposal <proposal.json> --yes --json"
       });
       continue;
     }
@@ -551,124 +545,10 @@ async function runPythonComponent(
   );
 }
 
-function positiveEnvMs(
-  env: Readonly<Record<string, string | undefined>>,
-  key: string,
-  fallback: number
-): number {
-  const parsed = Number(env[key]);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object"
     ? (value as Record<string, unknown>)
     : null;
-}
-
-/**
- * `sync_status()` reports `ok` only once the index is current AND the
- * maintenance outbox (drain_maintenance_outbox) has been fully drained.
- * Older/degraded payloads may omit `maintenance` entirely -- treat that as
- * valid so this stays backward compatible with pre-HH-KNOW-20260730-001
- * workflow bundles.
- */
-export function deriveKnowledgeOutputValid(
-  payload: Record<string, unknown> | null | undefined
-): boolean {
-  if (payload === null || payload === undefined) return false;
-  if (payload.ok === true) return true;
-  if (payload.upToDate !== true) return false;
-  const maintenance = asRecord(payload.maintenance);
-  if (maintenance === null) return true;
-  if (maintenance.skipped === true) return true;
-  return maintenance.ok !== false;
-}
-
-function isKnowledgeOutboxPending(
-  payload: Record<string, unknown> | null | undefined
-): boolean {
-  if (payload === null || payload === undefined) return false;
-  if (payload.upToDate !== true) return false;
-  const maintenance = asRecord(payload.maintenance);
-  if (maintenance === null || maintenance.skipped === true) return false;
-  return maintenance.ok === false;
-}
-
-export function classifyKnowledgeResult(
-  result: ProcessResult,
-  outputValid: boolean,
-  payload?: Record<string, unknown> | null
-): { status: SyncStatus; reasonCode: string } {
-  if (result.exitCode === 0 && !result.timedOut) {
-    if (outputValid) {
-      const health = asRecord(payload?.health);
-      if (health?.status === "WARN") {
-        return { status: "WARN", reasonCode: "KNOWLEDGE_HEALTH_WARN" };
-      }
-      if (health?.status === "ADVISORY") {
-        return { status: "ADVISORY", reasonCode: "KNOWLEDGE_HEALTH_ADVISORY" };
-      }
-      return { status: "OK", reasonCode: "OK" };
-    }
-    if (isKnowledgeOutboxPending(payload)) {
-      return { status: "WARN", reasonCode: "KNOWLEDGE_OUTBOX_PENDING" };
-    }
-    return { status: "WARN", reasonCode: "KNOWLEDGE_OUTPUT_UNVERIFIED" };
-  }
-  if (result.timedOut && outputValid) {
-    return {
-      status: "WARN",
-      reasonCode: "KNOWLEDGE_SYNC_TIMEOUT_OUTPUT_VALID"
-    };
-  }
-  if (result.timeoutKind === "stall") {
-    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_STALL_TIMEOUT" };
-  }
-  if (result.timeoutKind === "wall") {
-    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_WALL_TIMEOUT" };
-  }
-  if (result.termination === "spawn-error") {
-    return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_SPAWN_FAILED" };
-  }
-  return { status: "FAIL", reasonCode: "KNOWLEDGE_SYNC_FAILED" };
-}
-
-/** Ensures WARN/FAIL knowledge receipts always carry an actionable next step. */
-export function resolveKnowledgeNextAction(
-  status: SyncStatus,
-  reasonCode: string,
-  payload?: Record<string, unknown> | null
-): string | null {
-  if (status === "OK") return null;
-  const payloadNextAction = payload?.nextAction;
-  if (typeof payloadNextAction === "string" && payloadNextAction.length > 0) {
-    return payloadNextAction;
-  }
-  switch (reasonCode) {
-    case "KNOWLEDGE_HEALTH_WARN":
-      return "Run `hunter-harness sync --apply safe --json` to apply deterministic knowledge repairs, then inspect the freshness and health summaries.";
-    case "KNOWLEDGE_HEALTH_ADVISORY":
-      return "Inspect the knowledge health dimensions; no freshness failure blocks this sync.";
-    case "KNOWLEDGE_OUTBOX_PENDING":
-      return (
-        "Retry `hunter-harness sync`, or run `python harness/harness-knowledge-ingest/" +
-        "scripts/harness_knowledge.py maintain --project <project> --drain` to drain " +
-        "the remaining maintenance outbox items."
-      );
-    case "KNOWLEDGE_SYNC_TIMEOUT_OUTPUT_VALID":
-      return "Re-run `hunter-harness sync`; the knowledge sync process timed out but returned a valid result.";
-    case "KNOWLEDGE_SYNC_STALL_TIMEOUT":
-    case "KNOWLEDGE_SYNC_WALL_TIMEOUT":
-      return (
-        "Re-run `hunter-harness sync`; raise HUNTER_HARNESS_SYNC_KNOWLEDGE_WALL_TIMEOUT_MS " +
-        "or HUNTER_HARNESS_SYNC_KNOWLEDGE_STALL_TIMEOUT_MS if it keeps timing out."
-      );
-    case "KNOWLEDGE_SYNC_SPAWN_FAILED":
-      return "Verify the Python runtime is available, then re-run `hunter-harness sync`.";
-    default:
-      return "Retry `hunter-harness sync` to reconcile the knowledge index and maintenance outbox.";
-  }
 }
 
 export async function probeCodeGraph(
@@ -781,18 +661,8 @@ export async function persistSyncPointers(
   }
 }
 
-export function shouldApplyKnowledgeMaintenance(
-  options: Pick<SyncCommandOptions, "apply" | "fix">,
-  checkMode: boolean
-): boolean {
-  return !checkMode &&
-    (options.apply === "safe" || options.fix === "knowledge-maintain");
-}
-
 export interface SyncWritePolicy {
   adapterReadOnly: boolean;
-  knowledgeMode: "check" | "update" | "auto";
-  rulesReadOnly: boolean;
 }
 
 export function deriveSyncWritePolicy(
@@ -801,29 +671,16 @@ export function deriveSyncWritePolicy(
 ): SyncWritePolicy {
   if (checkMode) {
     return {
-      adapterReadOnly: true,
-      knowledgeMode: "check",
-      rulesReadOnly: true
+      adapterReadOnly: true
     };
   }
   if (options.fix?.startsWith("refresh-managed-adapters-") === true) {
     return {
-      adapterReadOnly: false,
-      knowledgeMode: "check",
-      rulesReadOnly: true
-    };
-  }
-  if (shouldApplyKnowledgeMaintenance(options, checkMode)) {
-    return {
-      adapterReadOnly: true,
-      knowledgeMode: "auto",
-      rulesReadOnly: true
+      adapterReadOnly: false
     };
   }
   return {
-    adapterReadOnly: false,
-    knowledgeMode: "update",
-    rulesReadOnly: false
+    adapterReadOnly: false
   };
 }
 
@@ -847,7 +704,6 @@ export async function runSync(
   }
   if (
     options.fix !== undefined &&
-    options.fix !== "knowledge-maintain" &&
     adapterAgentForRemediation(options.fix) === null
   ) {
     dependencies.stderr(`SYNC_REMEDIATION_UNKNOWN: ${options.fix}\n`);
@@ -1038,165 +894,43 @@ export async function runSync(
   }
 
   const knowledgeStarted = Date.now();
-  const knowledgeScript = join(
-    workflowBundleRoot,
-    "harness-knowledge-ingest",
-    "scripts",
-    "harness_knowledge.py"
-  );
-  const knowledgeArgs = writePolicy.knowledgeMode === "auto"
-    ? [
-        "auto",
-        "--project",
-        root
-      ]
-    : [
-        "sync",
-        "--project",
-        root,
-        ...(writePolicy.knowledgeMode === "check" ? ["--check"] : ["--update"]),
-        "--json",
-        "--progress",
-        options.progress ?? "jsonl"
-      ];
-  const knowledge = await runPythonComponent(
-    runtime,
-    knowledgeScript,
-    knowledgeArgs,
-    root,
-    dependencies,
-    options.progress,
-    {
-      wallTimeoutMs: positiveEnvMs(
-        dependencies.env,
-        "HUNTER_HARNESS_SYNC_KNOWLEDGE_WALL_TIMEOUT_MS",
-        15 * 60 * 1000
-      ),
-      stallTimeoutMs: positiveEnvMs(
-        dependencies.env,
-        "HUNTER_HARNESS_SYNC_KNOWLEDGE_STALL_TIMEOUT_MS",
-        3 * 60 * 1000
-      ),
-      heartbeatMs: positiveEnvMs(
-        dependencies.env,
-        "HUNTER_HARNESS_SYNC_HEARTBEAT_MS",
-        30_000
-      ),
-      terminateGraceMs: positiveEnvMs(
-        dependencies.env,
-        "HUNTER_HARNESS_SYNC_TERMINATE_GRACE_MS",
-        2_000
-      )
-    }
-  );
-  let knowledgePayload: unknown = knowledge.stdout;
-  let parsedKnowledgePayload: Record<string, unknown> | null = null;
-  try {
-    knowledgePayload = JSON.parse(knowledge.stdout);
-    if (knowledgePayload !== null && typeof knowledgePayload === "object") {
-      parsedKnowledgePayload = knowledgePayload as Record<string, unknown>;
-    }
-  } catch {
-    // Preserve bounded raw diagnostics in the detailed report.
-  }
-  const knowledgeOutputValid = deriveKnowledgeOutputValid(parsedKnowledgePayload);
-  const knowledgeOutcome = classifyKnowledgeResult(
-    knowledge,
-    knowledgeOutputValid,
-    parsedKnowledgePayload
-  );
-  const knowledgeNextAction = resolveKnowledgeNextAction(
-    knowledgeOutcome.status,
-    knowledgeOutcome.reasonCode,
-    parsedKnowledgePayload
-  );
   components.push(receipt(
     "knowledge",
     knowledgeStarted,
-    knowledgeOutcome.status,
-    knowledgeOutcome.reasonCode,
+    "OK",
+    "KNOWLEDGE_REMOTE_OWNED",
     {
-      payload: knowledgePayload,
-      postValidation: {
-        valid: knowledgeOutputValid,
-        reasonCode: knowledgeOutputValid
-          ? "KNOWLEDGE_OUTPUT_VALID"
-          : "KNOWLEDGE_OUTPUT_UNVERIFIED"
-      },
-      process: knowledge
+      ingest: "server-after-archive-upload",
+      query: "remote-only",
+      fallback: false,
+      localIndex: false
     },
-    knowledgeNextAction,
+    null,
     {
-      persisted: knowledgeOutputValid && writePolicy.knowledgeMode !== "check"
-        ? ["knowledge sync returned verified output"]
-        : [],
-      notPersisted: knowledgeOutputValid || writePolicy.knowledgeMode === "check"
-        ? []
-        : ["knowledge output was not verified"]
+      persisted: [],
+      notPersisted: ["本地不生成或维护知识索引"]
     }
   ));
 
   const rulesStarted = Date.now();
-  try {
-    const projections = await synchronizeProjectRules(
-      root,
-      agents,
-      surface,
-      { dryRun: writePolicy.rulesReadOnly }
-    );
-    const candidates = await synchronizeRuleCandidates(
-      root,
-      { dryRun: writePolicy.rulesReadOnly }
-    );
-    const rulesStatus: SyncStatus = projections.conflicts.length > 0
-      ? "WARN"
-      : candidates.candidates > 0
-        ? "ADVISORY"
-        : "OK";
-    const rulesReason = projections.conflicts.length > 0
-      ? "RULE_PROJECTION_CONFLICT"
-      : candidates.candidates > 0
-        ? "RULE_REVIEW_PENDING"
-        : "OK";
-    components.push(receipt(
-      "rules",
-      rulesStarted,
-      rulesStatus,
-      rulesReason,
-      {
-        projected: projections.written.length,
-        preview: writePolicy.rulesReadOnly,
-        conflicts: projections.conflicts,
-        pendingReview: candidates.candidates,
-        guidanceReachability: "evaluated",
-        semanticQuality: "not-evaluated"
-      },
-      undefined,
-      {
-        persisted: !writePolicy.rulesReadOnly && projections.written.length > 0
-          ? [`rule projection wrote ${projections.written.length} file(s)`]
-          : [],
-        notPersisted: [
-          ...(writePolicy.rulesReadOnly && projections.written.length > 0
-            ? [`rule projection previewed ${projections.written.length} file(s)`]
-            : []),
-          ...(projections.conflicts.length > 0
-            ? [`${projections.conflicts.length} rule projection conflict(s) need review`]
-            : [])
-        ]
-      }
-    ));
-  } catch (error) {
-    components.push(receipt(
-      "rules",
-      rulesStarted,
-      "FAIL",
-      "RULE_SYNC_FAILED",
-      String(error),
-      undefined,
-      { persisted: [], notPersisted: ["rule synchronization did not complete"] }
-    ));
-  }
+  components.push(receipt(
+    "rules",
+    rulesStarted,
+    "ADVISORY",
+    "INSTRUCTION_AUDIT_REQUIRED",
+    {
+      workflow: ["远端审计", "生成中文提案", "人工确认后事务化应用"],
+      inputs: ["项目类型", "现有文档", "Codebase Map", "近期变更总结"],
+      localMutation: false,
+      automaticRuleCandidateApplication: false,
+      legacyMarkerInjection: false
+    },
+    "运行 `hunter-harness instructions audit --json` 生成提案；审阅后再使用 `instructions apply`。",
+    {
+      persisted: [],
+      notPersisted: ["sync 不直接改写 AGENTS.md、Agent 文档或规则"]
+    }
+  ));
 
   const mapStarted = Date.now();
   const map = await assessCodebaseMapOnDisk(root);

@@ -1,0 +1,127 @@
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { sha256Bytes } from "@hunter-harness/core";
+
+import { runCli } from "../src/bin.js";
+
+const resourcesRoot = fileURLToPath(
+  new URL("../../workflow-data-harness", import.meta.url)
+);
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+describe("hunter-harness archive upload", () => {
+  let root: string;
+  let stdout: string[];
+  let stderr: string[];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-archive-upload-"));
+    stdout = [];
+    stderr = [];
+    expect(await runCli([
+      "--profile", "general", "--non-interactive", "--yes"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      stdout: () => undefined,
+      stderr: () => undefined,
+      env: {}
+    })).toBe(0);
+    await mkdir(join(root, ".harness", "state", "local", "archive-packages"), {
+      recursive: true
+    });
+    await writeFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://platform.example.test\ntoken: archive-token\n",
+      "utf8"
+    );
+  });
+
+  it("resolves the project and sends the package through the dedicated endpoint", async () => {
+    const packagePath = join(
+      root,
+      ".harness",
+      "state",
+      "local",
+      "archive-packages",
+      "change-one.zip"
+    );
+    await writeFile(packagePath, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+    const requests: Array<{ path: string; init?: RequestInit }> = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({ path: url.pathname, init });
+      if (url.pathname === "/api/v1/projects:resolve") {
+        return json({
+          schema_version: 1,
+          project_id: "prj_archive",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {},
+          request_id: "resolve-request"
+        });
+      }
+      if (url.pathname.endsWith("/archive-package")) {
+        return json({
+          schema_version: 1,
+          archive_id: "arc_archive",
+          project_id: "prj_archive",
+          change_key: "change-one",
+          package_sha256: sha256Bytes(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
+          manifest_sha256: "sha256:" + "b".repeat(64),
+          artifact_id: "art_archive",
+          archive_status: "durable",
+          knowledge_status: "ready",
+          stored_files: 5,
+          uploaded_at: "2026-08-08T00:00:00.000Z",
+          request_id: "upload-request"
+        }, 201);
+      }
+      return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    const code = await runCli([
+      "archive",
+      "upload",
+      "--file",
+      packagePath,
+      "--change-key",
+      "change-one",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code, stderr.join("\n")).toBe(0);
+    expect(requests.map((request) => request.path)).toEqual([
+      "/api/v1/projects:resolve",
+      "/api/v1/projects/prj_archive/changes/change-one/archive-package"
+    ]);
+    const upload = requests[1]?.init;
+    expect(new Headers(upload?.headers).get("Content-Type")).toBe("application/zip");
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      command: "archive upload",
+      ok: true,
+      project_id: "prj_archive",
+      archive_id: "arc_archive",
+      knowledge_status: "ready"
+    });
+  });
+});

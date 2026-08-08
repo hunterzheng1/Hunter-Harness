@@ -28,7 +28,7 @@ disallowed-tools:
 
 确定 change 后必须运行 `python <skills-root>/scripts/harness_gate.py classify --change <id> --stage plan --json`，并把脚本返回的 risk tier、默认阶段、条件阶段和必需验证写入计划；不得凭模型印象另建风险分级。
 
-需求 → 设计文档 → 任务拆分 → 测试场景表（编码/测试唯一真相源）。存在 `.harness/archive/` 或 `.harness/knowledge/` 时须先 `harness-knowledge-query`。
+需求 → 设计文档 → 任务拆分 → 测试场景表（编码/测试唯一真相源）。项目已绑定远端平台时先执行一次 `harness-knowledge-query`；远端不可用则记录 issue 并继续，不做本地回退。
 
 ## When to Use
 
@@ -60,7 +60,7 @@ disallowed-tools:
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
 | 0.5 | 先执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --json`，以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
-| 1 | `harness-knowledge-query` 单次 query（内部 ensure-current；失败记 `issue`） |
+| 1 | `harness-knowledge-query` 单次远端 query（失败记 `issue`，不建立本地索引或离线回退） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |

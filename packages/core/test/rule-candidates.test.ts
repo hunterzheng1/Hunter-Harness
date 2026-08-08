@@ -32,7 +32,7 @@ describe("rule candidate learning", () => {
     const first = await synchronizeRuleCandidates(root);
     const second = await synchronizeRuleCandidates(root);
     const manifest = JSON.parse(await readFile(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       "utf8"
     )) as { candidates: Array<Record<string, unknown>> };
 
@@ -68,7 +68,7 @@ describe("rule candidate learning", () => {
 
     const result = await synchronizeRuleCandidates(root);
     const manifest = JSON.parse(await readFile(
-      join(root, ".harness", "knowledge", "rule-candidates.json"),
+      join(root, ".harness", "state", "local", "rule-candidates.json"),
       "utf8"
     )) as { candidates: Array<{ proposed_rule: string }> };
 

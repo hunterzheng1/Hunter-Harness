@@ -4,11 +4,11 @@
 Subcommands:
   status   — pre-archive gate checks (read-only)
   finalize — single-process archive: manifest → move → collect → render →
-             validate → after-manifest → delete-or-keep → knowledge/service
+             validate → after-manifest → publish → ZIP upload/service
   replay   — read-only re-collect + validate for historical archives
 
 Python 3.10+, stdlib only. UTF-8 without BOM. Windows path safe.
-Depends on P0-1 harness_events.py; optionally P0-3 harness_knowledge.py.
+Depends on P0-1 harness_events.py. Knowledge ingest is owned by Hunter Platform.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import sys
 import tarfile
 import tempfile
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -41,9 +42,6 @@ SKILLS_ROOT = SCRIPTS_DIR.parent
 RENDER_SCRIPT = SKILLS_ROOT / "harness-archive" / "templates" / "render-summary.mjs"
 SUMMARY_TEMPLATE = (
     SKILLS_ROOT / "harness-archive" / "templates" / "summary-data-template.json"
-)
-KNOWLEDGE_SCRIPT = (
-    SKILLS_ROOT / "harness-knowledge-ingest" / "scripts" / "harness_knowledge.py"
 )
 SERVICE_SCRIPT = SCRIPTS_DIR / "harness_service.py"
 
@@ -1924,38 +1922,12 @@ def worktree_requested(change_dir: Path) -> bool:
 
 
 def check_archive_exact_byte_policy(project_root: Path) -> dict[str, Any]:
-    """Verify frozen archive paths are exempt from Git text conversion."""
-    required_rule = ".harness/archive/** -text"
-    attributes_path = project_root / ".gitattributes"
-    rules: list[str] = []
-    if attributes_path.is_file():
-        try:
-            rules = [
-                line.strip()
-                for line in attributes_path.read_text(encoding="utf-8-sig").splitlines()
-                if line.strip() and not line.lstrip().startswith("#")
-            ]
-        except OSError:
-            rules = []
-    matching = []
-    for rule in rules:
-        fields = rule.split()
-        if not fields or fields[0] != ".harness/archive/**":
-            continue
-        matching.append(rule)
-        if "-text" in fields[1:] or "binary" in fields[1:]:
-            return {
-                "ok": True,
-                "path": str(attributes_path),
-                "requiredRule": required_rule,
-                "matchedRule": rule,
-            }
+    """Exact bytes are guaranteed by ZIP entry hashes, independent of Git."""
     return {
-        "ok": False,
-        "path": str(attributes_path),
-        "requiredRule": required_rule,
-        "matchedRules": matching,
-        "remediation": f"add this exact-byte rule to .gitattributes: {required_rule}",
+        "ok": True,
+        "mode": "zip-content-hash",
+        "gitattributesRequired": False,
+        "note": "archive bytes are verified by manifest and package SHA-256",
     }
 
 
@@ -7001,79 +6973,6 @@ def materialize_repository_artifacts(change_dir: Path) -> dict[str, Any]:
     return result
 
 
-def run_knowledge_poststeps(project_root: Path) -> dict[str, Any]:
-    results: dict[str, Any] = {"ran": False, "steps": [], "warnings": []}
-    if not KNOWLEDGE_SCRIPT.is_file():
-        results["warnings"].append(f"harness_knowledge.py not found: {KNOWLEDGE_SCRIPT}")
-        return results
-    results["ran"] = True
-    for cmd in ("ingest", "dedupe", "auto-supersede", "reverify-stale"):
-        try:
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    str(KNOWLEDGE_SCRIPT),
-                    cmd,
-                    "--project",
-                    str(project_root),
-                    "--json",
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=300,
-                check=False,
-            )
-            step = {
-                "command": cmd,
-                "exit_code": proc.returncode,
-                "ok": proc.returncode == 0,
-            }
-            if proc.returncode != 0:
-                step["stderr"] = (proc.stderr or proc.stdout or "")[:500]
-                results["warnings"].append(f"knowledge {cmd} exit {proc.returncode}")
-            results["steps"].append(step)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            results["steps"].append({"command": cmd, "ok": False, "error": str(exc)})
-            results["warnings"].append(f"knowledge {cmd} failed: {exc}")
-    return results
-
-
-def enqueue_maintenance_outbox(project_root: Path, archive_dir: Path) -> dict[str, Any]:
-    """§8.2: write a pending maintenance-outbox item instead of synchronously
-    running the four knowledge subprocesses. Never rolls back the archive."""
-    pending_dir = (
-        project_root / ".harness" / "knowledge" / "maintenance-outbox" / "pending"
-    )
-    pending_dir.mkdir(parents=True, exist_ok=True)
-    archive_id = archive_dir.name
-    manifest = archive_dir / "evidence" / "archive-manifest-after.json"
-    manifest_hash = "sha256:" + sha256_file(manifest) if manifest.is_file() else ""
-    try:
-        rel = archive_dir.resolve().relative_to(project_root.resolve()).as_posix()
-    except ValueError:
-        rel = str(archive_dir)
-    item = {
-        "schemaVersion": 1,
-        "archiveId": archive_id,
-        "archivePath": rel,
-        "archiveManifestHash": manifest_hash,
-        "status": "pending",
-        "attempts": 0,
-        "createdAt": now_iso(),
-        "lastError": None,
-    }
-    item_path = pending_dir / f"{archive_id}.json"
-    write_json(item_path, item)
-    return {
-        "queued": True,
-        "outboxPath": str(item_path),
-        "archiveId": archive_id,
-        "status": "pending",
-    }
-
-
 def run_service_stop(change_dir: Path) -> dict[str, Any]:
     if not SERVICE_SCRIPT.is_file():
         return {
@@ -8325,19 +8224,15 @@ def cmd_finalize(
             warnings.append(f"could not remove archived runtime state: {exc}")
             payload["steps"]["delete_runtime_state"] = {"ok": False, "error": str(exc)}
 
-    # --- 12. maintenance outbox + service ---
-    if skip_ingest:
-        payload["steps"]["knowledge"] = {"skipped": True, "reason": "--skip-ingest"}
-        payload["knowledgeMaintenance"] = "SKIPPED"
-    else:
-        try:
-            enqueue = enqueue_maintenance_outbox(project_root, work_dir)
-            payload["steps"]["knowledge"] = enqueue
-            payload["knowledgeMaintenance"] = "QUEUED"
-        except OSError as exc:
-            warnings.append(f"maintenance outbox enqueue failed: {exc}")
-            payload["steps"]["knowledge"] = {"queued": False, "error": str(exc)}
-            payload["knowledgeMaintenance"] = "NOT_QUEUED"
+    # --- 12. remote knowledge ownership + service ---
+    # Knowledge ingest is server-owned. The local archive never builds or keeps
+    # a searchable knowledge index; upload status below is the ingest receipt.
+    payload["steps"]["knowledge"] = {
+        "mode": "remote-after-archive-upload",
+        "localIngest": False,
+        "legacySkipIngestFlag": bool(skip_ingest),
+    }
+    payload["knowledgeMaintenance"] = "REMOTE_PENDING"
 
     service_result = run_service_stop(work_dir)
     payload["steps"]["service_stop"] = service_result
@@ -8365,10 +8260,17 @@ def cmd_finalize(
     except OSError as exc:
         warnings.append(f"could not persist completed archive operation: {exc}")
 
-    # P4: when remote credentials exist, auto-push the core four
-    # (design/plan/summary-data/knowledge) via the existing push channel.
-    push_result = auto_push_archive_core(project_root, archive_dir)
+    # When remote credentials exist, upload one deterministic core-only ZIP.
+    push_result = auto_push_archive_core(
+        project_root,
+        archive_dir,
+        change_key=change_name,
+    )
     payload["steps"]["archive_push"] = push_result
+    if push_result.get("knowledgeStatus") == "ready":
+        payload["knowledgeMaintenance"] = "REMOTE_READY"
+    elif push_result.get("ok"):
+        payload["knowledgeMaintenance"] = "REMOTE_INDEX_FAILED"
     if push_result.get("warning"):
         warnings.append(str(push_result["warning"]))
 
@@ -8408,7 +8310,7 @@ def _remote_credentials_configured(project_root: Path) -> bool:
 
 
 def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[str]:
-    """Relative paths for the archive push allowlist (core + optional supporting)."""
+    """Return only durable core files; diagnostics and local knowledge stay local."""
     root = project_root.resolve()
     archive = archive_dir.resolve()
     paths: list[str] = []
@@ -8422,28 +8324,190 @@ def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[st
         base = archive / folder
         if base.is_dir():
             for path in sorted(base.rglob("*")):
-                if path.is_file():
-                    paths.append(path.relative_to(root).as_posix())
-    # C1 optional supporting files.
-    for folder in (("reports", "review"), ("reports", "test")):
-        base = archive.joinpath(*folder)
-        if base.is_dir():
-            for path in sorted(base.rglob("*")):
-                if path.is_file():
+                if path.is_file() and path.suffix.lower() == ".md":
                     paths.append(path.relative_to(root).as_posix())
     add_if_exists(archive / "meta" / "archive-meta.md")
     add_if_exists(archive / "meta" / "change-context.json")
-    knowledge = root / ".harness" / "knowledge" / "entries"
-    for status in ("active", "candidate"):
-        folder = knowledge / status
-        if folder.is_dir():
-            for path in sorted(folder.glob("*.json")):
-                paths.append(path.relative_to(root).as_posix())
     return paths
 
 
-def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, Any]:
-    """Best-effort remote push of archive core artifacts after finalize.
+def _archive_source_identity(project_root: Path) -> dict[str, str | None]:
+    def git_value(*args: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=str(project_root),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        value = completed.stdout.strip()
+        return value if completed.returncode == 0 and value else None
+
+    return {
+        "commit": git_value("rev-parse", "HEAD"),
+        "tree": git_value("rev-parse", "HEAD^{tree}"),
+    }
+
+
+def _archive_created_at(summary_path: Path) -> str:
+    try:
+        summary = read_json(summary_path)
+    except (OSError, json.JSONDecodeError):
+        return "1980-01-01T00:00:00.000Z"
+    for key in ("archivedAt", "archived_at", "generatedAt", "generated_at"):
+        value = summary.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "1980-01-01T00:00:00.000Z"
+
+
+def _deterministic_zip_info(path: str) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = (0o100644 & 0xFFFF) << 16
+    return info
+
+
+def build_archive_package(
+    project_root: Path,
+    archive_dir: Path,
+    change_key: str,
+    *,
+    output_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build the deterministic core-v1 ZIP uploaded to hunter-platform."""
+    project_root = project_root.resolve()
+    archive_dir = archive_dir.resolve()
+    if not archive_dir.is_dir():
+        raise ValueError(f"archive dir not found: {archive_dir}")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", change_key) is None:
+        raise ValueError("change_key must be a portable path segment")
+
+    file_specs: list[tuple[Path, str, str, str]] = []
+
+    def add(source: Path, package_path: str, role: str, media_type: str) -> None:
+        if source.is_file():
+            file_specs.append((source, package_path, role, media_type))
+
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    add(summary_path, "reports/final/summary-data.json", "summary", "application/json")
+    for folder, role in (("spec", "spec"), ("plans", "plan")):
+        root = archive_dir / folder
+        if root.is_dir():
+            for source in sorted(root.rglob("*.md")):
+                relative = source.relative_to(root).as_posix()
+                add(source, f"{folder}/{relative}", role, "text/markdown")
+    add(archive_dir / "meta" / "archive-meta.md", "archive-meta.md", "archive_meta", "text/markdown")
+    add(
+        archive_dir / "meta" / "change-context.json",
+        "change-context.json",
+        "change_context",
+        "application/json",
+    )
+    if not summary_path.is_file():
+        raise ValueError("archive final summary-data.json is required")
+
+    entries: list[dict[str, Any]] = []
+    content_by_path: dict[str, bytes] = {}
+    for source, package_path, role, media_type in sorted(file_specs, key=lambda item: item[1]):
+        raw = source.read_bytes()
+        # All semantic archive inputs are text and must round-trip as UTF-8.
+        raw.decode("utf-8")
+        if media_type == "application/json":
+            json.loads(raw)
+        content_by_path[package_path] = raw
+        entries.append(
+            {
+                "path": package_path,
+                "role": role,
+                "media_type": media_type,
+                "content_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+            }
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "profile": "core-v1",
+        "change_key": change_key,
+        "created_at": _archive_created_at(summary_path),
+        "source": _archive_source_identity(project_root),
+        "files": entries,
+    }
+    manifest_bytes = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+    if output_path is None:
+        output_path = (
+            project_root
+            / ".harness"
+            / "state"
+            / "local"
+            / "archive-packages"
+            / f"{change_key}.zip"
+        )
+    output_path = output_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + f".{uuid.uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(
+            temporary,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+            strict_timestamps=True,
+        ) as package:
+            package.writestr(
+                _deterministic_zip_info("archive-manifest.json"),
+                manifest_bytes,
+                compress_type=zipfile.ZIP_DEFLATED,
+                compresslevel=9,
+            )
+            for path in sorted(content_by_path):
+                package.writestr(
+                    _deterministic_zip_info(path),
+                    content_by_path[path],
+                    compress_type=zipfile.ZIP_DEFLATED,
+                    compresslevel=9,
+                )
+        os.replace(temporary, output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    package_raw = output_path.read_bytes()
+    return {
+        "schemaVersion": 1,
+        "profile": "core-v1",
+        "changeKey": change_key,
+        "packagePath": str(output_path),
+        "packageSha256": "sha256:" + hashlib.sha256(package_raw).hexdigest(),
+        "manifestSha256": "sha256:" + hashlib.sha256(manifest_bytes).hexdigest(),
+        "fileCount": len(entries),
+        "sizeBytes": len(package_raw),
+        "paths": [entry["path"] for entry in entries],
+    }
+
+
+def auto_push_archive_core(
+    project_root: Path,
+    archive_dir: Path,
+    *,
+    change_key: str | None = None,
+) -> dict[str, Any]:
+    """Build and upload one deterministic core ZIP after finalize.
 
     Skips silently when credentials are absent. Failures become warnings so
     archive success is never rolled back by a push outage.
@@ -8451,11 +8515,29 @@ def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, A
     project_root = project_root.resolve()
     if not _remote_credentials_configured(project_root):
         return {"skipped": True, "reason": "no remote credentials"}
-    core_paths = collect_archive_core_paths(project_root, archive_dir)
+    effective_change_key = change_key or archive_dir.name
+    try:
+        package = build_archive_package(
+            project_root,
+            archive_dir,
+            effective_change_key,
+        )
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {
+            "skipped": False,
+            "ok": False,
+            "warning": f"archive package build failed: {exc}",
+        }
+    core_paths = list(package["paths"])
     pending = {
         "schemaVersion": 1,
         "generatedAt": now_iso(),
         "archiveDir": str(archive_dir),
+        "changeKey": effective_change_key,
+        "packagePath": package["packagePath"],
+        "packageSha256": package["packageSha256"],
+        "manifestSha256": package["manifestSha256"],
+        "fileCount": package["fileCount"],
         "paths": core_paths,
     }
     pending_path = project_root / ".harness" / "state" / "archive-push-pending.json"
@@ -8470,12 +8552,18 @@ def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, A
             "warning": f"could not write archive-push-pending.json: {exc}",
         }
 
-    # Prefer the published CLI; fall back to recording the pending receipt only.
+    # The published CLI owns credentials, project binding, durable receipt checks,
+    # and retries. Generic `push` is intentionally not used for archive bytes.
     command = [
         "npx",
         "--yes",
         "hunter-harness",
-        "push",
+        "archive",
+        "upload",
+        "--file",
+        str(package["packagePath"]),
+        "--change-key",
+        effective_change_key,
         "--yes",
         "--non-interactive",
         "--json",
@@ -8495,6 +8583,9 @@ def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, A
             "skipped": False,
             "ok": False,
             "paths": core_paths,
+            "packagePath": package["packagePath"],
+            "packageSha256": package["packageSha256"],
+            "fileCount": package["fileCount"],
             "pending": str(pending_path),
             "warning": f"archive auto-push deferred: {exc}",
         }
@@ -8503,6 +8594,11 @@ def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, A
         "skipped": False,
         "ok": ok,
         "paths": core_paths,
+        "packagePath": package["packagePath"],
+        "packageSha256": package["packageSha256"],
+        "manifestSha256": package["manifestSha256"],
+        "fileCount": package["fileCount"],
+        "sizeBytes": package["sizeBytes"],
         "pending": str(pending_path),
         "exitCode": completed.returncode,
     }
@@ -8510,15 +8606,34 @@ def auto_push_archive_core(project_root: Path, archive_dir: Path) -> dict[str, A
         result["warning"] = (
             "archive auto-push failed (exit "
             + str(completed.returncode)
-            + "); pending receipt kept for retry via `hunter-harness push`"
+            + "); ZIP and pending receipt kept for retry via "
+            + "`hunter-harness archive upload`"
         )
         if completed.stderr.strip():
             result["stderr"] = completed.stderr.strip()[:500]
     else:
         try:
-            pending_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+            cli_payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            cli_payload = {}
+        result["archiveId"] = cli_payload.get("archive_id")
+        result["archiveStatus"] = cli_payload.get("archive_status")
+        result["knowledgeStatus"] = cli_payload.get("knowledge_status")
+        fully_ready = (
+            result["archiveStatus"] == "durable"
+            and result["knowledgeStatus"] == "ready"
+        )
+        if fully_ready:
+            try:
+                pending_path.unlink(missing_ok=True)
+                Path(str(package["packagePath"])).unlink(missing_ok=True)
+            except OSError:
+                pass
+        else:
+            result["warning"] = (
+                "归档原包已上传，但服务端知识索引尚未就绪；"
+                "已保留 ZIP 与 pending 回执，可重试同一个 ZIP。"
+            )
     return result
 
 

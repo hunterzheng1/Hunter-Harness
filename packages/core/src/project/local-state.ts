@@ -12,8 +12,7 @@ import { sha256File } from "../fs/hash.js";
 
 export const PROTECTED_LOCAL_ROOTS = [
   ".harness/archive",
-  ".harness/changes",
-  ".harness/knowledge/project-local"
+  ".harness/changes"
 ] as const;
 
 const ADAPTER_SKILL_ROOTS = [

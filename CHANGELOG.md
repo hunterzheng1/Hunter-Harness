@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.53] — hunter-harness / [0.2.51] — @hunter-harness/workflow-harness
+
+### Changed（2026-08-08 归档、知识与指令职责服务端化）
+
+- **确定性 core-v1 归档包**：archive finalize 生成带 manifest 与 SHA-256 的单一 ZIP，只包含最终摘要、spec、plans、archive-meta 和 change-context；新增 `archive upload` 上传并等待远端耐久/知识状态。
+- **知识服务端权威**：归档上传后由 Hunter Platform 安全解包、重建知识索引；`knowledge query` 改为纯远端查询，移除当前发行包中的本地 SQLite、entries、context-pack 和离线 fallback。
+- **指令提案工作流**：新增 `instructions audit/apply`，结合项目类型、codebase map 与近期 change 总结生成默认中文、无 marker、带 base hash 的审阅提案；规则候选永不自动应用。
+- **消费仓降噪**：初始化、refresh、sync 不再向 AGENTS/CLAUDE 文档注入 Hunter marker，也不再生成或要求消费仓 `.gitattributes`。
+- **工作流 bundle**：版本提升至 `0.2.39`，最低 CLI 版本提升至 `0.2.53`。
+
 ## [0.2.52] — hunter-harness / [0.2.50] — @hunter-harness/workflow-harness
 
 ### Added（2026-08-08 平台缺口 CLI 侧 C1–C4）

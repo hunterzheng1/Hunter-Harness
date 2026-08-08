@@ -1,6 +1,6 @@
 # Hunter Harness
 
-Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。项目 CLI 维护本地 working copy；`push` 只创建 proposal，人工审核通过后，`update` 才事务化应用已发布 artifact。
+Hunter Harness 是“本地轻量、服务端治理”的 Agent Harness。项目 CLI 负责本地工作流、确定性归档打包和安全应用；Hunter Platform 保存归档原包、解包入库、提供远端知识查询，并生成中文项目指令优化提案。
 
 ## 快速安装
 
@@ -34,7 +34,7 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 
 已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。
 
-选择 CodeBuddy 时，CLI 会询问是否把已有的自定义 `.claude/rules` 非破坏性复制到所选 CodeBuddy surface；目标已存在时保留目标，疑似包含 token、密码或私钥的规则不复制。项目已有 `.codegraph/` 且 `.mcp.json` 未配置 CodeGraph 时，也会询问是否合并项目级 MCP 配置。未选择 CodeBuddy 时，这两项都不读取、不修改。
+选择 CodeBuddy 时，CLI 不再复制 Claude 规则或改写 Agent 文档，而是提示运行 `instructions audit` 生成统一优化提案。项目已有 `.codegraph/` 且 `.mcp.json` 未配置 CodeGraph 时，仍会询问是否合并项目级 MCP 配置；未选择 CodeBuddy 时不读取或修改这些配置。
 
 ## 项目级 CLI
 
@@ -47,6 +47,10 @@ npx hunter-harness recover <recovery-id> --action inspect --json
 npx hunter-harness resume <recovery-id> --non-interactive --yes --json
 npx hunter-harness recover <recovery-id> --action rollback --non-interactive --yes --json
 npx hunter-harness rules-sync --json
+npx hunter-harness instructions audit --json
+npx hunter-harness instructions apply --proposal <proposal.json> --yes --json
+npx hunter-harness knowledge query "<问题>" --json
+npx hunter-harness archive upload --file <archive.zip> --change-key <change-key> --yes --json
 npx hunter-harness push
 npx hunter-harness update
 ```
@@ -54,11 +58,16 @@ npx hunter-harness update
 - `npx hunter-harness`：未安装时离线初始化；已安装且状态健康时直接 refresh；存在未完成事务时先进入恢复。
 - `status`：只读输出本地恢复状态、变更是否已部分应用和建议动作。
 - `recover` / `resume`：按稳定 recovery ID 检查或回滚指定事务；非交互回滚必须显式提供 `--yes`。
-- `rules-sync`：把各 Agent 的全局规则收敛到 `.harness/rules/` 并刷新受管投影，同时从结构化 review/test/archive 证据生成待审规则候选；分歧和 Agent 专属规则不会被覆盖。
+- `rules-sync`：兼容入口；调用远端审计生成中文提案，不再注入 `<!-- hunter-harness:start ... -->` 标记或直接改写项目文件。
+- `instructions audit/apply`：服务端结合项目类型、现有文档、Codebase Map、近期变更和公开最佳实践生成提案；本地审阅后按基线哈希事务化应用。变更经验只形成规则候选，不自动采纳。
+- `knowledge query`：只查询 Hunter Platform；远端不可用时直接失败，不建立本地索引或离线回退。
+- `archive upload`：上传一个确定性 ZIP。服务端保存原包、安全解包并 ingest；ZIP 只包含 summary、spec、plans、archive-meta 和 change-context 等核心文件。
 - `push`：预览、敏感信息扫描、首次项目绑定并上传 proposal；不推进 baseline。
 - `update`：仅拉取已批准 artifact，校验 SHA-256 后事务化写入。
 
-初始化默认创建 `AGENTS.md`，`CLAUDE.md` 保持为极简路由文件；`.harness/rules/` 是公共项目规则唯一真源。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
+初始化只在文档不存在或为空时创建简洁中文入口，已有 `AGENTS.md` / `CLAUDE.md` / `CODEBUDDY.md` 保持原样。优化通过“审计—提案—确认应用”完成；CLI 不要求也不生成消费项目的 `.gitattributes`。Claude Code Skill 由 canonical Skill IR 编译到 `.claude/skills/harness-*/SKILL.md`。
+
+配置远端凭据后，归档 finalize 会生成单个 ZIP 并自动上传。日志、测试/审查报告、HTML、缓存、备份和临时文件只留在本地归档，不进入远端核心包；上传或索引失败时 ZIP 与失败收据保留在 `.harness/state/local/archive-packages/` 供重试。本地 Python/SQLite 知识引擎已从当前 Bundle 移除。
 
 ## 独立 Skill CLI
 

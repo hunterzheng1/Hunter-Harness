@@ -852,7 +852,6 @@ def _node_commands(project: Path) -> dict[str, Any]:
         inputs.extend(
             [
                 "harness/scripts/*.py",
-                "harness/harness-knowledge-ingest/scripts/*.py",
                 "harness/harness-test/scripts/*.mjs",
                 "harness/harness-test/scripts/tests/*.mjs",
                 "scripts/*.mjs",

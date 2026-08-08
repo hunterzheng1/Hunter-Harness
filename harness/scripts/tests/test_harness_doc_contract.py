@@ -20,9 +20,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = ROOT / "harness" / "scripts"
-KNOWLEDGE_SCRIPT = (
-    ROOT / "harness" / "harness-knowledge-ingest" / "scripts" / "harness_knowledge.py"
-)
 DOC_DIRS = [ROOT / "harness" / "protocols"] + sorted(
     path for path in (ROOT / "harness").iterdir() if path.is_dir() and path.name.startswith("harness-")
 )
@@ -38,7 +35,6 @@ def _script_paths() -> dict[str, Path]:
         for path in SCRIPTS_DIR.glob("harness_*.py")
         if path.name != "__init__.py"
     }
-    paths["harness_knowledge"] = KNOWLEDGE_SCRIPT
     return paths
 
 

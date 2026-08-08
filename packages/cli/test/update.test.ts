@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -127,6 +127,7 @@ describe("hunter-harness update", () => {
   async function seedBaseline(contents: Record<string, string>): Promise<BaselineManifest> {
     const baseline = await readBaseline(root);
     for (const [path, content] of Object.entries(contents)) {
+      await mkdir(dirname(join(root, path)), { recursive: true });
       await writeFile(join(root, path), content);
       baseline.files[path] = {
         baseline_hash: sha256Bytes(content),
@@ -376,7 +377,13 @@ describe("hunter-harness update", () => {
 
   it("updates only the managed block and preserves user-authored guidance", async () => {
     const path = "CLAUDE.md";
-    const original = await readFile(join(root, path), "utf8");
+    const original = [
+      "<!-- hunter-harness:start -->",
+      "# Hunter Harness",
+      "Legacy managed guidance.",
+      "<!-- hunter-harness:end -->",
+      ""
+    ].join("\n");
     const baseline = await seedBaseline({ [path]: original });
     const block = extractManagedBlock(original) ?? "";
     const baselineEntry = baseline.files[path];

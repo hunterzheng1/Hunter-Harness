@@ -280,7 +280,7 @@ describe("hunter-harness initialization", () => {
     expect(agentPrompt).toContain("5. 全部");
   }, 120_000);
 
-  it("migrates shared rules idempotently and offers CodeGraph MCP when CodeBuddy is selected", async () => {
+  it("keeps existing agent rules isolated and offers CodeGraph MCP when CodeBuddy is selected", async () => {
     await mkdir(join(root, ".claude", "rules"), { recursive: true });
     await mkdir(join(root, ".codegraph"), { recursive: true });
     await writeFile(join(root, ".claude", "rules", "team.md"), "# Team rule\n");
@@ -299,10 +299,11 @@ describe("hunter-harness initialization", () => {
     expect(code).toBe(0);
     expect(questions.some((question) => question.includes("Claude 自定义规则"))).toBe(false);
     expect(questions.some((question) => question.includes("CodeGraph MCP"))).toBe(true);
-    expect(await readFile(join(root, ".harness", "rules", "team.md"), "utf8"))
-      .toContain("Team rule");
-    expect(await readFile(join(root, ".codebuddy", ".rules", "team.mdc"), "utf8"))
-      .toContain("Team rule");
+    expect(await readFile(join(root, ".claude", "rules", "team.md"), "utf8"))
+      .toBe("# Team rule\n");
+    expect(await pathExists(join(root, ".harness", "rules", "team.md"))).toBe(false);
+    expect(await pathExists(join(root, ".codebuddy", ".rules", "team.mdc"))).toBe(false);
+    expect(stdout.join("")).toContain("instructions audit");
     const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")) as {
       mcpServers: Record<string, unknown>;
     };
@@ -446,8 +447,11 @@ describe("hunter-harness initialization", () => {
 
     expect(secondClaude).toBe(firstClaude);
     expect(secondClaude).toContain("# User Claude");
-    expect(secondClaude.match(/hunter-harness:start/g)).toHaveLength(1);
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toContain("# User Agents");
+    expect(secondClaude).not.toContain("hunter-harness:start");
+    expect(secondClaude).toBe("# User Claude\nKeep this.\n");
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(
+      "# User Agents\nKeep this too.\n"
+    );
   });
 
   it.each(["general", "java"])("installs %s bundle byte-for-byte", async (profile) => {

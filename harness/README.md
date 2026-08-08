@@ -56,8 +56,8 @@
 | harness-review | `[Read, Write, Edit, Glob, Grep, Agent, Bash(powershell.exe:*)]` | 同上 |
 | harness-sync | `[Read, Glob, Grep, Edit, Write, Bash(powershell.exe:*)]` | 同上 |
 | harness-codebase-map | `[Read, Glob, Grep, Write, Edit, Agent, Bash(powershell.exe:*)]` | 同上 |
-| harness-knowledge-query | `[Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]` | 同上 |
-| harness-knowledge-ingest | `[Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]` | 同上 |
+| harness-knowledge-query | `[Bash(powershell.exe:*), Read, Glob, Grep]` | 同上 |
+| harness-knowledge-ingest | `[Bash(powershell.exe:*), Read, Glob, Grep]` | 同上 |
 
 > **blocking user confirmation 不预批准**：各 skill 需要向用户确认时通过普通权限提示调用 `blocking user confirmation`（adapter 映射到 `AskUserQuestion`/`request_user_input`/普通对话），不在 `allowed-tools` 中预批准（遵循 skill-optimizer 规则）。`harness-codebase-map` 额外预批准 `Agent` 用于派发并行 mapper。
 
@@ -227,8 +227,8 @@ harness-skills/
 | harness-review | `/harness-review` | 6维度参考性审查（不阻塞后续流程） | `test` | 手动 | `.harness/changes/<cn>/reports/review/` |
 | harness-submit | `/harness-submit` 或 `/harness-merge`（别名） | commit+push（主目录）/ worktree：本地 commit→--no-ff 合并→push 主分支 | `review` | 手动 | ledger `mergeFinalHash` + 控制台报告 |
 | harness-archive | `/harness-archive` | 归档产出到 archive/YYYY-MM-DD-<cn>，释放工作区 | `submit` | 手动 | `.harness/archive/YYYY-MM-DD-<cn>/` |
-| harness-knowledge-query | `/harness-knowledge-query` | 查询 .harness/knowledge 历史上下文，生成需求 context pack | `sync`/独立 | ✅ | `.harness/knowledge/context-packs/` |
-| harness-knowledge-ingest | `/harness-knowledge-ingest` | 从 archive 整理/同步/维护知识索引（promote/demote/audit） | `archive` | ✅ | `.harness/knowledge/index.json` |
+| harness-knowledge-query | `/harness-knowledge-query` | 只查询平台语义知识；无本地索引或离线回退 | 独立 | ✅ | CLI JSON（不落本地知识文件） |
+| harness-knowledge-ingest | `/harness-knowledge-ingest` | 确认归档 ZIP 已由平台保存、解包并 ingest | `archive` | ✅ | 服务端 package/knowledge 收据 |
 
 > 生命周期 skill（plan → run → test → review → submit → archive）为**手动触发**：单阶段结束后停止，不自动接续下一阶段（已设 `disable-model-invocation`）。sync / codebase-map / knowledge 等辅助 skill 仍可按需被调用。`harness-run`、`harness-submit`、`harness-archive` 涉及 git 写操作、文件移动或归档，调用前必须确保前置条件已满足。
 > `<cn>` = change-name，由 harness-plan 阶段7确定。其他 skill 自动扫描未归档变更定位。

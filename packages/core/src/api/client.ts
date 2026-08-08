@@ -224,6 +224,108 @@ export class HunterHarnessApiClient {
     );
   }
 
+  async uploadChangeArchivePackage(options: {
+    projectId: string;
+    changeKey: string;
+    archive: Uint8Array;
+    requestId: string;
+    idempotencyKey: string;
+  }): Promise<{
+    schema_version: 1;
+    archive_id: string;
+    project_id: string;
+    change_key: string;
+    package_sha256: string;
+    manifest_sha256: string;
+    artifact_id: string | null;
+    archive_status: "durable";
+    knowledge_status: "indexing" | "ready" | "failed";
+    stored_files: number;
+    uploaded_at: string;
+    request_id: string;
+  }> {
+    return this.request(
+      "PUT",
+      "/api/v1/projects/" + encodeURIComponent(options.projectId) +
+        "/changes/" + encodeURIComponent(options.changeKey) + "/archive-package",
+      {
+        requestId: options.requestId,
+        idempotencyKey: options.idempotencyKey,
+        rawBody: options.archive,
+        headers: { "Content-Type": "application/zip" }
+      }
+    );
+  }
+
+  async searchSemanticKnowledge(options: {
+    projectId: string;
+    query: string;
+    requestId: string;
+  }): Promise<{
+    items: Array<{
+      project_id: string;
+      document: {
+        document_id: string;
+        project_id: string;
+        artifact_id: string;
+        kind: string;
+        source_path: string;
+        title: string;
+        body: string;
+        metadata: Record<string, unknown>;
+        content_sha256: string;
+      };
+    }>;
+    request_id: string;
+  }> {
+    const parameters = new URLSearchParams({
+      q: options.query,
+      project_id: options.projectId
+    });
+    return this.request(
+      "GET",
+      "/api/v1/semantic/search?" + parameters.toString(),
+      { requestId: options.requestId }
+    );
+  }
+
+  async createInstructionProposal(options: {
+    projectId: string;
+    body: object;
+    requestId: string;
+    idempotencyKey: string;
+  }): Promise<{
+    schema_version: 1;
+    proposal_id: string;
+    project_id: string;
+    language: "zh-CN";
+    mode: "audit-propose";
+    applied: false;
+    generated_at: string;
+    findings: Array<Record<string, unknown>>;
+    files: Array<{
+      path: string;
+      operation: "add" | "modify";
+      base_content_sha256: string | null;
+      content_sha256: string;
+      content: string;
+    }>;
+    rule_candidates: Array<Record<string, unknown>>;
+    basis: string[];
+    request_id: string;
+  }> {
+    return this.request(
+      "POST",
+      "/api/v1/projects/" + encodeURIComponent(options.projectId) +
+        "/instruction-proposals",
+      {
+        requestId: options.requestId,
+        idempotencyKey: options.idempotencyKey,
+        body: options.body
+      }
+    );
+  }
+
   async finalizeProposal(
     sessionId: string,
     body: {

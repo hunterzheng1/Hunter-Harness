@@ -6,7 +6,7 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 
 ## 升级与本地状态保护边界
 
-`.harness/archive/`、`.harness/changes/`、`.harness/knowledge/project-local/` 是 protected local roots。CLI init/configure/refresh/rules 操作前必须：
+`.harness/archive/`、`.harness/changes/` 是 protected local roots。CLI init/configure/refresh/rules 操作前必须：
 
 1. 综合 project marker、adapter `.harness-build.json`、managed block、恢复事务和非空 `.harness` 判断 `absent / valid / partial / recovery-required`；
 2. 对 protected roots 记录文件数、目录数、字节数、Merkle root，以及 archive 首末 identity；
@@ -84,21 +84,20 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 `runtime/retired-service-sessions/`；该动作保留原始回执且不终止进程。受管命令、
 环境会话和 fixback 的完整合同见 `execution-session-protocol.md`。
 
-## knowledge maintenance-outbox（§8）
+## 归档上传重试状态（§8）
 
-归档 close 不再同步执行知识维护；它写一个 pending outbox 项即返回：
+知识 ingest 由 Hunter Platform 在接收归档 ZIP 后执行，本地不再创建 `.harness/knowledge`
+或 maintenance-outbox。尚未被服务端确认持久化的包保存在：
 
 ```text
-.harness/knowledge/maintenance-outbox/
-  pending/<archive-id>.json      # 待维护
-  running/<archive-id>.json      # maintain 正在处理
-  completed/<archive-id>.json    # 已完成（status=completed 或 completed_rules_pending_judge）
-  failed/<archive-id>.json       # 失败（attempts+1，可重试）
+.harness/state/local/archive-packages/
+  <change-key>.zip              # 确定性核心归档包
+  <change-key>.upload.json      # 上传/失败收据（如存在）
 ```
 
-项 schema：`{schemaVersion, archiveId, archivePath, archiveManifestHash, status, attempts, createdAt, lastError, pendingJudgements?, completedAt?}`。
-
-`harness_knowledge.py maintain --project . --archive-id <id>` 单进程顺序：claim pending/failed -> running -> 增量 ingest（`build_index` 内含 in-memory near-dedupe，**不再二次磁盘 dedupe**）-> auto-supersede -> reverify-stale -> 导出残余 judge checklist -> running -> completed（或 `completed_rules_pending_judge` 若 `pendingJudgements>0`）。失败 -> failed（attempts+1，可重试）。completed 项重复 maintain 幂等。`harness-sync` 启动时扫描 pending/failed outbox 并执行 maintain。
+ZIP 只包含 summary、spec、plans、archive-meta、change-context 和包 manifest。上传失败保留；
+服务端返回匹配的 package SHA-256 且确认原包已保存后才清理。远端知识查询失败不得创建
+本地 fallback。
 
 ## 读取兼容
 

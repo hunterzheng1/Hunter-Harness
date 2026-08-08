@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 const ARCHIVE_ROOT = ".harness/archive";
-const CANDIDATE_PATH = ".harness/knowledge/rule-candidates.json";
+const CANDIDATE_PATH = ".harness/state/local/rule-candidates.json";
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
 const EVIDENCE_NAMES = [
   /^review-findings.*\.json$/i,

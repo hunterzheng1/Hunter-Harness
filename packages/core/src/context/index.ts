@@ -3,7 +3,6 @@ export interface ContextIndexOptions {
   enabledSkills: string[];
   mapStatus: "missing" | "stale" | "fresh";
   codegraphAvailable: boolean;
-  knowledgeIndexHash: string | null;
 }
 
 export function buildContextIndex(options: ContextIndexOptions): object {
@@ -12,8 +11,10 @@ export function buildContextIndex(options: ContextIndexOptions): object {
     project: { claude_md: "CLAUDE.md", agents_md: "AGENTS.md" },
     rules: [...options.rules].sort(),
     knowledge: {
-      index: ".harness/knowledge/index.json",
-      hash: options.knowledgeIndexHash
+      source: "remote",
+      local_index: null,
+      query: "npx hunter-harness knowledge query",
+      fallback: false
     },
     codebase: {
       map: ".harness/codebase/map",
@@ -32,7 +33,7 @@ export function buildContextIndex(options: ContextIndexOptions): object {
       "project-guidance",
       "rules",
       "skill",
-      "knowledge",
+      "remote-knowledge",
       "codebase-map",
       "codegraph",
       "source"

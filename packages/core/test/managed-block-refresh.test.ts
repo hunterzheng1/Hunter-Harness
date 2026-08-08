@@ -64,8 +64,8 @@ describe("managed markdown block refresh", () => {
   });
 });
 
-describe("managed block conflicts during refresh", () => {
-  it("preserves a malformed AGENTS.md as conflict while other targets still update", async () => {
+describe("legacy managed blocks outside refresh ownership", () => {
+  it("preserves a malformed AGENTS.md without blocking other managed targets", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-conflict-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
@@ -83,8 +83,8 @@ describe("managed block conflicts during refresh", () => {
       projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
     });
 
-    expect(result.conflicts.some((c) => c.target_path === "AGENTS.md")).toBe(true);
-    expect(result.conflicts.some((c) => c.reason === "MALFORMED_MANAGED_BLOCK")).toBe(true);
+    expect(result.conflicts.some((c) => c.target_path === "AGENTS.md")).toBe(false);
+    expect(result.conflicts.some((c) => c.reason === "MALFORMED_MANAGED_BLOCK")).toBe(false);
     // AGENTS.md 原样保留。
     expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(
       "# Doc\n" + START + START + "\nblock\n" + END + "\n"
@@ -93,7 +93,7 @@ describe("managed block conflicts during refresh", () => {
     expect(result.applied.some((i) => i.target_path === ".claude/agents/harness-reviewer.md")).toBe(true);
   });
 
-  it("--force-managed never overwrites bytes outside the managed block", async () => {
+  it("--force-managed leaves root instruction documents byte-identical", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-block-force-"));
     await initializeProject({
       projectRoot: root, resourcesRoot,
@@ -108,11 +108,7 @@ describe("managed block conflicts during refresh", () => {
       projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: true
     });
     const refreshed = await readFile(join(root, "AGENTS.md"), "utf8");
-    // force-managed 只替换块内，块外用户字节逐字保留。
-    expect(refreshed.startsWith(before)).toBe(true);
-    expect(refreshed.endsWith(after)).toBe(true);
-    expect(refreshed).toContain(AGENTS_MANAGED_BLOCK_CONTENT);
-    // 畸形标记才会冲突；合法块即便 force 也不报冲突。
+    expect(refreshed).toBe(validWithUser);
     expect(result.conflicts.some((c) => c.target_path === "AGENTS.md")).toBe(false);
   });
 });

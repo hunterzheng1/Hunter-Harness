@@ -173,20 +173,18 @@ python harness/scripts/harness_archive.py repair --archive-dir ".harness/archive
 
 repair 先在 archive 外生成候选 derived version，两层 validator 均通过后，才以不可变新版本写入 `derived/v<N>/{summary-data.json, final-summary.html, repair-record.json}`，并把 `derived/authoritative.json` pointer 指向该版本；**原 summary-data.json、final-summary.html 与 manifest 永不覆盖**。知识层只从 authoritative pointer 指向且 hash 校验通过的版本提取条目。
 
-## 归档与知识维护解耦（§8）
+## 归档包与服务端知识 ingest（§8）
 
 archive close 的破坏性事务只执行确定性 close：
 
 ```text
 status -> manifest -> move -> collect -> render -> validate -> compare
--> 写 maintenance outbox(pending) -> stop AI service -> return
+-> 生成确定性核心 ZIP -> 上传并等待服务端持久化/ingest 收据 -> stop AI service -> return
 ```
 
-close **不再同步顺序启动四次** `harness_knowledge.py`（ingest/dedupe/auto-supersede/reverify-stale）。它写一个 `pending` outbox 项即返回，`knowledgeMaintenance=QUEUED`；写 outbox 失败时 `NOT_QUEUED`（warning，不回滚 archive，`finalStatus` 仍由验证事实决定，本次总状态 CONDITIONAL）。
-
-outbox 布局见 `state-layout-protocol.md`「knowledge maintenance-outbox」。`harness_knowledge.py maintain --project . --archive-id <id>` 单进程推进：claim pending/failed -> running -> 增量 ingest（含 in-memory near-dedupe，不再二次磁盘 dedupe）-> auto-supersede -> reverify-stale -> 导出残余 judge checklist -> completed（或 `completed_rules_pending_judge` 若 `pendingJudgements>0`）。失败 -> failed（attempts+1，可重试）；completed 项幂等。`harness-sync` 启动时扫描 pending/failed outbox 并执行 maintain。
-
-**机械 maintain 不得假装完成语义裁决**：存在待裁决项（conflict / promote-candidate）时状态为 `completed_rules_pending_judge`、`pendingJudgements>0`、写 `pending-judgements-<archive-id>.json`，由模型层后续 `judge --apply` 处理；`manualReview=true` 时保留人工确认。
+close 不再运行 `harness_knowledge.py`，也不写本地 outbox/index。服务端先保存原 ZIP，再安全
+解包发布核心文件并重建项目语义索引；客户端以 package hash 与 `knowledge_status` 作为收据。
+失败时本地归档保持有效，待上传 ZIP 保留供同包重试，不允许改走散文件 push 或本地索引。
 
 ## 最终状态
 

@@ -1,288 +1,72 @@
 ---
 name: harness-knowledge-ingest
-description: "从 .harness/archive 归档整理、同步和维护项目知识索引。适用场景：ingest knowledge、sync knowledge、rebuild knowledge index、promote knowledge、确认知识条目、检查知识库是否过期。"
-argument-hint: "auto(默认) | status | repair | ingest | audit | promote <entry-id> | demote <entry-id> | mcp"
-effort: medium
-allowed-tools: [Bash(powershell.exe:*), Read, Write, Edit, Glob, Grep]
+description: "确认归档 ZIP 已上传并由 Hunter Platform 在服务端解包、校验和入库。客户端不再构建或维护本地知识索引。"
+argument-hint: "status | retry-upload <archive.zip>"
+effort: low
+allowed-tools: [Bash(powershell.exe:*), Read, Glob, Grep]
 disallowed-tools:
   - Bash(git *)
-  - Bash(mvn *)
-  - Bash(ls *)
-  - Bash(find *)
-  - Bash(grep *)
-  - Bash(cat *)
-  - Bash(cp *)
-  - Bash(mv *)
-  - Bash(rm *)
-  - Bash(mkdir *)
-  - Bash(touch *)
-  - Bash(sed *)
-  - Bash(awk *)
   - Bash(curl *)
 ---
 
 # harness-knowledge-ingest
 
-从 `.harness/archive/**/reports/final/summary-data.json` **本地抽取**知识条目，产物随归档 push 上传；**裁决与投影以平台为准**（远程优先）。本地 SQLite / Agent judge 仅作离线或未连接平台时的回退。
+知识 ingest 完全由 Hunter Platform 负责。归档完成时，客户端生成一个确定性 ZIP；
+服务端收到后保存原包、安全解包、发布核心文件，并根据其中的 Markdown 与摘要重建
+项目语义索引。
 
-> 语言约定：知识条目的 title / summary / body 及一切生成文档优先使用中文（标识符与字段名保持原文）。详见 [[../shared/p0-trust.md|p0-trust]] 的"生成内容语言约定"。
+客户端不得生成 `.harness/knowledge`、SQLite 索引、候选条目、视图、报告或本地裁决。
+本地知识处理脚本已从分发包移除；历史版本数据只由升级兼容逻辑识别，不再执行。
 
-## 远程优先模式（平台连接后）
+## 归档包边界
 
-1. **本地职责**：抽取 candidate 条目 JSON，写入 `.harness/knowledge/entries/**`（及可选本地 index）。
-2. **上传**：条目随 `hunter-harness push` / 归档 finalize 的 auto-push 上传（见归档分级清单：核心含 `knowledge/entries/active|candidate`）。
-3. **平台职责**：服务端 ingest 后自动裁决 status（promote→active 等启发式），并投影到语义知识库；`deprecate` 粘性不被后续 push 覆盖。
-4. **本地 judge / SQLite**：无平台凭据或离线时仍可用；已连接平台时**不要**把本地裁决当作多人共享真源。
+允许上传的核心内容只有：
 
-未连接平台时，行为退回本地离线 MVP：`candidate` / `stale` / `active` / `superseded` / `conflicted` + SQLite FTS。按新需求查询历史由独立的 `harness-knowledge-query` 负责（默认远程语义搜索，本地索引离线回退）。
+- `reports/final/summary-data.json`
+- `spec/**/*.md`
+- `plans/**/*.md`
+- `archive-meta.md`
+- `change-context.json`
+- 包内 `archive-manifest.json`（由 CLI 生成）
 
-## Triggers
+日志、测试报告、审查报告、HTML、缓存、备份、凭据和临时文件不得进入归档包。
 
-- ingest knowledge
-- sync knowledge
-- rebuild knowledge index
-- promote knowledge
-- 确认知识条目
-- 从归档生成知识索引
-- 刷新项目知识库
-- 检查知识库是否过期
+## Normal Workflow
 
-## Required context
-
-- AGENTS.md / CLAUDE.md
-- `.harness/archive/**/reports/final/summary-data.json`
-- `.harness/knowledge/index.json`
-- `.harness/codebase/map-summary.md`（如存在）
-- design.md
-- （可选）`.harness/credentials.local.yaml` — 已连接平台时走远程裁决
-
-## Purpose
-
-解决两个问题：
-
-1. **整理知识库内容**：把归档里的 `businessGoal`、`changedFiles`、`maintenanceNotes`、`knownRisks`、`manualActions`、`verification`、`reviewSummary` 抽成知识条目。
-2. **维护知识生命周期**：
-   - **远程优先**：平台 ingest 后裁决并投影；本地只需保证条目 JSON 可上传。
-   - **离线回退**：检查索引是否过期，保留 active；高置信 candidate 由 `autoPromote` 自动提升；其余由 **Agent judge** 闭环裁决。
-
-## Outputs
-
-```text
-.harness/knowledge/index.json
-.harness/knowledge/index.sqlite
-.harness/knowledge/entries/candidate/*.json
-.harness/knowledge/entries/active/*.json
-.harness/knowledge/entries/stale/*.json
-.harness/knowledge/entries/superseded/*.json
-.harness/knowledge/entries/conflicted/*.json
-.harness/knowledge/cache/archive-entries/*.json
-.harness/knowledge/reports/ingest-report-*.md
-.harness/knowledge/reports/verification-report-*.md
-.harness/knowledge/reports/audit-report-*.md
-.harness/knowledge/reports/judge-export-<content-sha256>.json
-.harness/knowledge/reports/judgements-<content-sha256>.json
-.harness/knowledge/reports/latest.json
-.harness/knowledge/views/knowledge-dashboard.md
-.harness/knowledge/views/by-file.md
-.harness/knowledge/views/stale-items.md
-.harness/knowledge/views/superseded-items.md
-.harness/knowledge/views/conflicted-items.md
-.harness/knowledge/views/active-review.md
-.harness/knowledge/views/knowledge.base
-.harness/knowledge/context-packs/*.md
-```
-
-## Commands
-
-`<skill-dir>` 指本 skill 目录。所有 python 脚本命令通过 `powershell.exe -Command "..."` 执行。完整命令示例与 config.json 配置见 `reference.md`「Commands 详细」。
-
-| 命令 | 用途 |
-|---|---|
-| 无参数 / `auto` | 一键防腐：首建 config、sync --update、**默认**写回 validator 建议、verify、audit；随后由 **Agent** 执行 judge 闭环 |
-| `status` | 严格只读地返回 freshness 与 health |
-| `repair all` | 修复可证明的 legacy gate、归一化重复、冲突与报告保留；不确定项返回 `needsConfirmation` |
-| `ingest` | 重建/刷新知识索引，抽取 candidate；`--no-incremental` 强制全量重抽取 |
-| `sync --check` | 只读检查 index 与 archive/HEAD 一致性；`--update` 自动刷新 |
-| `promote` | candidate→active（显式 promote 或 autoPromote / judge 触发） |
-| `demote` | active→stale/candidate（显式 demote 或自动降级策略触发） |
-| `audit` | 生成 Candidate/Stale/Superseded/Conflict/Active Review 报告 |
-| `verify` | 执行 entry validators，刷新 lifecycle.validation，生成 verification-report |
-| `suggest-validators` | 生成 file_exists/file_contains validator 建议；`--apply` 写回 entry |
-| `admin <旧命令>` | 旧管理命令兼容入口 |
-| `mcp` | FastMCP stdio 入口，暴露 9 个工具（见 reference.md） |
-
-config.json 配置项（autoPromote / confidence / activeLifecycle / knowledgeValidation）详见 `reference.md`「Commands 详细」。
-
-## Workflow
-
-### Phase 0：确认项目根目录
-
-项目根目录必须包含 `.harness/`。如果 `.harness/archive/` 不存在或没有 `summary-data.json`，报告当前项目暂无可索引归档，不要伪造知识。
-
-### Phase 1：重建本地知识索引
-
-运行：
+1. `harness-archive` 的 finalize 生成确定性 ZIP，并调用：
 
 ```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' ingest --project '<project-root>'"
+powershell.exe -Command "npx hunter-harness archive upload --file '<archive.zip>' --change-key '<change-key>' --yes --non-interactive --json"
 ```
 
-生成：
+2. 检查响应中的包哈希、服务端保存状态和 `knowledge_status`。
+3. 只有服务端确认原 ZIP 已持久保存且知识状态为 ready，才删除本地待上传 ZIP。
+4. 上传或 ingest 失败时保留 ZIP 与失败收据；修复连接后重试同一个 ZIP，不重新拼散文件。
 
-- `index.json`：人类可读 manifest。
-- `index.sqlite`：SQLite FTS5 检索索引。
-- `entries/candidate/`：自动抽取、待确认知识。
-- `entries/stale/`：来源 commit 缺失、无法比较，或来源 commit 后相关文件变化的知识。
-- `entries/active/`：人工确认后可长期引用的知识。
-- `views/`：Obsidian 友好的浏览视图。
-- `reports/`：本次 ingest 报告。
+## Ownership Rules
 
-### Phase 2：一键 auto（推荐入口）
+- 客户端：选择核心文件、生成稳定 manifest/ZIP、校验包哈希、上传与保留失败重试材料。
+- 服务端：敏感信息扫描、ZIP 安全校验、原包持久化、解包、制品发布、知识 ingest、状态查询和下载恢复。
+- 远端不可用：知识不可用；不得启动本地替代索引。
+- 面向人的知识、提案、规则和说明默认使用中文。
 
-```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<project-root>'"
-```
+## Forbidden Actions
 
-不传子命令时等价于 `auto`。`auto` 输出必须分别报告：
-
-- `freshness`：archive、HEAD、manifest、entry、SQLite 是否一致。
-- `health`：各 lifecycle、publication、validation 与待裁决工作量。
-
-`auto` 默认会写回确定性 validator 建议（`--no-apply-suggestions` 可关闭）。JSON 返回含 `lifecycle` 摘要（validatorsApplied、autoPromote、pendingAgentJudge 等）。
-
-### Phase 3：Agent judge 闭环（auto 之后必须执行）
-
-当 `lifecycle.pendingAgentJudge > 0`、存在 `pending-judge` outbox，或 `judge export` 的
-`counts.requiredDecisionCount > 0` 时：
-
-1. `judge export`（或读 maintain 产出的 pending judgements）
-2. Agent 读取 export JSON，按 `reference.md`「Agent judge 启发式」批量写 `reports/judge-decisions-<ts>.json`
-3. `judge apply --apply <decisions.json>`（`knowledge.manualReview=true` 时需用户显式 `--force`）
-4. 向用户输出 **已处理报告**（promoted/dropped/superseded/kept/skipped 计数 + 报告路径）
-
-**禁止**默认输出「请人工确认 N 条 candidate」类五步待办清单。拿不准的 candidate 保持 `candidate` 状态留待下轮，记入 `skippedCandidates` 即可。
-
-`pendingAgentJudge`/`requiredDecisionCount` 是完整待裁决总量；`previewCount` 才受
-`config.judge.maxCandidatesPerRun`（默认 100）限制。已被 publication gate 阻断的条目
-只进入 `quarantinedCount`，不得混入 judge export。`defer` 必须保存证据指纹；来源、
-validator、冲突关系或 publication 证据变化后即使未到 `reviewAfter` 也重新进入裁决。
-
-### Phase 4：同步检查（可选）
-
-```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' status --project '<project-root>'"
-```
-
-当 `upToDate=false` 时，运行 `sync --update` 或重新 `auto`，再交给 `harness-knowledge-query` 查询。
-
-### Phase 5：显式 promote/demote（例外路径）
-
-仅在用户点名单条、或 `manualReview=true` 需人工确认时使用 `promote` / `demote`。日常归档后不要逐条人工复核。
-
-**发布门禁**：knowledge publication 与 archive release status 独立。promote / judge apply /
-autoPromote 校验 authoritative pointer/hash 与 `reportPipeline.sourceConsistency`；即使归档
-最终状态为 WARN，只要知识来源一致也可发布，但保留 release advisory。旧归档只有在
-summary/hash/source commit 可独立证明时才自动生成 attestation；否则保持 quarantined 并
-返回 `needsConfirmation`（详见 `reference.md`「发布门禁」）。
-
-### Phase 6：解释同步结果
-
-回复用户或交给后续 skill 前，应说明：
-
-- 索引是否最新。
-- 如需刷新，具体原因是 archive 增删、checksum 变化、sqlite 缺失，还是 HEAD 改变。
-- 本次是否自动刷新。
-- 当前 `active` / `candidate` / `stale` 的数量。
-- 分别报告 `freshness` 与 `health`，不要用一个 `status` 覆盖
-  lifecycle/review/publication/validation 四个正交维度。
-
-## Knowledge extraction rules
-
-- 优先读取归档显式 `knowledgeCandidates[]`；维护流水线、测试计数等
-  `category=process-observation` 不进入长期知识。
-- Duplicate content 使用 Unicode、空白、标点与大小写归一化指纹，并在全量重建时迁移。
-- 冲突必须同时有相同实体、共享来源范围和双方证据；仅关键词相反不得判为冲突。
-- Keep project-local entries excluded from any global index unless explicitly selected.
-- Validate lifecycle relationships.
-- Default generated entries are `candidate`; only config-gated `autoPromote` may promote high-confidence long-lived entries to `active`.
-- Preserve provenance: every entry must include source archive, summary path, source commit, and source files when available.
-- Do not edit `.harness/archive/**` during ingest.
-- Do not copy secrets into `.harness/knowledge`.
-
-## Lifecycle rules
-
-- `candidate`：自动抽取；高置信 + 白名单类型可由 autoPromote 提升；其余由 Agent judge 裁决或保持 candidate。
-- `active`：autoPromote、judge promote，或显式 promote 后可用。
-- `stale`：来源 commit 缺失、来源 commit 后相关文件变化，或当前代码无法证明旧结论仍有效。
-- `superseded`：被后续归档/决策取代。
-- `conflicted`：与另一条 active/candidate 知识冲突。
-
-## Forbidden actions
-
-- auto_promote_candidate_knowledge_without_config_and_confidence_gate
-- erase_conflicts
-- include_project_local_by_default
-- mutate_archive_evidence
-- store_secrets
-- treat_stale_knowledge_as_current_fact
-
-## Allowed capabilities
-
-- read
-- search
-- write_candidate_knowledge
-- write_active_knowledge_after_manual_confirmation
-- write_confidence_scores
-- auto_promote_high_confidence_knowledge_when_configured
-- agent_judge_knowledge_lifecycle
-- write_knowledge_index
-- write_obsidian_views
+- build_or_refresh_local_knowledge
+- write_dot_harness_knowledge
+- upload_logs_reviews_tests_or_temp_files
+- call_legacy_python_ingest
+- treat_upload_acceptance_without_durable_status_as_success
+- delete_pending_zip_after_failed_upload
 
 ## Verification
 
-本 skill 自带最小测试：
-
-```powershell
-powershell.exe -Command "python 'harness\scripts\harness_test_runner.py' unittest --profile safe --tests-dir '<skill-dir>\tests' --timeout-seconds 300 --verbosity 1"
-```
-
-完成脚本修改后必须至少运行该测试。若在真实项目中验证，还应运行：
-
-```powershell
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' auto --project '<real-project-root>'"
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' ingest --project '<real-project-root>'"
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' suggest-validators --project '<real-project-root>' --limit 20"
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' verify --project '<real-project-root>'"
-powershell.exe -Command "python '<skill-dir>\scripts\harness_knowledge.py' sync --project '<real-project-root>'"
-```
-
-并确认 `index.json`、`index.sqlite`、`views/knowledge-dashboard.md`、`reports/verification-report-*.md` 存在，且 sync 输出 `upToDate=true`。
+确认归档命令的 JSON 结果同时包含：服务端 package 哈希、保存状态和知识状态。
+若失败，确认 `.harness/state/local/archive-packages/` 中仍保留可重试 ZIP；若成功，确认
+ZIP 已按收据策略清理，且平台下载接口可以恢复原包。
 
 <!-- @include shared/p0-trust.md -->
-> 片段：[[shared/p0-trust.md|p0-trust]] · ingest/sync 须绑定 `upToDate`/产物路径证据
-
-## Output Format
-
-执行完成后展示：
-
-- 本次命令（ingest/sync/promote）与目标项目根。
-- `upToDate` 及 `reasons`（sync）或新增/覆盖条目数（ingest/promote）。
-- 当前 `active` / `candidate` / `stale` 数量统计。
-- 产物路径（`index.json`、`index.sqlite`、`views/`、`reports/`）。
-- `lifecycle` 摘要：`validatorsApplied`、`candidateAutoPromoted`、兼容整数
-  `pendingAgentJudge`，以及
-  `pendingAgentJudgeSummary.requiredDecisionCount/previewCount/quarantinedCount` 等。
-- validator 摘要：`eligible/selected/applied/remaining/unavailable`，不得只报告本轮抽样数。
-- **已处理报告**（auto + judge 后）：promoted/dropped/superseded/kept/deferred/skipped 计数与 `reports/judge-decisions-*.json`、`judgements-*.json` 路径；人工判断还会追加到 `judgements/decisions.json`，后续 ingest 不得抹除。`defer` 必须带 `reviewAfter`，到期前不重复进入待判断清单。
-- 仅当 `upToDate=false` 时建议 `sync --update`；查询历史 → `/harness-knowledge-query`。**禁止**默认列出「请人工确认 N 条 candidate」待办。
-
-## 渐进披露
-
-- **Read `reference.md`** 仅在执行命令或查阅 config.json 配置时 — 含 Commands 详细示例、config.json 配置与兼容说明。
-
-## 交互白名单
-
-**仅当** `.harness/config/harness.json` 中 `knowledge.manualReview=true` 时，promote/demote 高价值条目需 blocking user confirmation；否则按 skill 默认策略 + `decision` 事件。
+> 片段：[[shared/p0-trust.md|p0-trust]] · 只有服务端持久化与 ingest 收据可证明知识已入库
 
 <!-- @include shared/logging.md -->
-> 片段：[[shared/logging.md|logging]] · phase=`knowledge-ingest` · 默认控制台报告；变更上下文写 phase/decision/issue/artifact
+> 片段：[[shared/logging.md|logging]] · phase=`knowledge-ingest` · 记录 package hash、服务端状态与失败重试路径

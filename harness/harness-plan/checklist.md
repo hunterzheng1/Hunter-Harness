@@ -15,8 +15,8 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 ## 阶段 0.5：事件初始化与知识查询
 
 - [ ] 先确定 change-name、稳定的 plan-run-id 与 attempt（首次为 1），立即用 `harness_events.py append ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>` 追加开始事件
-- [ ] 再执行一次 knowledge `query`；由 query 内部 ensure-current，不另跑前置 sync
-- [ ] 查询失败追加 `issue`，不得重跑“sync + query”循环或假装已读取历史
+- [ ] 项目已绑定平台时执行一次远端 knowledge `query`；不另跑前置 sync，不创建本地索引
+- [ ] 查询失败追加 `issue`，不得回退本地 archive/SQLite、重跑“sync + query”循环或假装已读取历史
 
 ## 阶段 2：歧义优先检查与复杂度分级
 

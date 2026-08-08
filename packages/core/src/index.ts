@@ -1,6 +1,7 @@
 export const packageName = "@hunter-harness/core" as const;
 
 export * from "./ai/index.js";
+export * from "./archive/upload.js";
 export * from "./fs/hash.js";
 export * from "./fs/path-safety.js";
 export * from "./codebase/map.js";
@@ -9,9 +10,9 @@ export * from "./api/retry.js";
 export * from "./context/index.js";
 export * from "./environment/doctor.js";
 export * from "./external/convergence.js";
-export * from "./knowledge/frontmatter.js";
-export * from "./knowledge/index.js";
+export * from "./knowledge/remote-query.js";
 export * from "./instructions/graph.js";
+export * from "./instructions/proposal.js";
 export * from "./managed/managed-block.js";
 export * from "./policy/file-policy.js";
 export * from "./platform/registry-governance.js";

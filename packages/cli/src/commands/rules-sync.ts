@@ -1,114 +1,64 @@
 import {
-  harnessAgentSchema,
-  sortHarnessAgents,
-  type CodeBuddySurface,
-  type HarnessAgent,
-  type ProjectConfig
-} from "@hunter-harness/contracts";
-import {
-  exportRuleReviewQueue,
-  synchronizeProjectRules,
-  synchronizeRuleCandidates,
+  auditProjectInstructions,
+  InstructionProposalError,
   uuidV7
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
-import { detectProject } from "./refresh.js";
-import { parseAgentsInput } from "../config/init-config.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 
+/**
+ * Backward-compatible command surface. Rule synchronization is now a
+ * read-only audit that asks the server for a Chinese proposal. Project files
+ * are changed only by the separate `instructions apply` confirmation step.
+ */
 export interface RulesSyncCommandOptions {
   agents?: string;
   codebuddySurface?: string;
   json?: boolean;
   learn?: boolean;
-}
-
-function configuredAgents(config: ProjectConfig): HarnessAgent[] {
-  const agents = config.adapters.enabled.flatMap((value) => {
-    const parsed = harnessAgentSchema.safeParse(value);
-    return parsed.success ? [parsed.data] : [];
-  });
-  return sortHarnessAgents(agents.length > 0 ? agents : ["claude-code"]);
-}
-
-function configuredSurface(config: ProjectConfig, override?: string): CodeBuddySurface {
-  const value = override ?? config.adapter_options?.codebuddy?.surface ?? "both";
-  if (value === "both" || value === "ide" || value === "cli") return value;
-  throw new Error("codebuddy surface 必须为 both、ide 或 cli");
+  serverUrl?: string;
+  tokenEnv?: string;
 }
 
 export async function runRulesSync(
   options: RulesSyncCommandOptions,
   dependencies: CommandDependencies
 ): Promise<number> {
-  const detection = await detectProject(dependencies.cwd);
-  if (detection.status === "absent") {
-    dependencies.stderr("尚未初始化 Hunter Harness；请先运行 `hunter-harness`。\n");
-    return 3;
-  }
-  if (detection.status === "invalid") {
-    dependencies.stderr("PROJECT_CONFIG_INVALID：.harness/project.yaml 无效\n");
-    return 3;
-  }
-  if (detection.status === "partial" || detection.status === "recovery-required") {
-    dependencies.stderr(`${detection.reasonCode}：需要先恢复本地 Harness 主状态\n`);
-    return 6;
-  }
   try {
-    const agents = options.agents === undefined
-      ? configuredAgents(detection.config)
-      : parseAgentsInput(options.agents);
-    const projections = await synchronizeProjectRules(
-      dependencies.cwd,
-      agents,
-      configuredSurface(detection.config, options.codebuddySurface)
-    );
-    const learning = options.learn === false
-      ? null
-      : await synchronizeRuleCandidates(dependencies.cwd);
-    const ruleReview = learning === null
-      ? null
-      : await exportRuleReviewQueue(dependencies.cwd);
-    const exitCode = projections.conflicts.length > 0 ? 5 : 0;
+    const result = await auditProjectInstructions({
+      projectRoot: dependencies.cwd,
+      ...(options.serverUrl === undefined ? {} : { serverUrl: options.serverUrl }),
+      ...(options.tokenEnv === undefined ? {} : { tokenEnv: options.tokenEnv }),
+      env: dependencies.env,
+      fetch: dependencies.fetch
+    });
     const payload: CliResult = {
-      schema_version: 1 as const,
+      schema_version: 1,
       command: "rules-sync",
-      request_id: uuidV7(),
-      dry_run: false,
-      ok: exitCode === 0,
-      exit_code: exitCode,
-      project_id: detection.config.project.project_id,
+      request_id: result.proposal.request_id || uuidV7(),
+      dry_run: true,
+      ok: true,
+      exit_code: 0,
+      project_id: result.proposal.project_id,
       summary: {
-        migrated: projections.migrated.length,
-        projected: projections.written.length,
-        removed: projections.removed.length,
-        unchanged: projections.unchanged.length,
-        conflicts: projections.conflicts.length,
-        agent_specific: projections.agent_specific.length,
-        rule_candidates: learning?.candidates ?? 0,
-        rule_review_pending: ruleReview?.pending.length ?? 0
+        mode: "audit-propose",
+        language: result.proposal.language,
+        proposal_id: result.proposal.proposal_id,
+        proposal_path: result.proposalPath,
+        proposed_files: result.proposal.files.length,
+        findings: result.proposal.findings.length,
+        rule_candidates: result.proposal.rule_candidates.length,
+        applied: 0
       },
-      items: [
-        ...projections.migrated.map((path) => ({ path, status: "migrated" })),
-        ...projections.written.map((path) => ({ path, status: "projected" })),
-        ...projections.agent_specific.map((path) => ({ path, status: "agent-specific" })),
-        ...(learning === null ? [] : [{
-          path: learning.path,
-          status: learning.changed ? "updated" : "unchanged",
-          candidates: learning.candidates,
-          scanned: learning.scanned
-        }]),
-        ...(ruleReview === null ? [] : [{
-          path: ".harness/knowledge/rule-decisions.json",
-          status: ruleReview.pending.length > 0 ? "pending-review" : "current",
-          pending: ruleReview.pending.length,
-          decided: ruleReview.decided
-        }])
-      ],
+      items: result.proposal.files.map((file) => ({
+        path: file.path,
+        status: file.operation,
+        content_sha256: file.content_sha256
+      })),
       warnings: [
-        ...projections.conflicts.map((path) => `规则分歧未覆盖：${path}`),
-        ...projections.agent_specific.map((path) => `保留 Agent 专属规则：${path}`)
+        "rules-sync 已改为兼容入口：只生成远端中文提案，不再注入标记块或直接改写规则。",
+        `审阅后运行 hunter-harness instructions apply --proposal "${result.proposalPath}" --yes`
       ],
       errors: []
     };
@@ -116,14 +66,33 @@ export async function runRulesSync(
       dependencies.stdout(serializeCliResult(payload));
     } else {
       dependencies.stdout(
-        `规则同步：迁移 ${payload.summary.migrated}，投影 ${payload.summary.projected}，` +
-        `冲突 ${payload.summary.conflicts}，候选 ${payload.summary.rule_candidates}。\n`
+        `已生成中文规则与文档提案 ${result.proposal.proposal_id}：${result.proposalPath}\n` +
+        `未修改项目文件；审阅后使用 instructions apply。\n`
       );
-      for (const warning of payload.warnings) dependencies.stderr(warning + "\n");
+    }
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error instanceof InstructionProposalError
+      ? error.code
+      : "INSTRUCTION_AUDIT_FAILED";
+    const exitCode = error instanceof InstructionProposalError ? error.exitCode : 1;
+    dependencies.stderr(message + "\n");
+    if (options.json === true) {
+      dependencies.stdout(serializeCliResult({
+        schema_version: 1,
+        command: "rules-sync",
+        request_id: uuidV7(),
+        dry_run: true,
+        ok: false,
+        exit_code: exitCode,
+        project_id: null,
+        summary: { mode: "audit-propose", applied: 0 },
+        items: [],
+        warnings: [],
+        errors: [{ code, message }]
+      }));
     }
     return exitCode;
-  } catch (error) {
-    dependencies.stderr((error instanceof Error ? error.message : String(error)) + "\n");
-    return 1;
   }
 }

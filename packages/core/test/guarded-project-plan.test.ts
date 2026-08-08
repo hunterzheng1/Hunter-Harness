@@ -113,7 +113,8 @@ describe("guarded project plan binding", () => {
       cliVersion: "0.2.44",
       planTimestamp: "2026-07-31T08:01:00.000Z"
     });
-    await writeFile(join(root, "CLAUDE.md"), "operator changed the source view\n");
+    const managedPath = ".claude/skills/harness-review/SKILL.md";
+    await writeFile(join(root, managedPath), "operator changed the managed target\n");
 
     await expect(refreshProject({
       projectRoot: root,
@@ -126,7 +127,7 @@ describe("guarded project plan binding", () => {
       planTimestamp: "2026-07-31T08:01:00.000Z",
       expectedPlanHash: preview.plan_hash
     })).rejects.toMatchObject({ code: "PLAN_CHANGED_AFTER_PREVIEW" });
-    expect(await readFile(join(root, "CLAUDE.md"), "utf8"))
-      .toBe("operator changed the source view\n");
+    expect(await readFile(join(root, managedPath), "utf8"))
+      .toBe("operator changed the managed target\n");
   });
 });

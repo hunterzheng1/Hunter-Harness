@@ -1234,7 +1234,9 @@ class ScenarioCoverageTests(unittest.TestCase):
         self._write_ledger(["C5-S2"])
 
         args = self._close_args()
-        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+        with mock.patch.dict(
+            gate.os.environ, {"HUNTER_HARNESS_GATE_MODE": "strict"}, clear=False
+        ), mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \

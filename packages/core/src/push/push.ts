@@ -133,7 +133,6 @@ interface PushWorkflowState {
 }
 
 const SHARED_MANAGED_ROOTS = [
-  ".harness/knowledge",
   ".harness/codebase",
   ".harness/rules"
 ];
@@ -584,7 +583,7 @@ function makePreview(
 ) {
   // Harness Bundle 安装的文件是 adapter working copy（含教学示例与本地路径），
   // 不纳入服务端治理 proposal：既不上传也不扫描，避免教学 secret 触发 SENSITIVE_CONTENT_BLOCKED。
-  // 其余受管文件（rules/knowledge/CLAUDE.md 等）照常 diff-proposal。
+  // 其余受管文件（rules/CLAUDE.md 等）照常 diff-proposal。知识仅由服务端归档入库。
   const filteredFiles: Record<string, string> = {};
   for (const [path, content] of Object.entries(files)) {
     if (!ignorePaths.has(path)) filteredFiles[path] = content;
