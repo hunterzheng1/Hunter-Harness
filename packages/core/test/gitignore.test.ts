@@ -50,6 +50,23 @@ describe("Harness .gitignore maintenance", () => {
     });
   });
 
+  it("ignores Python bytecode caches created by Harness support scripts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-pycache-"));
+    await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+
+    await ensureHarnessGitignore(root);
+    const content = await readFile(join(root, ".gitignore"), "utf8");
+
+    for (const adapterRoot of [".claude", ".agents", ".cursor", ".codebuddy"]) {
+      const pattern = `/${adapterRoot}/skills/scripts/__pycache__/`;
+      expect(content).toContain(pattern);
+      await expect(execFileAsync("git", [
+        "check-ignore", "--no-index", "--",
+        `${adapterRoot}/skills/scripts/__pycache__/harness_events.cpython-311.pyc`
+      ], { cwd: root, windowsHide: true })).resolves.toBeDefined();
+    }
+  });
+
   it("reports a generated root document as tracked instead of ignoring it", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-tracked-"));
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
