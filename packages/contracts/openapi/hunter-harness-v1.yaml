@@ -729,8 +729,6 @@ paths:
         content:
           application/zip:
             schema: { type: string, format: binary }
-          application/x-zip-compressed:
-            schema: { type: string, format: binary }
       responses:
         "201":
           description: Original ZIP durably stored; receipt includes knowledge indexing status
@@ -738,6 +736,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ArchivePackageReceipt"
+        "413": { description: Archive package exceeds the configured upload limit }
         "409": { description: A different immutable ZIP already exists for this change }
         "415": { description: Request body is not an application/zip buffer }
         "422": { description: Unsafe ZIP, non-core file, manifest/hash mismatch, or sensitive content }
@@ -1136,10 +1135,10 @@ components:
     InstructionProposalRequest:
       type: object
       additionalProperties: false
-      required: [schema_version, language, project_profile, adapters, documents, codebase_map, recent_changes]
+      required: [schema_version, project_profile, adapters, documents, codebase_map, recent_changes]
       properties:
         schema_version: { type: integer, const: 1 }
-        language: { type: string, const: zh-CN }
+        language: { type: string, const: zh-CN, default: zh-CN }
         project_profile: { type: string, minLength: 1, maxLength: 100 }
         adapters:
           type: array
@@ -1153,7 +1152,19 @@ components:
             additionalProperties: false
             required: [path, content, content_sha256]
             properties:
-              path: { type: string }
+              path:
+                type: string
+                enum:
+                  - AGENTS.md
+                  - CLAUDE.md
+                  - CODEBUDDY.md
+                  - .harness/rules/project-guidance.md
+                  - .cursor/rules/project-guidance.mdc
+                  - package.json
+                  - pom.xml
+                  - build.gradle
+                  - build.gradle.kts
+                  - pyproject.toml
               content: { type: string, maxLength: 524288 }
               content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
         codebase_map:
@@ -1167,7 +1178,17 @@ components:
           type: array
           maxItems: 20
           description: Optional client hints; server-owned archive summaries are merged first.
-          items: { type: object }
+          items:
+            type: object
+            additionalProperties: false
+            required: [change_key, summary, decisions]
+            properties:
+              change_key: { type: string, minLength: 1, maxLength: 160 }
+              summary: { type: string, maxLength: 10000 }
+              decisions:
+                type: array
+                maxItems: 50
+                items: { type: string, minLength: 1, maxLength: 2000 }
     InstructionProposal:
       type: object
       additionalProperties: false
