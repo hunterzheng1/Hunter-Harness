@@ -16,6 +16,8 @@ export interface LocalCredentials {
   server_url?: string;
   /** Platform project id bound by `hunter-harness connect` (project API keys). */
   project_id?: string;
+  /** Human-readable platform project name cached during connect. */
+  project_display_name?: string;
 }
 
 export class InvalidCredentialsError extends Error {
@@ -57,13 +59,18 @@ function validateLocalCredentials(credentials: LocalCredentials): LocalCredentia
     credentials.project_id.trim().length > 0
     ? credentials.project_id.trim()
     : undefined;
+  const projectDisplayName = typeof credentials.project_display_name === "string" &&
+    credentials.project_display_name.trim().length > 0
+    ? credentials.project_display_name.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     throw new InvalidCredentialsError("credentials.local must include token and/or server_url");
   }
   return {
     ...(token === undefined ? {} : { token }),
     ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
-    ...(projectId === undefined ? {} : { project_id: projectId })
+    ...(projectId === undefined ? {} : { project_id: projectId }),
+    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
   };
 }
 
@@ -91,13 +98,18 @@ function parseLocalCredentials(raw: unknown): LocalCredentials | null {
     record.project_id.trim().length > 0
     ? record.project_id.trim()
     : undefined;
+  const projectDisplayName = typeof record.project_display_name === "string" &&
+    record.project_display_name.trim().length > 0
+    ? record.project_display_name.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     return null;
   }
   return {
     ...(token === undefined ? {} : { token }),
     ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
-    ...(projectId === undefined ? {} : { project_id: projectId })
+    ...(projectId === undefined ? {} : { project_id: projectId }),
+    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
   };
 }
 
@@ -109,6 +121,9 @@ export function mergeLocalCredentials(
     ...(existing?.token === undefined ? {} : { token: existing.token }),
     ...(existing?.server_url === undefined ? {} : { server_url: existing.server_url }),
     ...(existing?.project_id === undefined ? {} : { project_id: existing.project_id }),
+    ...(existing?.project_display_name === undefined
+      ? {}
+      : { project_display_name: existing.project_display_name }),
     ...patch
   });
 }

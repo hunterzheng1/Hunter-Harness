@@ -280,13 +280,11 @@ export class HunterHarnessApiClient {
     }>;
     request_id: string;
   }> {
-    const parameters = new URLSearchParams({
-      q: options.query,
-      project_id: options.projectId
-    });
+    const parameters = new URLSearchParams({ q: options.query });
     return this.request(
       "GET",
-      "/api/v1/semantic/search?" + parameters.toString(),
+      "/api/v1/projects/" + encodeURIComponent(options.projectId) +
+        "/semantic/search?" + parameters.toString(),
       { requestId: options.requestId }
     );
   }

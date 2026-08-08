@@ -841,6 +841,20 @@ paths:
       responses:
         "200": { description: Cross-project or project-scoped FTS search over semantic documents }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/search:
+    get:
+      operationId: searchProjectSemanticDocuments
+      description: Search one project's semantic documents. Project API keys require knowledge:read.
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200": { description: Project-scoped FTS search over semantic documents }
+        "403": { description: Project key lacks knowledge:read or belongs to another project }
+        default: { $ref: "#/components/responses/Error" }
 
 components:
   securitySchemes:

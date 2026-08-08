@@ -38,6 +38,35 @@ async function filesUnder(directory: string, base = directory): Promise<string[]
   return result.sort();
 }
 
+function terminalCellWidth(value: string): number {
+  const plain = value.replace(new RegExp(String.fromCharCode(27) + "\\[[0-?]*[ -/]*[@-~]", "g"), "");
+  let width = 0;
+  const graphemes = [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(plain)]
+    .map((item) => item.segment);
+  for (const character of graphemes) {
+    if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(character)) {
+      width += 2;
+      continue;
+    }
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (/\p{Mark}/u.test(character) || codePoint === 0x200d || codePoint === 0xfe0f) continue;
+    width += (
+      codePoint >= 0x1100 && (
+        codePoint <= 0x115f ||
+        codePoint === 0x2329 || codePoint === 0x232a ||
+        (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+        (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+        (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+        (codePoint >= 0xfe10 && codePoint <= 0xfe6f) ||
+        (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+        (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+        (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+      )
+    ) ? 2 : 1;
+  }
+  return width;
+}
+
 describe("hunter-harness initialization", () => {
   let root: string;
   let stdout: string[];
@@ -172,6 +201,36 @@ describe("hunter-harness initialization", () => {
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { project: { profiles: string[] } };
     expect(project.project.profiles).toEqual(["general"]);
+  });
+
+  it("creates precise idempotent Git ignore rules for Harness-owned local files", async () => {
+    await writeFile(join(root, ".gitignore"), "node_modules/\r\n", "utf8");
+    const args = ["--agents", "all", "--profile", "general", "--non-interactive", "--yes"];
+
+    expect(await run(args)).toBe(0);
+    const first = await readFile(join(root, ".gitignore"), "utf8");
+    expect(first).toContain("node_modules/\r\n");
+    expect(first).toContain("# Hunter Harness（本地生成，不提交）");
+    expect(first).toContain("/.harness/");
+    expect(first).toContain("/.worktrees/");
+    expect(first).toContain("/.codebuddy/skills/harness-*/");
+    expect(first).toContain("/.claude/rules/harness-*.md");
+    expect(first).not.toMatch(/^\/?\.codebuddy\/$/m);
+    expect(first).not.toMatch(/^\/?\.claude\/$/m);
+
+    expect(await run(args)).toBe(0);
+    expect(await readFile(join(root, ".gitignore"), "utf8")).toBe(first);
+  }, 240_000);
+
+  it("preserves an explicit Git ignore negation without blocking unrelated rules", async () => {
+    await writeFile(join(root, ".gitignore"), "/.harness/\n!/.harness/\n", "utf8");
+
+    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    const gitignore = await readFile(join(root, ".gitignore"), "utf8");
+    expect(gitignore).toContain("/.harness/\n!/.harness/\n");
+    expect(gitignore.match(/^\/\.harness\/$/gm)).toHaveLength(1);
+    expect(gitignore).toContain("/.worktrees/");
+    expect(gitignore).toContain("/.claude/skills/harness-*/");
   });
 
   it.each([
@@ -310,7 +369,7 @@ describe("hunter-harness initialization", () => {
     ])).toBe(0);
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
-      "project_id: prj_demo\nserver_url: https://platform.example.test\ntoken: test-token\n",
+      "project_display_name: \"本地部署测试 👩🏽‍💻\\u001b[31m\\n伪造\"\nproject_id: prj_demo\nserver_url: https://platform.example.test/very/long/path\ntoken: test-token\n",
       "utf8"
     );
     const answers = ["3", "0"];
@@ -321,6 +380,8 @@ describe("hunter-harness initialization", () => {
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
+      terminalColumns: 40,
+      env: { COLUMNS: "120" },
       prompt: async (question) => {
         questions.push(question);
         return answers.shift() ?? "";
@@ -328,9 +389,47 @@ describe("hunter-harness initialization", () => {
     });
 
     expect(code).toBe(0);
-    expect(stdout.join("")).toContain("平台：已连接 https://platform.example.test");
+    const output = stdout.join("");
+    expect(output).toMatch(/Hunter Harness v\d+\.\d+\.\d+/);
+    expect(output).toContain("本地部署测试 👩🏽‍💻 伪造");
+    expect(output).not.toContain("\u001b");
+    expect(output.split("\n").filter((line) => line === "伪造")).toHaveLength(0);
+    expect(output).not.toContain("项目 prj_demo");
+    const bannerLines = output.split("\n").filter((line) => /^[┌│└]/.test(line));
+    expect(bannerLines.length).toBeGreaterThan(2);
+    expect(new Set(bannerLines.map(terminalCellWidth)).size).toBe(1);
+    expect(Math.max(...bannerLines.map(terminalCellWidth))).toBeLessThanOrEqual(40);
     expect(questions[1]).toContain("重新绑定");
     expect(questions[1]).toContain("清除本地凭据");
+  }, 120_000);
+
+  it("ignores only newly generated root instructions after a successful platform binding", async () => {
+    await writeFile(join(root, "AGENTS.md"), "# 团队维护的规则\n", "utf8");
+    const answers = ["1", "1", "1", "https://platform.example.test"];
+    const fetch = async () => new Response(JSON.stringify({
+      kind: "project-key",
+      actor_id: "actor_owner",
+      project_id: "prj_bound",
+      project_display_name: "已绑定项目",
+      scopes: ["push", "knowledge:read", "progress:write"]
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      env: {},
+      fetch,
+      promptSecret: async () => "hh_test_key",
+      prompt: async () => answers.shift() ?? ""
+    });
+
+    expect(code).toBe(0);
+    const gitignore = await readFile(join(root, ".gitignore"), "utf8");
+    expect(gitignore).not.toMatch(/^\/AGENTS\.md$/m);
+    expect(gitignore).toMatch(/^\/CLAUDE\.md$/m);
+    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe("# 团队维护的规则\n");
   }, 120_000);
 
   it("keeps existing agent rules isolated and offers CodeGraph MCP when CodeBuddy is selected", async () => {

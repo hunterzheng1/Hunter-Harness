@@ -599,7 +599,7 @@ describe("hunter-harness push", () => {
       .toMatch(/stored\.example\.test[\s\S]*merged-token/);
     expect(sawAuth).toBe(true);
     expect(await readFile(join(root, ".gitignore"), "utf8"))
-      .toContain(".harness/credentials.local.yaml");
+      .toContain("/.harness/");
   });
 
   it("prompts once for both missing credentials, hides the token, and confirms once", async () => {

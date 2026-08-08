@@ -76,7 +76,7 @@ describe("hunter-harness knowledge query", () => {
     expect(code, stderr.join("\n")).toBe(0);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(String(fetch.mock.calls[0]?.[0])).toContain(
-      "/api/v1/semantic/search?q=%E5%8E%9F%E5%A7%8B+ZIP&project_id=prj_knowledge"
+      "/api/v1/projects/prj_knowledge/semantic/search?q=%E5%8E%9F%E5%A7%8B+ZIP"
     );
     expect(JSON.parse(stdout.join(""))).toMatchObject({
       command: "knowledge query",

@@ -4,14 +4,15 @@ import { join } from "node:path";
 import {
   assertSecureServerUrl,
   ensureCredentialsGitignore,
+  ensureHarnessGitignore,
   InvalidCredentialsError,
-  mergeLocalCredentials,
   readLocalCredentials,
   uuidV7,
   writeLocalCredentials
 } from "@hunter-harness/core";
 
 import { serializeCliResult, type CliResult } from "../output/json.js";
+import { sanitizeTerminalText } from "../ui/terminal.js";
 import type { CommandDependencies } from "./configure.js";
 
 export interface ConnectOptions {
@@ -27,6 +28,7 @@ interface KeyInfo {
   kind: string;
   actor_id?: string;
   project_id?: string;
+  project_display_name?: string;
   scopes?: string[];
   label?: string;
 }
@@ -212,12 +214,18 @@ export async function runConnect(
     // connect 可在项目 init 之前运行，先确保 .harness/ 存在。
     await mkdir(join(dependencies.cwd, ".harness"), { recursive: true });
     const existing = await readLocalCredentials(dependencies.cwd);
-    await writeLocalCredentials(dependencies.cwd, mergeLocalCredentials(existing, {
+    const preserveCachedName = existing?.server_url === serverUrl &&
+      existing.project_id === info.project_id;
+    const projectDisplayName = info.project_display_name ??
+      (preserveCachedName ? existing?.project_display_name : undefined);
+    await writeLocalCredentials(dependencies.cwd, {
       server_url: serverUrl,
       token: key,
-      ...(info.project_id === undefined ? {} : { project_id: info.project_id })
-    }));
+      ...(info.project_id === undefined ? {} : { project_id: info.project_id }),
+      ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
+    });
     await ensureCredentialsGitignore(dependencies.cwd);
+    await ensureHarnessGitignore(dependencies.cwd, { platformBound: true });
     if (info.project_id !== undefined) {
       await bindProjectIdInProjectYaml(dependencies.cwd, info.project_id);
     }
@@ -228,11 +236,16 @@ export async function runConnect(
     throw error;
   }
 
+  const safeKind = sanitizeTerminalText(info.kind);
+  const safeProjectDisplayName = info.project_display_name === undefined
+    ? undefined
+    : sanitizeTerminalText(info.project_display_name);
+  const safeScopes = info.scopes?.map(sanitizeTerminalText);
   const summaryLines = [
     "已连接 " + serverUrl,
-    "凭据类型：" + info.kind +
-      (info.project_id === undefined ? "" : "（项目 " + info.project_id + "）"),
-    ...(info.scopes === undefined ? [] : ["权限范围：" + info.scopes.join(", ")]),
+    "凭据类型：" + safeKind +
+      (safeProjectDisplayName === undefined ? "" : "（项目 " + safeProjectDisplayName + "）"),
+    ...(safeScopes === undefined ? [] : ["权限范围：" + safeScopes.join(", ")]),
     "已写入 .harness/credentials.local.yaml（已加入 .gitignore）。"
   ];
   if (options.json === true) {
@@ -247,6 +260,9 @@ export async function runConnect(
       summary: {
         server_url: serverUrl,
         credential_kind: info.kind,
+        ...(info.project_display_name === undefined
+          ? {}
+          : { project_display_name: info.project_display_name }),
         ...(info.scopes === undefined ? {} : { scopes: info.scopes.join(",") }),
         ...(localProjectId !== null &&
           keyProjectId !== undefined &&

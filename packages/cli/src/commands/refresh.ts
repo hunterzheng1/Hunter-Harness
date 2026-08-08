@@ -11,7 +11,9 @@ import { parse as parseYaml } from "yaml";
 
 import {
   collectFreshness,
+  ensureHarnessGitignore,
   inspectHarnessStateEvidence,
+  readLocalCredentials,
   refreshProject,
   resolveRecoveryRoot,
   uuidV7,
@@ -300,7 +302,30 @@ export async function runRefresh(
         cliVersion,
         recoveryStore
       });
+    const localCredentials = await readLocalCredentials(dependencies.cwd);
+    const gitignore = await ensureHarnessGitignore(dependencies.cwd, {
+      dryRun,
+      platformBound: localCredentials?.server_url !== undefined &&
+        localCredentials.token !== undefined && localCredentials.project_id !== undefined
+    });
     const output = summarize(result);
+    const noteworthyGitignore = gitignore.patternResults.filter((item) =>
+      item.status === "tracked" || item.status === "preserved-by-negation"
+    );
+    if (gitignore.changed || noteworthyGitignore.length > 0) {
+      output.items.push({
+        path: gitignore.path,
+        status: dryRun ? "planned" : gitignore.changed ? "applied" : "preserved",
+        patterns: gitignore.patternResults
+      });
+    }
+    if (gitignore.changed) {
+      if (dryRun) {
+        output.summary.planned = Number(output.summary.planned ?? 0) + 1;
+      } else {
+        output.summary.applied = Number(output.summary.applied ?? 0) + 1;
+      }
+    }
     // per-agent identity + freshness 六态（task 12）：legacy 字段不动，新增 freshness 数组。
     const freshness = await collectFreshness({
       projectRoot: dependencies.cwd,

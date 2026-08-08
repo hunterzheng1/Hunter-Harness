@@ -1,7 +1,11 @@
 import {
+  ensureHarnessGitignore,
+  existingRootInstructionDocuments,
   initializeProject,
   readInstalledAgentConfiguration,
+  readLocalCredentials,
   resolveRecoveryRoot,
+  ROOT_INSTRUCTION_DOCUMENTS,
   uuidV7
 } from "@hunter-harness/core";
 import {
@@ -53,6 +57,8 @@ export interface CommandDependencies {
   promptSecret?(question: string): Promise<string>;
   fetch: typeof globalThis.fetch;
   env: Readonly<Record<string, string | undefined>>;
+  /** Actual TTY width when available; preferred over the optional COLUMNS environment hint. */
+  terminalColumns?: number;
 }
 
 async function configureCodeBuddyExtras(
@@ -140,6 +146,7 @@ async function runFirstInstall(
       return 2;
     }
     const planTimestamp = new Date().toISOString();
+    const preexistingRootDocuments = await existingRootInstructionDocuments(dependencies.cwd);
     const localProjectKey = uuidV7();
     const cliVersion = await readCliVersion();
     const recoveryStore = {
@@ -173,6 +180,19 @@ async function runFirstInstall(
       options,
       dependencies
     );
+    const generatedRootDocuments = ROOT_INSTRUCTION_DOCUMENTS.filter((path) =>
+      result.paths.includes(path) && !preexistingRootDocuments.has(path)
+    );
+    const localCredentials = await readLocalCredentials(dependencies.cwd);
+    const gitignore = await ensureHarnessGitignore(dependencies.cwd, {
+      dryRun: options.dryRun === true,
+      generatedRootDocuments,
+      platformBound: localCredentials?.server_url !== undefined &&
+        localCredentials.token !== undefined && localCredentials.project_id !== undefined
+    });
+    const outputPaths = gitignore.changed && !result.paths.includes(gitignore.path)
+      ? [...result.paths, gitignore.path]
+      : result.paths;
     const output: CliResult = {
       schema_version: 1,
       command: "configure",
@@ -181,8 +201,8 @@ async function runFirstInstall(
       ok: true,
       exit_code: 0,
       project_id: result.projectConfig.project.project_id,
-      summary: { planned: result.paths.length, applied: options.dryRun === true ? 0 : result.paths.length },
-      items: result.paths.map((path) => ({ path, status: options.dryRun === true ? "planned" : "applied" })),
+      summary: { planned: outputPaths.length, applied: options.dryRun === true ? 0 : outputPaths.length },
+      items: outputPaths.map((path) => ({ path, status: options.dryRun === true ? "planned" : "applied" })),
       warnings: [],
       errors: [],
       plan_hash: result.planHash,
@@ -190,7 +210,7 @@ async function runFirstInstall(
     };
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
-      : "Hunter Harness 初始化完成，共处理 " + result.paths.length + " 个文件。\n");
+      : "Hunter Harness 初始化完成，共处理 " + outputPaths.length + " 个文件。\n");
     if (
       options.nonInteractive !== true &&
       options.dryRun !== true &&

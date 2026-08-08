@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -9,6 +11,7 @@ import { parse as parseYaml } from "yaml";
 import { runCli } from "../src/bin.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
+const execFileAsync = promisify(execFile);
 
 async function pathExists(path: string): Promise<boolean> {
   try { await stat(path); return true; } catch { return false; }
@@ -108,6 +111,30 @@ describe("hunter-harness refresh CLI", () => {
     expect(await run(["--non-interactive", "--yes"])).toBe(0);
     expect(await readFile(join(root, ".harness", "project.yaml"), "utf8")).toBe(projectBefore);
   });
+
+  it("normal refresh upgrades gitignore rules and respects effective broad ignores", async () => {
+    root = await mkdtemp(join(tmpdir(), "hunter-refresh-gitignore-"));
+    stdout = []; stderr = [];
+    await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+    expect(await run(["--profile", "general", "--non-interactive", "--yes"])).toBe(0);
+    await writeFile(
+      join(root, ".gitignore"),
+      "/.claude/\n!/.cursor/user-settings/\n",
+      "utf8"
+    );
+
+    stdout = []; stderr = [];
+    const code = await run(["refresh", "--non-interactive", "--yes", "--json"]);
+
+    expect(code).toBe(0);
+    const gitignore = await readFile(join(root, ".gitignore"), "utf8");
+    expect(gitignore).toContain("/.harness/");
+    expect(gitignore).toContain("/.cursor/skills/harness-*/");
+    expect(gitignore).not.toContain("/.claude/skills/harness-*/");
+    expect(gitignore).toContain("!/.cursor/user-settings/");
+    const output = JSON.parse(stdout.join("")) as { items: Array<{ path: string }> };
+    expect(output.items.some((item) => item.path === ".gitignore")).toBe(true);
+  }, 120_000);
 
   it("shows a profile-transition plan before asking for confirmation", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-preview-"));

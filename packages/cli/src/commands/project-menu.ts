@@ -9,17 +9,74 @@ import {
 import type { HarnessAgent } from "@hunter-harness/contracts";
 
 import { agentLabel, formatAgentLine } from "../ui/labels.js";
+import { sanitizeTerminalText } from "../ui/terminal.js";
 import { runConnect } from "./connect.js";
 import type { CommandDependencies, ConfigureOptions } from "./configure.js";
 import { runRefresh } from "./refresh.js";
+import { readCliVersion } from "../version.js";
 
-function banner(lines: string[]): string {
-  const width = Math.max(...lines.map((line) => [...line].length), 24);
+const graphemeSegmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
+
+function graphemes(value: string): string[] {
+  return [...graphemeSegmenter.segment(value)].map((entry) => entry.segment);
+}
+
+function characterCellWidth(character: string): number {
+  if (/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(character)) return 2;
+  const base = [...character].find((part) => !/\p{Mark}/u.test(part));
+  if (base === undefined) return 0;
+  const codePoint = base.codePointAt(0) ?? 0;
+  return codePoint >= 0x1100 && (
+    codePoint <= 0x115f || codePoint === 0x2329 || codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+    (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+  ) ? 2 : 1;
+}
+
+function cellWidth(value: string): number {
+  return graphemes(value).reduce(
+    (width, character) => width + characterCellWidth(character),
+    0
+  );
+}
+
+function wrapToCells(value: string, maximumWidth: number): string[] {
+  const wrapped: string[] = [];
+  let line = "";
+  let width = 0;
+  for (const character of graphemes(value)) {
+    const characterWidth = characterCellWidth(character);
+    if (width > 0 && width + characterWidth > maximumWidth) {
+      wrapped.push(line);
+      line = "";
+      width = 0;
+    }
+    line += character;
+    width += characterWidth;
+  }
+  wrapped.push(line);
+  return wrapped;
+}
+
+function banner(lines: string[], columns: number): string {
+  const maximumWidth = Math.max(8, columns - 4);
+  const wrapped = lines.flatMap((line) =>
+    wrapToCells(sanitizeTerminalText(line), maximumWidth)
+  );
+  const width = Math.min(
+    maximumWidth,
+    Math.max(Math.min(24, maximumWidth), ...wrapped.map(cellWidth))
+  );
   const bar = "─".repeat(width + 2);
   return [
     `┌${bar}┐`,
-    ...lines.map((line) => {
-      const pad = width - [...line].length;
+    ...wrapped.map((line) => {
+      const pad = width - cellWidth(line);
       return `│ ${line}${" ".repeat(Math.max(0, pad))} │`;
     }),
     `└${bar}┘`
@@ -29,7 +86,9 @@ function banner(lines: string[]): string {
 async function platformStatusLine(cwd: string): Promise<string> {
   const creds = await readLocalCredentials(cwd);
   if (creds?.server_url && creds.token) {
-    const project = creds.project_id === undefined ? "" : ` · 项目 ${creds.project_id}`;
+    const project = creds.project_display_name === undefined
+      ? " · 项目名称未缓存"
+      : ` · ${creds.project_display_name}`;
     return `平台：已连接 ${creds.server_url}${project}`;
   }
   return "平台：未绑定（可选，用于推送 / 知识库 / 运行监控）";
@@ -52,10 +111,13 @@ export async function runPlatformConnectionMenu(
 ): Promise<number> {
   const creds = await readLocalCredentials(dependencies.cwd);
   if (creds?.server_url && creds.token) {
+    const displayName = sanitizeTerminalText(
+      creds.project_display_name ?? "（名称未缓存，可重新绑定补全）"
+    );
     dependencies.stdout(
       `当前平台连接：\n` +
       `  地址：${creds.server_url}\n` +
-      `  项目：${creds.project_id ?? "（未写入 project_id）"}\n` +
+      `  项目：${displayName}\n` +
       `  密钥：已保存（本地凭据文件，不会再次显示明文）\n\n`
     );
     const answer = (await dependencies.prompt([
@@ -233,12 +295,18 @@ export async function runInitializedProjectMenu(
     ? installed.agents
     : (["claude-code"] as HarnessAgent[]);
   const projectName = dependencies.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? dependencies.cwd;
+  const cliVersion = await readCliVersion();
+  const parsedColumns = Number.parseInt(dependencies.env.COLUMNS ?? "", 10);
+  const detectedColumns = dependencies.terminalColumns ?? parsedColumns;
+  const terminalColumns = Number.isFinite(detectedColumns) && detectedColumns >= 12
+    ? detectedColumns
+    : 80;
   const statusLines = [
-    `Hunter Harness · ${projectName}`,
+    `Hunter Harness v${cliVersion} · ${projectName}`,
     await platformStatusLine(dependencies.cwd),
     ...await toolsStatusLines(dependencies.cwd)
   ];
-  dependencies.stdout(banner(statusLines) + "\n\n");
+  dependencies.stdout(banner(statusLines, terminalColumns) + "\n\n");
 
   const answer = (await dependencies.prompt([
     "请选择操作：",

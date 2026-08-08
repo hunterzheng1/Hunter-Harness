@@ -9,17 +9,32 @@ advances on accepted/duplicate_accepted responses.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_paths  # noqa: E402
+
 WHITELIST = {
     "id",
+    "timestamp",
+    "schema_version",
+    # Legacy aliases remain readable while new writers use the canonical names.
     "ts",
     "type",
     "phase",
@@ -35,6 +50,10 @@ WHITELIST = {
     "duration_ms",
     "schemaVersion",
 }
+
+MAX_BATCH_SIZE = 100
+ACCEPTED_STATUSES = {"accepted", "duplicate_accepted"}
+QUARANTINE_STATUSES = {"id_conflict", "rejected", "rejected_schema"}
 
 
 def _yaml_scalar(text: str, key: str) -> str | None:
@@ -73,27 +92,110 @@ def sanitize(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def cursor_path(change_dir: Path) -> Path:
-    return change_dir / "meta" / "events-sync-cursor.json"
+    return _state_dir(change_dir) / "meta" / "events-sync-cursor.json"
 
 
-def load_cursor(change_dir: Path) -> int:
+def _state_dir(change_dir: Path) -> Path:
+    return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
+
+
+def load_cursor(
+    change_dir: Path,
+    *,
+    maximum_lines: int | None = None,
+    repair: bool = False,
+) -> int:
     path = cursor_path(change_dir)
     if not path.is_file():
         return 0
+    valid = True
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return 0
-    return int(data.get("acked_lines") or 0)
+        data = None
+        valid = False
+    raw = data.get("acked_lines") if isinstance(data, dict) else None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        valid = False
+        value = 0
+    else:
+        value = raw
+    if maximum_lines is not None:
+        if maximum_lines < 0:
+            raise ValueError("maximum_lines must be non-negative")
+        if value > maximum_lines:
+            valid = False
+            value = 0
+    if not valid and repair:
+        save_cursor(change_dir, 0)
+    return value
+
+
+def _fsync_parent(path: Path) -> None:
+    if os.name == "nt":
+        return
+    descriptor = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def save_cursor(change_dir: Path, acked_lines: int) -> None:
+    if isinstance(acked_lines, bool) or not isinstance(acked_lines, int) or acked_lines < 0:
+        raise ValueError("acked_lines must be a non-negative integer")
     path = cursor_path(change_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"schemaVersion": 1, "acked_lines": acked_lines}, indent=2) + "\n",
-        encoding="utf-8",
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    encoded = (
+        json.dumps({"schemaVersion": 1, "acked_lines": acked_lines}, indent=2) + "\n"
+    ).encode("utf-8")
+    descriptor = os.open(
+        str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
     )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_parent(path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def quarantine_path(change_dir: Path) -> Path:
+    return _state_dir(change_dir) / "meta" / "events-sync-quarantine.ndjson"
+
+
+def append_quarantine(
+    change_dir: Path,
+    *,
+    event_id: str,
+    line_number: int,
+    error_code: str,
+    status: str,
+) -> None:
+    path = quarantine_path(change_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema_version": 1,
+        "event_id": event_id,
+        "line_number": line_number,
+        "status": status,
+        "error_code": error_code,
+        "quarantined_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def run_id_for(change_dir: Path) -> str:
@@ -119,6 +221,23 @@ def post_json(endpoint: dict[str, str], path: str, body: dict[str, Any]) -> dict
         return json.loads(response.read().decode("utf-8"))
 
 
+def _event_lines_snapshot(events_file: Path) -> list[str]:
+    """Read a complete-line snapshot under the writer's events.ndjson lock."""
+    lock = _CrossProcessLock(events_file.with_name(events_file.name + ".lock"))
+    lock.acquire(blocking=True)
+    try:
+        data = events_file.read_bytes()
+    finally:
+        lock.release()
+    # A non-cooperating/external writer may still leave a partial tail. Never
+    # quarantine or acknowledge that tail; the next nudge will retry it once a
+    # terminating newline makes the physical record durable.
+    if data and not data.endswith(b"\n"):
+        last_newline = data.rfind(b"\n")
+        data = b"" if last_newline < 0 else data[:last_newline + 1]
+    return data.decode("utf-8-sig").splitlines()
+
+
 def sync_change(
     project: Path,
     change_dir: Path,
@@ -136,8 +255,6 @@ def sync_change(
 
     # Always heartbeat so the console can separate connection vs run status.
     try:
-        from datetime import datetime, timezone
-
         client_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         post_json(
             endpoint,
@@ -156,7 +273,7 @@ def sync_change(
     if heartbeat_only:
         return {"ok": True, "heartbeat": True, "run_id": rid, "change_key": resolved_key}
 
-    events_file = change_dir / "events.ndjson"
+    events_file = _state_dir(change_dir) / "events.ndjson"
     if not events_file.is_file():
         return {
             "ok": True,
@@ -166,86 +283,145 @@ def sync_change(
             "reason": "no events.ndjson",
         }
 
-    lines = events_file.read_text(encoding="utf-8").splitlines()
-    acked = load_cursor(change_dir)
+    lines = _event_lines_snapshot(events_file)
+    acked = load_cursor(
+        change_dir,
+        maximum_lines=len(lines),
+        repair=True,
+    )
     pending_raw = lines[acked:]
-    batch: list[dict[str, Any]] = []
-    for offset, line in enumerate(pending_raw, start=1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        event_id = str(event.get("id") or f"{resolved_key}:{acked + offset}")
-        payload = sanitize(event)
-        batch.append(
-            {
+    uploaded = 0
+    quarantined = 0
+    last_result: dict[str, Any] | None = None
+
+    # Chunk physical lines, not only valid events, so a malformed line can never
+    # strand all later valid events behind the durable cursor.
+    for chunk_start in range(0, len(pending_raw), MAX_BATCH_SIZE):
+        raw_chunk = pending_raw[chunk_start:chunk_start + MAX_BATCH_SIZE]
+        batch: list[dict[str, Any]] = []
+        line_by_event_id: dict[str, int] = {}
+        local_invalid: list[tuple[str, int, str]] = []
+        for offset, raw_line in enumerate(raw_chunk, start=1):
+            line_number = acked + chunk_start + offset
+            line = raw_line.strip()
+            if not line:
+                local_invalid.append((f"{resolved_key}:{line_number}", line_number, "EMPTY_LINE"))
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                local_invalid.append((f"{resolved_key}:{line_number}", line_number, "INVALID_JSON"))
+                continue
+            if not isinstance(event, dict):
+                local_invalid.append((f"{resolved_key}:{line_number}", line_number, "INVALID_EVENT"))
+                continue
+            event_id = str(event.get("id") or f"{resolved_key}:{line_number}")
+            item: dict[str, Any] = {
                 "event_id": event_id,
-                "producer_seq": acked + offset,
+                "producer_seq": line_number,
                 "event_type": str(event.get("type") or "unknown"),
-                "phase": event.get("phase"),
-                "occurred_at": str(event.get("ts") or client_time),
-                "payload": payload,
+                "occurred_at": str(event.get("timestamp") or event.get("ts") or client_time),
+                "payload": sanitize(event),
             }
-        )
-    if not batch:
-        save_cursor(change_dir, len(lines))
-        return {
-            "ok": True,
-            "run_id": rid,
-            "change_key": resolved_key,
-            "uploaded": 0,
-            "acked_lines": len(lines),
-        }
+            if event.get("phase") is not None:
+                item["phase"] = event.get("phase")
+            batch.append(item)
+            line_by_event_id[event_id] = line_number
 
-    # Drop None phase keys for strict schema.
-    for item in batch:
-        if item.get("phase") is None:
-            item.pop("phase", None)
+        if batch:
+            try:
+                result = post_json(
+                    endpoint,
+                    f"/api/v1/projects/{project_id}/runs/events:batch",
+                    {
+                        "protocol_version": "hunter-progress-sync/v1",
+                        "run_id": rid,
+                        "change_key": resolved_key,
+                        "title": resolved_key,
+                        "events": batch,
+                    },
+                )
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                return {
+                    "ok": False,
+                    "error": f"batch HTTP {exc.code}: {detail}",
+                    "run_id": rid,
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "acked_lines": load_cursor(change_dir),
+                }
+            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                return {
+                    "ok": False,
+                    "error": f"batch failed: {exc}",
+                    "run_id": rid,
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "acked_lines": load_cursor(change_dir),
+                }
+            last_result = result
+            items = result.get("items") if isinstance(result, dict) else None
+            if not isinstance(items, list) or len(items) != len(batch):
+                return {
+                    "ok": False,
+                    "error": "batch response did not acknowledge every event",
+                    "run_id": rid,
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "acked_lines": load_cursor(change_dir),
+                }
+            response_by_id = {
+                str(item.get("id") or item.get("event_id") or ""): item
+                for item in items if isinstance(item, dict)
+            }
+            for event in batch:
+                event_id = str(event["event_id"])
+                item = response_by_id.get(event_id)
+                status = str((item or {}).get("status") or "")
+                if status in ACCEPTED_STATUSES:
+                    uploaded += 1
+                    continue
+                if status in QUARANTINE_STATUSES:
+                    append_quarantine(
+                        change_dir,
+                        event_id=event_id,
+                        line_number=line_by_event_id[event_id],
+                        error_code=str((item or {}).get("error_code") or status.upper()),
+                        status=status,
+                    )
+                    quarantined += 1
+                    continue
+                return {
+                    "ok": False,
+                    "error": f"event {event_id} was not durably acknowledged",
+                    "run_id": rid,
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "acked_lines": load_cursor(change_dir),
+                    "server": result,
+                }
 
-    try:
-        result = post_json(
-            endpoint,
-            f"/api/v1/projects/{project_id}/runs/events:batch",
-            {
-                "protocol_version": "hunter-progress-sync/v1",
-                "run_id": rid,
-                "change_key": resolved_key,
-                "title": resolved_key,
-                "events": batch,
-            },
-        )
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        return {"ok": False, "error": f"batch HTTP {exc.code}: {detail}", "run_id": rid}
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-        return {"ok": False, "error": f"batch failed: {exc}", "run_id": rid}
+        for event_id, line_number, error_code in local_invalid:
+            append_quarantine(
+                change_dir,
+                event_id=event_id,
+                line_number=line_number,
+                error_code=error_code,
+                status="local_invalid",
+            )
+            quarantined += 1
+        save_cursor(change_dir, acked + chunk_start + len(raw_chunk))
 
-    items = result.get("items") if isinstance(result, dict) else None
-    accepted = 0
-    if isinstance(items, list):
-        for item in items:
-            status = str((item or {}).get("status") or "")
-            if status in {"accepted", "duplicate_accepted"}:
-                accepted += 1
-    # Advance cursor only when the whole batch was accepted/duplicated.
-    if accepted == len(batch):
-        save_cursor(change_dir, acked + len(pending_raw))
-        acked_lines = acked + len(pending_raw)
-    else:
-        acked_lines = acked
     return {
-        "ok": accepted == len(batch),
+        "ok": True,
         "run_id": rid,
         "change_key": resolved_key,
-        "uploaded": accepted,
-        "batch_size": len(batch),
-        "acked_lines": acked_lines,
-        "server": result,
+        "uploaded": uploaded,
+        "quarantined": quarantined,
+        "batch_size": min(MAX_BATCH_SIZE, len(pending_raw)),
+        "acked_lines": len(lines),
+        "server": last_result,
     }
 
 
@@ -299,6 +475,189 @@ def auto_events_sync(
     }
 
 
+def _nudge_path(project_root: Path) -> Path:
+    return project_root / ".harness" / "state" / "local" / "events-sync" / "nudge.json"
+
+
+def _agent_lock_path(project_root: Path) -> Path:
+    return project_root / ".harness" / "state" / "local" / "events-sync" / "agent.lock"
+
+
+def _agent_waiter_lock_path(project_root: Path) -> Path:
+    return project_root / ".harness" / "state" / "local" / "events-sync" / "agent-waiter.lock"
+
+
+class _CrossProcessLock:
+    """Cross-platform advisory file lock held by an open descriptor.
+
+    Lock files are deliberately persistent: ownership belongs to the kernel lock,
+    not mtime or file existence, so a slow live worker can never be stolen.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._stream: Any | None = None
+
+    def acquire(self, *, blocking: bool) -> bool:
+        if self._stream is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        stream = self.path.open("a+b", buffering=0)
+        if stream.seek(0, os.SEEK_END) == 0:
+            stream.write(b"\0")
+            stream.flush()
+            os.fsync(stream.fileno())
+        while True:
+            stream.seek(0)
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._stream = stream
+                return True
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    stream.close()
+                    raise
+                if not blocking:
+                    stream.close()
+                    return False
+                time.sleep(0.05)
+
+    def release(self) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        try:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
+            self._stream = None
+
+
+def schedule_events_sync(project_root: Path, change_dir: Path) -> bool:
+    """Wake a finite, project-local sync worker after an event is durable.
+
+    The wake-up record contains no credential or event payload. Multiple spawns are
+    harmless: a project-local lock lets only one worker perform network requests.
+    """
+    project_root = project_root.resolve()
+    change_dir = change_dir.resolve()
+    if load_endpoint(project_root) is None:
+        return False
+    nudge = _nudge_path(project_root)
+    nudge.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "generation": uuid.uuid4().hex,
+        "change": change_dir.name,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    temporary = nudge.with_name(f".{nudge.name}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.replace(temporary, nudge)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--project",
+        str(project_root),
+        "--agent",
+        "--json",
+    ]
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(command, **kwargs)  # noqa: S603 — fixed local interpreter/script
+    return True
+
+
+def _read_nudge_generation(project_root: Path) -> str:
+    try:
+        value = json.loads(_nudge_path(project_root).read_text(encoding="utf-8"))
+        return str(value.get("generation") or "") if isinstance(value, dict) else ""
+    except (OSError, json.JSONDecodeError):
+        return ""
+
+
+def _discover_changes(project_root: Path) -> list[Path]:
+    root = project_root / ".harness" / "changes"
+    return sorted(path for path in root.glob("*") if path.is_dir()) if root.is_dir() else []
+
+
+def _run_agent_session(project_root: Path) -> dict[str, Any]:
+    attempts = 0
+    uploaded = 0
+    quarantined = 0
+    while attempts < 6:
+        generation = _read_nudge_generation(project_root)
+        results = [sync_change(project_root, path) for path in _discover_changes(project_root)]
+        uploaded += sum(int(item.get("uploaded") or 0) for item in results)
+        quarantined += sum(int(item.get("quarantined") or 0) for item in results)
+        if all(item.get("ok") for item in results):
+            time.sleep(0.6)
+            if generation == _read_nudge_generation(project_root):
+                return {
+                    "ok": True,
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "attempts": attempts + 1,
+                }
+            attempts = 0
+            continue
+        time.sleep(min(16.0, float(2 ** attempts)))
+        attempts += 1
+    return {
+        "ok": False,
+        "uploaded": uploaded,
+        "quarantined": quarantined,
+        "attempts": attempts,
+        "error": "remote sync remains unavailable after bounded retries",
+    }
+
+
+def run_agent(project_root: Path) -> dict[str, Any]:
+    """Run a bounded retry session with a lossless one-worker handoff."""
+    primary = _CrossProcessLock(_agent_lock_path(project_root))
+    waiter: _CrossProcessLock | None = None
+    if not primary.acquire(blocking=False):
+        # At most one follower waits at the release boundary. Any later nudge is
+        # represented by the same atomic generation record and that follower sees it.
+        waiter = _CrossProcessLock(_agent_waiter_lock_path(project_root))
+        if not waiter.acquire(blocking=False):
+            return {"ok": True, "already_running": True}
+        try:
+            primary.acquire(blocking=True)
+        finally:
+            waiter.release()
+    try:
+        return _run_agent_session(project_root)
+    finally:
+        primary.release()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync events.ndjson to platform Run monitoring")
     parser.add_argument("--project", default=".", help="Project root")
@@ -306,9 +665,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", help="Override stable run_id (archive finalize continuity)")
     parser.add_argument("--change-key", help="Override change_key sent to the platform")
     parser.add_argument("--heartbeat-only", action="store_true")
+    parser.add_argument("--agent", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     project = Path(args.project).resolve()
+    if args.agent:
+        result = run_agent(project)
+        payload = {
+            "schema_version": 1,
+            "ok": bool(result.get("ok")),
+            "command": "events.sync.agent",
+            "exit_code": 0 if result.get("ok") else 1,
+            "result": result,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return int(payload["exit_code"])
     if args.change_dir:
         changes = [Path(args.change_dir).resolve()]
     else:

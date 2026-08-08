@@ -44,7 +44,8 @@ describe("hunter-harness connect", () => {
       kind: "project-key",
       actor_id: "actor_owner",
       project_id: "prj_demo",
-      scopes: ["push", "files:read"]
+      project_display_name: "示例项目",
+      scopes: ["push", "knowledge:read", "files:read"]
     }));
 
     const code = await runConnect(
@@ -63,9 +64,10 @@ describe("hunter-harness connect", () => {
 
     const credentials = parseYaml(
       await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8")
-    ) as { token: string; server_url: string };
+    ) as { token: string; server_url: string; project_display_name: string };
     expect(credentials.token).toBe("hh_test_key");
     expect(credentials.server_url).toBe("https://platform.example.test");
+    expect(credentials.project_display_name).toBe("示例项目");
 
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
     expect(gitignore).toContain(".harness/credentials.local.yaml");
@@ -74,7 +76,8 @@ describe("hunter-harness connect", () => {
     expect(result).toMatchObject({
       command: "connect",
       ok: true,
-      project_id: "prj_demo"
+      project_id: "prj_demo",
+      summary: { project_display_name: "示例项目" }
     });
   });
 
@@ -111,6 +114,58 @@ describe("hunter-harness connect", () => {
       "http://127.0.0.1:3003/api/v1/auth/key-info",
       expect.any(Object)
     );
+  });
+
+  it("clears a stale cached project name when rebinding and an older server omits it", async () => {
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(
+      join(root, ".harness", "credentials.local.yaml"),
+      "project_display_name: 旧项目名称\nproject_id: prj_old\nserver_url: https://platform.example.test\ntoken: old-token\n",
+      "utf8"
+    );
+    const fetchMock = vi.fn(async () => json({
+      kind: "project-key",
+      actor_id: "actor_owner",
+      project_id: "prj_new",
+      scopes: ["push"]
+    }));
+
+    const code = await runConnect(
+      "https://platform.example.test",
+      { key: "hh_new_key", nonInteractive: true, rebind: true },
+      dependencies(fetchMock as unknown as typeof fetch)
+    );
+
+    expect(code).toBe(0);
+    const credentials = parseYaml(
+      await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8")
+    ) as Record<string, unknown>;
+    expect(credentials.project_id).toBe("prj_new");
+    expect(credentials).not.toHaveProperty("project_display_name");
+  });
+
+  it("sanitizes remote key information in human-readable output", async () => {
+    const fetchMock = vi.fn(async () => json({
+      kind: "project-key\n伪造类型",
+      actor_id: "actor_owner",
+      project_id: "prj_demo",
+      project_display_name: "安全名称\u001b[31m\n伪造行",
+      scopes: ["push\n伪造权限"]
+    }));
+
+    const code = await runConnect(
+      "https://platform.example.test",
+      { key: "hh_test_key" },
+      dependencies(fetchMock as unknown as typeof fetch)
+    );
+
+    expect(code).toBe(0);
+    const output = stdout.join("");
+    expect(output).not.toContain("\u001b");
+    expect(output.split("\n")).not.toContain("伪造行");
+    expect(output).toContain("安全名称 伪造行");
+    expect(output).toContain("project-key 伪造类型");
+    expect(output).toContain("push 伪造权限");
   });
 
   it("requires https for non-loopback hosts", async () => {

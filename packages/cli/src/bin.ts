@@ -142,7 +142,12 @@ function defaultDependencies(overrides: CliDependencies): CommandDependencies {
     }),
     promptSecret: overrides.promptSecret ?? overrides.prompt ?? promptSecret,
     fetch: overrides.fetch ?? globalThis.fetch,
-    env: overrides.env ?? process.env
+    env: overrides.env ?? process.env,
+    ...(overrides.terminalColumns !== undefined
+      ? { terminalColumns: overrides.terminalColumns }
+      : typeof process.stdout.columns === "number"
+        ? { terminalColumns: process.stdout.columns }
+        : {})
   };
 }
 

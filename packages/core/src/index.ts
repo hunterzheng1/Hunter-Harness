@@ -17,6 +17,7 @@ export * from "./managed/managed-block.js";
 export * from "./policy/file-policy.js";
 export * from "./platform/registry-governance.js";
 export * from "./project/initialize.js";
+export * from "./project/gitignore.js";
 export * from "./project/agent-adapters.js";
 export * from "./project/local-state.js";
 export * from "./project/managed-content.js";
