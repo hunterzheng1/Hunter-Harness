@@ -5,6 +5,29 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+const INSTALLED_BUNDLE_RELATIVE = ".harness/state/local/installed-harness-bundle.json";
+const GENERATED_PROJECTIONS_START = "# hunter-harness:generated-projections:start";
+const GENERATED_PROJECTIONS_END = "# hunter-harness:generated-projections:end";
+const PROJECTION_PREFIXES = [
+  ".claude/skills/",
+  ".claude/agents/",
+  ".claude/rules/",
+  ".claude/commands/",
+  ".agents/skills/",
+  ".agents/agents/",
+  ".agents/rules/",
+  ".agents/commands/",
+  ".cursor/skills/",
+  ".cursor/agents/",
+  ".cursor/rules/",
+  ".cursor/commands/",
+  ".codebuddy/skills/",
+  ".codebuddy/agents/",
+  ".codebuddy/rules/",
+  ".codebuddy/.rules/",
+  ".codebuddy/commands/"
+] as const;
+
 export const ROOT_INSTRUCTION_DOCUMENTS = [
   "AGENTS.md",
   "CLAUDE.md",
@@ -114,6 +137,79 @@ async function isTracked(projectRoot: string, relativePath: string): Promise<boo
   }
 }
 
+function normalizeProjectionPath(value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.includes("\0")) return null;
+  const normalized = value.replaceAll("\\", "/");
+  if (normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized) ||
+      normalized.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    return null;
+  }
+  return PROJECTION_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+    ? normalized
+    : null;
+}
+
+async function readInstalledProjectionPaths(projectRoot: string): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(projectRoot, INSTALLED_BUNDLE_RELATIVE), "utf8")
+    ) as { files?: Array<{ target_path?: unknown }> };
+    if (!Array.isArray(parsed.files)) return [];
+    return [...new Set(parsed.files
+      .map((file) => normalizeProjectionPath(file.target_path))
+      .filter((value): value is string => value !== null))].sort();
+  } catch (error) {
+    if (isMissing(error) || error instanceof SyntaxError) return [];
+    throw error;
+  }
+}
+
+function coveredByHarnessPattern(path: string): boolean {
+  return /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\/skills\/harness-[^/]+\//.test(path) ||
+    /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\/(?:agents|rules)\/harness-[^/]+\.md$/.test(path) ||
+    /^\.codebuddy\/\.rules\/harness-[^/]+\.mdc$/.test(path);
+}
+
+async function trackedPathSet(projectRoot: string, paths: readonly string[]): Promise<Set<string>> {
+  const tracked = new Set<string>();
+  for (let index = 0; index < paths.length; index += 100) {
+    const batch = paths.slice(index, index + 100);
+    try {
+      const result = await execFileAsync("git", ["ls-files", "-z", "--", ...batch], {
+        cwd: projectRoot,
+        windowsHide: true,
+        encoding: "utf8"
+      });
+      for (const value of result.stdout.split("\0")) {
+        const normalized = value === "" ? null : normalizeProjectionPath(value);
+        if (normalized !== null) tracked.add(normalized);
+      }
+    } catch {
+      // A missing Git executable or non-worktree is handled like an empty index.
+      return new Set();
+    }
+  }
+  return tracked;
+}
+
+function removeGeneratedProjectionBlock(content: string): {
+  content: string;
+  patterns: Set<string>;
+} {
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === GENERATED_PROJECTIONS_START);
+  if (start < 0) return { content, patterns: new Set() };
+  const endOffset = lines.slice(start + 1)
+    .findIndex((line) => line.trim() === GENERATED_PROJECTIONS_END);
+  if (endOffset < 0) return { content, patterns: new Set() };
+  const end = start + 1 + endOffset;
+  const patterns = new Set(lines.slice(start + 1, end).map((line) => line.trim()).filter(Boolean));
+  lines.splice(start, end - start + 1);
+  if (start === 0 && lines[0] === "") lines.shift();
+  return { content: lines.join(eol), patterns };
+}
+
 async function hasGitWorkTree(projectRoot: string): Promise<boolean> {
   try {
     const result = await execFileAsync("git", ["rev-parse", "--is-inside-work-tree"], {
@@ -191,6 +287,9 @@ export async function ensureHarnessGitignore(
   }
   const byteOrderMark = content.startsWith("\uFEFF") ? "\uFEFF" : "";
   if (byteOrderMark !== "") content = content.slice(1);
+  const originalContent = content;
+  const generatedBlock = removeGeneratedProjectionBlock(content);
+  content = generatedBlock.content;
   const lines = content.split(/\r?\n/);
   const existing = new Set(lines.map((line) => line.trim()));
   const gitWorkTree = await hasGitWorkTree(projectRoot);
@@ -210,6 +309,21 @@ export async function ensureHarnessGitignore(
     }
   }
 
+  const projectionPaths = (await readInstalledProjectionPaths(projectRoot))
+    .filter((path) => !coveredByHarnessPattern(path));
+  const trackedProjections = gitWorkTree
+    ? await trackedPathSet(projectRoot, projectionPaths)
+    : new Set<string>();
+  const generatedEntries: Array<{ pattern: string; probe: string }> = [];
+  for (const path of projectionPaths) {
+    const pattern = "/" + path;
+    if (trackedProjections.has(path)) {
+      patternResults.push({ pattern, status: "tracked" });
+    } else {
+      generatedEntries.push({ pattern, probe: path });
+    }
+  }
+
   const initiallyIgnored = gitWorkTree
     ? await effectivelyIgnored(projectRoot, wanted)
     : new Set<string>();
@@ -226,36 +340,37 @@ export async function ensureHarnessGitignore(
       missing.push(entry);
     }
   }
-  if (missing.length === 0) {
-    return {
-      changed: false,
-      path: ".gitignore",
-      ignoredRootDocuments,
-      skippedBecauseOfNegation: patternResults.some((item) => item.status === "preserved-by-negation"),
-      patternResults
-    };
-  }
+  const eol = content.includes("\r\n") ? "\r\n" : "\n";
+  const generatedLines = generatedEntries.length === 0
+    ? []
+    : [
+        GENERATED_PROJECTIONS_START,
+        ...generatedEntries.map((entry) => entry.pattern),
+        GENERATED_PROJECTIONS_END
+      ];
+  const headingNeeded = missing.length > 0 && !existing.has("# Hunter Harness（本地生成，不提交）");
+  const prefix = [
+    ...generatedLines,
+    ...(headingNeeded ? ["# Hunter Harness（本地生成，不提交）"] : []),
+    ...missing.map((entry) => entry.pattern)
+  ];
+  const nextContent = prefix.length === 0
+    ? content
+    : prefix.join(eol) + eol + (content.length === 0 ? "" : content);
+  const changed = nextContent !== originalContent;
   if (options.dryRun !== true) {
-    const eol = content.includes("\r\n") ? "\r\n" : "\n";
-    const headingNeeded = !existing.has("# Hunter Harness（本地生成，不提交）");
-    const block = [
-      ...(headingNeeded ? ["# Hunter Harness（本地生成，不提交）"] : []),
-      ...missing.map((entry) => entry.pattern)
-    ].join(eol);
     // Managed patterns stay before user content so later user negations retain
     // normal Git precedence instead of being silently overridden by the CLI.
-    await writeFile(
-      gitignorePath,
-      byteOrderMark + block + eol + (content.length === 0 ? "" : content),
-      "utf8"
-    );
+    if (changed) await writeFile(gitignorePath, byteOrderMark + nextContent, "utf8");
     const ignoredAfterWrite = gitWorkTree
-      ? await effectivelyIgnored(projectRoot, missing)
-      : new Set(missing.map((entry) => entry.pattern));
-    for (const entry of missing) {
+      ? await effectivelyIgnored(projectRoot, [...missing, ...generatedEntries])
+      : new Set([...missing, ...generatedEntries].map((entry) => entry.pattern));
+    for (const entry of [...missing, ...generatedEntries]) {
       patternResults.push({
         pattern: entry.pattern,
-        status: ignoredAfterWrite.has(entry.pattern) ? "added" : "preserved-by-negation"
+        status: ignoredAfterWrite.has(entry.pattern)
+          ? (generatedBlock.patterns.has(entry.pattern) ? "already-present" : "added")
+          : "preserved-by-negation"
       });
     }
   } else {
@@ -263,9 +378,13 @@ export async function ensureHarnessGitignore(
       pattern: entry.pattern,
       status: "planned" as const
     })));
+    patternResults.push(...generatedEntries.map((entry) => ({
+      pattern: entry.pattern,
+      status: generatedBlock.patterns.has(entry.pattern) ? "already-present" as const : "planned" as const
+    })));
   }
   return {
-    changed: true,
+    changed,
     path: ".gitignore",
     ignoredRootDocuments,
     skippedBecauseOfNegation: patternResults.some((item) => item.status === "preserved-by-negation"),
