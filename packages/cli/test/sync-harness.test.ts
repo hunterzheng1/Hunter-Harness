@@ -39,8 +39,15 @@ describe("sync-harness atomicSwapDir — INT-005", () => {
     ) as {
       bundle_version: string;
       minimumCliVersion: string;
+      workflowPackageVersion: string;
       capabilities: string[];
     };
+    const workflowPackage = JSON.parse(
+      await readFile(
+        join(process.cwd(), "packages", "workflow-data-harness", "package.json"),
+        "utf8"
+      )
+    ) as { version: string };
     const bundle = JSON.parse(
       await readFile(
         join(
@@ -58,6 +65,7 @@ describe("sync-harness atomicSwapDir — INT-005", () => {
 
     expect(family.bundle_version).toBe(bundle.bundle_version);
     expect(family.minimumCliVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(family.workflowPackageVersion).toBe(workflowPackage.version);
     expect(family.capabilities).toEqual(expect.arrayContaining([
       "sync@2",
       "rules-sync@1",

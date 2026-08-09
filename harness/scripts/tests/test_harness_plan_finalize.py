@@ -158,6 +158,8 @@ class PlanFinalizeTests(unittest.TestCase):
 
             self.assertTrue(first["ok"])
             self.assertTrue(second["ok"])
+            self.assertEqual(first["artifactRef"], "meta/plan-finalization.json")
+            self.assertEqual(second["artifactRef"], "meta/plan-finalization.json")
             self.assertTrue(second["idempotent"])
             lines = (change_dir / "events.ndjson").read_text(encoding="utf-8").splitlines()
             events = [json.loads(line) for line in lines if line.strip()]

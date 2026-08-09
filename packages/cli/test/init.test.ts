@@ -197,6 +197,9 @@ describe("hunter-harness initialization", () => {
     const code = await run(["--non-interactive", "--yes"]);
     expect(code).toBe(0);
     expect(stderr).toEqual([]);
+    expect(stdout.join("")).toMatch(
+      /版本：CLI v\d+\.\d+\.\d+ · 工作流包 v\d+\.\d+\.\d+ · Bundle v\d+\.\d+\.\d+/
+    );
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { project: { profiles: string[] } };
@@ -391,6 +394,7 @@ describe("hunter-harness initialization", () => {
     expect(code).toBe(0);
     const output = stdout.join("");
     expect(output).toMatch(/Hunter Harness v\d+\.\d+\.\d+/);
+    expect(output).toMatch(/工作流包 v\d+\.\d+\.\d+ · Bundle v\d+\.\d+\.\d+/);
     expect(output).toContain("本地部署测试 👩🏽‍💻 伪造");
     expect(output).not.toContain("\u001b");
     expect(output.split("\n").filter((line) => line === "伪造")).toHaveLength(0);

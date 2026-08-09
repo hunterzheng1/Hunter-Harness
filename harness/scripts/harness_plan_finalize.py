@@ -1155,6 +1155,7 @@ def finalize_plan(
                 "artifactsHash": validation["artifactsHash"],
                 "files": validation["files"],
                 "receiptPath": str(receipt_path),
+                "artifactRef": "meta/plan-finalization.json",
             }
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1253,6 +1254,7 @@ def finalize_plan(
             "artifactsHash": validation["artifactsHash"],
             "files": validation["files"],
             "receiptPath": str(receipt_path),
+            "artifactRef": "meta/plan-finalization.json",
             "executionLogPath": str(harness_events.execution_log_path(change_dir)),
         }
     except OSError as exc:

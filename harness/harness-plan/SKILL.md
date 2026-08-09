@@ -66,7 +66,7 @@ disallowed-tools:
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后执行 `harness_context.py close --from-phase plan --to-phase run --executor <tool> --artifact <plan-finalization> --json` 写 append-only handoff receipt；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close --from-phase plan --to-phase run --executor <tool> --artifact "<receiptPath>" --json`（也可使用返回的稳定 `artifactRef=meta/plan-finalization.json`），写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 

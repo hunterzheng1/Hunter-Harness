@@ -18,6 +18,10 @@ import { runArchiveUpload } from "./archive-upload.js";
 import type { CommandDependencies, ConfigureOptions } from "./configure.js";
 import { runRefresh } from "./refresh.js";
 import { readCliVersion } from "../version.js";
+import {
+  formatWorkflowVersionLine,
+  readWorkflowFamilyManifest
+} from "../workflow-data/resolve.js";
 
 const graphemeSegmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
 
@@ -333,6 +337,7 @@ export async function runInitializedProjectMenu(
     : (["claude-code"] as HarnessAgent[]);
   const projectName = dependencies.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? dependencies.cwd;
   const cliVersion = await readCliVersion();
+  const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
   const pendingArchives = await listPendingArchives(dependencies.cwd);
   const parsedColumns = Number.parseInt(dependencies.env.COLUMNS ?? "", 10);
   const detectedColumns = dependencies.terminalColumns ?? parsedColumns;
@@ -341,6 +346,7 @@ export async function runInitializedProjectMenu(
     : 80;
   const statusLines = [
     `Hunter Harness v${cliVersion} · ${projectName}`,
+    formatWorkflowVersionLine(cliVersion, workflowManifest),
     await platformStatusLine(dependencies.cwd),
     `待上传归档：${pendingArchives.length} 个`,
     ...await toolsStatusLines(dependencies.cwd)

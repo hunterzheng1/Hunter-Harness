@@ -30,6 +30,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_change as hc  # noqa: E402
+import harness_context as hctx  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_events_sync as hes  # noqa: E402
 import harness_ledger as hl  # noqa: E402
@@ -1673,6 +1674,7 @@ def append_phase_event(
         content = he.render_execution_log(events)
         log_path = he.write_execution_log(change_dir, content)
         rendered = True
+    he.nudge_remote_sync(change_dir)
     return {
         "ok": True,
         "eventId": event.get("id"),
@@ -1718,6 +1720,80 @@ def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -
         and event.get("run_id") == run_id
         for event in he.load_events(he.events_path(change_dir))
     )
+
+
+def _latest_phase_end(
+    change_dir: Path,
+    phase: str,
+    run_id: str | None = None,
+) -> dict[str, Any] | None:
+    for event in reversed(he.load_events(he.events_path(change_dir))):
+        if event.get("phase") != phase or event.get("type") != "phase.end":
+            continue
+        if run_id and event.get("run_id") != run_id:
+            continue
+        return event
+    return None
+
+
+def _terminal_matches_context_session(
+    project: Path,
+    change_id: str,
+    phase: str,
+    terminal: dict[str, Any],
+) -> bool:
+    view = hctx.context_view(project, change_id)
+    current = view.get("current") if isinstance(view, dict) else None
+    if not isinstance(current, dict) or current.get("phase") != phase:
+        return False
+    prepared_at = he.parse_timestamp(current.get("preparedAt"))
+    terminal_at = he.parse_timestamp(
+        terminal.get("timestamp") or terminal.get("occurred_at")
+    )
+    return (
+        prepared_at is not None
+        and terminal_at is not None
+        and terminal_at >= prepared_at
+    )
+
+
+def _close_context_handoff(
+    project: Path,
+    change_id: str,
+    args: argparse.Namespace,
+    *,
+    status: str,
+) -> dict[str, Any] | None:
+    to_phase = getattr(args, "to_phase", None)
+    if not to_phase:
+        return None
+    try:
+        return hctx.close_transition(
+            project,
+            change_id,
+            from_phase=args.phase,
+            to_phase=str(to_phase),
+            executor=getattr(args, "executor", None),
+            artifacts=list(getattr(args, "artifact", None) or []),
+            status=status,
+        )
+    except Exception as exc:  # noqa: BLE001 — phase close remains locally durable
+        return {
+            "ok": False,
+            "code": "CONTEXT_HANDOFF_FAILED",
+            "message": str(exc),
+        }
+
+
+def _sync_after_phase_close(project: Path, change_dir: Path) -> dict[str, Any]:
+    try:
+        return hes.auto_events_sync(project, change_dir)
+    except Exception as exc:  # noqa: BLE001 — remote sync is recoverable
+        return {
+            "ok": False,
+            "code": "PLATFORM_EVENTS_SYNC_WARN",
+            "warning": f"events-sync hook failed: {exc}",
+        }
 
 
 def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
@@ -2284,6 +2360,48 @@ def cmd_close(args: argparse.Namespace) -> int:
     explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
     current_lease = hc.inspect_lease(project, resolved["changeId"])
     if current_lease is None:
+        terminal = _latest_phase_end(change_dir, args.phase, explicit_run_id)
+        if (
+            getattr(args, "to_phase", None)
+            and terminal is not None
+            and _terminal_matches_context_session(
+                project, str(resolved["changeId"]), args.phase, terminal
+            )
+        ):
+            terminal_status = str(terminal.get("status") or args.status)
+            handoff = _close_context_handoff(
+                project,
+                str(resolved["changeId"]),
+                args,
+                status=terminal_status,
+            )
+            monitor = _sync_after_phase_close(project, change_dir)
+            if not isinstance(handoff, dict) or not handoff.get("ok"):
+                return emit_error(
+                    "PHASE_HANDOFF_PENDING",
+                    "phase gate is closed, but context handoff still needs attention",
+                    as_json=as_json,
+                    extra={
+                        "localCloseComplete": True,
+                        "retryable": True,
+                        "contextHandoff": handoff,
+                        "platformMonitor": monitor,
+                    },
+                )
+            emit(
+                {
+                    "ok": True,
+                    "code": "PHASE_CLOSE_RESUMED",
+                    "phase": args.phase,
+                    "status": terminal_status,
+                    "changeId": resolved["changeId"],
+                    "localCloseComplete": True,
+                    "contextHandoff": handoff,
+                    "platformMonitor": monitor,
+                },
+                as_json=as_json,
+            )
+            return 0
         return emit_error("LEASE_ABSENT", "no active lease for phase close", as_json=as_json)
     run_id = explicit_run_id or str(current_lease.get("runId") or "")
     if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
@@ -2615,6 +2733,29 @@ def cmd_close(args: argparse.Namespace) -> int:
         capsule["closeStatus"] = close_status
         write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
+    context_handoff = _close_context_handoff(
+        project,
+        str(resolved["changeId"]),
+        args,
+        status=close_status,
+    )
+    platform_monitor = _sync_after_phase_close(project, change_dir)
+    if isinstance(context_handoff, dict) and not context_handoff.get("ok"):
+        return emit_error(
+            "PHASE_HANDOFF_PENDING",
+            "phase gate closed locally, but context handoff failed; retry the same close command",
+            as_json=as_json,
+            extra={
+                "localCloseComplete": True,
+                "retryable": True,
+                "phase": args.phase,
+                "status": close_status,
+                "changeId": resolved["changeId"],
+                "contextHandoff": context_handoff,
+                "platformMonitor": platform_monitor,
+            },
+        )
+
     payload = {
         "ok": True,
         "code": close_code,
@@ -2630,6 +2771,8 @@ def cmd_close(args: argparse.Namespace) -> int:
         "lease": release,
         "gateSeverityMode": severity_mode,
         "gateWarnings": gate_warnings,
+        "contextHandoff": context_handoff,
+        "platformMonitor": platform_monitor,
     }
     emit(payload, as_json=as_json)
     return 0
@@ -2824,6 +2967,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--run-id", default=None)
     p_close.add_argument("--task", type=int, default=None)
     p_close.add_argument("--note", default="")
+    p_close.add_argument("--to-phase", default=None)
+    p_close.add_argument("--executor", default=None)
+    p_close.add_argument("--artifact", action="append", default=[])
     p_close.set_defaults(func=cmd_close)
 
     p_classify = sub.add_parser("classify", parents=[shared])

@@ -106,6 +106,22 @@ class HarnessEventsSyncTests(unittest.TestCase):
 
         self.assertEqual(payload["summary"], "开始执行计划阶段。")
 
+    def test_keeps_machine_hash_in_raw_payload_but_not_in_readable_summary(self) -> None:
+        digest = "sha256:" + "a" * 64
+        payload = hes.sanitize({
+            "type": "decision",
+            "phase": "plan",
+            "decision": (
+                "原生规划协议自检通过；finalize ok "
+                f"artifactsHash={digest}"
+            ),
+        })
+
+        self.assertNotIn("artifactsHash", payload["summary"])
+        self.assertNotIn(digest, payload["summary"])
+        self.assertIn("规划", payload["summary"])
+        self.assertIn(digest, payload["decision"])
+
     def test_sends_the_persisted_chinese_display_title(self) -> None:
         title_path = self.change_dir / "meta" / "change-title.json"
         title_path.parent.mkdir(parents=True)

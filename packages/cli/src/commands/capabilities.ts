@@ -6,7 +6,10 @@ import {
   assessWorkflowCompatibility,
   CLI_CAPABILITIES
 } from "../workflow-data/compatibility.js";
-import { readWorkflowFamilyManifest } from "../workflow-data/resolve.js";
+import {
+  readWorkflowFamilyManifest,
+  workflowReleaseVersions
+} from "../workflow-data/resolve.js";
 
 const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   capabilities: 1,
@@ -43,11 +46,12 @@ export async function runCapabilities(
     cliVersion,
     capabilities: CLI_CAPABILITIES
   });
+  const releaseVersions = workflowReleaseVersions(manifest);
   dependencies.stdout(JSON.stringify({
     schemaVersion: 1,
     cliVersion,
-    workflowBundleVersion:
-      typeof manifest.bundle_version === "string" ? manifest.bundle_version : null,
+    workflowPackageVersion: releaseVersions.workflowPackageVersion,
+    workflowBundleVersion: releaseVersions.bundleVersion,
     capabilities: CLI_CAPABILITIES,
     commands,
     compatibility

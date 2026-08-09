@@ -119,20 +119,43 @@ def _summary_text(value: Any) -> str:
     return text[:EVENT_SUMMARY_MAX_LENGTH].rstrip()
 
 
+_MACHINE_DETAIL_RE = re.compile(
+    r"(?:\s*[；;,，]?\s*)"
+    r"(?:artifactsHash|artifactHash|receiptHash|content_sha256|contentSha256)"
+    r"\s*[:=]\s*(?:sha256:)?[0-9a-f]{32,64}",
+    re.IGNORECASE,
+)
+
+
+def _readable_summary_text(value: Any) -> str:
+    text = _summary_text(value)
+    if not text:
+        return ""
+    text = _MACHINE_DETAIL_RE.sub("", text)
+    text = re.sub(
+        r"\bfinalize\s+ok\b",
+        "规划产物已校验并发布",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s*([；;，,])\s*([；;，,])", r"\1", text)
+    return _summary_text(text.strip(" ；;，,"))
+
+
 def build_event_summary(event: dict[str, Any]) -> str:
-    explicit = _summary_text(event.get("summary"))
+    explicit = _readable_summary_text(event.get("summary"))
     if explicit:
         return explicit
 
     event_type = _summary_text(event.get("type"))
     phase = _summary_text(event.get("phase"))
     phase_label = PHASE_LABELS.get(phase, phase or "当前")
-    note = _summary_text(event.get("note"))
-    message = _summary_text(event.get("message"))
-    decision = _summary_text(event.get("decision"))
-    reason = _summary_text(event.get("reason"))
-    name = _summary_text(event.get("name"))
-    code = _summary_text(event.get("code"))
+    note = _readable_summary_text(event.get("note"))
+    message = _readable_summary_text(event.get("message"))
+    decision = _readable_summary_text(event.get("decision"))
+    reason = _readable_summary_text(event.get("reason"))
+    name = _readable_summary_text(event.get("name"))
+    code = _readable_summary_text(event.get("code"))
     status = _summary_text(event.get("status"))
 
     if event_type == "decision" and decision:

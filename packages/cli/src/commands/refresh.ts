@@ -26,6 +26,10 @@ import { harnessErrorInfo, InitConfigurationError, parseAgentsInput } from "../c
 import { serializeCliResult, type CliResult } from "../output/json.js";
 import { profileLabel } from "../ui/labels.js";
 import { readCliVersion } from "../version.js";
+import {
+  formatWorkflowVersionLine,
+  readWorkflowFamilyManifest
+} from "../workflow-data/resolve.js";
 
 export interface RefreshCommandOptions {
   agents?: string;
@@ -343,8 +347,10 @@ export async function runRefresh(
       if (result.removed.length > 0) parts.push(`已删除 ${result.removed.length} 个`);
       if (result.preserved.length > 0) parts.push(`已保留 ${result.preserved.length} 个`);
       if (result.unchanged.length > 0) parts.push(`无需变更 ${result.unchanged.length} 个`);
+      const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
       dependencies.stdout(
-        `Harness 刷新（${profileLabel(result.profile)}）：${parts.join("，") || "没有变更"}。\n`
+        `Harness 刷新（${profileLabel(result.profile)}）：${parts.join("，") || "没有变更"}。\n` +
+        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n"
       );
     }
     return output.exit_code;

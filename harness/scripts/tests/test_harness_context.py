@@ -215,6 +215,125 @@ class HarnessContextTest(unittest.TestCase):
             self.assertEqual(begun["receipt"]["fromPhase"], "plan")
             self.assertEqual(begun["receipt"]["toPhase"], "run")
 
+    def test_close_accepts_absolute_project_relative_and_change_relative_artifacts(self) -> None:
+        forms = (
+            lambda project, change, artifact: str(artifact),
+            lambda project, change, artifact: artifact.relative_to(project).as_posix(),
+            lambda project, change, artifact: artifact.relative_to(change).as_posix(),
+        )
+        hashes: set[str] = set()
+        for artifact_form in forms:
+            with self.subTest(form=artifact_form), tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp)
+                change = make_change(project, "change")
+                artifact = change / "meta/plan-finalization.json"
+                artifact.write_text('{"status":"finalized"}\n', encoding="utf-8")
+                CONTEXT.prepare_context(
+                    project, change="change", phase="plan", executor="planner"
+                )
+
+                result = CONTEXT.close_transition(
+                    project,
+                    "change",
+                    from_phase="plan",
+                    to_phase="run",
+                    executor="planner",
+                    artifacts=[artifact_form(project, change, artifact)],
+                )
+
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(
+                    result["receipt"]["artifacts"][0]["path"],
+                    ".harness/changes/change/meta/plan-finalization.json",
+                )
+                hashes.add(result["receipt"]["artifacts"][0]["sha256"])
+        self.assertEqual(len(hashes), 1)
+
+    def test_close_rejects_missing_directory_and_outside_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as external:
+            project = Path(tmp)
+            change = make_change(project, "change")
+            directory = change / "meta"
+            outside = Path(external) / "outside.json"
+            outside.write_text("outside\n", encoding="utf-8")
+            invalid_paths = [
+                str(change / "meta/missing.json"),
+                str(directory),
+                str(outside),
+            ]
+            for invalid_path in invalid_paths:
+                with self.subTest(path=invalid_path):
+                    CONTEXT.prepare_context(
+                        project, change="change", phase="plan", executor="planner"
+                    )
+                    result = CONTEXT.close_transition(
+                        project,
+                        "change",
+                        from_phase="plan",
+                        to_phase="run",
+                        executor="planner",
+                        artifacts=[invalid_path],
+                    )
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["code"], "TRANSITION_ARTIFACT_INVALID")
+                    self.assertEqual(len(result["acceptedBases"]), 2)
+                    self.assertTrue(result["examples"])
+
+    def test_close_rejects_an_ambiguous_relative_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change = make_change(project, "change")
+            project_artifact = project / "meta/plan-finalization.json"
+            project_artifact.parent.mkdir(parents=True)
+            project_artifact.write_text("project", encoding="utf-8")
+            change_artifact = change / "meta/plan-finalization.json"
+            change_artifact.write_text("change", encoding="utf-8")
+            CONTEXT.prepare_context(
+                project, change="change", phase="plan", executor="planner"
+            )
+
+            result = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="plan",
+                to_phase="run",
+                executor="planner",
+                artifacts=["meta/plan-finalization.json"],
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "TRANSITION_ARTIFACT_AMBIGUOUS")
+
+    def test_close_is_idempotent_after_the_context_lease_is_released(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="plan", executor="planner"
+            )
+            first = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="plan",
+                to_phase="run",
+                executor=None,
+            )
+            second = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="plan",
+                to_phase="run",
+                executor=None,
+            )
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertEqual(second["code"], "TRANSITION_ALREADY_CLOSED")
+            self.assertTrue(second["idempotent"])
+            self.assertEqual(
+                second["receipt"]["receiptHash"], first["receipt"]["receiptHash"]
+            )
+
     def test_begin_rejects_artifact_hash_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

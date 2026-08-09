@@ -18,6 +18,9 @@ const dataManifestRoot = join(dataPackageRoot, "manifests");
 const migrationsSource = join(resourceRoot, "migrations");
 const dataMigrationsRoot = join(dataPackageRoot, "migrations");
 const syncStampPath = join(root, ".sync-staging", "harness-input-sha256");
+const workflowPackagePath = join(root, "packages", "workflow-data-harness", "package.json");
+const workflowPackage = JSON.parse(await readFile(workflowPackagePath, "utf8"));
+const WORKFLOW_PACKAGE_VERSION = workflowPackage.version;
 let cachedPythonRuntime;
 function pythonRuntime() {
   cachedPythonRuntime ??= resolvePythonRuntimeSync({ projectRoot: root, env: process.env });
@@ -26,8 +29,8 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.43";
-const MINIMUM_CLI_VERSION = "0.2.59";
+const BUNDLE_VERSION = "0.2.44";
+const MINIMUM_CLI_VERSION = "0.2.60";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",
@@ -335,6 +338,7 @@ async function generatedProjectionIsCurrent(inputHash) {
     const familyManifestPath = join(root, "packages", "workflow-data-harness", "hunter-workflow-family.json");
     const familyManifest = JSON.parse(await readFile(familyManifestPath, "utf8"));
     if (familyManifest.minimumCliVersion !== MINIMUM_CLI_VERSION) return false;
+    if (familyManifest.workflowPackageVersion !== WORKFLOW_PACKAGE_VERSION) return false;
     if (JSON.stringify(familyManifest.capabilities) !== JSON.stringify(REQUIRED_CAPABILITIES)) {
       return false;
     }
@@ -362,6 +366,7 @@ async function writeWorkflowFamilyManifest() {
   }
   manifest.bundle_version = BUNDLE_VERSION;
   manifest.minimumCliVersion = MINIMUM_CLI_VERSION;
+  manifest.workflowPackageVersion = WORKFLOW_PACKAGE_VERSION;
   manifest.capabilities = REQUIRED_CAPABILITIES;
   manifest.requires = {
     minimumCliVersion: MINIMUM_CLI_VERSION,

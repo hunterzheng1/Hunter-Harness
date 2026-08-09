@@ -109,6 +109,7 @@ describe("hunter-harness refresh CLI", () => {
     const projectBefore = await readFile(join(root, ".harness", "project.yaml"), "utf8");
     stdout = []; stderr = [];
     expect(await run(["--non-interactive", "--yes"])).toBe(0);
+    expect(stdout.join("")).toMatch(/工作流包 v\d+\.\d+\.\d+ · Bundle v\d+\.\d+\.\d+/);
     expect(await readFile(join(root, ".harness", "project.yaml"), "utf8")).toBe(projectBefore);
   });
 

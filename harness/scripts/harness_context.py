@@ -474,7 +474,7 @@ def close_transition(
     *,
     from_phase: str,
     to_phase: str,
-    executor: str,
+    executor: str | None,
     artifacts: list[str] | None = None,
     status: str = "OK",
 ) -> dict[str, Any]:
@@ -491,13 +491,81 @@ def close_transition(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
     paths = _paths(state_root)
+
+    artifact_entries: list[dict[str, Any]] = []
+    for raw in artifacts or []:
+        requested = Path(raw)
+        candidates = (
+            [requested]
+            if requested.is_absolute()
+            else [project / requested, contract_root / requested]
+        )
+        valid: list[Path] = []
+        for candidate in candidates:
+            try:
+                resolved_candidate = candidate.resolve()
+            except OSError:
+                continue
+            if resolved_candidate in valid:
+                continue
+            if resolved_candidate.is_relative_to(project) and resolved_candidate.is_file():
+                valid.append(resolved_candidate)
+        if len(valid) > 1:
+            return {
+                "ok": False,
+                "code": "TRANSITION_ARTIFACT_AMBIGUOUS",
+                "path": raw,
+                "candidates": [item.relative_to(project).as_posix() for item in valid],
+                "message": "relative artifact exists under both project and change roots",
+            }
+        if not valid:
+            return {
+                "ok": False,
+                "code": "TRANSITION_ARTIFACT_INVALID",
+                "path": raw,
+                "acceptedBases": [str(project), str(contract_root)],
+                "examples": [
+                    str(contract_root / "meta" / "plan-finalization.json"),
+                    f".harness/changes/{change}/meta/plan-finalization.json",
+                    "meta/plan-finalization.json",
+                ],
+            }
+        resolved_artifact = valid[0]
+        artifact_entries.append(
+            {
+                "path": resolved_artifact.relative_to(project).as_posix(),
+                "sha256": _sha256(resolved_artifact),
+            }
+        )
+
+    transitions = _read_ndjson(paths["transitions"])
     if not paths["lease"].is_file():
+        latest = transitions[-1] if transitions else None
+        if (
+            isinstance(latest, dict)
+            and latest.get("fromPhase") == from_phase
+            and latest.get("toPhase") == to_phase
+            and latest.get("status") == status
+            and latest.get("artifacts") == artifact_entries
+            and (executor is None or latest.get("executor") == executor)
+        ):
+            return {
+                "ok": True,
+                "code": "TRANSITION_ALREADY_CLOSED",
+                "idempotent": True,
+                "receipt": latest,
+                "path": str(paths["transitions"]),
+                "invalidation": None,
+            }
         return {"ok": False, "code": "CONTEXT_LEASE_REQUIRED"}
     try:
         lease = _read_json(paths["lease"])
     except (OSError, ValueError, json.JSONDecodeError):
         return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
-    if lease.get("owner") != executor or lease.get("phase") != from_phase:
+    effective_executor = executor or str(lease.get("owner") or "")
+    if not effective_executor:
+        return {"ok": False, "code": "CONTEXT_EXECUTOR_REQUIRED"}
+    if lease.get("owner") != effective_executor or lease.get("phase") != from_phase:
         return {
             "ok": False,
             "code": "CONTEXT_LEASE_MISMATCH",
@@ -508,25 +576,6 @@ def close_transition(
     if expiry is None or _now() >= expiry:
         return {"ok": False, "code": "CONTEXT_LEASE_EXPIRED"}
 
-    artifact_entries: list[dict[str, Any]] = []
-    for raw in artifacts or []:
-        path = Path(raw)
-        if not path.is_absolute():
-            path = contract_root / path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(project) or not resolved.is_file():
-            return {
-                "ok": False,
-                "code": "TRANSITION_ARTIFACT_INVALID",
-                "path": str(path),
-            }
-        artifact_entries.append(
-            {
-                "path": resolved.relative_to(project).as_posix(),
-                "sha256": _sha256(resolved),
-            }
-        )
-    transitions = _read_ndjson(paths["transitions"])
     previous_hash = transitions[-1].get("receiptHash") if transitions else None
     attempt = (
         1
@@ -543,7 +592,7 @@ def close_transition(
         "fromPhase": from_phase,
         "toPhase": to_phase,
         "status": status,
-        "executor": executor,
+        "executor": effective_executor,
         "productCommit": _head(project),
         "artifacts": artifact_entries,
         "attempt": attempt,

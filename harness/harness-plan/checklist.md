@@ -211,13 +211,14 @@ source: harness-plan
 
 - [ ] 所有待发布产物先写入 staging，不直接覆盖正式 change 目录
 - [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id <plan-run-id> --attempt <attempt> --json`；身份必须与本次 `phase.start` 完全相同
-- [ ] finalizer 返回 `ok=true` 与 `artifactsHash`；重复执行返回 `idempotent=true`
+- [ ] finalizer 返回 `ok=true`、`artifactsHash`、绝对 `receiptPath` 与稳定 `artifactRef=meta/plan-finalization.json`；重复执行返回 `idempotent=true`
 - [ ] 紧接着执行 `harness_plan_finalize.py verify --change-dir ... --json`
 - [ ] verify 返回 `phaseStartCount=1`、`phaseEndCount=1`、`phaseEndStatus=OK`、`receiptConsistent=true`
 - [ ] 收据 `files` 完整包含 design / plan / implementation-detail / test-scenarios / gate-policy / worktree 六项标准产物；不得省略、重复或经 symlink/junction/reparse point 引用
 - [ ] verify 的 `taskCount` 等于全部任务表行数，`scenarioCount` 等于 Markdown 中全部唯一场景 ID 数；任一为 0 或不一致即 ❌FAIL
 - [ ] finalizer 失败时正式目录无半发布产物、无成功 `phase.end`、无伪造 execution log
 - [ ] 禁止在 finalizer 之前手工追加成功 `phase.end`
+- [ ] context close 的 `--artifact` 只传 finalizer 原样返回的 `receiptPath` 或 `artifactRef`，不得猜测、拼接或使用 `<plan-finalization>` 占位文本
 
 | 文件 | 必须存在 | 检查结果 |
 |------|:---:|:---:|

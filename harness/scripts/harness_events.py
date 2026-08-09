@@ -41,7 +41,7 @@ def _project_root_for_change(change_dir: Path) -> Path | None:
     return None
 
 
-def _nudge_remote_sync(change_dir: Path) -> None:
+def nudge_remote_sync(change_dir: Path) -> None:
     """Best-effort wake-up after the event append has been flushed to disk."""
     project_root = _project_root_for_change(change_dir)
     if project_root is None:
@@ -53,6 +53,11 @@ def _nudge_remote_sync(change_dir: Path) -> None:
     except Exception:
         # Local event durability is authoritative; remote outages never roll it back.
         return
+
+
+def _nudge_remote_sync(change_dir: Path) -> None:
+    """Compatibility wrapper for older callers and focused tests."""
+    nudge_remote_sync(change_dir)
 
 
 if hasattr(sys.stdout, "reconfigure"):

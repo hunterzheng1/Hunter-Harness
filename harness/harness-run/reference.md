@@ -540,7 +540,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 >
 > **Ledger v3**：`record` 自动解析并强制顶层身份（`schemaVersion=3/repositoryId/changeName/baseCommit/currentHead/diffHash/ownershipHash`），缺字段非零退出、不写账本；已有 v1/v2 ledger 在写前透明迁移，`migrationHistory` 回执记录原/目标 schema 与迁移前后 evidence identity。无法迁移时返回 `LEDGER_MIGRATION_REQUIRED` 和确定性 `rerecordCommand`，不得半升级。v2 契约下 `--metrics-json` 必须通过 typed schema（unit=`total/passed/failed`，apiContract=`scenariosTotal/passed/failed`，browserE2E=`total/passed/failed`，dbCompatibility=`applicability(+reason)`）。详见 `../protocols/ledger-protocol.md` 第十节。
 
-阶段边界：`harness_gate.py begin/close`；测试跟踪：`harness_test_guard.py begin/close`。close 失败不得用自然语言覆盖。
+阶段边界与测试跟踪统一由 `harness_gate.py begin/close` 协调；底层 guard begin/close 不再由模型重复调用。close 失败不得用自然语言覆盖。
 
 ## 步骤 3：场景覆盖检查
 
@@ -800,7 +800,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 ```powershell
 # gate begin/close（--task 仅在该 change 启用 checkpoint 时必需；close 不需要 --skills-root）
 python <skills-root>/scripts/harness_gate.py begin --change <cn> --phase run --skills-root <skills-root> [--task N]
-python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK [--task N]
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK --to-phase test --executor <tool> [--task N]
 
 # ledger 记录（status: ok|fail|not_run —— 没有 PASS）
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: 155, Failures: 0, Errors: 0, Skipped: 0" --coverage full --files "packages/core/src/index.ts"

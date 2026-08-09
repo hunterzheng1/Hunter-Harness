@@ -28,6 +28,7 @@ describe("CLI/workflow capability contract", () => {
       expect(code).toBe(0);
       const payload = JSON.parse(stdout.join("")) as {
         cliVersion: string;
+        workflowPackageVersion: string;
         workflowBundleVersion: string;
         capabilities: string[];
         commands: Record<string, { available: boolean; schemaVersion: number }>;
@@ -37,6 +38,7 @@ describe("CLI/workflow capability contract", () => {
         await readFile(join(process.cwd(), "packages", "cli", "package.json"), "utf8")
       ) as { version: string };
       expect(payload.cliVersion).toBe(packageJson.version);
+      expect(payload.workflowPackageVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(payload.workflowBundleVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(payload.commands.sync).toEqual({ available: true, schemaVersion: 2 });
       expect(payload.commands["rules-sync"]).toEqual({ available: true, schemaVersion: 1 });

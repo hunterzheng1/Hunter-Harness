@@ -38,6 +38,10 @@ import {
   runPlatformConnectionMenu
 } from "./project-menu.js";
 import { readCliVersion } from "../version.js";
+import {
+  formatWorkflowVersionLine,
+  readWorkflowFamilyManifest
+} from "../workflow-data/resolve.js";
 
 export interface ConfigureOptions extends InitFlagValues {
   nonInteractive?: boolean;
@@ -149,6 +153,7 @@ async function runFirstInstall(
     const preexistingRootDocuments = await existingRootInstructionDocuments(dependencies.cwd);
     const localProjectKey = uuidV7();
     const cliVersion = await readCliVersion();
+    const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
     const recoveryStore = {
       root: options.recoveryRoot ?? resolveRecoveryRoot(dependencies.env)
     };
@@ -210,7 +215,8 @@ async function runFirstInstall(
     };
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
-      : "Hunter Harness 初始化完成，共处理 " + outputPaths.length + " 个文件。\n");
+      : "Hunter Harness 初始化完成，共处理 " + outputPaths.length + " 个文件。\n" +
+        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n");
     if (
       options.nonInteractive !== true &&
       options.dryRun !== true &&

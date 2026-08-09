@@ -310,3 +310,34 @@ export async function readWorkflowFamilyManifest(resourcesRoot: string): Promise
   if (!(await pathExists(manifestPath))) return {};
   return JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
 }
+
+export interface WorkflowReleaseVersions {
+  workflowPackageVersion: string | null;
+  bundleVersion: string | null;
+}
+
+/** Extract the two workflow release versions from the signed family manifest. */
+export function workflowReleaseVersions(
+  manifest: Readonly<Record<string, unknown>>
+): WorkflowReleaseVersions {
+  return {
+    workflowPackageVersion: typeof manifest.workflowPackageVersion === "string"
+      ? manifest.workflowPackageVersion
+      : null,
+    bundleVersion: typeof manifest.bundle_version === "string"
+      ? manifest.bundle_version
+      : null
+  };
+}
+
+export function formatWorkflowVersionLine(
+  cliVersion: string,
+  manifest: Readonly<Record<string, unknown>>
+): string {
+  const versions = workflowReleaseVersions(manifest);
+  return (
+    `版本：CLI v${cliVersion}` +
+    ` · 工作流包 v${versions.workflowPackageVersion ?? "未知"}` +
+    ` · Bundle v${versions.bundleVersion ?? "未知"}`
+  );
+}

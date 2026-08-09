@@ -122,6 +122,38 @@ class HarnessGateTests(unittest.TestCase):
         self._write_checkpoints("approved")
         self.assertIsNone(gate.foundation_gate_blocks(6, self.change_dir))
 
+    def test_gate_event_append_nudges_remote_sync_after_the_write(self) -> None:
+        with mock.patch.object(gate.he, "nudge_remote_sync") as nudge:
+            result = gate.append_phase_event(
+                self.change_dir,
+                phase="run",
+                type_="phase.end",
+                status="OK",
+                run_id="run-1",
+            )
+
+        self.assertTrue(result["ok"], result)
+        nudge.assert_called_once_with(self.change_dir)
+
+    def test_retry_never_uses_a_terminal_event_from_an_older_context_session(self) -> None:
+        terminal = {
+            "type": "phase.end",
+            "phase": "run",
+            "timestamp": "2026-08-09T10:00:00+00:00",
+        }
+        with mock.patch.object(gate.hctx, "context_view", return_value={
+            "ok": True,
+            "current": {
+                "phase": "run",
+                "preparedAt": "2026-08-09T11:00:00+00:00",
+            },
+        }):
+            self.assertFalse(
+                gate._terminal_matches_context_session(
+                    self.project, "demo", "run", terminal
+                )
+            )
+
     def test_validate_ledger_for_phase_close_rejects_handwritten_ut026(self) -> None:
         self._handwritten_ledger()
         workflow = policy.load_policy(REPO_ROOT)
@@ -1483,6 +1515,48 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch("sys.stdout"):
             code = gate.cmd_close(args)
         self.assertEqual(code, 0)
+
+    def test_close_finishes_handoff_and_remote_sync_in_one_command(self) -> None:
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--status", "OK", "--run-id", "run-1",
+            "--to-phase", "test", "--artifact", "evidence/verification-ledger.json",
+            "--json",
+        ])
+        emitted: list[dict] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value={
+                 "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
+             }), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate.hctx, "close_transition", return_value={
+                 "ok": True, "code": "TRANSITION_CLOSED", "receipt": {"receiptHash": "sha256:test"}
+             }) as close_context, \
+             mock.patch.object(gate.hes, "auto_events_sync", return_value={
+                 "ok": True, "code": "EVENTS_SYNCED"
+             }) as sync, \
+             mock.patch.object(gate, "emit", side_effect=lambda payload, **_kwargs: emitted.append(payload)):
+            code = gate.cmd_close(args)
+
+        self.assertEqual(code, 0)
+        close_context.assert_called_once_with(
+            self.project,
+            "demo",
+            from_phase="run",
+            to_phase="test",
+            executor=None,
+            artifacts=["evidence/verification-ledger.json"],
+            status="OK",
+        )
+        sync.assert_called_once_with(self.project, self.change_dir)
+        self.assertEqual(emitted[0]["contextHandoff"]["code"], "TRANSITION_CLOSED")
+        self.assertEqual(emitted[0]["platformMonitor"]["code"], "EVENTS_SYNCED")
 
 
 if __name__ == "__main__":
