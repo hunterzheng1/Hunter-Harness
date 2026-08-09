@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.63] — hunter-harness / [0.2.57] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-09 Windows 后台同步终端弹窗修订）
+
+- **绕过虚拟环境跳转器**：Windows 后台事件同步优先直接启动基础运行时的 `pythonw.exe`；缺少该文件时，使用基础 `python.exe` 配合无窗口创建标志。不会再经由 Hermes/uv 虚拟环境的转发程序二次启动控制台解释器。
+- **进程链回归**：新增基础解释器与 venv 转发器并存、基础 `pythonw.exe` 缺失两类测试，防止再次退回 `pythonw.exe → python.exe → Windows Terminal` 链路。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.46`，最低 CLI 版本提升至 `0.2.63`。
+
 ## [0.2.62] — hunter-harness / [0.2.56] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-09 阶段编排、归档结局与监控可读性修订）

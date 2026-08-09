@@ -483,19 +483,36 @@ class HarnessEventsSyncTests(unittest.TestCase):
             str(pythonw),
         )
 
-    def test_windows_background_sync_falls_back_to_the_real_windowless_interpreter(self) -> None:
+    def test_windows_background_sync_prefers_the_real_windowless_interpreter_over_venv_forwarder(self) -> None:
         launcher = self.project / "venv" / "Scripts" / "python.exe"
+        venv_pythonw = launcher.with_name("pythonw.exe")
         base = self.project / "runtime" / "python.exe"
         pythonw = base.with_name("pythonw.exe")
         launcher.parent.mkdir(parents=True)
         base.parent.mkdir(parents=True)
         launcher.write_bytes(b"launcher")
+        venv_pythonw.write_bytes(b"windowless forwarding launcher")
         base.write_bytes(b"runtime")
         pythonw.write_bytes(b"windowless runtime")
 
         self.assertEqual(
             hes._windowless_python_executable(str(launcher), str(base)),
             str(pythonw),
+        )
+
+    def test_windows_background_sync_uses_real_console_interpreter_before_venv_forwarder(self) -> None:
+        launcher = self.project / "venv" / "Scripts" / "python.exe"
+        venv_pythonw = launcher.with_name("pythonw.exe")
+        base = self.project / "runtime" / "python.exe"
+        launcher.parent.mkdir(parents=True)
+        base.parent.mkdir(parents=True)
+        launcher.write_bytes(b"launcher")
+        venv_pythonw.write_bytes(b"windowless forwarding launcher")
+        base.write_bytes(b"runtime")
+
+        self.assertEqual(
+            hes._windowless_python_executable(str(launcher), str(base)),
+            str(base),
         )
 
     def test_live_slow_worker_lock_is_never_stolen_by_age(self) -> None:

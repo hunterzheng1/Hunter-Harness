@@ -804,25 +804,26 @@ class _CrossProcessLock:
 def _windowless_python_executable(
     executable: str, base_executable: str | None
 ) -> str:
-    """Return a Windows interpreter that cannot allocate a console window.
+    """Return the real Windows interpreter, bypassing venv forwarding launchers.
 
-    Virtual-environment ``python.exe`` files may be forwarding launchers.  Even
-    when the first process is created with ``CREATE_NO_WINDOW``, such a launcher
-    can start the real console interpreter and make Windows Terminal flash.  A
-    sibling ``pythonw.exe`` preserves the windowless subsystem across that hop.
+    Virtual-environment ``python.exe`` and ``pythonw.exe`` files may both be
+    forwarding launchers.  The forwarding hop can start the real console
+    interpreter without preserving ``CREATE_NO_WINDOW`` and make Windows
+    Terminal appear.  Prefer the base runtime directly; its ``pythonw.exe`` is
+    ideal, while its console executable remains windowless under our explicit
+    process creation flags.
     """
     executable_path = Path(executable)
-    candidates = [executable_path.with_name("pythonw.exe")]
     if base_executable:
         base_path = Path(base_executable)
         base_windowless = base_path.with_name("pythonw.exe")
-        if base_windowless not in candidates:
-            candidates.append(base_windowless)
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    if base_executable and Path(base_executable).is_file():
-        return str(Path(base_executable))
+        if base_windowless.is_file():
+            return str(base_windowless)
+        if base_path.is_file():
+            return str(base_path)
+    windowless = executable_path.with_name("pythonw.exe")
+    if windowless.is_file():
+        return str(windowless)
     return str(executable_path)
 
 
