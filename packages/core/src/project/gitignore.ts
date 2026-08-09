@@ -38,27 +38,10 @@ export const ROOT_INSTRUCTION_DOCUMENTS = [
 const HARNESS_GITIGNORE_ENTRIES = [
   { pattern: "/.harness/", probe: ".harness/__hunter_probe__" },
   { pattern: "/.worktrees/", probe: ".worktrees/__hunter_probe__" },
-  { pattern: "/.claude/worktrees/", probe: ".claude/worktrees/__hunter_probe__" },
-  { pattern: "/.claude/skills/harness-*/", probe: ".claude/skills/harness-probe/__probe__" },
-  { pattern: "/.claude/skills/scripts/__pycache__/", probe: ".claude/skills/scripts/__pycache__/__probe__.pyc" },
-  { pattern: "/.claude/agents/harness-*.md", probe: ".claude/agents/harness-probe.md" },
-  { pattern: "/.claude/rules/harness-*.md", probe: ".claude/rules/harness-probe.md" },
-  { pattern: "/.agents/worktrees/", probe: ".agents/worktrees/__hunter_probe__" },
-  { pattern: "/.agents/skills/harness-*/", probe: ".agents/skills/harness-probe/__probe__" },
-  { pattern: "/.agents/skills/scripts/__pycache__/", probe: ".agents/skills/scripts/__pycache__/__probe__.pyc" },
-  { pattern: "/.agents/agents/harness-*.md", probe: ".agents/agents/harness-probe.md" },
-  { pattern: "/.agents/rules/harness-*.md", probe: ".agents/rules/harness-probe.md" },
-  { pattern: "/.cursor/worktrees/", probe: ".cursor/worktrees/__hunter_probe__" },
-  { pattern: "/.cursor/skills/harness-*/", probe: ".cursor/skills/harness-probe/__probe__" },
-  { pattern: "/.cursor/skills/scripts/__pycache__/", probe: ".cursor/skills/scripts/__pycache__/__probe__.pyc" },
-  { pattern: "/.cursor/agents/harness-*.md", probe: ".cursor/agents/harness-probe.md" },
-  { pattern: "/.cursor/rules/harness-*.md", probe: ".cursor/rules/harness-probe.md" },
-  { pattern: "/.codebuddy/worktrees/", probe: ".codebuddy/worktrees/__hunter_probe__" },
-  { pattern: "/.codebuddy/skills/harness-*/", probe: ".codebuddy/skills/harness-probe/__probe__" },
-  { pattern: "/.codebuddy/skills/scripts/__pycache__/", probe: ".codebuddy/skills/scripts/__pycache__/__probe__.pyc" },
-  { pattern: "/.codebuddy/agents/harness-*.md", probe: ".codebuddy/agents/harness-probe.md" },
-  { pattern: "/.codebuddy/rules/harness-*.md", probe: ".codebuddy/rules/harness-probe.md" },
-  { pattern: "/.codebuddy/.rules/harness-*.mdc", probe: ".codebuddy/.rules/harness-probe.mdc" }
+  { pattern: "/.claude/", probe: ".claude/__hunter_probe__" },
+  { pattern: "/.agents/", probe: ".agents/__hunter_probe__" },
+  { pattern: "/.cursor/", probe: ".cursor/__hunter_probe__" },
+  { pattern: "/.codebuddy/", probe: ".codebuddy/__hunter_probe__" }
 ] as const;
 
 const PROVENANCE_RELATIVE = ".harness/state/local/gitignore-provenance.json";
@@ -210,9 +193,7 @@ async function readInstalledProjectionPaths(projectRoot: string): Promise<string
 }
 
 function coveredByHarnessPattern(path: string): boolean {
-  return /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\/skills\/harness-[^/]+\//.test(path) ||
-    /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\/(?:agents|rules)\/harness-[^/]+\.md$/.test(path) ||
-    /^\.codebuddy\/\.rules\/harness-[^/]+\.mdc$/.test(path);
+  return /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\//.test(path);
 }
 
 async function trackedPathSet(projectRoot: string, paths: readonly string[]): Promise<Set<string>> {
@@ -312,8 +293,8 @@ export async function existingRootInstructionDocuments(
 }
 
 /**
- * Add only Harness-owned local paths to Git's ignore file. Existing user namespaces,
- * tracked instruction documents and explicit negations are always preserved.
+ * Ignore Harness state plus the local workspaces used by supported Agents. Tracked
+ * instruction documents and existing user-authored .gitignore lines are preserved.
  */
 export async function ensureHarnessGitignore(
   projectRoot: string,
@@ -354,20 +335,21 @@ export async function ensureHarnessGitignore(
     }
   }
 
-  const projectionPaths = (await readInstalledProjectionPaths(projectRoot))
-    .filter((path) => !coveredByHarnessPattern(path));
+  const projectionPaths = await readInstalledProjectionPaths(projectRoot);
   const trackedProjections = gitWorkTree
     ? await trackedPathSet(projectRoot, projectionPaths)
     : new Set<string>();
-  const generatedEntries: Array<{ pattern: string; probe: string }> = [];
+  const untrackedProjectionPaths: string[] = [];
   for (const path of projectionPaths) {
     const pattern = "/" + path;
     if (trackedProjections.has(path)) {
       patternResults.push({ pattern, status: "tracked" });
-    } else {
-      generatedEntries.push({ pattern, probe: path });
+    } else if (!coveredByHarnessPattern(path)) {
+      untrackedProjectionPaths.push(path);
     }
   }
+  const generatedEntries = untrackedProjectionPaths
+    .map((path) => ({ pattern: "/" + path, probe: path }));
 
   const initiallyIgnored = gitWorkTree
     ? await effectivelyIgnored(projectRoot, wanted)

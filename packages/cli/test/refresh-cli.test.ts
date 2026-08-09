@@ -113,7 +113,7 @@ describe("hunter-harness refresh CLI", () => {
     expect(await readFile(join(root, ".harness", "project.yaml"), "utf8")).toBe(projectBefore);
   });
 
-  it("normal refresh upgrades gitignore rules and respects effective broad ignores", async () => {
+  it("normal refresh upgrades gitignore rules to top-level Agent directories", async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-refresh-gitignore-"));
     stdout = []; stderr = [];
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
@@ -130,7 +130,8 @@ describe("hunter-harness refresh CLI", () => {
     expect(code).toBe(0);
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
     expect(gitignore).toContain("/.harness/");
-    expect(gitignore).toContain("/.cursor/skills/harness-*/");
+    expect(gitignore).toContain("/.cursor/");
+    expect(gitignore.match(/^\/\.claude\/$/gm)).toHaveLength(1);
     expect(gitignore).not.toContain("/.claude/skills/harness-*/");
     expect(gitignore).toContain("!/.cursor/user-settings/");
     const output = JSON.parse(stdout.join("")) as { items: Array<{ path: string }> };

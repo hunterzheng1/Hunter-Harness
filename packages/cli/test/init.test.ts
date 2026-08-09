@@ -206,7 +206,7 @@ describe("hunter-harness initialization", () => {
     expect(project.project.profiles).toEqual(["general"]);
   });
 
-  it("creates precise idempotent Git ignore rules for Harness-owned local files", async () => {
+  it("creates concise idempotent Git ignore rules for local Agent directories", async () => {
     await writeFile(join(root, ".gitignore"), "node_modules/\r\n", "utf8");
     const args = ["--agents", "all", "--profile", "general", "--non-interactive", "--yes"];
 
@@ -216,10 +216,11 @@ describe("hunter-harness initialization", () => {
     expect(first).toContain("# Hunter Harness（本地生成，不提交）");
     expect(first).toContain("/.harness/");
     expect(first).toContain("/.worktrees/");
-    expect(first).toContain("/.codebuddy/skills/harness-*/");
-    expect(first).toContain("/.claude/rules/harness-*.md");
-    expect(first).not.toMatch(/^\/?\.codebuddy\/$/m);
-    expect(first).not.toMatch(/^\/?\.claude\/$/m);
+    expect(first).toContain("/.claude/");
+    expect(first).toContain("/.agents/");
+    expect(first).toContain("/.cursor/");
+    expect(first).toContain("/.codebuddy/");
+    expect(first).not.toContain("/skills/harness-*/");
 
     expect(await run(args)).toBe(0);
     expect(await readFile(join(root, ".gitignore"), "utf8")).toBe(first);
@@ -233,7 +234,7 @@ describe("hunter-harness initialization", () => {
     expect(gitignore).toContain("/.harness/\n!/.harness/\n");
     expect(gitignore.match(/^\/\.harness\/$/gm)).toHaveLength(1);
     expect(gitignore).toContain("/.worktrees/");
-    expect(gitignore).toContain("/.claude/skills/harness-*/");
+    expect(gitignore).toContain("/.claude/");
   });
 
   it.each([

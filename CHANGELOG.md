@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.65] — hunter-harness / [0.2.59] — @hunter-harness/workflow-harness
+
+### Changed（2026-08-09 本地 Agent 目录忽略策略简化）
+
+- **顶层目录忽略**：初始化与刷新直接忽略 `.claude`、`.agents`、`.cursor`、`.codebuddy` 四个本地 Agent 工作目录，不再逐项生成 Harness 文件规则。
+- **自动迁移旧规则**：刷新时移除旧的 `generated-projections` 文件清单，保持 `.gitignore` 简短且可重复执行；已被 Git 跟踪的投影文件仍会给出安全迁移提示。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.48`，最低 CLI 版本提升至 `0.2.65`。
+
 ## [0.2.64] — hunter-harness / [0.2.58] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-09 验证复用、评审回流与监控阶段准备修订）

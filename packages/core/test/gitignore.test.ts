@@ -38,19 +38,19 @@ describe("Harness .gitignore maintenance", () => {
     const result = await ensureHarnessGitignore(root);
     const content = await readFile(join(root, ".gitignore"), "utf8");
 
-    expect(content).not.toContain("/.claude/skills/harness-*/");
-    expect(content).toContain("/.cursor/skills/harness-*/");
+    expect(content.match(/^\/\.claude\/$/gm)).toHaveLength(1);
+    expect(content).toContain("/.cursor/");
     expect(result.patternResults).toContainEqual({
-      pattern: "/.claude/skills/harness-*/",
+      pattern: "/.claude/",
       status: "already-ignored"
     });
     expect(result.patternResults).toContainEqual({
-      pattern: "/.cursor/skills/harness-*/",
+      pattern: "/.cursor/",
       status: "added"
     });
   });
 
-  it("ignores Python bytecode caches created by Harness support scripts", async () => {
+  it("ignores each local Agent workspace as one top-level directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-pycache-"));
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
 
@@ -58,7 +58,7 @@ describe("Harness .gitignore maintenance", () => {
     const content = await readFile(join(root, ".gitignore"), "utf8");
 
     for (const adapterRoot of [".claude", ".agents", ".cursor", ".codebuddy"]) {
-      const pattern = `/${adapterRoot}/skills/scripts/__pycache__/`;
+      const pattern = `/${adapterRoot}/`;
       expect(content).toContain(pattern);
       await expect(execFileAsync("git", [
         "check-ignore", "--no-index", "--",
@@ -94,12 +94,13 @@ describe("Harness .gitignore maintenance", () => {
     expect(text).toContain("node_modules/\r\n");
   });
 
-  it("ignores every untracked Harness projection from the installed bundle without hiding source files", async () => {
+  it("does not expand installed projections when their Agent directory is ignored", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-projections-"));
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
     await writeInstalledTargets(root, [
       ".codebuddy/skills/CONTEXT.md",
       ".codebuddy/skills/contracts/workflow-policy.json",
+      ".codebuddy/skills/protocols/state.md",
       ".codebuddy/skills/scripts/harness_events.py",
       ".codebuddy/skills/harness-plan/SKILL.md",
       "src/index.ts"
@@ -108,14 +109,17 @@ describe("Harness .gitignore maintenance", () => {
     const result = await ensureHarnessGitignore(root);
     const content = await readFile(join(root, ".gitignore"), "utf8");
 
-    expect(content).toContain("/.codebuddy/skills/CONTEXT.md");
-    expect(content).toContain("/.codebuddy/skills/contracts/workflow-policy.json");
-    expect(content).toContain("/.codebuddy/skills/scripts/harness_events.py");
+    expect(content).toContain("/.codebuddy/");
+    expect(content).not.toContain("# hunter-harness:generated-projections:start");
+    expect(content).not.toContain("/.codebuddy/skills/CONTEXT.md");
+    expect(content).not.toContain("/.codebuddy/skills/contracts/");
+    expect(content).not.toContain("/.codebuddy/skills/protocols/");
+    expect(content).not.toContain("/.codebuddy/skills/scripts/");
+    expect(content).not.toContain("/.codebuddy/skills/contracts/workflow-policy.json");
+    expect(content).not.toContain("/.codebuddy/skills/protocols/state.md");
+    expect(content).not.toContain("/.codebuddy/skills/scripts/harness_events.py");
     expect(content).not.toContain("/src/index.ts");
-    expect(result.patternResults).toContainEqual({
-      pattern: "/.codebuddy/skills/CONTEXT.md",
-      status: "added"
-    });
+    expect(result.patternResults).toContainEqual({ pattern: "/.codebuddy/", status: "added" });
     await expect(execFileAsync("git", [
       "check-ignore", "--no-index", "--",
       ".codebuddy/skills/CONTEXT.md",
@@ -123,13 +127,17 @@ describe("Harness .gitignore maintenance", () => {
       ".codebuddy/skills/scripts/harness_events.py",
       ".codebuddy/skills/harness-plan/SKILL.md"
     ], { cwd: root, windowsHide: true })).resolves.toBeDefined();
+    await expect(execFileAsync("git", [
+      "check-ignore", "--no-index", "--",
+      ".codebuddy/skills/custom/personal.md"
+    ], { cwd: root, windowsHide: true })).resolves.toBeDefined();
 
     const repeated = await ensureHarnessGitignore(root);
     expect(repeated.changed).toBe(false);
     expect(await readFile(join(root, ".gitignore"), "utf8")).toBe(content);
   });
 
-  it("does not ignore a tracked projection and removes stale generated entries after uninstall", async () => {
+  it("reports tracked projections while retaining the top-level Agent rule", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-projection-lifecycle-"));
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
     await mkdir(join(root, ".codebuddy", "skills"), { recursive: true });
@@ -155,12 +163,12 @@ describe("Harness .gitignore maintenance", () => {
     const repeated = await ensureHarnessGitignore(root);
     expect(repeated.trackedMigrationNotice?.shouldDisplay).toBe(false);
     expect(await readFile(join(root, ".gitignore"), "utf8"))
-      .toContain("/.codebuddy/skills/scripts/harness_events.py");
+      .toContain("/.codebuddy/");
 
     await writeInstalledTargets(root, []);
     await ensureHarnessGitignore(root);
     const afterUninstall = await readFile(join(root, ".gitignore"), "utf8");
-    expect(afterUninstall).not.toContain("/.codebuddy/skills/scripts/harness_events.py");
-    expect(afterUninstall).not.toContain("/.codebuddy/skills/CONTEXT.md");
+    expect(afterUninstall).toContain("/.codebuddy/");
+    expect(afterUninstall).not.toContain("# hunter-harness:generated-projections:start");
   });
 });
