@@ -302,6 +302,107 @@ class RunnerContractTests(unittest.TestCase):
             self.assertTrue(spawn.called)
             self.assertIs(runner.henv.hprocess, runner.hprocess)
 
+    def test_windows_command_resolution_uses_pathext_without_a_shell(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-path-") as raw_tmp:
+            command_dir = Path(raw_tmp) / "Program Files" / "nodejs"
+            command_dir.mkdir(parents=True)
+            wrapper = command_dir / "npm.CMD"
+            wrapper.write_text("@echo off\r\n", encoding="utf-8")
+            (command_dir / "npm").write_text(
+                "#!/bin/sh\necho wrong-platform-shim\n",
+                encoding="utf-8",
+            )
+
+            resolved = runner.resolve_managed_argv(
+                ["npm", "test", "--", "--runInBand"],
+                environ={
+                    "PATH": str(command_dir),
+                    "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                },
+                platform_name="nt",
+            )
+
+            self.assertEqual(Path(resolved[0]), wrapper.resolve())
+            self.assertEqual(resolved[1:], ["test", "--", "--runInBand"])
+
+            resolved_absolute = runner.resolve_managed_argv(
+                [str(command_dir / "npm"), "--version"],
+                environ={"PATHEXT": ".COM;.EXE;.BAT;.CMD"},
+                platform_name="nt",
+            )
+            self.assertEqual(Path(resolved_absolute[0]), wrapper.resolve())
+            self.assertEqual(resolved_absolute[1:], ["--version"])
+
+            executable = command_dir / "node.EXE"
+            executable.write_bytes(b"MZ")
+            resolved_executable = runner.resolve_managed_argv(
+                ["node", "--version"],
+                environ={
+                    "PATH": str(command_dir),
+                    "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                },
+                platform_name="nt",
+            )
+            self.assertEqual(Path(resolved_executable[0]), executable.resolve())
+            self.assertEqual(resolved_executable[1:], ["--version"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch launcher only")
+    def test_windows_batch_command_runs_through_explicit_command_processor(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="harness-runner-batch-") as raw_tmp:
+            command_dir = Path(raw_tmp) / "Program Files" / "tools"
+            command_dir.mkdir(parents=True)
+            wrapper = command_dir / "probe.CMD"
+            wrapper.write_text(
+                "@echo off\r\necho managed-batch:%~1\r\nexit /b 0\r\n",
+                encoding="utf-8",
+            )
+            # npm installs a POSIX shim named ``npm`` beside ``npm.cmd``.
+            # Windows PATHEXT resolution must choose the native batch shim.
+            (command_dir / "probe").write_text(
+                "#!/bin/sh\necho wrong-platform-shim\n",
+                encoding="utf-8",
+            )
+
+            result = runner.run_managed_command(
+                ["probe", "works"],
+                cwd=Path(raw_tmp),
+                timeout_seconds=5,
+                environ={
+                    "PATH": str(command_dir),
+                    "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                },
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("managed-batch:works", result.output_tail)
+
+            with self.assertRaisesRegex(
+                runner.ManagedCommandUnsafe,
+                "MANAGED_BATCH_ARGUMENT_UNSAFE",
+            ):
+                runner.run_managed_command(
+                    ["probe", "works", "&", "echo", "must-not-run"],
+                    cwd=Path(raw_tmp),
+                    timeout_seconds=5,
+                    environ={
+                        "PATH": str(command_dir),
+                        "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                    },
+                    capture_output=True,
+                )
+
+    def test_missing_managed_command_has_a_stable_error(self) -> None:
+        with self.assertRaisesRegex(
+            runner.ManagedCommandNotFound,
+            "MANAGED_COMMAND_NOT_FOUND",
+        ):
+            runner.resolve_managed_argv(
+                ["definitely-not-a-real-harness-command"],
+                environ={"PATH": ""},
+                platform_name="nt",
+            )
+
     def test_keeps_test_runner_and_environment_compatible_through_process_provider_migration(
         self,
     ) -> None:

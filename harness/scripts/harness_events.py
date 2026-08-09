@@ -71,6 +71,8 @@ EVENT_TYPES = frozenset(
         "phase.start",
         "phase.end",
         "phase.auto_sealed",
+        "phase.prepare.start",
+        "phase.prepare.end",
         "gate.blocked",
         "gate.recovered",
         "command",
@@ -160,8 +162,21 @@ _PROVENANCE_FIELDS = frozenset(
         "result_status",
     }
 )
+_REVIEW_DECISION_REASON_CODES = frozenset({"REVIEW_DELEGATED"})
+_REVIEW_FALLBACK_REASON_CODES = frozenset(
+    {
+        "REVIEW_INLINE_UNAVAILABLE",
+        "REVIEW_INLINE_SPAWN_FAILED",
+        "REVIEW_INLINE_INVALID_RESULT",
+    }
+)
 _EVENT_ALLOWED_FIELDS = {
     "phase.start": frozenset({"note"}) | _PROVENANCE_FIELDS,
+    "phase.prepare.start": frozenset({"note"}) | _PROVENANCE_FIELDS,
+    "phase.prepare.end": frozenset(
+        {"status", "code", "message", "reason", "note", "duration_ms"}
+    )
+    | _PROVENANCE_FIELDS,
     "phase.end": frozenset(
         {"status", "duration_ms", "note", "reason", "issue_id"}
     )
@@ -212,6 +227,7 @@ _EVENT_REQUIRED_FIELDS = {
         "reason",
     ),
     "phase.auto_sealed": ("reason",),
+    "phase.prepare.end": ("status",),
 }
 _CORRECTION_PROTECTED_FIELDS = frozenset(
     {"schema_version", "id", "timestamp", "phase", "type"}
@@ -591,10 +607,28 @@ def append_event(
     phase: str,
     type_: str,
     note: str = "",
+    status: str | None = None,
+    code: str | None = None,
+    message: str | None = None,
+    reason: str | None = None,
+    duration_ms: int | None = None,
     kind: str | None = None,
     path: str | None = None,
     run_id: str | None = None,
+    attempt: int | None = None,
     executor_tool: str | None = None,
+    executor_agent: str | None = None,
+    executor_model: str | None = None,
+    execution_mode: str | None = None,
+    decision_reason_code: str | None = None,
+    fallback_reason_code: str | None = None,
+    trigger: str | None = None,
+    from_phase: str | None = None,
+    result_status: str | None = None,
+    runner_ms: int | None = None,
+    orchestration_active_ms: int | None = None,
+    wall_clock_ms: int | None = None,
+    user_wait_ms: int | None = None,
     renamed_from: str | None = None,
     renamed_to: str | None = None,
     change_uuid: str | None = None,
@@ -615,14 +649,14 @@ def append_event(
         executor_tool=executor_tool,
         command=None,
         exit_code=None,
-        duration_ms=None,
-        status=None,
+        duration_ms=duration_ms,
+        status=status,
         name=None,
-        code=None,
+        code=code,
         severity=None,
-        message=None,
+        message=message,
         decision=None,
-        reason=None,
+        reason=reason,
         issue_id=None,
         scope=None,
         target_event_id=None,
@@ -632,18 +666,24 @@ def append_event(
         renamed_from=renamed_from,
         renamed_to=renamed_to,
         change_uuid=change_uuid,
-        attempt=None,
-        executor_agent=None,
-        executor_model=None,
+        attempt=attempt,
+        executor_agent=executor_agent,
+        executor_model=executor_model,
         handoff_from_tool=None,
         handoff_reason=None,
         trace_id=None,
         span_id=None,
         parent_span_id=None,
-        runner_ms=None,
-        orchestration_active_ms=None,
-        wall_clock_ms=None,
-        user_wait_ms=None,
+        runner_ms=runner_ms,
+        orchestration_active_ms=orchestration_active_ms,
+        wall_clock_ms=wall_clock_ms,
+        user_wait_ms=user_wait_ms,
+        execution_mode=execution_mode,
+        decision_reason_code=decision_reason_code,
+        fallback_reason_code=fallback_reason_code,
+        trigger=trigger,
+        from_phase=from_phase,
+        result_status=result_status,
         legacy_lenient=False,
         json=True,
     )
@@ -874,6 +914,56 @@ def validate_append_event(args: argparse.Namespace) -> tuple[str, str] | None:
             return (
                 "EVENT_TIMING_FIELD_INVALID",
                 f"EVENT_TIMING_FIELD_INVALID: --{field.replace('_', '-')} must be a nonnegative integer",
+            )
+    if event_type == "decision" and str(getattr(args, "phase", "")) == "review":
+        body = "\n".join(
+            str(getattr(args, field, "") or "")
+            for field in ("decision", "reason", "note")
+        )
+        if re.search(r"\bREVIEW_[A-Z0-9_]+\b", body):
+            return (
+                "EVENT_REVIEW_REASON_IN_BODY",
+                "EVENT_REVIEW_REASON_IN_BODY: 评审原因码只能写入结构化字段，正文请使用中文说明",
+            )
+        execution_mode = str(getattr(args, "execution_mode", "") or "").strip()
+        decision_code = str(
+            getattr(args, "decision_reason_code", "") or ""
+        ).strip()
+        fallback_code = str(
+            getattr(args, "fallback_reason_code", "") or ""
+        ).strip()
+        structured = bool(execution_mode or decision_code or fallback_code)
+        if structured and execution_mode not in {"delegated", "inline"}:
+            return (
+                "EVENT_REVIEW_EXECUTION_MODE_INVALID",
+                "EVENT_REVIEW_EXECUTION_MODE_INVALID: execution-mode 必须为 delegated 或 inline",
+            )
+        if decision_code and decision_code not in _REVIEW_DECISION_REASON_CODES:
+            return (
+                "EVENT_REVIEW_REASON_INVALID",
+                "EVENT_REVIEW_REASON_INVALID: 未知的评审委派原因码",
+            )
+        if fallback_code and fallback_code not in _REVIEW_FALLBACK_REASON_CODES:
+            return (
+                "EVENT_REVIEW_REASON_INVALID",
+                "EVENT_REVIEW_REASON_INVALID: 未知的评审回退原因码",
+            )
+        if execution_mode == "delegated":
+            if (
+                decision_code != "REVIEW_DELEGATED"
+                or fallback_code
+                or not str(getattr(args, "executor_agent", "") or "").strip()
+            ):
+                return (
+                    "EVENT_REVIEW_REASON_INVALID",
+                    "EVENT_REVIEW_REASON_INVALID: 委派评审必须记录执行 Agent 和 REVIEW_DELEGATED",
+                )
+        if execution_mode == "inline" and (
+            decision_code or fallback_code not in _REVIEW_FALLBACK_REASON_CODES
+        ):
+            return (
+                "EVENT_REVIEW_REASON_INVALID",
+                "EVENT_REVIEW_REASON_INVALID: 主会话评审必须记录一个稳定的回退原因码",
             )
     if event_type == "phase.auto_sealed":
         reason_value = str(getattr(args, "reason", "") or "").strip()

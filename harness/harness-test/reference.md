@@ -762,6 +762,8 @@ python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --ve
 | `--profile-input requires --project` | can-reuse/record 展开 profile 需要项目根 | 补 `--project <project>` |
 | `record` 缺 `--duration-ms` / `--evidence` | 参数为必填 | 按模板补齐 |
 
+`can-reuse` 的主文案按 `executionNeed` 呈现，错误码仅放技术详情：`first-run` 表示首次执行，`rerun` 表示已有证据因输入或环境变化失效，`evidence-incomplete` 表示旧记录缺少当前契约字段，`reuse` 表示可直接复用。不得把 `VALIDATION_MISSING` 翻译成“强制重跑”。
+
 ## 结果分级规则
 
 > 结果状态分级与证据要求遵循 `../protocols/evidence-based-reporting-protocol.md`。

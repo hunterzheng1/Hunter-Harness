@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -180,6 +182,23 @@ class CanReuseTests(unittest.TestCase):
                 harness_ledger.command_set_hash("npx vitest run"),
                 harness_ledger.command_set_hash("vitest run (safe runner)"),
             )
+
+    def test_missing_target_is_labeled_first_run_not_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-first-run"
+            change.mkdir()
+            source = change / "source.ts"
+            source.write_text("export {};\n", encoding="utf-8")
+
+            result = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(source)],
+            )
+
+            self.assertFalse(result["reuse"])
+            self.assertEqual(result["code"], "LEDGER_MISSING")
+            self.assertEqual(result["executionNeed"], "first-run")
 
     def test_rerun_when_fingerprint_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -515,6 +534,89 @@ class CanReuseTests(unittest.TestCase):
             payload = json.loads(buf2.getvalue())
             self.assertTrue(payload["reuse"], msg=payload)
             self.assertEqual(payload["reason"], "reuse")
+
+    def test_greenfield_profile_input_is_detected_and_records_full_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "src").mkdir()
+            (project / "src" / "timer.js").write_text(
+                "export const tick = () => 1;\n",
+                encoding="utf-8",
+            )
+            (project / "package.json").write_text(
+                json.dumps(
+                    {
+                        "name": "greenfield-ledger",
+                        "scripts": {"test": "node --test"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            change = project / ".harness" / "changes" / "greenfield"
+            change.mkdir(parents=True)
+            command = "npm test"
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                record_code = harness_ledger.main(
+                    [
+                        "--json",
+                        "record",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--status",
+                        "ok",
+                        "--command",
+                        command,
+                        "--exit-code",
+                        "0",
+                        "--duration-ms",
+                        "100",
+                        "--evidence",
+                        "全部测试通过",
+                        "--project",
+                        str(project),
+                        "--profile-input",
+                        "unitTestFull",
+                    ]
+                )
+            self.assertEqual(record_code, 0, out.getvalue())
+            self.assertTrue(
+                (project / ".harness" / "config" / "build-profile.json").is_file()
+            )
+            written = json.loads(
+                (change / "evidence" / "verification-ledger.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                written["validations"]["unitTestFull"]["scope"],
+                "full",
+            )
+
+            reuse_out = io.StringIO()
+            with redirect_stdout(reuse_out):
+                reuse_code = harness_ledger.main(
+                    [
+                        "--json",
+                        "can-reuse",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--project",
+                        str(project),
+                        "--profile-input",
+                        "unitTestFull",
+                        "--command",
+                        command,
+                        "--verbose",
+                    ]
+                )
+            self.assertEqual(reuse_code, 0, reuse_out.getvalue())
+            self.assertTrue(json.loads(reuse_out.getvalue())["reuse"])
 
 
 class RecordTests(unittest.TestCase):

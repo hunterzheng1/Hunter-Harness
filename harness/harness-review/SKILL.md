@@ -64,9 +64,9 @@ review 默认优先在独立上下文执行，避免主会话已形成的实现�
 
 项目规模小、风险低或没有 CodeGraph 都不是跳过独立评审的理由。原因码是稳定机器字段，仅用于协议与技术详情；面向用户的事件摘要必须写成「已使用独立评审」或「当前环境没有可用的隔离评审能力，已由主会话完成评审」等中文说明。
 
-3. **持久化报告与事实 sidecar（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`，并把同一批发现写成临时 JSON 后调用 `python <skills-root>/scripts/harness_review.py write-findings --change-dir <change-dir> --input <findings.json>`。权威计数来自 `reports/review/review-findings.json`，不是 Markdown。任一写入缺失 → 🟡WARN，不得宣称 review 完成。
+3. **持久化报告与事实 sidecar（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`，并把同一批发现写成临时 JSON 后调用 `python <skills-root>/scripts/harness_review.py write-findings --change-dir <change-dir> --input <findings.json>`。每条发现必须填写 `fixbackAction=code|manual|workflow`：只有确实需要修改产品代码的项使用 `code`；人工验收用 `manual`；流程、暂存或工具使用建议用 `workflow`。权威计数来自 `reports/review/review-findings.json`，不是 Markdown。任一写入缺失 → 评审未完整结束，不得关门。
 4. **生成修复反馈（原生协议）** — 若报告存在 RED/YELLOW 问题，执行 `protocols.md` 的 `review-fixback-protocol`，将问题转化为结构化 fixback 清单并落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`；随后把 disposition 临时 JSON 交给 `python <skills-root>/scripts/harness_review.py write-dispositions --change-dir <change-dir> --input <dispositions.json>`，权威状态写入 `reports/review/fixback-dispositions.json`。若无 RED/YELLOW，也必须写空 findings sidecar，并记录 `review-fixback-protocol: skipped(no findings)`。不调用 Superpowers `receiving-code-review`，也不记录外部 skill 降级。
-5. **收尾** — append `phase.end` / `artifact` 事件；控制台输出摘要
+5. **收尾** — 先写完 `review-findings.json` 与 `fixback-dispositions.json`，且两者 `runId` 必须等于本轮 Review；每个 finding 必须有 disposition。随后只调用一次 gate close，由门禁校验 sidecar、写 `phase.end` 与交接；缺失或不一致时保持 Review 未结束并按恢复提示补齐。控制台输出摘要。
 
 ## Review 定位（重要）
 
@@ -111,6 +111,8 @@ review:
 1. RED/YELLOW 问题转成 fixback 条目：严重级别、位置、风险、建议、验证方式、对 submit 的影响。
 2. fixback 落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`。
 3. 无 RED/YELLOW 时记录跳过原因，不制造空修复任务。
+
+没有 `.codegraph/` 只意味着“项目尚未建立 CodeGraph 索引，已直接读取源码”，不得将它写成独立评审不可用或委派失败原因。历史英文原因码不得进入摘要；稳定码只写结构化字段并留在技术详情。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]

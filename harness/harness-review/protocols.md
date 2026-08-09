@@ -34,6 +34,7 @@ description: harness-review 的原生修复反馈协议。内化 receiving-code-
 | 风险说明 | 说明为什么值得处理 |
 | 推荐修复 | 可执行的修复方向，不写空泛建议 |
 | 验证方式 | 构建、测试、场景编号或人工确认方式 |
+| 修复动作 | `code` / `manual` / `workflow`；只有 `code` 会进入 `/harness-run --fixback` |
 | submit 影响 | 默认 advisory；仅 strict-review-gate=true 时标记阻塞 |
 
 如果没有 RED/YELLOW，必须明确写：
@@ -45,7 +46,7 @@ description: harness-review 的原生修复反馈协议。内化 receiving-code-
 ### 定位边界
 
 - harness-review 默认仅供参考，不阻塞 submit/archive。
-- `review-fixback-protocol` 只生成修复反馈，不自动修改代码。
+- `review-fixback-protocol` 只生成修复反馈，不自动修改代码。人工验收与流程建议不得伪装成代码问题，也不得创建空 Fixback 批次。
 - 不得把 YELLOW 写成必须阻塞 submit。
 - 只有配置 `strict-review-gate: true` 时，RED 才可标记为阻塞 submit。
 

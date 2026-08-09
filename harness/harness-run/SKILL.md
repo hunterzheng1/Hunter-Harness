@@ -52,14 +52,14 @@ disallowed-tools:
 
 ## Workflow 概要
 
-0. 加载上下文：先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验交接。`--fixback` 时紧接着运行 `harness_fixback.py resume --change-dir "<executionRoot>"`，只消费返回的 `batchId/runId/attempt/nextStep/changedFiles/requiredVerifications`；重复调用必须复用同一批次和轮次，不重新通读实现或另建脚本。最后运行 **`harness_gate.py begin --phase run --change <id>`**；上下文未完成时 gate 会在创建租约前拒绝。禁止手写 `events.ndjson` / `phase.end`。已连接平台时 begin 会 best-effort 补传事件，失败只告警。
+0. 加载上下文：普通 Run 先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验交接，最后运行 **`harness_gate.py begin --phase run --change <id>`**。`--fixback` 不得拼装这些底层步骤，必须只调用一次 `harness_fixback.py launch-review --project . --change <id> --change-dir <change-dir> --executor <tool> --skills-root <skills-root> --product-identity <当前产品身份> --json`：该命令会先筛选结构化评审项，再原子选择 Fixback 分支、确认上下文、取得 Run 门禁并创建已填充批次。返回 `FIXBACK_NOTHING_TO_APPLY` 时直接报告“本轮评审没有需要执行的代码修复”并停止；返回阻塞码时按 `recoveryAction` 停止，不搜索实现、不试探其他参数、不创建空批次。禁止手写 `events.ndjson` / `phase.end`。已连接平台时 begin 会 best-effort 补传事件，失败只告警。
 0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5；测试基线已由上一步 gate begin 内部建立，不得再次执行 guard begin
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
-2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c
+2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；若本阶段创建/删除了清单、锁文件、源码根或改变技术栈，最后一次产品编辑后、写账本与关门前必须执行 `harness_preflight.py detect --project . --json` 刷新 build profile。`record --project . --profile-input <key>` 会对缺失/陈旧 profile 自动检测并从同一 target 推导 scope、coverage、规范命令和输入闭包；不得再手填另一套身份。`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c
 3. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
 4. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 必须取返回的 `nextPhases` 或 `plannedPhases` 中 run 的真实后继，禁止写死 test。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
 
-**Fixback**：必须通过 `harness_fixback.py resume/add-issue/resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；未选用则用中文记录“本轮未采纳该改进建议”。
+**Fixback**：入口只用 `launch-review`，后续问题处理通过 `resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；`manual`、`workflow` 或未选用的建议不进入代码批次，使用中文记录处理结论。
 
 **执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。
 

@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,25 @@ def _append_ndjson(path: Path, payload: dict[str, Any]) -> None:
     finally:
         os.close(descriptor)
         lock.unlink(missing_ok=True)
+
+
+@contextmanager
+def _exclusive_state_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 2
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"context state locked: {path}")
+            time.sleep(0.02)
+    try:
+        yield
+    finally:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
 
 
 def _read_ndjson(path: Path) -> list[dict[str, Any]]:
@@ -387,6 +407,233 @@ def _execution_root(project: Path, contract_root: Path, state_root: Path) -> Pat
     return project.resolve()
 
 
+def _reselect_review_fixback(
+    project: Path,
+    change: str,
+    *,
+    contract_root: Path,
+    state_root: Path,
+    executor: str,
+) -> dict[str, Any]:
+    """Supersede an unbegun review→submit choice with review→run."""
+
+    paths = _paths(state_root)
+    with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
+        transitions = _read_ndjson(paths["transitions"])
+        latest = transitions[-1] if transitions else None
+        if (
+            isinstance(latest, dict)
+            and latest.get("fromPhase") == "review"
+            and latest.get("toPhase") == "run"
+            and latest.get("trigger") == "review-fixback"
+        ):
+            return {
+                "ok": True,
+                "code": "FIXBACK_BRANCH_ALREADY_SELECTED",
+                "receipt": latest,
+            }
+        if not (
+            isinstance(latest, dict)
+            and latest.get("fromPhase") == "review"
+            and latest.get("toPhase") == "submit"
+        ):
+            return {
+                "ok": False,
+                "code": "FIXBACK_RESELECT_UNAVAILABLE",
+                "message": "当前没有可安全重选的评审后继分支。",
+            }
+        begins = _read_ndjson(paths["begins"])
+        submit_begun = any(
+            isinstance(item, dict)
+            and item.get("phase") == "submit"
+            and item.get("receiptHash") == latest.get("receiptHash")
+            for item in begins
+        )
+        event_paths = [state_root / "events.ndjson"]
+        if state_root != contract_root:
+            event_paths.append(contract_root / "events.ndjson")
+        submit_started = any(
+            item.get("phase") == "submit" and item.get("type") == "phase.start"
+            for path in event_paths
+            for item in _read_ndjson(path)
+        )
+        if submit_begun or submit_started:
+            return {
+                "ok": False,
+                "code": "FIXBACK_RESELECT_UNSAFE",
+                "message": "提交阶段已经开始，不能自动切回修复；请先完成或明确恢复提交现场。",
+            }
+        if paths["lease"].is_file():
+            try:
+                lease = _read_json(paths["lease"])
+            except (OSError, ValueError, json.JSONDecodeError):
+                return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
+            if lease.get("phase") != "submit" or lease.get("owner") != executor:
+                return {
+                    "ok": False,
+                    "code": "FIXBACK_RESELECT_UNSAFE",
+                    "message": "当前阶段租约不属于本次可撤销的提交准备。",
+                }
+            paths["lease"].unlink(missing_ok=True)
+        # Any submit context present here was only prepared, never begun.  The
+        # new run context is written by prepare_context after this atomic choice.
+        paths["current"].unlink(missing_ok=True)
+
+        receipt: dict[str, Any] = {
+            "schemaVersion": 1,
+            "changeName": change,
+            "fromPhase": "review",
+            "toPhase": "run",
+            "status": "OK",
+            "executor": executor,
+            "productCommit": _head(project),
+            "artifacts": [],
+            "attempt": 1
+            + sum(
+                1
+                for item in transitions
+                if item.get("fromPhase") == "review"
+                and item.get("toPhase") == "run"
+            ),
+            "closedAt": _now().isoformat(),
+            "previousReceiptHash": latest.get("receiptHash"),
+            "supersedesReceiptHash": latest.get("receiptHash"),
+            "trigger": "review-fixback",
+            "selectionReason": "用户选择处理评审中的代码修复项",
+        }
+        receipt["receiptHash"] = _payload_hash(receipt)
+        _append_ndjson(paths["transitions"], receipt)
+        invalidation = _invalidate_for_fixback(
+            state_root,
+            transition_hash=receipt["receiptHash"],
+            from_phase="review",
+            to_phase="run",
+        )
+        return {
+            "ok": True,
+            "code": "FIXBACK_BRANCH_RESELECTED",
+            "receipt": receipt,
+            "invalidation": invalidation,
+        }
+
+
+def _claim_prepared_context(
+    project: Path,
+    change: str,
+    *,
+    contract_root: Path,
+    state_root: Path,
+    phase: str,
+    executor: str,
+    ttl_seconds: int,
+    preparation_id: str | None,
+    display_title: str | None,
+) -> dict[str, Any]:
+    """Atomically check and claim the lease/current preparation pair."""
+
+    paths = _paths(state_root)
+    with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
+        recovery: dict[str, Any] | None = None
+        if paths["lease"].is_file():
+            try:
+                existing_lease = _read_json(paths["lease"])
+            except (OSError, ValueError, json.JSONDecodeError):
+                return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
+            expiry = _parse_time(existing_lease.get("expiresAt"))
+            expired = expiry is None or _now() >= expiry
+            if not expired and existing_lease.get("owner") != executor:
+                return {
+                    "ok": False,
+                    "code": "CONTEXT_LEASE_HELD",
+                    "holder": existing_lease.get("owner"),
+                    "expiresAt": existing_lease.get("expiresAt"),
+                }
+            if (
+                not expired
+                and preparation_id is not None
+                and existing_lease.get("preparationId") != preparation_id
+            ):
+                return {
+                    "ok": False,
+                    "code": "CONTEXT_PREPARATION_ACTIVE",
+                    "message": "已有一轮修复准备或执行正在进行，本次重复启动未修改现有上下文。",
+                    "preparationId": existing_lease.get("preparationId"),
+                    "expiresAt": existing_lease.get("expiresAt"),
+                }
+            if expired:
+                recovery = {
+                    "code": "LEASE_EXPIRED_RECOVERED",
+                    "previousOwner": existing_lease.get("owner"),
+                    "expiredAt": existing_lease.get("expiresAt"),
+                }
+
+        transitions = _read_ndjson(paths["transitions"])
+        latest = transitions[-1] if transitions else None
+        try:
+            current = (
+                _read_json(paths["current"])
+                if paths["current"].is_file()
+                else None
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {"ok": False, "code": "CONTEXT_CURRENT_INVALID"}
+        if recovery is None and isinstance(current, dict) and (
+            current.get("executor") != executor or current.get("phase") != phase
+        ):
+            valid_receipt = (
+                isinstance(latest, dict)
+                and latest.get("toPhase") == phase
+                and latest.get("fromPhase") == current.get("phase")
+            )
+            if not valid_receipt:
+                return {
+                    "ok": False,
+                    "code": "HANDOFF_REQUIRED",
+                    "fromExecutor": current.get("executor"),
+                    "fromPhase": current.get("phase"),
+                    "toExecutor": executor,
+                    "toPhase": phase,
+                }
+
+        execution_root = _execution_root(project, contract_root, state_root)
+        now = _now()
+        lease: dict[str, Any] = {
+            "schemaVersion": 1,
+            "changeName": change,
+            "phase": phase,
+            "owner": executor,
+            "acquiredAt": now.isoformat(),
+            "expiresAt": (
+                now + dt.timedelta(seconds=max(1, int(ttl_seconds)))
+            ).isoformat(),
+        }
+        if preparation_id is not None:
+            lease["preparationId"] = preparation_id
+        current_context: dict[str, Any] = {
+            "schemaVersion": 1,
+            "changeName": change,
+            "phase": phase,
+            "executor": executor,
+            "executionRoot": str(execution_root),
+            "preparedAt": now.isoformat(),
+            "receiptHash": latest.get("receiptHash") if latest else None,
+            "displayTitle": display_title,
+        }
+        if preparation_id is not None:
+            current_context["preparationId"] = preparation_id
+        _write_json_atomic(paths["lease"], lease)
+        _write_json_atomic(paths["current"], current_context)
+        return {
+            "ok": True,
+            "lease": lease,
+            "current": current_context,
+            "transitions": transitions,
+            "latestTransition": latest,
+            "recovery": recovery,
+            "executionRoot": str(execution_root),
+        }
+
+
 def prepare_context(
     project: Path,
     *,
@@ -395,6 +642,8 @@ def prepare_context(
     change: str | None = None,
     display_title: str | None = None,
     ttl_seconds: int = 3600,
+    trigger: str | None = None,
+    preparation_id: str | None = None,
 ) -> dict[str, Any]:
     project = Path(project).resolve()
     candidates = _active_changes(project)
@@ -442,79 +691,35 @@ def prepare_context(
         }
     paths = _paths(state_root)
     paths["runtime"].mkdir(parents=True, exist_ok=True)
-    recovery: dict[str, Any] | None = None
-    if paths["lease"].is_file():
-        try:
-            lease = _read_json(paths["lease"])
-        except (OSError, ValueError, json.JSONDecodeError):
-            return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
-        expiry = _parse_time(lease.get("expiresAt"))
-        expired = expiry is None or _now() >= expiry
-        if not expired and lease.get("owner") != executor:
-            return {
-                "ok": False,
-                "code": "CONTEXT_LEASE_HELD",
-                "holder": lease.get("owner"),
-                "expiresAt": lease.get("expiresAt"),
-            }
-        if expired:
-            recovery = {
-                "code": "LEASE_EXPIRED_RECOVERED",
-                "previousOwner": lease.get("owner"),
-                "expiredAt": lease.get("expiresAt"),
-            }
-
-    transitions = _read_ndjson(paths["transitions"])
-    latest = transitions[-1] if transitions else None
-    current = (
-        _read_json(paths["current"])
-        if paths["current"].is_file()
-        else None
-    )
-    if recovery is None and isinstance(current, dict) and (
-        current.get("executor") != executor or current.get("phase") != phase
-    ):
-        valid_receipt = (
-            isinstance(latest, dict)
-            and latest.get("toPhase") == phase
-            and latest.get("fromPhase") == current.get("phase")
+    reselection: dict[str, Any] | None = None
+    if trigger == "review-fixback" and phase == "run":
+        reselection = _reselect_review_fixback(
+            project,
+            change,
+            contract_root=contract_root,
+            state_root=state_root,
+            executor=executor,
         )
-        if not valid_receipt:
-            return {
-                "ok": False,
-                "code": "HANDOFF_REQUIRED",
-                "fromExecutor": current.get("executor"),
-                "fromPhase": current.get("phase"),
-                "toExecutor": executor,
-                "toPhase": phase,
-            }
-
-    execution_root = _execution_root(project, contract_root, state_root)
-    now = _now()
-    lease = {
-        "schemaVersion": 1,
-        "changeName": change,
-        "phase": phase,
-        "owner": executor,
-        "acquiredAt": now.isoformat(),
-        "expiresAt": (
-            now + dt.timedelta(seconds=max(1, int(ttl_seconds)))
-        ).isoformat(),
-    }
-    _write_json_atomic(paths["lease"], lease)
-    _write_json_atomic(
-        paths["current"],
-        {
-            "schemaVersion": 1,
-            "changeName": change,
-            "phase": phase,
-            "executor": executor,
-            "executionRoot": str(execution_root),
-            "preparedAt": now.isoformat(),
-            "receiptHash": latest.get("receiptHash") if latest else None,
-            "displayTitle": resolved_display_title,
-        },
+        if not reselection.get("ok"):
+            return reselection
+    claim = _claim_prepared_context(
+        project,
+        change,
+        contract_root=contract_root,
+        state_root=state_root,
+        phase=phase,
+        executor=executor,
+        ttl_seconds=ttl_seconds,
+        preparation_id=preparation_id,
+        display_title=resolved_display_title,
     )
+    if not claim.get("ok"):
+        return claim
+    transitions = claim["transitions"]
+    latest = claim["latestTransition"]
+    execution_root = Path(claim["executionRoot"])
+    lease = claim["lease"]
+    recovery = claim["recovery"]
     next_phases = (
         _allowed_next_phases(contract_root, phase)
         if planned_phases is not None
@@ -540,6 +745,7 @@ def prepare_context(
         "lease": lease,
         "recovery": recovery,
         "displayTitle": resolved_display_title,
+        "branchSelection": reselection,
     }
 
 
@@ -728,12 +934,13 @@ def close_transition(
     }
 
 
-def begin_transition(
+def _begin_transition_unlocked(
     project: Path,
     change: str,
     *,
     phase: str,
     executor: str,
+    preparation_id: str | None = None,
 ) -> dict[str, Any]:
     project = Path(project).resolve()
     try:
@@ -741,6 +948,20 @@ def begin_transition(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
     paths = _paths(state_root)
+    if preparation_id is not None:
+        current = _read_json(paths["current"]) if paths["current"].is_file() else None
+        lease = _read_json(paths["lease"]) if paths["lease"].is_file() else None
+        if not (
+            isinstance(current, dict)
+            and isinstance(lease, dict)
+            and current.get("preparationId") == preparation_id
+            and lease.get("preparationId") == preparation_id
+        ):
+            return {
+                "ok": False,
+                "code": "CONTEXT_PREPARATION_MISMATCH",
+                "message": "本次修复准备凭证与当前上下文不一致，未启动新阶段。",
+            }
     transitions = _read_ndjson(paths["transitions"])
     if not transitions:
         return {
@@ -792,10 +1013,10 @@ def begin_transition(
         "receiptHash": receipt["receiptHash"],
         "begunAt": _now().isoformat(),
     }
+    if preparation_id is not None:
+        acknowledgment["preparationId"] = preparation_id
     _append_ndjson(paths["begins"], acknowledgment)
-    _write_json_atomic(
-        paths["current"],
-        {
+    current_context = {
             "schemaVersion": 1,
             "changeName": change,
             "phase": phase,
@@ -803,13 +1024,136 @@ def begin_transition(
             "executionRoot": str(_execution_root(project, project / ".harness/changes" / change, state_root)),
             "receiptHash": receipt["receiptHash"],
             "begunAt": acknowledgment["begunAt"],
-        },
-    )
+        }
+    if preparation_id is not None:
+        current_context["preparationId"] = preparation_id
+    _write_json_atomic(paths["current"], current_context)
     return {
         "ok": True,
         "code": "TRANSITION_BEGUN",
         "receipt": receipt,
         "acknowledgment": acknowledgment,
+    }
+
+
+def begin_transition(
+    project: Path,
+    change: str,
+    *,
+    phase: str,
+    executor: str,
+    preparation_id: str | None = None,
+) -> dict[str, Any]:
+    """Acknowledge a transition while serializing branch selection."""
+
+    project = Path(project).resolve()
+    try:
+        _contract_root, _contract_data, state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+    paths = _paths(state_root)
+    with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
+        return _begin_transition_unlocked(
+            project,
+            change,
+            phase=phase,
+            executor=executor,
+            preparation_id=preparation_id,
+        )
+
+
+def cancel_prepared_context(
+    project: Path,
+    change: str,
+    *,
+    phase: str,
+    executor: str,
+    preparation_id: str | None = None,
+) -> dict[str, Any]:
+    """Remove a target-phase preparation that never obtained its gate."""
+
+    project = Path(project).resolve()
+    try:
+        _contract_root, _contract_data, state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+    paths = _paths(state_root)
+    removed: list[str] = []
+    receipt_hash: str | None = None
+    with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
+        if paths["current"].is_file():
+            try:
+                current = _read_json(paths["current"])
+            except (OSError, ValueError, json.JSONDecodeError):
+                current = None
+            if isinstance(current, dict) and (
+                current.get("phase") == phase and current.get("executor") == executor
+                and (
+                    preparation_id is None
+                    or current.get("preparationId") == preparation_id
+                )
+            ):
+                receipt_hash = str(current.get("receiptHash") or "") or None
+                paths["current"].unlink(missing_ok=True)
+                removed.append("current")
+        if paths["lease"].is_file():
+            try:
+                lease = _read_json(paths["lease"])
+            except (OSError, ValueError, json.JSONDecodeError):
+                lease = None
+            if isinstance(lease, dict) and (
+                lease.get("phase") == phase and lease.get("owner") == executor
+                and (
+                    preparation_id is None
+                    or lease.get("preparationId") == preparation_id
+                )
+            ):
+                paths["lease"].unlink(missing_ok=True)
+                removed.append("lease")
+        begins = _read_ndjson(paths["begins"])
+        retained = [
+            item
+            for item in begins
+            if not (
+                receipt_hash is not None
+                and item.get("phase") == phase
+                and item.get("executor") == executor
+                and item.get("receiptHash") == receipt_hash
+                and (
+                    preparation_id is None
+                    or item.get("preparationId") == preparation_id
+                )
+            )
+        ]
+        if len(retained) != len(begins):
+            paths["begins"].parent.mkdir(parents=True, exist_ok=True)
+            payload = "".join(
+                json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
+                for item in retained
+            )
+            fd, raw = tempfile.mkstemp(
+                prefix=f".{paths['begins'].name}.",
+                suffix=".tmp",
+                dir=str(paths["begins"].parent),
+            )
+            temporary = Path(raw)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, paths["begins"])
+            finally:
+                temporary.unlink(missing_ok=True)
+            removed.append("begin")
+    return {
+        "ok": True,
+        "code": (
+            "PREPARED_CONTEXT_CANCELLED"
+            if removed
+            else "PREPARED_CONTEXT_NOT_OWNED"
+        ),
+        "removed": removed,
     }
 
 
@@ -867,6 +1211,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--executor", required=True)
     prepare.add_argument("--title")
     prepare.add_argument("--ttl-seconds", type=int, default=3600)
+    prepare.add_argument("--trigger", choices=["review-fixback"])
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
     close.add_argument("--project", required=True, type=Path)
@@ -906,6 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
             change=args.change,
             display_title=args.title,
             ttl_seconds=args.ttl_seconds,
+            trigger=args.trigger,
         )
     elif args.command == "close":
         result = close_transition(

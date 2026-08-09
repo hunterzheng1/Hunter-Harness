@@ -14,6 +14,8 @@ import ctypes
 import hashlib
 import json
 import os
+import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -66,6 +68,104 @@ class CommandResult:
 
 class TestRunAlreadyActive(RuntimeError):
     """Raised when another resource-safe runner owns the project lock."""
+
+
+class ManagedCommandNotFound(FileNotFoundError):
+    """Raised when a structured command cannot be resolved without a shell."""
+
+
+class ManagedCommandUnsafe(ValueError):
+    """Raised when a Windows batch argument could be interpreted by cmd.exe."""
+
+
+_WINDOWS_BATCH_SUFFIXES = {".bat", ".cmd"}
+_WINDOWS_CMD_META = re.compile(r'[\r\n&|<>^%!\"]')
+
+
+def validate_managed_argv(
+    argv: Sequence[str], *, platform_name: str | None = None
+) -> None:
+    """Fail closed when Windows would reinterpret a batch argv boundary."""
+
+    platform = platform_name or os.name
+    if (
+        platform != "nt"
+        or not argv
+        or Path(argv[0]).suffix.casefold() not in _WINDOWS_BATCH_SUFFIXES
+    ):
+        return
+    for index, argument in enumerate(argv):
+        if _WINDOWS_CMD_META.search(str(argument)):
+            raise ManagedCommandUnsafe(
+                "MANAGED_BATCH_ARGUMENT_UNSAFE: "
+                f"Windows 批处理命令的第 {index} 个参数包含命令解释符；"
+                "请改用原生可执行文件或不含命令解释符的参数"
+            )
+
+
+def resolve_managed_argv(
+    argv: Sequence[str],
+    *,
+    environ: Mapping[str, str],
+    platform_name: str | None = None,
+) -> list[str]:
+    """Resolve argv[0] through PATH/PATHEXT while preserving argv boundaries."""
+
+    if not argv or not isinstance(argv[0], str) or not argv[0].strip():
+        raise ManagedCommandNotFound("MANAGED_COMMAND_NOT_FOUND: 命令不能为空")
+    command = argv[0].strip()
+    platform = platform_name or os.name
+    windows_extensions = [
+        item.strip() if item.strip().startswith(".") else f".{item.strip()}"
+        for item in str(
+            environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        ).split(";")
+        if item.strip()
+    ] if platform == "nt" else []
+    windows_extension_set = {item.casefold() for item in windows_extensions}
+    has_path = Path(command).is_absolute() or "/" in command or "\\" in command
+    if has_path:
+        requested = Path(command).expanduser()
+        suffix = requested.suffix.casefold()
+        candidates = (
+            [Path(str(requested) + extension) for extension in windows_extensions]
+            + [requested]
+            if platform == "nt" and suffix not in windows_extension_set
+            else [requested]
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return [str(candidate.resolve()), *list(argv[1:])]
+        raise ManagedCommandNotFound(
+            f"MANAGED_COMMAND_NOT_FOUND: 找不到可执行命令 {command}"
+        )
+
+    path_value = str(environ.get("PATH") or "")
+    resolved: str | None = None
+    if platform == "nt":
+        suffix = Path(command).suffix.casefold()
+        names = (
+            [command]
+            if suffix and suffix in windows_extension_set
+            else [*(command + item for item in windows_extensions), command]
+        )
+        for raw_directory in path_value.split(";"):
+            directory = raw_directory.strip().strip('"') or "."
+            for name in names:
+                candidate = Path(directory) / name
+                if candidate.is_file():
+                    resolved = str(candidate.resolve())
+                    break
+            if resolved is not None:
+                break
+    else:
+        resolved = shutil.which(command, path=path_value or None)
+
+    if resolved is None:
+        raise ManagedCommandNotFound(
+            f"MANAGED_COMMAND_NOT_FOUND: 找不到可执行命令 {command}"
+        )
+    return [resolved, *list(argv[1:])]
 
 
 def _truthy(value: object) -> bool:
@@ -819,6 +919,8 @@ def run_managed_command(
     if environ:
         child_env.update({str(key): str(value) for key, value in environ.items()})
     child_env.setdefault("PYTHONUNBUFFERED", "1")
+    resolved_argv = resolve_managed_argv(argv, environ=child_env)
+    validate_managed_argv(resolved_argv)
     lower_process_priority()
 
     output_stream = tempfile.TemporaryFile(mode="w+b") if capture_output else None
@@ -828,7 +930,7 @@ def run_managed_command(
     cleanup_complete = False
     try:
         spawned = hprocess.spawn_structured_argv(
-            list(argv),
+            resolved_argv,
             cwd=Path(cwd).resolve(),
             environment=child_env,
             owner_token=f"test-runner:{uuid.uuid4().hex}",
@@ -1133,6 +1235,32 @@ def _run_unittest(args: argparse.Namespace) -> int:
     except TestRunAlreadyActive as exc:
         print(str(exc), file=sys.stderr)
         return 3
+    except ManagedCommandNotFound as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "MANAGED_COMMAND_NOT_FOUND",
+                    "message": str(exc).split(":", 1)[-1].strip(),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 127
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "MANAGED_COMMAND_START_FAILED",
+                    "message": f"命令无法启动：{exc}",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 126
 
     duration = time.monotonic() - started
     status = "PASS" if not failures else "FAIL"
@@ -1264,6 +1392,32 @@ def _run_exec(args: argparse.Namespace) -> int:
     except TestRunAlreadyActive as exc:
         print(str(exc), file=sys.stderr)
         return 3
+    except ManagedCommandNotFound as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "MANAGED_COMMAND_NOT_FOUND",
+                    "message": str(exc).split(":", 1)[-1].strip(),
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 127
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "code": "MANAGED_COMMAND_START_FAILED",
+                    "message": f"命令无法启动：{exc}",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 126
     if not result.process_tree_isolated:
         print("PROCESS_TREE_ISOLATION_UNAVAILABLE", file=sys.stderr)
         return 4

@@ -49,6 +49,80 @@ class HarnessEventsTest(unittest.TestCase):
             code = he.main(argv)
         return code, out.getvalue(), err.getvalue()
 
+    def test_review_execution_decision_requires_stable_structured_reason(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "review",
+                "--type",
+                "decision",
+                "--decision",
+                "已由独立评审任务完成六维审查",
+                "--reason",
+                "宿主提供了可用的隔离任务能力",
+                "--execution-mode",
+                "delegated",
+                "--executor-agent",
+                "harness-reviewer",
+                "--decision-reason-code",
+                "REVIEW_DELEGATED",
+            ]
+        )
+        self.assertEqual(code, 0, err)
+        event = json.loads(
+            (self.change_dir / "events.ndjson").read_text(encoding="utf-8").splitlines()[0]
+        )
+        self.assertEqual(event["execution_mode"], "delegated")
+        self.assertEqual(event["decision_reason_code"], "REVIEW_DELEGATED")
+
+    def test_review_reason_code_in_free_text_is_rejected(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "review",
+                "--type",
+                "decision",
+                "--decision",
+                "REVIEW_INLINE_NO_DELEGATE：主会话完成评审",
+                "--reason",
+                "范围较小",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("EVENT_REVIEW_REASON_IN_BODY", err)
+
+    def test_unknown_review_fallback_reason_is_rejected(self) -> None:
+        code, out, err = self._run(
+            [
+                "append",
+                "--change-dir",
+                str(self.change_dir),
+                "--json",
+                "--phase",
+                "review",
+                "--type",
+                "decision",
+                "--decision",
+                "已由主会话完成评审",
+                "--reason",
+                "独立评审不可用",
+                "--execution-mode",
+                "inline",
+                "--fallback-reason-code",
+                "REVIEW_INLINE_NO_DELEGATE",
+            ]
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("EVENT_REVIEW_REASON_INVALID", err)
+
     def test_append_atomic_and_auto_render_all_types(self) -> None:
         """10+ events covering all 7 types; auto-render <100 lines; atomic append."""
         events_file = self.change_dir / "events.ndjson"
@@ -1071,6 +1145,51 @@ class ChangeRenameEventTests(unittest.TestCase):
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("EVENT_FIELD_NOT_ALLOWED", proc.stderr)
+
+
+class PhasePreparationEventTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-events-prepare-"))
+        self.change_dir = self.tmp / "change"
+        self.change_dir.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_preparation_events_are_structured_without_opening_a_phase_attempt(self) -> None:
+        started = he.append_event(
+            self.change_dir,
+            phase="run",
+            type_="phase.prepare.start",
+            note="正在检查修复前置条件。",
+            run_id="run-fixback",
+            attempt=2,
+            trigger="review-fixback",
+            from_phase="review",
+        )
+        ended = he.append_event(
+            self.change_dir,
+            phase="run",
+            type_="phase.prepare.end",
+            status="BLOCKED",
+            code="CONTEXT_HANDOFF_REQUIRED",
+            message="阶段交接尚未完成，修复未启动。",
+            run_id="run-fixback",
+            attempt=2,
+            trigger="review-fixback",
+            from_phase="review",
+            orchestration_active_ms=181000,
+        )
+        self.assertTrue(started.get("ok"), started)
+        self.assertTrue(ended.get("ok"), ended)
+        events = he.load_events(self.change_dir / "events.ndjson")
+        self.assertEqual([item["type"] for item in events], [
+            "phase.prepare.start",
+            "phase.prepare.end",
+        ])
+        self.assertEqual(events[-1]["status"], "BLOCKED")
+        self.assertEqual(events[-1]["orchestration_active_ms"], 181000)
+        self.assertFalse(any(item["type"] in he.TERMINAL_PHASE_EVENT_TYPES for item in events))
 
 
 if __name__ == "__main__":

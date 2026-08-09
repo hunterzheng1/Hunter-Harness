@@ -208,7 +208,13 @@ async function runFirstInstall(
       project_id: result.projectConfig.project.project_id,
       summary: { planned: outputPaths.length, applied: options.dryRun === true ? 0 : outputPaths.length },
       items: outputPaths.map((path) => ({ path, status: options.dryRun === true ? "planned" : "applied" })),
-      warnings: [],
+      warnings: gitignore.trackedMigrationNotice?.shouldDisplay === true
+        ? [{
+            code: "TRACKED_HARNESS_FILES_NEED_MIGRATION",
+            message: gitignore.trackedMigrationNotice.message,
+            paths: gitignore.trackedMigrationNotice.patterns
+          }]
+        : [],
       errors: [],
       plan_hash: result.planHash,
       recovery_id: result.recoveryId
@@ -216,7 +222,10 @@ async function runFirstInstall(
     dependencies.stdout(options.json === true
       ? serializeCliResult(output)
       : "Hunter Harness 初始化完成，共处理 " + outputPaths.length + " 个文件。\n" +
-        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n");
+        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n" +
+        (gitignore.trackedMigrationNotice?.shouldDisplay === true
+          ? `迁移提示：${gitignore.trackedMigrationNotice.message}\n涉及：${gitignore.trackedMigrationNotice.patterns.join("、")}\n`
+          : ""));
     if (
       options.nonInteractive !== true &&
       options.dryRun !== true &&

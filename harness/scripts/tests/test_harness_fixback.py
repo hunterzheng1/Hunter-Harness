@@ -104,6 +104,168 @@ def write_evidence(
 
 
 class FixbackBatchTests(unittest.TestCase):
+    @staticmethod
+    def _write_review_sidecars(
+        change_dir: Path,
+        *,
+        action: str,
+        disposition: str = "OPEN",
+    ) -> None:
+        review_dir = change_dir / "reports" / "review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        (review_dir / "review-findings.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "findings": [
+                        {
+                            "id": "f-one",
+                            "dimension": "correctness",
+                            "severity": "YELLOW",
+                            "path": "src/timer.ts",
+                            "line": 8,
+                            "title": "处理计时边界",
+                            "fixbackAction": action,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "dispositions": [
+                        {"findingId": "f-one", "disposition": disposition}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_manual_review_advice_does_not_create_an_empty_batch(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._write_review_sidecars(change_dir, action="manual")
+
+            result = module.review_fixback_plan(change_dir)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "FIXBACK_NOTHING_TO_APPLY")
+            self.assertFalse((change_dir / "fixback").exists())
+
+    def test_review_finding_without_persisted_id_is_rejected(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._write_review_sidecars(change_dir, action="code")
+            findings_path = change_dir / "reports" / "review" / "review-findings.json"
+            findings = json.loads(findings_path.read_text(encoding="utf-8"))
+            findings["findings"][0].pop("id")
+            findings_path.write_text(json.dumps(findings), encoding="utf-8")
+            dispositions_path = (
+                change_dir / "reports" / "review" / "fixback-dispositions.json"
+            )
+            dispositions = json.loads(dispositions_path.read_text(encoding="utf-8"))
+            dispositions["dispositions"] = []
+            dispositions_path.write_text(json.dumps(dispositions), encoding="utf-8")
+
+            result = module.review_fixback_plan(change_dir)
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "FIXBACK_REVIEW_OUTPUTS_INVALID")
+
+    def test_code_review_issue_opens_an_already_populated_batch(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._write_review_sidecars(change_dir, action="code")
+            plan = module.review_fixback_plan(change_dir)
+
+            batch = module.open_review_batch(
+                change_dir,
+                plan=plan,
+                batch_id="review-fixback-1",
+                product_identity="sha256:before",
+                run_id="run-fixback-2",
+                attempt=2,
+            )
+
+            self.assertEqual(len(batch["issues"]), 1)
+            self.assertEqual(batch["issues"][0]["issueId"], "f-one")
+            self.assertEqual(batch["nextStep"], "resolve-issues")
+
+    def test_one_command_prepares_gate_and_opens_populated_review_batch(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change_dir = project / ".harness" / "changes" / "timer"
+            change_dir.mkdir(parents=True)
+            self._write_review_sidecars(change_dir, action="code")
+
+            result = module.launch_review_fixback(
+                project=project,
+                change="timer",
+                change_dir=change_dir,
+                executor="cursor",
+                skills_root=project / ".cursor" / "skills",
+                product_identity="sha256:before",
+                run_id="run-fixback-2",
+                attempt=2,
+                context_prepare=lambda **_kwargs: {"ok": True, "code": "CONTEXT_PREPARED"},
+                context_begin=lambda **_kwargs: {"ok": True, "code": "TRANSITION_BEGUN"},
+                gate_begin=lambda **_kwargs: {"ok": True, "code": "PHASE_BEGUN"},
+                context_cancel=lambda **_kwargs: {"ok": True},
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "FIXBACK_STARTED")
+            self.assertEqual(len(result["batch"]["issues"]), 1)
+            events = module.he.load_events(change_dir / "events.ndjson")
+            self.assertEqual(events[0]["type"], "phase.prepare.start")
+            self.assertEqual(events[-1]["type"], "phase.prepare.end")
+            self.assertEqual(events[-1]["status"], "STARTED")
+
+    def test_gate_failure_cancels_target_context_and_never_creates_batch(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change_dir = project / ".harness" / "changes" / "timer"
+            change_dir.mkdir(parents=True)
+            self._write_review_sidecars(change_dir, action="code")
+            cancelled: list[dict[str, object]] = []
+
+            result = module.launch_review_fixback(
+                project=project,
+                change="timer",
+                change_dir=change_dir,
+                executor="cursor",
+                skills_root=project / ".cursor" / "skills",
+                product_identity="sha256:before",
+                run_id="run-fixback-2",
+                attempt=2,
+                context_prepare=lambda **_kwargs: {"ok": True, "code": "CONTEXT_PREPARED"},
+                context_begin=lambda **_kwargs: {"ok": True, "code": "TRANSITION_BEGUN"},
+                gate_begin=lambda **_kwargs: {
+                    "ok": False,
+                    "code": "CONTEXT_HANDOFF_REQUIRED",
+                    "message": "阶段交接尚未完成，修复未启动。",
+                },
+                context_cancel=lambda **kwargs: cancelled.append(kwargs) or {"ok": True},
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "CONTEXT_HANDOFF_REQUIRED")
+            self.assertEqual(len(cancelled), 1)
+            self.assertFalse((change_dir / "fixback" / "batches").exists())
+            events = module.he.load_events(change_dir / "events.ndjson")
+            self.assertEqual(events[-1]["type"], "phase.prepare.end")
+            self.assertEqual(events[-1]["status"], "BLOCKED")
+
     def test_resume_is_idempotent_and_returns_the_existing_open_batch(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

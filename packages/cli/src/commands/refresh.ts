@@ -330,6 +330,13 @@ export async function runRefresh(
         output.summary.applied = Number(output.summary.applied ?? 0) + 1;
       }
     }
+    if (gitignore.trackedMigrationNotice?.shouldDisplay === true) {
+      output.warnings.push({
+        code: "TRACKED_HARNESS_FILES_NEED_MIGRATION",
+        message: gitignore.trackedMigrationNotice.message,
+        paths: gitignore.trackedMigrationNotice.patterns
+      });
+    }
     // per-agent identity + freshness 六态（task 12）：legacy 字段不动，新增 freshness 数组。
     const freshness = await collectFreshness({
       projectRoot: dependencies.cwd,
@@ -350,7 +357,10 @@ export async function runRefresh(
       const workflowManifest = await readWorkflowFamilyManifest(dependencies.resourcesRoot);
       dependencies.stdout(
         `Harness 刷新（${profileLabel(result.profile)}）：${parts.join("，") || "没有变更"}。\n` +
-        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n"
+        formatWorkflowVersionLine(cliVersion, workflowManifest) + "\n" +
+        (gitignore.trackedMigrationNotice?.shouldDisplay === true
+          ? `迁移提示：${gitignore.trackedMigrationNotice.message}\n涉及：${gitignore.trackedMigrationNotice.patterns.join("、")}\n`
+          : "")
       );
     }
     return output.exit_code;

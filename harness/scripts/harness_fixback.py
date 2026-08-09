@@ -9,8 +9,10 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from harness_paths import resolve_state_dir_for_contract
 import harness_events as he
+import harness_review as hr
 
 
 SCHEMA_VERSION = 1
@@ -114,6 +117,477 @@ def _next_step(batch: dict[str, Any]) -> str:
     if not receipts.get("review"):
         return "review"
     return "close"
+
+
+def review_fixback_plan(change_dir: Path) -> dict[str, Any]:
+    """Read Review sidecars and return only actionable product-code fixes."""
+
+    review_root = _state_root(change_dir) / "reports" / "review"
+    findings_path = review_root / "review-findings.json"
+    dispositions_path = review_root / "fixback-dispositions.json"
+    if not findings_path.is_file() or not dispositions_path.is_file():
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_OUTPUTS_REQUIRED",
+            "message": "评审结构化记录不完整，无法安全创建修复批次。",
+            "recoveryAction": "先补齐评审发现与处置记录，再重新执行修复",
+        }
+    try:
+        findings_doc = json.loads(findings_path.read_text(encoding="utf-8-sig"))
+        dispositions_doc = json.loads(
+            dispositions_path.read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_OUTPUTS_INVALID",
+            "message": f"评审结构化记录无法读取：{exc}",
+        }
+    if not isinstance(findings_doc, dict) or not isinstance(dispositions_doc, dict):
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_OUTPUTS_INVALID",
+            "message": "评审结构化记录格式无效。",
+        }
+    if findings_doc.get("runId") != dispositions_doc.get("runId"):
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_RUN_MISMATCH",
+            "message": "评审发现与处置记录不属于同一轮评审。",
+        }
+    finding_problems = hr.validate_findings(findings_doc, require_ids=True)
+    known_ids = {
+        str(item.get("id"))
+        for item in findings_doc.get("findings", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    disposition_problems = hr.validate_dispositions(dispositions_doc, known_ids)
+    if finding_problems or disposition_problems:
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_OUTPUTS_INVALID",
+            "message": "评审结构化记录不完整，无法安全创建修复批次。",
+            "problems": [*finding_problems, *disposition_problems],
+            "recoveryAction": "重新写入完整的评审发现与处置记录后重试",
+        }
+    dispositions = {
+        str(item.get("findingId")): str(item.get("disposition") or "UNKNOWN")
+        for item in dispositions_doc.get("dispositions", [])
+        if isinstance(item, dict) and item.get("findingId")
+    }
+    finding_ids = {
+        str(item.get("id"))
+        for item in findings_doc.get("findings", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    invalid_actions = sorted(
+        str(item.get("id") or f"index-{index}")
+        for index, item in enumerate(findings_doc.get("findings", []))
+        if isinstance(item, dict)
+        and item.get("fixbackAction") not in {"code", "manual", "workflow"}
+    )
+    missing_dispositions = sorted(finding_ids - set(dispositions))
+    if invalid_actions or missing_dispositions:
+        return {
+            "ok": False,
+            "code": "FIXBACK_REVIEW_OUTPUTS_INVALID",
+            "message": "评审项缺少明确的修复动作或处置状态。",
+            "invalidActions": invalid_actions,
+            "missingDispositions": missing_dispositions,
+            "recoveryAction": "补齐评审发现的 fixbackAction 与 disposition 后重试",
+        }
+    actionable: list[dict[str, Any]] = []
+    informational: list[dict[str, Any]] = []
+    for finding in findings_doc.get("findings", []):
+        if not isinstance(finding, dict) or not finding.get("id"):
+            continue
+        disposition = dispositions.get(str(finding["id"]), "UNKNOWN")
+        action = str(finding.get("fixbackAction"))
+        item = {
+            "issueId": str(finding["id"]),
+            "summary": str(finding.get("title") or "评审问题"),
+            "severity": str(finding.get("severity") or "YELLOW"),
+            "path": str(finding.get("path") or ""),
+            "line": int(finding.get("line") or 0),
+            "riskTags": sorted(
+                {
+                    str(tag)
+                    for tag in finding.get("riskTags", [])
+                    if str(tag).strip()
+                }
+            ),
+            "disposition": disposition,
+            "fixbackAction": action,
+        }
+        if (
+            action == "code"
+            and item["severity"] in {"RED", "YELLOW"}
+            and disposition in {"OPEN", "UNKNOWN"}
+        ):
+            actionable.append(item)
+        else:
+            informational.append(item)
+    if not actionable:
+        return {
+            "ok": True,
+            "code": "FIXBACK_NOTHING_TO_APPLY",
+            "message": "本轮评审没有需要执行的代码修复。",
+            "reviewRunId": findings_doc.get("runId"),
+            "issues": [],
+            "informationalItems": informational,
+            "writesState": False,
+        }
+    return {
+        "ok": True,
+        "code": "FIXBACK_READY",
+        "message": f"已找到 {len(actionable)} 个需要处理的代码修复项。",
+        "reviewRunId": findings_doc.get("runId"),
+        "issues": actionable,
+        "informationalItems": informational,
+        "writesState": False,
+    }
+
+
+def open_review_batch(
+    change_dir: Path,
+    *,
+    plan: dict[str, Any],
+    batch_id: str,
+    product_identity: str,
+    run_id: str,
+    attempt: int,
+) -> dict[str, Any]:
+    """Atomically create a populated batch from a validated Review plan."""
+
+    issues = plan.get("issues") if isinstance(plan, dict) else None
+    if plan.get("code") != "FIXBACK_READY" or not isinstance(issues, list) or not issues:
+        raise ValueError("FIXBACK_NOTHING_TO_APPLY")
+    if not product_identity.strip():
+        raise ValueError("FIXBACK_PRODUCT_IDENTITY_REQUIRED")
+    opened = [item for item in _all_batches(change_dir) if item.get("status") == "OPEN"]
+    if opened:
+        existing = sorted(opened, key=lambda item: str(item.get("openedAt") or ""))[0]
+        if existing.get("sourceReviewRunId") == plan.get("reviewRunId"):
+            result = dict(existing)
+            result.update(
+                {
+                    "ok": True,
+                    "code": "FIXBACK_RESUMED",
+                    "resumed": True,
+                    "runId": run_id,
+                    "attempt": max(1, int(attempt)),
+                    "nextStep": _next_step(existing),
+                }
+            )
+            return result
+        raise ValueError(
+            "FIXBACK_BATCH_ALREADY_OPEN: " + str(existing.get("batchId"))
+        )
+    path = _batch_path(change_dir, batch_id)
+    if path.exists():
+        raise ValueError(f"FIXBACK_BATCH_EXISTS: {batch_id}")
+    opened_at = now_iso()
+    issue_entries = [
+        {
+            "issueId": str(item["issueId"]),
+            "summary": str(item["summary"]),
+            "status": "OPEN",
+            "riskTags": list(item.get("riskTags") or []),
+            "severity": item.get("severity"),
+            "path": item.get("path"),
+            "line": item.get("line"),
+            "redEvidence": None,
+            "greenEvidence": None,
+            "changedFiles": [],
+            "resolvedAt": None,
+        }
+        for item in issues
+    ]
+    batch = {
+        "schemaVersion": SCHEMA_VERSION,
+        "batchId": batch_id,
+        "status": "OPEN",
+        "rootCause": "处理评审中明确要求的代码修复项",
+        "sourceReviewRunId": plan.get("reviewRunId"),
+        "openedAt": opened_at,
+        "updatedAt": opened_at,
+        "closedAt": None,
+        "baseProductIdentity": product_identity,
+        "finalProductIdentity": None,
+        "issues": issue_entries,
+        "changedFiles": [],
+        "requiredVerifications": _required_verifications(issue_entries),
+        "receipts": {"affected": None, "review": None},
+        "verificationRuns": {"affected": 0, "review": 0},
+    }
+    _write_json(path, batch)
+    session = {
+        "schemaVersion": 1,
+        "status": "ACTIVE",
+        "batchId": batch_id,
+        "runId": run_id,
+        "attempt": max(1, int(attempt)),
+        "nextStep": _next_step(batch),
+        "updatedAt": opened_at,
+    }
+    _write_json(_session_path(change_dir), session)
+    he.append_event(
+        change_dir,
+        phase="run",
+        type_="decision",
+        note=f"已从评审结果创建修复批次，共 {len(issue_entries)} 个代码修复项。",
+        run_id=run_id,
+        attempt=session["attempt"],
+        trigger="review-fixback",
+        from_phase="review",
+    )
+    return {
+        "ok": True,
+        "code": "FIXBACK_OPENED",
+        "resumed": False,
+        **batch,
+        **session,
+    }
+
+
+def _default_context_prepare(**kwargs: Any) -> dict[str, Any]:
+    import harness_context as hctx
+
+    return hctx.prepare_context(
+        kwargs["project"],
+        phase="run",
+        executor=kwargs["executor"],
+        change=kwargs["change"],
+        trigger="review-fixback",
+        preparation_id=kwargs["preparation_id"],
+    )
+
+
+def _default_context_begin(**kwargs: Any) -> dict[str, Any]:
+    import harness_context as hctx
+
+    return hctx.begin_transition(
+        kwargs["project"],
+        kwargs["change"],
+        phase="run",
+        executor=kwargs["executor"],
+        preparation_id=kwargs["preparation_id"],
+    )
+
+
+def _default_context_cancel(**kwargs: Any) -> dict[str, Any]:
+    import harness_context as hctx
+
+    return hctx.cancel_prepared_context(
+        kwargs["project"],
+        kwargs["change"],
+        phase="run",
+        executor=kwargs["executor"],
+        preparation_id=kwargs["preparation_id"],
+    )
+
+
+def _default_gate_begin(**kwargs: Any) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        str(SCRIPTS_DIR / "harness_gate.py"),
+        "begin",
+        "--json",
+        "--phase",
+        "run",
+        "--change",
+        str(kwargs["change"]),
+        "--project",
+        str(kwargs["project"]),
+        "--skills-root",
+        str(kwargs["skills_root"]),
+        "--run-id",
+        str(kwargs["run_id"]),
+        "--note",
+        "开始处理评审中确认需要修改的代码问题。",
+    ]
+    for option, key in (
+        ("--executor-tool", "executor_tool"),
+        ("--executor-agent", "executor_agent"),
+        ("--executor-model", "executor_model"),
+    ):
+        value = kwargs.get(key)
+        if value:
+            command.extend([option, str(value)])
+    if kwargs.get("task") is not None:
+        command.extend(["--task", str(kwargs["task"])])
+    completed = subprocess.run(
+        command,
+        cwd=str(kwargs["project"]),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    raw = completed.stdout.strip() or completed.stderr.strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = {
+            "ok": False,
+            "code": "FIXBACK_GATE_COMMAND_FAILED",
+            "message": raw or "修复门禁未返回有效结果。",
+        }
+    if not isinstance(payload, dict):
+        payload = {
+            "ok": False,
+            "code": "FIXBACK_GATE_COMMAND_FAILED",
+            "message": "修复门禁返回了无效结果。",
+        }
+    payload.setdefault("ok", completed.returncode == 0)
+    return payload
+
+
+def launch_review_fixback(
+    *,
+    project: Path,
+    change: str,
+    change_dir: Path,
+    executor: str,
+    skills_root: Path,
+    product_identity: str,
+    run_id: str | None = None,
+    attempt: int = 2,
+    batch_id: str | None = None,
+    task: int | None = None,
+    executor_tool: str | None = None,
+    executor_agent: str | None = None,
+    executor_model: str | None = None,
+    context_prepare: Any = None,
+    context_begin: Any = None,
+    gate_begin: Any = None,
+    context_cancel: Any = None,
+) -> dict[str, Any]:
+    """Plan, claim and begin Review Fixback through one fail-closed command."""
+
+    project = Path(project).resolve()
+    change_dir = Path(change_dir).resolve()
+    plan = review_fixback_plan(change_dir)
+    if not plan.get("ok") or plan.get("code") == "FIXBACK_NOTHING_TO_APPLY":
+        return plan
+    effective_run_id = run_id or "fixback-" + uuid.uuid4().hex
+    effective_attempt = max(2, int(attempt))
+    if batch_id is None:
+        source = f"{change}:{plan.get('reviewRunId') or 'review'}"
+        batch_id = "fb-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    prepare_fn = context_prepare or _default_context_prepare
+    begin_fn = context_begin or _default_context_begin
+    gate_fn = gate_begin or _default_gate_begin
+    cancel_fn = context_cancel or _default_context_cancel
+    started_at = time.monotonic()
+    start_event = he.append_event(
+        change_dir,
+        phase="run",
+        type_="phase.prepare.start",
+        note="正在检查评审修复的前置条件。",
+        run_id=effective_run_id,
+        attempt=effective_attempt,
+        trigger="review-fixback",
+        from_phase="review",
+        executor_tool=executor_tool,
+        executor_agent=executor_agent,
+        executor_model=executor_model,
+    )
+    if not start_event.get("ok"):
+        return start_event
+    callback_args = {
+        "project": project,
+        "change": change,
+        "change_dir": change_dir,
+        "executor": executor,
+        "skills_root": Path(skills_root).resolve(),
+        "run_id": effective_run_id,
+        "attempt": effective_attempt,
+        "task": task,
+        "executor_tool": executor_tool,
+        "executor_agent": executor_agent,
+        "executor_model": executor_model,
+        "preparation_id": effective_run_id,
+    }
+
+    def blocked(result: dict[str, Any], *, cancel: bool) -> dict[str, Any]:
+        cancellation = cancel_fn(**callback_args) if cancel else None
+        duration = max(0, round((time.monotonic() - started_at) * 1000))
+        code = str(result.get("code") or "FIXBACK_PREPARATION_BLOCKED")
+        message = str(result.get("message") or result.get("error") or "前置条件未满足，修复未启动。")
+        he.append_event(
+            change_dir,
+            phase="run",
+            type_="phase.prepare.end",
+            status="BLOCKED",
+            code=code,
+            message=message,
+            run_id=effective_run_id,
+            attempt=effective_attempt,
+            trigger="review-fixback",
+            from_phase="review",
+            orchestration_active_ms=duration,
+            wall_clock_ms=duration,
+            executor_tool=executor_tool,
+            executor_agent=executor_agent,
+            executor_model=executor_model,
+        )
+        return {
+            "ok": False,
+            "code": code,
+            "message": message,
+            "recoveryAction": "处理提示的前置条件后重新执行 /harness-run --fixback",
+            "preparationDurationMs": duration,
+            "contextCancellation": cancellation,
+        }
+
+    prepared = prepare_fn(**callback_args)
+    if not prepared.get("ok"):
+        return blocked(prepared, cancel=False)
+    begun = begin_fn(**callback_args)
+    if not begun.get("ok"):
+        return blocked(begun, cancel=True)
+    gate = gate_fn(**callback_args)
+    if not gate.get("ok"):
+        return blocked(gate, cancel=True)
+    batch = open_review_batch(
+        change_dir,
+        plan=plan,
+        batch_id=batch_id,
+        product_identity=product_identity,
+        run_id=effective_run_id,
+        attempt=effective_attempt,
+    )
+    duration = max(0, round((time.monotonic() - started_at) * 1000))
+    he.append_event(
+        change_dir,
+        phase="run",
+        type_="phase.prepare.end",
+        status="STARTED",
+        message="前置条件已满足，修复编码已启动。",
+        run_id=effective_run_id,
+        attempt=effective_attempt,
+        trigger="review-fixback",
+        from_phase="review",
+        orchestration_active_ms=duration,
+        wall_clock_ms=duration,
+        executor_tool=executor_tool,
+        executor_agent=executor_agent,
+        executor_model=executor_model,
+    )
+    return {
+        "ok": True,
+        "code": "FIXBACK_STARTED",
+        "message": f"修复编码已启动，共 {len(batch.get('issues') or [])} 个代码修复项。",
+        "runId": effective_run_id,
+        "attempt": effective_attempt,
+        "preparationDurationMs": duration,
+        "context": prepared,
+        "transition": begun,
+        "gate": gate,
+        "batch": batch,
+    }
 
 
 def resume_batch(
@@ -823,8 +1297,10 @@ def _emit(value: dict[str, Any]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_fixback.py")
+    parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
     resume = sub.add_parser("resume")
+    resume.add_argument("--json", action="store_true")
     resume.add_argument("--change-dir", required=True)
     resume.add_argument("--batch-id")
     resume.add_argument("--product-identity")
@@ -864,6 +1340,31 @@ def build_parser() -> argparse.ArgumentParser:
     register = sub.add_parser("register-evidence")
     register.add_argument("--change-dir", required=True)
     register.add_argument("--evidence", required=True)
+    review_plan = sub.add_parser("review-plan")
+    review_plan.add_argument("--change-dir", required=True)
+    review_plan.add_argument("--json", action="store_true")
+    review_start = sub.add_parser("start-review")
+    review_start.add_argument("--change-dir", required=True)
+    review_start.add_argument("--batch-id", required=True)
+    review_start.add_argument("--product-identity", required=True)
+    review_start.add_argument("--run-id", required=True)
+    review_start.add_argument("--attempt", type=int, required=True)
+    review_start.add_argument("--json", action="store_true")
+    launch_review = sub.add_parser("launch-review")
+    launch_review.add_argument("--project", required=True)
+    launch_review.add_argument("--change", required=True)
+    launch_review.add_argument("--change-dir", required=True)
+    launch_review.add_argument("--executor", required=True)
+    launch_review.add_argument("--skills-root", required=True)
+    launch_review.add_argument("--product-identity", required=True)
+    launch_review.add_argument("--run-id")
+    launch_review.add_argument("--attempt", type=int, default=2)
+    launch_review.add_argument("--batch-id")
+    launch_review.add_argument("--task", type=int)
+    launch_review.add_argument("--executor-tool")
+    launch_review.add_argument("--executor-agent")
+    launch_review.add_argument("--executor-model")
+    launch_review.add_argument("--json", action="store_true")
     return parser
 
 
@@ -871,7 +1372,34 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     change_dir = Path(args.change_dir)
     try:
-        if args.command == "resume":
+        if args.command == "review-plan":
+            value = review_fixback_plan(change_dir)
+        elif args.command == "start-review":
+            value = open_review_batch(
+                change_dir,
+                plan=review_fixback_plan(change_dir),
+                batch_id=args.batch_id,
+                product_identity=args.product_identity,
+                run_id=args.run_id,
+                attempt=args.attempt,
+            )
+        elif args.command == "launch-review":
+            value = launch_review_fixback(
+                project=Path(args.project),
+                change=args.change,
+                change_dir=change_dir,
+                executor=args.executor,
+                skills_root=Path(args.skills_root),
+                product_identity=args.product_identity,
+                run_id=args.run_id,
+                attempt=args.attempt,
+                batch_id=args.batch_id,
+                task=args.task,
+                executor_tool=args.executor_tool,
+                executor_agent=args.executor_agent,
+                executor_model=args.executor_model,
+            )
+        elif args.command == "resume":
             value = resume_batch(
                 change_dir,
                 batch_id=args.batch_id,

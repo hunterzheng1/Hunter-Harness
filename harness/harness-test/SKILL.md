@@ -117,7 +117,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### Phase 1-2：测试执行（默认主会话执行）
 
-**Phase 1 前先检查 verification-ledger**：通过 state layout 解析后的路径调用 `harness_ledger.py can-reuse --project . --profile-input <key> --command <profile 解析出的规范命令>`；可复用时不得重跑。不得手工读取实现源码来猜账本参数。
+**Phase 1 前先检查 verification-ledger**：先执行 `harness_preflight.py check --project . --json`；profile 缺失或因清单、锁文件、源码根、技术栈变化而陈旧时立即执行一次 `detect --project . --json`。随后通过 state layout 解析后的路径调用 `harness_ledger.py can-reuse --project . --profile-input <key> --command <profile 解析出的规范命令>`；可复用时不得重跑。不得手工读取实现源码来猜账本参数。按返回的 `executionNeed` 使用中文：`first-run`=“尚未执行，需要首次运行”，`rerun`=“证据已失效，需要重新运行”，`evidence-incomplete`=“已有记录不完整，需要重新验证”，`reuse`=“现有证据可复用”；禁止把首次执行统一描述成“强制重跑”。
 
 **默认在主会话执行**（不委派 subagent）：
 - 单元测试：可复用则跳过重跑；否则按技术栈执行测试命令
@@ -148,7 +148,9 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### 四、单元测试复用 + 写入 ledger
 
-Phase 1 前用 `harness_ledger.py diff-hash` 和 `can-reuse` 重算真实指纹。验证目标必须使用 profile key 的单一入口：`--project . --profile-input unitTest|unitTestFull --command <规范命令>`；声明 `--profile-input` 后不得同时传入另一套 `--files`。`npx vitest run` 与 `vitest run` 等包装差异由账本规范化，`safe runner` 等说明只能写 `--runner-command` 元数据。可复用则跳过；否则执行同一 profile 命令并只登记一条结果。增量测试记 `unitTest`，模块全量记 `unitTestFull`，API/浏览器分别记录。详见 `checklist.md` 与 ledger protocol。
+Phase 1 前用 `harness_ledger.py diff-hash` 和 `can-reuse` 重算真实指纹。验证目标必须使用 profile key 的单一入口：`--project . --profile-input unitTest|unitTestFull --command <规范命令>`；声明 `--profile-input` 后不得同时传入另一套 `--files`。`record` 与 `can-reuse` 必须消费同一 profile target，由 CLI 推导 scope、coverage、规范命令与输入闭包。`npx vitest run` 与 `vitest run` 等包装差异由账本规范化，`safe runner` 等说明只能写 `--runner-command` 元数据。可复用则跳过；否则执行同一 profile 命令并只登记一条结果。增量测试记 `unitTest`，模块全量记 `unitTestFull`，API/浏览器分别记录。详见 `checklist.md` 与 ledger protocol。
+
+报告必须分开呈现“产品测试”与“工具维护”。`ownership.productPaths` 决定产品结论；`.cursor/.agents/.claude/.codebuddy` 的 Harness 投影、context-index 与安装状态变化只进入“工具维护”，不得单独把产品结果降为 WARN。已知升级使用明确文案“Harness 已从 <旧版本> 更新到 <新版本>”，不得写“无关漂移”。场景统计分别列出：已执行、待手工验收、已豁免、说明性、NOT_APPLICABLE；“未验证”必须只等于仍要求执行但尚未完成的场景数。
 
 ### 五、命令与请求超时治理
 

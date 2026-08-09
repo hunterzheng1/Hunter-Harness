@@ -2,7 +2,9 @@ import datetime as dt
 import importlib.util
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -188,6 +190,232 @@ class HarnessContextTest(unittest.TestCase):
             )
             self.assertFalse(second["ok"])
             self.assertEqual(second["code"], "HANDOFF_REQUIRED")
+
+    def test_review_fixback_can_reselect_unbegun_submit_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="review",
+                executor="cursor",
+            )
+            closed = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+            self.assertTrue(closed["ok"], closed)
+
+            selected = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+
+            self.assertTrue(selected["ok"], selected)
+            self.assertEqual(selected["latestTransition"]["toPhase"], "run")
+            self.assertEqual(
+                selected["latestTransition"]["trigger"], "review-fixback"
+            )
+
+    def test_cancel_prepared_fixback_removes_unstarted_target_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+            prepared = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+            self.assertTrue(prepared["ok"], prepared)
+            self.assertTrue(CONTEXT.begin_transition(
+                project, "change", phase="run", executor="cursor"
+            )["ok"])
+
+            cancelled = CONTEXT.cancel_prepared_context(
+                project, "change", phase="run", executor="cursor"
+            )
+
+            self.assertTrue(cancelled["ok"], cancelled)
+            view = CONTEXT.context_view(project, "change")
+            self.assertIsNone(view["current"])
+            runtime = project / ".harness" / "state" / "changes" / "change" / "runtime"
+            self.assertFalse((runtime / "context-lease.json").exists())
+            self.assertFalse(any(
+                item.get("phase") == "run"
+                for item in view["attemptHistory"]["begins"]
+            ))
+
+    def test_duplicate_fixback_cannot_cancel_the_running_preparation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+            first = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="cursor",
+                trigger="review-fixback",
+                preparation_id="fixback-run-1",
+            )
+            self.assertTrue(first["ok"], first)
+            begun = CONTEXT.begin_transition(
+                project,
+                "change",
+                phase="run",
+                executor="cursor",
+                preparation_id="fixback-run-1",
+            )
+            self.assertTrue(begun["ok"], begun)
+
+            duplicate = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="cursor",
+                trigger="review-fixback",
+                preparation_id="fixback-run-2",
+            )
+            self.assertFalse(duplicate["ok"], duplicate)
+            self.assertEqual(duplicate["code"], "CONTEXT_PREPARATION_ACTIVE")
+            cancellation = CONTEXT.cancel_prepared_context(
+                project,
+                "change",
+                phase="run",
+                executor="cursor",
+                preparation_id="fixback-run-2",
+            )
+            self.assertEqual(cancellation["code"], "PREPARED_CONTEXT_NOT_OWNED")
+
+            view = CONTEXT.context_view(project, "change")
+            self.assertEqual(view["current"]["preparationId"], "fixback-run-1")
+            lease_path = (
+                project
+                / ".harness"
+                / "state"
+                / "changes"
+                / "change"
+                / "runtime"
+                / "context-lease.json"
+            )
+            lease = json.loads(lease_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                lease["preparationId"], "fixback-run-1"
+            )
+            self.assertTrue(any(
+                item.get("preparationId") == "fixback-run-1"
+                for item in view["attemptHistory"]["begins"]
+            ))
+
+    def test_concurrent_fixback_preparations_claim_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project, change="change", phase="review", executor="cursor"
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+            ready = threading.Barrier(2)
+
+            def prepare(preparation_id: str) -> dict:
+                ready.wait(timeout=5)
+                return CONTEXT.prepare_context(
+                    project,
+                    change="change",
+                    phase="run",
+                    executor="cursor",
+                    trigger="review-fixback",
+                    preparation_id=preparation_id,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(
+                    pool.map(prepare, ["fixback-concurrent-a", "fixback-concurrent-b"])
+                )
+
+            self.assertEqual(sum(bool(item["ok"]) for item in results), 1, results)
+            blocked = next(item for item in results if not item["ok"])
+            self.assertEqual(blocked["code"], "CONTEXT_PREPARATION_ACTIVE")
+            winner = next(item for item in results if item["ok"])
+            lease_path = (
+                project
+                / ".harness/state/changes/change/runtime/context-lease.json"
+            )
+            lease = json.loads(lease_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                lease["preparationId"], winner["lease"]["preparationId"]
+            )
+
+    def test_review_fixback_cannot_reselect_after_submit_begin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="review",
+                executor="cursor",
+            )
+            CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="review",
+                to_phase="submit",
+                executor="cursor",
+            )
+            self.assertTrue(
+                CONTEXT.begin_transition(
+                    project,
+                    "change",
+                    phase="submit",
+                    executor="cursor",
+                )["ok"]
+            )
+
+            selected = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="cursor",
+                trigger="review-fixback",
+            )
+
+            self.assertFalse(selected["ok"])
+            self.assertEqual(selected["code"], "FIXBACK_RESELECT_UNSAFE")
 
     def test_close_and_begin_cross_tool_receipt_with_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

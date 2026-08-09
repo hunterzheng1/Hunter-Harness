@@ -148,6 +148,12 @@ describe("Harness .gitignore maintenance", () => {
       pattern: "/.codebuddy/skills/CONTEXT.md",
       status: "tracked"
     });
+    expect(first.trackedMigrationNotice).toMatchObject({
+      shouldDisplay: true,
+      patterns: ["/.codebuddy/skills/CONTEXT.md"]
+    });
+    const repeated = await ensureHarnessGitignore(root);
+    expect(repeated.trackedMigrationNotice?.shouldDisplay).toBe(false);
     expect(await readFile(join(root, ".gitignore"), "utf8"))
       .toContain("/.codebuddy/skills/scripts/harness_events.py");
 

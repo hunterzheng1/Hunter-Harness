@@ -386,6 +386,23 @@ class HarnessGateTests(unittest.TestCase):
             cwd=self.project, capture_output=True, text=True, encoding="utf-8", check=False,
         )
         self.assertEqual(begin.returncode, 0, begin.stderr)
+        begin_events = [
+            json.loads(line)
+            for line in (self.change_dir / "events.ndjson").read_text("utf-8").splitlines()
+        ]
+        review_run_id = next(
+            item["run_id"] for item in begin_events if item["type"] == "phase.start"
+        )
+        review_reports = self.change_dir / "reports" / "review"
+        review_reports.mkdir(parents=True, exist_ok=True)
+        (review_reports / "review-findings.json").write_text(
+            json.dumps({"schemaVersion": 1, "runId": review_run_id, "findings": []}) + "\n",
+            encoding="utf-8",
+        )
+        (review_reports / "fixback-dispositions.json").write_text(
+            json.dumps({"schemaVersion": 1, "runId": review_run_id, "dispositions": []}) + "\n",
+            encoding="utf-8",
+        )
         close = subprocess.run(
             common + ["close", "--phase", "review", "--change", "demo", "--task", "5",
                       "--status", "OK", "--json"],
@@ -445,6 +462,116 @@ class HarnessGateTests(unittest.TestCase):
         result = gate.classify_risk(self.change_dir, "post-run")
         self.assertEqual(result["tier"], "fast")
         self.assertEqual(result["signals"], ["docs-only"])
+
+    def test_post_run_harness_upgrade_is_reported_as_maintenance_only(self) -> None:
+        plans = self.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / "demo-plan.md").write_text("risk: fast\n", encoding="utf-8")
+        context_path = self.change_dir / "meta" / "change-context.json"
+        context_path.parent.mkdir(parents=True, exist_ok=True)
+        context_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "changeId": "demo",
+                    "ownership": {
+                        "productPaths": ["src/"],
+                        "staticEvidencePaths": [".harness/changes/demo/"],
+                        "excludedPaths": [".harness/state/"],
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        generated = self.project / ".cursor" / "skills" / "harness-run" / "SKILL.md"
+        generated.parent.mkdir(parents=True)
+        generated.write_text("bundle 0.2.64\n", encoding="utf-8")
+        (self.project / ".harness" / "context-index.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+
+        result = gate.classify_risk(self.change_dir, "post-run")
+
+        self.assertEqual(result["tier"], "fast")
+        self.assertNotIn("production-code", result["signals"])
+        self.assertEqual(
+            result["workspaceBreakdown"]["harnessMaintenancePaths"],
+            [".cursor/skills/harness-run/SKILL.md", ".harness/context-index.json"],
+        )
+        self.assertEqual(result["workspaceBreakdown"]["productPaths"], [])
+
+    def test_review_outputs_must_be_complete_and_bound_to_the_run(self) -> None:
+        missing = gate.validate_review_outputs_for_close(
+            self.change_dir, "review-run-1"
+        )
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["code"], "REVIEW_OUTPUTS_INCOMPLETE")
+
+        review_dir = self.change_dir / "reports" / "review"
+        review_dir.mkdir(parents=True)
+        (review_dir / "review-findings.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "findings": [
+                        {
+                            "id": "f-one",
+                            "dimension": "correctness",
+                            "severity": "YELLOW",
+                            "path": "src/timer.ts",
+                            "line": 12,
+                            "title": "避免魔法数",
+                            "fixbackAction": "code",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "dispositions": [
+                        {"findingId": "f-one", "disposition": "OPEN"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        valid = gate.validate_review_outputs_for_close(
+            self.change_dir, "review-run-1"
+        )
+        self.assertTrue(valid["ok"], valid)
+
+        findings_path = review_dir / "review-findings.json"
+        findings_without_id = json.loads(findings_path.read_text(encoding="utf-8"))
+        findings_without_id["findings"][0].pop("id")
+        findings_path.write_text(
+            json.dumps(findings_without_id), encoding="utf-8"
+        )
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "dispositions": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        invalid = gate.validate_review_outputs_for_close(
+            self.change_dir, "review-run-1"
+        )
+        self.assertFalse(invalid["ok"], invalid)
+        self.assertEqual(invalid["code"], "REVIEW_OUTPUTS_INVALID")
+        self.assertTrue(
+            any("id" in problem for problem in invalid["problems"]), invalid
+        )
 
     def test_risk_classification_uses_change_worktree_root(self) -> None:
         worktree = self.project / "feature-worktree"

@@ -36,6 +36,7 @@ import harness_events_sync as hes  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_plan_finalize as hpf  # noqa: E402
+import harness_review as hr  # noqa: E402
 import harness_workflow_policy as hwp  # noqa: E402
 import harness_test_guard as htg  # noqa: E402
 
@@ -1319,11 +1320,62 @@ def classify_risk(
         changed: list[str] = []
         for line in proc.stdout.splitlines():
             raw = line[3:].strip().strip('"').replace("\\", "/")
-            if not raw or raw.startswith(".harness/"):
+            if not raw:
                 continue
+            if " -> " in raw:
+                raw = raw.rsplit(" -> ", 1)[-1].strip().strip('"')
             changed.append(raw)
-        capabilities = sorted(set(capabilities) | set(_diff_capabilities(changed)))
-        lowered = "\n".join(changed).lower()
+        try:
+            contract = hp.load_change_contract(change_dir)
+        except (OSError, ValueError, json.JSONDecodeError):
+            contract = {}
+        ownership = contract.get("ownership") if isinstance(contract, dict) else None
+        modern_scope = isinstance(ownership, dict) and bool(
+            ownership.get("productPaths") or ownership.get("staticEvidencePaths")
+        )
+        product_paths: list[str] = []
+        static_paths: list[str] = []
+        excluded_paths: list[str] = []
+        maintenance_paths: list[str] = []
+        foreign_paths: list[str] = []
+
+        def is_harness_maintenance(path: str) -> bool:
+            normalized = path.replace("\\", "/")
+            return normalized.startswith(
+                (
+                    ".cursor/skills/",
+                    ".claude/skills/",
+                    ".agents/skills/",
+                    ".codebuddy/skills/",
+                )
+            ) or normalized in {
+                ".harness/context-index.json",
+                ".harness/config/build-profile.json",
+            }
+
+        for path in changed:
+            if modern_scope:
+                category = hl._classify_ownership_path(
+                    path, change_dir.name, ownership
+                )
+                if category == "owned":
+                    product_paths.append(path)
+                elif category == "staticEvidence":
+                    static_paths.append(path)
+                elif category == "excludedRuntime":
+                    excluded_paths.append(path)
+                elif is_harness_maintenance(path):
+                    maintenance_paths.append(path)
+                else:
+                    foreign_paths.append(path)
+            elif path.startswith(".harness/") or is_harness_maintenance(path):
+                maintenance_paths.append(path)
+            else:
+                product_paths.append(path)
+        capabilities = sorted(
+            set(capabilities) | set(_diff_capabilities(product_paths))
+        )
+        lowered = "\n".join(product_paths).lower()
         full_markers = {
             "auth": ("auth", "token", "credential", "permission"),
             "security": ("security", "secret", "crypto"),
@@ -1338,14 +1390,14 @@ def classify_risk(
                 signals.append(signal)
         if signals:
             observed = "full"
-        elif changed and all(
+        elif product_paths and all(
             path.lower().endswith((".md", ".txt", ".rst"))
             or path.lower().startswith("docs/")
-            for path in changed
+            for path in product_paths
         ):
             observed = "fast"
             signals.append("docs-only")
-        elif changed:
+        elif product_paths:
             observed = "standard"
             signals.append("production-code")
         else:
@@ -1373,6 +1425,14 @@ def classify_risk(
         "conditionalStages": list(tier_policy["conditionalStages"]),
         "stageDecisions": _stage_decisions_for_tier(workflow, tier, unique_signals),
     }
+    if stage == "post-run":
+        payload["workspaceBreakdown"] = {
+            "productPaths": sorted(set(product_paths)),
+            "staticEvidencePaths": sorted(set(static_paths)),
+            "excludedRuntimePaths": sorted(set(excluded_paths)),
+            "harnessMaintenancePaths": sorted(set(maintenance_paths)),
+            "foreignPaths": sorted(set(foreign_paths)),
+        }
     if stage == "post-run":
         _write_json(change_dir / "meta" / "risk-classification.json", payload)
     result = _apply_required_gate_contract(payload, workflow, capabilities)
@@ -2158,6 +2218,72 @@ def validate_plan_handoff(change_dir: Path) -> dict[str, Any]:
     return hpf.verify_plan(change_dir)
 
 
+def validate_review_outputs_for_close(
+    change_dir: Path,
+    run_id: str,
+) -> dict[str, Any]:
+    """Require complete, run-bound structured Review sidecars before close."""
+
+    findings_path = hr.findings_path(change_dir)
+    dispositions_path = hr.dispositions_path(change_dir)
+    missing = [
+        str(path)
+        for path in (findings_path, dispositions_path)
+        if not path.is_file()
+    ]
+    if missing:
+        return {
+            "ok": False,
+            "code": "REVIEW_OUTPUTS_INCOMPLETE",
+            "message": "评审的结构化发现或处置记录缺失，尚不能结束评审阶段。",
+            "missing": missing,
+            "recoveryAction": "补写 review-findings.json 与 fixback-dispositions.json 后重试关门",
+        }
+    try:
+        findings = json.loads(findings_path.read_text(encoding="utf-8-sig"))
+        dispositions = json.loads(
+            dispositions_path.read_text(encoding="utf-8-sig")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "REVIEW_OUTPUTS_INVALID",
+            "message": f"评审结构化记录无法读取：{exc}",
+        }
+    finding_problems = hr.validate_findings(findings, require_ids=True)
+    known_ids = {
+        str(item.get("id"))
+        for item in findings.get("findings", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    disposition_problems = hr.validate_dispositions(dispositions, known_ids)
+    disposition_ids = {
+        str(item.get("findingId"))
+        for item in dispositions.get("dispositions", [])
+        if isinstance(item, dict) and item.get("findingId")
+    }
+    problems = [*finding_problems, *disposition_problems]
+    if findings.get("runId") != run_id or dispositions.get("runId") != run_id:
+        problems.append("review sidecars must match the active review runId")
+    missing_dispositions = sorted(known_ids - disposition_ids)
+    if missing_dispositions:
+        problems.append(
+            "findings without dispositions: " + ",".join(missing_dispositions)
+        )
+    if problems:
+        return {
+            "ok": False,
+            "code": "REVIEW_OUTPUTS_INVALID",
+            "message": "评审结构化记录不完整或与当前轮次不一致。",
+            "problems": problems,
+        }
+    return {
+        "ok": True,
+        "code": "REVIEW_OUTPUTS_READY",
+        "findingCount": len(known_ids),
+    }
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     project = hc.resolve_main_project_root()
@@ -2737,6 +2863,35 @@ def cmd_close(args: argparse.Namespace) -> int:
             as_json=as_json,
             extra={k: v for k, v in ledger_result.items() if k not in {"ok", "message", "code"}},
         )
+
+    if args.phase == "review":
+        review_outputs = validate_review_outputs_for_close(change_dir, run_id)
+        if not review_outputs.get("ok"):
+            persist_close_failure(
+                change_dir,
+                args.phase,
+                run_id,
+                capsule,
+                status="REVIEW_OUTPUTS_INVALID",
+                error=review_outputs,
+            )
+            record_gate_blocked(
+                change_dir,
+                phase=args.phase,
+                code=str(review_outputs.get("code") or "REVIEW_OUTPUTS_INVALID"),
+                message=str(review_outputs.get("message") or "评审记录不完整。"),
+                run_id=run_id,
+            )
+            return emit_error(
+                str(review_outputs.get("code") or "REVIEW_OUTPUTS_INVALID"),
+                str(review_outputs.get("message") or "评审记录不完整。"),
+                as_json=as_json,
+                extra={
+                    key: value
+                    for key, value in review_outputs.items()
+                    if key not in {"ok", "code", "message"}
+                },
+            )
 
     # C9: scenario coverage check — all P0 scenarios must have a ledger entry.
     if args.phase in {"run", "test"}:

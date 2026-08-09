@@ -808,6 +808,50 @@ def expand_profile_input_files(
     return sorted(seen), None
 
 
+def ensure_profile_input_target(
+    project: Path,
+    profile_input: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Refresh a missing/stale detected profile before recording evidence."""
+
+    project_root = Path(project).resolve()
+    profile = harness_profile.load_profile(project_root)
+    inputs = profile.get("verificationInputs") if isinstance(profile, dict) else None
+    graph = profile.get("verificationGraph") if isinstance(profile, dict) else None
+    targets = graph.get("targets") if isinstance(graph, dict) else None
+    if (
+        isinstance(inputs, dict)
+        and profile_input in inputs
+        and isinstance(targets, dict)
+        and isinstance(targets.get(profile_input), dict)
+    ):
+        return profile, None
+
+    # An unreadable profile needs an explicit repair; silently replacing it can
+    # discard user-owned overrides.
+    common = harness_paths.common_root(project_root)
+    for root in dict.fromkeys((common, project_root)):
+        candidate = root / ".harness" / "config" / "build-profile.json"
+        if not candidate.is_file():
+            continue
+        try:
+            json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return None, f"build-profile.json unreadable: {exc}"
+
+    detected = harness_profile.detect(project_root)
+    if not detected.get("ok"):
+        return None, str(
+            detected.get("message")
+            or detected.get("code")
+            or "build profile detection failed"
+        )
+    refreshed = harness_profile.load_profile(project_root)
+    if not isinstance(refreshed, dict):
+        return None, "build-profile.json missing after detection"
+    return refreshed, None
+
+
 def _state_dir(change_dir: Path) -> Path:
     return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
 
@@ -1728,6 +1772,7 @@ def decide_can_reuse(
             "reuse": False,
             "reason": "insufficient-evidence",
             "code": "LEDGER_MISSING",
+            "executionNeed": "first-run",
             "verification": verification,
             "detail": "ledger missing",
         }
@@ -1787,6 +1832,7 @@ def decide_can_reuse(
             "reuse": False,
             "reason": "insufficient-evidence",
             "code": "VALIDATIONS_MISSING",
+            "executionNeed": "first-run",
             "verification": verification,
             "detail": "validations missing",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -1800,6 +1846,7 @@ def decide_can_reuse(
             "reuse": False,
             "reason": "insufficient-evidence",
             "code": "VALIDATION_MISSING",
+            "executionNeed": "first-run",
             "verification": verification,
             "detail": f"validation '{verification}' missing",
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -1821,6 +1868,7 @@ def decide_can_reuse(
             "reuse": False,
             "reason": "rerun",
             "code": "EVIDENCE_INVALIDATED",
+            "executionNeed": "rerun",
             "verification": verification,
             "detail": "recorded target was invalidated by workflow fixback",
             "invalidation": entry.get("invalidation"),
@@ -1868,6 +1916,7 @@ def decide_can_reuse(
             "reuse": False,
             "reason": "insufficient-evidence",
             "code": "MISSING_V2_FIELDS" if v2_missing else "MISSING_FIELDS",
+            "executionNeed": "evidence-incomplete",
             "verification": verification,
             "detail": "missing or invalid: " + ", ".join(all_missing),
             "ledger_path": str(ledger_path) if ledger_path else None,
@@ -2017,6 +2066,7 @@ def decide_can_reuse(
         "reuse": True,
         "reason": "reuse",
         "code": "REUSED",
+        "executionNeed": "reuse",
         "invalidationCode": None,
         "verification": verification,
         "ledger_path": str(ledger_path) if ledger_path else None,
@@ -2171,7 +2221,6 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
         )
     except (OSError, ValueError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
-    explicit_files = list(files)
     target = resolve_verification_target(verification, project_root)
     if target is None:
         return emit_error(
@@ -2180,6 +2229,7 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             "verificationGraph.targets",
             as_json=as_json,
         )
+    explicit_files = list(files)
     profile_input = getattr(args, "profile_input", None)
     project_raw = getattr(args, "project", None)
     if profile_input:
@@ -2297,6 +2347,20 @@ def cmd_record(args: argparse.Namespace) -> int:
     except (OSError, ValueError) as exc:
         return emit_error(f"record failed: {exc}", as_json=as_json)
     explicit_files = list(files)
+    profile_input = getattr(args, "profile_input", None)
+    project_raw = getattr(args, "project", None)
+    if profile_input:
+        if not project_raw:
+            return emit_error("--profile-input requires --project", as_json=as_json)
+        _profile, profile_error = ensure_profile_input_target(
+            project_root, profile_input
+        )
+        if profile_error:
+            return emit_error(
+                f"record failed: {profile_error}",
+                as_json=as_json,
+                error_code="BUILD_PROFILE_REFRESH_FAILED",
+            )
     target = resolve_verification_target(verification, project_root)
     if target is None:
         return emit_error(
@@ -2305,11 +2369,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             "verificationGraph.targets",
             as_json=as_json,
         )
-    profile_input = getattr(args, "profile_input", None)
-    project_raw = getattr(args, "project", None)
     if profile_input:
-        if not project_raw:
-            return emit_error("--profile-input requires --project", as_json=as_json)
         resolved_files, err = expand_profile_input_files(project_root, profile_input)
         if err:
             return emit_error(f"record failed: {err}", as_json=as_json)
@@ -2455,8 +2515,21 @@ def cmd_record(args: argparse.Namespace) -> int:
                 )
             except ValueError as exc:
                 return emit_error(str(exc), as_json=as_json)
-        if args.scope is not None and str(args.scope).strip():
-            entry["scope"] = str(args.scope).strip()
+        effective_scope = (
+            str(args.scope).strip()
+            if args.scope is not None and str(args.scope).strip()
+            else (
+                str(
+                    target.get("coverageLevel")
+                    or target.get("requiredCoverage")
+                    or ""
+                ).strip()
+                if profile_input
+                else ""
+            )
+        )
+        if effective_scope:
+            entry["scope"] = effective_scope
         # No default scope: recording an incremental run as broad "module" scope
         # would let can-reuse wrongly approve untested classes (D13 guardrail).
         # Missing scope → can-reuse treats unitTest as insufficient-evidence.
@@ -2470,7 +2543,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         )
         coverage = getattr(args, "coverage", None)
         if not (_nonempty_str(coverage) and str(coverage).strip() in COVERAGE_RANK):
-            coverage = derive_coverage(verification, args.scope)
+            coverage = derive_coverage(verification, effective_scope or None)
         entry["coverage"] = coverage
         for field, attr in (
             ("toolchainHash", "toolchain_hash"),

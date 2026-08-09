@@ -37,6 +37,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 SEVERITIES = {"RED", "YELLOW", "OK"}
+FIXBACK_ACTIONS = {"code", "manual", "workflow"}
 DISPOSITIONS = {
     "OPEN",
     "FIXED",
@@ -48,7 +49,14 @@ DISPOSITIONS = {
 CURRENT_RISK_DISPOSITIONS = {"OPEN", "ACCEPTED_RISK", "DEFERRED", "UNKNOWN"}
 FINDINGS_REL = Path("reports") / "review" / "review-findings.json"
 DISPOSITIONS_REL = Path("reports") / "review" / "fixback-dispositions.json"
-_REQUIRED_FINDING_FIELDS = ("dimension", "severity", "path", "line", "title")
+_REQUIRED_FINDING_FIELDS = (
+    "dimension",
+    "severity",
+    "path",
+    "line",
+    "title",
+    "fixbackAction",
+)
 
 
 def _write_json_atomic(path: Path, data: Any) -> None:
@@ -95,7 +103,7 @@ def stable_finding_id(
     return "f-" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
 
 
-def validate_findings(doc: Any) -> list[str]:
+def validate_findings(doc: Any, *, require_ids: bool = False) -> list[str]:
     problems: list[str] = []
     if not isinstance(doc, dict):
         return ["findings document must be an object"]
@@ -105,10 +113,19 @@ def validate_findings(doc: Any) -> list[str]:
     if not isinstance(findings, list):
         problems.append("findings must be a list")
         return problems
+    seen_ids: set[str] = set()
     for index, finding in enumerate(findings):
         if not isinstance(finding, dict):
             problems.append(f"findings[{index}] must be an object")
             continue
+        if require_ids:
+            finding_id = finding.get("id")
+            if not isinstance(finding_id, str) or not finding_id.strip():
+                problems.append(f"findings[{index}].id is required")
+            elif finding_id in seen_ids:
+                problems.append(f"findings[{index}].id must be unique")
+            else:
+                seen_ids.add(finding_id)
         for field in _REQUIRED_FINDING_FIELDS:
             if field not in finding:
                 problems.append(f"findings[{index}].{field} is required")
@@ -120,6 +137,12 @@ def validate_findings(doc: Any) -> list[str]:
         line = finding.get("line")
         if line is not None and (not isinstance(line, int) or line < 0):
             problems.append(f"findings[{index}].line must be a non-negative int")
+        action = finding.get("fixbackAction")
+        if action is not None and action not in FIXBACK_ACTIONS:
+            problems.append(
+                f"findings[{index}].fixbackAction must be one of "
+                f"{sorted(FIXBACK_ACTIONS)}"
+            )
     return problems
 
 

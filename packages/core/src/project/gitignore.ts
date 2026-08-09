@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -61,6 +62,7 @@ const HARNESS_GITIGNORE_ENTRIES = [
 ] as const;
 
 const PROVENANCE_RELATIVE = ".harness/state/local/gitignore-provenance.json";
+const TRACKED_NOTICE_RELATIVE = ".harness/state/local/tracked-generated-migration-notice.json";
 
 interface GitignoreProvenance {
   schema_version: 1;
@@ -79,6 +81,11 @@ export interface EnsureHarnessGitignoreResult {
   ignoredRootDocuments: string[];
   skippedBecauseOfNegation: boolean;
   patternResults: GitignorePatternResult[];
+  trackedMigrationNotice?: {
+    shouldDisplay: boolean;
+    patterns: string[];
+    message: string;
+  };
 }
 
 export interface GitignorePatternResult {
@@ -127,6 +134,40 @@ async function writeProvenance(
     JSON.stringify({ schema_version: 1, generated_root_documents: merged }, null, 2) + "\n",
     "utf8"
   );
+}
+
+async function trackedMigrationNotice(
+  projectRoot: string,
+  patterns: readonly string[],
+  dryRun: boolean
+): Promise<EnsureHarnessGitignoreResult["trackedMigrationNotice"]> {
+  if (patterns.length === 0) return undefined;
+  const sorted = [...new Set(patterns)].sort();
+  const fingerprint = createHash("sha256").update(sorted.join("\n")).digest("hex");
+  let previous = "";
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(projectRoot, TRACKED_NOTICE_RELATIVE), "utf8")
+    ) as { fingerprint?: unknown };
+    previous = typeof parsed.fingerprint === "string" ? parsed.fingerprint : "";
+  } catch (error) {
+    if (!isMissing(error) && !(error instanceof SyntaxError)) throw error;
+  }
+  const shouldDisplay = previous !== fingerprint;
+  if (shouldDisplay && !dryRun) {
+    const target = join(projectRoot, TRACKED_NOTICE_RELATIVE);
+    await mkdir(join(projectRoot, ".harness", "state", "local"), { recursive: true });
+    await writeFile(target, JSON.stringify({
+      schema_version: 1,
+      fingerprint,
+      patterns: sorted
+    }, null, 2) + "\n", "utf8");
+  }
+  return {
+    shouldDisplay,
+    patterns: sorted,
+    message: "这些 Harness 生成文件已被 Git 跟踪，.gitignore 无法自动取消跟踪。若它们不属于源码，请先确认范围，再只从 Git 索引中移除；本地文件会保留。"
+  };
 }
 
 async function isTracked(projectRoot: string, relativePath: string): Promise<boolean> {
@@ -387,11 +428,20 @@ export async function ensureHarnessGitignore(
       status: generatedBlock.patterns.has(entry.pattern) ? "already-present" as const : "planned" as const
     })));
   }
+  const trackedPatterns = patternResults
+    .filter((item) => item.status === "tracked")
+    .map((item) => item.pattern);
+  const migrationNotice = await trackedMigrationNotice(
+    projectRoot,
+    trackedPatterns,
+    options.dryRun === true
+  );
   return {
     changed,
     path: ".gitignore",
     ignoredRootDocuments,
     skippedBecauseOfNegation: patternResults.some((item) => item.status === "preserved-by-negation"),
-    patternResults
+    patternResults,
+    ...(migrationNotice === undefined ? {} : { trackedMigrationNotice: migrationNotice })
   };
 }

@@ -93,6 +93,7 @@ class ReviewFixture(unittest.TestCase):
                     "line": 42,
                     "title": "God object accumulates responsibilities",
                     "detail": "split required",
+                    "fixbackAction": "code",
                 },
                 {
                     "dimension": "security",
@@ -101,6 +102,7 @@ class ReviewFixture(unittest.TestCase):
                     "line": 7,
                     "title": "Token logged in plaintext",
                     "detail": "redact",
+                    "fixbackAction": "code",
                 },
                 {
                     "dimension": "tests",
@@ -109,6 +111,7 @@ class ReviewFixture(unittest.TestCase):
                     "line": 1,
                     "title": "Missing edge-case coverage",
                     "detail": "add cases",
+                    "fixbackAction": "code",
                 },
             ],
         }
@@ -161,6 +164,14 @@ class FindingsWriteTests(ReviewFixture):
     def test_validate_findings_requires_fields(self) -> None:
         problems = review.validate_findings({"findings": [{"title": "x"}]})
         self.assertTrue(problems)
+
+    def test_validate_findings_requires_a_supported_fixback_action(self) -> None:
+        doc = self.sample_findings()
+        del doc["findings"][0]["fixbackAction"]
+        doc["findings"][1]["fixbackAction"] = "advice"
+        problems = review.validate_findings(doc)
+        self.assertTrue(any("fixbackAction is required" in item for item in problems), problems)
+        self.assertTrue(any("fixbackAction must be one of" in item for item in problems), problems)
 
     def test_write_findings_refuses_invalid_doc(self) -> None:
         doc = self.sample_findings()

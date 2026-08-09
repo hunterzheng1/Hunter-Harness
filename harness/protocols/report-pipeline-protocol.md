@@ -74,6 +74,8 @@ python <skills-root>/scripts/harness_events.py append --change-dir ".harness/cha
 |---|---|---|
 | `phase.start` | phase, timestamp | 阶段开始 |
 | `phase.end` | phase, timestamp, status | 阶段结束并记录 `OK/WARN/FAIL/BLOCKED`；计算当前 attempt 耗时 |
+| `phase.prepare.start` | phase, timestamp, attempt, trigger | 开始检查再次执行阶段的前置条件；不计入产品阶段 attempt |
+| `phase.prepare.end` | phase, timestamp, attempt, status | 记录准备已启动或受阻及单独耗时；`BLOCKED` 不改变旧产品轮次 |
 | `command` | command, exit_code, duration_ms | 命令事实 |
 | `verification` | name, status, command | 验证事实 |
 | `artifact` | path, kind | 报告、包、manifest 等产物 |
