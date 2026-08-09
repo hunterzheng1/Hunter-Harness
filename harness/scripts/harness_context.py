@@ -23,6 +23,8 @@ PHASE_GRAPH = {
     "submit": (),
 }
 
+DISPLAY_TITLE_MAX_LENGTH = 80
+
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
@@ -33,6 +35,41 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"JSON object required: {path}")
     return data
+
+
+def _normalize_display_title(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("display title must be text")
+    title = value.strip()
+    if not title:
+        raise ValueError("display title must not be empty")
+    if len(title) > DISPLAY_TITLE_MAX_LENGTH:
+        raise ValueError(
+            f"display title exceeds {DISPLAY_TITLE_MAX_LENGTH} characters"
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in title):
+        raise ValueError("display title contains control characters")
+    return title
+
+
+def _ensure_display_title(contract_root: Path, value: Any) -> str | None:
+    path = contract_root / "meta" / "change-title.json"
+    if path.is_file():
+        payload = _read_json(path)
+        return _normalize_display_title(payload.get("displayTitle"))
+    title = _normalize_display_title(value)
+    if title is None:
+        return None
+    _write_json_atomic(
+        path,
+        {
+            "schemaVersion": 1,
+            "displayTitle": title,
+        },
+    )
+    return title
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -243,6 +280,7 @@ def prepare_context(
     phase: str,
     executor: str,
     change: str | None = None,
+    display_title: str | None = None,
     ttl_seconds: int = 3600,
 ) -> dict[str, Any]:
     project = Path(project).resolve()
@@ -265,6 +303,16 @@ def prepare_context(
         contract_root, contract, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "code": str(exc).split(":", 1)[0], "error": str(exc)}
+    try:
+        resolved_display_title = _ensure_display_title(
+            contract_root, display_title
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {
+            "ok": False,
+            "code": "DISPLAY_TITLE_INVALID",
+            "error": str(exc),
+        }
     lifecycle = contract.get("lifecycle")
     if (
         isinstance(lifecycle, dict)
@@ -343,6 +391,7 @@ def prepare_context(
             "executionRoot": str(execution_root),
             "preparedAt": now.isoformat(),
             "receiptHash": latest.get("receiptHash") if latest else None,
+            "displayTitle": resolved_display_title,
         },
     )
     next_phases = (
@@ -363,6 +412,7 @@ def prepare_context(
         "latestTransition": latest,
         "lease": lease,
         "recovery": recovery,
+        "displayTitle": resolved_display_title,
     }
 
 
@@ -657,6 +707,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--change")
     prepare.add_argument("--phase", required=True)
     prepare.add_argument("--executor", required=True)
+    prepare.add_argument("--title")
     prepare.add_argument("--ttl-seconds", type=int, default=3600)
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
@@ -688,6 +739,7 @@ def main(argv: list[str] | None = None) -> int:
             phase=args.phase,
             executor=args.executor,
             change=args.change,
+            display_title=args.title,
             ttl_seconds=args.ttl_seconds,
         )
     elif args.command == "close":

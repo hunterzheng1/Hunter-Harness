@@ -40,6 +40,7 @@ WHITELIST = {
     "phase",
     "status",
     "note",
+    "message",
     "attempt",
     "name",
     "code",
@@ -49,11 +50,25 @@ WHITELIST = {
     "exit_code",
     "duration_ms",
     "schemaVersion",
+    "summary",
 }
 
 MAX_BATCH_SIZE = 100
 ACCEPTED_STATUSES = {"accepted", "duplicate_accepted"}
 QUARANTINE_STATUSES = {"id_conflict", "rejected", "rejected_schema"}
+DISPLAY_TITLE_MAX_LENGTH = 200
+EVENT_SUMMARY_MAX_LENGTH = 500
+
+PHASE_LABELS = {
+    "plan": "计划",
+    "run": "编码",
+    "test": "测试",
+    "review": "评审",
+    "package": "打包",
+    "apidoc": "接口文档",
+    "submit": "提交",
+    "archive": "归档",
+}
 
 
 def _yaml_scalar(text: str, key: str) -> str | None:
@@ -87,8 +102,139 @@ def load_endpoint(project: Path) -> dict[str, str] | None:
     }
 
 
+def _summary_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = re.sub(r"\s+", " ", value).strip()
+    text = "".join(character for character in text if ord(character) >= 32 and ord(character) != 127)
+    return text[:EVENT_SUMMARY_MAX_LENGTH].rstrip()
+
+
+def build_event_summary(event: dict[str, Any]) -> str:
+    explicit = _summary_text(event.get("summary"))
+    if explicit:
+        return explicit
+
+    event_type = _summary_text(event.get("type"))
+    phase = _summary_text(event.get("phase"))
+    phase_label = PHASE_LABELS.get(phase, phase or "当前")
+    note = _summary_text(event.get("note"))
+    message = _summary_text(event.get("message"))
+    decision = _summary_text(event.get("decision"))
+    reason = _summary_text(event.get("reason"))
+    name = _summary_text(event.get("name"))
+    code = _summary_text(event.get("code"))
+    status = _summary_text(event.get("status"))
+
+    if event_type == "decision" and decision:
+        return _summary_text(f"{decision}；原因：{reason}" if reason else decision)
+    if event_type == "issue":
+        detail = message or note or code
+        if detail and reason and reason != detail:
+            return _summary_text(f"{detail}；原因：{reason}")
+        return detail or "发现一项需要处理的问题。"
+    if event_type == "issue.resolve":
+        detail = message or note or code
+        return _summary_text(f"问题已解决：{detail}" if detail else "已解决此前记录的问题。")
+    if event_type == "phase.start":
+        return _summary_text(
+            f"开始执行{phase_label}阶段：{note}" if note else f"开始执行{phase_label}阶段。"
+        )
+    if event_type in {"phase.end", "phase.auto_sealed"}:
+        detail = note or status
+        return _summary_text(
+            f"{phase_label}阶段已结束：{detail}" if detail else f"{phase_label}阶段已结束。"
+        )
+    if event_type == "command":
+        detail = name or note
+        return _summary_text(f"执行步骤：{detail}" if detail else "执行了一项工作步骤。")
+    if event_type == "verification":
+        detail = name or note or status
+        return _summary_text(f"完成验证：{detail}" if detail else "完成了一项结果验证。")
+    if event_type == "artifact":
+        detail = name or note
+        return _summary_text(f"生成或更新产物：{detail}" if detail else "生成或更新了一项交付内容。")
+    if event_type == "correction":
+        detail = note or reason or message
+        return _summary_text(f"调整执行方式：{detail}" if detail else "根据当前结果调整了执行方式。")
+    if event_type == "change.rename":
+        return note or message or "更新了变更名称。"
+    if event_type in {"recovery", "phase.recovery", "attempt.recovery"}:
+        return note or reason or message or "恢复了中断的运行状态。"
+    if event_type == "heartbeat":
+        return "客户端保持在线，并同步了最新运行状态。"
+
+    return note or message or name or reason or code or "记录了一项运行事件。"
+
+
 def sanitize(event: dict[str, Any]) -> dict[str, Any]:
-    return {key: event[key] for key in WHITELIST if key in event}
+    payload = {key: event[key] for key in WHITELIST if key in event}
+    payload["summary"] = build_event_summary(event)
+    return payload
+
+
+def _valid_display_title(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    title = value.strip()
+    if (
+        not title
+        or len(title) > DISPLAY_TITLE_MAX_LENGTH
+        or any(ord(character) < 32 or ord(character) == 127 for character in title)
+    ):
+        return None
+    return title
+
+
+def _safe_file_within(change_dir: Path, path: Path) -> Path | None:
+    try:
+        root = change_dir.resolve()
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if path.is_symlink() or not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    return resolved
+
+
+def load_display_title(change_dir: Path, change_key: str) -> str:
+    metadata_path = _safe_file_within(
+        change_dir, change_dir / "meta" / "change-title.json"
+    )
+    if metadata_path is not None:
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            title = _valid_display_title(payload.get("displayTitle"))
+            if title is not None:
+                return title
+
+    # Legacy migration: older Plan runs already wrote a human title into the
+    # approved design H1 but had no structured title metadata.
+    design_path = _safe_file_within(
+        change_dir, change_dir / "spec" / f"{change_key}-design.md"
+    )
+    if design_path is not None:
+        try:
+            with design_path.open("r", encoding="utf-8-sig") as stream:
+                for _ in range(40):
+                    line = stream.readline()
+                    if not line:
+                        break
+                    if not line.startswith("# "):
+                        continue
+                    candidate = re.sub(
+                        r"\s+(?:设计文档|设计方案|设计)$", "", line[2:].strip()
+                    )
+                    title = _valid_display_title(candidate)
+                    if title is not None and title != change_key:
+                        return title
+                    break
+        except OSError:
+            pass
+    return change_key
 
 
 def cursor_path(change_dir: Path) -> Path:
@@ -252,6 +398,7 @@ def sync_change(
     resolved_key = change_key or change_dir.name
     rid = run_id or run_id_for(change_dir)
     project_id = endpoint["project_id"]
+    display_title = load_display_title(change_dir, resolved_key)
 
     # Always heartbeat so the console can separate connection vs run status.
     try:
@@ -264,7 +411,7 @@ def sync_change(
                 "run_id": rid,
                 "change_key": resolved_key,
                 "client_time": client_time,
-                "title": resolved_key,
+                "title": display_title,
             },
         )
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -337,7 +484,7 @@ def sync_change(
                         "protocol_version": "hunter-progress-sync/v1",
                         "run_id": rid,
                         "change_key": resolved_key,
-                        "title": resolved_key,
+                        "title": display_title,
                         "events": batch,
                     },
                 )

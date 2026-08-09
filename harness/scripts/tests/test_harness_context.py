@@ -83,6 +83,52 @@ class HarnessContextTest(unittest.TestCase):
             self.assertEqual(result["nextPhases"], ["plan", "run"])
             self.assertEqual(result["executionRoot"], str(project.resolve()))
 
+    def test_prepare_persists_the_first_plan_display_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change = make_change(project, "pomodoro-timer")
+
+            first = CONTEXT.prepare_context(
+                project,
+                change="pomodoro-timer",
+                phase="plan",
+                executor="codex",
+                display_title="番茄钟计时器",
+            )
+            second = CONTEXT.prepare_context(
+                project,
+                change="pomodoro-timer",
+                phase="plan",
+                executor="codex",
+                display_title="不应覆盖原始标题",
+            )
+
+            self.assertTrue(first["ok"], first)
+            self.assertTrue(second["ok"], second)
+            self.assertEqual(first["displayTitle"], "番茄钟计时器")
+            self.assertEqual(second["displayTitle"], "番茄钟计时器")
+            metadata = json.loads(
+                (change / "meta/change-title.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["displayTitle"], "番茄钟计时器")
+
+            args = CONTEXT.build_parser().parse_args(
+                [
+                    "prepare",
+                    "--project",
+                    str(project),
+                    "--change",
+                    "pomodoro-timer",
+                    "--phase",
+                    "plan",
+                    "--executor",
+                    "codex",
+                    "--title",
+                    "番茄钟计时器",
+                ]
+            )
+            self.assertEqual(args.title, "番茄钟计时器")
+
     def test_prepare_resolves_relative_worktree_path_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)

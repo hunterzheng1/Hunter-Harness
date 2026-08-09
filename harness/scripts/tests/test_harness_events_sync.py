@@ -81,6 +81,70 @@ class HarnessEventsSyncTests(unittest.TestCase):
         self.assertEqual(payload["timestamp"], event["timestamp"])
         self.assertEqual(payload["schema_version"], 3)
 
+    def test_adds_a_readable_bounded_summary_without_raw_output(self) -> None:
+        event = {
+            "id": "evt-decision",
+            "timestamp": "2026-08-08T10:00:00+08:00",
+            "schema_version": 3,
+            "type": "decision",
+            "phase": "plan",
+            "decision": "采用本地缓存",
+            "reason": "减少重复请求",
+            "raw_output": "secret command output",
+        }
+
+        payload = hes.sanitize(event)
+
+        self.assertEqual(payload["summary"], "采用本地缓存；原因：减少重复请求")
+        self.assertNotIn("raw_output", payload)
+
+    def test_adds_a_fallback_summary_for_an_event_without_notes(self) -> None:
+        payload = hes.sanitize({
+            "type": "phase.start",
+            "phase": "plan",
+        })
+
+        self.assertEqual(payload["summary"], "开始执行计划阶段。")
+
+    def test_sends_the_persisted_chinese_display_title(self) -> None:
+        title_path = self.change_dir / "meta" / "change-title.json"
+        title_path.parent.mkdir(parents=True)
+        title_path.write_text(
+            json.dumps({"schemaVersion": 1, "displayTitle": "番茄钟计时器"}),
+            encoding="utf-8",
+        )
+        requests: list[dict] = []
+
+        def post_json(_endpoint, _path: str, body: dict):
+            requests.append(body)
+            return {"ok": True}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(
+                self.project, self.change_dir, heartbeat_only=True
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(requests[0]["title"], "番茄钟计时器")
+
+    def test_uses_the_design_heading_for_a_legacy_change_title(self) -> None:
+        design = self.change_dir / "spec" / "demo-design.md"
+        design.parent.mkdir(parents=True)
+        design.write_text("# 番茄钟计时器 设计文档\n", encoding="utf-8")
+        requests: list[dict] = []
+
+        def post_json(_endpoint, _path: str, body: dict):
+            requests.append(body)
+            return {"ok": True}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(
+                self.project, self.change_dir, heartbeat_only=True
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(requests[0]["title"], "番茄钟计时器")
+
     def test_sends_bounded_batches_and_advances_the_cursor(self) -> None:
         self.write_events(501)
         batch_sizes: list[int] = []
