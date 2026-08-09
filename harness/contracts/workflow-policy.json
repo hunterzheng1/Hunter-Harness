@@ -34,7 +34,7 @@
   "riskTiers": {
     "fast": {
       "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency. Policy notes: checkpointRules apply only when meta/implementation-checkpoints.json defines the entry for this change; missing file/entry = disabled (gate must not require --task).",
-      "defaultPhases": ["plan", "run", "submit", "archive"],
+      "defaultPhases": ["plan", "run", "archive"],
       "requiredValidations": ["unitTest"],
       "conditionalStages": ["review", "package", "apidoc"],
       "upgradeTriggers": ["api-change", "security", "migration", "concurrency", "breaking-contract"]

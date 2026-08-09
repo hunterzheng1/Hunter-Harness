@@ -26,11 +26,11 @@ disallowed-tools:
 
 ## Purpose
 
-合并最新代码→最终验证→生成中文 commit→提交/推送；worktree 模式在本地 commit 后**自动接续** `--no-ff` 合并回主分支、push、清理 worktree，完成开发闭环。
+仅在 `plannedPhases` 包含 Submit 时执行 Git 提交/推送交付；没有 Git、没有远端或本次计划省略 Submit 时直接进入下一计划阶段，不得把 Submit 当作归档前提。
 
 ## When to Use
 
-仅当用户显式调用 `/harness-submit`（或 `/harness-merge` 从合并段重入）时执行。用户口头说「提交代码」「commit」「push」「完成开发」而未调用本 skill 时，先确认是否走 Harness 提交阶段，**不得自动触发**。前置：review 和 test 已通过或已明确跳过。
+仅当用户显式调用 `/harness-submit`（或 `/harness-merge` 从合并段重入）且 `plannedPhases` 包含 Submit 时执行。用户口头说「提交代码」「commit」「push」「完成开发」而未调用本 skill 时，先确认。前置阶段只按实际计划检查；Test/Review 被计划省略时不得补跑。
 
 > **主目录模式**（`worktree.json` requested=false）：commit+push 主分支后**停止**，仅提示可执行 `/harness-archive`，不自动归档。**worktree 模式**（requested=true）：worktree 内仅本地 commit，随后本 skill 在同一次调用内接续合并流程（这是同一次提交动作的一部分，不属于跨阶段自动推进）；**push 只在主分支发生一次**；合并完成后同样**停止**，仅提示 `/harness-archive`。
 
@@ -62,14 +62,14 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 
 0. **启动准备** — `harness_context.py prepare --phase submit --executor <tool> [--change <id>] --json` 确定唯一变更与 executionRoot；`harness_context.py begin --phase submit --change <id> --executor <tool> --json` 校验 review→submit receipt；**`harness_gate.py begin --phase submit --change <id>`**；读 ledger，以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 计算 diffHash + post-test 7 类分类（禁止手写 ledger / 手工 phase.end）
 1. **合并最新代码** — 主目录与 worktree 均**不在业务工作区 stash/pull**；远端同步由合并段 integration transaction 在隔离 integration worktree 内完成（见「worktree 合并流程」）；**正常路径禁止 `git stash` / `stash pop`**
-2. **最终验证** — ledger 复用优先；**提交前最终门禁只调 `can-reuse`**（删除与 coverage 冲突的二次全量门禁）：`harness_ledger.py can-reuse --verification unitTestFull --scope module --project . --profile-input unitTestFull --command <resolved commands.unitTestFull.command>`。`--command` **按 profile key resolve**：读 `build-profile.json` 的 `commands.unitTestFull.command`（v2），或 `harness_profile.py resolve --project . --key unitTestFull --json` 取 resolved command，**不复制示例模块名**（文档示例只展示 key）。`--profile-input unitTestFull` 从 `verificationInputs.unitTestFull`（v2 由 `commands.unitTestFull.inputs` 派生）展开依赖闭包，**禁止用仅含 staged 文件的 `--files` 快捷方式**冒充全量闭包。`reuse=true` → 不再执行二次全量测试；仅 `reuse=false` 时执行**同一 resolved verification**（profile `unitTestFull` 命令），成功后用同一文件集、command、`scope=module` 经 **`harness_ledger.py record`** 写回 ledger `unitTestFull` 项。增量 `unitTest` 永远不能冒充 `unitTestFull` 门禁。
+2. **最终验证** — ledger 复用优先；提交前只调用 `can-reuse --project . --profile-input unitTestFull --command <profile 规范命令>`。不得传入另一套 `--files`，不得把 runner 包装说明写进 `command`。`reuse=true` 时禁止重跑；只有真实输入、依赖、工具链或环境身份变化时才执行一次同一 profile 验证，并只登记一条结果。不要读取 ledger/archive 实现源码或临时编写散列脚本排查参数。
    - 无远端 CI 且 gate-policy 未强制 remote provider 时，验证通过/复用后运行 `harness_archive.py certify-local --change-dir ... --project . --json`，从同一 ledger 生成 `local-reproducible` 产品候选收据；该命令不执行测试。
    - gate-policy 要求 `remote-attested` 时不得降级成本地收据，等待远端 attestation。
 3. **.gitignore + 精确暂存** ⚠️ — 检查 `.harness/` 在 `.gitignore`；**禁止 `git add -A`**。若存在 `evidence/test-tracking.json`，先执行 `python <skills-root>/scripts/harness_test_guard.py stage --project . --change-dir ".harness/changes/<change-name>" --json`；失败即硬停止。无 manifest 时不使用 `-f`。manifest 之外的文件按精确业务路径正常暂存，**禁止全局 force-add**。
 4. **提交方式** — 主目录：blocking user confirmation 三选项（commit+push / 仅本地 / 取消）；**worktree：固定仅本地 commit**
 5. **commit-message.txt** ⚠️ — 展示 staged、diff stat、完整中文 message；用户确认
-6. **commit / push** — `git commit -F`；主目录按选项 push（push 前 fetch 检查远端）；**worktree：只 commit，记录 local hash**
-7. **收尾** — **`harness_gate.py close --phase submit --status ...`**；主目录：可选 worktree 清理 + 提示 `/harness-archive`；**worktree：接续下方合并流程**
+6. **commit / push** — `git commit -F`；主目录按选项 push（push 前 fetch 检查远端）；无 upstream 时允许仅本地 commit。commit 后立即重新运行 `harness_archive.py certify-local`：若验证输入未变化，脚本把候选从提交前身份安全重绑定到最终 commit，不得重跑测试或手工复制账本；**worktree：只 commit，记录 local hash**
+7. **收尾** — `harness_gate.py close --phase submit --status ... --to-phase <实际计划后继>`；通常后继为 Archive，但不得显示“等待 merge”或固定写死。主目录停止并提示真实下一阶段；worktree 才接续下方同一 Submit 内的合并流程。
 
 详细步骤见 `checklist.md`。
 

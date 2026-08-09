@@ -384,7 +384,7 @@ class ProductCiGateTests(unittest.TestCase):
         self.assertEqual(gate["code"], "PRODUCT_CANDIDATE_NOT_VERIFIED")
         self.assertIn("subject.environmentHash", gate["message"])
 
-    def test_certify_local_rejects_missing_environment_identity(self) -> None:
+    def test_certify_local_collects_missing_environment_and_toolchain_identity(self) -> None:
         (self.change / "evidence" / "product-candidate-ci.json").unlink()
         ledger_path = self.change / "evidence" / "verification-ledger.json"
         ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
@@ -395,12 +395,90 @@ class ProductCiGateTests(unittest.TestCase):
             "evidence": "tests.log",
             "inputsHash": "sha256:" + "e" * 64,
             "inputsFiles": ["src/app.py"],
-            "toolchainHash": "sha256:" + "a" * 64,
         }
         _write_json(ledger_path, ledger)
 
-        with self.assertRaisesRegex(ValueError, "environmentHash"):
-            ha.certify_local_candidate(self.change, project=self.project)
+        receipt = ha.certify_local_candidate(self.change, project=self.project)
+
+        self.assertRegex(
+            receipt["subject"]["environmentHash"], r"^sha256:[0-9a-f]{64}$"
+        )
+        self.assertEqual(len(receipt["verification"]["toolchainHashes"]), 1)
+
+    def test_certify_local_reads_and_writes_the_split_state_layout(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        state = self.project / ".harness" / "state" / "changes" / self.change.name
+        state.joinpath("evidence").mkdir(parents=True)
+        context_path = self.change / "meta" / "change-context.json"
+        context = {
+            "schemaVersion": 2,
+            "changeId": self.change.name,
+            "stateOwnership": {
+                "contractRoot": f".harness/changes/{self.change.name}",
+                "runtimeRoot": f".harness/state/changes/{self.change.name}",
+            },
+        }
+        _write_json(context_path, context)
+        contract_ledger = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(contract_ledger.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
+        ledger["validations"]["unitTestFull"] = {
+            "status": "OK",
+            "command": "python -m unittest discover",
+            "evidence": {"run": 12, "failures": 0, "errors": 0},
+            "inputsHash": "sha256:" + "e" * 64,
+            "inputsFiles": ["src/app.py"],
+        }
+        _write_json(state / "evidence" / "verification-ledger.json", ledger)
+        contract_ledger.unlink()
+
+        receipt = ha.certify_local_candidate(self.change, project=self.project)
+
+        self.assertEqual(receipt["provider"], "local-harness")
+        self.assertTrue(
+            (state / "evidence" / "product-candidate-verification.json").is_file()
+        )
+        self.assertFalse(
+            (self.change / "evidence" / "product-candidate-verification.json").exists()
+        )
+
+    def test_certify_local_rebinds_a_post_verification_commit_without_rerunning(self) -> None:
+        (self.change / "evidence" / "product-candidate-ci.json").unlink()
+        app = self.project / "src" / "app.py"
+        app.write_text("print('verified working tree')\n", encoding="utf-8")
+        inputs_hash, input_files = ha.hl.compute_inputs_hash(
+            [app], project_root=self.project
+        )
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
+        ledger.pop("productTreeHash", None)
+        ledger["validations"]["unitTestFull"] = {
+            "status": "OK",
+            "command": "python -m unittest discover",
+            "evidence": {"run": 12, "failures": 0, "errors": 0},
+            "inputsHash": inputs_hash,
+            "inputsFiles": input_files,
+        }
+        _write_json(ledger_path, ledger)
+        subprocess.run(
+            ["git", "add", "src/app.py"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "local submit"], cwd=self.project,
+            check=True, capture_output=True,
+        )
+        new_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=self.project, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+
+        receipt = ha.certify_local_candidate(self.change, project=self.project)
+
+        self.assertEqual(receipt["subject"]["productCommit"], new_head)
+        self.assertEqual(receipt["subject"]["reboundFromCommit"], self.product_commit)
+        self.assertTrue(receipt["verification"]["commitReboundWithoutRerun"])
 
     def test_certify_local_rejects_stale_product_tree_identity(self) -> None:
         (self.change / "evidence" / "product-candidate-ci.json").unlink()

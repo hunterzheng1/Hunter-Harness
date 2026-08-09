@@ -215,6 +215,87 @@ class HarnessContextTest(unittest.TestCase):
             self.assertEqual(begun["receipt"]["fromPhase"], "plan")
             self.assertEqual(begun["receipt"]["toPhase"], "run")
 
+    def test_configured_phase_plan_allows_run_to_archive_and_skips_optional_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change = make_change(project, "fast-change")
+            (change / "meta" / "gate-policy.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "tier": "fast",
+                        "source": "change",
+                        "defaultPhases": ["plan", "run", "archive"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            configured = CONTEXT.configure_phase_plan(
+                project,
+                "fast-change",
+                phases=["plan", "run", "archive"],
+                operator="tester",
+                reason="本次只需本地快速迭代",
+            )
+            self.assertTrue(configured["ok"], configured)
+            self.assertEqual(configured["plannedPhases"], ["plan", "run", "archive"])
+            self.assertEqual(
+                [item["phase"] for item in configured["skippedPhases"]],
+                ["test", "review", "package", "apidoc", "submit"],
+            )
+
+            prepared = CONTEXT.prepare_context(
+                project,
+                change="fast-change",
+                phase="plan",
+                executor="codex",
+            )
+            self.assertEqual(prepared["nextPhases"], ["run"])
+            self.assertEqual(prepared["plannedPhases"], ["plan", "run", "archive"])
+            self.assertTrue(
+                CONTEXT.close_transition(
+                    project,
+                    "fast-change",
+                    from_phase="plan",
+                    to_phase="run",
+                    executor="codex",
+                )["ok"]
+            )
+            self.assertTrue(
+                CONTEXT.begin_transition(
+                    project,
+                    "fast-change",
+                    phase="run",
+                    executor="codex",
+                )["ok"]
+            )
+            run_context = CONTEXT.prepare_context(
+                project,
+                change="fast-change",
+                phase="run",
+                executor="codex",
+            )
+            self.assertEqual(run_context["nextPhases"], ["archive"])
+            self.assertTrue(
+                CONTEXT.close_transition(
+                    project,
+                    "fast-change",
+                    from_phase="run",
+                    to_phase="archive",
+                    executor="codex",
+                )["ok"]
+            )
+            illegal = CONTEXT.close_transition(
+                project,
+                "fast-change",
+                from_phase="run",
+                to_phase="test",
+                executor="codex",
+            )
+            self.assertFalse(illegal["ok"])
+            self.assertEqual(illegal["code"], "TRANSITION_ILLEGAL")
+
     def test_close_accepts_absolute_project_relative_and_change_relative_artifacts(self) -> None:
         forms = (
             lambda project, change, artifact: str(artifact),
@@ -387,7 +468,7 @@ class HarnessContextTest(unittest.TestCase):
             self.assertTrue(recovered["ok"])
             self.assertEqual(recovered["recovery"]["code"], "LEASE_EXPIRED_RECOVERED")
 
-    def test_fixback_transition_invalidates_targets_without_deleting_history(self) -> None:
+    def test_fixback_transition_defers_invalidation_until_changed_files_are_known(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
             make_change(project, "change")
@@ -427,8 +508,10 @@ class HarnessContextTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             updated = json.loads(ledger_path.read_text(encoding="utf-8"))
             self.assertEqual(len(updated["verificationTargets"]), 2)
-            self.assertFalse(updated["verificationTargets"]["unit"]["reusable"])
+            self.assertNotIn("reusable", updated["verificationTargets"]["unit"])
+            self.assertNotIn("reusable", updated["verificationTargets"]["api"])
             self.assertIn("invalidation", result)
+            self.assertTrue(result["invalidation"]["deferred"])
 
     def test_view_reconstructs_append_only_transition_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

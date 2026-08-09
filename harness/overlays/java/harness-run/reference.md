@@ -88,7 +88,7 @@ powershell.exe -NoProfile -Command "Test-Path '.worktrees/<change-name>/.git'"
 4. **读取详细计划（补充参考）**：`.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（如存在）→ 获取详细执行说明
 5. **读取设计文档**：`.harness/changes/<change-name>/spec/<change-name>-design.md` �? 获取核心设计决策和不变项
 6. **读取测试场景�?**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` �? 获取测试真相�?
-7. **读取验证账本**：`.harness/changes/<change-name>/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
+7. **读取验证账本**：`通过共享状态目录解析器定位的 evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状�?**：`.harness/changes/<change-name>/run-task-status.md`（如存在）→ 恢复上次运行状�?
 9. 确认 `项目规则（见 .harness/context-index.json�?/` 规则已加�?
 10. **执行测试基础设施探测**（见下方"步骤 0.5"�?
@@ -501,7 +501,7 @@ powershell.exe -Command "mvn test -pl <module> -o"
 
 ### 2c. 写入 verification-ledger
 
-步骤 2 完成�?**必须**写入/更新 `.harness/changes/<change-name>/verification-ledger.json`�?
+步骤 2 完成�?**必须**写入/更新 `通过共享状态目录解析器定位的 evidence/verification-ledger.json`�?
 
 - `compile` 项：始终写入（status / command / scope / evidence / 时间�? / durationMs�?
 - `unitTest` 项：仅当 2b 执行了全�? mvn test 时写入（testsRun / failures / errors / skipped / evidence）；未执行时标记 `{"status": "NOT_RUN_BY_RUN", "note": "轻量验证，全量单元测试由 harness-test 执行"}`

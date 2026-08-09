@@ -60,6 +60,12 @@ WHITELIST = {
     "trigger",
     "from_phase",
     "result_status",
+    "planned_phases",
+    "skipped_phases",
+    "next_phase",
+    "phase_plan_source",
+    "closure_disposition",
+    "closure_reason",
 }
 
 MAX_BATCH_SIZE = 100
@@ -77,6 +83,14 @@ PHASE_LABELS = {
     "apidoc": "接口文档",
     "submit": "提交",
     "archive": "归档",
+}
+
+REVIEW_REASON_SUMMARIES = {
+    "REVIEW_DELEGATED": "已使用独立评审，主会话负责核验结果。",
+    "REVIEW_INLINE_UNAVAILABLE": "当前环境没有可用的隔离评审能力，已由主会话完成评审。",
+    "REVIEW_INLINE_SPAWN_FAILED": "独立评审启动失败，已由主会话完成评审。",
+    "REVIEW_INLINE_INVALID_RESULT": "独立评审未返回有效结果，已由主会话重新完成评审。",
+    "INLINE_BY_ADAPTER": "当前适配器未提供隔离评审，已由主会话完成评审。",
 }
 
 
@@ -143,8 +157,21 @@ def _readable_summary_text(value: Any) -> str:
 
 
 def build_event_summary(event: dict[str, Any]) -> str:
+    reason_code = _summary_text(
+        event.get("fallback_reason_code") or event.get("decision_reason_code")
+    )
+    reason_summary = REVIEW_REASON_SUMMARIES.get(reason_code)
     explicit = _readable_summary_text(event.get("summary"))
-    if explicit:
+    if reason_summary and (
+        not explicit
+        or explicit == reason_code
+        or re.search(r"REVIEW_[A-Z0-9_]+|INLINE_BY_ADAPTER", explicit)
+    ):
+        return reason_summary
+    if explicit and not re.search(
+        r"\b[A-Z][A-Z0-9_]{3,}\b|\b[a-z][\w.-]+\s*=\s*(?:true|false)\b",
+        explicit,
+    ):
         return explicit
 
     event_type = _summary_text(event.get("type"))
@@ -177,6 +204,10 @@ def build_event_summary(event: dict[str, Any]) -> str:
         return _summary_text(
             f"{phase_label}阶段已结束：{detail}" if detail else f"{phase_label}阶段已结束。"
         )
+    if event_type == "gate.blocked":
+        return note or message or "阶段门禁暂未通过，现场已保留，可按提示恢复。"
+    if event_type == "gate.recovered":
+        return note or message or "阶段门禁已恢复，流程可以继续。"
     if event_type == "command":
         detail = name or note
         return _summary_text(f"执行步骤：{detail}" if detail else "执行了一项工作步骤。")
@@ -202,6 +233,48 @@ def build_event_summary(event: dict[str, Any]) -> str:
 def sanitize(event: dict[str, Any]) -> dict[str, Any]:
     payload = {key: event[key] for key in WHITELIST if key in event}
     payload["summary"] = build_event_summary(event)
+    return payload
+
+
+def _workflow_plan(change_dir: Path) -> dict[str, Any] | None:
+    policy_path = change_dir / "meta" / "gate-policy.json"
+    if not policy_path.is_file():
+        return None
+    try:
+        policy = json.loads(policy_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(policy, dict):
+        return None
+    raw = policy.get("plannedPhases")
+    source = "change"
+    if not isinstance(raw, list) or not raw:
+        raw = policy.get("defaultPhases")
+        source = "policy-default"
+    if not isinstance(raw, list):
+        return None
+    phases = [str(item).strip() for item in raw if str(item).strip()]
+    if not phases:
+        return None
+    skipped = policy.get("skippedPhases")
+    return {
+        "planned_phases": list(dict.fromkeys(phases)),
+        "skipped_phases": skipped if isinstance(skipped, list) else [],
+        "phase_plan_source": source,
+    }
+
+
+def _event_payload(event: dict[str, Any], phase_plan: dict[str, Any] | None) -> dict[str, Any]:
+    payload = sanitize(event)
+    if phase_plan is None:
+        return payload
+    payload.update(phase_plan)
+    if str(event.get("type") or "") in {"phase.end", "phase.auto_sealed"}:
+        phase = str(event.get("phase") or "").strip()
+        planned = phase_plan["planned_phases"]
+        if phase in planned:
+            index = planned.index(phase)
+            payload["next_phase"] = planned[index + 1] if index + 1 < len(planned) else None
     return payload
 
 
@@ -469,6 +542,7 @@ def sync_change(
         repair=True,
     )
     pending_raw = lines[acked:]
+    phase_plan = _workflow_plan(change_dir)
     uploaded = 0
     quarantined = 0
     last_result: dict[str, Any] | None = None
@@ -500,7 +574,7 @@ def sync_change(
                 "producer_seq": line_number,
                 "event_type": str(event.get("type") or "unknown"),
                 "occurred_at": str(event.get("timestamp") or event.get("ts") or client_time),
-                "payload": sanitize(event),
+                "payload": _event_payload(event, phase_plan),
             }
             if event.get("phase") is not None:
                 item["phase"] = event.get("phase")
@@ -727,6 +801,31 @@ class _CrossProcessLock:
             self._stream = None
 
 
+def _windowless_python_executable(
+    executable: str, base_executable: str | None
+) -> str:
+    """Return a Windows interpreter that cannot allocate a console window.
+
+    Virtual-environment ``python.exe`` files may be forwarding launchers.  Even
+    when the first process is created with ``CREATE_NO_WINDOW``, such a launcher
+    can start the real console interpreter and make Windows Terminal flash.  A
+    sibling ``pythonw.exe`` preserves the windowless subsystem across that hop.
+    """
+    executable_path = Path(executable)
+    candidates = [executable_path.with_name("pythonw.exe")]
+    if base_executable:
+        base_path = Path(base_executable)
+        base_windowless = base_path.with_name("pythonw.exe")
+        if base_windowless not in candidates:
+            candidates.append(base_windowless)
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    if base_executable and Path(base_executable).is_file():
+        return str(Path(base_executable))
+    return str(executable_path)
+
+
 def schedule_events_sync(project_root: Path, change_dir: Path) -> bool:
     """Wake a finite, project-local sync worker after an event is durable.
 
@@ -748,8 +847,14 @@ def schedule_events_sync(project_root: Path, change_dir: Path) -> bool:
     temporary = nudge.with_name(f".{nudge.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json.dumps(payload, separators=(",", ":")) + "\n", encoding="utf-8")
     os.replace(temporary, nudge)
+    interpreter = sys.executable
+    if os.name == "nt":
+        interpreter = _windowless_python_executable(
+            sys.executable,
+            getattr(sys, "_base_executable", None),
+        )
     command = [
-        sys.executable,
+        interpreter,
         str(Path(__file__).resolve()),
         "--project",
         str(project_root),

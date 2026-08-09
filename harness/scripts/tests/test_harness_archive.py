@@ -219,6 +219,9 @@ class FinalizeSuccessTests(unittest.TestCase):
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         self.assertEqual(summary["schemaVersion"], "2.3")
         self.assertEqual(summary["changeName"], "demo-change")
+        self.assertEqual(summary["releaseIntent"], "none")
+        self.assertEqual(summary["closureDisposition"], "completed")
+        self.assertIsNone(summary["closureReason"])
         self.assertEqual(
             summary["archiveDurability"]["status"],
             "ARCHIVED_LOCAL_ONLY",
@@ -726,6 +729,33 @@ class StatusTests(unittest.TestCase):
         after_files = {p.relative_to(self.change) for p in self.change.rglob("*") if p.is_file()}
         self.assertEqual(before_files, after_files)
 
+    def test_status_and_ledger_read_split_runtime_state_without_copying(self) -> None:
+        state = self.tmp / ".harness" / "state" / "changes" / self.change.name
+        state.mkdir(parents=True)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeName": self.change.name,
+                "stateOwnership": {
+                    "layout": "split-v1",
+                    "runtimeRoot": f".harness/state/changes/{self.change.name}",
+                },
+            },
+        )
+        shutil.move(str(self.change / "events.ndjson"), str(state / "events.ndjson"))
+        shutil.move(str(self.change / "evidence"), str(state / "evidence"))
+
+        result = ha.check_status(self.change, archive_intent="record-only")
+
+        self.assertNotIn("missing-events", {item["code"] for item in result["blockers"]})
+        self.assertTrue(result["checks"]["events_ndjson"])
+        self.assertIsNotNone(ha.load_ledger(self.change))
+        self.assertEqual(
+            result["checks"]["state_root"],
+            str(state.resolve()),
+        )
+
     def test_status_archivable_when_final_hash_is_ancestor(self) -> None:
         # main advanced past the change's mergeFinalHash: the change's commit is
         # still pushed (ancestor of HEAD), so archivable must be True (multi-change
@@ -774,6 +804,28 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(payload["archivable"], msg=json.dumps(payload, ensure_ascii=False))
         self.assertEqual(payload["blockers"], [])
         self.assertTrue(payload["checks"].get("final_hash_ancestor"))
+
+    def test_abandoned_closure_can_be_archived_without_a_verification_ledger(self) -> None:
+        (self.change / "evidence" / "verification-ledger.json").unlink()
+
+        result = ha.check_status(
+            self.change,
+            archive_intent="record-only",
+            closure_disposition="abandoned",
+            closure_reason="方案不再采用",
+        )
+
+        self.assertTrue(result["archivable"], result)
+        self.assertEqual(result["closureDisposition"], "abandoned")
+        self.assertEqual(result["closureReason"], "方案不再采用")
+        self.assertNotIn(
+            "missing-verification-ledger",
+            {item["code"] for item in result["blockers"]},
+        )
+        self.assertIn(
+            "closure-ledger-not-required",
+            {item["code"] for item in result["warnings"]},
+        )
 
 
 class ManifestCompareExcludeTests(unittest.TestCase):
@@ -2334,6 +2386,70 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertTrue(result["autoArchiveAllowed"])
         self.assertEqual(result["reasonCode"], "ARCHIVE_AUTO_GATE_SATISFIED")
         self.assertIn("no AskQuestion", result["nextAction"])
+
+    def test_auto_gate_uses_split_state_and_the_last_planned_phase_without_git(self) -> None:
+        state = self.tmp / ".harness" / "state" / "changes" / self.change.name
+        state.mkdir(parents=True)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeName": self.change.name,
+                "stateOwnership": {
+                    "layout": "split-v1",
+                    "runtimeRoot": f".harness/state/changes/{self.change.name}",
+                },
+            },
+        )
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "fast",
+                "source": "change",
+                "plannedPhases": ["plan", "run", "archive"],
+                "skippedPhases": [
+                    {"phase": "submit", "reason": "本次不需要 Git 提交"}
+                ],
+            },
+        )
+        shutil.move(str(self.change / "evidence"), str(state / "evidence"))
+        events = [
+            {
+                "schema_version": 3,
+                "id": "evt-plan-end",
+                "timestamp": "2026-08-09T00:00:00+00:00",
+                "type": "phase.end",
+                "phase": "plan",
+                "status": "OK",
+            },
+            {
+                "schema_version": 3,
+                "id": "evt-run-end",
+                "timestamp": "2026-08-09T00:01:00+00:00",
+                "type": "phase.end",
+                "phase": "run",
+                "status": "OK",
+            },
+        ]
+        _write(
+            state / "events.ndjson",
+            "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in events),
+        )
+        _write_json(
+            state / "meta" / "state-snapshot.json",
+            {
+                "schemaVersion": 1,
+                "sourceControl": "none",
+                "content": {"productTreeHash": "sha256:" + "a" * 64},
+            },
+        )
+
+        result = ha.archive_auto_gate(self.change, archive_intent="record-only")
+
+        self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
+        self.assertEqual(result["completedPrerequisitePhase"], "run")
+        self.assertEqual(result["plannedPhases"], ["plan", "run", "archive"])
 
 
 class SensitiveEvidencePublicationGateTests(unittest.TestCase):

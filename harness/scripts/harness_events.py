@@ -71,6 +71,8 @@ EVENT_TYPES = frozenset(
         "phase.start",
         "phase.end",
         "phase.auto_sealed",
+        "gate.blocked",
+        "gate.recovered",
         "command",
         "verification",
         "artifact",
@@ -165,6 +167,10 @@ _EVENT_ALLOWED_FIELDS = {
     )
     | _PROVENANCE_FIELDS,
     "phase.auto_sealed": frozenset({"status", "reason", "note"}) | _PROVENANCE_FIELDS,
+    "gate.blocked": frozenset({"status", "code", "reason", "note"})
+    | _PROVENANCE_FIELDS,
+    "gate.recovered": frozenset({"status", "code", "reason", "note"})
+    | _PROVENANCE_FIELDS,
     "command": frozenset({"command", "exit_code", "duration_ms", "note"})
     | _PROVENANCE_FIELDS,
     "verification": frozenset(
@@ -1798,18 +1804,45 @@ def cmd_append(args: argparse.Namespace) -> int:
             "warning: verification missing --name or --status",
             file=sys.stderr,
         )
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     phase_closed = False
     projection_error: str | None = None
+    attempt_error: str | None = None
     auto_sealed_events: list[dict[str, Any]] = []
     try:
         with event_file_lock(lock_path):
             existing_events = (
                 load_events(path)
                 if args.type in {"phase.end", "correction", "phase.start"}
+                or event.get("run_id") is not None
+                or event.get("attempt") is not None
                 else []
             )
-            if args.type == "phase.end":
+            run_id = event.get("run_id")
+            if run_id is not None:
+                run_attempts = {
+                    int(item["attempt"])
+                    for item in existing_events
+                    if item.get("phase") == event.get("phase")
+                    and item.get("run_id") == run_id
+                    and isinstance(item.get("attempt"), int)
+                    and int(item["attempt"]) > 0
+                }
+                if run_attempts:
+                    expected_attempt = max(run_attempts)
+                    explicit_attempt = event.get("attempt")
+                    if (
+                        isinstance(explicit_attempt, int)
+                        and explicit_attempt != expected_attempt
+                    ):
+                        attempt_error = (
+                            "EVENT_ATTEMPT_CONFLICT: run_id is already bound to "
+                            f"attempt {expected_attempt}, received {explicit_attempt}"
+                        )
+                    else:
+                        event["attempt"] = expected_attempt
+            if attempt_error is not None:
+                pass
+            elif args.type == "phase.end":
                 phase_closed = phase_end_already_recorded(existing_events, event)
             elif args.type == "correction":
                 try:
@@ -1830,13 +1863,16 @@ def cmd_append(args: argparse.Namespace) -> int:
                         phase=args.phase,
                         seal_reason=inferred_reason,
                     )
-            if not phase_closed and projection_error is None:
+            if not phase_closed and projection_error is None and attempt_error is None:
                 for seal_event in auto_sealed_events:
                     atomic_append_line(
                         path,
                         json.dumps(seal_event, ensure_ascii=False, separators=(",", ":")),
                     )
-                atomic_append_line(path, line)
+                atomic_append_line(
+                    path,
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":")),
+                )
     except (OSError, TimeoutError, ValueError) as exc:
         return emit_error(f"append failed: {exc}", as_json=as_json)
     if phase_closed:
@@ -1851,6 +1887,12 @@ def cmd_append(args: argparse.Namespace) -> int:
             projection_error,
             as_json=as_json,
             error_code=error_code,
+        )
+    if attempt_error is not None:
+        return emit_error(
+            attempt_error,
+            as_json=as_json,
+            error_code="EVENT_ATTEMPT_CONFLICT",
         )
 
     _nudge_remote_sync(change_dir)

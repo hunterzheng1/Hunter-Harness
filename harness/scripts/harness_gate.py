@@ -693,11 +693,12 @@ def validate_ledger_for_phase_close(
         try:
             current_repository = hp.repository_identity(root)
             current_ownership = hl.ownership_hash(contract)
-            current_diff = hl.compute_ownership_diff(
+            current_diff_detail = hl.compute_ownership_diff(
                 root,
                 base=str(ledger["baseCommit"]),
                 change_dir=change_dir,
-            )["diffHash"]
+            )
+            current_diff = current_diff_detail["diffHash"]
             current_head = _git_text(root, "rev-parse", "--verify", "HEAD")
         except (OSError, ValueError, RuntimeError) as exc:
             return {
@@ -727,6 +728,18 @@ def validate_ledger_for_phase_close(
                 "storedHead": ledger.get("currentHead"),
                 "currentHead": current_head,
                 "ledgerPath": str(ledger_path) if ledger_path else None,
+                "pathSummary": {
+                    "ownedFiles": list(current_diff_detail.get("files") or [])[:20],
+                    "foreignPaths": list(current_diff_detail.get("foreignPaths") or [])[:20],
+                    "ownedFileCount": current_diff_detail.get("ownedFileCount", 0),
+                    "excludedRuntimeCount": current_diff_detail.get(
+                        "excludedRuntimeCount", 0
+                    ),
+                },
+                "recoveryAction": (
+                    "先确认新增、删除或越界路径是否属于当前变更；更新所有权后，"
+                    "只重新执行受影响的验证，再原样重试 close。"
+                ),
             }
 
     problems: list[dict[str, Any]] = []
@@ -1713,6 +1726,98 @@ def record_blocked_attempt(
     )
 
 
+def record_gate_blocked(
+    change_dir: Path,
+    *,
+    phase: str,
+    code: str,
+    message: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist a recoverable gate rejection without manufacturing a phase run."""
+    return append_phase_event(
+        change_dir,
+        phase=phase,
+        type_="gate.blocked",
+        status="BLOCKED",
+        note=message,
+        run_id=run_id or "blocked-" + uuid.uuid4().hex[:12],
+        code=code,
+    )
+
+
+def record_gate_recovered(
+    change_dir: Path,
+    *,
+    phase: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Close the latest unresolved gate.blocked record for this phase."""
+    blocked: dict[str, Any] | None = None
+    for event in reversed(he.load_events(he.events_path(change_dir))):
+        if event.get("phase") != phase:
+            continue
+        if event.get("type") == "gate.recovered":
+            break
+        if event.get("type") == "gate.blocked":
+            blocked = event
+            break
+    if blocked is None:
+        return {"ok": True, "skipped": True, "reason": "no-unresolved-block"}
+    return append_phase_event(
+        change_dir,
+        phase=phase,
+        type_="gate.recovered",
+        status="OK",
+        note="阶段交接已恢复，门禁现已成功启动。",
+        run_id=run_id,
+        code=str(blocked.get("code") or "GATE_BLOCKED"),
+    )
+
+
+def validate_context_for_gate_begin(
+    project: Path,
+    change_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    """Require a completed Context handoff whenever modern Context state exists."""
+    view = hctx.context_view(project, change_id)
+    if not isinstance(view, dict) or not view.get("ok"):
+        return {"ok": True, "code": "CONTEXT_LEGACY_COMPATIBLE"}
+    current = view.get("current")
+    transitions = view.get("transitions")
+    begins = (view.get("attemptHistory") or {}).get("begins")
+    if not isinstance(current, dict):
+        return {"ok": True, "code": "CONTEXT_LEGACY_COMPATIBLE"}
+    current_phase = str(current.get("phase") or view.get("currentPhase") or "")
+    if current_phase != phase:
+        return {
+            "ok": False,
+            "code": "CONTEXT_HANDOFF_REQUIRED",
+            "message": "阶段交接尚未完成，门禁未启动；请先完成上下文交接。",
+            "expectedPhase": current_phase or None,
+            "requestedPhase": phase,
+        }
+    if isinstance(transitions, list) and transitions:
+        latest = transitions[-1] if isinstance(transitions[-1], dict) else {}
+        receipt_hash = latest.get("receiptHash")
+        begin_items = begins if isinstance(begins, list) else []
+        acknowledged = any(
+            isinstance(item, dict)
+            and item.get("phase") == phase
+            and item.get("receiptHash") == receipt_hash
+            for item in begin_items
+        )
+        if latest.get("toPhase") != phase or not acknowledged:
+            return {
+                "ok": False,
+                "code": "CONTEXT_BEGIN_REQUIRED",
+                "message": "阶段交接收据尚未确认，门禁未启动；请先执行上下文 begin。",
+                "requestedPhase": phase,
+            }
+    return {"ok": True, "code": "CONTEXT_READY"}
+
+
 def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -> bool:
     return any(
         event.get("phase") == phase
@@ -2065,6 +2170,32 @@ def cmd_begin(args: argparse.Namespace) -> int:
             extra={k: v for k, v in resolved.items() if k not in {"ok", "message"}},
         )
     change_dir = Path(resolved["changeDir"])
+    context_check = validate_context_for_gate_begin(
+        project, str(resolved["changeId"]), args.phase
+    )
+    if not context_check.get("ok"):
+        code = str(context_check.get("code") or "CONTEXT_HANDOFF_REQUIRED")
+        message = str(
+            context_check.get("message")
+            or "阶段交接尚未完成，门禁未启动。"
+        )
+        record_gate_blocked(
+            change_dir,
+            phase=args.phase,
+            code=code,
+            message=message,
+            run_id=args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID"),
+        )
+        return emit_error(
+            code,
+            message,
+            as_json=as_json,
+            extra={
+                key: value
+                for key, value in context_check.items()
+                if key not in {"ok", "code", "message"}
+            },
+        )
     severity_mode = gate_severity_mode(project, change_dir)
     gate_warnings: list[dict[str, Any]] = []
     plan_verification: dict[str, Any] | None = None
@@ -2236,6 +2367,16 @@ def cmd_begin(args: argparse.Namespace) -> int:
                             message="test guard begin failed (downgraded to WARN)",
                         ))
                     else:
+                        record_gate_blocked(
+                            change_dir,
+                            phase=args.phase,
+                            code=str(
+                                guard_result.get("code")
+                                or "TEST_GUARD_BEGIN_FAILED"
+                            ),
+                            message="测试保护快照建立失败，已停止阶段启动。",
+                            run_id=run_id,
+                        )
                         hc.release_lease(
                             project,
                             change_id=resolved["changeId"],
@@ -2252,6 +2393,11 @@ def cmd_begin(args: argparse.Namespace) -> int:
             current_head = _git_text(execution_root, "rev-parse", "--verify", "HEAD")
             ledger, _ = hl.load_ledger(change_dir)
             base_commit = ledger.get("baseCommit") if isinstance(ledger, dict) else None
+            try:
+                begin_contract = hp.load_change_contract(change_dir)
+                begin_ownership_hash = hl.ownership_hash(begin_contract)
+            except (OSError, ValueError, json.JSONDecodeError):
+                begin_ownership_hash = None
             capsule = {
                 "schemaVersion": 1,
                 "changeId": resolved["changeId"],
@@ -2264,6 +2410,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 "repositoryId": hp.repository_identity(execution_root),
                 "baseCommit": base_commit or current_head,
                 "currentHead": current_head,
+                "ownershipHash": begin_ownership_hash,
                 "createdAt": he.now_iso(),
                 "projectionReceipt": projection,
             }
@@ -2281,6 +2428,11 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 executor_agent=args.executor_agent or os.environ.get("HUNTER_HARNESS_AGENT"),
                 executor_model=args.executor_model or os.environ.get("HUNTER_HARNESS_MODEL"),
             )
+        recovery_result = record_gate_recovered(
+            change_dir,
+            phase=args.phase,
+            run_id=run_id,
+        )
     except BaseException:
         hc.release_lease(
             project, change_id=resolved["changeId"], phase=args.phase, run_id=run_id
@@ -2300,6 +2452,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "lease": claim.get("lease"),
         "identity": identity,
         "event": event_result,
+        "gateRecovery": recovery_result,
         "testGuard": guard_result,
         "policySchemaVersion": policy.get("schemaVersion"),
         "planVerification": plan_verification,
@@ -2568,6 +2721,16 @@ def cmd_close(args: argparse.Namespace) -> int:
             status="LEDGER_VALIDATION_FAILED",
             error=ledger_result,
         )
+        record_gate_blocked(
+            change_dir,
+            phase=args.phase,
+            code=str(ledger_result.get("code") or "LEDGER_INVALID"),
+            message=(
+                "验证记录与当前变更身份不一致，已保留现场；"
+                "请按返回的路径摘要重新验证受影响范围。"
+            ),
+            run_id=run_id,
+        )
         return emit_error(
             str(ledger_result.get("code", "LEDGER_INVALID")),
             str(ledger_result.get("message", "ledger validation failed")),
@@ -2656,6 +2819,16 @@ def cmd_close(args: argparse.Namespace) -> int:
                             "updatedAt": he.now_iso(),
                         })
                         write_phase_capsule(change_dir, args.phase, run_id, capsule)
+                    record_gate_blocked(
+                        change_dir,
+                        phase=args.phase,
+                        code=str(
+                            guard_result.get("code")
+                            or "TEST_GUARD_CLOSE_FAILED"
+                        ),
+                        message="测试保护关门失败，已保留现场并等待同一命令恢复。",
+                        run_id=run_id,
+                    )
                     return emit_error(
                         str(guard_result.get("code", "TEST_GUARD_CLOSE_FAILED")),
                         "test guard close failed",
@@ -2741,6 +2914,13 @@ def cmd_close(args: argparse.Namespace) -> int:
     )
     platform_monitor = _sync_after_phase_close(project, change_dir)
     if isinstance(context_handoff, dict) and not context_handoff.get("ok"):
+        record_gate_blocked(
+            change_dir,
+            phase=args.phase,
+            code=str(context_handoff.get("code") or "PHASE_HANDOFF_PENDING"),
+            message="阶段本地关门已完成，但上下文交接尚待恢复。",
+            run_id=run_id,
+        )
         return emit_error(
             "PHASE_HANDOFF_PENDING",
             "phase gate closed locally, but context handoff failed; retry the same close command",
@@ -2756,6 +2936,11 @@ def cmd_close(args: argparse.Namespace) -> int:
             },
         )
 
+    recovery_result = record_gate_recovered(
+        change_dir,
+        phase=args.phase,
+        run_id=run_id,
+    )
     payload = {
         "ok": True,
         "code": close_code,
@@ -2773,6 +2958,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         "gateWarnings": gate_warnings,
         "contextHandoff": context_handoff,
         "platformMonitor": platform_monitor,
+        "gateRecovery": recovery_result,
     }
     emit(payload, as_json=as_json)
     return 0

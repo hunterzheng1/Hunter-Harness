@@ -639,6 +639,72 @@ class HarnessGateTests(unittest.TestCase):
         record_blocked.assert_not_called()
         claim_lease.assert_not_called()
 
+    def test_gate_begin_rejects_a_phase_when_context_handoff_did_not_finish(self) -> None:
+        args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo", "--json",
+        ])
+        resolved = {
+            "ok": True,
+            "changeId": "demo",
+            "changeDir": str(self.change_dir),
+        }
+        with mock.patch.object(
+            gate.hc, "resolve_main_project_root", return_value=self.project
+        ), mock.patch.object(
+            gate.hc, "resolve_change", return_value=resolved
+        ), mock.patch.object(
+            gate.hctx,
+            "context_view",
+            return_value={
+                "ok": True,
+                "currentPhase": "submit",
+                "current": {"phase": "submit", "executor": "cursor"},
+            },
+        ), mock.patch.object(
+            gate, "record_gate_blocked"
+        ) as record_blocked, mock.patch.object(
+            gate.hc, "claim_lease"
+        ) as claim_lease, mock.patch("sys.stderr"):
+            code = gate.cmd_begin(args)
+
+        self.assertEqual(code, 1)
+        claim_lease.assert_not_called()
+        record_blocked.assert_called_once()
+        self.assertEqual(
+            record_blocked.call_args.kwargs["code"],
+            "CONTEXT_HANDOFF_REQUIRED",
+        )
+
+    def test_successful_begin_records_recovery_after_a_context_block(self) -> None:
+        self.change_dir.joinpath("events.ndjson").write_text(
+            json.dumps({
+                "schema_version": 3,
+                "id": "evt-blocked",
+                "timestamp": "2026-08-09T12:00:00+00:00",
+                "phase": "run",
+                "type": "gate.blocked",
+                "code": "CONTEXT_HANDOFF_REQUIRED",
+                "run_id": "blocked-run",
+                "attempt": 2,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(gate, "append_phase_event") as append_event:
+            result = gate.record_gate_recovered(
+                self.change_dir,
+                phase="run",
+                run_id="active-run",
+            )
+
+        self.assertTrue(result["ok"])
+        append_event.assert_called_once()
+        self.assertEqual(append_event.call_args.kwargs["type_"], "gate.recovered")
+        self.assertEqual(
+            append_event.call_args.kwargs["code"],
+            "CONTEXT_HANDOFF_REQUIRED",
+        )
+
     def test_phase_capsule_persists_and_reuses_execution_root(self) -> None:
         self._write_checkpoints("approved")
         execution = self.project.parent / f"{self.project.name}-feature"

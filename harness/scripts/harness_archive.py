@@ -160,6 +160,39 @@ def infer_change_name(dir_path: Path) -> str:
     return name
 
 
+def resolve_archive_state_root(change_dir: Path) -> Path:
+    """Resolve the dynamic state view shared by status, certify and finalize."""
+    change_dir = change_dir.resolve()
+    return hp.resolve_state_dir_for_contract(
+        change_dir,
+        find_project_root(change_dir),
+    ).resolve()
+
+
+def archive_read_roots(change_dir: Path) -> list[Path]:
+    """Return dynamic state first and the immutable contract as fallback."""
+    contract = change_dir.resolve()
+    state = resolve_archive_state_root(contract)
+    return [state] if state == contract else [state, contract]
+
+
+def _first_archive_path(change_dir: Path, relative: str) -> Path | None:
+    for root in archive_read_roots(change_dir):
+        candidate = root / relative
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _archive_path_label(change_dir: Path, path: Path) -> str:
+    for root in archive_read_roots(change_dir):
+        try:
+            return path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return path.name
+
+
 def load_template() -> dict[str, Any]:
     if SUMMARY_TEMPLATE.is_file():
         data = read_json(SUMMARY_TEMPLATE)
@@ -217,6 +250,8 @@ def generate_manifest(root: Path, output_path: Path) -> dict[str, Any]:
     total_bytes = 0
     for path in sorted(root.rglob("*")):
         if not path.is_file():
+            continue
+        if path.name.endswith(".lock"):
             continue
         if exclude is not None and path.resolve() == exclude:
             continue
@@ -314,12 +349,14 @@ def compare_manifests(
 
 
 def load_ledger(change_dir: Path) -> dict[str, Any] | None:
-    for rel in (
-        "evidence/verification-ledger.json",
-        "verification-ledger.json",
-    ):
-        path = change_dir / rel
-        if path.is_file():
+    for root in archive_read_roots(change_dir):
+        for rel in (
+            "evidence/verification-ledger.json",
+            "verification-ledger.json",
+        ):
+            path = root / rel
+            if not path.is_file():
+                continue
             try:
                 data = read_json(path)
                 return data if isinstance(data, dict) else None
@@ -330,14 +367,15 @@ def load_ledger(change_dir: Path) -> dict[str, Any] | None:
 
 def load_ci_metrics(change_dir: Path) -> tuple[dict[str, Any] | None, str | None]:
     """Load schema-versioned runner metrics without parsing human CI logs."""
-    for relative in ("evidence/ci-metrics.json", "runtime/ci-metrics.json"):
-        path = change_dir / relative
-        if not path.is_file():
-            continue
-        value = read_json(path)
-        if value.get("schemaVersion") != 1:
-            raise ValueError(f"unsupported ci-metrics schema: {path}")
-        return value, relative
+    for root in archive_read_roots(change_dir):
+        for relative in ("evidence/ci-metrics.json", "runtime/ci-metrics.json"):
+            path = root / relative
+            if not path.is_file():
+                continue
+            value = read_json(path)
+            if value.get("schemaVersion") != 1:
+                raise ValueError(f"unsupported ci-metrics schema: {path}")
+            return value, relative
     return None, None
 
 
@@ -451,8 +489,8 @@ def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
         "meta/product-candidate-verification.json",
         "runtime/product-candidate-verification.json",
     ):
-        path = change_dir / relative
-        if not path.is_file():
+        path = _first_archive_path(change_dir, relative)
+        if path is None:
             continue
         try:
             data = read_json(path)
@@ -857,14 +895,21 @@ def _candidate_value_hash(value: Any) -> str:
 def _candidate_evidence_hash(change_dir: Path, value: Any) -> str:
     if isinstance(value, str) and value.strip():
         raw = Path(value.strip())
-        candidate = raw if raw.is_absolute() else change_dir / raw
-        try:
-            resolved = candidate.resolve()
-            resolved.relative_to(change_dir.resolve())
-        except (OSError, ValueError):
-            resolved = None
-        if resolved is not None and resolved.is_file():
-            return f"sha256:{sha256_file(resolved)}"
+        candidates = [raw] if raw.is_absolute() else [
+            root / raw for root in archive_read_roots(change_dir)
+        ]
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if not any(
+                    resolved.is_relative_to(root.resolve())
+                    for root in archive_read_roots(change_dir)
+                ):
+                    continue
+            except OSError:
+                continue
+            if resolved.is_file():
+                return f"sha256:{sha256_file(resolved)}"
     return _candidate_value_hash(value)
 
 
@@ -980,8 +1025,6 @@ def certify_local_candidate(
             "command",
             "evidence",
             "inputsHash",
-            "toolchainHash",
-            "environmentHash",
         ):
             if entry.get(field) in (None, "", [], {}):
                 missing.append(field)
@@ -994,25 +1037,24 @@ def certify_local_candidate(
                 "name": name,
                 "command": entry.get("command"),
                 "inputsHash": entry.get("inputsHash"),
-                "toolchainHash": entry.get("toolchainHash"),
-                "environmentHash": entry.get("environmentHash"),
+                "toolchainHash": (
+                    entry.get("toolchainHash")
+                    or hl.default_toolchain_hash(project_root)
+                ),
+                "environmentHash": (
+                    entry.get("environmentHash")
+                    or hl.default_environment_hash(project_root)
+                ),
+                "inputsFiles": list(entry.get("inputsFiles") or []),
                 "logHash": _candidate_evidence_hash(
                     change_dir, entry.get("evidence")
                 ),
             }
         )
 
-    ledger_path = next(
-        (
-            change_dir / relative
-            for relative in (
-                "evidence/verification-ledger.json",
-                "verification-ledger.json",
-            )
-            if (change_dir / relative).is_file()
-        ),
-        None,
-    )
+    ledger_path = _first_archive_path(
+        change_dir, "evidence/verification-ledger.json"
+    ) or _first_archive_path(change_dir, "verification-ledger.json")
     if ledger_path is None:
         raise ValueError("verification ledger path missing")
 
@@ -1023,15 +1065,29 @@ def certify_local_candidate(
         or ""
     ).strip()
     rc, current_head, _stderr = git_run(project_root, "rev-parse", "HEAD")
+    rebound_from_commit: str | None = None
     if rc == 0 and current_head:
         if product_commit and not (
             current_head.startswith(product_commit)
             or product_commit.startswith(current_head)
         ):
-            raise ValueError(
-                "product commit is stale: "
-                f"ledger={product_commit} current={current_head}"
-            )
+            for item in selected:
+                input_files = [str(path) for path in item.get("inputsFiles") or []]
+                if not input_files:
+                    raise ValueError(
+                        "product commit is stale and validation inputs are unavailable: "
+                        f"ledger={product_commit} current={current_head}"
+                    )
+                current_inputs_hash, _paths = hl.compute_inputs_hash(
+                    hl.resolve_input_files(input_files, project_root),
+                    project_root=project_root,
+                )
+                if current_inputs_hash != item.get("inputsHash"):
+                    raise ValueError(
+                        "product commit is stale and validated inputs changed: "
+                        f"ledger={product_commit} current={current_head}"
+                    )
+            rebound_from_commit = product_commit
         product_commit = current_head
     if not product_commit:
         raise ValueError("product commit unavailable")
@@ -1045,7 +1101,7 @@ def certify_local_candidate(
         )
     current_tree_hash = f"sha256:{detail['hash']}"
     recorded_tree_hash = str(ledger.get("productTreeHash") or "").strip()
-    if recorded_tree_hash and recorded_tree_hash.removeprefix(
+    if recorded_tree_hash and rebound_from_commit is None and recorded_tree_hash.removeprefix(
         "sha256:"
     ) != current_tree_hash.removeprefix("sha256:"):
         raise ValueError(
@@ -1090,8 +1146,13 @@ def certify_local_candidate(
             "logHashes": sorted({str(item["logHash"]) for item in selected}),
         },
     }
+    if rebound_from_commit is not None:
+        receipt["subject"]["reboundFromCommit"] = rebound_from_commit
+        receipt["verification"]["commitReboundWithoutRerun"] = True
     write_json(
-        change_dir / "evidence" / "product-candidate-verification.json",
+        resolve_archive_state_root(change_dir)
+        / "evidence"
+        / "product-candidate-verification.json",
         receipt,
     )
     return receipt
@@ -1811,9 +1872,11 @@ def verify_manifest_byte_coverage(
     }
 
 def load_execution_log(change_dir: Path) -> str:
-    for rel in ("logs/execution-log.md", "execution-log.md"):
-        path = change_dir / rel
-        if path.is_file():
+    for root in archive_read_roots(change_dir):
+        for rel in ("logs/execution-log.md", "execution-log.md"):
+            path = root / rel
+            if not path.is_file():
+                continue
             try:
                 return path.read_text(encoding="utf-8-sig")
             except OSError:
@@ -1822,12 +1885,14 @@ def load_execution_log(change_dir: Path) -> str:
 
 
 def load_existing_summary(change_dir: Path) -> dict[str, Any] | None:
-    for rel in (
-        "reports/final/summary-data.json",
-        "summary-data.json",
-    ):
-        path = change_dir / rel
-        if path.is_file():
+    for root in archive_read_roots(change_dir):
+        for rel in (
+            "reports/final/summary-data.json",
+            "summary-data.json",
+        ):
+            path = root / rel
+            if not path.is_file():
+                continue
             try:
                 data = read_json(path)
                 return data if isinstance(data, dict) else None
@@ -2074,15 +2139,36 @@ def check_status(
     *,
     allow_missing_review: bool = False,
     archive_intent: str = "release-candidate",
+    closure_disposition: str = "completed",
+    closure_reason: str = "",
 ) -> dict[str, Any]:
     """Read-only archive preconditions. Never mutates."""
     if archive_intent not in {"release-candidate", "record-only"}:
         raise ValueError(
             "archive_intent must be release-candidate or record-only"
         )
+    if closure_disposition not in {"completed", "abandoned", "superseded"}:
+        raise ValueError(
+            "closure_disposition must be completed, abandoned, or superseded"
+        )
+    closure_reason = closure_reason.strip()
     blockers: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
     checks: dict[str, Any] = {}
+    if closure_disposition != "completed" and not closure_reason:
+        blockers.append(
+            {
+                "code": "closure-reason-required",
+                "message": "ending an unfinished change requires a closure reason",
+            }
+        )
+    if closure_disposition != "completed" and archive_intent == "release-candidate":
+        blockers.append(
+            {
+                "code": "closure-not-release-candidate",
+                "message": "abandoned or superseded changes can be archived but cannot be release candidates",
+            }
+        )
 
     if not change_dir.is_dir():
         return {
@@ -2097,6 +2183,8 @@ def check_status(
 
     project = find_project_root(change_dir)
     checks["project_root"] = str(project)
+    state_root = resolve_archive_state_root(change_dir)
+    checks["state_root"] = str(state_root)
 
     exact_byte = check_archive_exact_byte_policy(project)
     checks["archive_exact_byte"] = exact_byte
@@ -2138,7 +2226,7 @@ def check_status(
             }
         )
 
-    events_path = change_dir / "events.ndjson"
+    events_path = state_root / "events.ndjson"
     events_present = events_path.is_file() and events_path.stat().st_size > 0
     checks["events_ndjson"] = events_present
     if not events_present:
@@ -2152,10 +2240,19 @@ def check_status(
     ledger = load_ledger(change_dir)
     checks["verification_ledger"] = ledger is not None
     if ledger is None:
-        blockers.append(
+        target = warnings if closure_disposition != "completed" else blockers
+        target.append(
             {
-                "code": "missing-verification-ledger",
-                "message": "evidence/verification-ledger.json is required before archive",
+                "code": (
+                    "closure-ledger-not-required"
+                    if closure_disposition != "completed"
+                    else "missing-verification-ledger"
+                ),
+                "message": (
+                    "verification was not completed; the closure records it as NOT_RUN"
+                    if closure_disposition != "completed"
+                    else "evidence/verification-ledger.json is required before archive"
+                ),
             }
         )
 
@@ -2425,6 +2522,8 @@ def check_status(
             change_dir, write=False, for_replay=False
         )
         release_summary["archiveIntent"] = archive_intent
+        release_summary["closureDisposition"] = closure_disposition
+        release_summary["closureReason"] = closure_reason
         report_adequacy = validate_report_adequacy(release_summary)
         release_decision = evaluate_release_eligibility(
             change_dir,
@@ -2448,12 +2547,19 @@ def check_status(
         "ok": True,
         "archivable": archivable,
         "archiveIntent": archive_intent,
+        "releaseIntent": "candidate" if archive_intent == "release-candidate" else "none",
+        "closureDisposition": closure_disposition,
+        "closureReason": closure_reason or None,
         "archiveIntegrity": archive_integrity,
         "candidateVerification": release_decision["checks"][
             "candidateVerification"
         ],
         "releaseDecision": release_decision,
-        "releaseEligible": release_decision["releaseEligible"],
+        "releaseEligible": (
+            release_decision["releaseEligible"]
+            if closure_disposition == "completed"
+            else False
+        ),
         "change_dir": str(change_dir),
         "change_name": infer_change_name(change_dir),
         "blockers": blockers,
@@ -2484,7 +2590,10 @@ def archive_auto_gate(
             "nextAction": "Resolve archive status blockers, then run `harness_archive.py auto-gate` again.",
         }
 
-    snapshot_path = change_dir / "meta" / "state-snapshot.json"
+    state_root = resolve_archive_state_root(change_dir)
+    snapshot_path = state_root / "meta" / "state-snapshot.json"
+    if not snapshot_path.is_file():
+        snapshot_path = change_dir / "meta" / "state-snapshot.json"
     try:
         snapshot = read_json(snapshot_path)
     except (OSError, json.JSONDecodeError, TypeError):
@@ -2496,7 +2605,7 @@ def archive_auto_gate(
             "autoArchiveAllowed": False,
             "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_MISSING",
             "status": status,
-            "nextAction": "Capture the post-submit/merge archive-boundary state snapshot before auto-archiving.",
+            "nextAction": "Capture the archive-boundary state snapshot before auto-archiving.",
         }
 
     git_state = snapshot.get("git")
@@ -2505,33 +2614,65 @@ def archive_auto_gate(
         if isinstance(git_state, dict)
         else snapshot.get("base") or snapshot.get("baseCommit")
     )
-    if not isinstance(snapshot_base, str) or not snapshot_base.strip():
+    content_state = snapshot.get("content")
+    content_hash = (
+        content_state.get("productTreeHash")
+        if isinstance(content_state, dict)
+        else snapshot.get("productTreeHash")
+    )
+    content_boundary_valid = (
+        isinstance(content_hash, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", content_hash.strip()) is not None
+    )
+    git_boundary_valid = isinstance(snapshot_base, str) and bool(snapshot_base.strip())
+    if not git_boundary_valid and not content_boundary_valid:
         return {
             "ok": False,
             "action": "auto-gate",
             "autoArchiveAllowed": False,
             "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_INVALID",
             "status": status,
-            "nextAction": "Capture a state snapshot containing the archive-boundary base commit after Submit or Merge.",
+            "nextAction": (
+                "Capture a state snapshot containing either a Git boundary or "
+                "a deterministic productTreeHash content boundary."
+            ),
         }
 
-    events_path = change_dir / "events.ndjson"
+    events_path = state_root / "events.ndjson"
     events = he.load_events(events_path) if events_path.is_file() else []
+    policy = load_gate_policy(change_dir) or {}
+    raw_planned = policy.get("plannedPhases")
+    if not isinstance(raw_planned, list) or not raw_planned:
+        raw_planned = policy.get("defaultPhases")
+    planned_phases = (
+        [str(item).strip() for item in raw_planned if str(item).strip()]
+        if isinstance(raw_planned, list)
+        else []
+    )
+    completed_phase: str | None = None
+    if "archive" in planned_phases:
+        archive_index = planned_phases.index("archive")
+        if archive_index > 0:
+            completed_phase = planned_phases[archive_index - 1]
+    expected_phases = {completed_phase} if completed_phase else {"submit", "merge"}
     completed = any(
-        event.get("phase") in {"submit", "merge"}
+        event.get("phase") in expected_phases
         and event.get("type") == "phase.end"
         and str(event.get("status") or "").upper() in {"OK", "WARN"}
         for event in events
         if isinstance(event, dict)
     )
     if not completed:
+        phase_label = completed_phase or "Submit or Merge"
         return {
             "ok": False,
             "action": "auto-gate",
             "autoArchiveAllowed": False,
-            "reasonCode": "SUBMIT_OR_MERGE_NOT_COMPLETED",
+            "reasonCode": "PLANNED_PREREQUISITE_NOT_COMPLETED",
             "status": status,
-            "nextAction": "Complete Submit or Merge and record its terminal phase event before auto-archiving.",
+            "plannedPhases": planned_phases or None,
+            "completedPrerequisitePhase": completed_phase,
+            "nextAction": f"Complete {phase_label} and record its terminal phase event before auto-archiving.",
         }
 
     return {
@@ -2539,6 +2680,8 @@ def archive_auto_gate(
         "action": "auto-gate",
         "autoArchiveAllowed": True,
         "reasonCode": "ARCHIVE_AUTO_GATE_SATISFIED",
+        "plannedPhases": planned_phases or None,
+        "completedPrerequisitePhase": completed_phase,
         "status": status,
         "snapshotPath": str(snapshot_path),
         "snapshotBase": snapshot_base,
@@ -4026,6 +4169,9 @@ def collect_summary_data(
             "knownRisks",
             "manualActions",
             "archiveIntent",
+            "releaseIntent",
+            "closureDisposition",
+            "closureReason",
             "archiveIntegrity",
             "candidateVerification",
             "releaseDecision",
@@ -4163,6 +4309,19 @@ def collect_summary_data(
     candidate_gate = evaluate_product_ci_gate(change_dir)
     data["archiveIntent"] = str(
         intent_data.get("intent") or "release-candidate"
+    )
+    data["releaseIntent"] = str(
+        intent_data.get("releaseIntent")
+        or ("candidate" if data["archiveIntent"] == "release-candidate" else "none")
+    )
+    data["closureDisposition"] = str(
+        intent_data.get("closureDisposition") or "completed"
+    )
+    raw_closure_reason = intent_data.get("closureReason")
+    data["closureReason"] = (
+        str(raw_closure_reason).strip()
+        if isinstance(raw_closure_reason, str) and raw_closure_reason.strip()
+        else None
     )
     data["archiveIntegrity"] = {"ok": True}
     data["candidateVerification"] = candidate_gate
@@ -5199,6 +5358,9 @@ def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
         "path": "events.ndjson",
     }
     write_json(work_dir / "evidence" / "evidence-cutoff.json", cutoff)
+    # The staged archive is immutable after this point.  The event lock is a
+    # runtime coordination file, not evidence, and must not survive publish.
+    events_file.with_name(events_file.name + ".lock").unlink(missing_ok=True)
     return cutoff
 
 
@@ -7302,6 +7464,8 @@ def cmd_finalize(
     skip_ingest: bool = False,
     allow_missing_review: bool = False,
     archive_intent: str = "release-candidate",
+    closure_disposition: str = "completed",
+    closure_reason: str = "",
 ) -> tuple[int, dict[str, Any]]:
     """Execute the 9-step finalize pipeline. Returns (exit_code, payload)."""
     if archive_intent not in {"release-candidate", "record-only"}:
@@ -7309,6 +7473,25 @@ def cmd_finalize(
             "ok": False,
             "action": "finalize",
             "error": "archive_intent must be release-candidate or record-only",
+        }
+    if closure_disposition not in {"completed", "abandoned", "superseded"}:
+        return 1, {
+            "ok": False,
+            "action": "finalize",
+            "error": "invalid closure disposition",
+        }
+    closure_reason = closure_reason.strip()
+    if closure_disposition != "completed" and not closure_reason:
+        return 1, {
+            "ok": False,
+            "action": "finalize",
+            "error": "closure reason is required for abandoned or superseded changes",
+        }
+    if closure_disposition != "completed" and archive_intent == "release-candidate":
+        return 1, {
+            "ok": False,
+            "action": "finalize",
+            "error": "abandoned or superseded changes cannot be release candidates",
         }
     warnings: list[str] = []
     original_change_dir = change_dir.resolve()
@@ -7396,6 +7579,9 @@ def cmd_finalize(
         "operationTempDir": str(operation_temp_dir),
         "operationRecord": str(operation_record),
         "archiveIntent": archive_intent,
+        "releaseIntent": "candidate" if archive_intent == "release-candidate" else "none",
+        "closureDisposition": closure_disposition,
+        "closureReason": closure_reason or None,
         "releaseEligible": False,
         "warnings": warnings,
         "steps": {},
@@ -7787,6 +7973,11 @@ def cmd_finalize(
         {
             "schemaVersion": 1,
             "intent": archive_intent,
+            "releaseIntent": (
+                "candidate" if archive_intent == "release-candidate" else "none"
+            ),
+            "closureDisposition": closure_disposition,
+            "closureReason": closure_reason or None,
             "candidateVerificationCode": ci_gate.get("code"),
             "releaseEligible": False,
             "releaseDecisionCode": "PENDING_IDENTITY_AND_REPORT_GATES",
@@ -9219,6 +9410,8 @@ def cmd_status_cli(args: argparse.Namespace) -> int:
         change_dir,
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
         archive_intent=str(getattr(args, "intent", "release-candidate")),
+        closure_disposition=str(getattr(args, "closure", "completed")),
+        closure_reason=str(getattr(args, "closure_reason", "")),
     )
     emit_json(result)
     # Checks completed → exit 0; archivable flag conveys the gate result.
@@ -9289,6 +9482,8 @@ def cmd_finalize_cli(args: argparse.Namespace) -> int:
         skip_ingest=bool(args.skip_ingest),
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
         archive_intent=str(getattr(args, "intent", "release-candidate")),
+        closure_disposition=str(getattr(args, "closure", "completed")),
+        closure_reason=str(getattr(args, "closure_reason", "")),
     )
     emit_json(payload)
     return code
@@ -9498,6 +9693,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="downgrade full-tier missing review from blocker to warning",
     )
     p_status.add_argument(
+        "--closure",
+        choices=("completed", "abandoned", "superseded"),
+        default="completed",
+        help="lifecycle outcome, independent from release intent",
+    )
+    p_status.add_argument("--closure-reason", default="")
+    p_status.add_argument(
         "--intent",
         choices=("release-candidate", "record-only"),
         default="release-candidate",
@@ -9543,6 +9745,13 @@ def build_parser() -> argparse.ArgumentParser:
             "the project and is verified before source deletion"
         ),
     )
+    p_fin.add_argument(
+        "--closure",
+        choices=("completed", "abandoned", "superseded"),
+        default="completed",
+        help="lifecycle outcome, independent from release intent",
+    )
+    p_fin.add_argument("--closure-reason", default="")
     p_fin.add_argument(
         "--retention-policy",
         default="unspecified",

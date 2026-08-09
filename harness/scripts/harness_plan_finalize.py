@@ -30,6 +30,18 @@ if hasattr(sys.stderr, "reconfigure"):
 
 SCHEMA_VERSION = 1
 _LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+_BACKTICK = re.compile(r"`([^`\r\n]+)`")
+_CODE_PATH_SUFFIXES = {
+    ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",
+    ".java", ".js", ".jsx", ".kt", ".kts", ".mjs", ".php", ".py", ".rb",
+    ".rs", ".scss", ".sh", ".svelte", ".swift", ".ts", ".tsx", ".vue",
+}
+_BUILD_FILE_NAMES = {
+    "build.gradle", "build.gradle.kts", "cargo.toml", "composer.json", "go.mod",
+    "gradle.properties", "package-lock.json", "package.json", "pnpm-lock.yaml",
+    "pom.xml", "pyproject.toml", "requirements.txt", "settings.gradle",
+    "settings.gradle.kts", "tsconfig.json", "yarn.lock",
+}
 
 # C8: valid ownerPhase values (lifecycle phases that can own tasks).
 VALID_OWNER_PHASES = {"plan", "run", "test", "review", "submit"}
@@ -615,6 +627,71 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
     }
 
 
+def validate_product_ownership(change_dir: Path, staging: Path) -> dict[str, Any]:
+    """Ensure Plan declares stable prefix ownership for explicit code/test/build paths."""
+    context_path = change_dir / "meta" / "change-context.json"
+    if not context_path.is_file():
+        return {"ok": True, "code": "PLAN_PRODUCT_PATHS_LEGACY_UNDECLARED"}
+    try:
+        context = json.loads(context_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("PLAN_CHANGE_CONTEXT_INVALID", str(exc))
+    ownership = context.get("ownership") if isinstance(context, dict) else None
+    raw_paths = ownership.get("productPaths") if isinstance(ownership, dict) else None
+    product_paths = [
+        str(item).strip().replace("\\", "/").removeprefix("./")
+        for item in raw_paths or []
+        if isinstance(item, str) and item.strip()
+    ]
+    unsupported = sorted(path for path in product_paths if any(char in path for char in "*?[]"))
+    if unsupported:
+        result = _result_error(
+            "PLAN_PRODUCT_PATHS_GLOB_UNSUPPORTED",
+            "productPaths 只接受精确文件或目录前缀，不支持通配：" + ", ".join(unsupported),
+        )
+        result["unsupportedPaths"] = unsupported
+        return result
+
+    planned_paths: set[str] = set()
+    for document in sorted(staging.rglob("*.md")):
+        text = document.read_text(encoding="utf-8-sig")
+        for raw in _BACKTICK.findall(text):
+            candidate = raw.strip().strip("'\"").replace("\\", "/")
+            if not candidate or " " in candidate or "://" in candidate or "<" in candidate:
+                continue
+            candidate = re.sub(r":\d+(?::\d+)?$", "", candidate)
+            candidate = candidate.removeprefix("./").strip("/.,;，；")
+            if not candidate or candidate.startswith("../") or candidate.startswith(".harness/"):
+                continue
+            pure = PurePosixPath(candidate)
+            if pure.name.lower() in _BUILD_FILE_NAMES or pure.suffix.lower() in _CODE_PATH_SUFFIXES:
+                planned_paths.add(candidate)
+
+    def covered(path: str) -> bool:
+        return any(
+            path == owned.rstrip("/")
+            or path.startswith(owned.rstrip("/") + "/")
+            for owned in product_paths
+            if owned.rstrip("/")
+        )
+
+    missing = sorted(path for path in planned_paths if not covered(path))
+    if missing:
+        result = _result_error(
+            "PLAN_PRODUCT_PATHS_INCOMPLETE",
+            "productPaths 未覆盖计划明确引用的产品文件：" + ", ".join(missing),
+        )
+        result["missingPaths"] = missing
+        result["recoveryAction"] = "在 Plan 阶段补充精确文件或目录前缀后重新 finalize。"
+        return result
+    return {
+        "ok": True,
+        "code": "PLAN_PRODUCT_PATHS_COMPLETE",
+        "plannedPaths": sorted(planned_paths),
+        "productPaths": product_paths,
+    }
+
+
 def _terminal_exists(change_dir: Path, run_id: str, attempt: int) -> bool:
     try:
         events = harness_events.load_events(harness_events.events_path(change_dir))
@@ -1125,6 +1202,9 @@ def finalize_plan(
     validation = validate_staging(staging, change_name)
     if not validation["ok"]:
         return validation
+    ownership_validation = validate_product_ownership(change_dir, staging)
+    if not ownership_validation["ok"]:
+        return ownership_validation
     start_validation = _validate_plan_start(change_dir, run_id, attempt)
     if not start_validation["ok"]:
         return start_validation

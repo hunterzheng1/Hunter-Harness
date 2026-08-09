@@ -39,7 +39,7 @@ description: harness-package 的8步工作流详细步骤、模块识别方法�
 
 **读取 verification-ledger + 确定 baseCommit**：
 
-1. 读取 `.harness/changes/<change-name>/evidence/verification-ledger.json`（旧路径 `verification-ledger.json` 兼容），记录 `unitTest`/`apiTest` 的 status、`diffHash`、`currentHead`
+1. 通过共享状态目录解析器读取 `evidence/verification-ledger.json`（旧路径 `verification-ledger.json` 兼容），记录 `unitTest`/`apiTest` 的 status、`diffHash`、`currentHead`
 2. 确定 `baseCommit`：优先取 `.harness/changes/<change-name>/logs/execution-log.md` 中 harness-submit 阶段的 `final pushed hash`（旧路径 `execution-log.md` 兼容）；无 submit 记录时取当前 `git rev-parse HEAD`
 3. 判断 ledger 是否有效（全部满足才算有效）：
    - `unitTest.status=OK` 且 `apiTest.status=OK`

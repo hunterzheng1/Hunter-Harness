@@ -37,19 +37,15 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 
 - [ ] 未在调用 finalize 前手工追加 archive 阶段边界
 - [ ] 只有一个未归档变更目录（多个时终止或让用户选择）
-- [ ] **最小必备集 blockers**（`harness_archive.py status`）：
-  - [ ] `plans/*-plan.md` 存在
-  - [ ] `events.ndjson` 存在且非空
-  - [ ] `evidence/verification-ledger.json` 存在
-  - [ ] 至少一个 test 或 review 报告/证据
-  - [ ] 若缺失：优先从 `.harness/cache/change-snapshots/<change>/` 恢复，禁止空壳归档
+- [ ] 已确认 `closure`：正常完成 / 主动废弃 / 被其他方案替代；后两者有中文 `closure-reason`
+- [ ] 正常完成按 `plannedPhases` 核对；提前结束只要求可识别变更与安全封存的最小材料
 - [ ] 变更目录下有 plans/ 子目录（至少有计划文件）
 - [ ] `events.ndjson` 存在；执行日志允许由 finalize 从事件流重新渲染（旧 archive 才兼容根目录 `execution-log.md`）
 - [ ] 准备生成 `archive-manifest-before.json`（path/size/sha256）
 - [ ] 准备生成 `summary-data.json`（业务目标、阶段状态、验证、产物、维护者结论）
-- [ ] git status 无未提交的重要变更（归档应对应已提交的代码）
-- [ ] **commit 已 push**：`powershell.exe -Command "git -C '<项目路径>' log @{u}..HEAD --oneline"` 输出为空（无未推送提交）
-- [ ] **最终 hash 一致**：worktree 模式（requested=true）下读 `evidence/verification-ledger.json` 的 `mergeFinalHash`（submit 合并段写入），否则从 events/ledger 读取 `final pushed hash`，与当前 `git rev-parse HEAD` 比对
+- [ ] Git 项目记录 dirty/HEAD/upstream；无 upstream 或仅本地 commit 允许归档，但 `releaseEligible=false`
+- [ ] 非 Git 项目生成确定性内容清单与产品树散列，并记录 `sourceControl=none`
+- [ ] 最终产品身份来自 Submit 收据或当前内容；提交前候选只允许在验证输入未变化时由 `certify-local` 自动重绑定
 - [ ] **test/review 报告状态确认**：
   - ✅ `.harness/changes/<change-name>/tests/test-report-*.md` 存在 → 归档正常
   - 🟡 不存在 → 必须在 archive-meta.md 和 final-summary.html 中标记"跳过测试"或"未运行测试"，不得伪造通过率
@@ -63,7 +59,7 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - [ ] `.harness/archive/YYYY-MM-DD-<change-name>/` 目录存在（通过 Glob 实际扫描确认）
 - [ ] 所有子目录（plans/, tests/, reviews/, sqls/）已完整移入（通过 Glob 实际扫描确认，不仅看预期路径）
 - [ ] before/after manifest 校验通过（排除 `logs/execution-log.md`——归档追加结束记录预期 sha256 变化；其他 moved 文件 sha256 必须一致，missing/mismatch=0）
-- [ ] 如需 archive-meta.md，已在 finalize 前创建且 frontmatter 字段完整；finalize 后未再改动归档文件
+- [ ] archive-meta.md 由 finalize 自动生成且字段完整；调用者未手写或补改
 - [ ] summary-data.json 已生成，且为合法 JSON
 - [ ] final-summary.html 已由 `templates/render-summary.mjs` 渲染生成
 - [ ] **final-summary.html 真实性检查**：

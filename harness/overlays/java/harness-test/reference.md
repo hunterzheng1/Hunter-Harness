@@ -776,7 +776,7 @@ powershell.exe -NoProfile -Command "$base = '<baseCommit>'; $patch = '.harness/c
 
 `<baseCommit>` 从 ledger 读取（harness-plan 写入）；缺失时用 `git merge-base HEAD <默认分支>` 兜底。三部分：`git diff $base HEAD`（已提交）+ `git diff`（未提交 tracked）+ 未跟踪新文件（`git ls-files --others --exclude-standard`）；`& { }` 必须带 `&`。
 
-写入 `.harness/changes/<change>/evidence/verification-ledger.json`：
+通过共享状态目录解析器定位 change 后，写入 `evidence/verification-ledger.json`：
 
 ```json
 {

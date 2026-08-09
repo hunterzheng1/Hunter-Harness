@@ -122,6 +122,21 @@ class HarnessEventsSyncTests(unittest.TestCase):
         self.assertIn("规划", payload["summary"])
         self.assertIn(digest, payload["decision"])
 
+    def test_translates_review_reason_code_instead_of_using_it_as_summary(self) -> None:
+        payload = hes.sanitize({
+            "type": "decision",
+            "phase": "review",
+            "summary": "REVIEW_INLINE_UNAVAILABLE",
+            "execution_mode": "inline",
+            "fallback_reason_code": "REVIEW_INLINE_UNAVAILABLE",
+        })
+
+        self.assertEqual(
+            payload["summary"],
+            "当前环境没有可用的隔离评审能力，已由主会话完成评审。",
+        )
+        self.assertEqual(payload["fallback_reason_code"], "REVIEW_INLINE_UNAVAILABLE")
+
     def test_sends_the_persisted_chinese_display_title(self) -> None:
         title_path = self.change_dir / "meta" / "change-title.json"
         title_path.parent.mkdir(parents=True)
@@ -142,6 +157,44 @@ class HarnessEventsSyncTests(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(requests[0]["title"], "番茄钟计时器")
+
+    def test_reports_the_confirmed_phase_plan_and_real_next_phase(self) -> None:
+        (self.change_dir / "meta").mkdir(exist_ok=True)
+        (self.change_dir / "meta" / "gate-policy.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "plannedPhases": ["plan", "run", "archive"],
+                "skippedPhases": [{"phase": "submit", "reason": "本次不需要提交"}],
+            }),
+            encoding="utf-8",
+        )
+        (self.change_dir / "events.ndjson").write_text(
+            json.dumps({
+                "schema_version": 3,
+                "id": "evt-run-end",
+                "timestamp": "2026-08-08T10:00:00+08:00",
+                "type": "phase.end",
+                "phase": "run",
+                "status": "OK",
+            }) + "\n",
+            encoding="utf-8",
+        )
+        batches: list[dict] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            batches.append(body)
+            return {"items": [{"id": "evt-run-end", "status": "accepted"}]}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        payload = batches[0]["events"][0]["payload"]
+        self.assertEqual(payload["planned_phases"], ["plan", "run", "archive"])
+        self.assertEqual(payload["next_phase"], "archive")
+        self.assertEqual(payload["phase_plan_source"], "change")
 
     def test_uses_the_design_heading_for_a_legacy_change_title(self) -> None:
         design = self.change_dir / "spec" / "demo-design.md"
@@ -416,6 +469,34 @@ class HarnessEventsSyncTests(unittest.TestCase):
         self.assertFalse(follower.is_alive())
         self.assertEqual(observed_generations, [expected])
         self.assertTrue(results[0]["ok"])
+
+    def test_windows_background_sync_prefers_the_venv_windowless_launcher(self) -> None:
+        scripts = self.project / "venv" / "Scripts"
+        scripts.mkdir(parents=True)
+        executable = scripts / "python.exe"
+        pythonw = scripts / "pythonw.exe"
+        executable.write_bytes(b"launcher")
+        pythonw.write_bytes(b"windowless launcher")
+
+        self.assertEqual(
+            hes._windowless_python_executable(str(executable), None),
+            str(pythonw),
+        )
+
+    def test_windows_background_sync_falls_back_to_the_real_windowless_interpreter(self) -> None:
+        launcher = self.project / "venv" / "Scripts" / "python.exe"
+        base = self.project / "runtime" / "python.exe"
+        pythonw = base.with_name("pythonw.exe")
+        launcher.parent.mkdir(parents=True)
+        base.parent.mkdir(parents=True)
+        launcher.write_bytes(b"launcher")
+        base.write_bytes(b"runtime")
+        pythonw.write_bytes(b"windowless runtime")
+
+        self.assertEqual(
+            hes._windowless_python_executable(str(launcher), str(base)),
+            str(pythonw),
+        )
 
     def test_live_slow_worker_lock_is_never_stolen_by_age(self) -> None:
         primary_path = hes._agent_lock_path(self.project)

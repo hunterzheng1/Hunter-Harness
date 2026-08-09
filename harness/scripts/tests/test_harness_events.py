@@ -390,6 +390,31 @@ class HarnessEventsTest(unittest.TestCase):
         self.assertEqual(event["executor_tool"], "codex")
         self.assertEqual(event["handoff_from_tool"], "claude-code")
 
+    def test_run_id_derives_attempt_and_rejects_a_conflicting_explicit_attempt(self) -> None:
+        first, _, first_err = self._run([
+            "append", "--change-dir", str(self.change_dir), "--json",
+            "--phase", "run", "--type", "phase.start", "--attempt", "2",
+            "--run-id", "run-fixback",
+        ])
+        self.assertEqual(first, 0, first_err)
+
+        derived, out, derived_err = self._run([
+            "append", "--change-dir", str(self.change_dir), "--json",
+            "--phase", "run", "--type", "decision",
+            "--decision", "修复第一项建议", "--run-id", "run-fixback",
+        ])
+        self.assertEqual(derived, 0, derived_err)
+        self.assertEqual(json.loads(out)["event"]["attempt"], 2)
+
+        conflict, _, conflict_err = self._run([
+            "append", "--change-dir", str(self.change_dir), "--json",
+            "--phase", "run", "--type", "decision",
+            "--decision", "冲突事件", "--run-id", "run-fixback",
+            "--attempt", "1",
+        ])
+        self.assertNotEqual(conflict, 0)
+        self.assertIn("EVENT_ATTEMPT_CONFLICT", conflict_err)
+
     def test_append_refuses_to_recreate_an_archived_change(self) -> None:
         project = Path(self._tmpdir.name) / "project"
         change_dir = project / ".harness" / "changes" / "finished-change"

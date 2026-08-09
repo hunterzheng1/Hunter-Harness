@@ -92,7 +92,7 @@ requested=true + path missing
 4. **读取详细计划（补充参考）**：`.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（新版必需，legacy 缺失时 🟡WARN）→ 获取自适应执行参考
 5. **读取设计文档**：`.harness/changes/<change-name>/spec/<change-name>-design.md` → 获取核心设计决策和不变项
 6. **读取测试场景表**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` → 获取测试真相源
-7. **读取验证账本**：`.harness/changes/<change-name>/evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
+7. **读取验证账本**：通过 state layout resolver 定位 `evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状态**：`.harness/changes/<change-name>/evidence/run-task-status.md`（如存在）→ 恢复上次运行状态
 9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并用 `harness_fixback.py` 将相关 RED/YELLOW 条目合并为一个批次；每条问题保留 RED/GREEN 证据，批次关闭后只触发一次 affected verification 与一次 review
 10. 确认 `项目规则（见 .harness/context-index.json）/` 规则已加载
@@ -800,7 +800,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 ```powershell
 # gate begin/close（--task 仅在该 change 启用 checkpoint 时必需；close 不需要 --skills-root）
 python <skills-root>/scripts/harness_gate.py begin --change <cn> --phase run --skills-root <skills-root> [--task N]
-python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK --to-phase test --executor <tool> [--task N]
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK --to-phase <plannedPhases 中 run 的后继> --executor <tool> [--task N]
 
 # ledger 记录（status: ok|fail|not_run —— 没有 PASS）
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: 155, Failures: 0, Errors: 0, Skipped: 0" --coverage full --files "packages/core/src/index.ts"

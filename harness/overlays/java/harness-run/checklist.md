@@ -26,7 +26,7 @@
 - [ ] **读取详细计划（补充参考）**：`.harness/changes/<change>/plans/<change>-implementation-detail.md`（如存在）
 - [ ] **读取设计文档**：`.harness/changes/<change>/spec/<change>-design.md` — 获取核心设计决策和不变项
 - [ ] **读取测试场景表**：`.harness/changes/<change>/plans/<change>-test-scenarios.md` — 获取与当前任务相关的测试场景
-- [ ] **读取验证账本**：`.harness/changes/<change>/verification-ledger.json`（如存在）— 复用已有 compile/unitTest 结果
+- [ ] **读取验证账本**：通过共享状态目录解析器定位 change，再读取 `evidence/verification-ledger.json`（兼容旧路径）— 复用已有 compile/unitTest 结果
 - [ ] **读取任务状态**：`.harness/changes/<change>/run-task-status.md`（如存在）— 恢复上次运行状态
 - [ ] 确认 `项目规则（见 .harness/context-index.json）/` 规则已加载
 - [ ] 检查构建配置完整性（worktree 中确认 `.mvn/maven.config`、`settings.xml` 等存在）

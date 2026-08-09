@@ -21,10 +21,10 @@ verification-ledger 把每次验证（compile / unit test / api test / package�
 ## 二、账本文件位置
 
 ```text
-.harness/changes/<change-name>/evidence/verification-ledger.json
+<resolved-change-state>/evidence/verification-ledger.json
 ```
 
-> 旧路径 `.harness/changes/<change-name>/verification-ledger.json`（根目录）兼容读取，详见 `state-layout-protocol.md`。新版本优先写 `evidence/`。
+> `<resolved-change-state>` 必须由共享状态目录解析器取得：split-v1 通常位于 `.harness/state/changes/<change-name>`，旧布局仍位于 `.harness/changes/<change-name>`。根目录旧文件 `verification-ledger.json` 只兼容读取，详见 `state-layout-protocol.md`；新版本统一写入 `evidence/`。
 
 - 不提交到 git（已在 `.harness/` 屏蔽范围内）
 - 每次验证执行后**立即写回**（不得等所有阶段结束才补）
@@ -32,7 +32,7 @@ verification-ledger 把每次验证（compile / unit test / api test / package�
 
 ## 三、账本结构
 
-`.harness/changes/<change>/verification-ledger.json` 必须至少包含：
+解析后的变更状态目录中，`evidence/verification-ledger.json` 必须至少包含：
 
 ```json
 {

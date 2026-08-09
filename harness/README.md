@@ -278,7 +278,7 @@ harness-skills/
 | **submit 步骤 4** | 提交前必须展示四项：实际 staged 文件列表、diff stat、commit message、是否 push |
 | **submit push 前** | `git fetch` 后检查远程是否有新提交；有则**不得直接 pull 后 push**，必须 pull/rebase + 重新 compile/test |
 | **submit hash 记录** | pre-pull local hash + final pushed hash 双标注（主目录）；worktree 模式 submit 段只本地 commit，合并段产生 `mergeFinalHash`，archive 以 `mergeFinalHash` 为准（无则回退 final pushed hash） |
-| **archive 阶段 1** | 归档前确认 commit 已 push、hash 与 submit/merge 记录一致、test/review 报告状态；阶段边界由 finalize 单进程维护，调用者不额外 append |
+| **archive 阶段 1** | 归档前确认实际计划阶段的证据与结局；有 Git 时核对最终提交身份，无 Git、无 upstream 或跳过 submit 时使用内容清单身份。发布候选资格与本地封存分开判断；阶段边界由 finalize 单进程维护，调用者不额外 append |
 | **archive 文件移动** | 只用 PowerShell 或 Read+Write+验证，**禁止 Bash mv/cp/rm**；移动失败时不删除原目录 |
 | **archive final-summary** | 必须运行 `harness_archive.py finalize` 生成权威 `summary-data.json` 并完成 validate；`final-summary.html` 为可选展示投影（默认渲染，失败只记 warning 不回滚；`finalize --no-html` 可跳过）。无测试或无 review 时必须在 JSON 中标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
 
@@ -339,9 +339,9 @@ harness-skills/
 
 > **harness-review 是参考性审查阶段**：默认只生成参考性审查报告和按需 fixback，不影响后续 submit、archive。如果用户选择处理 fixback，回到 `/harness-run --fixback`，再执行 `/harness-test` 和 `/harness-review`；如果团队希望 review RED 阻塞提交，可在 `.harness/config/harness-test-config.md` 中设置 `review.strict-review-gate: true`。
 
-> **submit 与 archive 的时序**：主目录模式流程为 `run → test → review(advisory) → submit(含 push) → archive`；worktree 模式流程为 `run → test → review → submit(本地 commit + 自动 --no-ff 合并 + push 主分支) → archive`。`/harness-merge` 为 submit 的别名触发词。archive 优先读 ledger `mergeFinalHash`。
+> **阶段顺序以计划为准**：Plan 会把本次 `plannedPhases` 写入上下文，后续阶段只消费该计划，不再假定 test、review、submit 或 merge 必经。快速流程默认可用 `plan → run → archive`；需要完整验证、评审或提交时再把对应阶段加入计划。无 Git、无 upstream、仅本地提交或主动跳过 submit 都不妨碍事实封存；只有“发布候选”需要额外满足发布策略。
 
-> **verification-ledger 驱动跨阶段复用**：每个变更目录维护 `.harness/changes/<change-name>/evidence/verification-ledger.json`，记录 compile/unitTest/apiTest 的结果+证据+diffHash+作用范围。run/test/submit 执行验证前先读 ledger，满足复用条件（diffHash 一致、module/profile 一致、范围更严格、有证据、无行为性 post-test 修改）则跳过重跑并标记 🔁REUSED；post-test 小改动按 7 类分类，非行为性清理可复用 API 测试。详见 `protocols/ledger-protocol.md`。
+> **verification-ledger 驱动跨阶段复用**：先通过共享状态目录解析器定位变更，再读写其 `evidence/verification-ledger.json`，其中记录 compile/unitTest/apiTest 的结果、证据、diffHash 和作用范围。run/test/submit 执行验证前先读 ledger，满足复用条件（diffHash 一致、module/profile 一致、范围更严格、有证据、无行为性 post-test 修改）则跳过重跑并标记 🔁REUSED；post-test 小改动按 7 类分类，非行为性清理可复用 API 测试。详见 `protocols/ledger-protocol.md`。
 
 ## 外部方法论吸收（已内化）
 

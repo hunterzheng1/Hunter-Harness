@@ -740,7 +740,7 @@ TEST_<change-name>_<timestamp>_<short-random>
 ```powershell
 # gate begin/close（phase=test；--task 仅 checkpoint 启用时必需；close 不需要 --skills-root）
 python <skills-root>/scripts/harness_gate.py begin --change <cn> --phase test --skills-root <skills-root> [--task N]
-python <skills-root>/scripts/harness_gate.py close --change <cn> --phase test --status OK --to-phase review --executor <tool> [--task N]
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase test --status OK --to-phase <plannedPhases 中 test 的后继> --executor <tool> [--task N]
 
 # ledger 记录 / 复用（--profile-input = verification key，不是文件路径）
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: N, Failures: 0" --coverage full --files "packages/core/src/index.ts"
@@ -851,7 +851,7 @@ python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --ve
 python <skills-root>/scripts/harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json
 ```
 
-写入 `.harness/changes/<change>/evidence/verification-ledger.json`：
+通过 `harness_ledger.py record` 写入 state layout resolver 返回的 `evidence/verification-ledger.json`：
 
 ```json
 {

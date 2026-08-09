@@ -23,6 +23,18 @@ PHASE_GRAPH = {
     "submit": (),
 }
 
+WORKFLOW_PHASES = (
+    "plan",
+    "run",
+    "test",
+    "review",
+    "package",
+    "apidoc",
+    "submit",
+    "merge",
+    "archive",
+)
+
 DISPLAY_TITLE_MAX_LENGTH = 80
 
 
@@ -206,6 +218,107 @@ def _contract(project: Path, change: str) -> tuple[Path, dict[str, Any], Path]:
     return contract_root, contract, state_root
 
 
+def _phase_plan(contract_root: Path) -> tuple[list[str] | None, str]:
+    policy_path = contract_root / "meta" / "gate-policy.json"
+    if not policy_path.is_file():
+        return None, "legacy"
+    try:
+        policy = _read_json(policy_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, "legacy"
+    for field, source in (
+        ("plannedPhases", "change"),
+        ("defaultPhases", "policy-default"),
+    ):
+        raw = policy.get(field)
+        if not isinstance(raw, list):
+            continue
+        phases = [str(item).strip() for item in raw if str(item).strip()]
+        if (
+            phases
+            and len(phases) == len(set(phases))
+            and all(item in WORKFLOW_PHASES for item in phases)
+        ):
+            return phases, source
+    return None, "legacy"
+
+
+def _allowed_next_phases(contract_root: Path, from_phase: str) -> list[str]:
+    planned, _source = _phase_plan(contract_root)
+    if planned is None:
+        return list(PHASE_GRAPH.get(from_phase, ()))
+    if from_phase not in planned:
+        return []
+    index = planned.index(from_phase)
+    allowed = planned[index + 1 : index + 2]
+    if from_phase in {"test", "review"} and "run" in planned:
+        allowed = [*allowed, "run"]
+    return list(dict.fromkeys(allowed))
+
+
+def configure_phase_plan(
+    project: Path,
+    change: str,
+    *,
+    phases: list[str],
+    operator: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Persist the single phase plan consumed by Context, Archive and Platform."""
+    project = Path(project).resolve()
+    try:
+        contract_root, _contract_data, _state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+    normalized = [str(item).strip() for item in phases if str(item).strip()]
+    if (
+        not normalized
+        or len(normalized) != len(set(normalized))
+        or any(item not in WORKFLOW_PHASES for item in normalized)
+        or normalized[0] != "plan"
+        or normalized[-1] != "archive"
+    ):
+        return {
+            "ok": False,
+            "code": "PHASE_PLAN_INVALID",
+            "message": "phase plan must be unique, start with plan, and end with archive",
+            "allowedPhases": list(WORKFLOW_PHASES),
+        }
+    if not operator.strip() or not reason.strip():
+        return {
+            "ok": False,
+            "code": "PHASE_PLAN_JUSTIFICATION_REQUIRED",
+        }
+    policy_path = contract_root / "meta" / "gate-policy.json"
+    policy = _read_json(policy_path) if policy_path.is_file() else {"schemaVersion": 1}
+    skipped = [
+        {
+            "phase": phase,
+            "reason": reason.strip(),
+            "operator": operator.strip(),
+            "decidedAt": _now().isoformat(),
+        }
+        for phase in WORKFLOW_PHASES
+        if phase not in normalized and phase != "merge"
+    ]
+    policy["plannedPhases"] = normalized
+    policy["skippedPhases"] = skipped
+    policy["phasePlan"] = {
+        "source": "change-override",
+        "operator": operator.strip(),
+        "reason": reason.strip(),
+        "updatedAt": _now().isoformat(),
+    }
+    _write_json_atomic(policy_path, policy)
+    return {
+        "ok": True,
+        "code": "PHASE_PLAN_CONFIGURED",
+        "plannedPhases": normalized,
+        "skippedPhases": skipped,
+        "path": str(policy_path),
+    }
+
+
 def _active_changes(project: Path) -> list[str]:
     root = project.resolve() / ".harness" / "changes"
     if not root.is_dir():
@@ -319,6 +432,14 @@ def prepare_context(
         and lifecycle.get("status") not in {None, "active"}
     ):
         return {"ok": False, "code": "CHANGE_NOT_ACTIVE", "changeName": change}
+    planned_phases, phase_plan_source = _phase_plan(contract_root)
+    if planned_phases is not None and phase not in planned_phases:
+        return {
+            "ok": False,
+            "code": "PHASE_NOT_PLANNED",
+            "phase": phase,
+            "plannedPhases": planned_phases,
+        }
     paths = _paths(state_root)
     paths["runtime"].mkdir(parents=True, exist_ok=True)
     recovery: dict[str, Any] | None = None
@@ -395,9 +516,13 @@ def prepare_context(
         },
     )
     next_phases = (
-        list(PHASE_GRAPH.get(str(latest.get("toPhase")), ()))
-        if latest
-        else ["plan", "run"]
+        _allowed_next_phases(contract_root, phase)
+        if planned_phases is not None
+        else (
+            list(PHASE_GRAPH.get(str(latest.get("toPhase")), ()))
+            if latest
+            else ["plan", "run"]
+        )
     )
     return {
         "ok": True,
@@ -408,6 +533,8 @@ def prepare_context(
         "contractRoot": str(contract_root),
         "stateRoot": str(state_root),
         "nextPhases": next_phases,
+        "plannedPhases": planned_phases,
+        "phasePlanSource": phase_plan_source,
         "legacyBootstrap": not transitions,
         "latestTransition": latest,
         "lease": lease,
@@ -423,42 +550,19 @@ def _invalidate_for_fixback(
     from_phase: str,
     to_phase: str,
 ) -> dict[str, Any]:
-    ledger_path = state_root / "evidence" / "verification-ledger.json"
-    invalidated: list[str] = []
-    if ledger_path.is_file():
-        try:
-            ledger = _read_json(ledger_path)
-        except (OSError, ValueError, json.JSONDecodeError):
-            ledger = {}
-        targets = ledger.get("verificationTargets")
-        if isinstance(targets, dict):
-            for target_id, target in targets.items():
-                if not isinstance(target, dict):
-                    continue
-                target["reusable"] = False
-                target["invalidation"] = {
-                    "code": "FIXBACK_INVALIDATED",
-                    "transitionHash": transition_hash,
-                    "fromPhase": from_phase,
-                    "toPhase": to_phase,
-                    "invalidatedAt": _now().isoformat(),
-                }
-                invalidated.append(str(target_id))
-        validations = ledger.get("validations")
-        if isinstance(validations, dict):
-            for entry in validations.values():
-                if isinstance(entry, dict):
-                    entry["reusable"] = False
-                    entry["invalidation"] = {
-                        "code": "FIXBACK_INVALIDATED",
-                        "transitionHash": transition_hash,
-                    }
-        _write_json_atomic(ledger_path, ledger)
+    # A review→run handoff happens before product files are changed. Invalidating
+    # every target here made unrelated API/build evidence unusable. The Fixback
+    # resolver now invalidates only entries whose inputsFiles intersect the
+    # issue's actual changedFiles.
     record = {
         "schemaVersion": 1,
-        "code": "FIXBACK_INVALIDATED",
+        "code": "FIXBACK_INVALIDATION_DEFERRED",
         "transitionHash": transition_hash,
-        "targetIds": invalidated,
+        "fromPhase": from_phase,
+        "toPhase": to_phase,
+        "targetIds": [],
+        "deferred": True,
+        "reason": "changed-files-not-known",
         "createdAt": _now().isoformat(),
     }
     _append_ndjson(
@@ -479,17 +583,22 @@ def close_transition(
     status: str = "OK",
 ) -> dict[str, Any]:
     project = Path(project).resolve()
-    if to_phase not in PHASE_GRAPH.get(from_phase, ()):
+    try:
+        contract_root, _contract_data, state_root = _contract(project, change)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+    allowed_next = _allowed_next_phases(contract_root, from_phase)
+    if to_phase not in allowed_next:
+        planned_phases, source = _phase_plan(contract_root)
         return {
             "ok": False,
             "code": "TRANSITION_ILLEGAL",
             "fromPhase": from_phase,
             "toPhase": to_phase,
+            "allowedNextPhases": allowed_next,
+            "plannedPhases": planned_phases,
+            "phasePlanSource": source,
         }
-    try:
-        contract_root, _contract_data, state_root = _contract(project, change)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
     paths = _paths(state_root)
 
     artifact_entries: list[dict[str, Any]] = []
@@ -773,6 +882,13 @@ def build_parser() -> argparse.ArgumentParser:
     begin.add_argument("--change", required=True)
     begin.add_argument("--phase", required=True)
     begin.add_argument("--executor", required=True)
+    configure = sub.add_parser("configure-plan")
+    configure.add_argument("--json", action="store_true")
+    configure.add_argument("--project", required=True, type=Path)
+    configure.add_argument("--change", required=True)
+    configure.add_argument("--phases", required=True)
+    configure.add_argument("--operator", required=True)
+    configure.add_argument("--reason", required=True)
     view = sub.add_parser("view")
     view.add_argument("--json", action="store_true")
     view.add_argument("--project", required=True, type=Path)
@@ -807,6 +923,14 @@ def main(argv: list[str] | None = None) -> int:
             args.change,
             phase=args.phase,
             executor=args.executor,
+        )
+    elif args.command == "configure-plan":
+        result = configure_phase_plan(
+            args.project,
+            args.change,
+            phases=[item.strip() for item in args.phases.split(",") if item.strip()],
+            operator=args.operator,
+            reason=args.reason,
         )
     else:
         result = context_view(args.project, args.change)

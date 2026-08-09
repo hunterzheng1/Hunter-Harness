@@ -96,6 +96,65 @@ def seed_plan_start(
 
 
 class PlanFinalizeTests(unittest.TestCase):
+    def test_finalize_rejects_product_paths_that_miss_planned_code_test_and_build_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            plan_path = staging / "plans" / "demo-plan.md"
+            write(
+                plan_path,
+                plan_path.read_text(encoding="utf-8")
+                + "\n实现 `src/timer.ts`，验证 `tests/timer.test.ts`，并维护 `package.json`。\n",
+            )
+            write(
+                change_dir / "meta" / "change-context.json",
+                json.dumps({
+                    "schemaVersion": 2,
+                    "ownership": {"productPaths": ["src/"]},
+                }),
+            )
+            seed_plan_start(change_dir)
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "PLAN_PRODUCT_PATHS_INCOMPLETE")
+            self.assertEqual(result["missingPaths"], ["package.json", "tests/timer.test.ts"])
+
+    def test_finalize_rejects_glob_product_paths_before_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            staging = root / "staging"
+            change_dir = root / ".harness" / "changes" / "demo"
+            seed_staging(staging)
+            write(
+                change_dir / "meta" / "change-context.json",
+                json.dumps({
+                    "schemaVersion": 2,
+                    "ownership": {"productPaths": ["src/**"]},
+                }),
+            )
+            seed_plan_start(change_dir)
+
+            result = finalizer.finalize_plan(
+                change_dir,
+                staging,
+                change_name="demo",
+                run_id="plan-run",
+                attempt=1,
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "PLAN_PRODUCT_PATHS_GLOB_UNSUPPORTED")
+
     def test_invalid_staging_publishes_nothing_and_writes_no_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

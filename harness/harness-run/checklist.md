@@ -31,7 +31,7 @@ description: harness-run 的执行检查清单。仅在编码执行时读取。
 - [ ] **读取详细计划（补充参考）**：`.harness/changes/<change>/plans/<change>-implementation-detail.md`（新版必需；legacy 缺失时 🟡WARN）
 - [ ] **读取设计文档**：`.harness/changes/<change>/spec/<change>-design.md` — 获取核心设计决策和不变项
 - [ ] **读取测试场景表**：`.harness/changes/<change>/plans/<change>-test-scenarios.md` — 获取与当前任务相关的测试场景
-- [ ] **读取验证账本**：`.harness/changes/<change>/evidence/verification-ledger.json`（如存在）— 复用已有 compile/unitTest 结果
+- [ ] **读取验证账本**：通过 context 返回的 `executionRoot` 读取 `evidence/verification-ledger.json`（如存在）— 复用已有 compile/unitTest 结果
 - [ ] **读取任务状态**：`.harness/changes/<change>/evidence/run-task-status.md`（如存在）— 恢复上次运行状态
 - [ ] **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change>/reports/review/fixback-*.md`
 - [ ] 确认未将 `docs/superpowers/` 作为执行输入（旧草稿最多作为人工线索）

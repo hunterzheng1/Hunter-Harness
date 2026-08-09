@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -140,6 +141,45 @@ class CanReuseTests(unittest.TestCase):
             self.assertEqual(result["reason"], "reuse")
             self.assertEqual(result["marker"], "REUSED")
             self.assertIn("evidence_summary", result)
+
+    def test_equivalent_runner_wrappers_do_not_change_the_canonical_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-wrapper"
+            change.mkdir()
+            src = change / "engine.test.ts"
+            src.write_text("export {}\n", encoding="utf-8")
+            inputs_hash, inputs_files = harness_ledger.compute_inputs_hash([src])
+            self._write_ledger(
+                change,
+                {
+                    "validations": {
+                        "unitTestFull": {
+                            "status": "OK",
+                            "command": "npx vitest run",
+                            "runnerCommand": "npx vitest run",
+                            "scope": "full",
+                            "evidence": "13 tests passed",
+                            "inputsHash": inputs_hash,
+                            "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "full",
+                        }
+                    }
+                },
+            )
+
+            result = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="unitTestFull",
+                files=[str(src)],
+                requested_command="vitest run (safe runner)",
+            )
+
+            self.assertTrue(result["reuse"], result)
+            self.assertEqual(
+                harness_ledger.command_set_hash("npx vitest run"),
+                harness_ledger.command_set_hash("vitest run (safe runner)"),
+            )
 
     def test_rerun_when_fingerprint_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -478,6 +518,50 @@ class CanReuseTests(unittest.TestCase):
 
 
 class RecordTests(unittest.TestCase):
+    def test_active_run_freezes_ownership_before_evidence_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+            change = project / ".harness" / "changes" / "freeze"
+            state = project / ".harness" / "state" / "changes" / "freeze"
+            change.joinpath("meta").mkdir(parents=True)
+            contract = {
+                "schemaVersion": 2,
+                "changeId": "freeze",
+                "lifecycle": {"status": "active"},
+                "ownership": {
+                    "productPaths": ["src/"],
+                    "staticEvidencePaths": [".harness/changes/freeze/"],
+                    "excludedPaths": [".harness/state/"],
+                },
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/freeze",
+                    "runtimeRoot": ".harness/state/changes/freeze",
+                },
+            }
+            change.joinpath("meta/change-context.json").write_text(
+                json.dumps(contract), encoding="utf-8"
+            )
+            capsule = {
+                "schemaVersion": 1,
+                "phase": "run",
+                "runId": "run-1",
+                "ownershipHash": harness_ledger.ownership_hash(contract),
+                "createdAt": "2026-08-09T10:00:00+00:00",
+            }
+            capsule_path = state / "runtime" / "phase-context" / "run-1.json"
+            capsule_path.parent.mkdir(parents=True)
+            capsule_path.write_text(json.dumps(capsule), encoding="utf-8")
+            contract["ownership"]["productPaths"].append("tests/")
+            change.joinpath("meta/change-context.json").write_text(
+                json.dumps(contract), encoding="utf-8"
+            )
+
+            result = harness_ledger.frozen_ownership_check(change)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "OWNERSHIP_CHANGED_BEFORE_VERIFICATION")
+
     def test_record_preserves_diff_hash_and_adds_inputs_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp) / "change-record"
@@ -606,6 +690,34 @@ class RecordTests(unittest.TestCase):
 
 
 class CliSmokeTests(unittest.TestCase):
+    def test_can_reuse_rejects_relative_files_without_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change-cli"
+            change.mkdir()
+
+            from contextlib import redirect_stderr
+            from io import StringIO
+
+            error = StringIO()
+            with redirect_stderr(error):
+                code = harness_ledger.main(
+                    [
+                        "can-reuse",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--files",
+                        "src/app.ts",
+                        "--json",
+                    ]
+                )
+
+            self.assertNotEqual(code, 0)
+            payload = json.loads(error.getvalue())
+            self.assertEqual(payload["code"], "PROJECT_ROOT_REQUIRED")
+            self.assertIn("--project", payload["error"])
+
     def test_can_reuse_json_flag_after_subcommand(self) -> None:
         # Gate 1 格式（设计 §3.5 与 skill 文档一致）：--json 位于子命令之后。
         # argparse 子命令切换后必须仍能识别全局 --json，否则 skill 实际命令

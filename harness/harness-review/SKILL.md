@@ -51,16 +51,18 @@ disallowed-tools:
 
 ## Workflow
 
-先用 `harness_context.py prepare --phase review --executor <tool> [--change <id>] --json` 与 `harness_context.py begin --phase review --change <id> --executor <tool> --json` 解析唯一 active change 并校验 test→review receipt；多个 active change 未显式选择时返回 `ACTIVE_CHANGE_AMBIGUOUS`，禁止再按 Glob/mtime 猜测。阶段门禁使用 `harness_gate.py begin --phase review --change <id> --task <n> --skills-root <skills-root> --executor-tool <tool> --json`；结束时只执行一次 `harness_gate.py close --phase review --change <id> --status <OK|WARN|FAIL> --run-id <begin-run-id> --to-phase submit|run --executor <tool> --json`，由 gate 完成阶段事件、租约、上下文交接与远端补传。不得手工追加 `phase.start/phase.end` 或再次调用 context close；任一 close 失败不得宣称审查完成。
+先用 `harness_context.py prepare --phase review --executor <tool> [--change <id>] --json` 与 `harness_context.py begin --phase review --change <id> --executor <tool> --json` 解析唯一 active change 并校验实际前序 receipt；多个 active change 未显式选择时返回 `ACTIVE_CHANGE_AMBIGUOUS`，禁止再按 Glob/mtime 猜测。阶段门禁使用 `harness_gate.py begin --phase review --change <id> --task <n> --skills-root <skills-root> --executor-tool <tool> --json`；结束时只执行一次 `harness_gate.py close`，正常路径的 `--to-phase` 取 `plannedPhases` 中 review 的后继，Fixback 才返回 run。由 gate 完成阶段事件、租约、上下文交接与远端补传。不得手工追加阶段边界或再次调用 context close；任一 close 失败不得宣称评审完成。
 
 0. **启动准备** — 确定变更名（Glob `.harness/changes/*/plans/*-plan.md`，排除 `.harness/archive/*/`，读 frontmatter 提取 change-name）；**append `phase.start` 事件**（不得等审查完成才补）
 1. **读取 worktree 状态（门禁检查）** — 读 `.harness/changes/<change-name>/meta/worktree.json`：`requested=true` 但 worktree 不存在 → 停止并提示先修复 `harness-run`，不得静默回主目录（否则 git diff 为空）；`requested=true` 且 worktree 已创建 → spawned agent 用该 worktree 路径执行 `git diff`（确保审查 worktree 变更而非主目录）；`requested=false` → 审查主目录变更
 <!-- @section-id review.delegate -->
-### 2. 审查执行（隔离 reviewer 优先）
+### 2. 审查执行（独立评审优先）
 
 review 默认优先在独立上下文执行，避免主会话已形成的实现结论影响审查。阶段开始后只做一次能力判定：固定 reviewer 可用时执行 `python <skills-root>/scripts/harness_preflight.py check-agents --skills-root <skills-root> --agent harness-reviewer --json`；宿主提供通用隔离任务能力时可直接委派一次只读审查。委派只读取 diff、规则和测试证据，主会话负责最终核验与落盘。
 
-无隔离能力、定义损坏、spawn 失败、空返回或只有元数据时，不重试，立即由主会话按同一 6 维度检查清单完成审查。无论是否委派，都必须追加一条 `decision` 事件：`executor_agent=harness-reviewer` 表示已委派；`decision` 写执行方式，`reason` 写选择或回退原因，稳定原因码使用 `REVIEW_DELEGATED`、`REVIEW_INLINE_UNAVAILABLE`、`REVIEW_INLINE_SPAWN_FAILED` 或 `REVIEW_INLINE_INVALID_RESULT`。正常 inline 是可接受结果，不显示成流程故障；`fallbackPolicy=inline-no-retry`。
+无隔离能力、定义损坏、spawn 失败、空返回或只有元数据时，不重试，立即由主会话按同一 6 维度检查清单完成审查。无论是否委派，都必须追加一条结构化 `decision` 事件：`--execution-mode delegated|inline` 标明执行方式；委派时写 `--executor-agent harness-reviewer --decision-reason-code REVIEW_DELEGATED`；回退时只写一个 `--fallback-reason-code REVIEW_INLINE_UNAVAILABLE|REVIEW_INLINE_SPAWN_FAILED|REVIEW_INLINE_INVALID_RESULT`。`decision` 和 `reason` 必须用中文完整说明，禁止把原因码拼进正文。正常主会话评审是可接受结果，不显示成流程故障；`fallbackPolicy=inline-no-retry`。
+
+项目规模小、风险低或没有 CodeGraph 都不是跳过独立评审的理由。原因码是稳定机器字段，仅用于协议与技术详情；面向用户的事件摘要必须写成「已使用独立评审」或「当前环境没有可用的隔离评审能力，已由主会话完成评审」等中文说明。
 
 3. **持久化报告与事实 sidecar（强制，主会话）** — Agent 返回后主会话 Write 到 `reports/review/review-report-*.md`，并把同一批发现写成临时 JSON 后调用 `python <skills-root>/scripts/harness_review.py write-findings --change-dir <change-dir> --input <findings.json>`。权威计数来自 `reports/review/review-findings.json`，不是 Markdown。任一写入缺失 → 🟡WARN，不得宣称 review 完成。
 4. **生成修复反馈（原生协议）** — 若报告存在 RED/YELLOW 问题，执行 `protocols.md` 的 `review-fixback-protocol`，将问题转化为结构化 fixback 清单并落盘到 `.harness/changes/<change-name>/reports/review/fixback-YYYYMMDD-HHmm.md`；随后把 disposition 临时 JSON 交给 `python <skills-root>/scripts/harness_review.py write-dispositions --change-dir <change-dir> --input <dispositions.json>`，权威状态写入 `reports/review/fixback-dispositions.json`。若无 RED/YELLOW，也必须写空 findings sidecar，并记录 `review-fixback-protocol: skipped(no findings)`。不调用 Superpowers `receiving-code-review`，也不记录外部 skill 降级。

@@ -248,7 +248,7 @@ powershell.exe -Command "Copy-Item '<main-dir>/<module>/src/main/resources/appli
 
 ### 单元测试复用（ledger 驱动）
 
-- [ ] Phase 1 前读取 `.harness/changes/<change-name>/evidence/verification-ledger.json`
+- [ ] Phase 1 前通过共享状态目录解析器读取 `evidence/verification-ledger.json`
 - [ ] 判断是否复用 run 的 unitTest：diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 实际跑了全量 mvn test
 - [ ] 复用 → 跳过重跑，标记"✅ 复用 harness-run 单元测试结果"
 - [ ] 不复用 → 重跑 `mvn test -pl <module>`，结果写回 ledger 的 `unitTest` 项

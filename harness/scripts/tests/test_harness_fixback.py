@@ -104,6 +104,113 @@ def write_evidence(
 
 
 class FixbackBatchTests(unittest.TestCase):
+    def test_resume_is_idempotent_and_returns_the_existing_open_batch(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            first = module.resume_batch(
+                change_dir,
+                batch_id="batch-resume",
+                product_identity="sha256:before",
+                root_cause="同一组评审建议",
+                run_id="run-fixback-2",
+                attempt=2,
+            )
+            second = module.resume_batch(
+                change_dir,
+                batch_id="ignored-new-id",
+                product_identity="sha256:before",
+                root_cause="同一组评审建议",
+                run_id="another-run",
+                attempt=3,
+            )
+
+            self.assertEqual(first["batchId"], "batch-resume")
+            self.assertEqual(second["batchId"], "batch-resume")
+            self.assertEqual(second["runId"], "run-fixback-2")
+            self.assertEqual(second["attempt"], 2)
+            self.assertTrue(second["resumed"])
+            self.assertEqual(second["nextStep"], "add-issues")
+            self.assertEqual(len(module._all_batches(change_dir)), 1)
+
+    def test_resolving_an_issue_invalidates_only_verifications_using_changed_files(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            source = change_dir / "src" / "engine.ts"
+            source.parent.mkdir(parents=True)
+            source.write_text("export {}\n", encoding="utf-8")
+            ledger_path = change_dir / "evidence" / "verification-ledger.json"
+            ledger_path.parent.mkdir(parents=True)
+            ledger_path.write_text(
+                json.dumps({
+                    "verificationTargets": {
+                        "unit": {
+                            "verification": "unitTestFull",
+                            "inputsFiles": ["src/engine.ts", "src/engine.test.ts"],
+                            "reusable": True,
+                        },
+                        "api": {
+                            "verification": "apiTest",
+                            "inputsFiles": ["src/api.ts"],
+                            "reusable": True,
+                        },
+                    },
+                    "validations": {
+                        "unitTestFull": {
+                            "inputsFiles": ["src/engine.ts", "src/engine.test.ts"],
+                            "reusable": True,
+                        },
+                        "apiTest": {
+                            "inputsFiles": ["src/api.ts"],
+                            "reusable": True,
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+            module.open_batch(
+                change_dir,
+                batch_id="batch-targeted",
+                product_identity="sha256:before",
+                root_cause="快照返回可变引用",
+            )
+            module.add_issue(
+                change_dir,
+                batch_id="batch-targeted",
+                issue_id="I-1",
+                summary="复制快照",
+                risk_tags=[],
+            )
+            module.resolve_issue(
+                change_dir,
+                batch_id="batch-targeted",
+                issue_id="I-1",
+                red_evidence=write_evidence(
+                    change_dir,
+                    "evidence/red-targeted.json",
+                    kind="red",
+                    status="FAIL",
+                    product_identity="sha256:before",
+                    evidence_id="red-targeted",
+                ),
+                green_evidence=write_evidence(
+                    change_dir,
+                    "evidence/green-targeted.json",
+                    kind="green",
+                    status="PASS",
+                    product_identity="sha256:after",
+                    evidence_id="green-targeted",
+                ),
+                changed_files=["src/engine.ts"],
+            )
+
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+            self.assertFalse(ledger["verificationTargets"]["unit"]["reusable"])
+            self.assertTrue(ledger["verificationTargets"]["api"]["reusable"])
+            self.assertFalse(ledger["validations"]["unitTestFull"]["reusable"])
+            self.assertTrue(ledger["validations"]["apiTest"]["reusable"])
+
     def test_related_issues_close_with_one_affected_and_review_receipt(self) -> None:
         self.assertTrue(SCRIPT.is_file(), "harness_fixback.py must be implemented")
         module = load_module()

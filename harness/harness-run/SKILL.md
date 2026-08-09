@@ -33,7 +33,7 @@ disallowed-tools:
 
 仅当用户显式调用 `/harness-run` 时执行；plan 完成后**不自动**进入本阶段。参数：`--subagent` 强制 Subagent-Driven；`--inline` 等同默认；`--fixback` 读最新 review fixback。**默认 Inline，不询问执行模式**。
 
-**单阶段原则**：run 关门（步骤 4 的 gate close + context close）完成后必须停止并交还用户，仅提示下一步可执行 `/harness-test`；禁止自动开始执行测试、review 或 submit。
+**单阶段原则**：run 关门后必须停止并交还用户，仅提示 `plannedPhases` 中的真实下一阶段；禁止自动开始其他阶段。
 
 ## 前置条件
 
@@ -52,14 +52,16 @@ disallowed-tools:
 
 ## Workflow 概要
 
-0. 加载上下文：先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，以返回的唯一 change/executionRoot/transition receipt 为准（多 active 缺参 → `ACTIVE_CHANGE_AMBIGUOUS`，禁止按 mtime 猜测）；再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验 Plan artifact/hash/HEAD，读 spec/plan/detail/scenarios/ledger/run-task-status/worktree；`--fixback` 读 fixback → **`harness_gate.py begin --phase run --change <id>`**（claim + phase.start + identity；禁止手工 Write `events.ndjson` / 手工 `phase.end`）。**C3 钩子**：`harness_gate.py begin` 在已连接平台时会 best-effort 调用 events-sync（注册 run / `running`）；失败只告警，不阻断 begin。
+0. 加载上下文：先 `harness_context.py prepare --phase run --executor <tool> [--change <id>] --json`，再 **`harness_context.py begin --phase run --change <id> --executor <tool> --json`** 校验交接。`--fixback` 时紧接着运行 `harness_fixback.py resume --change-dir "<executionRoot>"`，只消费返回的 `batchId/runId/attempt/nextStep/changedFiles/requiredVerifications`；重复调用必须复用同一批次和轮次，不重新通读实现或另建脚本。最后运行 **`harness_gate.py begin --phase run --change <id>`**；上下文未完成时 gate 会在创建租约前拒绝。禁止手写 `events.ndjson` / `phase.end`。已连接平台时 begin 会 best-effort 补传事件，失败只告警。
 0.5. **测试基础设施探测**（先写 `CHECKING`，四项证据齐备后再结论）→ `reference.md` Step 0.5；测试基线已由上一步 gate begin 内部建立，不得再次执行 guard begin
 1. **变更簇 TDD** — `protocols.md` `run-tdd-protocol`；批量 RED/GREEN；按需 `change-cluster-review-protocol`（高风险 + reviewer 预检可用）
 2. 构建验证 + **仅**通过 `harness_ledger.py record` 写 ledger（禁止 Write/Edit `verification-ledger.json`）；`diff-hash --change-dir` 纳入 ignored tests → `reference.md` Step 2c
 3. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
-4. **关门检查**（10 项）→ 只执行一次 **`harness_gate.py close --phase run --change <id> --status <OK|WARN|FAIL> --to-phase test --executor <tool> --json`**。该命令内部依次关闭 test guard、写 `phase.end`、释放阶段租约、写 append-only handoff，并立即补传远端事件；不得再单独调用 test-guard/context close。若返回 `PHASE_HANDOFF_PENDING`，修正明确指出的输入后原样重试同一命令，已完成步骤会幂等复用。
+4. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 必须取返回的 `nextPhases` 或 `plannedPhases` 中 run 的真实后继，禁止写死 test。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
 
-**Fixback**：`--fixback` 或用户要求时读 `reports/review/fixback-*.md`；RED 优先；未选用则记 `fixback: advisory-not-applied`。
+**Fixback**：必须通过 `harness_fixback.py resume/add-issue/resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；未选用则用中文记录“本轮未采纳该改进建议”。
+
+**执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。
 
 **Foundation Gate**：若 `meta/implementation-checkpoints.json` 中 `foundation-gate` 为 pending，不得开始 plan 中任务 6+；由 `harness_gate.py` 硬阻断。
 

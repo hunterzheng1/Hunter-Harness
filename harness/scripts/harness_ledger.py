@@ -145,7 +145,91 @@ def _hash_text(value: str) -> str:
 
 def command_set_hash(command: str) -> str:
     """Stable identity for the exact command set represented by one target."""
-    return _hash_text(str(command).strip())
+    return _hash_text(canonical_command(command))
+
+
+def canonical_command(command: str) -> str:
+    """Normalize supported launch wrappers without mixing runner notes into identity."""
+    value = re.sub(r"\s+", " ", str(command).strip())
+    value = re.sub(r"\s*\(safe runner\)\s*$", "", value, flags=re.I)
+    value = re.sub(r"^npx(?:\s+--no-install)?\s+", "", value, flags=re.I)
+    return value.strip()
+
+
+def default_environment_hash(project_root: Path | None = None) -> str:
+    payload = {
+        "osName": os.name,
+        "platform": sys.platform,
+        "pythonImplementation": sys.implementation.name,
+        "projectFilesystem": "windows" if os.name == "nt" else "posix",
+    }
+    return _hash_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def default_toolchain_hash(project_root: Path | None = None) -> str:
+    root = Path(project_root).resolve() if project_root is not None else None
+    manifests: list[dict[str, str]] = []
+    if root is not None:
+        for name in (
+            "package.json", "pyproject.toml", "pom.xml", "build.gradle",
+            "build.gradle.kts", "go.mod", "Cargo.toml",
+        ):
+            path = root / name
+            if path.is_file():
+                manifests.append({
+                    "name": name,
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                })
+    payload = {
+        "python": sys.version.split()[0],
+        "implementation": sys.implementation.name,
+        "manifests": manifests,
+    }
+    return _hash_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
+def frozen_ownership_check(change_dir: Path) -> dict[str, Any]:
+    """Reject evidence writes after a Run capsule's ownership scope changed."""
+    try:
+        state_root = Path(
+            harness_paths.resolve_state_dir_for_contract(change_dir)
+        ).resolve()
+        contract = harness_paths.load_change_contract(change_dir)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"ok": True, "code": "OWNERSHIP_FREEZE_NOT_APPLICABLE"}
+    capsule_root = state_root / "runtime" / "phase-context"
+    if not capsule_root.is_dir():
+        return {"ok": True, "code": "OWNERSHIP_FREEZE_NOT_APPLICABLE"}
+    capsules: list[dict[str, Any]] = []
+    for path in capsule_root.glob("run-*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            isinstance(item, dict)
+            and item.get("phase") == "run"
+            and not item.get("closedAt")
+            and _nonempty_str(item.get("ownershipHash"))
+        ):
+            capsules.append(item)
+    if not capsules:
+        return {"ok": True, "code": "OWNERSHIP_FREEZE_NOT_APPLICABLE"}
+    capsule = sorted(capsules, key=lambda item: str(item.get("createdAt") or ""))[-1]
+    current = ownership_hash(contract)
+    if capsule.get("ownershipHash") != current:
+        return {
+            "ok": False,
+            "code": "OWNERSHIP_CHANGED_BEFORE_VERIFICATION",
+            "message": (
+                "产品范围在 Run 启动后发生变化；请先通过受控范围更新重启 Run，"
+                "系统将只失效受影响的验证。"
+            ),
+            "storedOwnershipHash": capsule.get("ownershipHash"),
+            "currentOwnershipHash": current,
+            "runId": capsule.get("runId"),
+        }
+    return {"ok": True, "code": "OWNERSHIP_FROZEN"}
 
 
 def product_tree_hash(project_root: Path | None) -> str | None:
@@ -284,6 +368,10 @@ def parse_files_manifest(raw: str | None) -> list[str]:
     ]
 
 
+class ProjectRootRequiredError(ValueError):
+    """Raised when relative verification inputs have no stable project basis."""
+
+
 def resolve_input_files(
     files: list[str], project_root: Path | None
 ) -> list[str]:
@@ -313,7 +401,15 @@ def input_files_from_args(args: argparse.Namespace) -> tuple[list[str], Path | N
     manifest = parse_files_manifest(getattr(args, "files_from", None))
     if files and manifest:
         raise ValueError("use only one of --files and --files-from")
-    return resolve_input_files(files or manifest, project_root), project_root
+    selected = files or manifest
+    if project_root is None and any(
+        not Path(raw).expanduser().is_absolute() for raw in selected
+    ):
+        raise ProjectRootRequiredError(
+            "relative verification inputs require --project so their identity "
+            "does not depend on the caller's current directory"
+        )
+    return resolve_input_files(selected, project_root), project_root
 
 
 def sha256_file(path: Path) -> str:
@@ -1674,8 +1770,8 @@ def decide_can_reuse(
         )
         and (
             not _nonempty_str(requested_command)
-            or str(candidate.get("command") or "").strip()
-            == str(requested_command).strip()
+            or canonical_command(str(candidate.get("command") or ""))
+            == canonical_command(str(requested_command))
         )
     ]
     entry = (
@@ -1823,7 +1919,7 @@ def decide_can_reuse(
             }
 
     if requested_command is not None and str(requested_command).strip():
-        if str(command).strip() != str(requested_command).strip():
+        if canonical_command(str(command)) != canonical_command(str(requested_command)):
             return {
                 "ok": True,
                 "reuse": False,
@@ -2053,10 +2149,29 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     verification = args.verification
     change_dir = resolve_path(args.change_dir)
+    ownership_check = frozen_ownership_check(change_dir)
+    if not ownership_check.get("ok"):
+        return emit_error(
+            str(ownership_check.get("message")),
+            as_json=as_json,
+            error_code=str(ownership_check.get("code")),
+            extra={
+                key: value
+                for key, value in ownership_check.items()
+                if key not in {"ok", "code", "message"}
+            },
+        )
     try:
         files, project_root = input_files_from_args(args)
+    except ProjectRootRequiredError as exc:
+        return emit_error(
+            str(exc),
+            as_json=as_json,
+            error_code="PROJECT_ROOT_REQUIRED",
+        )
     except (OSError, ValueError) as exc:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
+    explicit_files = list(files)
     target = resolve_verification_target(verification, project_root)
     if target is None:
         return emit_error(
@@ -2085,7 +2200,22 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
                 compact_fn=_compact_can_reuse_payload,
             )
             return 0
-        files = resolve_input_files(resolved_files, project_root)
+        profile_files = resolve_input_files(resolved_files, project_root)
+        if explicit_files:
+            _explicit_hash, explicit_names = compute_inputs_hash(
+                explicit_files, project_root=project_root
+            )
+            _profile_hash, profile_names = compute_inputs_hash(
+                profile_files, project_root=project_root
+            )
+            if explicit_names != profile_names:
+                return emit_error(
+                    "PROFILE_INPUT_FILES_CONFLICT: --files does not match the "
+                    "declared build-profile input set",
+                    as_json=as_json,
+                    error_code="PROFILE_INPUT_FILES_CONFLICT",
+                )
+        files = profile_files
     if not files:
         return emit_error(
             "can-reuse requires --files or a non-empty --profile-input file set",
@@ -2097,10 +2227,20 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
             verification=verification,
             files=files,
             requested_scope=getattr(args, "scope", None),
-            requested_command=getattr(args, "command", None),
-            requested_toolchain_hash=getattr(args, "toolchain_hash", None),
+            requested_command=(
+                canonical_command(str(getattr(args, "command", "")))
+                if _nonempty_str(getattr(args, "command", None))
+                else None
+            ),
+            requested_toolchain_hash=(
+                getattr(args, "toolchain_hash", None)
+                or default_toolchain_hash(project_root)
+            ),
             requested_profile_hash=getattr(args, "profile_hash", None),
-            requested_environment_hash=getattr(args, "environment_hash", None),
+            requested_environment_hash=(
+                getattr(args, "environment_hash", None)
+                or default_environment_hash(project_root)
+            ),
             requested_db_schema_hash=getattr(args, "db_schema_hash", None),
             requested_product_tree_hash=(
                 getattr(args, "product_tree_hash", None) or product_tree_hash(project_root)
@@ -2137,6 +2277,18 @@ def cmd_record(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     verbose = bool(getattr(args, "verbose", False))
     change_dir = resolve_path(args.change_dir)
+    ownership_check = frozen_ownership_check(change_dir)
+    if not ownership_check.get("ok"):
+        return emit_error(
+            str(ownership_check.get("message")),
+            as_json=as_json,
+            error_code=str(ownership_check.get("code")),
+            extra={
+                key: value
+                for key, value in ownership_check.items()
+                if key not in {"ok", "code", "message"}
+            },
+        )
     verification = args.verification
     contract_v2 = _contract_is_v2(change_dir)
     migration_receipt: dict[str, Any] | None = None
@@ -2144,6 +2296,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         files, project_root = input_files_from_args(args)
     except (OSError, ValueError) as exc:
         return emit_error(f"record failed: {exc}", as_json=as_json)
+    explicit_files = list(files)
     target = resolve_verification_target(verification, project_root)
     if target is None:
         return emit_error(
@@ -2160,7 +2313,22 @@ def cmd_record(args: argparse.Namespace) -> int:
         resolved_files, err = expand_profile_input_files(project_root, profile_input)
         if err:
             return emit_error(f"record failed: {err}", as_json=as_json)
-        files = resolve_input_files(resolved_files, project_root)
+        profile_files = resolve_input_files(resolved_files, project_root)
+        if explicit_files:
+            _explicit_hash, explicit_names = compute_inputs_hash(
+                explicit_files, project_root=project_root
+            )
+            _profile_hash, profile_names = compute_inputs_hash(
+                profile_files, project_root=project_root
+            )
+            if explicit_names != profile_names:
+                return emit_error(
+                    "PROFILE_INPUT_FILES_CONFLICT: --files does not match the "
+                    "declared build-profile input set",
+                    as_json=as_json,
+                    error_code="PROFILE_INPUT_FILES_CONFLICT",
+                )
+        files = profile_files
     if not files:
         return emit_error(
             "record requires --files or a non-empty --profile-input file set",
@@ -2226,7 +2394,12 @@ def cmd_record(args: argparse.Namespace) -> int:
         entry.update(
             {
                 "status": status,
-                "command": args.command,
+                "command": canonical_command(args.command),
+                "runnerCommand": (
+                    str(getattr(args, "runner_command", None)).strip()
+                    if _nonempty_str(getattr(args, "runner_command", None))
+                    else str(args.command).strip()
+                ),
                 "evidence": args.evidence,
                 "exitCode": args.exit_code,
                 "durationMs": args.duration_ms,
@@ -2306,6 +2479,10 @@ def cmd_record(args: argparse.Namespace) -> int:
             ("dbSchemaHash", "db_schema_hash"),
         ):
             val = getattr(args, attr, None)
+            if field == "toolchainHash" and not _nonempty_str(val):
+                val = default_toolchain_hash(project_root)
+            elif field == "environmentHash" and not _nonempty_str(val):
+                val = default_environment_hash(project_root)
             if _nonempty_str(val):
                 entry[field] = str(val).strip()
         entry["commandSetHash"] = command_set_hash(args.command)
@@ -2658,6 +2835,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_record.add_argument("--verification", required=True)
     p_record.add_argument("--status", required=True)
     p_record.add_argument("--command", required=True)
+    p_record.add_argument(
+        "--runner-command",
+        default=None,
+        help="actual launcher command; stored as execution metadata, not target identity",
+    )
     p_record.add_argument("--exit-code", type=int, required=True)
     p_record.add_argument("--duration-ms", type=int, required=True)
     p_record_files = p_record.add_mutually_exclusive_group()

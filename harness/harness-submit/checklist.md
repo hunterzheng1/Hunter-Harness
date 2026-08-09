@@ -30,7 +30,7 @@ description: harness-submit 的8 步工作流详细步骤和执行日志记录�
 
 **读取 verification-ledger + post-test 变更分类**：
 
-1. 读取 `.harness/changes/<change-name>/evidence/verification-ledger.json`，记录 `diffHash` / `currentHead` / `unitTest` / `apiTest` 状态
+1. 通过 state layout resolver 读取权威 `evidence/verification-ledger.json`，记录 `diffHash` / `currentHead` / `unitTest` / `apiTest` 状态；split-v1 不得回退复制到 contract 目录
 2. 执行 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 计算当前 diffHash；manifest 校验失败即停止，不得绕过后与 ledger 比对
 3. 若 test 之后有代码变更（当前 diffHash ≠ test 完成时的 diffHash），按 7 类对 post-test diff 分类（见 `../protocols/ledger-protocol.md` 第六章），写入 ledger 的 `postTestClassification`
 4. 行为性变更（BEHAVIORAL_SERVICE_CHANGE / API_CONTRACT_CHANGE / SQL_OR_MAPPER_CHANGE / SECURITY_OR_PERMISSION_CHANGE）→ **停止 submit**，提示先重跑 `/harness-test` 相关场景

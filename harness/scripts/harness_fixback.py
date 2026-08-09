@@ -11,6 +11,7 @@ import os
 import re
 import tempfile
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from harness_paths import resolve_state_dir_for_contract
+import harness_events as he
 
 
 SCHEMA_VERSION = 1
@@ -94,6 +96,171 @@ def _all_batches(change_dir: Path) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             batches.append(value)
     return batches
+
+
+def _session_path(change_dir: Path) -> Path:
+    return _state_root(change_dir) / "runtime" / "fixback-session.json"
+
+
+def _next_step(batch: dict[str, Any]) -> str:
+    issues = [item for item in batch.get("issues", []) if isinstance(item, dict)]
+    if not issues:
+        return "add-issues"
+    if any(item.get("status") != "RESOLVED" for item in issues):
+        return "resolve-issues"
+    receipts = batch.get("receipts") if isinstance(batch.get("receipts"), dict) else {}
+    if not receipts.get("affected"):
+        return "verify-affected"
+    if not receipts.get("review"):
+        return "review"
+    return "close"
+
+
+def resume_batch(
+    change_dir: Path,
+    *,
+    batch_id: str | None,
+    product_identity: str | None,
+    root_cause: str | None,
+    run_id: str | None,
+    attempt: int | None,
+) -> dict[str, Any]:
+    """Open once or resume the active Fixback session with a stable run identity."""
+    opened = [item for item in _all_batches(change_dir) if item.get("status") == "OPEN"]
+    resumed = bool(opened)
+    if opened:
+        batch = sorted(opened, key=lambda item: str(item.get("openedAt") or ""))[0]
+    else:
+        if not batch_id or not product_identity or not root_cause:
+            raise ValueError(
+                "FIXBACK_RESUME_INPUT_REQUIRED: new sessions require batch-id, "
+                "product-identity and root-cause"
+            )
+        batch = open_batch(
+            change_dir,
+            batch_id=batch_id,
+            product_identity=product_identity,
+            root_cause=root_cause,
+        )
+    session_path = _session_path(change_dir)
+    existing: dict[str, Any] = {}
+    if session_path.is_file():
+        try:
+            loaded = json.loads(session_path.read_text(encoding="utf-8-sig"))
+            existing = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+    same_open_session = (
+        existing.get("status") == "ACTIVE"
+        and existing.get("batchId") == batch.get("batchId")
+    )
+    effective_run_id = (
+        str(existing.get("runId"))
+        if same_open_session and existing.get("runId")
+        else str(run_id or "fixback-" + uuid.uuid4().hex)
+    )
+    effective_attempt = (
+        int(existing.get("attempt"))
+        if same_open_session and isinstance(existing.get("attempt"), int)
+        else max(1, int(attempt or 1))
+    )
+    next_step = _next_step(batch)
+    session = {
+        "schemaVersion": 1,
+        "status": "ACTIVE",
+        "batchId": batch.get("batchId"),
+        "runId": effective_run_id,
+        "attempt": effective_attempt,
+        "nextStep": next_step,
+        "updatedAt": now_iso(),
+    }
+    _write_json(session_path, session)
+    he.append_event(
+        change_dir,
+        phase="run",
+        type_="decision",
+        note=(
+            "已恢复现有修复批次，将从未完成步骤继续。"
+            if resumed
+            else "已创建修复批次，将按问题逐项执行 RED/GREEN。"
+        ),
+        run_id=effective_run_id,
+    )
+    return {
+        "ok": True,
+        "code": "FIXBACK_RESUMED" if resumed else "FIXBACK_OPENED",
+        "resumed": resumed,
+        "batchId": batch.get("batchId"),
+        "runId": effective_run_id,
+        "attempt": effective_attempt,
+        "nextStep": next_step,
+        "requiredVerifications": batch.get("requiredVerifications", []),
+        "changedFiles": batch.get("changedFiles", []),
+        "sessionPath": str(session_path),
+    }
+
+
+def invalidate_affected_evidence(
+    change_dir: Path,
+    *,
+    changed_files: list[str],
+    batch_id: str,
+) -> dict[str, Any]:
+    """Invalidate only verification targets whose declared inputs were changed."""
+    normalized = {
+        str(path).replace("\\", "/").lstrip("./")
+        for path in changed_files
+        if str(path).strip()
+    }
+    ledger_path = _state_root(change_dir) / "evidence" / "verification-ledger.json"
+    if not normalized or not ledger_path.is_file():
+        return {"ok": True, "targetIds": [], "validations": []}
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {"ok": False, "code": "FIXBACK_LEDGER_INVALID"}
+    if not isinstance(ledger, dict):
+        return {"ok": False, "code": "FIXBACK_LEDGER_INVALID"}
+
+    def affected(entry: dict[str, Any]) -> bool:
+        inputs = entry.get("inputsFiles")
+        if not isinstance(inputs, list):
+            return False
+        input_set = {
+            str(path).replace("\\", "/").lstrip("./")
+            for path in inputs
+            if str(path).strip()
+        }
+        return bool(normalized & input_set)
+
+    invalidation = {
+        "code": "FIXBACK_AFFECTED_INPUT_CHANGED",
+        "batchId": batch_id,
+        "changedFiles": sorted(normalized),
+        "invalidatedAt": now_iso(),
+    }
+    target_ids: list[str] = []
+    targets = ledger.get("verificationTargets")
+    if isinstance(targets, dict):
+        for target_id, target in targets.items():
+            if isinstance(target, dict) and affected(target):
+                target["reusable"] = False
+                target["invalidation"] = dict(invalidation)
+                target_ids.append(str(target_id))
+    validation_names: list[str] = []
+    validations = ledger.get("validations")
+    if isinstance(validations, dict):
+        for name, entry in validations.items():
+            if isinstance(entry, dict) and affected(entry):
+                entry["reusable"] = False
+                entry["invalidation"] = dict(invalidation)
+                validation_names.append(str(name))
+    _write_json(ledger_path, ledger)
+    return {
+        "ok": True,
+        "targetIds": sorted(target_ids),
+        "validations": sorted(validation_names),
+    }
 
 
 def _required_verifications(issues: list[dict[str, Any]]) -> list[str]:
@@ -506,6 +673,11 @@ def resolve_issue(
         }
     )
     batch["updatedAt"] = resolved_at
+    batch["invalidation"] = invalidate_affected_evidence(
+        change_dir,
+        changed_files=[record["path"] for record in changed_records],
+        batch_id=batch_id,
+    )
     _write_json(_batch_path(change_dir, batch_id), batch)
     return issue
 
@@ -652,6 +824,13 @@ def _emit(value: dict[str, Any]) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_fixback.py")
     sub = parser.add_subparsers(dest="command", required=True)
+    resume = sub.add_parser("resume")
+    resume.add_argument("--change-dir", required=True)
+    resume.add_argument("--batch-id")
+    resume.add_argument("--product-identity")
+    resume.add_argument("--root-cause")
+    resume.add_argument("--run-id")
+    resume.add_argument("--attempt", type=int)
     opened = sub.add_parser("open")
     opened.add_argument("--change-dir", required=True)
     opened.add_argument("--batch-id", required=True)
@@ -692,7 +871,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     change_dir = Path(args.change_dir)
     try:
-        if args.command == "open":
+        if args.command == "resume":
+            value = resume_batch(
+                change_dir,
+                batch_id=args.batch_id,
+                product_identity=args.product_identity,
+                root_cause=args.root_cause,
+                run_id=args.run_id,
+                attempt=args.attempt,
+            )
+        elif args.command == "open":
             value = open_batch(
                 change_dir,
                 batch_id=args.batch_id,

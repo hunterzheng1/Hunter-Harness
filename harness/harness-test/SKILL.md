@@ -34,7 +34,7 @@ disallowed-tools:
 
 仅当用户显式调用 `/harness-test` 时执行（已设 `disable-model-invocation`）。run 阶段结束后**不自动**进入本阶段；用户口头提到"跑测试"而未调用本 skill 时，先确认是否走 Harness 测试阶段。
 
-**单阶段原则**：test 关门后必须停止并交还用户，仅按风险层级提示下一步（`/harness-review` 或 `/harness-submit`）；禁止自动接续执行。
+**单阶段原则**：test 关门后必须停止并交还用户，仅提示 `plannedPhases` 中的真实下一阶段；禁止自动接续执行。
 
 使用场景：
 - 完成 `/harness-run` 编码后，验证单元测试 + 接口测试 + 数据兼容
@@ -54,7 +54,7 @@ disallowed-tools:
 
 ## Workflow
 
-测试跟踪由 `harness_gate.py begin/close` 统一协调 test guard；不得额外手工执行 guard close。任一失败都必须使用 gate 返回的结构化状态，不得以自然语言覆盖失败状态。
+测试跟踪由 `harness_gate.py begin/close` 统一协调 test guard；不得额外手工执行 guard close。任一失败都必须使用 gate 返回的结构化状态，不得以自然语言覆盖失败状态。所有 change/state 路径必须使用 `harness_change.py resolve` 或 context 返回的 `executionRoot`，不得固定拼接 `.harness/changes/**`；split-v1 默认位于 `.harness/state/changes/**`。
 
 兼容实现中的底层命令名是 `harness_test_guard.py begin` 与 `harness_test_guard.py close`，两者只允许由 gate 内部调用；写在这里用于能力审计，不构成模型执行步骤。
 
@@ -95,7 +95,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 先 `harness_context.py prepare --phase test --executor <tool> [--change <id>] --json`，再 `harness_context.py begin --phase test --change <id> --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
 
-验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：gate begin → 执行（可选 `harness_test_guard.py mark stale-test-repair`）→ 单次 `harness_gate.py close --phase test --status ... --to-phase review --executor <tool> --json`。fixback 时由 `harness_fixback.py` 合批记录 RED/GREEN 和 affected verification，再把同一 close 命令的 `--to-phase` 改为 `run`，由 context 失效受影响 target。
+验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：gate begin → 执行（可选 `harness_test_guard.py mark stale-test-repair`）→ 单次 `harness_gate.py close`。`--to-phase` 取实际阶段计划的后继；Fixback 返回 run，普通流程可直接进入 Review、Submit 或 Archive。Fixback 只失效与改动文件相交的验证目标。
 
 - **Read `checklist.md`** — 各项检查详情 + 0.1 preflight + Playwright 探测 + 避坑规则指引
 - **失败处理**：任一项检查失败 → 终止流程并报告原因，用户确认修复后才能继续
@@ -117,7 +117,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### Phase 1-2：测试执行（默认主会话执行）
 
-**Phase 1 前先读 verification-ledger**：读取 `.harness/changes/<change-name>/evidence/verification-ledger.json`，判断是否可复用 run 阶段的 unitTest（见「关键规则·四」）。
+**Phase 1 前先检查 verification-ledger**：通过 state layout 解析后的路径调用 `harness_ledger.py can-reuse --project . --profile-input <key> --command <profile 解析出的规范命令>`；可复用时不得重跑。不得手工读取实现源码来猜账本参数。
 
 **默认在主会话执行**（不委派 subagent）：
 - 单元测试：可复用则跳过重跑；否则按技术栈执行测试命令
@@ -148,7 +148,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### 四、单元测试复用 + 写入 ledger
 
-Phase 1 前先读 `.harness/changes/<change-name>/evidence/verification-ledger.json`，并用 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算真实指纹：run 的 unitTest 满足（diffHash 一致 + module/profile 一致 + scope 一致或更严格 + run 后无行为性修改 + run 跑了全量测试）则复用，否则按 **profile key resolve** 执行测试命令（`python <skills-root>/scripts/harness_profile.py resolve --project . --key unitTest|unitTestFull --json`，**不复制示例 `-pl` 命令**）。Phase 1/2 完成后必须写回 ledger：执行增量测试类 → 记 `unitTest`（scope=incremental）；执行 profile 模块全量命令 → 记 `unitTestFull`（scope=module，可供 submit 复用）；HTTP/API 契约测试 → 记 `apiTest`；真实浏览器/真实栈 Playwright → 单独记 `browserTest`，不得覆盖 `apiTest`。详见 `checklist.md`「单元测试复用」、`../protocols/ledger-protocol.md`。
+Phase 1 前用 `harness_ledger.py diff-hash` 和 `can-reuse` 重算真实指纹。验证目标必须使用 profile key 的单一入口：`--project . --profile-input unitTest|unitTestFull --command <规范命令>`；声明 `--profile-input` 后不得同时传入另一套 `--files`。`npx vitest run` 与 `vitest run` 等包装差异由账本规范化，`safe runner` 等说明只能写 `--runner-command` 元数据。可复用则跳过；否则执行同一 profile 命令并只登记一条结果。增量测试记 `unitTest`，模块全量记 `unitTestFull`，API/浏览器分别记录。详见 `checklist.md` 与 ledger protocol。
 
 ### 五、命令与请求超时治理
 

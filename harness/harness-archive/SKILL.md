@@ -26,45 +26,33 @@ disallowed-tools:
 
 ## Purpose
 
-将 `.harness/changes/<change-name>/` 的所有产出移入 `.harness/archive/YYYY-MM-DD-<change-name>/`，生成归档元数据和可视化最终报告，释放工作区。
+把变更事实安全封存、生成确定性 ZIP，并在已连接 Hunter Platform 时上传保存。归档结局、发布资格、Git 远端和平台上传分别建模，互不冒充前置条件。
 
 ## When to Use
 
 仅当用户显式调用 `/harness-archive` 时执行。submit/merge 完成后**不自动**进入本阶段；用户口头说"归档/收尾"而未调用本 skill 时，先确认。
 
-前置：submit 已推送、test/review 报告已就绪（或已明确标记跳过/未运行）。变更闭环最后一站，归档后从工作区移除 `.harness/changes/<change-name>/`。
-
-跳过场景：
-
-- 变更尚未 submit 推送（归档前 commit 必须已 push）。
-- 仍存在未结清的 test/review 验证（除非已明确标记 CONDITIONAL_OK）。
+前置只看本次 `plannedPhases` 与用户选择的生命周期结局。Submit、Test 或 Review 未在计划中时记录为“未执行”，不得临时补跑；无 Git、无 upstream、仅本地 commit 都允许归档和平台上传，只是不能声明为发布候选。
 
 自动调用边界：
 
 - 归档涉及移动/删除原变更目录，**禁止被其他 skill 自动调用**；只接受用户显式 `/harness-archive` 调用。
-- `harness_archive.py auto-gate` 只影响**本次显式调用内**是否需要归档确认对话：返回 `ARCHIVE_AUTO_GATE_SATISFIED`（Submit 或 Merge 已终态，archive-boundary snapshot 存在且全部归档门禁满足）时可跳过 AskQuestion 直接归档；其他情况仍须确认。auto-gate 不构成跨阶段自动触发的授权。
+- `harness_archive.py auto-gate` 只影响**本次显式调用内**是否需要归档确认对话：实际计划中的最后阶段已终态、archive-boundary/content snapshot 存在且保存门禁满足时可跳过确认。auto-gate 不构成跨阶段自动触发的授权。
 
 ## 前置条件
 
-- commit 已 push（`git log @{u}..HEAD` 输出为空）
-- **最终 hash 来源**：worktree 模式（`meta/worktree.json` requested=true）下读 ledger 的 `mergeFinalHash`（由 `/harness-submit` 合并段写入）；主目录模式读 submit 的 `final pushed hash`。当前 `git rev-parse HEAD` 须一致
-- test 报告存在或标记"跳过"；review 报告存在或标记"未运行 review"（review 不阻塞归档）
-- **最小必备集（H-4 / `harness_archive.py status` blockers）**：
-  - `plans/*-plan.md`
-  - 非空 `events.ndjson`
-  - `evidence/verification-ledger.json`
-  - 至少一个 test 或 review 报告/证据
-  - 缺失任一项 → `archivable=false`；可从 `.harness/cache/change-snapshots/<change>/` 恢复正式层后再重试
+- **最终产品身份**：Git 项目优先使用 Submit 最终收据/当前 HEAD；提交前验证而内容未变化时由 `certify-local` 自动重绑定 commit。非 Git 项目使用确定性内容清单与产品树散列，并记录 `sourceControl=none`。
+- **正常完成**按 `plannedPhases` 检查已规划阶段；被省略阶段记录 `NOT_RUN` / `NOT_APPLICABLE`。**结束未完成变更**只要求足以识别和安全封存变更的最小设计、事件与内容清单，不要求补齐测试、评审或提交。
+- 所有 events、ledger、reports、receipts 和 upload state 都通过 state layout 解析器读取；split-v1 的权威状态位于 `.harness/state/changes/<change>`，禁止复制到旧目录。
 - **产品候选验证**：
   - 有远端 CI：保留 `product-candidate-ci.json` 兼容证据；归档会把有效的 legacy schema v1 证据迁移为 `remote-claimed` 的 schema v2 `product-candidate-verification.json`，不会冒充 `remote-attested`。
   - `remote-attested` 必须同时带远端运行 URL 与 `verification.attestationDigest`；只有 URL、旧 JSON 哈希或 ledger 哈希只能达到 `remote-claimed`。
   - 无 CI：先运行 `harness_archive.py certify-local --change-dir ... --project . --json`，只复用身份一致且完整的 `unitTestFull` ledger 证据，不重复执行测试。
-  - `release-candidate` 默认要求候选验证通过；仅封存未完成事实时显式使用 `--intent record-only`，归档结果必须为 `releaseEligible=false`，不得用于发布。
+  - `release-candidate` 要求候选验证通过；正常本地完成或结束未完成变更使用 `--intent record-only`，固定 `releaseEligible=false`，但仍生成 ZIP 并上传平台。
 
 ## Inputs
 
-- `$ARGUMENTS`：变更名（可选，留空时 Glob `.harness/changes/*/plans/*-plan.md` 自动检测，排除 `.harness/archive/`）
-- 相关文件：`.harness/changes/<change-name>/logs/execution-log.md`、`.harness/changes/<change-name>/events.ndjson`、`evidence/verification-ledger.json`、各阶段 reports/
+- `$ARGUMENTS`：变更名（可选）；必须由 `harness_change.py resolve` 解析 contract/state 双层目录，禁止按 mtime 或固定旧路径猜测。
 
 <!-- @include shared/read-protocol.md -->
 > 片段：[[shared/read-protocol.md|read-protocol]]
@@ -84,29 +72,29 @@ disallowed-tools:
    - `../protocols/sensitive-info-protocol.md`
    - `../protocols/evidence-based-reporting-protocol.md`
    - `../protocols/report-pipeline-protocol.md`
-4. 解析 `$ARGUMENTS`：留空时 Glob 自动检测未归档变更，排除 `.harness/archive/`。
+4. 用 `harness_change.py resolve [--change] --json` 解析 `$ARGUMENTS`；多个 active change 时让用户选择。
 
 ### Phase 1：确认归档对象（扫描未归档变更）
 
-用 Glob 搜索 `.harness/changes/*/plans/*-plan.md`（排除 `.harness/archive/`），展示变更概要。
+使用 resolver 返回的 active changes 展示变更概要；同时读取 `plannedPhases`、已完成阶段、Git 能力、平台连接和待上传 ZIP 状态。
 
 - **Read `checklist.md`** — 归档前检查项
 - 发现多个未归档变更 → 让用户选择或终止
 
 ### Phase 2：确认归档 / 自动门禁
 
-先运行 `harness_archive.py auto-gate --change-dir ".harness/changes/<change-name>" --intent <intent> --json`。
+先运行 `harness_archive.py auto-gate --change-dir "<executionRoot>" --intent <intent> --json`。
 
 - `autoArchiveAllowed=true`：记录 gate receipt，直接进入 Phase 3；无需 AskQuestion。
-- 否则：blocking user confirmation 让用户确认归档操作。**用户拒绝 → 终止流程，不执行任何操作。**
+- 否则用中文提供：①正常完成并归档（本地验证、不可发布）；②作为发布候选归档；③结束未完成变更；④取消。选择③后继续选择“主动废弃”或“被其他方案替代”，并填写中文原因。不要把无 upstream 显示为阻止保存。
 
 - **Read `reference.md`** — 确认对话框的内容格式
 
 ### Phase 3：执行归档
 
-1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ".harness/changes/<change-name>" --intent release-candidate --json` 前置检查。无 CI 项目若已有完整全量 ledger，先运行 `certify-local`；若用户明确只封存事实，则 status/finalize 均使用 `--intent record-only`。
+1. 对“发布候选”使用 `--intent release-candidate --closure completed`；对正常本地完成使用 `--intent record-only --closure completed`；主动废弃或被替代分别使用 `--intent record-only --closure abandoned|superseded --closure-reason "<中文原因>"`。先运行 `status`；有可复用全量 ledger 时可运行 `certify-local`，不得重复测试。
 2. `meta/archive-meta.md` **由 `harness_archive.py finalize` 自动生成**（与 summary-data `finalStatus` 同源）；**禁止 agent 手写**该文件，手写视为数据丢失。维护者结论写入 events（decision/issue）即可，finalize 会汇总到 summary / archive-meta。
-3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --intent <release-candidate|record-only> --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest 比对、archive-meta、ZIP package、上传与服务端 knowledge status）。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不再执行知识维护，也不写 maintenance-outbox**；服务端在归档 ZIP 持久保存并解包后 ingest。**finalize 失败或 validate 报错时不删除原目录**。
+3. 运行 `harness_archive.py finalize --change-dir "<executionRoot>" --archive-root ".harness/archive" --intent <...> --closure <...> [--closure-reason "..."] --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest、archive-meta、ZIP、上传与服务端知识状态）。finalize 内部只负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
    - **归档包上传**：始终先生成一个确定性 ZIP；有远程凭据时再调用 `npx hunter-harness archive upload`。ZIP 仅包含 `summary-data.json`、`spec/**/*.md`、`plans/**/*.md`、`archive-meta.md`、`change-context.json` 和稳定 manifest；明确排除 logs、review/test 报告、HTML、缓存、备份、凭据和临时文件。
    - **失败可恢复**：无论远端凭据是否齐全，都先生成 ZIP 与 `<change-key>.upload.json`；上传或服务端 ingest 失败不破坏本地归档。待上传 ZIP 与逐 change 回执保留在 `.harness/state/local/archive-packages/`，可枚举独立重试。只有 CLI 核验 package hash 且服务端同时返回 `archive_status=durable`、`knowledge_status=ready` 后，才清理对应 ZIP 与回执；`indexing` 记为 pending，不记为失败。
    - **监控终态（C3）**：auto-upload 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；失败只记 warning。
@@ -134,7 +122,7 @@ disallowed-tools:
 
 ### 二、归档前确认或自动门禁
 
-`auto-gate` 只有在 Submit/Merge 终态、`meta/state-snapshot.json` 含 archive-boundary base、且 `status.archivable=true` 时才允许无确认执行。未满足时 blocking user confirmation；用户拒绝 → 终止，不执行任何操作。
+`auto-gate` 只有在实际计划最后阶段终态、边界快照存在且 `status.archivable=true` 时才允许无确认执行。未满足时按 Phase 2 的四个中文选项确认；用户取消则不执行移动。
 
 ### 三、文件移动只用内置工具或 PowerShell
 
@@ -148,12 +136,12 @@ disallowed-tools:
 
 归档前后生成 `evidence/archive-manifest-before.json` / `archive-manifest-after.json`（path/size/sha256），before/after 不一致时**不得删除原目录**。复杂 PowerShell 写入 `scripts/*.ps1` 后 `-File` 执行，禁止内联 `$` / `$_` / `@{}`。详见 `reference.md`。
 
-### 六、归档前确认四项（缺一不可）
+### 六、归档前确认四项
 
-- commit 已 push（`git log @{u}..HEAD` 输出为空）
-- **final hash 来源**：worktree 模式（requested=true）下读 ledger `mergeFinalHash`（submit 合并段）；否则读 submit 日志 `final pushed hash`。当前 HEAD 须一致
-- test 报告存在，或标记"跳过"/"未运行测试"
-- review 报告：存在则作 📝ADVISORY 归档材料；不存在标记"📝ADVISORY：未运行 review"（review 不阻塞归档）
+- 生命周期结局与中文原因已确认；正常完成、主动废弃、被其他方案替代不得混写
+- Git 项目记录当前 HEAD 与 upstream 状态；无 upstream 只影响发布资格，不阻止保存。非 Git 项目记录内容身份
+- Test/Review 只按 `plannedPhases` 核对；未规划或提前结束时如实标记未执行
+- 平台连接与 Git remote 分开检查；无 Git remote 仍生成 ZIP，并在平台已连接时上传
 
 ### 七、verification-ledger 汇总状态
 

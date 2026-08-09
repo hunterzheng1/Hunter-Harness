@@ -138,7 +138,7 @@ describe("embedded Harness Bundles", () => {
           "check-agents --skills-root <skills-root> --agent harness-reviewer"
         );
         expect(planSkill).toContain("仅高复杂度探索考虑委派");
-        expect(reviewSkill).toContain("审查执行（风险分级、inline 优先）");
+        expect(reviewSkill).toContain("审查执行（独立评审优先）");
       }
     }
   );

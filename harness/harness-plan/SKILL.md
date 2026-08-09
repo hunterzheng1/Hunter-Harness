@@ -34,7 +34,7 @@ disallowed-tools:
 
 仅当用户显式调用 `/harness-plan`（或明确说"用 harness 规划这个需求"）时执行。用户只是描述需求、提问或讨论方案时，**不得**自动进入本 skill。
 
-**单阶段原则**：本 skill 只负责 plan 阶段。plan finalize + verify 完成后必须停止并交还用户，仅提示下一步可执行 `/harness-run`；禁止自动开始编码或调用其他 harness 阶段 skill。
+**单阶段原则**：本 skill 只负责 plan 阶段。plan finalize + verify 完成后必须停止并交还用户，仅提示 `plannedPhases` 中的真实下一阶段；禁止自动调用其他阶段 skill。
 
 <!-- @include shared/read-protocol.md -->
 > 片段：[[shared/read-protocol.md|read-protocol]] · plan 额外写 `meta/worktree.json`、`meta/change-context.json`
@@ -60,13 +60,14 @@ disallowed-tools:
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
 | 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
+| 0.6 | 使用 `classify` 返回的默认阶段和项目能力生成 `plannedPhases`，向用户用中文说明可选阶段；确认后运行 `harness_context.py configure-plan --project . --change <id> --phases "plan,run,...,archive" --operator <tool> --reason "<中文原因>" --json`。无 Git 或不需要提交时不得加入 `submit`；快速迭代默认 `plan,run,archive`。省略项由脚本写入 `skippedPhases`，不得伪造阶段事件 |
 | 1 | `harness-knowledge-query` 单次远端 query（失败记 `issue`，不建立本地索引或离线回退） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close --from-phase plan --to-phase run --executor <tool> --artifact "<receiptPath>" --json`（也可使用返回的稳定 `artifactRef=meta/plan-finalization.json`），写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 
@@ -79,6 +80,9 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 |------|------|
 | 产物路径 | 只写 `.harness/changes/<cn>/`；禁止 superpowers 输入 |
 | Change 标题 | 首次 Plan 同时确定英文 `change-name` 与中文展示标题；英文名保持目录和机器标识不变，中文标题由 `prepare --title` 持久化，后续阶段只复用、不重新生成 |
+| 阶段计划 | Plan 必须持久化 `plannedPhases`；固定从 plan 开始、以 archive 结束。Test、Review、Submit、Package、API 文档可按项目策略省略；高风险必需项只能转为“提前结束且不可发布”，不得伪装通过 |
+| 产品边界 | `ownership.productPaths` 必须覆盖计划会修改的源文件、测试文件和构建入口；只写目录前缀或精确文件，禁止 `**` 通配。finalize 前对照任务表补齐，避免归档阶段才发现边界缺口 |
+| 空目录 | 不得为“预留目录”生成 `.gitkeep`；只有产品明确需要跟踪空目录时才能创建，并在计划中说明业务原因 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
 | 阶段 8 | spec/plan/detail/scenarios/gate-policy/worktree 六项标准产物先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log；随后 `verify` 必须确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致，失败不得手工补终态 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
