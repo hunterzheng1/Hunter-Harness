@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.66] — hunter-harness / [0.2.60] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-10 阶段归属、归档上传与平台展示修订）
+
+- **编码阶段归属**：编码结果只评估 `ownerPhase=run` 的任务和场景；计划交给测试阶段的内容显示为「待测试阶段执行」，不再把已经完成的编码误标为警告。
+- **归档身份与证据**：归档只接受 Git 可验证的完整提交身份，避免符号 `HEAD` 或操作编号导致 `filesChanged=0`；未声明数据库能力的项目将数据库兼容性标记为 `NOT_APPLICABLE`。
+- **归档准备与耗时**：报告充分性检查失败改为独立准备事件，不再增加归档执行次数；平台兼容旧事件并合并伪归档记录，小于 1 秒的阶段显示为 `<1s`。
+- **Windows ZIP 上传**：通过 Node.js 启动 `npx-cli.js`，避免直接执行 `npx.CMD` 触发 `WinError 2`；上传前对 JSON 中的本机绝对路径做脱敏，不修改本地归档原件。
+- **结构化归档**：移除 `final-summary.html` 与 HTML 渲染器。未来归档只生成 `summary-data.json` 和确定性核心 ZIP，由 Hunter Platform 展示；受控刷新会删除未修改的官方旧渲染器，并保留用户改过的同名文件。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.49`，最低 CLI 版本提升至 `0.2.66`。
+
 ## [0.2.65] — hunter-harness / [0.2.59] — @hunter-harness/workflow-harness
 
 ### Changed（2026-08-09 本地 Agent 目录忽略策略简化）

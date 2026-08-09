@@ -59,6 +59,8 @@ disallowed-tools:
 3. **场景覆盖检查**（场景表映射，禁止用用例数冒充场景数）
 4. **关门检查**（10 项）→ 只执行一次 `harness_gate.py close`；`--to-phase` 必须取返回的 `nextPhases` 或 `plannedPhases` 中 run 的真实后继，禁止写死 test。该命令内部关闭 test guard、写 `phase.end`、释放租约、写 handoff 并补传事件；不得再单独调用 test-guard/context close。失败时按结构化 `recoveryAction` 原样重试，已完成步骤幂等复用。
 
+**阶段归属规则**：只用 `ownerPhase=run` 的任务和场景判定编码阶段结果。`ownerPhase=test` 的任务或场景按计划留给测试阶段属于正常移交，必须记录为“待测试阶段执行”，不得将编码阶段降级为 WARN；只有 run 自身负责的工作未完成、验证降级或证据异常时才使用 WARN。
+
 **Fixback**：入口只用 `launch-review`，后续问题处理通过 `resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；`manual`、`workflow` 或未选用的建议不进入代码批次，使用中文记录处理结论。
 
 **执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。
@@ -81,7 +83,7 @@ disallowed-tools:
 | **探测/ledger** | 基础设施先探测；每次构建/测试经 `harness_ledger.py record`；禁止手写 ledger JSON；用 canonical `diff-hash --change-dir` |
 | **Gate/Guard** | 跨 Agent/阶段先用 `harness_context.py prepare/begin`；阶段门禁与上下文交接统一用 `harness_gate.py begin/close`；gate 内部负责 guard begin/close，模型只在需要记录测试来源或修复时调用 guard 的 `record/stage/mark` |
 | **预存变更** | 保留 → baseline 隔离；存在则最终 ≥ 🟡WARN |
-| **关门/状态** | 10 项关门检查；持久化 run-task-status；P0 静态-only 不得建议 submit |
+| **关门/状态** | 10 项关门检查；持久化 run-task-status；仅 run-owned P0 静态-only 导致 WARN；test-owned 待办正常移交 |
 | **Worktree** | `requested=true` 时代码只写 worktree |
 | **PowerShell** | 所有 git/构建经 `powershell.exe -NoProfile -Command` |
 

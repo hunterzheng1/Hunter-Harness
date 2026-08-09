@@ -663,7 +663,7 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 - 测试数据: N 条已清理 / M 条遗留
 - tokenRefreshCount: 0
 
-### final-summary（顶层维度状态）
+### 归档数据与平台监控（顶层维度状态）
 - compile: ✅ OK
 - unitTest: ✅ OK / 🟡 REUSED_FROM_RUN
 - apiTest: **OK / PARTIAL / BLOCKED / NOT_RUN / FAIL**
@@ -720,7 +720,7 @@ JAVATEST_<change-name>_<timestamp>_<short-random>
 
 > **P0 场景 BLOCKED 不得仍 OK**：必须 🟡 WARN 或 ❌ FAIL。
 
-### API 测试维度状态（final-summary 中输出）
+### API 测试维度状态（写入 `summary-data.json` 并由平台展示）
 
 | 状态 | 定义 |
 |---|---|

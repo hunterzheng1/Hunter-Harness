@@ -40,6 +40,8 @@ REFACTOR 只允许不改变行为的整理。若重构改变行为，必须回�
 
 禁止把静态验证写成“测试通过”。静态 RED/GREEN 的最终状态至少是 🟡WARN，除非后续真实验证已完成。
 
+上述分级只评估 `ownerPhase=run` 的任务和场景。`ownerPhase=test` 的验证按计划留给测试阶段时，记录为“待测试阶段执行”，不得将编码阶段降级为 WARN；后续阶段未开始不是当前阶段的风险。
+
 ## 协议二：change-cluster-review-protocol
 
 用于高风险变更簇后的轻量审查。它内化 subagent-driven-development 的“新上下文审查”价值，但不把每个变更簇的 subagent 审查设为默认流程。

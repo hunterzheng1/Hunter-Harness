@@ -1,5 +1,5 @@
 ---
-description: 结构化事件、summary-data 生成、final-summary 校验和外部可观测性边界协议（finalize/replay）。
+description: 结构化事件、summary-data 生成与校验，以及外部可观测性边界协议（finalize/replay）。
 ---
 
 # Report Pipeline Protocol
@@ -10,7 +10,7 @@ description: 结构化事件、summary-data 生成、final-summary 校验和外�
 
 1. **Event Layer**：`events.ndjson` 记录结构化执行事实。
 2. **Report Data Layer**：`summary-data.json` 由程序或确定性规则生成。
-3. **Renderer / Final Report Layer**：`final-summary.html` 只渲染和解释 summary-data，不重新推理统计。
+3. **Platform View Layer**：Hunter Platform 读取 `summary-data.json` 并展示结果，不在本地保存重复报告。
 
 模型可以写维护者结论、风险解释和人工判断，但不得凭印象手写统计数字、通过率、耗时、命令结果或 artifact hash。
 
@@ -24,7 +24,7 @@ python <skills-root>/scripts/harness_archive.py replay --archive-dir ".harness/a
 python <skills-root>/scripts/harness_events.py append --change-dir ".harness/changes/<change-name>" --phase "<phase>" --type <type> [--note "..."]
 ```
 
-归档报告流水线只有两个入口，均由 `harness_archive.py` 提供：`collect`/`render`/`validate` 是 `finalize` 的内嵌同进程步骤，**不再作为独立 CLI 暴露**（不存在 `report collect`/`report validate` 子命令）。`summary-data.json` 只能由 `finalize`（归档时）或 `replay`（回放时）生成；**禁止 agent 临场手写或拼装等价的 `summary-data.json`**。`harness_archive.py` 不可用时归档失败退出，不得退回手写汇总。
+归档报告流水线只有两个入口，均由 `harness_archive.py` 提供：`collect` 与 `validate` 是 `finalize` 的内嵌同进程步骤，**不作为独立 CLI 暴露**（不存在 `report collect` / `report validate` 子命令）。`summary-data.json` 只能由 `finalize`（归档时）或 `replay`（回放时）生成；**禁止 agent 临场手写或拼装等价的 `summary-data.json`**。`harness_archive.py` 不可用时归档失败退出，不得退回手写汇总。
 
 ## events.ndjson
 
@@ -146,8 +146,7 @@ summary-data 必须保留原 archive final report 维度，并增加事件层摘
 | 阶段 | 责任 | 写入 |
 |---|---|---|
 | `collect` | 从 events/ledger/log/manifest/report/git evidence 收集事实 | `summary-data.json` |
-| `render` | 由 `render-summary.mjs` 渲染 final-summary | `final-summary.html` |
-| `validate` | 检查 final-summary 是否覆盖 summary-data 关键事实 | issues；不得静默忽略 error |
+| `validate` | 检查 summary-data 的身份、验证状态与事实是否一致 | issues；不得静默忽略 error |
 
 > **已废弃**：独立 `enrich` 步骤与 `harness-report` skill；全部并入 `finalize` 单命令。回放见 `harness_archive.py replay`。
 
@@ -168,4 +167,4 @@ summary-data 必须保留原 archive final report 维度，并增加事件层摘
 
 - 可保留 `reportPipeline.externalTraceRefs[]` 等扩展字段。
 - 不得要求外部服务可用才允许 archive 成功。
-- 未来接入也必须以 `events.ndjson` 和 `summary-data.json` 为稳定合同，不改变 final-summary 质量维度。
+- 未来接入也必须以 `events.ndjson` 和 `summary-data.json` 为稳定合同，不改变结构化报告的质量维度。

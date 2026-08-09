@@ -8,11 +8,10 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 
 归档遵循 `../protocols/archive-report-protocol.md`，门禁要点见 SKILL.md `## 关键规则` 四/五/九：
 
-- 先写 `reports/final/summary-data.json`，再渲染 `reports/final/final-summary.html`。
+- 生成并校验 `reports/final/summary-data.json`；平台直接使用该文件展示结果。
 - 归档前生成 `evidence/archive-manifest-before.json`，移动后生成 `archive-manifest-after.json`。
-- final-summary 的统计只能来自 summary-data 或 manifest。
+- 归档统计只能来自 summary-data 或 manifest。
 - before/after checksum 不一致时，不得删除原目录。
-- 默认渲染器 `templates/render-summary.mjs`（finalize 内嵌调用）。
 - 需要跨工作区恢复时传 `--durable-root <独立存储>`；成功必须为 `ARCHIVED_DURABLE`，并验证 content-addressed object 与 durable receipt 可读回。
 - `restore-durable` 只恢复到不存在的目标；目标已存在或对象 digest 不符时 fail closed，禁止覆盖。
 - 未配置 durable root 时显式记录 `ARCHIVED_LOCAL_ONLY` 风险，不得把同工作区 move 宣称为独立备份。
@@ -48,11 +47,11 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - [ ] 最终产品身份来自 Submit 收据或当前内容；提交前候选只允许在验证输入未变化时由 `certify-local` 自动重绑定
 - [ ] **test/review 报告状态确认**：
   - ✅ `.harness/changes/<change-name>/tests/test-report-*.md` 存在 → 归档正常
-  - 🟡 不存在 → 必须在 archive-meta.md 和 final-summary.html 中标记"跳过测试"或"未运行测试"，不得伪造通过率
+  - 🟡 不存在 → 必须在 archive-meta.md 和 summary-data.json 中标记「跳过测试」或「未运行测试」，不得伪造通过率
   - ✅ `.harness/changes/<change-name>/reports/review/review-report-*.md` 存在（旧路径 `reviews/review-report-*.md` 兼容回退）→ 作为 📝ADVISORY 归档材料
   - 📝 `.harness/changes/<change-name>/reports/review/fixback-*.md` 存在 → 随 review 报告一并归档；默认 advisory，除非 `strict-review-gate=true`
   - 🟡 不存在但 `logs/execution-log.md` 有 harness-review 小节 → **review 已运行但未落盘**（harness-review `context:fork` 交接缝常见，见 `agent/case-candidates/2026-06-30-harness-review-forked-not-persisting-report.md`）：从 execution-log/会话补落盘到 `reports/review/review-report-YYYYMMDD-HHmm.md` 再归档，**不得误标"未运行 review"**（实际跑过）
-  - 🟡 不存在且 execution-log 无 review 小节 → 在 archive-meta.md 和 final-summary.html 中标记"📝ADVISORY：未运行 review"
+  - 🟡 不存在且 execution-log 无 review 小节 → 在 archive-meta.md 和 summary-data.json 中标记「📝ADVISORY：未运行 review」
 
 ## 归档后验证（Phase 4）
 
@@ -61,11 +60,9 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - [ ] before/after manifest 校验通过（排除 `logs/execution-log.md`——归档追加结束记录预期 sha256 变化；其他 moved 文件 sha256 必须一致，missing/mismatch=0）
 - [ ] archive-meta.md 由 finalize 自动生成且字段完整；调用者未手写或补改
 - [ ] summary-data.json 已生成，且为合法 JSON
-- [ ] final-summary.html 已由 `templates/render-summary.mjs` 渲染生成
-- [ ] **final-summary.html 真实性检查**：
+- [ ] **summary-data.json 真实性检查**：
   - 无测试报告时，`summary-data.json.verification.unitTests.status` / `summary-data.json.verification.apiTests.status` 必须标记为 `NOT_RUN`、`USER_SKIPPED`、`BLOCKED` 或 `STATIC_ONLY`，不得显示 100%
   - 无 review 报告时，`summary-data.json.reviewSummary.status` 必须标记为 `ADVISORY_NOT_RUN`，不得显示 100%
   - 跳过、复用、人工确认的部分必须明确标记，不伪装成 ✅
-  - final-summary.html 中不得残留 `{{...}}` 占位符
 - [ ] 原目录 `.harness/changes/<change-name>/` 已删除（仅在前面所有验证通过后）
 - [ ] .harness/ 下无残留未归档变更目录

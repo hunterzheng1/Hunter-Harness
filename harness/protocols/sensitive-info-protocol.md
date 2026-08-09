@@ -1,10 +1,10 @@
 ---
-description: harness 全流程的敏感信息脱敏协议。所有 skill 的输出（控制台、execution-log、报告、commit message、final-summary）按本协议脱敏，禁止明文 token/密码/密钥。由原 harness-plan/sensitive-info.md 迁移。
+description: harness 全流程的敏感信息脱敏协议。所有 skill 的输出（控制台、execution-log、报告、commit message、summary-data）按本协议脱敏，禁止明文 token/密码/密钥。由原 harness-plan/sensitive-info.md 迁移。
 ---
 
 # Sensitive Info Protocol
 
-> 本协议适用于所有 harness-skills 的输出（控制台、execution-log.md、package-report、review-report、final-summary.html、commit message）。
+> 本协议适用于所有 harness-skills 的输出（控制台、execution-log.md、package-report、review-report、summary-data.json、commit message）。
 
 ## 1. 禁止明文输出的信息类型
 
@@ -49,7 +49,7 @@ description: harness 全流程的敏感信息脱敏协议。所有 skill 的输�
 | 执行日志 | `.harness/changes/<change-name>/logs/execution-log.md` |
 | 审查报告 | `.harness/changes/<change-name>/reports/review/review-report-*.md` |
 | 测试报告 | `.harness/changes/<change-name>/reports/test/test-report-*.md` |
-| 最终总结 | `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/final-summary.html` |
+| 最终总结数据 | `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/summary-data.json` |
 | 归档元数据 | `.harness/archive/YYYY-MM-DD-<change-name>/meta/archive-meta.md` |
 | Commit message | git log 中的提交信息 |
 

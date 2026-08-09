@@ -1311,36 +1311,5 @@ class EnvironmentManagerTests(unittest.TestCase):
         self.assertTrue((self.leases / "db-main.json").is_file())
 
 
-class FallbackHtmlTimingTests(unittest.TestCase):
-    def test_html_shows_three_duration_columns_and_cutoff(self) -> None:
-        html = ha.render_fallback_html(
-            {
-                "changeName": "demo",
-                "finalStatus": "OK",
-                "finalStatusReasons": [],
-                "timing": {
-                    "workflowWallClockMs": 3_600_000,
-                    "stageActiveExecutionMs": 600_000,
-                    "stageWallClockSpanMs": 1_800_000,
-                    "reportCutoffAt": "2026-07-23T12:00:00+00:00",
-                },
-                "durations": {
-                    "totalLabel": "active-only",
-                    "totalMinutes": 10,
-                    "stages": [],
-                },
-                "verification": {},
-                "changedFiles": [],
-                "archiveManifest": {"checksumStatus": "OK", "totalArchiveFiles": 1},
-                "reportPipeline": {"commands": []},
-            }
-        )
-        self.assertIn("workflowWallClock", html)
-        self.assertIn("stageActiveExecution", html)
-        self.assertIn("stageWallClockSpan", html)
-        self.assertIn("reportCutoffAt", html)
-        self.assertIn("2026-07-23T12:00:00+00:00", html)
-
-
 if __name__ == "__main__":
     unittest.main()

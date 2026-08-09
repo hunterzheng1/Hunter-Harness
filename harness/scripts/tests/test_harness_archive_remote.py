@@ -56,11 +56,30 @@ def _npx_upload_calls(run: mock.Mock) -> list[object]:
         for call in run.call_args_list
         if call.args
         and isinstance(call.args[0], list)
-        and call.args[0][:3] == ["npx", "--yes", "hunter-harness"]
+        and "hunter-harness" in call.args[0]
+        and "--yes" in call.args[0]
+        and call.args[0].index("--yes") + 1 == call.args[0].index("hunter-harness")
     ]
 
 
 class ArchiveRemoteUploadStateTests(unittest.TestCase):
+    def test_windows_npx_launcher_uses_node_instead_of_bare_cmd_shim(self) -> None:
+        with mock.patch.object(
+            ha.shutil,
+            "which",
+            side_effect=lambda name: {
+                "node": r"C:\Program Files\nodejs\node.exe",
+                "npx": r"C:\Program Files\nodejs\npx.CMD",
+            }.get(name),
+        ), mock.patch.object(ha.os, "name", "nt"):
+            launcher = ha.resolve_npx_launcher()
+
+        self.assertEqual(launcher[0], r"C:\Program Files\nodejs\node.exe")
+        self.assertEqual(
+            launcher[1],
+            r"C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js",
+        )
+
     def test_no_database_capability_projects_get_typed_not_applicable_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp)

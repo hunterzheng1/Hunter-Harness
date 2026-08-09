@@ -203,13 +203,7 @@
         "source": "events.ndjson | evidence/verification-ledger.json"
       }
     ],
-    "artifacts": [
-      {
-        "path": "reports/final/final-summary.html",
-        "kind": "final-report",
-        "phase": "archive"
-      }
-    ],
+    "artifacts": [],
     "validationIssues": [],
     "sourceConsistency": {
       "ok": true,

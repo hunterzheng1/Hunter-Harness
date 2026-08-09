@@ -23,18 +23,18 @@
 
 ## 共用规则文件（强制约束）
 
-跨 skill 共用的强制约束规则全部集中在 `protocols/` 下（8 个 protocol；其中 report pipeline 用于结构化事件、summary-data 生成和 final-summary 校验），各 skill 通过相对路径引用：
+跨 skill 共用的强制约束规则全部集中在 `protocols/` 下（8 个 protocol；其中 report pipeline 用于结构化事件，以及 summary-data 的生成与校验），各 skill 通过相对路径引用：
 
 | 文件 | 作用 |
 |------|------|
 | `protocols/powershell-protocol.md` | Shell 执行安全策略：Windows/中文路径下禁止普通 Bash，所有 git/构建命令必须通过 `powershell.exe -Command "..."` 执行；命令被拒绝时不得回退普通 Bash；所有"成功"必须有明确证据（构建成功 / git 输出 / 文件存在 / exit code 0） |
-| `protocols/sensitive-info-protocol.md` | 敏感信息脱敏：token、密码、Authorization header、Cookie、API key、access/secret key 不得明文出现在 execution-log、报告、commit message、final-summary 中；引用时统一替换为 `<TOKEN_REDACTED>` / `<PASSWORD_REDACTED>` / `<SECRET_REDACTED>` |
+| `protocols/sensitive-info-protocol.md` | 敏感信息脱敏：token、密码、Authorization header、Cookie、API key、access/secret key 不得明文出现在 execution-log、报告、commit message、summary-data 中；引用时统一替换为 `<TOKEN_REDACTED>` / `<PASSWORD_REDACTED>` / `<SECRET_REDACTED>` |
 | `protocols/evidence-based-reporting-protocol.md` | 证据化报告：所有 skill 输出必须区分 ✅ 真实成功 / 🟡 静态验证或用户跳过 / ❌ 失败或被拒绝；禁止把"静态验证"写成"测试通过"，禁止把"命令被拒绝"写成"成功" |
 | `protocols/ledger-protocol.md` | 验证账本：每个变更目录维护 `verification-ledger.json`，记录 compile/unitTest/apiTest 的结果+证据+diffHash+作用范围；后续阶段先读 ledger 判定是否可复用，避免跨阶段重复编译/测试；post-test 变更按 7 类分类，决定是否重跑 |
 | `protocols/state-layout-protocol.md` | 状态目录分层：`.harness/changes/<cn>/` 下按 `meta/`、`logs/`、`evidence/`、`reports/`、`scripts/`、`backups/` 子目录分层写入；读取时先读新路径再兼容旧路径 |
 | `protocols/submit-protocol.md` | 固定提交交互：提交方式与 commit message 确认使用固定选项模板，禁止 AI footer |
-| `protocols/archive-report-protocol.md` | 归档报告：`summary-data.json` + 模板渲染 `final-summary.html`，含 manifest/checksum 真实性规则 |
-| `protocols/report-pipeline-protocol.md` | 报告流水线：`events.ndjson` + `harness_archive.py finalize/replay` + final-summary 一致性校验 |
+| `protocols/archive-report-protocol.md` | 归档报告：`summary-data.json`、manifest/checksum 与真实性规则 |
+| `protocols/report-pipeline-protocol.md` | 报告流水线：`events.ndjson` + `harness_archive.py finalize/replay` + 数据一致性校验 |
 
 每个 skill 的 SKILL.md 关键规则章节都通过相对路径引用这些 protocol（`../protocols/powershell-protocol.md` 等）。
 
@@ -85,8 +85,7 @@
 │       │   ├── test/
 │       │   ├── review/
 │       │   └── final/
-│       │           ├── summary-data.json
-│       │           └── final-summary.html  # 最终报告（代码量+产出清单+测试/审查摘要）
+│       │           └── summary-data.json   # 平台展示使用的最终报告数据
 │       ├── events.ndjson                   # 结构化事件层（新流程推荐；历史 archive 可缺失）
 │       └── backups/
 ├── <change-name>/                   # 当前未归档变更（最多 1 个，不提交）
@@ -211,8 +210,7 @@ harness-skills/
     ├── checklist.md            # 归档前后检查项
     ├── reference.md            # 归档操作 + 占位符真实性规则
     └── templates/
-        ├── summary-data-template.json  # final-summary 数据结构
-        └── render-summary.mjs          # final-summary UTF-8 固定渲染脚本
+        └── summary-data-template.json  # 最终报告数据结构
 ```
 
 ## Skill 列表
@@ -280,11 +278,11 @@ harness-skills/
 | **submit hash 记录** | pre-pull local hash + final pushed hash 双标注（主目录）；worktree 模式 submit 段只本地 commit，合并段产生 `mergeFinalHash`，archive 以 `mergeFinalHash` 为准（无则回退 final pushed hash） |
 | **archive 阶段 1** | 归档前确认实际计划阶段的证据与结局；有 Git 时核对最终提交身份，无 Git、无 upstream 或跳过 submit 时使用内容清单身份。发布候选资格与本地封存分开判断；阶段边界由 finalize 单进程维护，调用者不额外 append |
 | **archive 文件移动** | 只用 PowerShell 或 Read+Write+验证，**禁止 Bash mv/cp/rm**；移动失败时不删除原目录 |
-| **archive final-summary** | 必须运行 `harness_archive.py finalize` 生成权威 `summary-data.json` 并完成 validate；`final-summary.html` 为可选展示投影（默认渲染，失败只记 warning 不回滚；`finalize --no-html` 可跳过）。无测试或无 review 时必须在 JSON 中标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
+| **archive 最终报告** | 必须运行 `harness_archive.py finalize` 生成权威 `summary-data.json` 并完成 validate。平台直接读取该 JSON；本地不生成重复的 HTML 报告。无测试或无 review 时必须标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
 
 ### 敏感信息脱敏
 
-- token / Authorization / Cookie / Redis 密码 / 数据库密码 / API key / access&secret key 不得明文出现在 execution-log、报告、commit message、final-summary 中
+- token / Authorization / Cookie / Redis 密码 / 数据库密码 / API key / access&secret key 不得明文出现在 execution-log、报告、commit message、summary-data 中
 - 引用敏感值时统一使用占位符：`<TOKEN_REDACTED>` / `<PASSWORD_REDACTED>` / `<SECRET_REDACTED>` / `<API_KEY_REDACTED>` / `<AUTH_HEADER_REDACTED>` / `<COOKIE_REDACTED>`
 - 命令示例使用占位符，不复述真实值
 - 测试中临时使用的 token 在持久化测试报告中必须替换为占位符
@@ -455,8 +453,8 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 - `protocols/sensitive-info-protocol.md`：敏感信息脱敏（token/密码/密钥占位符化，已取代原 `harness-plan/sensitive-info.md`，各 skill 引用此版本）。
 - `protocols/evidence-based-reporting-protocol.md`：证据化报告（✅/🟡/❌ 三态，已取代原 `harness-plan/evidence-based-reporting.md`，各 skill 引用此版本）。
 - `protocols/submit-protocol.md`：固定提交交互、中文 commit 文件、禁止 AI footer。
-- `protocols/archive-report-protocol.md`：summary-data + template 渲染 final-summary、manifest/checksum。
-- `protocols/report-pipeline-protocol.md`：events.ndjson + `harness_archive.py finalize/replay` + final-summary 一致性校验。
+- `protocols/archive-report-protocol.md`：summary-data、manifest/checksum 与平台归档展示合同。
+- `protocols/report-pipeline-protocol.md`：events.ndjson + `harness_archive.py finalize/replay` + summary-data 一致性校验。
 - `protocols/state-layout-protocol.md`：`.harness/changes/<cn>/` 子目录分层（meta/logs/evidence/reports/scripts/backups），读取先新后旧。
 
 各 skill 的 `SKILL.md` 只保留阶段目标和硬门禁，细节优先引用这些协议，避免在多个 skill 中复制并产生冲突。
@@ -477,4 +475,4 @@ backups/    未提交但用于验证的测试文件等备份
 
 读取时先读新路径，再兼容旧路径。详见 `protocols/state-layout-protocol.md`。
 
-Archive 最终报告默认运行 `harness_archive.py finalize`，再使用 `harness-archive/templates/render-summary.mjs` 从 `summary-data.json` 渲染，避免 PowerShell 中文乱码、模型长 HTML 生成中断和日志汇总统计漂移。
+Archive 最终报告由 `harness_archive.py finalize` 生成 `summary-data.json`。Hunter Platform 直接读取该文件，避免本地重复渲染和两份报告数据不一致。

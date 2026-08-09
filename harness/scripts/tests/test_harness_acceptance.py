@@ -112,6 +112,8 @@ class AcceptanceStatsRealTests(unittest.TestCase):
             self.assertIn(key, report, f"missing key: {key}")
         self.assertIn(report["overall"], {"PASS", "CONDITIONAL", "FAIL"})
         self.assertTrue(report["generatedAt"], "generatedAt must be present in report JSON")
+        self.assertTrue(report["d13"]["summaryDataNotFabricated"])
+        self.assertNotIn("finalSummaryNotFabricated", report["d13"])
         # skillCounts are real (build_once is not patched)
         generic = self.tmp / "g"
         hd.cmd_build(SKILLS_ROOT, generic, None)

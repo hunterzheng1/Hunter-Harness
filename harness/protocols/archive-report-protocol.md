@@ -1,12 +1,12 @@
 ---
-description: harness-archive 的数据化归档和 final-summary 渲染协议。用于减少模型长篇 HTML 生成、提升数据准确性和页面一致性。
+description: harness-archive 的结构化归档与 summary-data 校验协议。用于减少重复产物、提升数据准确性和平台展示一致性。
 ---
 
 # Archive Report Protocol
 
 ## 原则
 
-archive 不应让模型临场生成 500+ 行 HTML。事实收集与校验由 `harness_archive.py finalize` 单命令完成（cleanup → **freeze（事件 cutoff）** → collect → source consistency → render → renderer consistency → validate → archive-meta 内嵌）；模型仅通过 events 写入维护结论。`meta/archive-meta.md` 由 finalize 生成，禁止手写。历史 archive 回放用 `harness_archive.py replay`（只读，不写 archive-meta / 不跑 cleanup）。
+归档不应维护与平台重复的展示文件。事实收集与校验由 `harness_archive.py finalize` 单命令完成（cleanup → **freeze（事件 cutoff）** → collect → source consistency → summary validate → archive-meta）；模型仅通过 events 写入维护结论。`meta/archive-meta.md` 由 finalize 生成，禁止手写。历史 archive 回放用 `harness_archive.py replay`（只读，不写 archive-meta / 不跑 cleanup）。
 
 `knownRisks` 仅收录 severity∈{warning,error,critical} 的 issue 事件；无 severity 的 issue 进入 `maintenanceNotes`。`finalStatusReasons` 解释 CONDITIONAL_OK/WARN/FAIL 原因。finalize 在 before-manifest 前 cleanup：删除 lock/pid/launcher/credential，截断超大日志。
 
@@ -21,7 +21,6 @@ archive-meta.md
 archive-manifest-before.json
 archive-manifest-after.json
 summary-data.json
-final-summary.html
 events.ndjson（新流程推荐；历史 archive 可缺失）
 ```
 
@@ -81,7 +80,7 @@ events.ndjson（新流程推荐；历史 archive 可缺失）
 }
 ```
 
-`final-summary.html` 的数字必须全部来自 events、`summary-data.json`、ledger 或 manifest，不得手写另一套统计。
+`summary-data.json` 的数字必须全部来自 events、ledger 或 manifest，不得手写另一套统计。
 
 ### 数据采集来源（禁止手写统计）
 
@@ -90,7 +89,7 @@ events.ndjson（新流程推荐；历史 archive 可缺失）
 - `skillCalls`：从 execution-log 统计每个 `harness-<skill>` 小节出现次数（含重入）及结果。
 - `verification` 各项及 `passRate`：来自 `evidence/verification-ledger.json`，不得手写通过率。
 - `reviewSummary.redFixed`/`redConfirmed`/`yellowFixed`/`yellowDeferred`：从 review 报告清单 + 后续修复提交 diff 比对得出，不得手写。
-- `artifacts[]`：本次变更构建出的可分发 package 产物（如 `.jar`/`.war`/`.zip`/`.tar`/`.gz`/`.dll`/`.exe`/`.whl`/`.nupkg` 等）。来自项目构建输出目录扫描（按构建工具识别产物路径，如 Maven `target/*.jar`、Gradle `build/libs/*`、npm `dist/*`、.NET `bin/Release/*`），每项记录 `name`（basename）、`path`（相对仓库根）、`size`、`sha256`（`Get-FileHash -Algorithm SHA256` 计算），不得手写。无构建产物时留空数组（renderer 不渲染该卡）。注意：归档 manifest（`archive-manifest-after.json`）记录的是 `.harness/archive/` 目录文件，不包含项目构建产物，两者不可混用。
+- `artifacts[]`：本次变更构建出的可分发 package 产物（如 `.jar`/`.war`/`.zip`/`.tar`/`.gz`/`.dll`/`.exe`/`.whl`/`.nupkg` 等）。来自项目构建输出目录扫描（按构建工具识别产物路径，如 Maven `target/*.jar`、Gradle `build/libs/*`、npm `dist/*`、.NET `bin/Release/*`），每项记录 `name`（basename）、`path`（相对仓库根）、`size`、`sha256`（`Get-FileHash -Algorithm SHA256` 计算），不得手写。无构建产物时留空数组，平台不展示空卡片。注意：归档 manifest（`archive-manifest-after.json`）记录的是 `.harness/archive/` 目录文件，不包含项目构建产物，两者不可混用。
 - `reportPipeline.commands[]` / `verificationChecks[]` / `validationIssues[]`：来自 `events.ndjson`、ledger、validate 结果。旧 archive 无 events 时可从 ledger/log/manifest 回放，不得编造。
 
 ## manifest/checksum
@@ -121,7 +120,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 
 ## 页面内容
 
-final-summary 必须突出：
+平台归档摘要必须突出：
 
 1. 本次变更业务目标；
 2. 代码变更统计（diffStat：文件数 / insertions / deletions）；
@@ -134,34 +133,24 @@ final-summary 必须突出：
 禁止出现顶部 `N/A`、正文 `100%` 这类互相矛盾的数据。
 
 
-## final-summary 信息密度要求
+## summary-data 信息密度要求
 
-`summary-data.json` 至少包含 `verification`、`artifacts`、`reviewSummary`、`archiveManifest`、`maintenanceNotes`、`knownRisks`、`manualActions`。renderer 只根据 JSON 渲染，不在 HTML 中重新推理数据。
+`summary-data.json` 至少包含 `verification`、`artifacts`、`reviewSummary`、`archiveManifest`、`maintenanceNotes`、`knownRisks`、`manualActions`。平台只读取该 JSON，不重新推理或维护第二套统计。
 
-`artifacts` 与 `uncommittedTestEvidence` 为空数组时，renderer 不渲染对应卡片（"📦 产物清单"/"🧪 未提交测试证据"），避免空态噪音；非空才渲染。字段在 JSON 中始终保留，仅控制是否展示。
+`artifacts` 与 `uncommittedTestEvidence` 为空数组时，平台不展示对应卡片，避免空态噪音；非空时才展示。字段在 JSON 中始终保留，仅控制界面展示。
 
-## 渲染器
+## 数据校验
 
-默认渲染器为 Node.js：
-
-```powershell
-powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-archive/templates/render-summary.mjs' --summary '.harness/changes/<change>/reports/final/summary-data.json' --out '.harness/changes/<change>/reports/final/final-summary.html'"
-```
-
-PowerShell HTML renderer 仅作 legacy fallback。该脚本以 UTF-8 with BOM 保存，确保 Windows PowerShell 5.1 正确识别编码（无 BOM 会被 5.1 按 ANSI/GBK 误读导致中文 label 乱码）；默认渲染器仍为 Node.js `render-summary.mjs`。
-
-**Python fallback（`harness_archive.py` 内置）**：Node 不可用/超时/exit 非 0/未产出文件时，`harness_archive.py render_final_summary` 自动降级为内置 Python fallback（`render_fallback_html`），渲染含 changeName、finalStatus、`reportPipeline.commands`（command/exitCode）、`verification`（unitTests/apiTests/dbCompatibility）、changedFiles、archiveManifest、knownRisks、manualActions、maintenanceNotes 的确定性 HTML；USER_SKIPPED/BLOCKED_BY_DBA/失败状态可见，所有动态值 HTML 转义。返回结构统一为 `{ok, renderer: node|python-fallback|none, fallbackReason, out_path}`。Node 与 Python fallback **都失败**（`renderer=none, ok=false`）时，finalize 立即恢复原 change 目录并 exit 非 0，**绝不归档无 final-summary.html 的变更**。
-
-`validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不存在独立 `report validate` CLI）；validate error 存在时，finalize 恢复原 changes 目录并 exit 非 0，绝不删除原 changes 目录。**缺 final-summary.html 恒为 validate error**（不再有"没有 HTML 但只 warning"的分支）。
+`validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不存在独立 `report validate` CLI）。validate error 存在时，finalize 恢复原 changes 目录并 exit 非 0，绝不删除原 changes 目录。Hunter Platform 直接读取已校验的 `summary-data.json`。
 
 ## 冻结优先 finalize 与两层一致性（schemaVersion 2.3 起）
 
-finalize 在 collect 之前**冻结事件事实**：所有 archive-fact 事件落盘并 fsync 后，写入唯一的 `phase.end` 与 `evidence/evidence-cutoff.json`（`eventCount` + `sha256` + `frozenAt`）。cutoff 之后**禁止再向归档 events.ndjson 追加任何事件**；后续报告生成事实（render/validate 结果、manifest 比对）只写入 finalize JSON payload 与 maintenance outbox，不回写事件流。collect 是纯函数：stage/timeline/durations 全部由冻结事件推导，**不存在选择性 patch 步骤**。
+finalize 在 collect 之前**冻结事件事实**：所有 archive-fact 事件落盘并 fsync 后，写入唯一的 `phase.end` 与 `evidence/evidence-cutoff.json`（`eventCount` + `sha256` + `frozenAt`）。cutoff 之后**禁止再向归档 events.ndjson 追加任何事件**；后续校验结果与 manifest 比对只写入 finalize JSON payload 与 maintenance outbox，不回写事件流。collect 是纯函数：stage/timeline/durations 全部由冻结事件推导，**不存在选择性 patch 步骤**。
 
 两层 validator 顺序执行，任何一层失败都恢复原 change 目录并非零退出：
 
-1. **source consistency**（`validate_source_consistency`，render 前）：summary 事实对照冻结来源——`event_count` 对 cutoff、verification 对 ledger typed metrics projection、review 计数对 sidecars。结果写入 `reportPipeline.sourceConsistency = {ok, issues}`；`ok=false` 时 issue code 含 `event-count-mismatch` / `verification-mismatch`。
-2. **renderer consistency**（`validate_summary`，render 后）：HTML 对照 summary-data，数字不得漂移。
+1. **source consistency**（`validate_source_consistency`）：summary 事实对照冻结来源——`event_count` 对 cutoff、verification 对 ledger typed metrics projection、review 计数对 sidecars。结果写入 `reportPipeline.sourceConsistency = {ok, issues}`；`ok=false` 时 issue code 含 `event-count-mismatch` / `verification-mismatch`。
+2. **summary consistency**（`validate_summary_data`）：检查最终状态与验证结果是否矛盾，以及结构化字段是否满足归档要求。
 
 ## versioned repair（不改写原归档）
 
@@ -171,14 +160,14 @@ finalize 在 collect 之前**冻结事件事实**：所有 archive-fact 事件�
 python harness/scripts/harness_archive.py repair --archive-dir ".harness/archive/<archive-id>" --json
 ```
 
-repair 先在 archive 外生成候选 derived version，两层 validator 均通过后，才以不可变新版本写入 `derived/v<N>/{summary-data.json, final-summary.html, repair-record.json}`，并把 `derived/authoritative.json` pointer 指向该版本；**原 summary-data.json、final-summary.html 与 manifest 永不覆盖**。知识层只从 authoritative pointer 指向且 hash 校验通过的版本提取条目。
+repair 先在 archive 外生成候选 derived version。来源校验与数据校验均通过后，才以不可变新版本写入 `derived/v<N>/{summary-data.json, repair-record.json}`，并把 `derived/authoritative.json` pointer 指向该版本；**原 summary-data.json 与 manifest 永不覆盖**。知识层只从 authoritative pointer 指向且 hash 校验通过的版本提取条目。
 
 ## 归档包与服务端知识 ingest（§8）
 
 archive close 的破坏性事务只执行确定性 close：
 
 ```text
-status -> manifest -> move -> collect -> render -> validate -> compare
+status -> manifest -> move -> collect -> validate -> compare
 -> 生成确定性核心 ZIP -> 上传并等待服务端持久化/ingest 收据 -> stop AI service -> return
 ```
 
@@ -200,4 +189,4 @@ CONDITIONAL_OK
 
 run/test 本轮新增、更新或安全修复且被 `.gitignore` 忽略的测试，必须先由 `test-tracking.json` + `harness_test_guard.py stage` 精确提交；这类测试不得继续作为“未提交证据”收尾，也不得计入可复用 P0 验证后随 worktree 删除。
 
-`uncommittedTestEvidence` 只兼容历史归档或明确只读的外部证据：归档到 `backups/uncommitted-tests/`，记录文件名、验证范围与未提交原因，并在 final-summary 展示风险。若它是本轮可修改的回归测试，则 archive 必须阻断并要求先走精确跟踪流程。
+`uncommittedTestEvidence` 只兼容历史归档或明确只读的外部证据：归档到 `backups/uncommitted-tests/`，记录文件名、验证范围与未提交原因，并在 `summary-data.json` 中记录风险。若它是本轮可修改的回归测试，则 archive 必须阻断并要求先走精确跟踪流程。

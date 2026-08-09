@@ -179,7 +179,7 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - `USER_STARTED` → 保留进程，报告中提示用户可手动停止。
 - `REUSED_EXISTING` → 保留进程，除非用户明确要求关闭。
 
-最终报告 / final-summary 必须包含：
+测试报告与 `summary-data.json` 的服务生命周期投影必须包含：
 
 ```md
 ## 服务生命周期
@@ -317,4 +317,4 @@ powershell.exe -Command "Copy-Item '<main-dir>/<module>/src/main/resources/appli
 - 请求执行器必须在报告中明确记录（四种执行器，含降级原因）
 - 请求耗时统计必须包含在报告中
 - 服务由 AI 启动的情况，测试结束默认 Stop-Process；**即使测试失败也要进入 finally 清理**
-- final-summary 的 apiTest 状态必须用 OK/PARTIAL/BLOCKED/NOT_RUN/FAIL（不得把 PARTIAL 写成 NOT_RUN）
+- `summary-data.json` 与平台监控中的 `apiTest` 状态必须使用 OK/PARTIAL/BLOCKED/NOT_RUN/FAIL（不得把 PARTIAL 写成 NOT_RUN）

@@ -1,5 +1,5 @@
 ---
-description: harness-archive 的归档流程、manifest、summary-data、final-summary 渲染、目录结构与最终状态规则。
+description: harness-archive 的归档流程、manifest、summary-data 校验、目录结构与最终状态规则。
 ---
 
 # harness-archive 参考
@@ -12,7 +12,7 @@ description: harness-archive 的归档流程、manifest、summary-data、final-s
 - **Phase 3 执行归档**：
   1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
   2. `meta/archive-meta.md` 由 finalize 生成（与 summary `finalStatus` 同源）；禁止手写。维护者结论写入 events 即可。finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。
-  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。finalize 为冻结优先（freeze-first）：collect 前先 fsync 事件并写 `evidence/evidence-cutoff.json`，cutoff 后不再追加事件；随后依次执行 source consistency（层 1，写入 `reportPipeline.sourceConsistency`）→ render → renderer consistency（层 2），任一层失败即恢复原目录并非零退出。
+  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。finalize 为冻结优先（freeze-first）：collect 前先 fsync 事件并写 `evidence/evidence-cutoff.json`，cutoff 后不再追加事件；随后依次执行 source consistency（层 1，写入 `reportPipeline.sourceConsistency`）→ summary consistency（层 2），任一层失败即恢复原目录并非零退出。
 - **Phase 4 验证与提示**：见 `checklist.md` 归档后验证项。
 
 ## manifest 生成
@@ -55,29 +55,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 
 报告必须突出业务目标和维护者结论。所有统计数字只能来自 events、summary-data、ledger 或 manifest，不得手写另一套。历史 archive 没有 `events.ndjson` 时，允许从 ledger/log/manifest 回放，并在 `reportPipeline.sources` 中记录来源。
 
-## final-summary 渲染
+## 平台展示与数据校验
 
-默认使用 Node.js 渲染器：
-
-```powershell
-powershell.exe -NoProfile -Command "& '<node-path>' 'harness-skills/harness-archive/templates/render-summary.mjs' --summary '.harness/archive/<date-change>/reports/final/summary-data.json' --out '.harness/archive/<date-change>/reports/final/final-summary.html'"
-```
-
-如模板脚本位于 skill 目录，则先复制到 archive 目录或直接引用 skill 路径。
-
-禁止模型临场手写大段 HTML。确需临时修 HTML，只能修模板，不得让统计数字脱离 `summary-data.json`。
+平台监控直接读取 `reports/final/summary-data.json`，归档阶段不再生成本地 HTML 报告，也不得由模型临场维护第二份展示数据。
 
 `validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不再作为独立 `report validate` CLI 调用）。finalize 在 validate error 存在时恢复原 `.harness/changes/<change>` 目录并 exit 非 0，绝不归档未通过校验的变更。
 
 ## repair（归档后修复，不改写原版）
 
-归档后发现 source/renderer 不一致时，使用显式修复（`replay` 仍为只读）：
+归档后发现来源事实与 summary-data 不一致时，使用显式修复（`replay` 仍为只读）：
 
 ```powershell
 python <skills-root>/scripts/harness_archive.py repair --archive-dir ".harness/archive/<archive-id>" --json
 ```
 
-repair 在 archive 外生成候选版本，两层 validator 通过后写入不可变 `derived/v<N>/`（summary-data.json + final-summary.html + repair-record.json），并更新 `derived/authoritative.json` pointer；原 summary、HTML、manifest 不覆盖。知识层仅从 authoritative pointer 且 hash 校验通过的版本提取。
+repair 在 archive 外生成候选版本。来源校验与数据校验通过后，写入不可变 `derived/v<N>/`（summary-data.json + repair-record.json），并更新 `derived/authoritative.json` pointer；原 summary 与 manifest 不覆盖。知识层仅从 authoritative pointer 且 hash 校验通过的版本提取。
 
 ## archive-meta.md 模板
 
@@ -103,8 +95,7 @@ cleanup 步骤（before-manifest 前）：删除 `events.ndjson.lock`、`runtime
 
 ## 目录结构与最终状态规则
 
-- 默认渲染器：`templates/render-summary.mjs`，输入 `reports/final/summary-data.json`，输出 `reports/final/final-summary.html`。
-- `render-summary.mjs` 是默认 UTF-8 渲染器；finalize 内嵌调用，不得由模型临场写 HTML。
+- 平台直接读取 `reports/final/summary-data.json`；本地不生成重复展示文件。
 - 新路径优先：`meta/`、`logs/`、`evidence/`、`reports/final/`、`scripts/`、`backups/uncommitted-tests/`。旧路径只做读取兼容，不再写大量根目录文件。
 - 当 `summary-data.json.verification.apiTests.status=USER_SKIPPED` 或 `verification.dbCompatibility.status=BLOCKED_BY_DBA`，最终状态必须是 `CONDITIONAL_OK`。
 - 复杂 PowerShell 命令写入 `scripts/*.ps1` 后 `-File` 执行，禁止内联 `$` / `$_`。

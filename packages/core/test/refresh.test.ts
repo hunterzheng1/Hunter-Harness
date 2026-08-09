@@ -482,6 +482,47 @@ describe("Conservative Refresh", () => {
     expect((await stat(join(root, INSTALLED_STATE_PATH))).mtimeMs).toBe(beforeStat.mtimeMs);
   });
 
+  it("removes the retired archive HTML renderer only when its content is trusted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-retired-renderer-"));
+    await installFirst(root, "general");
+    const target = ".claude/skills/harness-archive/templates/render-summary.mjs";
+    const historical = await readFile(fileURLToPath(new URL(
+      "./fixtures/v0.1.1-bundles/general/harness-archive/templates/render-summary.mjs",
+      import.meta.url
+    )));
+    await mkdir(join(root, ".claude", "skills", "harness-archive", "templates"), {
+      recursive: true
+    });
+    await writeFile(join(root, target), historical);
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+
+    expect(await exists(join(root, target))).toBe(false);
+    expect(result.removed).toContainEqual(expect.objectContaining({ target_path: target }));
+  });
+
+  it("preserves a locally edited retired archive HTML renderer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-refresh-edited-renderer-"));
+    await installFirst(root, "general");
+    const target = ".claude/skills/harness-archive/templates/render-summary.mjs";
+    await mkdir(join(root, ".claude", "skills", "harness-archive", "templates"), {
+      recursive: true
+    });
+    await writeFile(join(root, target), "用户保留的同名脚本\n");
+
+    const result = await refreshProject({
+      projectRoot: root, resourcesRoot, profile: "general",
+      agents: ["claude-code"], dryRun: false, forceManaged: false
+    });
+
+    expect(await readFile(join(root, target), "utf8")).toBe("用户保留的同名脚本\n");
+    expect(result.removed.some((entry) => entry.target_path === target)).toBe(false);
+    expect(result.preserved).toContainEqual(expect.objectContaining({ target_path: target }));
+  });
+
   it("applies a profile transition across every enabled agent", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-multi-profile-"));
     await initializeProject({

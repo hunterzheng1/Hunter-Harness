@@ -459,19 +459,20 @@ TestA+TestB+TestC RED → 实现相关代码 → TestA+TestB+TestC GREEN → 最
 
 ### ✅OK
 - 所有计划内代码变更完成
-- 关键 P0 场景已自动化测试通过
+- 所有 `ownerPhase=run` 的关键 P0 场景已自动化测试通过
 - 构建成功
 - 无预存变更或预存变更已明确隔离
 - 无非计划文件混入
-- 无 P0 静态-only 场景
+- 无 run-owned P0 静态-only 场景
+- `ownerPhase=test` 的待办已清楚移交给测试阶段
 
 ### 🟡WARN
-- 存在 P0/P1 场景仅静态验证，需 harness-test
+- 存在 `ownerPhase=run` 的 P0/P1 场景仅静态验证
 - 存在预存变更
-- 数据库迁移脚本需要人工执行或 DB 验证
-- 数据访问层/数据库迁移查询只做静态验证
+- run 阶段负责的数据库迁移脚本需要人工执行或 DB 验证
+- run 阶段负责的数据访问层/数据库迁移查询只做静态验证
 - 使用了低价值 Mock 替代真实验证
-- 构建/测试成功但仍需接口/DB 验证
+- run 阶段负责的接口/DB 验证仍未完成
 
 ### ❌FAIL
 - 构建失败
@@ -480,8 +481,7 @@ TestA+TestB+TestC RED → 实现相关代码 → TestA+TestB+TestC GREEN → 最
 - 非计划文件被修改且无法解释
 - git diff --check 失败
 
-如果存在数据库迁移、接口验证、DB 验证未完成，最终不得输出纯 ✅OK，应输出：
-🟡WARN：编码完成，需 harness-test 验证剩余 DB/API 场景。
+`ownerPhase=test` 的任务或场景按计划留给测试阶段属于正常移交，必须记录为“待测试阶段执行”，不得将编码阶段降级为 WARN。只有这些验证属于 `ownerPhase=run` 且未完成时，才输出 `🟡WARN`。
 
 ## 步骤 2：构建验证（默认轻量，按需全量 test）
 
@@ -544,18 +544,19 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 
 ## 步骤 3：场景覆盖检查
 
-对照场景表，逐条确认代码逻辑已覆盖，**并将覆盖结果展示给用户**。**状态必须三类标注**：
+对照场景表，逐条确认代码逻辑已覆盖，**并将覆盖结果展示给用户**。状态按阶段归属分为四类：
 
 - ✅ **已测试通过**：测试基础设施可用且测试已实际运行通过（测试命令输出测试通过证据，如 Java 的 Tests run + Failures: 0）
 - 🟡 **静态检查通过，未真实测试**：TDD 降级，仅做代码逻辑静态检查。**不得计入"已测试通过"**
 - ❌ **未覆盖 / 未验证**：场景未对应代码逻辑或需端到端验证
+- ⏳ **按计划移交**：场景明确为 `ownerPhase=test`，由测试阶段执行；不计入 run 的 🟡/❌，也不降低编码阶段结果
 
 ### 静态验证不等于测试覆盖（⚠️ 关键规则）
 
 1. 🟡 静态检查 **不得计入"已测试通过"**
-2. 如果任一 P0 场景仅静态验证，则 harness-run 最终结果必须是：
+2. 如果任一 `ownerPhase=run` 的 P0 场景仅静态验证，则 harness-run 最终结果必须是：
    `🟡WARN：编码和编译完成，但存在 P0 场景未真实验证`
-3. 只有所有 P0 场景都有自动化测试或真实接口验证时，最终结果才能是：
+3. 只有所有 run-owned P0 场景都有自动化测试或真实接口验证时，最终结果才能是：
    `✅OK成功`
 4. **最终摘要禁止写**：`5✅ + 17🟡 = 22/22`
 5. **最终摘要必须写**：
@@ -566,7 +567,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
    harness-run 结果: 🟡WARN，必须进入 harness-test 后才能 submit
    ```
 6. **禁止用测试用例数冒充场景数**：计数对象是 `test-scenarios.md` 的场景编号（UT-001/N、API-001/N、COM-001/N、INT-001/N），不是测试框架的测试方法数（如 vitest "178 tests"、junit "Tests run: 178"）。场景总数 = test-scenarios.md 的场景数。
-7. **三类计数须自洽**：只要存在任一 🟡 或 ❌ 场景，"未验证"计数不得为 0；"待 harness-test"的场景归入 🟡静态或 ❌未验证，不得既不算 ✅ 又让"未验证:0"。
+7. **四类计数须自洽**：run-owned 的 🟡/❌ 计入未验证；`ownerPhase=test` 单列为 ⏳“按计划移交”，不得冒充 ✅，也不得反向污染 run 的结果。
 8. **输出须为场景表映射**：按 `UT-001~037: ✅X/🟡Y/❌Z`、`API-001~032: ...`、`COM-001~007: ...`、`INT-001~008: ...` 形式逐条或范围标注，不得只给一个聚合测试数。
 
 > 展示格式示例：
@@ -575,9 +576,9 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 > - ✅ UT-001~005: getEnabledIndicators 正常/异常/边界场景已测试通过
 > - 🟡 UT-006~010: getIndicatorPage 分页场景静态验证通过，待测试基础设施补齐后运行 harness-test
 > - ❌ UT-011~015: getIndicatorByCode 场景未覆盖，需补充测试用例
-> - ✅ API-001~005: enabled 接口场景代码逻辑已覆盖（接口测试待 harness-test 验证）
+> - ⏳ API-001~005: `ownerPhase=test`，接口测试按计划移交 harness-test
 > - ✅ COM-001~005: 数据库迁移脚本覆盖
-> - 🟡 INT-001~004: 需端到端部署验证
+> - ⏳ INT-001~004: `ownerPhase=test`，按计划移交测试阶段验证
 > ```
 >
 > **最终汇总**：
@@ -585,6 +586,7 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir ".harness/cha
 > 自动化测试通过: 5
 > 静态检查未真实验证: 17
 > 未验证: 0
+> 按计划移交测试阶段: 4
 > harness-run 结果: 🟡WARN，必须进入 harness-test 后才能 submit
 > ```
 
@@ -767,7 +769,8 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 - 自动化测试通过: K
 - 静态检查未真实验证: M
 - 未验证: P
-- harness-run 结果: ✅OK成功 / 🟡WARN，必须进入 harness-test 后才能 submit
+- 按计划移交测试阶段: Q
+- harness-run 结果: ✅OK成功 / 🟡WARN（只由 run-owned 工作决定）
 
 ### 关门检查结果
 - git status --porcelain: ✅/❌
@@ -785,7 +788,7 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 - 状态已写入: `.harness/changes/<change-name>/evidence/run-task-status.md`
 
 ### 下一步
-> ⚠️ 如果存在 P0 场景为 🟡静态验证，下一步必须且只能是 harness-test。
+> ⚠️ 如果存在 run-owned P0 场景为 🟡静态验证，下一步必须且只能是 harness-test。
 
 运行 `/harness-test` 验证剩余 P0 场景。
 在 harness-test 通过前，不建议也不应进入 `/harness-submit`。

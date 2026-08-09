@@ -33,6 +33,49 @@ async function filePaths(directory: string, base = directory): Promise<string[]>
 }
 
 describe("embedded Harness Bundles", () => {
+  it("omits the retired local HTML archive report", async () => {
+    expect(await exists(join(
+      harnessSource, "harness-archive", "templates", "render-summary.mjs"
+    ))).toBe(false);
+
+    for (const profile of PROFILES) {
+      for (const agent of AGENTS) {
+        const archiveRoot = join(
+          resources, "bundles", profile, agent, "harness-archive"
+        );
+        expect(await exists(join(archiveRoot, "templates", "render-summary.mjs")))
+          .toBe(false);
+        const skill = await readFile(join(archiveRoot, "SKILL.md"), "utf8");
+        expect(skill).not.toContain("final-summary.html");
+      }
+    }
+  });
+
+  it("does not downgrade a completed run for work owned by the test phase", async () => {
+    const sourceSkill = await readFile(join(harnessSource, "harness-run", "SKILL.md"), "utf8");
+    const sourceReference = await readFile(
+      join(harnessSource, "harness-run", "reference.md"), "utf8"
+    );
+    const sourceChecklist = await readFile(
+      join(harnessSource, "harness-run", "checklist.md"), "utf8"
+    );
+
+    for (const text of [sourceSkill, sourceReference, sourceChecklist]) {
+      expect(text).toContain("ownerPhase=test");
+      expect(text).toContain("不得将编码阶段降级为 WARN");
+    }
+
+    for (const profile of PROFILES) {
+      for (const agent of AGENTS) {
+        const runSkill = await readFile(
+          join(resources, "bundles", profile, agent, "harness-run", "SKILL.md"), "utf8"
+        );
+        expect(runSkill).toContain("ownerPhase=test");
+        expect(runSkill).toContain("不得将编码阶段降级为 WARN");
+      }
+    }
+  });
+
   it("keeps ignored-test repair and exact tracking contracts complete", async () => {
     const runSkill = await readFile(join(harnessSource, "harness-run", "SKILL.md"), "utf8");
     const testSkill = await readFile(join(harnessSource, "harness-test", "SKILL.md"), "utf8");

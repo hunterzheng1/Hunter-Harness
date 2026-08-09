@@ -203,13 +203,12 @@ class FreezeFirstTests(_FinalizeFixture):
                 encoding="utf-8"
             )
         )
-        html = (
-            archive_dir / "reports" / "final" / "final-summary.html"
-        ).read_text(encoding="utf-8")
         replay_code, replay = ha.cmd_replay(archive_dir)
 
         self.assertEqual(summary["changeName"], "demo-change")
-        self.assertIn("demo-change", html)
+        self.assertFalse(
+            (archive_dir / "reports" / "final" / "final-summary.html").exists()
+        )
         self.assertEqual(replay_code, 0, replay)
         self.assertTrue(replay["ok"], replay)
 
@@ -264,7 +263,10 @@ class FreezeFirstTests(_FinalizeFixture):
         self.assertTrue(payload.get("ok"))
         self.assertFalse(self.change.exists())
         self.assertTrue(
-            (archive_dir / "reports" / "final" / "final-summary.html").is_file()
+            (archive_dir / "reports" / "final" / "summary-data.json").is_file()
+        )
+        self.assertFalse(
+            (archive_dir / "reports" / "final" / "final-summary.html").exists()
         )
 
     def test_split_v1_runtime_state_is_merged_into_archive(self) -> None:
@@ -594,9 +596,10 @@ class SourceConsistencyTests(_FinalizeFixture):
         archive_terminals = [
             event
             for event in _events_in(self.change)
-            if event.get("phase") == "archive" and event.get("type") == "phase.end"
+            if event.get("phase") == "archive"
+            and event.get("type") == "phase.prepare.end"
         ]
-        self.assertEqual([event.get("status") for event in archive_terminals], ["FAIL"])
+        self.assertEqual([event.get("status") for event in archive_terminals], ["BLOCKED"])
 
     def test_arc_int001_two_failed_attempts_do_not_poison_successful_retry(self) -> None:
         forced = {
@@ -811,8 +814,8 @@ class BusinessGoalTests(unittest.TestCase):
         self.assertIn("建立失败夹具", goal)
 
 
-class RendererProjectionTests(unittest.TestCase):
-    """UT-016 / RET-28: renderer & validator share canonical risk projection."""
+class SummaryProjectionTests(unittest.TestCase):
+    """UT-016 / RET-28: summary data keeps structured risk facts."""
 
     def test_structured_risk_objects_no_false_missing_risk(self) -> None:
         summary = {
@@ -823,23 +826,12 @@ class RendererProjectionTests(unittest.TestCase):
                 {"phase": "test", "severity": "high", "message": "DB 兼容性未验证"}
             ],
         }
-        html_path = Path(tempfile.mkdtemp(prefix="harness-archiveC-html-")) / "h.html"
-        html_path.write_text(
-            "<html><body>x DB 兼容性未验证 CONDITIONAL_OK</body></html>",
-            encoding="utf-8",
-        )
-        try:
-            result = ha.validate_summary(summary, html_path)
-            codes = {i.get("code") for i in result.get("issues") or []}
-            self.assertNotIn(
-                "missing-risk",
-                codes,
-                "structured risk whose message is rendered must not warn missing-risk",
-            )
-        finally:
-            shutil.rmtree(html_path.parent, ignore_errors=True)
+        result = ha.validate_summary_data(summary)
+        codes = {i.get("code") for i in result.get("issues") or []}
+        self.assertNotIn("missing-risk", codes)
+        self.assertEqual(summary["knownRisks"][0]["message"], "DB 兼容性未验证")
 
-    def test_missing_structured_risk_still_warns(self) -> None:
+    def test_structured_risk_does_not_depend_on_a_second_projection(self) -> None:
         summary = {
             "changeName": "x",
             "finalStatus": "CONDITIONAL_OK",
@@ -848,14 +840,9 @@ class RendererProjectionTests(unittest.TestCase):
                 {"phase": "test", "severity": "high", "message": "真实风险未渲染"}
             ],
         }
-        html_path = Path(tempfile.mkdtemp(prefix="harness-archiveC-html-")) / "h.html"
-        html_path.write_text("<html><body>x</body></html>", encoding="utf-8")
-        try:
-            result = ha.validate_summary(summary, html_path)
-            codes = {i.get("code") for i in result.get("issues") or []}
-            self.assertIn("missing-risk", codes)
-        finally:
-            shutil.rmtree(html_path.parent, ignore_errors=True)
+        result = ha.validate_summary_data(summary)
+        self.assertTrue(result["ok"])
+        self.assertEqual(summary["knownRisks"][0]["message"], "真实风险未渲染")
 
 
 class ManifestStatsTests(_FinalizeFixture):
@@ -1113,7 +1100,7 @@ class RepairTests(unittest.TestCase):
             "sha256:" + hashlib.sha256(summary_bytes).hexdigest(),
         )
         self.assertEqual(record.get("validators", {}).get("source", {}).get("ok"), True)
-        self.assertEqual(record.get("validators", {}).get("renderer", {}).get("ok"), True)
+        self.assertEqual(record.get("validators", {}).get("summary", {}).get("ok"), True)
 
     def test_arc_ut004_repair_reuses_frozen_manifest_facts(self) -> None:
         before_path = self.archive_dir / "evidence" / "archive-manifest-before.json"

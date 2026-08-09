@@ -3,8 +3,8 @@
 
 Subcommands:
   status   — pre-archive gate checks (read-only)
-  finalize — single-process archive: manifest → move → collect → render →
-             validate → after-manifest → publish → ZIP upload/service
+  finalize — single-process archive: manifest → move → collect → validate →
+             after-manifest → publish → ZIP upload/service
   replay   — read-only re-collect + validate for historical archives
 
 Python 3.10+, stdlib only. UTF-8 without BOM. Windows path safe.
@@ -43,7 +43,6 @@ if hasattr(sys.stderr, "reconfigure"):
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILLS_ROOT = SCRIPTS_DIR.parent
-RENDER_SCRIPT = SKILLS_ROOT / "harness-archive" / "templates" / "render-summary.mjs"
 SUMMARY_TEMPLATE = (
     SKILLS_ROOT / "harness-archive" / "templates" / "summary-data-template.json"
 )
@@ -3198,7 +3197,11 @@ def build_verification_projection(
         "apiTests": _ledger_api_tests(effective_ledger, change_dir=change_dir),
     }
     db_compatibility = _ledger_db_compat(effective_ledger)
-    if db_compatibility["status"] == "NOT_RUN" and change_dir is not None:
+    if db_compatibility["status"] in {
+        "NOT_RUN",
+        "UNKNOWN",
+        "EVIDENCE_MISSING",
+    } and change_dir is not None:
         gate_policy_path = change_dir / "meta" / "gate-policy.json"
         try:
             gate_policy = read_json(gate_policy_path) if gate_policy_path.is_file() else None
@@ -3936,8 +3939,16 @@ def _resolve_base_commit(
 
     Latest merge phase context must not override the full change boundary.
     """
+    def stable_base(value: Any) -> str:
+        candidate = str(value or "").strip()
+        if candidate.upper() in {"HEAD", "FETCH_HEAD", "ORIG_HEAD"}:
+            return ""
+        if candidate.startswith(("refs/", "@{")):
+            return ""
+        return candidate
+
     if ledger:
-        base = str(ledger.get("baseCommit") or "").strip()
+        base = stable_base(ledger.get("baseCommit"))
         if base and base != NOT_AVAILABLE:
             return base
 
@@ -3959,7 +3970,7 @@ def _resolve_base_commit(
                 continue
             if not isinstance(payload, dict):
                 continue
-            base = str(payload.get("baseCommit") or "").strip()
+            base = stable_base(payload.get("baseCommit"))
             if base and base != NOT_AVAILABLE:
                 return base
 
@@ -3996,9 +4007,18 @@ def _final_commit_from_sources(
         if str(event.get("phase") or "").lower() not in {"submit", "merge", "archive"}:
             continue
         text = " ".join(str(event.get(key) or "") for key in ("note", "message", "command"))
-        match = commit_pattern.search(text)
-        if match:
-            return match.group(0)
+        for match in commit_pattern.finditer(text):
+            candidate = match.group(0)
+            code, resolved, _ = git_run(
+                project,
+                "rev-parse",
+                "--verify",
+                f"{candidate}^{{commit}}",
+            )
+            resolved_lines = str(resolved or "").splitlines()
+            resolved_hash = resolved_lines[0].strip() if resolved_lines else ""
+            if code == 0 and re.fullmatch(r"[0-9a-f]{40}", resolved_hash, re.IGNORECASE):
+                return resolved_hash
     if existing and existing.get("finalCommit"):
         return str(existing["finalCommit"])
     code, head, _ = git_run(project, "rev-parse", "HEAD")
@@ -4669,618 +4689,6 @@ def collect_summary_data(
 
 
 # ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
-
-
-def resolve_node_path(project_root: Path) -> str | None:
-    profile = project_root / ".harness" / "config" / "build-profile.json"
-    if profile.is_file():
-        try:
-            data = read_json(profile)
-            node = (data.get("toolPaths") or {}).get("node")
-            if node and Path(str(node)).exists():
-                return str(node)
-        except (OSError, json.JSONDecodeError, TypeError):
-            pass
-    return shutil.which("node")
-
-
-def _render_legacy_fallback_html(summary: dict[str, Any]) -> str:
-    """Render escaped, deterministic HTML with every validate-required fact.
-
-    Used when the Node renderer is unavailable or fails. No timestamps / random
-    data; all dynamic values are HTML-escaped via _html_escape.
-    """
-    def esc(v: Any) -> str:
-        return _html_escape("" if v is None else str(v))
-
-    parts: list[str] = [
-        "<!DOCTYPE html>",
-        '<html lang="zh-CN"><head><meta charset="utf-8">',
-        "<title>harness final-summary (python fallback)</title>",
-        "</head><body>",
-        "<h1>变更最终报告（Python fallback 渲染）</h1>",
-        f'<h2 id="changeName">{esc(summary.get("changeName"))}</h2>',
-        f'<p><strong>finalStatus</strong>: '
-        f'<span id="finalStatus">{esc(summary.get("finalStatus"))}</span></p>',
-        f'<div id="finalStatusReasons"><strong>finalStatusReasons</strong><ul>',
-    ]
-    for reason in summary.get("finalStatusReasons") or []:
-        parts.append(f"<li>{esc(reason)}</li>")
-    parts.append("</ul></div>")
-    if summary.get("riskTier"):
-        parts.append(f"<p><strong>riskTier</strong>: {esc(summary.get('riskTier'))}</p>")
-    parts.append("<h3>Current Outcome</h3>")
-    parts.append(
-        f"<p>finalStatus={esc(summary.get('finalStatus'))}</p>"
-    )
-
-    candidate = (
-        summary.get("candidateVerification")
-        if isinstance(summary.get("candidateVerification"), dict)
-        else {}
-    )
-    parts.append("<h3>Candidate Claim / Attestation</h3>")
-    parts.append(
-        f"<p>assurance={esc(candidate.get('assurance'))} "
-        f"code={esc(candidate.get('code'))} "
-        f"provider={esc(candidate.get('provider'))}</p>"
-    )
-
-    integrity = (
-        summary.get("archiveIntegrity")
-        if isinstance(summary.get("archiveIntegrity"), dict)
-        else {}
-    )
-    parts.append("<h3>Archive Integrity</h3>")
-    parts.append(
-        f"<p>ok={esc(integrity.get('ok'))} "
-        f"code={esc(integrity.get('code'))} "
-        f"checksumStatus={esc(integrity.get('checksumStatus'))}</p>"
-    )
-
-    decision = (
-        summary.get("releaseDecision")
-        if isinstance(summary.get("releaseDecision"), dict)
-        else {}
-    )
-    parts.append("<h3>Release Eligibility</h3>")
-    parts.append(
-        f"<p>releaseEligible={esc(decision.get('releaseEligible'))} "
-        f"code={esc(decision.get('code'))}</p><ul>"
-    )
-    checks = decision.get("checks")
-    checks = checks if isinstance(checks, dict) else {}
-    for name, check in checks.items():
-        check = check if isinstance(check, dict) else {}
-        parts.append(
-            f"<li>{esc(name)}: ok={esc(check.get('ok'))} "
-            f"code={esc(check.get('code'))}</li>"
-        )
-    parts.append("</ul>")
-
-    timing = summary.get("timing") if isinstance(summary.get("timing"), dict) else {}
-    if timing:
-        parts.append("<h3>Timing</h3>")
-        parts.append(
-            "<p id=\"timingColumns\">"
-            f"stageActiveExecution={esc(timing.get('stageActiveExecutionMs'))} · "
-            f"stageWallClockSpan={esc(timing.get('stageWallClockSpanMs'))} · "
-            f"workflowWallClock={esc(timing.get('workflowWallClockMs'))}"
-            "</p>"
-        )
-        parts.append(
-            "<p id=\"timingConservation\">"
-            f"attributedStageUnionMs={esc(timing.get('attributedStageUnionMs'))} · "
-            f"externalWaitMs={esc(timing.get('externalWaitMs'))} · "
-            f"pausedMs={esc(timing.get('pausedMs'))} · "
-            "agentOrToolUnattributedMs="
-            f"{esc(timing.get('agentOrToolUnattributedMs'))} · "
-            f"conservationDeltaMs={esc(timing.get('conservationDeltaMs'))}"
-            "</p>"
-        )
-        parts.append(
-            f"<p><strong>reportCutoffAt</strong>: "
-            f"<span id=\"reportCutoffAt\">{esc(timing.get('reportCutoffAt'))}</span></p>"
-        )
-        parts.append(
-            "<p><small>durations.totalMinutes is active-only; "
-            "do not treat it as workflow wall clock.</small></p>"
-        )
-    parts.append("<h3>History Quality</h3><ul>")
-    attempts = timing.get("attempts")
-    attempts = attempts if isinstance(attempts, list) else []
-    for attempt in attempts:
-        attempt = attempt if isinstance(attempt, dict) else {}
-        parts.append(
-            f"<li>{esc(attempt.get('phase'))}: "
-            f"{esc(attempt.get('terminalStatus') or attempt.get('status'))} "
-            f"durationMs={esc(attempt.get('durationMs'))}</li>"
-        )
-    if not attempts:
-        parts.append("<li>no typed attempts recorded</li>")
-    parts.append("</ul>")
-
-    remote_cost = (
-        summary.get("remoteCost")
-        if isinstance(summary.get("remoteCost"), dict)
-        else {}
-    )
-    remote_totals = remote_cost.get("totals")
-    remote_totals = remote_totals if isinstance(remote_totals, dict) else {}
-    parts.append("<h3>Remote Cost</h3>")
-    parts.append(
-        f"<p>runnerMinutes={esc(remote_totals.get('runnerMinutes'))} "
-        f"queueWaitMs={esc(remote_totals.get('queueWaitMs'))} "
-        f"artifactBytes={esc(remote_totals.get('artifactBytes'))} "
-        f"duplicateRunCount={esc(remote_totals.get('duplicateRunCount'))}</p>"
-    )
-
-    storage = (
-        summary.get("artifactStorage")
-        if isinstance(summary.get("artifactStorage"), dict)
-        else {}
-    )
-    parts.append("<h3>Artifact Storage</h3>")
-    parts.append(
-        f"<p>artifactCount={esc(storage.get('artifactCount'))} "
-        f"bytesAdded={esc(storage.get('bytesAdded'))} "
-        f"bytesReused={esc(storage.get('bytesReused'))} "
-        f"bytesPruned={esc(storage.get('bytesPruned'))}</p>"
-    )
-
-    projection = (
-        summary.get("projection")
-        if isinstance(summary.get("projection"), dict)
-        else {}
-    )
-    parts.append("<h3>Projection / Fallback</h3>")
-    parts.append(
-        f"<p>mode={esc(projection.get('mode'))} "
-        f"code={esc(projection.get('code'))} "
-        f"remediation={esc(projection.get('remediation'))}</p>"
-    )
-
-    if summary.get("productCommit") or summary.get("productTreeHash"):
-        parts.append("<h3>Identity</h3>")
-        parts.append(
-            f"<p>productCommit={esc(summary.get('productCommit'))} "
-            f"productTreeHash={esc(summary.get('productTreeHash'))} "
-            f"archiveCommit={esc(summary.get('archiveCommit'))}</p>"
-        )
-
-    pipeline = summary.get("reportPipeline") or {}
-    cmds = pipeline.get("commands") or []
-    parts.append("<h3>Commands</h3><ul>")
-    for c in cmds:
-        parts.append(
-            f"<li><code>{esc(c.get('command'))}</code> "
-            f"exitCode={esc(c.get('exit_code'))}</li>"
-        )
-    parts.append("</ul>")
-
-    ver = summary.get("verification") or {}
-    unit = ver.get("unitTests") or {}
-    api = ver.get("apiTests") or {}
-    browser = ver.get("browserE2E") or {}
-    parts.append("<h3>Verification</h3>")
-    parts.append(
-        "<p>unitTests: run={run} failures={failures} errors={errors} "
-        "skipped={skipped} passRate={passRate} status={status}</p>".format(
-            run=esc(unit.get("run")),
-            failures=esc(unit.get("failures")),
-            errors=esc(unit.get("errors")),
-            skipped=esc(unit.get("skipped")),
-            passRate=esc(unit.get("passRate")),
-            status=esc(unit.get("status")),
-        )
-    )
-    parts.append(
-        "<p>apiTests: status={status} total={total} passed={passed} "
-        "failed={failed} blocked={blocked}</p>".format(
-            status=esc(api.get("status")),
-            total=esc(api.get("total")),
-            passed=esc(api.get("passed")),
-            failed=esc(api.get("failed")),
-            blocked=esc(api.get("blocked")),
-        )
-    )
-    parts.append(
-        "<p>browserE2E: status={status} total={total} passed={passed} "
-        "failed={failed} skipped={skipped} retries={retries}</p>".format(
-            status=esc(browser.get("status")),
-            total=esc(browser.get("total")),
-            passed=esc(browser.get("passed")),
-            failed=esc(browser.get("failed")),
-            skipped=esc(browser.get("skipped")),
-            retries=esc(browser.get("retries")),
-        )
-    )
-    parts.append(f"<p>dbCompatibility: {esc(ver.get('dbCompatibility'))}</p>")
-
-    parts.append("<h3>Changed Files</h3><ul>")
-    for f in summary.get("changedFiles") or []:
-        parts.append(
-            f"<li>{esc(f.get('path'))} +{esc(f.get('insertions'))} "
-            f"-{esc(f.get('deletions'))}</li>"
-        )
-    parts.append("</ul>")
-
-    am = summary.get("archiveManifest") or {}
-    parts.append("<h3>Archive Manifest</h3>")
-    parts.append(
-        "<p>movedFiles={moved} generatedFiles={gen} totalArchiveFiles={total} "
-        "checksumStatus={cs}</p>".format(
-            moved=esc(am.get("movedFiles")),
-            gen=esc(am.get("generatedFiles")),
-            total=esc(am.get("totalArchiveFiles")),
-            cs=esc(am.get("checksumStatus")),
-        )
-    )
-
-    def _list_section(title: str, items: Any) -> None:
-        parts.append(f"<h3>{esc(title)}</h3><ul>")
-        for it in items or []:
-            parts.append(f"<li>{esc(it)}</li>")
-        parts.append("</ul>")
-
-    _list_section("Known Risks", summary.get("knownRisks"))
-    _list_section("Manual Actions", summary.get("manualActions"))
-    _list_section("Maintenance Notes", summary.get("maintenanceNotes"))
-
-    parts.append("</body></html>")
-    return "\n".join(parts) + "\n"
-
-
-def render_fallback_html(summary: dict[str, Any]) -> str:
-    """Render the same executive information architecture without Node."""
-
-    def esc(value: Any) -> str:
-        return _html_escape("" if value is None else str(value))
-
-    def rec(value: Any) -> dict[str, Any]:
-        return value if isinstance(value, dict) else {}
-
-    def seq(value: Any) -> list[Any]:
-        return value if isinstance(value, list) else []
-
-    normalized = rec(summary.get("normalizedReport"))
-    outcomes = rec(normalized.get("outcomes"))
-    current = rec(outcomes.get("current")) or {
-        "status": summary.get("finalStatus"),
-        "reasons": seq(summary.get("finalStatusReasons")),
-        "stages": rec(summary.get("stageStatus")),
-        "knownRisks": seq(summary.get("knownRisks")),
-    }
-    release = rec(outcomes.get("release")) or {
-        "intent": summary.get("archiveIntent"),
-        "decision": "NOT_REQUESTED"
-        if summary.get("archiveIntent") == "record-only"
-        else rec(summary.get("releaseDecision")).get("code"),
-        "eligible": rec(summary.get("releaseDecision")).get("releaseEligible"),
-    }
-    identity = rec(normalized.get("identity")) or rec(summary.get("changeIdentity"))
-    verification = rec(normalized.get("verification")) or rec(
-        summary.get("verification")
-    )
-    timing = rec(normalized.get("timing")) or rec(summary.get("timing"))
-    measurements = rec(normalized.get("measurements"))
-    record_only = (
-        release.get("intent") == "record-only"
-        or summary.get("archiveIntent") == "record-only"
-    )
-    product_commit = (
-        identity.get("productCommit")
-        or summary.get("productCommit")
-        or summary.get("finalCommit")
-        or "N/A"
-    )
-    labels = [
-        ("后端", ("unitTests", "dbCompatibility")),
-        ("Geo", ("geo",)),
-        ("前端", ("frontend",)),
-        ("浏览器", ("browserE2E",)),
-        ("API", ("apiTests",)),
-    ]
-    status_labels = {
-        "OK": "通过",
-        "PASS": "通过",
-        "PASSED": "通过",
-        "CONDITIONAL_OK": "有条件通过",
-        "WARN": "警告",
-        "ADVISORY": "建议",
-        "FAIL": "失败",
-        "FAILED": "失败",
-        "ERROR": "错误",
-        "BLOCKED": "阻塞",
-        "NOT_RUN": "未运行",
-        "SKIPPED": "已跳过",
-        "NOT_APPLICABLE": "不适用",
-        "UNKNOWN": "未知",
-    }
-
-    def status_label(value: Any) -> str:
-        status = str(value or "UNKNOWN").upper()
-        return status_labels.get(status, status)
-
-    def verification_status(value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        item = rec(value)
-        if item.get("status"):
-            return str(item["status"])
-        if int(item.get("failures") or 0) + int(item.get("errors") or 0):
-            return "FAIL"
-        if int(item.get("run") or item.get("total") or 0):
-            return "OK"
-        return "NOT_RUN"
-
-    def describe(value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        item = rec(value)
-        return str(
-            item.get("title")
-            or item.get("message")
-            or item.get("summary")
-            or item.get("action")
-            or item.get("remediation")
-            or item
-        )
-
-    def measurement_label(value: Any) -> str:
-        item = rec(value)
-        if item.get("state") in {"unknown", "not_applicable"}:
-            return "N/A"
-        if item.get("state") == "zero":
-            return "0"
-        if item.get("state") == "known":
-            return str(item.get("value"))
-        return "N/A" if value is None or value == "" else str(value)
-
-    risks = (
-        seq(current.get("findings"))
-        or seq(current.get("knownRisks"))
-        or seq(summary.get("knownRisks"))
-    )
-    actions = seq(summary.get("manualActions"))
-    groups: list[str] = []
-    passed = 0
-    for label, keys in labels:
-        statuses = [
-            verification_status(verification[key])
-            for key in keys
-            if key in verification
-        ]
-        status = (
-            "FAIL"
-            if any(value in {"FAIL", "ERROR", "BLOCKED"} for value in statuses)
-            else "WARN"
-            if any("WARN" in value or "CONDITIONAL" in value for value in statuses)
-            else "NOT_APPLICABLE"
-            if statuses and all(value == "NOT_APPLICABLE" for value in statuses)
-            else "OK"
-            if statuses
-            and all(
-                value in {"OK", "PASS", "PASSED", "NOT_APPLICABLE"}
-                for value in statuses
-            )
-            else "NOT_RUN"
-        )
-        if status == "OK":
-            passed += 1
-        details = " · ".join(
-            str(rec(verification.get(key)).get("passRate") or status)
-            for key in keys
-            if key in verification
-        ) or "未配置该组验证"
-        raw_details = " · ".join(
-            f"{key} · status={verification_status(verification[key])}"
-            + (
-                f" · failed={rec(verification[key]).get('failed')}"
-                if rec(verification[key]).get("failed") is not None
-                else ""
-            )
-            for key in keys
-            if key in verification
-        )
-        groups.append(
-            f'<article class="verify" title="{esc(raw_details)}"><strong>{esc(label)}</strong>'
-            f'<span title="{esc(status)}">{esc(status_label(status))}</span><small>{esc(details)}</small></article>'
-        )
-
-    commands = seq(rec(summary.get("reportPipeline")).get("commands"))
-    command_rows = "".join(
-        f"<tr><td>{esc(item.get('phase') or '-')}</td>"
-        f"<td><code>{esc(item.get('command'))}</code></td>"
-        f"<td>{esc('OK' if int(item.get('exit_code', item.get('exitCode', 1))) == 0 else 'FAIL')}</td></tr>"
-        for item in commands
-        if isinstance(item, dict)
-    ) or '<tr><td colspan="3">没有命令证据</td></tr>'
-    files = seq(summary.get("changedFiles"))
-    file_rows = "".join(
-        f"<tr><td><code>{esc(item.get('path') or item.get('file'))}</code></td>"
-        f"<td>+{esc(item.get('insertions') or 0)}</td>"
-        f"<td>-{esc(item.get('deletions') or 0)}</td></tr>"
-        for item in files
-        if isinstance(item, dict)
-    ) or '<tr><td colspan="3">没有变更文件证据</td></tr>'
-    risk_rows = "".join(f"<li>{esc(describe(item))}</li>" for item in risks) or "<li>当前没有未处置风险</li>"
-    action_rows = "".join(f"<li>{esc(describe(item))}</li>" for item in actions) or "<li>无需人工后续动作</li>"
-    release_card = (
-        ""
-        if record_only
-        else "<article class=\"card\"><h2>发布与候选</h2>"
-        f"<p>候选证明 / 发布资格：{esc(release.get('decision') or 'NOT_EVALUATED')}</p></article>"
-    )
-    remote = rec(measurements.get("remoteCost"))
-    storage = rec(measurements.get("artifactStorage"))
-    remote_totals = rec(remote.get("totals"))
-    projection = rec(summary.get("projection"))
-    archive_integrity = rec(summary.get("archiveIntegrity"))
-    durability = rec(summary.get("archiveDurability"))
-    durability_status = str(
-        durability.get("status") or "ARCHIVED_LOCAL_ONLY"
-    )
-    scenario_coverage = rec(summary.get("scenarioCoverage"))
-    unexecuted_scenarios = [
-        str(item) for item in seq(scenario_coverage.get("unexecuted"))
-    ]
-    scenario_status = str(
-        scenario_coverage.get("code")
-        or ("SCENARIO_COVERAGE_OK" if scenario_coverage.get("ok") else "NOT_RUN")
-    )
-    total_files = rec(summary.get("archiveManifest")).get("totalArchiveFiles")
-    total_files_text = "" if total_files is None else str(total_files)
-
-    return f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Harness 最终报告 · {esc(summary.get("changeName"))}</title>
-<style>
-:root{{--bg:#f4f6f8;--card:#fff;--text:#172033;--muted:#667085;--line:#dfe5ec}}
-@media(prefers-color-scheme:dark){{:root{{--bg:#0b1119;--card:#121a26;--text:#eef3f9;--muted:#9aa8ba;--line:#2a384a}}}}
-*{{box-sizing:border-box}}html,body{{max-width:100%;overflow-x:hidden}}body{{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif}}main{{width:min(1120px,calc(100% - 32px));margin:24px auto}}.hero,.card,.metric,.verify,details{{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}}.hero h1{{margin:4px 0}}.metrics,.groups{{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;margin:10px 0}}.metric strong,.verify strong{{display:block;font-size:17px}}.verify small{{display:block;color:var(--muted)}}.risk{{display:grid;grid-template-columns:1fr 1fr;gap:10px}}.card{{margin:10px 0}}details{{margin:9px 0}}summary{{cursor:pointer;font-weight:700}}details>div{{overflow:auto}}table{{width:100%;border-collapse:collapse}}td,th{{padding:8px;border-bottom:1px solid var(--line);text-align:left}}code{{overflow-wrap:anywhere}}@media(max-width:600px){{main{{width:calc(100% - 18px);margin:9px auto}}.metrics,.groups,.risk{{grid-template-columns:1fr}}}}
-</style></head><body><main>
-<section class="hero"><small>HARNESS · 管理结论</small><h1>{esc(summary.get("changeName"))}</h1>
-<p>{esc(summary.get("businessGoal") or "未记录业务目标")}</p>
-<strong title="{esc(current.get("status"))}">{esc(status_label(current.get("status")))}</strong>
-<p id="finalStatusReasons">{esc(" · ".join(str(item) for item in seq(current.get("reasons"))))}</p>
-{"<p>归档意图：仅记录 · 未请求发布</p>" if record_only else ""}</section>
-<section class="metrics"><article class="metric"><small>产品提交</small><strong><code>{esc(str(product_commit)[:10])}</code></strong></article>
-<article class="metric"><small>验证概览</small><strong>{passed}/5 组通过</strong></article>
-<article class="metric"><small>风险与动作</small><strong>{len(risks)} / {len(actions)}</strong></article>
-<article class="metric"><small>全流程耗时</small><strong>{esc(timing.get("workflowWallClockMs") or "N/A")}</strong></article>
-<article class="metric"><small>归档文件</small><strong>{esc(total_files_text or "N/A")}</strong></article></section>
-<article class="card"><h2>验证概览</h2><div class="groups">{"".join(groups)}</div></article>
-<article class="card"><h2>场景执行闭环</h2>
-<p>结构化运行回执：{esc(scenario_status)}</p>
-<p>未执行 / 未通过：{esc(", ".join(unexecuted_scenarios) or "无")}</p></article>
-<article class="card"><h2>风险与动作</h2><div class="risk"><section><h3>当前风险</h3><ul>{risk_rows}</ul></section><section><h3>人工动作</h3><ul>{action_rows}</ul></section></div></article>
-{release_card}
-<details><summary>技术证据 · 时间守恒</summary><div><p>conservationDeltaMs={esc(timing.get("conservationDeltaMs") if "conservationDeltaMs" in timing else "N/A")}</p>
-<p>workflowWallClock={esc(timing.get("workflowWallClockMs") if "workflowWallClockMs" in timing else "N/A")}</p>
-<p>stageActiveExecution={esc(timing.get("stageActiveExecutionMs") if "stageActiveExecutionMs" in timing else "N/A")}</p>
-<p>stageWallClockSpan={esc(timing.get("stageWallClockSpanMs") if "stageWallClockSpanMs" in timing else "N/A")}</p>
-<p>reportCutoffAt={esc(timing.get("reportCutoffAt") or "N/A")}</p>
-<p>远端 runner 成本：{esc(measurement_label(remote_totals.get("runnerMinutes") or remote.get("runnerMinutes")))}</p>
-<p>新增制品字节：{esc(measurement_label(storage.get("bytesAdded")))}</p></div></details>
-<details><summary>技术证据 · 发布与归档治理</summary><div>
-    <p>归档完整性：{esc(archive_integrity.get("code") or rec(summary.get("archiveManifest")).get("checksumStatus") or "N/A")}</p>
-    <p>归档持久性：{esc(durability_status)} · {esc(durability.get("risk") or "已通过持久介质回读校验")}</p>
-    <p>保留策略：{esc(durability.get("retentionPolicy") or "N/A")}</p>
-    <p>历史质量：未闭合尝试 {esc(timing.get("unclosedAttemptCount") if "unclosedAttemptCount" in timing else "N/A")}</p>
-<p>投影状态：{esc(projection.get("code") or projection.get("mode") or "N/A")}</p></div></details>
-<details><summary>技术证据 · 变更文件</summary><div><table><tbody>{file_rows}</tbody></table></div></details>
-<details><summary>技术证据 · 命令</summary><div><table><tbody>{command_rows}</tbody></table></div></details>
-<details><summary>技术元数据</summary><div><p>productCommit=<code>{esc(product_commit)}</code></p>
-<p>schemaVersion={esc(summary.get("schemaVersion"))}</p></div></details>
-</main></body></html>
-"""
-
-
-
-# P1 slim-files: final-summary.html is a regenerable presentation layer over
-# summary-data.json. `finalize --no-html` skips local HTML rendering entirely
-# (a remote platform can render from summary-data.json); render failures are
-# downgraded to warnings instead of rolling back the archive.
-RENDER_HTML_ENABLED = True
-
-
-def render_final_summary(
-    change_dir: Path,
-    summary_path: Path,
-) -> dict[str, Any]:
-    """Render final-summary.html via Node; fall back to a Python renderer.
-
-    Returns ``{ok, renderer, fallbackReason, out_path}``:
-    - Node success -> renderer="node".
-    - Node unavailable/timeout/non-zero/no-file -> Python fallback; success ->
-      renderer="python-fallback" (fallbackReason carries the node failure cause).
-    - Both fail or produce no file -> ok=False (caller downgrades to warning).
-    - Rendering disabled (--no-html) -> ok=True with renderer="skipped".
-    """
-    out_path = change_dir / "reports" / "final" / "final-summary.html"
-    if not RENDER_HTML_ENABLED:
-        return {
-            "ok": True,
-            "renderer": "skipped",
-            "fallbackReason": "",
-            "out_path": str(out_path),
-            "skipped": True,
-        }
-    project = find_project_root(change_dir)
-    node = resolve_node_path(project)
-    fallback_reason = ""
-
-    if node and RENDER_SCRIPT.is_file():
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            proc = subprocess.run(
-                [
-                    node,
-                    str(RENDER_SCRIPT),
-                    "--summary",
-                    str(summary_path),
-                    "--out",
-                    str(out_path),
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                check=False,
-            )
-            if proc.returncode == 0 and out_path.is_file():
-                return {
-                    "ok": True,
-                    "renderer": "node",
-                    "fallbackReason": "",
-                    "out_path": str(out_path),
-                }
-            fallback_reason = (
-                f"node render exit {proc.returncode}: "
-                f"{(proc.stderr or proc.stdout or '')[:200]}"
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            fallback_reason = f"node render failed: {exc}"
-    else:
-        fallback_reason = (
-            "node unavailable" if not node else f"renderer missing: {RENDER_SCRIPT}"
-        )
-
-    # Python fallback
-    try:
-        summary = read_json(summary_path)
-        html = render_fallback_html(summary)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(html, encoding="utf-8", newline="\n")
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return {
-            "ok": False,
-            "renderer": "none",
-            "fallbackReason": f"{fallback_reason}; fallback failed: {exc}",
-            "out_path": str(out_path),
-        }
-    if out_path.is_file():
-        return {
-            "ok": True,
-            "renderer": "python-fallback",
-            "fallbackReason": fallback_reason,
-            "out_path": str(out_path),
-        }
-    return {
-        "ok": False,
-        "renderer": "none",
-        "fallbackReason": f"{fallback_reason}; fallback produced no file",
-        "out_path": str(out_path),
-    }
-
-
-# ---------------------------------------------------------------------------
-# validate
-# ---------------------------------------------------------------------------
 
 
 def _manifest_self_stats(
@@ -5312,22 +4720,24 @@ def _append_finalize_failure_terminal(
     *,
     operation_id: str,
 ) -> None:
-    """Persist one failed finalize attempt on the authoritative change source."""
+    """Record a blocked preparation without manufacturing an archive attempt."""
     if not authoritative_change_dir.is_dir():
         return
     try:
         append_event(
             authoritative_change_dir,
             phase="archive",
-            type_="phase.start",
-            note=f"finalize operation {operation_id} failed before publish",
+            type_="phase.prepare.start",
+            note="开始检查归档条件",
         )
         append_event(
             authoritative_change_dir,
             phase="archive",
-            type_="phase.end",
-            status="FAIL",
-            note=f"finalize operation {operation_id} discarded: {message}",
+            type_="phase.prepare.end",
+            status="BLOCKED",
+            code="ARCHIVE_PREPARE_BLOCKED",
+            message=f"归档条件未满足：{message}",
+            note=f"归档操作 {operation_id} 未进入正式执行",
         )
     except OSError:
         pass
@@ -5570,254 +4980,55 @@ def validate_source_consistency(
     }
 
 
-def validate_summary(
-    summary: dict[str, Any],
-    html_path: Path | None,
-    *,
-    render_skipped: bool = False,
-) -> dict[str, Any]:
-    """Validate final-summary covers summary-data key facts (in-process)."""
+def validate_summary_data(summary: dict[str, Any]) -> dict[str, Any]:
+    """Validate canonical summary data without creating an HTML projection."""
     issues: list[dict[str, str]] = []
-
-    change_id = str(summary.get("changeName") or "")
-    html = ""
-    if html_path and html_path.is_file():
-        try:
-            html = html_path.read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            issues.append(
-                {
-                    "code": "missing-final-report",
-                    "severity": "error",
-                    "message": f"cannot read final-summary: {exc}",
-                }
-            )
-    else:
-        # P1 slim-files: final-summary.html 是 summary-data.json 的可再生展示
-        # 投影，不再是硬产物（summary-data + manifest + adequacy 仍 fail-closed）。
-        # 缺 HTML 恒为 warning，不阻断归档收尾；平台端可按 summary-data 渲染。
-        _ = render_skipped  # kept for call-site compatibility
+    verification = summary.get("verification") or {}
+    verification = verification if isinstance(verification, dict) else {}
+    unit = verification.get("unitTests") or {}
+    api = verification.get("apiTests") or {}
+    browser = verification.get("browserE2E") or {}
+    unit = unit if isinstance(unit, dict) else {}
+    api = api if isinstance(api, dict) else {}
+    browser = browser if isinstance(browser, dict) else {}
+    api_status = str(api.get("status") or "")
+    browser_status = str(browser.get("status") or "")
+    final_status = str(summary.get("finalStatus") or "")
+    has_skip = api_status == "USER_SKIPPED" or browser_status in {
+        "USER_SKIPPED",
+        "BLOCKED",
+        "BLOCKED_BY_ENV",
+        "NOT_RUN",
+        "PARTIAL",
+    } or str(verification.get("dbCompatibility") or "") == "BLOCKED_BY_DBA"
+    has_failed_verification = (
+        int(unit.get("failures") or 0) > 0
+        or int(unit.get("errors") or 0) > 0
+        or int(api.get("failed") or 0) > 0
+        or int(browser.get("failed") or 0) > 0
+        or browser_status == "FAIL"
+    )
+    stage = summary.get("stageStatus") or {}
+    stage = stage if isinstance(stage, dict) else {}
+    has_failed_stage = any(str(value).upper() == "FAIL" for value in stage.values())
+    if (has_skip or has_failed_verification or has_failed_stage) and final_status == "OK":
         issues.append(
             {
-                "code": "missing-final-report",
-                "severity": "warning",
-                "message": "reports/final/final-summary.html not found",
-            }
-        )
-
-    def has_text(needle: str) -> bool:
-        if not needle or needle == NOT_AVAILABLE:
-            return True
-        return needle in html
-
-    # change id
-    if html and change_id and not has_text(change_id):
-        issues.append(
-            {
-                "code": "missing-change-id",
+                "code": "status-contradiction",
                 "severity": "error",
-                "message": f"final-summary missing change id '{change_id}'",
+                "message": (
+                    "finalStatus is pure OK but skipped, blocked, or failed "
+                    "verification is present"
+                ),
             }
         )
-
-    # key commands — stock render-summary.mjs does not embed reportPipeline.commands.
-    # Require commands to be present in summary-data; HTML absence is warning only.
-    commands = (summary.get("reportPipeline") or {}).get("commands") or []
-    if html:
-        for cmd in commands[:8]:
-            c = str(cmd.get("command") or "").strip()
-            if not c:
-                continue
-            fragment = c if len(c) <= 60 else c[:60]
-            token = c.split()[-1] if c.split() else c
-            in_html = (
-                fragment in html
-                or _html_escape(fragment) in html
-                or (len(token) >= 4 and (token in html or _html_escape(token) in html))
-            )
-            if not in_html:
-                issues.append(
-                    {
-                        "code": "missing-command",
-                        "severity": "warning",
-                        "message": (
-                            f"final-summary HTML omits command (renderer may not "
-                            f"embed commands): {c}"
-                        ),
-                    }
-                )
-
-        # verification
-        ver = summary.get("verification") or {}
-        unit = ver.get("unitTests") or {}
-        api = ver.get("apiTests") or {}
-        browser = ver.get("browserE2E") or {}
-        pass_rate = unit.get("passRate")
-        if pass_rate and pass_rate != NOT_AVAILABLE and str(pass_rate) not in html:
-            issues.append(
-                {
-                    "code": "missing-verification",
-                    "severity": "warning",
-                    "message": f"unitTests.passRate '{pass_rate}' not in final-summary",
-                }
-            )
-        api_status = str(api.get("status") or "")
-        if api_status and api_status not in {"", NOT_AVAILABLE} and api_status not in html:
-            # Renderer shows api status; soft warning
-            if api_status in {"USER_SKIPPED", "BLOCKED_BY_DBA", "NOT_RUN", "PARTIAL"}:
-                issues.append(
-                    {
-                        "code": "missing-verification",
-                        "severity": "warning",
-                        "message": f"apiTests.status '{api_status}' not visible in final-summary",
-                    }
-                )
-        browser_status = str(browser.get("status") or "")
-        if (
-            browser_status
-            and browser_status not in {"", NOT_AVAILABLE}
-            and browser_status not in html
-        ):
-            issues.append(
-                {
-                    "code": "missing-verification",
-                    "severity": "warning",
-                    "message": (
-                        f"browserE2E.status '{browser_status}' not visible "
-                        "in final-summary"
-                    ),
-                }
-            )
-
-        # artifacts / summary-data path hints
-        am = summary.get("archiveManifest") or {}
-        total = am.get("totalArchiveFiles")
-        if total is not None and str(total) not in html:
-            issues.append(
-                {
-                    "code": "missing-artifact",
-                    "severity": "warning",
-                    "message": "archiveManifest.totalArchiveFiles not reflected in final-summary",
-                }
-            )
-
-        # risks / manual actions — empty arrays are OK (placeholder)
-        for risk in summary.get("knownRisks") or []:
-            # UT-016/RET-28: canonical projection — structured risk objects
-            # project to their message; str(dict) never matches rendered HTML.
-            if isinstance(risk, dict):
-                text = str(risk.get("message") or risk.get("summary") or "").strip()
-            else:
-                text = str(risk)
-            if text and text not in html and _html_escape(text) not in html:
-                issues.append(
-                    {
-                        "code": "missing-risk",
-                        "severity": "warning",
-                        "message": f"knownRisk not in final-summary: {text[:80]}",
-                    }
-                )
-
-        # status contradiction
-        final_status = str(summary.get("finalStatus") or "")
-        browser_conditional = {
-            "USER_SKIPPED",
-            "BLOCKED",
-            "BLOCKED_BY_ENV",
-            "NOT_RUN",
-            "PARTIAL",
-        }
-        has_skip = api_status == "USER_SKIPPED" or browser_status in browser_conditional or str(
-            ver.get("dbCompatibility") or ""
-        ) == "BLOCKED_BY_DBA"
-        has_fail_ver = int(unit.get("failures") or 0) > 0 or int(unit.get("errors") or 0) > 0
-        has_fail_ver = has_fail_ver or int(api.get("failed") or 0) > 0
-        has_fail_ver = (
-            has_fail_ver
-            or int(browser.get("failed") or 0) > 0
-            or browser_status == "FAIL"
-        )
-        stage = summary.get("stageStatus") or {}
-        has_fail_stage = any(str(v).upper() == "FAIL" for v in stage.values())
-
-        if (has_skip or has_fail_ver or has_fail_stage) and final_status == "OK":
-            issues.append(
-                {
-                    "code": "status-contradiction",
-                    "severity": "error",
-                    "message": (
-                        "finalStatus is pure OK but USER_SKIPPED/BLOCKED_BY_DBA/"
-                        "failed verification present"
-                    ),
-                }
-            )
-        if has_skip and html:
-            if re.search(r">\s*OK\s*<", html) and "CONDITIONAL" not in html.upper():
-                if final_status != "CONDITIONAL_OK":
-                    issues.append(
-                        {
-                            "code": "status-contradiction",
-                            "severity": "error",
-                            "message": "final-summary shows pure OK despite USER_SKIPPED/BLOCKED",
-                        }
-                    )
-    else:
-        # No HTML (and not render_skipped handled above): still check data-level status rules
-        ver = summary.get("verification") or {}
-        unit = ver.get("unitTests") or {}
-        api = ver.get("apiTests") or {}
-        browser = ver.get("browserE2E") or {}
-        api_status = str(api.get("status") or "")
-        browser_status = str(browser.get("status") or "")
-        final_status = str(summary.get("finalStatus") or "")
-        has_skip = api_status == "USER_SKIPPED" or browser_status in {
-            "USER_SKIPPED",
-            "BLOCKED",
-            "BLOCKED_BY_ENV",
-            "NOT_RUN",
-            "PARTIAL",
-        } or str(
-            ver.get("dbCompatibility") or ""
-        ) == "BLOCKED_BY_DBA"
-        has_fail_ver = int(unit.get("failures") or 0) > 0 or int(unit.get("errors") or 0) > 0
-        has_fail_ver = has_fail_ver or int(api.get("failed") or 0) > 0
-        has_fail_ver = (
-            has_fail_ver
-            or int(browser.get("failed") or 0) > 0
-            or browser_status == "FAIL"
-        )
-        stage = summary.get("stageStatus") or {}
-        has_fail_stage = any(str(v).upper() == "FAIL" for v in stage.values())
-        if (has_skip or has_fail_ver or has_fail_stage) and final_status == "OK":
-            issues.append(
-                {
-                    "code": "status-contradiction",
-                    "severity": "error",
-                    "message": (
-                        "finalStatus is pure OK but USER_SKIPPED/BLOCKED_BY_DBA/"
-                        "failed verification present"
-                    ),
-                }
-            )
-
-    errors = [i for i in issues if i.get("severity") == "error"]
-    warnings = [i for i in issues if i.get("severity") != "error"]
+    errors = [item for item in issues if item.get("severity") == "error"]
     return {
-        "ok": len(errors) == 0,
+        "ok": not errors,
         "issues": issues,
         "error_count": len(errors),
-        "warning_count": len(warnings),
+        "warning_count": len(issues) - len(errors),
     }
-
-
-def _html_escape(text: str) -> str:
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -8125,32 +7336,12 @@ def cmd_finalize(
         payload["ok"] = False
         return 1, payload
 
-    # --- 6. render (Node, else Python fallback) ---
-    render_result = render_final_summary(work_dir, summary_path)
-    payload["steps"]["render"] = render_result
-    if not render_result.get("ok"):
-        # final-summary.html 是 summary-data.json 的可再生展示层：渲染失败
-        # 降级为 warning，归档继续（平台端可按 summary-data 重新渲染）。
-        msg = str(render_result.get("fallbackReason") or "render failed")
-        warnings.append(f"final-summary render failed (archive continues): {msg}")
-    renderer = render_result.get("renderer")
-    if renderer == "python-fallback" and render_result.get("fallbackReason"):
-        warnings.append(
-            f"node render unavailable; used python-fallback: "
-            f"{render_result.get('fallbackReason')}"
-        )
-
-    html_path = work_dir / "reports" / "final" / "final-summary.html"
-
-    # --- 7. renderer consistency (layer 2) ---
+    # --- 6. canonical summary validation ---
     try:
         summary = read_json(summary_path)
     except (OSError, json.JSONDecodeError):
         pass
-    validate_result = validate_summary(
-        summary,
-        html_path if html_path.is_file() else None,
-    )
+    validate_result = validate_summary_data(summary)
     payload["steps"]["validate"] = validate_result
     summary.setdefault("reportPipeline", {})["validationIssues"] = validate_result.get(
         "issues"
@@ -8169,10 +7360,10 @@ def cmd_finalize(
         warnings.append(f"archive-meta write failed: {exc}")
         payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
 
-    # --- 9/10. final summary stats + render, then LAST manifest (IA-7) ---
-    # Post-manifest rewrites of covered bytes are forbidden. We update summary /
-    # HTML first, regenerate after-manifest last, then verify on-disk hashes.
-    # If summary/html must still change after that, they are excluded with reasons.
+    # --- 9/10. final summary stats, then LAST manifest (IA-7) ---
+    # Post-manifest rewrites of covered bytes are forbidden. We update the
+    # summary first, regenerate after-manifest last, then verify on-disk hashes.
+    # If summary must still change after that, it is excluded with a reason.
     summary = read_json(summary_path)
     summary["archiveManifest"] = {
         "movedFiles": 0,
@@ -8181,14 +7372,8 @@ def cmd_finalize(
         "checksumStatus": "PENDING",
     }
     write_json(summary_path, summary)
-    render_result = render_final_summary(work_dir, summary_path)
-    if not render_result.get("ok"):
-        warnings.append(
-            "final summary re-render failed (archive continues): "
-            f"{render_result.get('fallbackReason') or render_result.get('error')}"
-        )
     summary = read_json(summary_path)
-    validate_result = validate_summary(summary, html_path if html_path.is_file() else None)
+    validate_result = validate_summary_data(summary)
     payload["steps"]["validate"] = validate_result
     summary.setdefault("reportPipeline", {})["validationIssues"] = validate_result.get(
         "issues"
@@ -8214,25 +7399,15 @@ def cmd_finalize(
                 "reports/final/summary-data.json": (
                     "archiveManifest stats written after coverage snapshot"
                 ),
-                "reports/final/final-summary.html": (
-                    "re-rendered after coverage snapshot to display manifest stats"
-                ),
             },
             **_manifest_self_stats(work_dir, after_manifest, after_path),
         }
         write_json(summary_path, summary)
-        render_result = render_final_summary(work_dir, summary_path)
-        if not render_result.get("ok"):
-            warnings.append(
-                "post-manifest summary render failed (archive continues): "
-                f"{render_result.get('fallbackReason') or render_result.get('error')}"
-            )
         coverage = verify_manifest_byte_coverage(
             work_dir,
             after_manifest,
             exclude_paths=[
                 "reports/final/summary-data.json",
-                "reports/final/final-summary.html",
             ],
             exclusion_reasons=summary["archiveManifest"]["exclusionReasons"],
         )
@@ -8288,12 +7463,8 @@ def cmd_finalize(
         ]
         payload["releaseEligible"] = summary["releaseEligible"]
         write_json(summary_path, summary)
-        # Re-render once more for checksumStatus display; remain excluded.
-        render_final_summary(work_dir, summary_path)
         summary = read_json(summary_path)
-        validate_result = validate_summary(
-            summary, html_path if html_path.is_file() else None
-        )
+        validate_result = validate_summary_data(summary)
         payload["steps"]["validate"] = validate_result
         summary.setdefault("reportPipeline", {})["validationIssues"] = (
             validate_result.get("issues") or []
@@ -8407,7 +7578,6 @@ def cmd_finalize(
         shutil.rmtree(operation_temp_dir.parent, ignore_errors=True)
         work_dir = archive_dir
         summary_path = work_dir / "reports" / "final" / "summary-data.json"
-        html_path = work_dir / "reports" / "final" / "final-summary.html"
         payload["steps"]["move"] = {"ok": True, "to": str(archive_dir)}
     except OSError as exc:
         payload["error"] = f"publish failed: {exc}"
@@ -8508,7 +7678,6 @@ def cmd_finalize(
     payload["finalStatus"] = "OK"
     payload["warnings"] = warnings
     payload["summary_data"] = str(summary_path)
-    payload["final_summary"] = str(html_path) if html_path.is_file() else None
     return 0, payload
 
 
@@ -8845,6 +8014,59 @@ def _deterministic_zip_info(path: str) -> zipfile.ZipInfo:
     return info
 
 
+_WINDOWS_LOCAL_PATH_RE = re.compile(
+    r"\b[A-Za-z]:\\(?:[^\s<>:\"|?*]+\\)*[^\s<>:\"|?*]*"
+)
+
+
+def _archive_remote_json_value(value: Any) -> Any:
+    """Remove machine-local absolute paths from the remote JSON projection."""
+    if isinstance(value, dict):
+        return {
+            key: _archive_remote_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_archive_remote_json_value(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if re.match(r"^[A-Za-z]:[\\/]", value) or value.startswith("\\\\"):
+        return "<local-path>"
+    return _WINDOWS_LOCAL_PATH_RE.sub("<local-path>", value)
+
+
+def _archive_remote_json_bytes(raw: bytes) -> bytes:
+    value = json.loads(raw)
+    projected = _archive_remote_json_value(value)
+    return (
+        json.dumps(
+            projected,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def resolve_npx_launcher() -> list[str]:
+    """Resolve npx without asking CreateProcess to execute a Windows .CMD shim."""
+    npx = shutil.which("npx")
+    if not npx:
+        raise FileNotFoundError("npx is not installed or not available on PATH")
+    if os.name != "nt":
+        return [npx]
+
+    node = shutil.which("node")
+    if not node:
+        raise FileNotFoundError("node is required to launch npx on Windows")
+    npx_path = Path(npx)
+    npx_cli = npx_path.parent / "node_modules" / "npm" / "bin" / "npx-cli.js"
+    if not npx_cli.is_file():
+        raise FileNotFoundError(f"npx-cli.js not found beside Node.js: {npx_cli}")
+    return [node, str(npx_cli)]
+
+
 def build_archive_package(
     project_root: Path,
     archive_dir: Path,
@@ -8875,7 +8097,7 @@ def build_archive_package(
         # All semantic archive inputs are text and must round-trip as UTF-8.
         raw.decode("utf-8")
         if media_type == "application/json":
-            json.loads(raw)
+            raw = _archive_remote_json_bytes(raw)
         content_by_path[package_path] = raw
         entries.append(
             {
@@ -9104,8 +8326,21 @@ def auto_push_archive_core(
 
     # The published CLI owns credentials, project binding, durable receipt checks,
     # and retries. Generic `push` is intentionally not used for archive bytes.
+    try:
+        launcher = resolve_npx_launcher()
+    except OSError as exc:
+        reason_code = "ARCHIVE_UPLOAD_DEFERRED"
+        try:
+            persist_receipt(upload_status="pending", reason_code=reason_code)
+        except OSError:
+            pass
+        return {
+            **base_result,
+            "reasonCode": reason_code,
+            "warning": f"归档自动上传已延后：{exc}",
+        }
     command = [
-        "npx",
+        *launcher,
         "--yes",
         "hunter-harness",
         "archive",
@@ -9359,13 +8594,7 @@ def cmd_replay(
     # Collect without writing into the archive
     summary = collect_summary_data(archive_dir, write=False, for_replay=True)
 
-    html_path = archive_dir / "reports" / "final" / "final-summary.html"
-    render_skipped = not html_path.is_file()
-    validate_result = validate_summary(
-        summary,
-        html_path if html_path.is_file() else None,
-        render_skipped=render_skipped,
-    )
+    validate_result = validate_summary_data(summary)
     summary.setdefault("reportPipeline", {})["validationIssues"] = (
         validate_result.get("issues") or []
     )
@@ -9462,9 +8691,6 @@ def cmd_certify_local_cli(args: argparse.Namespace) -> int:
 
 
 def cmd_finalize_cli(args: argparse.Namespace) -> int:
-    global RENDER_HTML_ENABLED
-    if getattr(args, "no_html", False):
-        RENDER_HTML_ENABLED = False
     change_dir = resolve_path(args.change_dir)
     archive_root = resolve_path(args.archive_root)
     durable_root = (
@@ -9516,50 +8742,12 @@ def cmd_replay_cli(args: argparse.Namespace) -> int:
     return code
 
 
-def _render_html_to(
-    change_dir: Path,
-    summary_path: Path,
-    out_path: Path,
-) -> dict[str, Any]:
-    """Render summary HTML to an arbitrary path (node first, python fallback).
-
-    Unlike ``render_final_summary`` this never touches the canonical
-    ``reports/final/final-summary.html`` — repair renders into staging.
-    """
-    project = find_project_root(change_dir)
-    node = resolve_node_path(project)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if node and RENDER_SCRIPT.is_file():
-        try:
-            proc = subprocess.run(
-                [node, str(RENDER_SCRIPT), "--summary", str(summary_path), "--out", str(out_path)],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-                check=False,
-            )
-            if proc.returncode == 0 and out_path.is_file():
-                return {"ok": True, "renderer": "node", "out_path": str(out_path)}
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    try:
-        summary = read_json(summary_path)
-        html = render_fallback_html(summary)
-        out_path.write_text(html, encoding="utf-8", newline="\n")
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return {"ok": False, "renderer": "none", "error": str(exc)}
-    return {"ok": True, "renderer": "python-fallback", "out_path": str(out_path)}
-
-
 def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
     """Versioned repair (task 11 / RET-40).
 
-    Re-collect a candidate from the frozen sources, run both validators, and
-    only then write an immutable ``derived/v<N>/`` plus a repair record. The
-    original summary/HTML/manifest is never overwritten; the authoritative
-    pointer moves only when both validators pass.
+    Re-collect a candidate from the frozen sources, validate its source and
+    canonical data, then write an immutable ``derived/v<N>/`` plus a repair
+    record. The original summary and manifest are never overwritten.
     """
     payload: dict[str, Any] = {
         "ok": False,
@@ -9596,25 +8784,18 @@ def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
         payload["error"] = f"repair collect failed: {exc}"
         return 1, payload
 
-    # 2. stage outside the archive; run both validators on the candidate.
+    # 2. stage outside the archive; validate canonical data only.
     staging = Path(tempfile.mkdtemp(prefix="harness-repair-"))
     try:
         staged_summary = staging / "summary-data.json"
         write_json(staged_summary, candidate)
         source_result = validate_source_consistency(archive_dir, candidate)
-        render_result = _render_html_to(
-            archive_dir, staged_summary, staging / "final-summary.html"
-        )
-        staged_html = staging / "final-summary.html"
-        renderer_result = validate_summary(
-            candidate,
-            staged_html if staged_html.is_file() else None,
-        )
+        summary_result = validate_summary_data(candidate)
         payload["validators"] = {
             "source": source_result,
-            "renderer": renderer_result,
+            "summary": summary_result,
         }
-        if not (source_result.get("ok") and renderer_result.get("ok")):
+        if not (source_result.get("ok") and summary_result.get("ok")):
             payload["error"] = "repair validators failed; derived version not written"
             return 1, payload
 
@@ -9637,8 +8818,6 @@ def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
             target_manifest = staged_version_dir / manifest_name
             shutil.copy2(source_manifest, target_manifest)
             frozen_manifest_hashes[manifest_name] = "sha256:" + sha256_file(target_manifest)
-        if staged_html.is_file():
-            shutil.copy2(staged_html, staged_version_dir / "final-summary.html")
         record = {
             "version": version,
             "createdAt": now_iso(),
@@ -9647,7 +8826,7 @@ def cmd_repair(archive_dir: Path) -> tuple[int, dict[str, Any]]:
             "frozenManifestHashes": frozen_manifest_hashes,
             "validators": {
                 "source": {"ok": bool(source_result.get("ok")), "issues": source_result.get("issues") or []},
-                "renderer": {"ok": bool(renderer_result.get("ok")), "issues": renderer_result.get("issues") or []},
+                "summary": {"ok": bool(summary_result.get("ok")), "issues": summary_result.get("issues") or []},
             },
         }
         write_json(staged_version_dir / "repair-record.json", record)
@@ -9768,11 +8947,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("release-candidate", "record-only"),
         default="release-candidate",
         help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
-    )
-    p_fin.add_argument(
-        "--no-html",
-        action="store_true",
-        help="skip local final-summary.html rendering (summary-data.json stays canonical)",
     )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)

@@ -25,7 +25,7 @@ DOC_DIRS = [ROOT / "harness" / "protocols"] + sorted(
 )
 DOC_NAMES = {"SKILL.md", "reference.md", "checklist.md"}
 
-# `harness_x.py <sub>`；sub 后不得紧跟标识符字符（排除 render_final_summary 之类的函数引用）。
+# `harness_x.py <sub>`；sub 后不得紧跟标识符字符，避免把函数名误当命令。
 REF_RE = re.compile(r"harness_([a-z_]+)\.py\s+([a-z][a-z0-9-]*)(?![\w-])")
 
 

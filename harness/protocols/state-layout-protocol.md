@@ -55,8 +55,7 @@ description: harness .harness 状态目录分层协议。用于减少根目录�
 │   ├── review/
 │   ├── package/
 │   └── final/
-│       ├── summary-data.json
-│       └── final-summary.html
+│       └── summary-data.json
 ├── sqls/
 ├── scripts/
 ├── runtime/
@@ -117,7 +116,6 @@ package SHA-256，且服务端同时确认 `archive_status=durable` 与
 | worktree | `meta/worktree.json` | `worktree.json` |
 | run status | `evidence/run-task-status.md` | `run-task-status.md` |
 | final summary data | `reports/final/summary-data.json` | `summary-data.json` |
-| final report | `reports/final/final-summary.html` | `final-summary.html` |
 
 ## 写入规则
 
@@ -167,7 +165,7 @@ segment 的文件集由调用方（各 skill）决定：`capture_snapshot(..., s
 
 ## archive 结构
 
-archive 后保持同样分层结构，不把 `.bak`、脚本、manifest、HTML 全部放在 archive 根目录。
+archive 后保持同样分层结构，不把 `.bak`、脚本、manifest 或其他生成文件堆在 archive 根目录。
 
 未提交但用于验证的测试文件放入：
 

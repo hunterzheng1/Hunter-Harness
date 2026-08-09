@@ -32,7 +32,7 @@ description: harness-test 的踩坑规则（来自真实对话日志）。执行
 | 21 | **直接 Edit tracked 应用配置文件** | 测试期间改配置，之后又还原，diff 噪声大 | 把运行时配置覆盖直接写进 tracked 文件 | 生成 ASCII 运行时配置叠加 `C:/temp/harness-test-overlay/<change>/application-harness-test.yml`，启动用该绝对路径叠加（如 `-Dspring.config.additional-location=...`） |
 | 22 | **唯一约束字段与本地预存数据冲突** | 大面积唯一约束冲突，9 个场景 BLOCKED | 执行器用硬编码字段值 | 用随机值（如 `900000 + random`）/ 先查避让 / 用唯一隔离值 |
 | 23 | **setup 失败后继续用 null ID 发送请求** | 后续 9 个接口全部 400/500，掩盖真正问题 | 执行器不区分 BLOCKED 状态 | 执行器强制 setup/test/cleanup 三阶段，依赖未满足 → 标 🟡 BLOCKED，**不发起请求** |
-| 24 | **final-summary 把 PARTIAL 写成 NOT_RUN** | 报告显示"未执行"，但实际跑了 6 个场景 | 状态枚举不完整，只有 OK/FAIL/NOT_RUN | API 维度状态使用 OK/PARTIAL/BLOCKED/NOT_RUN/FAIL，5 PASS+9 BLOCKED+1 FAIL → `apiTest=PARTIAL` |
+| 24 | **归档数据把 PARTIAL 写成 NOT_RUN** | 平台显示「未执行」，但实际跑了 6 个场景 | 状态枚举不完整，只有 OK/FAIL/NOT_RUN | API 维度状态使用 OK/PARTIAL/BLOCKED/NOT_RUN/FAIL，5 PASS+9 BLOCKED+1 FAIL → `apiTest=PARTIAL` |
 | 25 | **AI 启动的服务测试结束不关闭** | 端口长期占用，下次启动端口占用异常（如 `BindException`） | 没有 service lifecycle 管理 | 通过 `service.pid` + `serviceState` 区分，AI_STARTED 默认 Stop-Process，**即使测试失败也 finally 清理** |
 | 26 | **凭证在同一流程内重复获取** | 浏览器 origin 在认证服务就再走一次登录 | 执行器依赖浏览器当前页面 origin | 执行器用 request context 直连本地 baseURL，凭证从 cache 读，`credentialRefreshCount > 1` → 🟡 WARN |
 | 27 | **服务启动盲等 + 无反馈** | 等待 90s 后才发现启动报错 | 没有启动状态机和异常关键字检测 | 0–30s/2s × 30–120s/5s 状态机；遇启动失败特征（按技术栈，如 BindException/Could not resolve placeholder/BeanCreationException）立即停；> 10s 必须输出一次状态行 |
@@ -208,9 +208,9 @@ $cred = $resp.data.accessToken
 **后果**：后续接口大面积 400/500，掩盖真正的根因（setup 失败）
 **正确做法**：执行器强制 setup/test/cleanup 三阶段；依赖 setup 数据的场景在 test 阶段开头判定依赖，缺失则标 🟡 BLOCKED，**不发起请求**
 
-### 规则 24：final-summary 把 PARTIAL 写成 NOT_RUN
+### 规则 24：归档数据把 PARTIAL 写成 NOT_RUN
 **严重度**：🟡WARN
-**场景**：15 个 API 场景中 5 PASS + 9 BLOCKED + 1 FAIL，final-summary 写 `apiTest=NOT_RUN`
+**场景**：15 个 API 场景中 5 PASS + 9 BLOCKED + 1 FAIL，`summary-data.json` 却写成 `apiTest=NOT_RUN`，导致平台错误显示为「未执行」。
 **后果**：报告与现实不符，下游 review / submit / package 误判
 **正确做法**：API 维度状态使用 5 个值：`OK / PARTIAL / BLOCKED / NOT_RUN / FAIL`。"部分执行+部分阻塞" 是 `PARTIAL`，附说明：`apiTest=PARTIAL — 15 个场景中 5 个 PASS, 9 个 BLOCKED, 1 个 FAIL`
 

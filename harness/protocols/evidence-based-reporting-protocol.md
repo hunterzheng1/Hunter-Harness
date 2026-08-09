@@ -66,11 +66,11 @@ description: harness 全流程的证据化报告协议。所有 skill 输出必�
 | `To <remote>` + 推送范围 | ✅ 推送成功 |
 | 无输出 | ❌ 状态未知 |
 
-## final-summary.html / summary-data.json 状态映射
+## summary-data.json 状态映射
 
-final-summary.html 默认由 `summary-data.json + render-summary.mjs` 渲染；旧占位符模板仅作 legacy reference。
+平台监控直接读取 `summary-data.json`。本地归档不再生成重复的 HTML 报告。
 
-归档前必须执行 `harness_archive.py finalize` 内嵌 validate，或 `harness_archive.py replay` 等价校验。只有 validate 无 error 时，才能宣称 final-summary 与 summary-data 一致；validate error 不得被写成 WARN 或"已完成"。
+归档前必须执行 `harness_archive.py finalize` 内嵌 validate，或使用 `harness_archive.py replay` 做等价校验。只有 validate 无 error 时，才能宣称报告数据有效；validate error 不得被写成 WARN 或「已完成」。
 
 | 数据来源 | 无报告时 |
 |----------|----------|
@@ -122,7 +122,7 @@ harness-review 对代码/变更的审查发现按风险分级，反映的是**�
 | 标记 | 含义 | 适用场景 |
 |:----:|------|----------|
 | CONDITIONAL_OK | 条件性通过 | API 测试 `USER_SKIPPED` 或 DB 兼容性 `BLOCKED_BY_DBA` 时的归档最终状态，不得写纯 OK，必须在 knownRisks/manualActions 说明风险接受与后续人工动作 |
-| 🔁REUSED | 复用前阶段结果 | 复用了前一阶段验证结果，final-summary 必须显式标记，不得伪装成重新执行 |
+| 🔁REUSED | 复用前阶段结果 | 复用了前一阶段验证结果，summary-data 必须显式标记，不得伪装成重新执行 |
 | 📝ADVISORY | 参考性未运行 | review 参考性意见，未作为门禁执行 |
 | ⏭️ | 用户选择跳过 | 用户主动选择跳过某步骤（如仅本地 commit 不 push、跳过 test/review） |
 
@@ -131,4 +131,4 @@ harness-review 对代码/变更的审查发现按风险分级，反映的是**�
 - skill 执行状态回答"这个步骤跑没跑、成没成"；
 - review 发现严重级回答"被审查的东西有没有问题、问题多大"；
 - 条件态/跳过态回答"这个步骤的最终结论是什么特殊情况"。
-- 三者独立：例如 test skill 可 ✅OK 执行成功，但 review 发现其覆盖的代码存在 RED 问题；又如 archive 可因 `USER_SKIPPED` 给出 CONDITIONAL_OK，同时 review 发现为 YELLOW。final-summary 必须分别展示，不得用一个维度覆盖另一个。
+- 三者独立：例如 test skill 可 ✅OK 执行成功，但 review 发现其覆盖的代码存在 RED 问题；又如 archive 可因 `USER_SKIPPED` 给出 CONDITIONAL_OK，同时 review 发现为 YELLOW。summary-data 必须分别记录，不得用一个维度覆盖另一个。

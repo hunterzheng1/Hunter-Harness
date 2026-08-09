@@ -231,17 +231,13 @@ class FinalizeSuccessTests(unittest.TestCase):
         self.assertEqual(summary["knownRisks"], [])
         self.assertEqual(summary["manualActions"], [])
         self.assertIn("reportPipeline", summary)
-        # Task 2 (§4): final-summary.html 始终产出（node 渲染器，否则 python-fallback）。
-        html = archive_dir / "reports" / "final" / "final-summary.html"
-        render_step = payload["steps"].get("render") or {}
-        self.assertIn(render_step.get("renderer"), {"node", "python-fallback"})
-        self.assertTrue(render_step.get("ok"))
-        self.assertTrue(html.is_file(), "final-summary.html must always exist after finalize")
-        summary = json.loads((archive_dir / "reports" / "final" / "summary-data.json").read_text(encoding="utf-8"))
-        self.assertIn(str(summary["archiveManifest"]["totalArchiveFiles"]), html.read_text(encoding="utf-8"))
-        html_text = html.read_text(encoding="utf-8")
-        self.assertIn("demo-change", html_text)
-        self.assertIn("ARCHIVED_LOCAL_ONLY", html_text)
+        # 平台监控直接读取 summary-data.json；归档不再生成重复的 HTML 投影。
+        self.assertNotIn("render", payload["steps"])
+        self.assertFalse(
+            (archive_dir / "reports" / "final" / "final-summary.html").exists()
+        )
+        serialized = json.dumps(summary, ensure_ascii=False)
+        self.assertNotIn("final-summary.html", serialized)
 
     def test_finalize_refuses_invalid_artifact_projection_and_preserves_change(self) -> None:
         invalid = {
@@ -272,6 +268,55 @@ class FinalizeSuccessTests(unittest.TestCase):
         serialized = json.dumps(payload, ensure_ascii=False)
         self.assertIn("ARTIFACT_PREFLIGHT_INVALID", serialized)
         self.assertIn("CORRECTION_OLD_VALUE_MISMATCH", serialized)
+        events = he.load_events(he.events_path(self.change))
+        archive_events = [item for item in events if item.get("phase") == "archive"]
+        self.assertFalse(
+            any(item.get("type") == "phase.start" for item in archive_events),
+            "预发布校验失败不能制造一次归档执行",
+        )
+        self.assertTrue(
+            any(item.get("type") == "phase.prepare.end" for item in archive_events),
+            "预发布校验失败应记录为准备受阻",
+        )
+
+    def test_finalize_without_database_capability_needs_no_manual_db_ledger(self) -> None:
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"].pop("dbCompatibility", None)
+        _write_json(ledger_path, ledger)
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {"schemaVersion": 1, "capabilities": []},
+        )
+
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        summary = json.loads(
+            (
+                Path(payload["archive_dir"])
+                / "reports"
+                / "final"
+                / "summary-data.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["verification"]["dbCompatibility"], "NOT_APPLICABLE")
+        self.assertEqual(
+            summary["verification"]["dbCompatibilityEvidence"]["source"],
+            "capability-profile",
+        )
 
     def test_finalize_writes_and_verifies_durable_archive_before_source_deletion(
         self,
@@ -305,11 +350,14 @@ class FinalizeSuccessTests(unittest.TestCase):
         self.assertTrue(Path(receipt["payloadPath"]).is_dir())
         self.assertFalse(self.change.exists())
         archive_dir = Path(payload["archive_dir"])
-        self.assertIn(
-            "ARCHIVED_DURABLE",
-            (archive_dir / "reports" / "final" / "final-summary.html").read_text(
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
                 encoding="utf-8"
-            ),
+            )
+        )
+        self.assertEqual(summary["archiveDurability"]["status"], "ARCHIVED_DURABLE")
+        self.assertFalse(
+            (archive_dir / "reports" / "final" / "final-summary.html").exists()
         )
 
         restore_root = self.tmp / "restored"
@@ -360,9 +408,60 @@ class FinalizeSuccessTests(unittest.TestCase):
         self.assertFalse(Path(payload["archive_dir"]).exists())
 
 
-class FallbackRenderTests(unittest.TestCase):
-    """Node 不可用走 Python fallback；P1 slim-files 后 HTML 是可选投影：
-    所有 renderer 失败仅记 warning，归档继续（summary-data.json 仍是硬产物）。"""
+class ArchiveIdentityResolutionTests(unittest.TestCase):
+    def test_final_commit_ignores_archive_operation_hex_fragment(self) -> None:
+        valid = "0368ff84419fce70c075d9dda16b31b2651380f4"
+        events = [
+            {
+                "phase": "submit",
+                "type": "phase.end",
+                "note": f"submit 完成：本地提交 {valid}",
+            },
+            {
+                "phase": "archive",
+                "type": "phase.end",
+                "note": (
+                    "finalize operation a-8280e633866e discarded: "
+                    "report adequacy failed"
+                ),
+            },
+        ]
+
+        def git_result(_project: Path, *args: str) -> tuple[int, str, str]:
+            candidate = args[-1].removesuffix("^{commit}") if args else ""
+            if valid.startswith(candidate):
+                return 0, valid, ""
+            if args == ("rev-parse", "HEAD"):
+                return 0, valid, ""
+            return 1, "", "unknown revision"
+
+        with mock.patch.object(ha, "git_run", side_effect=git_result):
+            resolved = ha._final_commit_from_sources(None, events, None, Path("."))
+
+        self.assertEqual(resolved, valid)
+
+    def test_base_commit_skips_symbolic_head_and_uses_concrete_phase_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            change = root / ".harness" / "changes" / "demo"
+            context = change / "runtime" / "phase-context"
+            context.mkdir(parents=True)
+            expected = "0c39a651841179f387777796fef47f83b69bca23"
+            _write_json(context / "older.json", {"baseCommit": expected})
+            _write_json(context / "newer.json", {"baseCommit": "HEAD"})
+
+            resolved = ha._resolve_base_commit(
+                {"baseCommit": "HEAD"},
+                change,
+                root,
+                "0368ff84419fce70c075d9dda16b31b2651380f4",
+            )
+
+        self.assertEqual(resolved, expected)
+
+
+class CanonicalSummaryOnlyTests(unittest.TestCase):
+    """平台直接消费 summary-data.json，归档不再运行本地 HTML 渲染。"""
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-fb-"))
@@ -376,73 +475,35 @@ class FallbackRenderTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_finalize_without_node_uses_python_fallback(self) -> None:
-        with mock.patch.object(ha, "resolve_node_path", return_value=None):
-            code, payload = _run(
-                [
-                    "finalize",
-                    "--intent",
-                    "record-only",
-                    "--change-dir",
-                    str(self.change),
-                    "--archive-root",
-                    str(self.archive_root),
-                    "--skip-ingest",
-                    "--json",
-                ]
-            )
-        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
-        self.assertTrue(payload.get("ok"))
-        archive_dir = Path(payload["archive_dir"])
-        html = archive_dir / "reports" / "final" / "final-summary.html"
-        self.assertTrue(html.is_file(), "python fallback must produce final-summary.html")
-        render_step = payload["steps"].get("render") or {}
-        self.assertEqual(render_step.get("renderer"), "python-fallback")
-        self.assertTrue(render_step.get("ok"))
-        self.assertIn("fb-change", html.read_text(encoding="utf-8"))
-
-    def test_fallback_failure_downgrades_to_warning(self) -> None:
-        """P1 slim-files: renderer 全灭不再回滚归档，只记 warning。"""
-        def _boom(_summary: dict) -> str:
-            raise OSError("simulated fallback failure")
-
-        with mock.patch.object(ha, "resolve_node_path", return_value=None), mock.patch.object(
-            ha, "render_fallback_html", side_effect=_boom
-        ):
-            code, payload = _run(
-                [
-                    "finalize",
-                    "--intent",
-                    "record-only",
-                    "--change-dir",
-                    str(self.change),
-                    "--archive-root",
-                    str(self.archive_root),
-                    "--skip-ingest",
-                    "--json",
-                ]
-            )
-        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
-        self.assertTrue(payload.get("ok"))
-        archive_dir = Path(payload["archive_dir"])
-        self.assertTrue(archive_dir.is_dir(), "archive must complete despite render failure")
-        self.assertTrue(
-            (archive_dir / "reports" / "final" / "summary-data.json").is_file(),
-            "summary-data.json stays mandatory",
+    def test_finalize_does_not_need_node_or_create_html(self) -> None:
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
         )
-        render_warnings = [
-            w for w in payload.get("warnings") or [] if "render" in str(w).lower()
-        ]
-        self.assertTrue(render_warnings, "render failure must surface as warning")
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        self.assertTrue(payload.get("ok"))
+        archive_dir = Path(payload["archive_dir"])
+        self.assertFalse(
+            (archive_dir / "reports" / "final" / "final-summary.html").exists()
+        )
+        self.assertNotIn("render", payload["steps"])
 
-    def test_validate_missing_html_is_warning_when_render_skipped(self) -> None:
+    def test_summary_validation_has_no_html_warning(self) -> None:
         summary = {"changeName": "x", "finalStatus": "OK", "verification": {}}
-        # P1 slim-files: HTML 是可选投影，缺失一律 warning 而非 error。
-        result = ha.validate_summary(summary, None, render_skipped=True)
+        result = ha.validate_summary_data(summary)
         codes = {i.get("code") for i in result.get("issues") or []}
-        self.assertIn("missing-final-report", codes)
+        self.assertNotIn("missing-final-report", codes)
         errors = [i for i in result.get("issues") or [] if i.get("severity") == "error"]
-        self.assertFalse(errors, "missing html must not be a hard error")
+        self.assertFalse(errors)
         self.assertTrue(result.get("ok"))
 
 
@@ -460,17 +521,17 @@ class ValidateErrorKeepsOriginalTests(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_validate_error_preserves_original(self) -> None:
-        def _bad_render(change_dir: Path, summary_path: Path) -> dict:
-            out = change_dir / "reports" / "final" / "final-summary.html"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            # Deliberately omit change id
-            out.write_text(
-                "<html><body><h1>变更最终报告</h1><p>no-id-here</p></body></html>",
-                encoding="utf-8",
-            )
-            return {"ok": True, "skipped": False, "out_path": str(out)}
-
-        with mock.patch.object(ha, "render_final_summary", side_effect=_bad_render):
+        invalid = {
+            "ok": False,
+            "issues": [{
+                "code": "status-contradiction",
+                "severity": "error",
+                "message": "summary status contradicts verification",
+            }],
+            "error_count": 1,
+            "warning_count": 0,
+        }
+        with mock.patch.object(ha, "validate_summary_data", return_value=invalid):
             code, payload = _run(
                 [
                     "finalize",
@@ -498,15 +559,16 @@ class ValidateErrorKeepsOriginalTests(unittest.TestCase):
         self.assertTrue(payload.get("original_preserved", True))
         issues = payload.get("issues") or (payload.get("steps", {}).get("validate") or {}).get("issues") or []
         codes = {i.get("code") for i in issues}
-        self.assertIn("missing-change-id", codes)
+        self.assertIn("status-contradiction", codes)
         events = he.load_events(self.change / "events.ndjson")
         archive_terminals = [
             event
             for event in events
-            if event.get("phase") == "archive" and event.get("type") == "phase.end"
+            if event.get("phase") == "archive"
+            and event.get("type") == "phase.prepare.end"
         ]
         self.assertEqual(len(archive_terminals), 1)
-        self.assertEqual(archive_terminals[0].get("status"), "FAIL")
+        self.assertEqual(archive_terminals[0].get("status"), "BLOCKED")
 
 
 class MoveFailureTests(unittest.TestCase):
@@ -631,7 +693,7 @@ class ArchiveFactDerivationTests(unittest.TestCase):
             self.assertEqual(summary["finalStatus"], "CONDITIONAL_OK")
             self.assertEqual(summary["timeline"][1]["handoffFromTool"], "claude-code")
 
-    def test_node_report_is_compact_utf8_and_keeps_full_evidence(self) -> None:
+    def test_summary_data_keeps_full_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp) / ".harness" / "changes" / "report-demo"
             summary_path = change / "reports" / "final" / "summary-data.json"
@@ -669,42 +731,36 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                     "commands": [{"phase": "test", "command": "npm test", "exit_code": 0}],
                 },
             })
-            result = ha.render_final_summary(change, summary_path)
-            self.assertTrue(result["ok"], msg=result)
-            self.assertEqual(result["renderer"], "node", msg=result)
-            html = Path(result["out_path"]).read_text(encoding="utf-8")
-            self.assertIn("HARNESS · 管理结论", html)
-            self.assertIn("执行时间线与工具交接", html)
-            self.assertIn("<details>", html)
-            self.assertIn(full_hash[:10], html)
-            self.assertIn(full_hash, html)
-            self.assertIn("npm test", html)
-            self.assertIn("浏览器", html)
-            self.assertIn("1 失败", html)
-            self.assertNotIn("鍙", html)
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["finalCommit"], full_hash)
+            self.assertEqual(summary["verification"]["browserE2E"]["failed"], 1)
+            self.assertEqual(
+                summary["reportPipeline"]["commands"][0]["command"],
+                "npm test",
+            )
+            self.assertEqual(summary["knownRisks"][0]["message"], "API 环境未启动")
 
-    def test_python_fallback_renders_browser_e2e_status(self) -> None:
-        html = ha.render_fallback_html(
-            {
-                "changeName": "browser-report",
-                "finalStatus": "FAIL",
-                "verification": {
-                    "unitTests": {},
-                    "apiTests": {},
-                    "browserE2E": {
-                        "status": "FAIL",
-                        "total": 3,
-                        "passed": 0,
-                        "failed": 3,
-                        "skipped": 0,
-                    },
+    def test_summary_validation_rejects_browser_failure_as_ok(self) -> None:
+        result = ha.validate_summary_data({
+            "changeName": "browser-report",
+            "finalStatus": "OK",
+            "verification": {
+                "unitTests": {},
+                "apiTests": {},
+                "browserE2E": {
+                    "status": "FAIL",
+                    "total": 3,
+                    "passed": 0,
+                    "failed": 3,
+                    "skipped": 0,
                 },
-            }
+            },
+        })
+        self.assertFalse(result["ok"])
+        self.assertIn(
+            "status-contradiction",
+            {item["code"] for item in result["issues"]},
         )
-
-        self.assertIn("browserE2E", html)
-        self.assertIn("status=FAIL", html)
-        self.assertIn("failed=3", html)
 
 
 class StatusTests(unittest.TestCase):
@@ -950,13 +1006,7 @@ class ConditionalOkTests(unittest.TestCase):
             "archiveManifest": {"totalArchiveFiles": 0},
             "reportPipeline": {"commands": []},
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            html = Path(tmp) / "final-summary.html"
-            html.write_text(
-                "<html><body>browser-contradiction OK browserE2E FAIL</body></html>",
-                encoding="utf-8",
-            )
-            result = ha.validate_summary(summary, html)
+        result = ha.validate_summary_data(summary)
 
         codes = {item.get("code") for item in result.get("issues") or []}
         self.assertIn("status-contradiction", codes)
@@ -1595,15 +1645,9 @@ class KnownRisksFilterTests(unittest.TestCase):
             "archiveManifest": {"totalArchiveFiles": 1},
             "reportPipeline": {"commands": []},
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            html = Path(tmp) / "final-summary.html"
-            html.write_text(
-                "<html>x OK 1</html>",
-                encoding="utf-8",
-            )
-            result = ha.validate_summary(summary, html)
-            codes = {i.get("code") for i in result.get("issues") or []}
-            self.assertNotIn("missing-risk", codes)
+        result = ha.validate_summary_data(summary)
+        codes = {i.get("code") for i in result.get("issues") or []}
+        self.assertNotIn("missing-risk", codes)
 
     def test_arc_ut003_resolved_issue_is_not_a_risk_or_stage_downgrade(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1986,33 +2030,28 @@ class ArchiveMetaAndPipelineTests(unittest.TestCase):
         self.assertFalse((archive_dir / "events.ndjson.lock").exists())
         cleanup = (payload.get("steps") or {}).get("cleanup") or {}
         self.assertTrue(cleanup.get("deleted"))
-        html = (archive_dir / "reports" / "final" / "final-summary.html").read_text(
-            encoding="utf-8"
+    def test_int102_summary_data_includes_reasons(self) -> None:
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
         )
-        self.assertIn("155", html)
-        self.assertTrue("3/3" in html or "3" in html)
-
-    def test_int102_python_fallback_includes_reasons(self) -> None:
-        with mock.patch.object(ha, "resolve_node_path", return_value=None):
-            code, payload = _run(
-                [
-                    "finalize",
-                    "--intent",
-                    "record-only",
-                    "--change-dir",
-                    str(self.change),
-                    "--archive-root",
-                    str(self.archive_root),
-                    "--skip-ingest",
-                    "--json",
-                ]
-            )
         self.assertEqual(code, 0, msg=payload)
         archive_dir = Path(payload["archive_dir"])
-        html = (archive_dir / "reports" / "final" / "final-summary.html").read_text(
-            encoding="utf-8"
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
         )
-        self.assertIn("finalStatusReasons", html)
+        self.assertIn("finalStatusReasons", summary)
         self.assertTrue(archive_dir.is_dir())
 
     def test_int103_no_patch_still_consistent(self) -> None:
@@ -2649,6 +2688,35 @@ class ArchiveCorePushTests(unittest.TestCase):
                 self.assertEqual(manifest["profile"], "core-v1")
                 self.assertEqual(manifest["change_key"], "demo")
                 self.assertEqual(len(manifest["files"]), 5)
+
+    def test_archive_package_redacts_windows_local_paths_from_remote_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / ".harness" / "archive" / "2026-08-08-demo"
+            _write_json(
+                archive / "reports" / "final" / "summary-data.json",
+                {
+                    "schemaVersion": "2.3",
+                    "changeName": "demo",
+                    "projection": {
+                        "receiptPath": r"E:\private\project\projection.json",
+                        "relativePath": "reports/final/summary-data.json",
+                    },
+                },
+            )
+
+            package = ha.build_archive_package(root, archive, "demo")
+
+            with zipfile.ZipFile(package["packagePath"], "r") as zipped:
+                uploaded = json.loads(
+                    zipped.read("reports/final/summary-data.json").decode("utf-8")
+                )
+            self.assertEqual(uploaded["projection"]["receiptPath"], "<local-path>")
+            self.assertEqual(
+                uploaded["projection"]["relativePath"],
+                "reports/final/summary-data.json",
+            )
+            self.assertNotIn(r"E:\private", json.dumps(uploaded, ensure_ascii=False))
 
     def test_archive_package_rejects_linked_archive_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

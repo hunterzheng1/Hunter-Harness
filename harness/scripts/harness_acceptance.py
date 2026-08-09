@@ -222,7 +222,8 @@ def check_d13_static_rules(skills_root: Path, harness_tests_ok: bool, full_gate_
         "dbMigrationNotAuto": text_contains_all(skills_root / "harness-apply" / "SKILL.md", ["migration"]),
         "archiveManifestValidateConfirm": harness_tests_ok and text_contains_all(archive, ["archiveManifest", "validate"]),
         "unitTestFullGate": full_gate_ok and text_contains_all(ledger, ["unitTestFull"]),
-        "finalSummaryNotFabricated": harness_tests_ok and text_contains_all(archive, ["final-summary", "renderer"]),
+        "summaryDataNotFabricated": harness_tests_ok
+        and text_contains_all(archive, ["summary-data.json", "不得手写", "平台"]),
     }
 
 

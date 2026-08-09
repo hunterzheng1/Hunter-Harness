@@ -64,7 +64,7 @@ disallowed-tools:
 ### Phase 0：读取规则和上下文
 
 1. 读取本文件。
-2. 按需读取 `reference.md`（归档流程、manifest、summary-data、final-summary 渲染、目录结构与最终状态规则）。
+2. 按需读取 `reference.md`（归档流程、manifest、summary-data、目录结构与最终状态规则）。
 3. 读取共用约束：
    - `../protocols/archive-report-protocol.md`
    - `../protocols/state-layout-protocol.md`
@@ -94,14 +94,13 @@ disallowed-tools:
 
 1. 对“发布候选”使用 `--intent release-candidate --closure completed`；对正常本地完成使用 `--intent record-only --closure completed`；主动废弃或被替代分别使用 `--intent record-only --closure abandoned|superseded --closure-reason "<中文原因>"`。先运行 `status`；有可复用全量 ledger 时可运行 `certify-local`，不得重复测试。
 2. `meta/archive-meta.md` **由 `harness_archive.py finalize` 自动生成**（与 summary-data `finalStatus` 同源）；**禁止 agent 手写**该文件，手写视为数据丢失。维护者结论写入 events（decision/issue）即可，finalize 会汇总到 summary / archive-meta。
-3. 运行 `harness_archive.py finalize --change-dir "<executionRoot>" --archive-root ".harness/archive" --intent <...> --closure <...> [--closure-reason "..."] --json`；读 JSON（cleanup、事件、移动、collect、render、validate、manifest、archive-meta、ZIP、上传与服务端知识状态）。finalize 内部只负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
+3. 运行 `harness_archive.py finalize --change-dir "<executionRoot>" --archive-root ".harness/archive" --intent <...> --closure <...> [--closure-reason "..."] --json`；读 JSON（cleanup、事件、移动、collect、validate、manifest、archive-meta、ZIP、上传与服务端知识状态）。finalize 内部只负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
    - **归档包上传**：始终先生成一个确定性 ZIP；有远程凭据时再调用 `npx hunter-harness archive upload`。ZIP 仅包含 `summary-data.json`、`spec/**/*.md`、`plans/**/*.md`、`archive-meta.md`、`change-context.json` 和稳定 manifest；明确排除 logs、review/test 报告、HTML、缓存、备份、凭据和临时文件。
    - **失败可恢复**：无论远端凭据是否齐全，都先生成 ZIP 与 `<change-key>.upload.json`；上传或服务端 ingest 失败不破坏本地归档。待上传 ZIP 与逐 change 回执保留在 `.harness/state/local/archive-packages/`，可枚举独立重试。只有 CLI 核验 package hash 且服务端同时返回 `archive_status=durable`、`knowledge_status=ready` 后，才清理对应 ZIP 与回执；`indexing` 记为 pending，不记为失败。
    - **监控终态（C3）**：auto-upload 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；失败只记 warning。
 
 - **Read `reference.md`** — finalize 输出字段、archive-meta 格式、CONDITIONAL_OK 规则
 - **Read `templates/summary-data-template.json`** — summary-data 数据结构
-- **Read `templates/render-summary.mjs`** — final-summary 渲染脚本（finalize 内嵌调用）
 
 ### Phase 4：验证与提示
 
@@ -128,9 +127,9 @@ disallowed-tools:
 
 移动用 Read+Write+验证 或 PowerShell；**禁止 Bash mv/cp/rm**。移动失败时不删除原目录，报错退出让用户手动处理。
 
-### 四、数据化归档门禁（先数据后渲染）
+### 四、数据化归档门禁
 
-必须通过 `harness_archive.py finalize` 生成权威 `reports/final/summary-data.json` 并完成 validate；`final-summary.html` 为可选展示投影（默认渲染；渲染失败只记 warning、不回滚归档；`finalize --no-html` 可完全跳过本地 HTML）。**禁止模型临场写 500+ 行 HTML**。统计数字只能来自 summary-data、events、ledger 或 manifest。详见 `../protocols/report-pipeline-protocol.md`、`../protocols/archive-report-protocol.md`、`reference.md`。
+必须通过 `harness_archive.py finalize` 生成权威 `reports/final/summary-data.json` 并完成 validate。平台监控直接读取该数据；本地不再生成重复的 HTML 报告。统计数字只能来自 summary-data、events、ledger 或 manifest。详见 `../protocols/report-pipeline-protocol.md`、`../protocols/archive-report-protocol.md`、`reference.md`。
 
 ### 五、manifest/checksum 必须存在
 
@@ -145,13 +144,13 @@ disallowed-tools:
 
 ### 七、verification-ledger 汇总状态
 
-归档前读 `evidence/verification-ledger.json`，提取各阶段 status、postTestClassification、复用关系，供 final-summary 真实展示状态演进。若 ledger 有 `postTestClassification`，final-summary 必须展示该分类及对应的复用/重测决策。
+归档前读 `evidence/verification-ledger.json`，提取各阶段 status、postTestClassification、复用关系，供 summary-data 真实记录状态演进。若 ledger 有 `postTestClassification`，summary-data 必须记录该分类及对应的复用/重测决策。
 
-### 八、final-summary 不得伪造且必须展示状态演进
+### 八、summary-data 不得伪造且必须记录状态演进
 
 无测试报告 → 显示"未运行测试 / 静态验证"，不得 100% 通过率；无 review → "📝ADVISORY：未运行 review"。状态用 ✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP，复用前一阶段结果显示 🔁REUSED，**不得伪装成重新执行，不得无脑全绿**。
 
-**final-summary 是可再生展示投影，非硬产物**：`summary-data.json` 是最终报告的唯一权威数据源，必须产出并通过 validate/adequacy。HTML 渲染默认执行（Node 渲染器失败时自动 Python fallback），但渲染失败只记 warning，**不再回滚归档**；`finalize --no-html` 可完全跳过本地 HTML（配置远端平台时由平台按 summary-data.json 渲染）。
+`summary-data.json` 是最终报告的唯一权威数据源，必须产出并通过 validate/adequacy。平台按该文件展示归档结果，本地不维护第二份展示文件。
 
 ### 九、CONDITIONAL_OK 最终状态
 
@@ -159,7 +158,7 @@ API 测试 `USER_SKIPPED` 或 DB 兼容 `BLOCKED_BY_DBA` 时，最终状态必�
 
 ### 十、未提交测试文件归档
 
-未提交但用于验证的测试文件必须归档到 `backups/uncommitted-tests/` 并在 final-summary 中展示。
+未提交但用于验证的测试文件必须归档到 `backups/uncommitted-tests/`，并在 summary-data 中记录。
 
 ### 十一、归档事件单一所有权
 
@@ -167,7 +166,7 @@ finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，并在移�
 
 ### 十二、Shell 安全 / 敏感信息 / 证据化报告
 
-git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 final-summary.html 不得含明文 token/密码/密钥；归档报告必须区分 ✅真实成功 / 🟡跳过·静态验证 / ❌失败。
+git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 summary-data.json 不得含明文 token、密码或密钥；归档报告必须区分 ✅真实成功 / 🟡跳过·静态验证 / ❌失败。
 
 ### 十三、归档完整性与发布资格分离
 
@@ -175,23 +174,21 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 fi
 
 ## Output Format
 
-> 归档元数据格式见 `reference.md` 的 archive-meta 模板；最终报告由 `templates/summary-data-template.json` 数据结构 + `templates/render-summary.mjs` 固定脚本渲染。
+> 归档元数据格式见 `reference.md` 的 archive-meta 模板；最终报告使用 `templates/summary-data-template.json` 定义的数据结构。
 
 产出文件：
 
 - `.harness/archive/YYYY-MM-DD-<change-name>/meta/archive-meta.md` — 归档元数据
 - `.harness/archive/YYYY-MM-DD-<change-name>/events.ndjson` — 结构化事件层（新流程推荐；旧 archive 可缺失）
 - `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/summary-data.json` — 最终报告数据源
-- `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/final-summary.html` — 可选展示投影，由 `render-summary.mjs` 渲染（Node 失败时 Python fallback）；渲染失败降级 warning，`--no-html` 可跳过
 - `.harness/archive/YYYY-MM-DD-<change-name>/evidence/archive-manifest-before.json` / `archive-manifest-after.json` — 归档前后 manifest/checksum
 
 ## 渐进披露
 
 - **Read `checklist.md`** 仅在 Phase 1 归档前检查和 Phase 4 验证时 — 含归档前检查项和归档后验证项
-- **Read `reference.md`** 仅在 Phase 0/2/3 时 — 含归档流程、archive-meta 格式、summary-data 字段说明、final-summary 渲染规则、目录结构与最终状态规则
-- **Read `reference.md`** 仅在 Phase 3 finalize 时 — summary-data、final-summary 校验与 archive-meta 补写
+- **Read `reference.md`** 仅在 Phase 0/2/3 时 — 含归档流程、archive-meta 格式、summary-data 字段说明、目录结构与最终状态规则
+- **Read `reference.md`** 仅在 Phase 3 finalize 时 — summary-data 校验与 archive-meta 补写
 - **Read `templates/summary-data-template.json`** 仅在 Phase 3 生成 `summary-data.json` 时 — 含最终报告数据结构
-- **Read `templates/render-summary.mjs`** 仅在 Phase 3 渲染 `final-summary.html` 时 — 固定 HTML 渲染脚本
 
 ## 交互白名单
 

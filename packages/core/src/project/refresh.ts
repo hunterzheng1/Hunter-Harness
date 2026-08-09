@@ -111,6 +111,26 @@ export interface RefreshOptions {
 
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
 const CONTEXT_INDEX_PATH = ".harness/context-index.json";
+const RETIRED_ARCHIVE_RENDERER_TARGETS: Readonly<Record<HarnessAgent, string>> = {
+  "claude-code": ".claude/skills/harness-archive/templates/render-summary.mjs",
+  codex: ".agents/skills/harness-archive/templates/render-summary.mjs",
+  cursor: ".cursor/skills/harness-archive/templates/render-summary.mjs",
+  codebuddy: ".codebuddy/skills/harness-archive/templates/render-summary.mjs"
+};
+const RETIRED_ARCHIVE_RENDERER_HASHES = new Set([
+  "fb171bc2a3aaa3a99bf298f3d9697f9dd7025881b0437851a7af4937d224ef30",
+  "6fab9fab77dae08f6e111342a5245e8efbf1faa683db1d379e480076618d22af",
+  "fbfde9bdf16dba8aff1ef638e582a517064e81ea4681ed4831ff2e7c55f5ab9c",
+  "f15d2b541649fe677d56de46bc7ac8deccaeab12e57c530f5cd64fb340f17df4",
+  "7478a27f71b006b206443fee7ac8c2ee9722d21c78e6b2a82d3a1300de41d391",
+  "7cd1b29dab74510048a0077a7363775f19f47010ba8d46553b88755335e73496",
+  "9e027c4c26dc5d076c35bb485fc618929d425b1f2b0ac097d45caad9817b29b4",
+  "57547ca3c3a4c967ef1e0dc7778249e5b6cfb1a32517d975145db8af371ceff4",
+  "b437798e93e4bf1afc31305de9e448e4f292ed57513b059ffab59bc53f6dc347",
+  "6f5198906276a80859e1dc17793113c39dea8fb510c51678e0c1f91e40fddfa0",
+  "a4d1a98de2cf6a6ab74ddba33b6529459f7f5b009f31c5a7021f6abe2c0afef0",
+  "970585dcd1c590a6fc985289954b60c41b2cf012df7ea2dd790260e452e404c9"
+]);
 
 interface InstalledState {
   profile: HarnessProfile | null;
@@ -690,6 +710,50 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
         trustedHash ?? null
       ));
       // 保留的旧 profile 冲突文件不再受管（design §8），不进入新 state。
+    }
+  }
+
+  // `final-summary.html` 已由平台监控取代。这里仅删除路径与内容哈希都在
+  // 内置退役清单中的旧渲染器；本地改写过的同名文件继续保留，且本地 state
+  // 不能伪造删除授权。
+  const oldOnlyTargets = new Set(oldOnly.map((target) => target.target_path));
+  for (const agent of selectedAgents) {
+    const targetPath = RETIRED_ARCHIVE_RENDERER_TARGETS[agent];
+    if (newTargetSet.has(targetPath) || oldOnlyTargets.has(targetPath)) continue;
+    const current = await fileHex(join(root, targetPath));
+    if (current === null) continue;
+    const target: ProjectedBundleFile = {
+      source_path: "harness-archive/templates/render-summary.mjs",
+      target_path: targetPath,
+      sha256: "",
+      bytes: new Uint8Array()
+    };
+    const clean = RETIRED_ARCHIVE_RENDERER_HASHES.has(current);
+    if (clean || options.forceManaged) {
+      removed.push(item(
+        target,
+        "delete",
+        clean ? "BASELINE_CLEAN" : "FORCE_MANAGED",
+        current,
+        null
+      ));
+      ops.push({ operation: "delete", path: targetPath });
+    } else {
+      preserved.push(item(
+        target,
+        "preserve",
+        "LEGACY_PROFILE_FILE_MODIFIED",
+        current,
+        null
+      ));
+      conflicts.push(await conflict(
+        root,
+        target,
+        "LEGACY_PROFILE_FILE_MODIFIED",
+        current,
+        null,
+        null
+      ));
     }
   }
 

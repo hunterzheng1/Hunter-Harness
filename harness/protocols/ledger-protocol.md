@@ -14,7 +14,7 @@ description: verification-ledger、diffHash、service-fingerprint 的统一协�
 - run 跑过测试命令（如 `mvn test`/`pytest`），test 阶段又原样跑一遍——浪费 3~8 分钟
 - submit/package 各自再 compile+test 一次——同一 diff 被验证三四轮
 - test 通过后用户改了一行注释/删了一个未用 import，package 不知道该不该重测，干脆全量重跑
-- final-summary 只展示全绿，看不出哪些是"重新执行"、哪些是"复用"、哪些是"小改动后复用"
+- 阶段汇总只展示全绿时，看不出哪些是「重新执行」、哪些是「复用」、哪些是「小改动后复用」
 
 verification-ledger 把每次验证（compile / unit test / api test / package）的**结果 + 证据 + 作用范围 + diffHash** 记下来，后续阶段先读 ledger 再决定是否重跑。
 
@@ -255,13 +255,13 @@ API 测试: 🔁 复用上一轮结果（diffHash 未变 / 仅清理性变更）
 | harness-run | 步骤 2 前读（确认是否已有 compile/unitTest 可复用） | 步骤 2 后写 compile + unitTest（若跑了全量测试） |
 | harness-test | Phase 1 前读（复用 run 的 unitTest） | Phase 1/2 后写 unitTest + apiTest |
 | harness-submit | 验证前读（复用 test 的 compile/unitTest） | 若重跑则写回 |
-| harness-archive | 归档前读（汇总各阶段状态用于 final-summary） | 不写（归档时一并移入 archive） |
+| harness-archive | 归档前读（汇总各阶段状态，写入 `summary-data.json` 并上传平台） | 不写（归档时一并移入 archive） |
 
-## 八、状态与 final-summary 的对应
+## 八、状态与归档投影的对应
 
-ledger 的 `status` 与 final-summary 展示状态对应：
+ledger 的 `status` 与 `summary-data.json`、平台监控中的展示状态对应：
 
-| ledger status | 含义 | final-summary 标记 |
+| ledger status | 含义 | 归档与平台标记 |
 |:---:|------|------|
 | `OK`（本阶段真实执行并通过） | 真实验证 | ✅OK |
 | `OK` 但本阶段复用了前一阶段 | 复用 | 🔁REUSED |
@@ -270,7 +270,7 @@ ledger 的 `status` 与 final-summary 展示状态对应：
 | `ADVISORY` | review 参考性 | 📝ADVISORY |
 | postTestClassification=NON_BEHAVIORAL_CLEANUP | 小清理 | 🧹NON_BEHAVIORAL_CLEANUP |
 
-**强制规则**：任何阶段若复用了前一阶段结果，final-summary 必须显示 `🔁REUSED`，**不得伪装成重新执行**。
+**强制规则**：任何阶段若复用了前一阶段结果，`summary-data.json` 与平台监控必须显示 `🔁REUSED`，**不得伪装成重新执行**。
 
 ## 九、Ledger v2（cluster 2）
 
