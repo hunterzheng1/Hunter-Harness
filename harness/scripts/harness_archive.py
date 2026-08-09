@@ -17,6 +17,7 @@ import argparse
 import datetime as dt
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -192,9 +194,9 @@ def append_event(
     for key, value in fields.items():
         if value is not None:
             event[key] = value
-    line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-    he.atomic_append_line(path, line)
-    all_events = existing + [he.normalize_event(event)]
+    result = he.append_with_auto_seal(path, event, existing_events=existing)
+    event = result["event"]
+    all_events = he.load_events(path)
     he.write_execution_log(change_dir, he.render_execution_log(all_events))
     return event
 
@@ -3053,6 +3055,25 @@ def build_verification_projection(
         "apiTests": _ledger_api_tests(effective_ledger, change_dir=change_dir),
     }
     db_compatibility = _ledger_db_compat(effective_ledger)
+    if db_compatibility["status"] == "NOT_RUN" and change_dir is not None:
+        gate_policy_path = change_dir / "meta" / "gate-policy.json"
+        try:
+            gate_policy = read_json(gate_policy_path) if gate_policy_path.is_file() else None
+        except (OSError, json.JSONDecodeError):
+            gate_policy = None
+        if isinstance(gate_policy, dict):
+            capabilities = gate_policy.get("capabilities")
+            required = gate_policy.get("requiredValidations")
+            if (
+                isinstance(capabilities, list)
+                and "database" not in capabilities
+                and (not isinstance(required, list) or "dbCompatibility" not in required)
+            ):
+                db_compatibility = {
+                    "status": "NOT_APPLICABLE",
+                    "reason": "项目能力画像未声明数据库能力",
+                    "source": "capability-profile",
+                }
     projection["dbCompatibility"] = db_compatibility["status"]
     projection["dbCompatibilityEvidence"] = db_compatibility
     api_contract = validations.get("apiContract")
@@ -8377,6 +8398,27 @@ def _read_optional_text(path: Path) -> str:
         return ""
 
 
+def _archive_server_url_allowed(value: str | None) -> bool:
+    """Require TLS remotely while allowing explicit loopback HTTP for local testing."""
+    if value is None or not value.strip() or re.search(r"\s", value):
+        return False
+    try:
+        parsed = urlsplit(value)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme.lower() == "https":
+        return bool(host)
+    if parsed.scheme.lower() != "http":
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _resolve_archive_remote_credentials(
     project_root: Path,
     environment: Mapping[str, str],
@@ -8403,10 +8445,7 @@ def _resolve_archive_remote_credentials(
         else ""
     )
     token_available = bool(env_token or local_token)
-    url_available = bool(
-        server_url
-        and re.fullmatch(r"https://[^\s]+", server_url, flags=re.IGNORECASE)
-    )
+    url_available = _archive_server_url_allowed(server_url)
     return {
         "configured": bool(url_available and token_available),
         "serverUrl": server_url if url_available else None,

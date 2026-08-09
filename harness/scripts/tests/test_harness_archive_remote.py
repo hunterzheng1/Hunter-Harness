@@ -61,6 +61,47 @@ def _npx_upload_calls(run: mock.Mock) -> list[object]:
 
 
 class ArchiveRemoteUploadStateTests(unittest.TestCase):
+    def test_no_database_capability_projects_get_typed_not_applicable_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            _write_json(
+                change / "meta" / "gate-policy.json",
+                {"schemaVersion": 1, "capabilities": []},
+            )
+
+            projection = ha.build_verification_projection({}, change_dir=change)
+
+            self.assertEqual(projection["dbCompatibility"], "NOT_APPLICABLE")
+            self.assertEqual(
+                projection["dbCompatibilityEvidence"]["source"],
+                "capability-profile",
+            )
+
+    def test_loopback_http_platform_is_valid_for_local_development(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / ".harness" / "credentials.local.yaml",
+                "server_url: http://127.0.0.1:3003\ntoken: local-token\n",
+            )
+
+            resolved = ha._resolve_archive_remote_credentials(root, {})
+
+            self.assertTrue(resolved["configured"], resolved)
+            self.assertEqual(resolved["serverUrl"], "http://127.0.0.1:3003")
+
+    def test_non_loopback_plain_http_platform_remains_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / ".harness" / "credentials.local.yaml",
+                "server_url: http://platform.example.test\ntoken: local-token\n",
+            )
+
+            resolved = ha._resolve_archive_remote_credentials(root, {})
+
+            self.assertFalse(resolved["configured"], resolved)
+
     def test_missing_credentials_still_builds_retryable_package_and_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

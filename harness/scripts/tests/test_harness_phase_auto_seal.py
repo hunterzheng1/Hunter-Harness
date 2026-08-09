@@ -450,6 +450,24 @@ class GateAutoSealTests(unittest.TestCase):
                 [e.get("type") for e in written],
                 ["phase.start", "phase.auto_sealed", "phase.start"],
             )
+            self.assertEqual([e.get("attempt") for e in written], [1, 1, 2])
+
+    def test_fixback_start_records_structured_trigger_and_source_phase(self) -> None:
+        gate = load_module("harness_gate_fixback", "harness_gate.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            gate.append_phase_event(
+                change_dir,
+                phase="run",
+                type_="phase.start",
+                run_id="run-fixback",
+                note="/harness-run --fixback",
+            )
+
+            event = events.load_events(events.events_path(change_dir))[0]
+            self.assertEqual(event["attempt"], 1)
+            self.assertEqual(event["trigger"], "fixback")
+            self.assertEqual(event["from_phase"], "review")
 
 
 if __name__ == "__main__":

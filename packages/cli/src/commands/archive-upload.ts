@@ -13,6 +13,9 @@ export interface ArchiveUploadOptions {
   nonInteractive?: boolean;
   yes?: boolean;
   json?: boolean;
+  onReceipt?: (
+    receipt: Awaited<ReturnType<typeof uploadArchivePackage>>
+  ) => void | Promise<void>;
 }
 
 export async function runArchiveUpload(
@@ -33,6 +36,7 @@ export async function runArchiveUpload(
       env: dependencies.env,
       fetch: dependencies.fetch
     });
+    await options.onReceipt?.(receipt);
     const output = {
       schema_version: 1,
       command: "archive upload",

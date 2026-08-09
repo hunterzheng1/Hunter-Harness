@@ -1160,6 +1160,8 @@ _DYNAMIC_OWN_DIRS = ("events.ndjson", "logs", "evidence", "reports", "runtime", 
 
 def _matches_ownership_path(rel: str, declared: Any) -> bool:
     scope = str(declared).replace("\\", "/").strip("/")
+    if scope.endswith("/**"):
+        scope = scope[:-3].rstrip("/")
     if not scope:
         return False
     normalized = rel.replace("\\", "/").strip("/")

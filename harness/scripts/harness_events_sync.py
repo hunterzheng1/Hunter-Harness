@@ -51,6 +51,15 @@ WHITELIST = {
     "duration_ms",
     "schemaVersion",
     "summary",
+    "executor_tool",
+    "executor_agent",
+    "executor_model",
+    "execution_mode",
+    "decision_reason_code",
+    "fallback_reason_code",
+    "trigger",
+    "from_phase",
+    "result_status",
 }
 
 MAX_BATCH_SIZE = 100
@@ -754,6 +763,39 @@ def _discover_changes(project_root: Path) -> list[Path]:
     return sorted(path for path in root.glob("*") if path.is_dir()) if root.is_dir() else []
 
 
+def _change_has_open_phase(change_dir: Path) -> bool:
+    """Project the append-only stream into open/closed phase state."""
+    try:
+        path = Path(harness_paths.resolve_state_dir_for_contract(change_dir)) / "events.ndjson"
+    except (OSError, ValueError):
+        return False
+    if not path.is_file():
+        return False
+    open_phases: dict[str, bool] = {}
+    try:
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                continue
+            phase = event.get("phase")
+            event_type = event.get("type")
+            if not isinstance(phase, str) or not phase:
+                continue
+            if event_type == "phase.start":
+                open_phases[phase] = True
+            elif event_type in {"phase.end", "phase.auto_sealed", "workflow.end", "run.end"}:
+                open_phases[phase] = False
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any(open_phases.values())
+
+
+def _project_has_open_phase(project_root: Path) -> bool:
+    return any(_change_has_open_phase(path) for path in _discover_changes(project_root))
+
+
 def _run_agent_session(project_root: Path) -> dict[str, Any]:
     attempts = 0
     uploaded = 0
@@ -766,14 +808,28 @@ def _run_agent_session(project_root: Path) -> dict[str, Any]:
         if all(item.get("ok") for item in results):
             time.sleep(0.6)
             if generation == _read_nudge_generation(project_root):
-                return {
-                    "ok": True,
-                    "uploaded": uploaded,
-                    "quarantined": quarantined,
-                    "attempts": attempts + 1,
-                }
+                if not _project_has_open_phase(project_root):
+                    return {
+                        "ok": True,
+                        "uploaded": uploaded,
+                        "quarantined": quarantined,
+                        "attempts": attempts + 1,
+                    }
+                # Keep a finite workflow lease alive while a phase is open.
+                # A phase.end nudge is observed on the next pass and releases
+                # the worker naturally; no terminal window is created.
+                time.sleep(10.0)
+                heartbeat_results = [
+                    sync_change(project_root, path, heartbeat_only=True)
+                    for path in _discover_changes(project_root)
+                ]
+                if all(item.get("ok") for item in heartbeat_results):
+                    attempts = 0
+                    continue
+                results = heartbeat_results
             attempts = 0
-            continue
+            if generation != _read_nudge_generation(project_root):
+                continue
         time.sleep(min(16.0, float(2 ** attempts)))
         attempts += 1
     return {

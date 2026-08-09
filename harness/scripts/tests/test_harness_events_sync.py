@@ -439,6 +439,45 @@ class HarnessEventsSyncTests(unittest.TestCase):
         self.assertIn("harness_events_sync.py", " ".join(str(part) for part in command))
         self.assertIn("--agent", command)
 
+    def test_agent_keeps_heartbeating_until_the_open_phase_closes(self) -> None:
+        event_path = self.change_dir / "events.ndjson"
+        event_path.write_text(
+            json.dumps({
+                "schema_version": 3,
+                "id": "evt-start",
+                "timestamp": "2026-08-08T10:00:00+08:00",
+                "type": "phase.start",
+                "phase": "run",
+                "attempt": 1,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        calls: list[bool] = []
+
+        def sync(_project: Path, _change: Path, *, heartbeat_only: bool = False):
+            calls.append(heartbeat_only)
+            if heartbeat_only:
+                with event_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps({
+                        "schema_version": 3,
+                        "id": "evt-end",
+                        "timestamp": "2026-08-08T10:00:10+08:00",
+                        "type": "phase.end",
+                        "phase": "run",
+                        "attempt": 1,
+                        "status": "OK",
+                    }) + "\n")
+            return {"ok": True, "uploaded": 0, "quarantined": 0}
+
+        with (
+            mock.patch.object(hes, "sync_change", side_effect=sync),
+            mock.patch.object(hes.time, "sleep"),
+        ):
+            result = hes._run_agent_session(self.project)
+
+        self.assertTrue(result["ok"], result)
+        self.assertIn(True, calls)
+
 
 if __name__ == "__main__":
     unittest.main()

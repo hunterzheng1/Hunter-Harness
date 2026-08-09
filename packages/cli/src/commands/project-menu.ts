@@ -1,3 +1,6 @@
+import { readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import {
   cleanupOldTransactions,
   clearLocalCredentials,
@@ -11,11 +14,45 @@ import type { HarnessAgent } from "@hunter-harness/contracts";
 import { agentLabel, formatAgentLine } from "../ui/labels.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import { runConnect } from "./connect.js";
+import { runArchiveUpload } from "./archive-upload.js";
 import type { CommandDependencies, ConfigureOptions } from "./configure.js";
 import { runRefresh } from "./refresh.js";
 import { readCliVersion } from "../version.js";
 
 const graphemeSegmenter = new Intl.Segmenter("zh-CN", { granularity: "grapheme" });
+
+interface PendingArchive {
+  changeKey: string;
+  packagePath: string;
+  receiptPath: string;
+}
+
+async function listPendingArchives(projectRoot: string): Promise<PendingArchive[]> {
+  const directory = join(projectRoot, ".harness", "state", "local", "archive-packages");
+  let names: string[];
+  try {
+    names = await readdir(directory);
+  } catch {
+    return [];
+  }
+  const pending: PendingArchive[] = [];
+  for (const name of names.filter((item) => item.endsWith(".upload.json")).sort()) {
+    const changeKey = name.slice(0, -".upload.json".length);
+    try {
+      const receipt = JSON.parse(await readFile(join(directory, name), "utf8")) as Record<string, unknown>;
+      if (receipt.uploadStatus === "ready") continue;
+      await readFile(join(directory, `${changeKey}.zip`));
+      pending.push({
+        changeKey,
+        packagePath: join(directory, `${changeKey}.zip`),
+        receiptPath: join(directory, name)
+      });
+    } catch {
+      // Ignore incomplete or concurrently cleaned receipts.
+    }
+  }
+  return pending;
+}
 
 function graphemes(value: string): string[] {
   return [...graphemeSegmenter.segment(value)].map((entry) => entry.segment);
@@ -296,6 +333,7 @@ export async function runInitializedProjectMenu(
     : (["claude-code"] as HarnessAgent[]);
   const projectName = dependencies.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? dependencies.cwd;
   const cliVersion = await readCliVersion();
+  const pendingArchives = await listPendingArchives(dependencies.cwd);
   const parsedColumns = Number.parseInt(dependencies.env.COLUMNS ?? "", 10);
   const detectedColumns = dependencies.terminalColumns ?? parsedColumns;
   const terminalColumns = Number.isFinite(detectedColumns) && detectedColumns >= 12
@@ -304,6 +342,7 @@ export async function runInitializedProjectMenu(
   const statusLines = [
     `Hunter Harness v${cliVersion} · ${projectName}`,
     await platformStatusLine(dependencies.cwd),
+    `待上传归档：${pendingArchives.length} 个`,
     ...await toolsStatusLines(dependencies.cwd)
   ];
   dependencies.stdout(banner(statusLines, terminalColumns) + "\n\n");
@@ -313,7 +352,8 @@ export async function runInitializedProjectMenu(
     "  1. 一键刷新已安装工具（不重选工具与配置）",
     "  2. 管理工具（新增 / 换配置 / 移除）",
     "  3. 平台连接（绑定或修改地址与密钥）",
-    "  4. 事务与恢复",
+    `  4. 重试待上传归档（${pendingArchives.length} 个）`,
+    "  5. 事务与恢复",
     "  0. 退出",
     "请选择 [1]："
   ].join("\n"))).trim();
@@ -342,6 +382,55 @@ export async function runInitializedProjectMenu(
     return runPlatformConnectionMenu(options, dependencies);
   }
   if (choice === "4") {
+    if (pendingArchives.length === 0) {
+      dependencies.stdout("当前没有待上传归档。\n");
+      return 0;
+    }
+    let exitCode = 0;
+    for (const archive of pendingArchives) {
+      dependencies.stdout(`正在重试归档：${archive.changeKey}\n`);
+      const result = await runArchiveUpload({
+        file: archive.packagePath,
+        changeKey: archive.changeKey,
+        nonInteractive: true,
+        yes: true,
+        onReceipt: async (receipt) => {
+          if (receipt.archive_status === "durable" && receipt.knowledge_status === "ready") {
+            await Promise.all([
+              unlink(archive.packagePath).catch(() => undefined),
+              unlink(archive.receiptPath).catch(() => undefined)
+            ]);
+            return;
+          }
+          let existing: Record<string, unknown> = {};
+          try {
+            existing = JSON.parse(await readFile(archive.receiptPath, "utf8")) as Record<string, unknown>;
+          } catch {
+            // Recreate a bounded retry receipt when the previous one is damaged.
+          }
+          const failed = receipt.knowledge_status === "failed";
+          await writeFile(archive.receiptPath, JSON.stringify({
+            ...existing,
+            schemaVersion: 1,
+            changeKey: archive.changeKey,
+            packagePath: archive.packagePath,
+            packageSha256: receipt.package_sha256,
+            uploadStatus: failed ? "failed" : "pending",
+            archiveStatus: receipt.archive_status,
+            knowledgeStatus: receipt.knowledge_status,
+            archiveId: receipt.archive_id,
+            reasonCode: failed
+              ? "ARCHIVE_KNOWLEDGE_INDEX_FAILED"
+              : "ARCHIVE_KNOWLEDGE_INDEXING",
+            updatedAt: new Date().toISOString()
+          }, null, 2) + "\n", "utf8");
+        }
+      }, dependencies);
+      if (result !== 0) exitCode = result;
+    }
+    return exitCode;
+  }
+  if (choice === "5") {
     return runTransactionMenu(dependencies);
   }
   dependencies.stderr("无效选项。\n");

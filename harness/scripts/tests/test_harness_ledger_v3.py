@@ -915,6 +915,11 @@ class OwnershipDiffTests(LedgerV3Fixture):
         self.assertIn("docs/untracked.md", result["foreignPaths"])
         self.assertEqual(result["ownedFileCount"], 1)
 
+    def test_product_path_accepts_trailing_recursive_glob(self) -> None:
+        self.assertTrue(ledger._matches_ownership_path("src/app/main.py", "src/**"))
+        self.assertTrue(ledger._matches_ownership_path("src", "src/**"))
+        self.assertFalse(ledger._matches_ownership_path("scripts/main.py", "src/**"))
+
 
 if __name__ == "__main__":
     unittest.main()

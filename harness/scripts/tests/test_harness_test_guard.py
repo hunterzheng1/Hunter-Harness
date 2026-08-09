@@ -304,7 +304,7 @@ class TestGuardTests(unittest.TestCase):
         finally:
             self._git("worktree", "remove", "--force", str(worktree))
 
-    def test_review_fixback_close_rejects_profile_change_without_manifest_drift(
+    def test_review_fixback_close_rebases_profile_without_manifest_drift(
         self,
     ) -> None:
         test_file = self.project / "src" / "test" / "java" / "ChangedTest.java"
@@ -326,8 +326,8 @@ class TestGuardTests(unittest.TestCase):
 
         close = guard.close(self.project, self.change)
 
-        self.assertFalse(close["ok"], close)
-        self.assertEqual(close["code"], "PROFILE_CHANGED")
+        self.assertTrue(close["ok"], close)
+        self.assertTrue(close["profileChanged"])
         self.assertEqual(manifest_path.read_bytes(), manifest_before)
 
     def test_review_fixback_close_cleans_restored_current_change_provenance(
@@ -1039,6 +1039,33 @@ class TestGuardTests(unittest.TestCase):
         # not the generic SNAPSHOT_INVALID, so callers can distinguish wrong
         # root from corrupt snapshot.
         self.assertEqual(result["code"], "EXECUTION_ROOT_MISMATCH")
+
+    def test_close_reconciles_build_profile_change_without_manual_snapshot_reset(self) -> None:
+        target = self.project / "src" / "test" / "java" / "ProfileChangedTest.java"
+        self._write(target, "before\n")
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+        self._write(
+            self.project / ".harness" / "config" / "build-profile.json",
+            json.dumps({"testTracking": {"paths": ["src/test/**", "qa/**"]}}),
+        )
+        self._write(target, "after\n")
+
+        result = guard.close(self.project, self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["profileChanged"])
+        self.assertIn("src/test/java/ProfileChangedTest.java", result["files"])
+
+    def test_close_does_not_reject_unchanged_manifest_from_an_earlier_phase(self) -> None:
+        target = self.project / "src" / "test" / "java" / "EarlierPhaseTest.java"
+        self._write(target, "stable\n")
+        self.assertTrue(self._record(target)["ok"])
+        self.assertTrue(guard.begin(self.project, self.change)["ok"])
+
+        result = guard.close(self.project, self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["recordedCount"], 0)
 
 
 if __name__ == "__main__":

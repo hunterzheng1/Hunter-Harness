@@ -1593,18 +1593,15 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             [],
             error=str(exc),
         )
-    if (
+    profile_changed = bool(
         isinstance(snapshot.get("profileFingerprint"), str)
         and snapshot["profileFingerprint"] != current_profile_fingerprint
-    ):
-        return _result(False, action, "PROFILE_CHANGED", [])
+    )
     baseline_commit = _snapshot_baseline_commit(
         project_root,
         change_root,
         snapshot,
     )
-    profile_changed = False
-
     before_entries = snapshot.get("files")
     if not isinstance(before_entries, list):
         return _result(False, action, "SNAPSHOT_INVALID", [])
@@ -1682,11 +1679,21 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             return result
 
     recorded = [rel for rel, _ in touched]
-    reconciliation = _reconcile_close_manifest(
-        project_root,
-        change_root,
-        set(recorded),
-        baseline_commit,
+    reconciliation = (
+        {
+            "ok": True,
+            "code": "PROFILE_REBASED_MANIFEST_PRESERVED",
+            "removedCurrentTouches": 0,
+            "deletedEntries": 0,
+            "preservedForeignEntries": 0,
+        }
+        if profile_changed
+        else _reconcile_close_manifest(
+            project_root,
+            change_root,
+            set(recorded),
+            baseline_commit,
+        )
     )
     if not reconciliation.get("ok"):
         return _result(
@@ -1696,40 +1703,26 @@ def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
             list(reconciliation.get("files") or []),
         )
 
-    # Cross-check (retro §5.10): if the manifest has active entries for this
-    # change but close computed recordedCount=0, the snapshot/manifest/diff
-    # are inconsistent. Fail closed instead of silently returning success.
-    manifest_path = _manifest_path(change_root)
-    if manifest_path is not None and manifest_path.is_file():
-        try:
-            manifest = _read_json(manifest_path)
-        except (OSError, json.JSONDecodeError):
-            manifest = None
-        if isinstance(manifest, dict):
-            manifest_files = manifest.get("files")
-            if isinstance(manifest_files, list):
-                is_v2 = manifest.get("schemaVersion") == 2
-                change_id = change_root.name
-                active_entries = [
-                    f for f in manifest_files
-                    if isinstance(f, dict)
-                    and f.get("reason") in ("tdd-created", "test-updated", "stale-test-repair")
-                    and (
-                        not is_v2
-                        or f.get("introducedBy") == change_id
-                        or change_id in (f.get("touchedBy") or [])
-                    )
-                ]
-                if active_entries and not recorded:
-                    return _result(
-                        False,
-                        action,
-                        "MANIFEST_DIFF_HASH_MISMATCH",
-                        [],
-                        manifestEntries=len(active_entries),
-                        recordedCount=0,
-                        detail="manifest has active entries but close computed 0 recorded tests",
-                    )
+    # A manifest is change-wide and intentionally survives phase boundaries.
+    # Therefore pre-existing entries with no new diff are consistent and must
+    # not force a test-guard reset. When the build profile changes mid-phase,
+    # retain the diff result and rebaseline the reusable snapshot atomically.
+    if profile_changed:
+        snapshot.update(
+            {
+                "profileFingerprint": current_profile_fingerprint,
+                "capturedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "files": [
+                    {
+                        "path": rel,
+                        "sha256": digest,
+                        "ignored": _is_ignored(project_root, rel),
+                    }
+                    for rel, digest in sorted(current.items())
+                ],
+            }
+        )
+        _write_json(snapshot_path, snapshot)
 
     return _result(
         True,

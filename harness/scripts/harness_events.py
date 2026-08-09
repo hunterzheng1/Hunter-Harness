@@ -121,6 +121,12 @@ OPTIONAL_FIELDS = (
     "renamed_from",
     "renamed_to",
     "change_uuid",
+    "execution_mode",
+    "decision_reason_code",
+    "fallback_reason_code",
+    "trigger",
+    "from_phase",
+    "result_status",
 )
 
 _PROVENANCE_FIELDS = frozenset(
@@ -139,6 +145,12 @@ _PROVENANCE_FIELDS = frozenset(
         "orchestration_active_ms",
         "wall_clock_ms",
         "user_wait_ms",
+        "execution_mode",
+        "decision_reason_code",
+        "fallback_reason_code",
+        "trigger",
+        "from_phase",
+        "result_status",
     }
 )
 _EVENT_ALLOWED_FIELDS = {
@@ -1698,6 +1710,22 @@ def append_with_auto_seal(
                 else []
             )
         )
+        if event_type in {"phase.start", "phase.end", "phase.auto_sealed"} and phase:
+            phase_attempts = split_phase_attempts(
+                [item for item in loaded if item.get("phase") == phase]
+            )
+            latest_attempt = max(
+                (
+                    int(item.get("attempt"))
+                    for item in phase_attempts
+                    if isinstance(item.get("attempt"), int)
+                ),
+                default=0,
+            )
+            if not isinstance(event.get("attempt"), int) or int(event["attempt"]) <= 0:
+                event["attempt"] = (
+                    latest_attempt + 1 if event_type == "phase.start" else latest_attempt or 1
+                )
         if event_type == "phase.start" and phase:
             auto_sealed = seal_open_phase_attempts(loaded, phase=phase)
             for seal_event in auto_sealed:
@@ -1967,6 +1995,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_append.add_argument("--orchestration-active-ms", type=int, default=None)
     p_append.add_argument("--wall-clock-ms", type=int, default=None)
     p_append.add_argument("--user-wait-ms", type=int, default=None)
+    p_append.add_argument("--execution-mode", default=None)
+    p_append.add_argument("--decision-reason-code", default=None)
+    p_append.add_argument("--fallback-reason-code", default=None)
+    p_append.add_argument("--trigger", default=None)
+    p_append.add_argument("--from-phase", default=None)
+    p_append.add_argument("--result-status", default=None)
     p_append.add_argument(
         "--legacy-lenient",
         action="store_true",

@@ -1,4 +1,4 @@
 <!-- @override section-id:"review.delegate" -->
 ### 2. 审查执行（主会话优先）
 
-默认在主会话按同一 6 维度检查清单执行，**不运行固定 `harness-reviewer` 预检**。仅发布候选或命中权限/安全、支付、迁移、并发幂等、公共契约、跨模块核心路径，且当前宿主显式提供通用隔离任务工具时，才可临时委派一次只读审查。spawn 失败、空返回或无报告正文 → 不 retry，继续主会话审查并记一次 `issue`；正常 inline 只记 `decision`，不显示不可用告警。
+Codex 提供通用隔离任务能力时，默认优先临时委派一次只读审查，**不要求安装固定 `harness-reviewer`**。子任务只读取 diff、规则和测试证据；主会话核验并写报告。无法委派、spawn 失败、空返回或无报告正文 → 不 retry，继续主会话审查。每次都记一条 `decision`，用 `REVIEW_DELEGATED` 或相应 `REVIEW_INLINE_*` 原因码说明是否委派及原因；正常 inline 不显示为故障。

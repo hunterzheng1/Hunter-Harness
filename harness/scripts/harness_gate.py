@@ -1602,6 +1602,18 @@ def append_phase_event(
     auto_sealed: list[dict[str, Any]] = []
     with he.event_file_lock(lock_path):
         existing = he.load_events(events_file)
+        phase_attempts = he.split_phase_attempts(
+            [event for event in existing if event.get("phase") == phase]
+        )
+        latest_attempt = max(
+            (
+                int(item.get("attempt"))
+                for item in phase_attempts
+                if isinstance(item.get("attempt"), int)
+            ),
+            default=0,
+        )
+        event_attempt = latest_attempt + 1 if type_ == "phase.start" else latest_attempt or 1
         args = argparse.Namespace(
             phase=phase,
             type=type_,
@@ -1619,12 +1631,18 @@ def append_phase_event(
             decision=None,
             reason=None,
             run_id=run_id,
-            attempt=None,
+            attempt=event_attempt,
             executor_tool=executor_tool,
             executor_agent=executor_agent,
             executor_model=executor_model,
             handoff_from_tool=None,
             handoff_reason=None,
+            execution_mode=None,
+            decision_reason_code=None,
+            fallback_reason_code=None,
+            trigger=("fixback" if "fixback" in note.lower() else None),
+            from_phase=("review" if phase == "run" and "fixback" in note.lower() else None),
+            result_status=None,
         )
         event = he.build_event(args, existing)
         if identity:
