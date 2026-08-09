@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.61] — hunter-harness
+
+### Fixed（2026-08-09 发布包脚本定位修订）
+
+- **事件同步可执行**：`events-sync` 现在能从公开 workflow 包的 Bundle 目录解析同步脚本，不再只在源码仓库布局下可用。
+
 ## [0.2.60] — hunter-harness / [0.2.55] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-09 阶段收尾与实时监控修订）

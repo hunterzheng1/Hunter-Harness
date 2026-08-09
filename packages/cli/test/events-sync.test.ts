@@ -8,6 +8,38 @@ import { runEventsSync } from "../src/commands/events-sync.js";
 import type { CommandDependencies } from "../src/commands/configure.js";
 
 describe("hunter-harness events-sync", () => {
+  it("resolves the sync helper from a published workflow bundle layout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-events-sync-bundle-"));
+    const resourcesRoot = join(root, "workflow-package");
+    const scriptsRoot = join(
+      resourcesRoot, "harness", "bundles", "general", "codex", "scripts"
+    );
+    await mkdir(scriptsRoot, { recursive: true });
+    await writeFile(
+      join(scriptsRoot, "harness_events_sync.py"),
+      'import json\nprint(json.dumps({"ok": True, "results": []}))\n',
+      "utf8"
+    );
+
+    const stdout: string[] = [];
+    const dependencies = {
+      cwd: root,
+      resourcesRoot,
+      stdout: (chunk: string) => stdout.push(chunk),
+      stderr: () => undefined,
+      prompt: async () => "",
+      fetch: globalThis.fetch,
+      env: process.env
+    } as CommandDependencies;
+
+    expect(await runEventsSync({ json: true }, dependencies)).toBe(0);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      command: "events-sync",
+      ok: true,
+      exit_code: 0
+    });
+  });
+
   it("returns JSON envelope when remote credentials are absent", async () => {
     const root = await mkdtemp(join(tmpdir(), "hh-events-sync-"));
     await mkdir(join(root, ".harness", "changes", "demo"), { recursive: true });

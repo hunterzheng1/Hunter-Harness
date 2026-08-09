@@ -21,6 +21,24 @@ function scriptsDirFromResources(resourcesRoot: string): string {
 async function resolveSyncScript(resourcesRoot: string): Promise<string | null> {
   const candidates = [
     join(scriptsDirFromResources(resourcesRoot), "harness_events_sync.py"),
+    join(
+      resourcesRoot,
+      "harness",
+      "bundles",
+      "general",
+      "codex",
+      "scripts",
+      "harness_events_sync.py"
+    ),
+    join(
+      resourcesRoot,
+      "harness",
+      "bundles",
+      "general",
+      "claude-code",
+      "scripts",
+      "harness_events_sync.py"
+    ),
     // Monorepo / source checkout fallback.
     join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "harness", "scripts", "harness_events_sync.py")
   ];
