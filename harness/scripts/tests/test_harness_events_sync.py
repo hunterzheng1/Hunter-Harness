@@ -441,6 +441,139 @@ class HarnessEventsSyncTests(unittest.TestCase):
         )
         self.assertEqual(hes.load_cursor(contract_dir), 1)
 
+    def test_split_v1_keeps_producer_sequence_after_legacy_stream_switch(self) -> None:
+        subprocess.run(
+            ["git", "init", "--quiet"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+        self.write_events(2)
+        accepted_by_sequence: dict[int, str] = {}
+        uploaded_sequences: list[int] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            items = []
+            for event in body["events"]:
+                sequence = event["producer_seq"]
+                uploaded_sequences.append(sequence)
+                if sequence in accepted_by_sequence:
+                    items.append({
+                        "id": event["event_id"],
+                        "status": "id_conflict",
+                        "error_code": "SEQ_CONFLICT",
+                    })
+                    continue
+                accepted_by_sequence[sequence] = event["event_id"]
+                items.append({"id": event["event_id"], "status": "accepted"})
+            return {"items": items}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            legacy_result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(legacy_result["ok"], legacy_result)
+        self.assertEqual(uploaded_sequences, [1, 2])
+
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "changeId": "demo",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo",
+                    "runtimeRoot": ".harness/state/changes/demo",
+                },
+            }),
+            encoding="utf-8",
+        )
+        state_dir = self.project / ".harness" / "state" / "changes" / "demo"
+        state_dir.mkdir(parents=True)
+        state_events = []
+        for index in range(3, 5):
+            state_events.append(json.dumps({
+                "schema_version": 3,
+                "id": f"evt-{index}",
+                "timestamp": f"2026-08-08T10:00:0{index}+08:00",
+                "type": "decision",
+                "phase": "run",
+                "decision": f"decision-{index}",
+                "note": "",
+            }))
+        (state_dir / "events.ndjson").write_text(
+            "\n".join(state_events) + "\n", encoding="utf-8"
+        )
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            split_result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(split_result["ok"], split_result)
+        self.assertEqual(split_result["uploaded"], 2)
+        self.assertEqual(split_result["quarantined"], 0)
+        self.assertEqual(uploaded_sequences, [1, 2, 3, 4])
+        cursor = json.loads(
+            hes.cursor_path(self.change_dir).read_text(encoding="utf-8")
+        )
+        self.assertEqual(cursor.get("producer_seq_base"), 2)
+
+    def test_split_v1_sync_preserves_unsent_legacy_events_before_new_state_events(self) -> None:
+        subprocess.run(
+            ["git", "init", "--quiet"], cwd=self.project, check=True,
+            capture_output=True,
+        )
+        self.write_events(2)
+        (self.change_dir / "meta").mkdir(exist_ok=True)
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "changeId": "demo",
+                "stateOwnership": {
+                    "contractRoot": ".harness/changes/demo",
+                    "runtimeRoot": ".harness/state/changes/demo",
+                },
+            }),
+            encoding="utf-8",
+        )
+        state_dir = self.project / ".harness" / "state" / "changes" / "demo"
+        state_dir.mkdir(parents=True)
+        (state_dir / "events.ndjson").write_text(
+            "\n".join(json.dumps({
+                "schema_version": 3,
+                "id": f"evt-{index}",
+                "timestamp": f"2026-08-08T10:00:0{index}+08:00",
+                "type": "decision",
+                "phase": "run",
+                "decision": f"decision-{index}",
+                "note": "",
+            }) for index in range(3, 5)) + "\n",
+            encoding="utf-8",
+        )
+        uploaded_ids: list[str] = []
+        uploaded_sequences: list[int] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            uploaded_ids.extend(event["event_id"] for event in body["events"])
+            uploaded_sequences.extend(event["producer_seq"] for event in body["events"])
+            return {
+                "items": [
+                    {"id": event["event_id"], "status": "accepted"}
+                    for event in body["events"]
+                ]
+            }
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["uploaded"], 4)
+        self.assertEqual(uploaded_ids, ["evt-1", "evt-2", "evt-3", "evt-4"])
+        self.assertEqual(uploaded_sequences, [1, 2, 3, 4])
+        self.assertFalse((self.change_dir / "events.ndjson").exists())
+        self.assertEqual(
+            len((state_dir / "events.ndjson").read_text(encoding="utf-8").splitlines()),
+            4,
+        )
+
     def test_exit_boundary_nudge_waits_for_current_worker_and_is_processed(self) -> None:
         primary = hes._CrossProcessLock(hes._agent_lock_path(self.project))
         self.assertTrue(primary.acquire(blocking=False))

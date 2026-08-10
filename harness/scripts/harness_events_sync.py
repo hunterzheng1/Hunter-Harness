@@ -350,36 +350,97 @@ def _state_dir(change_dir: Path) -> Path:
     return Path(harness_paths.resolve_state_dir_for_contract(change_dir))
 
 
+def _cursor_values(path: Path) -> tuple[int, int, bool]:
+    if not path.is_file():
+        return 0, 0, True
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0, False
+    raw_acked = data.get("acked_lines") if isinstance(data, dict) else None
+    raw_base = data.get("producer_seq_base", 0) if isinstance(data, dict) else None
+    acked_valid = (
+        not isinstance(raw_acked, bool)
+        and isinstance(raw_acked, int)
+        and raw_acked >= 0
+    )
+    base_valid = (
+        not isinstance(raw_base, bool)
+        and isinstance(raw_base, int)
+        and raw_base >= 0
+    )
+    return (
+        raw_acked if acked_valid else 0,
+        raw_base if base_valid else 0,
+        acked_valid and base_valid,
+    )
+
+
+def _complete_line_count(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return 0
+    if not data:
+        return 0
+    return data.count(b"\n")
+
+
+def _initial_producer_seq_base(change_dir: Path) -> int:
+    """Keep producer sequence monotonic when a legacy stream becomes split-v1."""
+    state_dir = _state_dir(change_dir).resolve()
+    contract_dir = change_dir.resolve()
+    if state_dir == contract_dir:
+        return 0
+    legacy_acked, legacy_base, _ = _cursor_values(
+        contract_dir / "meta" / "events-sync-cursor.json"
+    )
+    legacy_lines = _complete_line_count(contract_dir / "events.ndjson")
+    return legacy_base + max(legacy_acked, legacy_lines)
+
+
+def load_cursor_state(
+    change_dir: Path,
+    *,
+    maximum_lines: int | None = None,
+    repair: bool = False,
+) -> dict[str, int]:
+    path = cursor_path(change_dir)
+    exists = path.is_file()
+    acked, producer_seq_base, valid = _cursor_values(path)
+    if not exists:
+        producer_seq_base = _initial_producer_seq_base(change_dir)
+    if maximum_lines is not None:
+        if maximum_lines < 0:
+            raise ValueError("maximum_lines must be non-negative")
+        if acked > maximum_lines:
+            acked = 0
+            valid = False
+    if (not valid or not exists) and repair:
+        save_cursor(
+            change_dir,
+            acked,
+            producer_seq_base=producer_seq_base,
+        )
+    return {
+        "acked_lines": acked,
+        "producer_seq_base": producer_seq_base,
+    }
+
+
 def load_cursor(
     change_dir: Path,
     *,
     maximum_lines: int | None = None,
     repair: bool = False,
 ) -> int:
-    path = cursor_path(change_dir)
-    if not path.is_file():
-        return 0
-    valid = True
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = None
-        valid = False
-    raw = data.get("acked_lines") if isinstance(data, dict) else None
-    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-        valid = False
-        value = 0
-    else:
-        value = raw
-    if maximum_lines is not None:
-        if maximum_lines < 0:
-            raise ValueError("maximum_lines must be non-negative")
-        if value > maximum_lines:
-            valid = False
-            value = 0
-    if not valid and repair:
-        save_cursor(change_dir, 0)
-    return value
+    return load_cursor_state(
+        change_dir,
+        maximum_lines=maximum_lines,
+        repair=repair,
+    )["acked_lines"]
 
 
 def _fsync_parent(path: Path) -> None:
@@ -392,14 +453,31 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
-def save_cursor(change_dir: Path, acked_lines: int) -> None:
+def save_cursor(
+    change_dir: Path,
+    acked_lines: int,
+    *,
+    producer_seq_base: int | None = None,
+) -> None:
     if isinstance(acked_lines, bool) or not isinstance(acked_lines, int) or acked_lines < 0:
         raise ValueError("acked_lines must be a non-negative integer")
     path = cursor_path(change_dir)
+    if producer_seq_base is None:
+        _, producer_seq_base, _ = _cursor_values(path)
+    if (
+        isinstance(producer_seq_base, bool)
+        or not isinstance(producer_seq_base, int)
+        or producer_seq_base < 0
+    ):
+        raise ValueError("producer_seq_base must be a non-negative integer")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     encoded = (
-        json.dumps({"schemaVersion": 1, "acked_lines": acked_lines}, indent=2) + "\n"
+        json.dumps({
+            "schemaVersion": 2,
+            "acked_lines": acked_lines,
+            "producer_seq_base": producer_seq_base,
+        }, indent=2) + "\n"
     ).encode("utf-8")
     descriptor = os.open(
         str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
@@ -489,6 +567,85 @@ def _event_lines_snapshot(events_file: Path) -> list[str]:
     return data.decode("utf-8-sig").splitlines()
 
 
+def _complete_stream_bytes(path: Path) -> bytes:
+    data = path.read_bytes() if path.is_file() else b""
+    if data and not data.endswith(b"\n"):
+        last_newline = data.rfind(b"\n")
+        data = b"" if last_newline < 0 else data[:last_newline + 1]
+    return data
+
+
+def _atomic_replace_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(
+        str(temporary), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_parent(path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _migrate_pending_legacy_stream(change_dir: Path) -> None:
+    """Prefix unsent colocated events before the first split-v1 state upload."""
+    contract_dir = change_dir.resolve()
+    state_dir = _state_dir(change_dir).resolve()
+    legacy_events = contract_dir / "events.ndjson"
+    target_events = state_dir / "events.ndjson"
+    target_cursor = state_dir / "meta" / "events-sync-cursor.json"
+    if state_dir == contract_dir or not legacy_events.is_file() or target_cursor.exists():
+        return
+    legacy_cursor = contract_dir / "meta" / "events-sync-cursor.json"
+    legacy_acked, _, _ = _cursor_values(legacy_cursor)
+    legacy_line_count = _complete_line_count(legacy_events)
+    if legacy_acked >= legacy_line_count:
+        return
+
+    locks = [
+        _CrossProcessLock(path.with_name(path.name + ".lock"))
+        for path in sorted((legacy_events, target_events), key=lambda item: str(item).casefold())
+    ]
+    for lock in locks:
+        lock.acquire(blocking=True)
+    try:
+        if target_cursor.exists() or not legacy_events.is_file():
+            return
+        legacy_data = _complete_stream_bytes(legacy_events)
+        target_data = _complete_stream_bytes(target_events)
+        if target_data.startswith(legacy_data):
+            merged = target_data
+        else:
+            merged = legacy_data + target_data
+        _atomic_replace_bytes(target_events, merged)
+
+        target_cursor.parent.mkdir(parents=True, exist_ok=True)
+        if legacy_cursor.is_file():
+            os.replace(legacy_cursor, target_cursor)
+        else:
+            save_cursor(change_dir, 0, producer_seq_base=0)
+
+        legacy_quarantine = contract_dir / "meta" / "events-sync-quarantine.ndjson"
+        target_quarantine = state_dir / "meta" / "events-sync-quarantine.ndjson"
+        if legacy_quarantine.is_file() and not target_quarantine.exists():
+            os.replace(legacy_quarantine, target_quarantine)
+        legacy_events.unlink()
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+
+
 def sync_change(
     project: Path,
     change_dir: Path,
@@ -525,6 +682,7 @@ def sync_change(
     if heartbeat_only:
         return {"ok": True, "heartbeat": True, "run_id": rid, "change_key": resolved_key}
 
+    _migrate_pending_legacy_stream(change_dir)
     events_file = _state_dir(change_dir) / "events.ndjson"
     if not events_file.is_file():
         return {
@@ -536,11 +694,13 @@ def sync_change(
         }
 
     lines = _event_lines_snapshot(events_file)
-    acked = load_cursor(
+    cursor = load_cursor_state(
         change_dir,
         maximum_lines=len(lines),
         repair=True,
     )
+    acked = cursor["acked_lines"]
+    producer_seq_base = cursor["producer_seq_base"]
     pending_raw = lines[acked:]
     phase_plan = _workflow_plan(change_dir)
     uploaded = 0
@@ -571,7 +731,7 @@ def sync_change(
             event_id = str(event.get("id") or f"{resolved_key}:{line_number}")
             item: dict[str, Any] = {
                 "event_id": event_id,
-                "producer_seq": line_number,
+                "producer_seq": producer_seq_base + line_number,
                 "event_type": str(event.get("type") or "unknown"),
                 "occurred_at": str(event.get("timestamp") or event.get("ts") or client_time),
                 "payload": _event_payload(event, phase_plan),
@@ -664,7 +824,11 @@ def sync_change(
                 status="local_invalid",
             )
             quarantined += 1
-        save_cursor(change_dir, acked + chunk_start + len(raw_chunk))
+        save_cursor(
+            change_dir,
+            acked + chunk_start + len(raw_chunk),
+            producer_seq_base=producer_seq_base,
+        )
 
     return {
         "ok": True,
@@ -674,6 +838,7 @@ def sync_change(
         "quarantined": quarantined,
         "batch_size": min(MAX_BATCH_SIZE, len(pending_raw)),
         "acked_lines": len(lines),
+        "producer_seq_base": producer_seq_base,
         "server": last_result,
     }
 
