@@ -1077,6 +1077,11 @@ def split_phase_attempts(phase_events: list[dict[str, Any]]) -> list[dict[str, A
         "external.wait",
         "issue",
         "ci.wait",
+        # Preparation is intentionally outside the formal phase lifecycle.
+        # A blocked preflight must remain visible in the raw timeline without
+        # manufacturing an attempt or inflating the phase duration/count.
+        "phase.prepare.start",
+        "phase.prepare.end",
     }
     for event in phase_events:
         if event.get("type") == "phase.start":

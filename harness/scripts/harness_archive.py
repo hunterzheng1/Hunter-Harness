@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -1907,8 +1908,13 @@ def find_test_reports(change_dir: Path) -> list[Path]:
         "reports/test/*.md",
     ]
     found: list[Path] = []
+    seen: set[Path] = set()
     for pattern in patterns:
-        found.extend(sorted(change_dir.glob(pattern)))
+        for path in sorted(change_dir.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            found.append(path)
     return found
 
 
@@ -2184,6 +2190,21 @@ def check_status(
     checks["project_root"] = str(project)
     state_root = resolve_archive_state_root(change_dir)
     checks["state_root"] = str(state_root)
+    range_adoption = validate_existing_range_adoption(change_dir)
+    checks["range_adoption"] = range_adoption
+    if not range_adoption.get("ok"):
+        blockers.append(
+            {
+                "code": str(
+                    range_adoption.get("reasonCode")
+                    or "EXISTING_RANGE_RECEIPT_INVALID"
+                ),
+                "message": str(
+                    range_adoption.get("message")
+                    or "既有提交范围认领收据无效。"
+                ),
+            }
+        )
 
     exact_byte = check_archive_exact_byte_policy(project)
     checks["archive_exact_byte"] = exact_byte
@@ -2202,14 +2223,33 @@ def check_status(
     )
     checks["sensitive_evidence_publication"] = sensitive_gate
     if not sensitive_gate.get("ok"):
-        blockers.append({
-            "code": str(sensitive_gate.get("reasonCode") or "SECRET_SCAN_GATE_BLOCKED"),
-            "message": str(
-                sensitive_gate.get("nextAction")
-                or sensitive_gate.get("error")
-                or "sensitive evidence publication gate failed"
-            ),
-        })
+        sensitive_issue_codes = {
+            str(item.get("code") or "")
+            for item in sensitive_gate.get("issues") or []
+            if isinstance(item, dict)
+        }
+        digest_only_drift = sensitive_issue_codes == {
+            "SECRET_SCAN_TREE_DIGEST_MISMATCH"
+        }
+        if digest_only_drift and not sensitive_gate.get("unresolvedFailures"):
+            warnings.append(
+                {
+                    "code": "SECRET_SCAN_RECEIPT_REFRESH_REQUIRED",
+                    "message": (
+                        "归档事件或锁文件变化使敏感信息扫描收据过期；"
+                        "正式归档会重新扫描并绑定当前字节。"
+                    ),
+                }
+            )
+        else:
+            blockers.append({
+                "code": str(sensitive_gate.get("reasonCode") or "SECRET_SCAN_GATE_BLOCKED"),
+                "message": str(
+                    sensitive_gate.get("nextAction")
+                    or sensitive_gate.get("error")
+                    or "sensitive evidence publication gate failed"
+                ),
+            })
 
     # --- H-4 formal-layer minimum set ---
     plans_dir = change_dir / "plans"
@@ -2238,6 +2278,28 @@ def check_status(
 
     ledger = load_ledger(change_dir)
     checks["verification_ledger"] = ledger is not None
+    immutable_base = _immutable_change_base_from_snapshot(change_dir)
+    ledger_base = (
+        str(ledger.get("baseCommit") or "").strip()
+        if isinstance(ledger, dict)
+        else ""
+    )
+    checks["change_base"] = immutable_base or None
+    if (
+        immutable_base
+        and ledger_base
+        and immutable_base != ledger_base
+        and not range_adoption.get("present")
+    ):
+        blockers.append(
+            {
+                "code": "CHANGE_BASE_IDENTITY_MISMATCH",
+                "message": (
+                    "计划阶段保存的变更基线与验证账本不一致；"
+                    "请先恢复正确身份，不得在归档阶段自动改写。"
+                ),
+            }
+        )
     if ledger is None:
         target = warnings if closure_disposition != "completed" else blockers
         target.append(
@@ -2296,7 +2358,10 @@ def check_status(
     hash_source: str | None = None
     if ledger is None:
         ledger = load_ledger(change_dir)
-    if worktree_requested(change_dir) and ledger:
+    if range_adoption.get("ok") and range_adoption.get("present"):
+        expected_hash = str(range_adoption.get("tipCommit") or "").strip() or None
+        hash_source = "meta/archive-range-adoption.json"
+    if expected_hash is None and worktree_requested(change_dir) and ledger:
         merge_hash = ledger.get("mergeFinalHash") or (
             ledger.get("merge") or {}
         ).get("finalHash")
@@ -2492,7 +2557,6 @@ def check_status(
                 ),
             })
 
-    archivable = len(blockers) == 0
     candidate_codes = {
         "PRODUCT_CI_NOT_GREEN",
         "PRODUCT_CANDIDATE_NOT_VERIFIED",
@@ -2500,6 +2564,71 @@ def check_status(
         "PROJECT_RELEASE_POLICY_BLOCKED",
         "REMOTE_CI_DOWNGRADE_REFUSED",
     }
+    report_adequacy: dict[str, Any]
+    release_summary: dict[str, Any] | None = None
+    try:
+        release_summary = collect_summary_data(
+            change_dir, write=False, for_replay=False
+        )
+        release_summary["archiveIntent"] = archive_intent
+        release_summary["closureDisposition"] = closure_disposition
+        release_summary["closureReason"] = closure_reason
+        report_adequacy = validate_report_adequacy(release_summary)
+    except Exception as exc:  # noqa: BLE001 — status must remain read-only
+        report_adequacy = {
+            "ok": False,
+            "code": "REPORT_ADEQUACY_UNAVAILABLE",
+            "message": str(exc),
+            "issues": [
+                {
+                    "code": "REPORT_ADEQUACY_UNAVAILABLE",
+                    "severity": "error",
+                    "message": str(exc),
+                }
+            ],
+        }
+
+    adequacy_messages_zh = {
+        "ARCHIVE_BASE_EQUALS_FEATURE_TIP": (
+            "变更基线与产品提交相同，本次没有可归档的产品增量。"
+            "如需封存已有提交，请先使用受控的既有范围认领；"
+            "如变更未完成，请选择废弃或被替代并填写中文原因。"
+        ),
+        "IDENTITY_BASE_MISSING": "缺少不可变的变更基线，无法证明归档范围。",
+        "DIFF_ZERO_WITH_NONEMPTY_COMMIT": "提交范围非空，但报告中的文件变更数为 0。",
+        "ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP": "归档差异小于声明的产品范围。",
+        "ARCHIVE_NOFF_MERGE_DELTA_ONLY": "归档只覆盖了合并提交差异，未覆盖完整变更。",
+        "REPORT_ADEQUACY_UNAVAILABLE": "无法生成归档充分性报告。",
+    }
+    for issue in report_adequacy.get("issues") or []:
+        if not isinstance(issue, dict) or issue.get("severity") != "error":
+            continue
+        code = str(issue.get("code") or "REPORT_ADEQUACY_FAILED")
+        if any(item.get("code") == code for item in blockers):
+            continue
+        blockers.append(
+            {
+                "code": code,
+                "message": adequacy_messages_zh.get(
+                    code,
+                    str(issue.get("message") or "归档报告不完整"),
+                ),
+            }
+        )
+    for issue in report_adequacy.get("issues") or []:
+        if not isinstance(issue, dict) or issue.get("severity") != "warning":
+            continue
+        code = str(issue.get("code") or "REPORT_ADEQUACY_WARNING")
+        if any(item.get("code") == code for item in warnings):
+            continue
+        warnings.append(
+            {
+                "code": code,
+                "message": str(issue.get("message") or "归档报告需要注意"),
+            }
+        )
+
+    archivable = len(blockers) == 0
     archive_integrity_ok = not any(
         item.get("code") not in candidate_codes for item in blockers
     )
@@ -2511,34 +2640,23 @@ def check_status(
             else "ARCHIVE_INTEGRITY_FAILED"
         ),
         "message": (
-            "archive preconditions are complete"
+            "归档前置条件完整"
             if archive_integrity_ok
-            else "archive preconditions contain non-candidate blockers"
+            else "归档前置条件存在阻断项"
         ),
     }
-    try:
-        release_summary = collect_summary_data(
-            change_dir, write=False, for_replay=False
-        )
-        release_summary["archiveIntent"] = archive_intent
-        release_summary["closureDisposition"] = closure_disposition
-        release_summary["closureReason"] = closure_reason
-        report_adequacy = validate_report_adequacy(release_summary)
+    if release_summary is not None:
         release_decision = evaluate_release_eligibility(
             change_dir,
             release_summary,
             archive_integrity=archive_integrity,
             report_adequacy=report_adequacy,
         )
-    except Exception as exc:  # noqa: BLE001 — status must remain read-only
+    else:
         release_decision = compose_release_decision(
             {
                 "archiveIntegrity": archive_integrity,
-                "reportAdequacy": {
-                    "ok": False,
-                    "code": "REPORT_ADEQUACY_UNAVAILABLE",
-                    "message": str(exc),
-                },
+                "reportAdequacy": report_adequacy,
                 "candidateVerification": ci_gate,
             }
         )
@@ -2572,21 +2690,37 @@ def archive_auto_gate(
     *,
     allow_missing_review: bool = False,
     archive_intent: str = "release-candidate",
+    closure_disposition: str = "completed",
+    closure_reason: str = "",
 ) -> dict[str, Any]:
     """Read-only proof that a post-submit/merge archive may run unattended."""
     status = check_status(
         change_dir,
         allow_missing_review=allow_missing_review,
         archive_intent=archive_intent,
+        closure_disposition=closure_disposition,
+        closure_reason=closure_reason,
     )
     if not status.get("archivable"):
+        report_adequacy = (
+            (status.get("releaseDecision") or {}).get("checks") or {}
+        ).get("reportAdequacy") or {}
+        adequacy_failed = report_adequacy.get("ok") is False
         return {
             "ok": False,
             "action": "auto-gate",
             "autoArchiveAllowed": False,
-            "reasonCode": "ARCHIVE_PRECONDITIONS_UNSATISFIED",
+            "reasonCode": (
+                "ARCHIVE_REPORT_ADEQUACY_FAILED"
+                if adequacy_failed
+                else "ARCHIVE_PRECONDITIONS_UNSATISFIED"
+            ),
             "status": status,
-            "nextAction": "Resolve archive status blockers, then run `harness_archive.py auto-gate` again.",
+            "nextAction": (
+                "归档报告不完整，请按 blockers 中的中文建议处理后重试。"
+                if adequacy_failed
+                else "请先处理归档阻断项，再重新执行归档。"
+            ),
         }
 
     state_root = resolve_archive_state_root(change_dir)
@@ -2608,7 +2742,7 @@ def archive_auto_gate(
         }
 
     git_state = snapshot.get("git")
-    snapshot_base = (
+    snapshot_base = snapshot.get("changeBase") or (
         (git_state.get("base") or git_state.get("baseCommit"))
         if isinstance(git_state, dict)
         else snapshot.get("base") or snapshot.get("baseCommit")
@@ -2684,8 +2818,129 @@ def archive_auto_gate(
         "status": status,
         "snapshotPath": str(snapshot_path),
         "snapshotBase": snapshot_base,
-        "nextAction": "Run `harness_archive.py finalize` with the same change directory and intent; no AskQuestion confirmation is required.",
+        "nextAction": "运行 `harness_archive.py execute`；它会复用本次状态结果，不再重复扫描。",
     }
+
+
+def execute_archive(
+    change_dir: Path,
+    archive_root: Path,
+    *,
+    durable_root: Path | None = None,
+    retention_policy: str = "unspecified",
+    skip_ingest: bool = False,
+    allow_missing_review: bool = False,
+    archive_intent: str = "release-candidate",
+    closure_disposition: str = "completed",
+    closure_reason: str = "",
+) -> tuple[int, dict[str, Any]]:
+    """Run one status collection, boundary gate, and finalize operation."""
+    change_dir = change_dir.resolve()
+    started = time.perf_counter()
+    try:
+        state_root = resolve_archive_state_root(change_dir)
+    except (OSError, ValueError):
+        state_root = change_dir
+    if state_root.is_dir():
+        try:
+            append_event(
+                state_root,
+                phase="archive",
+                type_="phase.prepare.start",
+                note="开始一次性检查归档条件",
+            )
+        except OSError:
+            pass
+    candidate_certification: dict[str, Any] | None = None
+    if load_product_candidate_ci(change_dir) is None:
+        try:
+            receipt = certify_local_candidate(
+                change_dir,
+                project=find_project_root(change_dir),
+            )
+            subject = (
+                receipt.get("subject")
+                if isinstance(receipt.get("subject"), dict)
+                else {}
+            )
+            candidate_certification = {
+                "ok": True,
+                "code": "LOCAL_CANDIDATE_CERTIFIED",
+                "assurance": receipt.get("assurance"),
+                "subject": subject,
+                "reusedValidations": (
+                    receipt.get("verification", {}).get("reusedValidations", [])
+                    if isinstance(receipt.get("verification"), dict)
+                    else []
+                ),
+            }
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            candidate_certification = {
+                "ok": False,
+                "code": "LOCAL_CANDIDATE_CERTIFICATION_UNAVAILABLE",
+                "message": str(exc),
+            }
+    gate = archive_auto_gate(
+        change_dir,
+        allow_missing_review=allow_missing_review,
+        archive_intent=archive_intent,
+        closure_disposition=closure_disposition,
+        closure_reason=closure_reason,
+    )
+    elapsed_ms = max(0, int(round((time.perf_counter() - started) * 1000)))
+    if state_root.is_dir():
+        try:
+            append_event(
+                state_root,
+                phase="archive",
+                type_="phase.prepare.end",
+                status="OK" if gate.get("ok") else "BLOCKED",
+                code=str(gate.get("reasonCode") or "ARCHIVE_PREPARE_FINISHED"),
+                message=(
+                    "归档条件检查通过"
+                    if gate.get("ok")
+                    else str(gate.get("nextAction") or "归档条件未满足")
+                ),
+                duration_ms=elapsed_ms,
+                note="一次性归档预检完成",
+            )
+        except OSError:
+            pass
+    if not gate.get("ok"):
+        status = gate.get("status") if isinstance(gate.get("status"), dict) else {}
+        blocked_payload = {
+            "ok": False,
+            "action": "execute",
+            "reasonCode": gate.get("reasonCode"),
+            "error": gate.get("nextAction"),
+            "issues": list(status.get("blockers") or []),
+            "preflight": gate,
+            "change_dir": str(change_dir),
+            "archive_dir": str(archive_root.resolve() / f"{today_date()}-{change_dir.name}"),
+            "original_preserved": change_dir.is_dir(),
+            "finalStatus": "BLOCKED",
+            "preparationDurationMs": elapsed_ms,
+        }
+        if candidate_certification is not None:
+            blocked_payload["candidateCertification"] = candidate_certification
+        return 1, blocked_payload
+    code, payload = cmd_finalize(
+        change_dir,
+        archive_root,
+        durable_root=durable_root,
+        retention_policy=retention_policy,
+        skip_ingest=skip_ingest,
+        allow_missing_review=allow_missing_review,
+        archive_intent=archive_intent,
+        closure_disposition=closure_disposition,
+        closure_reason=closure_reason,
+        preflight_status=gate["status"],
+    )
+    payload["preflight"] = gate
+    payload["preparationDurationMs"] = elapsed_ms
+    if candidate_certification is not None:
+        payload["candidateCertification"] = candidate_certification
+    return code, payload
 
 
 # ---------------------------------------------------------------------------
@@ -3209,15 +3464,22 @@ def build_verification_projection(
             gate_policy = None
         if isinstance(gate_policy, dict):
             capabilities = gate_policy.get("capabilities")
-            required = gate_policy.get("requiredValidations")
-            if (
-                isinstance(capabilities, list)
-                and "database" not in capabilities
-                and (not isinstance(required, list) or "dbCompatibility" not in required)
-            ):
+            required_names: set[str] = set()
+            for field in ("requiredValidations", "requiredValidationsByPhase"):
+                required = gate_policy.get(field)
+                if isinstance(required, list):
+                    required_names.update(str(item) for item in required)
+                elif isinstance(required, dict):
+                    for phase_items in required.values():
+                        if isinstance(phase_items, list):
+                            required_names.update(str(item) for item in phase_items)
+            has_database_capability = (
+                isinstance(capabilities, list) and "database" in capabilities
+            )
+            if not has_database_capability and "dbCompatibility" not in required_names:
                 db_compatibility = {
                     "status": "NOT_APPLICABLE",
-                    "reason": "项目能力画像未声明数据库能力",
+                    "reason": "门禁策略未声明数据库能力或数据库兼容性验证要求",
                     "source": "capability-profile",
                 }
     projection["dbCompatibility"] = db_compatibility["status"]
@@ -3896,6 +4158,303 @@ def _review_summary(
     return base
 
 
+def _archive_range_adoption_path(change_dir: Path) -> Path:
+    return change_dir.resolve() / "meta" / "archive-range-adoption.json"
+
+
+def _archive_range_receipt_id(payload: dict[str, Any]) -> str:
+    canonical = {
+        key: value for key, value in payload.items() if key != "receiptId"
+    }
+    raw = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _evaluate_existing_range(
+    change_dir: Path,
+    *,
+    base: str,
+    tip: str,
+) -> dict[str, Any]:
+    project = find_project_root(change_dir)
+    base_code, resolved_base, base_error = git_run(
+        project, "rev-parse", "--verify", f"{base}^{{commit}}"
+    )
+    tip_code, resolved_tip, tip_error = git_run(
+        project, "rev-parse", "--verify", f"{tip}^{{commit}}"
+    )
+    if base_code != 0 or not resolved_base:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_BASE_INVALID",
+            "message": f"无法解析既有范围基线：{base_error or base}",
+        }
+    if tip_code != 0 or not resolved_tip:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_TIP_INVALID",
+            "message": f"无法解析既有范围终点：{tip_error or tip}",
+        }
+    if resolved_base == resolved_tip:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_EMPTY",
+            "message": "既有提交范围为空，不能认领为已完成产品变更。",
+        }
+    ancestor_code, _, ancestor_error = git_run(
+        project, "merge-base", "--is-ancestor", resolved_base, resolved_tip
+    )
+    if ancestor_code != 0:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_NOT_ANCESTOR",
+            "message": f"范围基线不是终点的祖先：{ancestor_error or resolved_base}",
+        }
+    identity = resolve_product_archive_identity(change_dir, project=project)
+    expected_tip = str(
+        identity.get("featureTip") or identity.get("productCommit") or ""
+    ).strip()
+    if expected_tip:
+        expected_code, resolved_expected, _ = git_run(
+            project, "rev-parse", "--verify", f"{expected_tip}^{{commit}}"
+        )
+        if expected_code == 0 and resolved_expected != resolved_tip:
+            return {
+                "ok": False,
+                "reasonCode": "EXISTING_RANGE_TIP_MISMATCH",
+                "message": (
+                    "既有范围终点与当前产品提交不一致："
+                    f"expected={resolved_expected} actual={resolved_tip}"
+                ),
+            }
+    try:
+        ownership = hl.compute_ownership_diff(
+            project,
+            base=resolved_base,
+            head=resolved_tip,
+            change_dir=change_dir,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_OWNERSHIP_UNAVAILABLE",
+            "message": f"无法验证既有范围归属：{exc}",
+        }
+    foreign = list(ownership.get("foreignPaths") or [])
+    owned = list(ownership.get("files") or [])
+    if foreign:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_FOREIGN_PATHS",
+            "message": "既有范围包含不属于本变更的文件。",
+            "foreignPaths": foreign,
+        }
+    if not owned:
+        return {
+            "ok": False,
+            "reasonCode": "EXISTING_RANGE_NO_PRODUCT_FILES",
+            "message": "既有范围未包含本变更声明的产品文件。",
+        }
+    return {
+        "ok": True,
+        "reasonCode": "EXISTING_RANGE_VALID",
+        "project": project,
+        "baseCommit": resolved_base,
+        "tipCommit": resolved_tip,
+        "ownership": ownership,
+    }
+
+
+def validate_existing_range_adoption(change_dir: Path) -> dict[str, Any]:
+    path = _archive_range_adoption_path(change_dir)
+    if not path.is_file():
+        return {
+            "ok": True,
+            "present": False,
+            "reasonCode": "EXISTING_RANGE_NOT_ADOPTED",
+            "receiptPath": str(path),
+        }
+    try:
+        receipt = read_json(path)
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        return {
+            "ok": False,
+            "present": True,
+            "reasonCode": "EXISTING_RANGE_RECEIPT_INVALID",
+            "message": str(exc),
+            "receiptPath": str(path),
+        }
+    if not isinstance(receipt, dict):
+        return {
+            "ok": False,
+            "present": True,
+            "reasonCode": "EXISTING_RANGE_RECEIPT_INVALID",
+            "message": "既有范围认领收据必须是 JSON 对象。",
+            "receiptPath": str(path),
+        }
+    issues: list[str] = []
+    if receipt.get("schemaVersion") != 1:
+        issues.append("schemaVersion")
+    if receipt.get("action") != "adopt-existing-range":
+        issues.append("action")
+    if receipt.get("changeName") != change_dir.name:
+        issues.append("changeName")
+    if receipt.get("confirmedByUser") is not True:
+        issues.append("confirmedByUser")
+    reason = str(receipt.get("reason") or "").strip()
+    if not reason or re.search(r"[\u4e00-\u9fff]", reason) is None:
+        issues.append("reason")
+    if receipt.get("receiptId") != _archive_range_receipt_id(receipt):
+        issues.append("receiptId")
+    if issues:
+        return {
+            "ok": False,
+            "present": True,
+            "reasonCode": "EXISTING_RANGE_RECEIPT_INVALID",
+            "message": "既有范围认领收据字段无效：" + ", ".join(issues),
+            "receiptPath": str(path),
+        }
+    evaluated = _evaluate_existing_range(
+        change_dir,
+        base=str(receipt.get("baseCommit") or ""),
+        tip=str(receipt.get("tipCommit") or ""),
+    )
+    if not evaluated.get("ok"):
+        return {
+            **evaluated,
+            "present": True,
+            "receiptPath": str(path),
+        }
+    project = evaluated["project"]
+    repository_id = hp.repository_identity(project)
+    ownership = evaluated["ownership"]
+    if receipt.get("repositoryId") != repository_id:
+        issues.append("repositoryId")
+    if receipt.get("diffHash") != ownership.get("diffHash"):
+        issues.append("diffHash")
+    if receipt.get("ownershipHash") != ownership.get("ownershipHash"):
+        issues.append("ownershipHash")
+    if list(receipt.get("files") or []) != list(ownership.get("files") or []):
+        issues.append("files")
+    if issues:
+        return {
+            "ok": False,
+            "present": True,
+            "reasonCode": "EXISTING_RANGE_RECEIPT_STALE",
+            "message": "既有范围认领收据与当前仓库不一致：" + ", ".join(issues),
+            "receiptPath": str(path),
+        }
+    return {
+        "ok": True,
+        "present": True,
+        "reasonCode": "EXISTING_RANGE_ADOPTED",
+        "receiptPath": str(path),
+        "receipt": receipt,
+        "baseCommit": evaluated["baseCommit"],
+        "tipCommit": evaluated["tipCommit"],
+        "files": list(ownership.get("files") or []),
+    }
+
+
+def adopt_existing_range(
+    change_dir: Path,
+    *,
+    base: str,
+    tip: str,
+    reason: str,
+    confirmed: bool,
+) -> dict[str, Any]:
+    change_dir = change_dir.resolve()
+    path = _archive_range_adoption_path(change_dir)
+    if not confirmed:
+        return {
+            "ok": False,
+            "action": "adopt-existing-range",
+            "reasonCode": "EXISTING_RANGE_CONFIRMATION_REQUIRED",
+            "message": "认领既有提交范围必须先获得用户明确确认。",
+            "receiptPath": str(path),
+        }
+    reason = reason.strip()
+    if not reason or re.search(r"[\u4e00-\u9fff]", reason) is None:
+        return {
+            "ok": False,
+            "action": "adopt-existing-range",
+            "reasonCode": "EXISTING_RANGE_REASON_REQUIRED",
+            "message": "请提供可读的中文认领原因。",
+            "receiptPath": str(path),
+        }
+    evaluated = _evaluate_existing_range(
+        change_dir,
+        base=base,
+        tip=tip,
+    )
+    if not evaluated.get("ok"):
+        return {
+            **evaluated,
+            "action": "adopt-existing-range",
+            "receiptPath": str(path),
+        }
+    project = evaluated["project"]
+    ownership = evaluated["ownership"]
+    if path.is_file():
+        existing = validate_existing_range_adoption(change_dir)
+        existing_receipt = (
+            existing.get("receipt")
+            if isinstance(existing.get("receipt"), dict)
+            else {}
+        )
+        if (
+            existing.get("ok")
+            and existing_receipt.get("baseCommit") == evaluated["baseCommit"]
+            and existing_receipt.get("tipCommit") == evaluated["tipCommit"]
+            and existing_receipt.get("reason") == reason
+        ):
+            return {
+                "ok": True,
+                "action": "adopt-existing-range",
+                "reasonCode": "EXISTING_RANGE_ADOPTED",
+                "idempotent": True,
+                "receiptPath": str(path),
+                "receipt": existing_receipt,
+            }
+        return {
+            "ok": False,
+            "action": "adopt-existing-range",
+            "reasonCode": "EXISTING_RANGE_RECEIPT_CONFLICT",
+            "message": "已有不同的既有范围认领收据，拒绝覆盖。",
+            "receiptPath": str(path),
+        }
+    receipt = {
+        "schemaVersion": 1,
+        "action": "adopt-existing-range",
+        "changeName": change_dir.name,
+        "repositoryId": hp.repository_identity(project),
+        "baseCommit": evaluated["baseCommit"],
+        "tipCommit": evaluated["tipCommit"],
+        "diffHash": ownership["diffHash"],
+        "ownershipHash": ownership["ownershipHash"],
+        "files": list(ownership.get("files") or []),
+        "reason": reason,
+        "confirmedByUser": True,
+        "recordedAt": now_iso(),
+    }
+    receipt["receiptId"] = _archive_range_receipt_id(receipt)
+    write_json(path, receipt)
+    return {
+        "ok": True,
+        "action": "adopt-existing-range",
+        "reasonCode": "EXISTING_RANGE_ADOPTED",
+        "idempotent": False,
+        "receiptPath": str(path),
+        "receipt": receipt,
+    }
+
+
 def _base_from_state_snapshot(change_dir: Path) -> str:
     """Read archive-boundary base from meta/state-snapshot.json when present."""
     for relative in (
@@ -3911,6 +4470,9 @@ def _base_from_state_snapshot(change_dir: Path) -> str:
             continue
         if not isinstance(payload, dict):
             continue
+        change_base = str(payload.get("changeBase") or "").strip()
+        if change_base and change_base != NOT_AVAILABLE:
+            return change_base
         git_info = payload.get("git")
         if isinstance(git_info, dict):
             base = str(git_info.get("base") or git_info.get("baseCommit") or "").strip()
@@ -3919,6 +4481,27 @@ def _base_from_state_snapshot(change_dir: Path) -> str:
         base = str(payload.get("baseCommit") or payload.get("base") or "").strip()
         if base and base != NOT_AVAILABLE:
             return base
+    return ""
+
+
+def _immutable_change_base_from_snapshot(change_dir: Path) -> str:
+    for root in archive_read_roots(change_dir):
+        for relative in (
+            Path("meta") / "state-snapshot.json",
+            Path("state-snapshot.json"),
+        ):
+            path = root / relative
+            if not path.is_file():
+                continue
+            try:
+                payload = read_json(path)
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            value = str(payload.get("changeBase") or "").strip()
+            if value and value != NOT_AVAILABLE:
+                return value
     return ""
 
 
@@ -3946,6 +4529,12 @@ def _resolve_base_commit(
         if candidate.startswith(("refs/", "@{")):
             return ""
         return candidate
+
+    adoption = validate_existing_range_adoption(change_dir)
+    if adoption.get("ok") and adoption.get("present"):
+        adopted_base = stable_base(adoption.get("baseCommit"))
+        if adopted_base:
+            return adopted_base
 
     if ledger:
         base = stable_base(ledger.get("baseCommit"))
@@ -5045,6 +5634,10 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
     a lossy projection of itself.
     """
     issues: list[dict[str, str]] = []
+    closure_disposition = str(
+        summary.get("closureDisposition") or "completed"
+    ).strip()
+    unfinished_closure = closure_disposition in {"abandoned", "superseded"}
 
     # H-12: prefer top-level baseCommit + diffStat; gitFacts is a mirror.
     base = str(summary.get("baseCommit") or "").strip()
@@ -5069,7 +5662,7 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
     final_present = bool(
         (final and final != NOT_AVAILABLE) or (merge_final and merge_final != NOT_AVAILABLE)
     )
-    if final_present and base_missing:
+    if final_present and base_missing and not unfinished_closure:
         issues.append({
             "code": "IDENTITY_BASE_MISSING",
             "severity": "error",
@@ -5086,6 +5679,7 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
         and final != NOT_AVAILABLE
         and base != final
         and files_changed == 0
+        and not unfinished_closure
     ):
         issues.append({
             "code": "DIFF_ZERO_WITH_NONEMPTY_COMMIT",
@@ -5113,19 +5707,29 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
     if not feature_tip:
         feature_tip = str(identity_doc_early.get("productCommit") or "").strip()
 
-    if (
+    collapsed_boundary = (
         base
         and base != NOT_AVAILABLE
         and feature_tip
         and feature_tip != NOT_AVAILABLE
         and base == feature_tip
-    ):
+    )
+    if collapsed_boundary and not unfinished_closure:
         issues.append({
             "code": "ARCHIVE_BASE_EQUALS_FEATURE_TIP",
             "severity": "error",
             "message": (
                 f"baseCommit equals feature tip ({base}); "
                 "archive boundary collapsed to an empty/merge-only delta"
+            ),
+        })
+    elif unfinished_closure and files_changed == 0:
+        issues.append({
+            "code": "NO_PRODUCT_DELTA",
+            "severity": "warning",
+            "message": (
+                "未完成变更没有产生产品增量；仅封存过程、原因与已有证据，"
+                "不得作为发布候选。"
             ),
         })
 
@@ -5140,7 +5744,7 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
     changed_files = summary.get("changedFiles")
     changed_count = len(changed_files) if isinstance(changed_files, list) else files_changed
 
-    if ownership_count > 0 and changed_count == 0:
+    if ownership_count > 0 and changed_count == 0 and not unfinished_closure:
         issues.append({
             "code": "ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP",
             "severity": "error",
@@ -5150,7 +5754,12 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
                 "but does not represent the full change"
             ),
         })
-    elif ownership_count > 0 and changed_count > 0 and changed_count * 3 < ownership_count:
+    elif (
+        ownership_count > 0
+        and changed_count > 0
+        and changed_count * 3 < ownership_count
+        and not unfinished_closure
+    ):
         issues.append({
             "code": "ARCHIVE_DIFF_SHRUNK_VS_OWNERSHIP",
             "severity": "error",
@@ -5161,7 +5770,11 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
         })
 
     merge_parents = summary.get("mergeParents") or summary.get("mergeParentHashes")
-    if isinstance(merge_parents, list) and len(merge_parents) >= 2:
+    if (
+        isinstance(merge_parents, list)
+        and len(merge_parents) >= 2
+        and not unfinished_closure
+    ):
         first_parent = str(merge_parents[0] or "").strip()
         if (
             base
@@ -5384,7 +5997,15 @@ def validate_report_adequacy(summary: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    return {"ok": not issues, "issues": issues}
+    error_count = sum(
+        1 for issue in issues if str(issue.get("severity") or "error") == "error"
+    )
+    return {
+        "ok": error_count == 0,
+        "issues": issues,
+        "error_count": error_count,
+        "warning_count": len(issues) - error_count,
+    }
 
 
 RELEASE_CHECKS = (
@@ -6677,6 +7298,7 @@ def cmd_finalize(
     archive_intent: str = "release-candidate",
     closure_disposition: str = "completed",
     closure_reason: str = "",
+    preflight_status: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Execute the 9-step finalize pipeline. Returns (exit_code, payload)."""
     if archive_intent not in {"release-candidate", "record-only"}:
@@ -6747,6 +7369,11 @@ def cmd_finalize(
         if resolved_state_dir.resolve() != original_change_dir.resolve()
         else None
     )
+    authoritative_event_dir = (
+        split_state_dir
+        if split_state_dir is not None and split_state_dir.is_dir()
+        else original_change_dir
+    )
     operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
     operation_temp_dir = operation_root / "staging" / operation_id / change_dir.name
@@ -6756,13 +7383,22 @@ def cmd_finalize(
         shutil.rmtree(operation_temp_dir.parent, ignore_errors=True)
         payload["original_preserved"] = original_change_dir.is_dir()
         payload["finalStatus"] = "FAIL"
-        _append_finalize_failure_terminal(
-            split_state_dir
-            if split_state_dir is not None and split_state_dir.is_dir()
-            else original_change_dir,
-            str(payload.get("error") or "archive finalize failed"),
-            operation_id=operation_id,
-        )
+        if authoritative_event_dir.is_dir():
+            try:
+                append_event(
+                    authoritative_event_dir,
+                    phase="archive",
+                    type_="phase.end",
+                    status="FAIL",
+                    code=str(
+                        payload.get("reasonCode")
+                        or "ARCHIVE_FINALIZE_FAILED"
+                    ),
+                    message=str(payload.get("error") or "归档执行失败"),
+                    note=f"归档操作 {operation_id} 失败，原变更目录已保留",
+                )
+            except OSError:
+                pass
         try:
             write_json(
                 operation_record,
@@ -6806,6 +7442,65 @@ def cmd_finalize(
         payload["error"] = f"archive target already exists: {archive_dir}"
         return 1, payload
 
+    status = preflight_status or check_status(
+        original_change_dir,
+        allow_missing_review=allow_missing_review,
+        archive_intent=archive_intent,
+        closure_disposition=closure_disposition,
+        closure_reason=closure_reason,
+    )
+    payload["steps"]["preflight"] = status
+    if not status.get("archivable"):
+        report_adequacy = (
+            (status.get("releaseDecision") or {}).get("checks") or {}
+        ).get("reportAdequacy") or {}
+        adequacy_failed = report_adequacy.get("ok") is False
+        payload["reasonCode"] = (
+            "ARCHIVE_REPORT_ADEQUACY_FAILED"
+            if adequacy_failed
+            else "ARCHIVE_PRECONDITIONS_UNSATISFIED"
+        )
+        payload["error"] = (
+            "归档报告不完整，未进入暂存与发布阶段。"
+            if adequacy_failed
+            else "归档前置条件未满足，未进入暂存与发布阶段。"
+        )
+        payload["issues"] = [
+            {
+                "code": str(
+                    item.get("code") or "ARCHIVE_PRECONDITION_FAILED"
+                ).replace("-", "_").upper(),
+                "severity": "error",
+                "message": str(item.get("message") or payload["error"]),
+            }
+            for item in status.get("blockers") or []
+            if isinstance(item, dict)
+        ]
+        payload["original_preserved"] = original_change_dir.is_dir()
+        payload["finalStatus"] = "BLOCKED"
+        _append_finalize_failure_terminal(
+            split_state_dir
+            if split_state_dir is not None and split_state_dir.is_dir()
+            else original_change_dir,
+            payload["error"],
+            operation_id=operation_id,
+        )
+        return 1, payload
+
+    # The formal archive attempt starts after the one-shot preflight succeeds,
+    # before scans and staging begin.  Keeping this start in authoritative state
+    # makes the monitor show the real duration and exactly one attempt.
+    if authoritative_event_dir.is_dir():
+        try:
+            append_event(
+                authoritative_event_dir,
+                phase="archive",
+                type_="phase.start",
+                note="归档条件已通过，开始扫描、暂存与发布",
+            )
+        except OSError as exc:
+            warnings.append(f"archive phase start append failed: {exc}")
+
     source_sensitive_refresh = hruntime.refresh_sensitive_evidence_scan_receipt(
         original_change_dir,
         persist=False,
@@ -6826,8 +7521,7 @@ def cmd_finalize(
                 "message": payload["error"],
             }
         ]
-        payload["original_preserved"] = original_change_dir.is_dir()
-        payload["finalStatus"] = "FAIL"
+        _restore_finalize_failure()
         return 1, payload
 
     source_sensitive_gate = validate_sensitive_evidence_publication_gate(
@@ -6853,8 +7547,7 @@ def cmd_finalize(
                 "message": payload["error"],
             }
         ]
-        payload["original_preserved"] = original_change_dir.is_dir()
-        payload["finalStatus"] = "FAIL"
+        _restore_finalize_failure()
         return 1, payload
 
     exact_byte = check_archive_exact_byte_policy(project_root)
@@ -6885,15 +7578,7 @@ def cmd_finalize(
                 ),
             }
         ]
-        payload["original_preserved"] = original_change_dir.is_dir()
-        payload["finalStatus"] = "FAIL"
-        _append_finalize_failure_terminal(
-            split_state_dir
-            if split_state_dir is not None and split_state_dir.is_dir()
-            else original_change_dir,
-            payload["error"],
-            operation_id=operation_id,
-        )
+        _restore_finalize_failure()
         return 1, payload
 
     payload["steps"]["service_stop_before_staging"] = run_service_stop(
@@ -7011,9 +7696,6 @@ def cmd_finalize(
             append_event(work_dir, **kwargs)
         except OSError as exc:
             warnings.append(f"event append failed: {exc}")
-
-    # Step 9 starts here: phase.start
-    _safe_append(phase="archive", type_="phase.start", note="finalize start")
 
     # --- 0. cleanup transients (before before-manifest) ---
     try:
@@ -8652,6 +9334,20 @@ def cmd_auto_gate_cli(args: argparse.Namespace) -> int:
         resolve_path(args.change_dir),
         allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
         archive_intent=str(getattr(args, "intent", "release-candidate")),
+        closure_disposition=str(getattr(args, "closure", "completed")),
+        closure_reason=str(getattr(args, "closure_reason", "")),
+    )
+    emit_json(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_adopt_existing_range_cli(args: argparse.Namespace) -> int:
+    result = adopt_existing_range(
+        resolve_path(args.change_dir),
+        base=str(args.base),
+        tip=str(args.tip),
+        reason=str(args.reason),
+        confirmed=bool(getattr(args, "confirm_existing_range", False)),
     )
     emit_json(result)
     return 0 if result.get("ok") else 1
@@ -8701,6 +9397,29 @@ def cmd_finalize_cli(args: argparse.Namespace) -> int:
     code, payload = cmd_finalize(
         change_dir,
         archive_root,
+        durable_root=durable_root,
+        retention_policy=str(
+            getattr(args, "retention_policy", "unspecified")
+        ),
+        skip_ingest=bool(args.skip_ingest),
+        allow_missing_review=bool(getattr(args, "allow_missing_review", False)),
+        archive_intent=str(getattr(args, "intent", "release-candidate")),
+        closure_disposition=str(getattr(args, "closure", "completed")),
+        closure_reason=str(getattr(args, "closure_reason", "")),
+    )
+    emit_json(payload)
+    return code
+
+
+def cmd_execute_cli(args: argparse.Namespace) -> int:
+    durable_root = (
+        resolve_path(args.durable_root)
+        if getattr(args, "durable_root", None)
+        else None
+    )
+    code, payload = execute_archive(
+        resolve_path(args.change_dir),
+        resolve_path(args.archive_root),
         durable_root=durable_root,
         retention_policy=str(
             getattr(args, "retention_policy", "unspecified")
@@ -8902,7 +9621,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("release-candidate", "record-only"),
         default="release-candidate",
     )
+    p_auto_gate.add_argument(
+        "--closure",
+        choices=("completed", "abandoned", "superseded"),
+        default="completed",
+    )
+    p_auto_gate.add_argument("--closure-reason", default="")
     p_auto_gate.set_defaults(func=cmd_auto_gate_cli)
+
+    p_adopt = sub.add_parser(
+        "adopt-existing-range",
+        help="explicitly bind an already committed product range to this change",
+    )
+    p_adopt.add_argument("--change-dir", required=True)
+    p_adopt.add_argument("--base", required=True)
+    p_adopt.add_argument("--tip", required=True)
+    p_adopt.add_argument("--reason", required=True)
+    p_adopt.add_argument("--confirm-existing-range", action="store_true")
+    p_adopt.add_argument("--json", action="store_true", default=True)
+    p_adopt.set_defaults(func=cmd_adopt_existing_range_cli)
 
     p_cert = sub.add_parser(
         "certify-local",
@@ -8950,6 +9687,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)
+
+    p_execute = sub.add_parser(
+        "execute",
+        help="run one archive preflight, boundary gate, finalize, ZIP, and upload flow",
+    )
+    p_execute.add_argument("--change-dir", required=True)
+    p_execute.add_argument("--archive-root", required=True)
+    p_execute.add_argument("--durable-root", default=None)
+    p_execute.add_argument(
+        "--closure",
+        choices=("completed", "abandoned", "superseded"),
+        default="completed",
+    )
+    p_execute.add_argument("--closure-reason", default="")
+    p_execute.add_argument("--retention-policy", default="unspecified")
+    p_execute.add_argument("--skip-ingest", action="store_true")
+    p_execute.add_argument("--allow-missing-review", action="store_true")
+    p_execute.add_argument(
+        "--intent",
+        choices=("release-candidate", "record-only"),
+        default="release-candidate",
+    )
+    p_execute.add_argument("--json", action="store_true", default=True)
+    p_execute.set_defaults(func=cmd_execute_cli)
 
     p_restore = sub.add_parser(
         "restore-durable",

@@ -810,10 +810,15 @@ def close_transition(
     artifact_entries: list[dict[str, Any]] = []
     for raw in artifacts or []:
         requested = Path(raw)
+        artifact_bases: list[Path] = []
+        for base in (project, contract_root, state_root):
+            resolved_base = base.resolve()
+            if resolved_base not in artifact_bases:
+                artifact_bases.append(resolved_base)
         candidates = (
             [requested]
             if requested.is_absolute()
-            else [project / requested, contract_root / requested]
+            else [base / requested for base in artifact_bases]
         )
         valid: list[Path] = []
         for candidate in candidates:
@@ -838,10 +843,11 @@ def close_transition(
                 "ok": False,
                 "code": "TRANSITION_ARTIFACT_INVALID",
                 "path": raw,
-                "acceptedBases": [str(project), str(contract_root)],
+                "acceptedBases": [str(base) for base in artifact_bases],
                 "examples": [
                     str(contract_root / "meta" / "plan-finalization.json"),
                     f".harness/changes/{change}/meta/plan-finalization.json",
+                    f".harness/state/changes/{change}/evidence/verification-ledger.json",
                     "meta/plan-finalization.json",
                 ],
             }

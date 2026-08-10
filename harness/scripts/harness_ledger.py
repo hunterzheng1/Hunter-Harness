@@ -1053,6 +1053,40 @@ def ledger_evidence_identity(ledger: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
+def _immutable_change_base(
+    change_dir: Path,
+    project_root: Path,
+) -> str:
+    roots = [change_dir]
+    try:
+        state_root = harness_paths.resolve_state_dir_for_contract(
+            change_dir,
+            project_root,
+        )
+        if state_root.resolve() != change_dir.resolve():
+            roots.insert(0, state_root)
+    except (OSError, ValueError):
+        pass
+    for root in roots:
+        for relative in (
+            Path("meta") / "state-snapshot.json",
+            Path("state-snapshot.json"),
+        ):
+            path = root / relative
+            if not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            value = str(payload.get("changeBase") or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def migrate_ledger_for_write(
     change_dir: Path,
     ledger: dict[str, Any],
@@ -1089,6 +1123,15 @@ def migrate_ledger_for_write(
     if not _nonempty_str(resolved_base):
         resolved_base = ledger.get("baseCommit")
     if not _nonempty_str(resolved_base):
+        resolved_base = _immutable_change_base(change_dir, repo_root)
+    if not _nonempty_str(resolved_base):
+        if record_migration:
+            raise LedgerMigrationError(
+                "immutable change base is missing; recapture the Plan boundary "
+                "or pass an explicit --base-commit instead of using write-time HEAD"
+            )
+        # A genuinely new ledger establishes its identity at the first write.
+        # Existing ledgers are handled above and may never take this fallback.
         resolved_base = current_head
     resolved_diff = diff_hash
     if not _nonempty_str(resolved_diff):
@@ -2795,9 +2838,43 @@ def cmd_diff_hash(args: argparse.Namespace) -> int:
     repo_raw = getattr(args, "repo", None)
     repo = Path(repo_raw).expanduser().resolve() if repo_raw else Path.cwd().resolve()
     base = getattr(args, "base", None)
-    change_dir = getattr(args, "change_dir", None)
+    change_dir_raw = getattr(args, "change_dir", None)
     try:
-        diff_hash, meta = compute_diff_hash(repo, base=base, change_dir=change_dir)
+        change_dir = resolve_path(change_dir_raw) if change_dir_raw else None
+        if change_dir is not None and _contract_is_v2(change_dir):
+            resolved_base = str(base or "").strip()
+            if not resolved_base:
+                existing, _ = load_ledger(change_dir)
+                if isinstance(existing, dict):
+                    resolved_base = str(existing.get("baseCommit") or "").strip()
+            if not resolved_base:
+                resolved_base = _immutable_change_base(change_dir, repo)
+            if not resolved_base:
+                raise ValueError(
+                    "immutable change base is missing; capture the Plan boundary "
+                    "or pass --base"
+                )
+            detail = compute_ownership_diff(
+                repo,
+                base=resolved_base,
+                change_dir=change_dir,
+            )
+            payload = {
+                "ok": True,
+                "action": "diff-hash",
+                "identityScope": "change-ownership",
+                "algorithmVersion": "ownership-content-changeset-1",
+                "base": resolved_base,
+                "head": _git_text(repo, "rev-parse", "--verify", "HEAD"),
+                **detail,
+            }
+            emit_json(payload, as_json=as_json)
+            return 0
+        diff_hash, meta = compute_diff_hash(
+            repo,
+            base=base,
+            change_dir=str(change_dir) if change_dir is not None else None,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         return emit_error(str(exc), as_json=as_json)
     payload = {"ok": True, "action": "diff-hash", "diffHash": diff_hash}

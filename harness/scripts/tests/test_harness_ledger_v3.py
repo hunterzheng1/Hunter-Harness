@@ -193,6 +193,26 @@ class IdentityEnforcementTests(LedgerV3Fixture):
         ):
             self.assertIn(field, missing)
 
+    def test_legacy_migration_does_not_invent_base_from_write_time_head(self) -> None:
+        legacy = {
+            "schemaVersion": 2,
+            "changeName": self.change_dir.name,
+            "validations": {"compile": {"status": "OK"}},
+        }
+
+        with self.assertRaisesRegex(
+            ledger.LedgerMigrationError,
+            "immutable change base",
+        ):
+            ledger.migrate_ledger_for_write(
+                self.change_dir,
+                legacy,
+                project_root=self.project,
+                base_commit=None,
+                diff_hash="sha256:deadbeef",
+                record_migration=True,
+            )
+
     def test_record_recomputes_implicit_diff_hash_after_worktree_changes(self) -> None:
         argv = [
             "--json", "record",
@@ -272,6 +292,7 @@ class IdentityEnforcementTests(LedgerV3Fixture):
     def test_legacy_ledger_migrates_explicit_identity_without_changing_evidence(
         self,
     ) -> None:
+        head = git(self.project, "rev-parse", "HEAD").stdout.strip()
         legacy_dir = self.project / ".harness" / "changes" / "legacy-explicit"
         (legacy_dir / "meta").mkdir(parents=True)
         (legacy_dir / "meta" / "change-context.json").write_text(
@@ -308,6 +329,7 @@ class IdentityEnforcementTests(LedgerV3Fixture):
                 "--evidence", "1 passed",
                 "--scope", "module",
                 "--files", str(self.project / "src" / "app.py"),
+                "--base-commit", head,
                 "--diff-hash", "sha256:deadbeef",
                 "--verbose",
             ]
@@ -887,6 +909,38 @@ class OwnershipDiffTests(LedgerV3Fixture):
         self.assertGreaterEqual(result["excludedRuntimeCount"], 1)
         self.assertEqual(result["ownedFileCount"], len(result["files"]))
         self.assertTrue(str(result["diffHash"]).startswith("sha256:"))
+
+    def test_diff_hash_cli_matches_v2_ownership_identity(self) -> None:
+        base = git(self.project, "rev-parse", "HEAD").stdout.strip()
+        (self.project / "src" / "app.py").write_text("print('v2')\n", encoding="utf-8")
+        docs = self.project / "docs"
+        docs.mkdir()
+        (docs / "foreign.md").write_text("not owned\n", encoding="utf-8")
+        expected = ledger.compute_ownership_diff(
+            self.project,
+            base=base,
+            change_dir=self.change_dir,
+        )
+
+        code, out, err = self.run_cli(
+            [
+                "--json",
+                "diff-hash",
+                "--repo",
+                str(self.project),
+                "--base",
+                base,
+                "--change-dir",
+                str(self.change_dir),
+            ]
+        )
+
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["diffHash"], expected["diffHash"])
+        self.assertEqual(payload["ownedFileCount"], 1)
+        self.assertEqual(payload["files"], ["src/app.py"])
+        self.assertIn("docs/foreign.md", payload["foreignPaths"])
 
     def test_ownership_diff_is_stable(self) -> None:
         base = git(self.project, "rev-parse", "HEAD").stdout.strip()

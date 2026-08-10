@@ -47,7 +47,7 @@ disallowed-tools:
 - **产品候选验证**：
   - 有远端 CI：保留 `product-candidate-ci.json` 兼容证据；归档会把有效的 legacy schema v1 证据迁移为 `remote-claimed` 的 schema v2 `product-candidate-verification.json`，不会冒充 `remote-attested`。
   - `remote-attested` 必须同时带远端运行 URL 与 `verification.attestationDigest`；只有 URL、旧 JSON 哈希或 ledger 哈希只能达到 `remote-claimed`。
-  - 无 CI：先运行 `harness_archive.py certify-local --change-dir ... --project . --json`，只复用身份一致且完整的 `unitTestFull` ledger 证据，不重复执行测试。
+  - 无 CI：`execute` 在候选收据缺失时自动尝试本地认证，只复用身份一致且完整的 `unitTestFull` ledger 证据，并在产品内容未变化时把提交前验证安全重绑定到当前 HEAD；认证不会执行测试。只有需要单独诊断认证结果时才手工运行 `certify-local`。
   - `release-candidate` 要求候选验证通过；正常本地完成或结束未完成变更使用 `--intent record-only`，固定 `releaseEligible=false`，但仍生成 ZIP 并上传平台。
 
 ## Inputs
@@ -59,54 +59,53 @@ disallowed-tools:
 
 ## Workflow
 
-先用 `harness_change.py resolve [--change] --json` 解析 change；多个 active change 未显式选择时返回 `CHANGE_SELECTION_REQUIRED`，禁止按 Glob/mtime 自动选择。`harness_archive.py finalize` 内部负责且仅负责一次 `harness_gate.py begin` 与 `harness_gate.py close`。调用者禁止重复调用阶段门禁，避免重复事件和幽灵 change 目录。
+先用 `harness_change.py resolve [--change] --json` 解析 change；多个 active change 未显式选择时返回 `CHANGE_SELECTION_REQUIRED`，禁止按 Glob/mtime 自动选择。常规路径只运行一次 `harness_archive.py execute`。该命令一次性完成状态采集、自动门禁和 finalize，并复用同一份预检结果。调用者不得再串行运行 `auto-gate`、`status` 和 `finalize`，避免重复扫描、重复事件和幽灵 change 目录。
 
 ### Phase 0：读取规则和上下文
 
 1. 读取本文件。
-2. 按需读取 `reference.md`（归档流程、manifest、summary-data、目录结构与最终状态规则）。
-3. 读取共用约束：
-   - `../protocols/archive-report-protocol.md`
-   - `../protocols/state-layout-protocol.md`
-   - `../protocols/powershell-protocol.md`
-   - `../protocols/sensitive-info-protocol.md`
-   - `../protocols/evidence-based-reporting-protocol.md`
-   - `../protocols/report-pipeline-protocol.md`
-4. 用 `harness_change.py resolve [--change] --json` 解析 `$ARGUMENTS`；多个 active change 时让用户选择。
+2. 用 `harness_change.py resolve [--change] --json` 解析 `$ARGUMENTS`；多个 active change 时让用户选择。
+3. 按共享读取协议刷新一次状态快照。首次 Plan 已记录的 `changeBase` 必须保持不变，归档阶段不得把当前 HEAD 写回为基线。
+4. 常规路径不预读全部参考资料。仅在 `execute` 返回阻断或需要解释结果时，读取 `reference.md` 和对应协议章节。
 
 ### Phase 1：确认归档对象（扫描未归档变更）
 
-使用 resolver 返回的 active changes 展示变更概要；同时读取 `plannedPhases`、已完成阶段、Git 能力、平台连接和待上传 ZIP 状态。
+使用 resolver 返回的 active changes 展示变更概要；同时读取 `plannedPhases`、已完成阶段和用户表达的生命周期结局。Git remote 与平台连接不是归档前置条件，不在这里额外探测。
 
-- **Read `checklist.md`** — 归档前检查项
 - 发现多个未归档变更 → 让用户选择或终止
 
-### Phase 2：确认归档 / 自动门禁
+### Phase 2：确定归档结局
 
-先运行 `harness_archive.py auto-gate --change-dir "<executionRoot>" --intent <intent> --json`。
+根据用户当前指令确定一次归档结局：
 
-- `autoArchiveAllowed=true`：记录 gate receipt，直接进入 Phase 3；无需 AskQuestion。
-- 否则用中文提供：①正常完成并归档（本地验证、不可发布）；②作为发布候选归档；③结束未完成变更；④取消。选择③后继续选择“主动废弃”或“被其他方案替代”，并填写中文原因。不要把无 upstream 显示为阻止保存。
+- 明确要求发布候选：`--intent release-candidate --closure completed`。
+- 正常完成但不要求发布：`--intent record-only --closure completed`。
+- 主动停止或被其他方案替代：`--intent record-only --closure abandoned|superseded --closure-reason "<中文原因>"`。
 
-- **Read `reference.md`** — 确认对话框的内容格式
+信息已经明确时，不重复询问。信息不足且会改变结局时，才用中文提供「正常完成」「发布候选」「主动废弃」「被其他方案替代」「取消」。无 upstream 不阻止保存。
 
 ### Phase 3：执行归档
 
-1. 对“发布候选”使用 `--intent release-candidate --closure completed`；对正常本地完成使用 `--intent record-only --closure completed`；主动废弃或被替代分别使用 `--intent record-only --closure abandoned|superseded --closure-reason "<中文原因>"`。先运行 `status`；有可复用全量 ledger 时可运行 `certify-local`，不得重复测试。
-2. `meta/archive-meta.md` **由 `harness_archive.py finalize` 自动生成**（与 summary-data `finalStatus` 同源）；**禁止 agent 手写**该文件，手写视为数据丢失。维护者结论写入 events（decision/issue）即可，finalize 会汇总到 summary / archive-meta。
-3. 运行 `harness_archive.py finalize --change-dir "<executionRoot>" --archive-root ".harness/archive" --intent <...> --closure <...> [--closure-reason "..."] --json`；读 JSON（cleanup、事件、移动、collect、validate、manifest、archive-meta、ZIP、上传与服务端知识状态）。finalize 内部只负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
+1. 不要为归档预先补跑测试或手工修 ledger。候选收据缺失时，`execute` 会先尝试复用身份一致的全量 ledger 完成本地认证；无法认证时保留结构化原因，`record-only` 仍按事实归档，`release-candidate` 则由发布门禁决定是否阻断。
+2. 运行一次 `harness_archive.py execute --change-dir "<executionRoot>" --archive-root ".harness/archive" --intent <...> --closure <...> [--closure-reason "..."] --json`。`execute` 只采集一次状态，并把准备耗时、正式归档耗时和唯一阶段轮次写入事件。调用者不得在它前后再运行 `auto-gate`、`status`、`finalize` 或手工追加 archive 阶段边界。
+3. `meta/archive-meta.md` 与 `reports/final/summary-data.json` 均由脚本生成。禁止手写、补字段或手工修改 ledger 以绕过门禁。
+4. `execute` 失败时，先按 `reasonCode` 处理，不要盲目重跑：
+   - `ARCHIVE_BASE_EQUALS_FEATURE_TIP`：正常完成不允许空范围归档。仅可选择受控认领既有提交范围、改为未完成封存，或取消。
+   - 受控认领既有范围：先展示 base、tip 和产品文件清单；获得用户明确确认后运行 `adopt-existing-range --base <base> --tip <tip> --reason "<中文原因>" --confirm-existing-range --json`，再重跑一次 `execute`。禁止直接编辑 snapshot 或 ledger。
+   - `abandoned` / `superseded`：允许没有产品增量，但必须保存中文原因，并固定 `releaseEligible=false`。
+   - 其他阻断：读取 `reference.md` 中对应错误的恢复说明；原变更目录必须保留。
+
+   **本地不执行知识 ingest**；服务端在 ZIP 持久保存并解包后 ingest。失败时保留原目录、ZIP 和回执。
    - **归档包上传**：始终先生成一个确定性 ZIP；有远程凭据时再调用 `npx hunter-harness archive upload`。ZIP 仅包含 `summary-data.json`、`spec/**/*.md`、`plans/**/*.md`、`archive-meta.md`、`change-context.json` 和稳定 manifest；明确排除 logs、review/test 报告、HTML、缓存、备份、凭据和临时文件。
    - **失败可恢复**：无论远端凭据是否齐全，都先生成 ZIP 与 `<change-key>.upload.json`；上传或服务端 ingest 失败不破坏本地归档。待上传 ZIP 与逐 change 回执保留在 `.harness/state/local/archive-packages/`，可枚举独立重试。只有 CLI 核验 package hash 且服务端同时返回 `archive_status=durable`、`knowledge_status=ready` 后，才清理对应 ZIP 与回执；`indexing` 记为 pending，不记为失败。
    - **监控终态（C3）**：auto-upload 之后自动 `events-sync`，用归档前 change 路径派生的 `run_id` + 原 `change_key` 上报；失败只记 warning。
 
-- **Read `reference.md`** — finalize 输出字段、archive-meta 格式、CONDITIONAL_OK 规则
-- **Read `templates/summary-data-template.json`** — summary-data 数据结构
+- **Read `reference.md`** — 仅在阻断恢复或需要解释输出字段时读取
+- **Read `templates/summary-data-template.json`** — 仅在排查 summary 校验失败时读取
 
 ### Phase 4：验证与提示
 
-验证归档目录完整 → 提示用户归档完成。
-
-- **Read `checklist.md`** — 归档后验证项
+以 `execute` 返回的 manifest、ZIP、上传回执和 `finalStatus` 为权威结果。只有返回字段缺失或不一致时，才读取 `checklist.md` 做人工诊断。不要为了重复确认成功结果再次扫描整个目录。
 
 <!-- @include shared/p0-trust.md -->
 > 片段：[[shared/p0-trust.md|p0-trust]]
@@ -121,7 +120,7 @@ disallowed-tools:
 
 ### 二、归档前确认或自动门禁
 
-`auto-gate` 只有在实际计划最后阶段终态、边界快照存在且 `status.archivable=true` 时才允许无确认执行。未满足时按 Phase 2 的四个中文选项确认；用户取消则不执行移动。
+`execute` 内部运行自动门禁。实际计划最后阶段已终态、边界快照存在且 `status.archivable=true` 时直接执行；未满足时返回阻断且不移动原目录。用户取消后不得重跑。
 
 ### 三、文件移动只用内置工具或 PowerShell
 
@@ -146,6 +145,8 @@ disallowed-tools:
 
 归档前读 `evidence/verification-ledger.json`，提取各阶段 status、postTestClassification、复用关系，供 summary-data 真实记录状态演进。若 ledger 有 `postTestClassification`，summary-data 必须记录该分类及对应的复用/重测决策。
 
+门禁策略未声明 `database` 能力，且 `requiredValidations` / `requiredValidationsByPhase` 也未要求 `dbCompatibility` 时，数据库兼容性投影固定为 `NOT_APPLICABLE`，原因来自能力配置。不得要求纯前端、文档或无数据库项目伪造数据库证据。
+
 ### 八、summary-data 不得伪造且必须记录状态演进
 
 无测试报告 → 显示"未运行测试 / 静态验证"，不得 100% 通过率；无 review → "📝ADVISORY：未运行 review"。状态用 ✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP，复用前一阶段结果显示 🔁REUSED，**不得伪装成重新执行，不得无脑全绿**。
@@ -162,7 +163,7 @@ API 测试 `USER_SKIPPED` 或 DB 兼容 `BLOCKED_BY_DBA` 时，最终状态必�
 
 ### 十一、归档事件单一所有权
 
-finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，并在移动后继续向归档目录中的同一事件流追加。调用者不得在 finalize 前后重复追加阶段边界，否则会造成重复阶段或在原 changes 路径生成幽灵目录。归档后 events.ndjson 与自动渲染的 execution-log.md 一起位于 archive。
+`execute` 在一次性预检通过后负责且仅负责一次正式 `phase.start` / `phase.end`。准备阶段单独使用 `phase.prepare.start/end`，不计为归档重跑。调用者不得重复追加阶段边界。归档后 events.ndjson 与自动渲染的 execution-log.md 一起位于 archive。
 
 ### 十二、Shell 安全 / 敏感信息 / 证据化报告
 
@@ -185,14 +186,13 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 su
 
 ## 渐进披露
 
-- **Read `checklist.md`** 仅在 Phase 1 归档前检查和 Phase 4 验证时 — 含归档前检查项和归档后验证项
-- **Read `reference.md`** 仅在 Phase 0/2/3 时 — 含归档流程、archive-meta 格式、summary-data 字段说明、目录结构与最终状态规则
-- **Read `reference.md`** 仅在 Phase 3 finalize 时 — summary-data 校验与 archive-meta 补写
-- **Read `templates/summary-data-template.json`** 仅在 Phase 3 生成 `summary-data.json` 时 — 含最终报告数据结构
+- **Read `checklist.md`** 仅在 `execute` 返回结果缺失或 manifest 不一致时
+- **Read `reference.md`** 仅在阻断恢复、受控范围认领或解释最终状态时
+- **Read `templates/summary-data-template.json`** 仅在 summary 校验失败时
 
 ## 交互白名单
 
-仅当 `auto-gate` 未满足时，允许归档确认（Phase 2 blocking user confirmation）；拒绝 → 终止，不执行任何移动。
+仅当生命周期结局不明确，或需要受控认领既有提交范围时，允许阻断式确认。拒绝后终止，不执行任何移动。
 
 <!-- @include shared/logging.md -->
 > 片段：[[shared/logging.md|logging]] · phase=`archive`

@@ -34,7 +34,7 @@
 | `protocols/state-layout-protocol.md` | 状态目录分层：`.harness/changes/<cn>/` 下按 `meta/`、`logs/`、`evidence/`、`reports/`、`scripts/`、`backups/` 子目录分层写入；读取时先读新路径再兼容旧路径 |
 | `protocols/submit-protocol.md` | 固定提交交互：提交方式与 commit message 确认使用固定选项模板，禁止 AI footer |
 | `protocols/archive-report-protocol.md` | 归档报告：`summary-data.json`、manifest/checksum 与真实性规则 |
-| `protocols/report-pipeline-protocol.md` | 报告流水线：`events.ndjson` + `harness_archive.py finalize/replay` + 数据一致性校验 |
+| `protocols/report-pipeline-protocol.md` | 报告流水线：`events.ndjson` + `harness_archive.py execute/replay` + 数据一致性校验 |
 
 每个 skill 的 SKILL.md 关键规则章节都通过相对路径引用这些 protocol（`../protocols/powershell-protocol.md` 等）。
 
@@ -159,9 +159,9 @@
 - **Bash 拒绝、PowerShell 重试、降级、跳过、用户确认都必须记录**
 - 日志状态统一使用 `✅OK / 🟡WARN(原因) / ❌FAIL(原因)`
 - harness-archive 归档时从日志汇总：时间线、总用时、Skill 调用统计
-- `harness_archive.py finalize/replay` 优先从 `events.ndjson` 汇总命令、验证、artifact、问题和决策；旧 archive 缺少 events 时才回放 execution-log/ledger/manifest
+- `harness_archive.py execute/replay` 优先从 `events.ndjson` 汇总命令、验证、artifact、问题和决策；旧 archive 缺少 events 时才回放 execution-log/ledger/manifest
 - sync 默认不关联具体变更目录，仅在已有变更目录时追加日志和 events
-- archive 是例外：finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加阶段边界
+- archive 是例外：`execute` 负责一次准备记录和一次正式 `phase.start` / `phase.end`，调用者不得重复追加阶段边界，也不得串行运行 `auto-gate`、`status`、`finalize`
 
 ## Skill 目录结构
 
@@ -278,7 +278,7 @@ harness-skills/
 | **submit hash 记录** | pre-pull local hash + final pushed hash 双标注（主目录）；worktree 模式 submit 段只本地 commit，合并段产生 `mergeFinalHash`，archive 以 `mergeFinalHash` 为准（无则回退 final pushed hash） |
 | **archive 阶段 1** | 归档前确认实际计划阶段的证据与结局；有 Git 时核对最终提交身份，无 Git、无 upstream 或跳过 submit 时使用内容清单身份。发布候选资格与本地封存分开判断；阶段边界由 finalize 单进程维护，调用者不额外 append |
 | **archive 文件移动** | 只用 PowerShell 或 Read+Write+验证，**禁止 Bash mv/cp/rm**；移动失败时不删除原目录 |
-| **archive 最终报告** | 必须运行 `harness_archive.py finalize` 生成权威 `summary-data.json` 并完成 validate。平台直接读取该 JSON；本地不生成重复的 HTML 报告。无测试或无 review 时必须标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
+| **archive 最终报告** | 必须运行 `harness_archive.py execute`，由内部 finalize 生成权威 `summary-data.json` 并完成 validate。平台直接读取该 JSON；本地不生成重复的 HTML 报告。无测试或无 review 时必须标记 `NOT_RUN` / `ADVISORY_NOT_RUN`，禁止伪造 100% 通过率。状态演进须真实展示（✅OK / 🟡WARN / 🔁REUSED / 🔁RETESTED / 📝ADVISORY / 🧹NON_BEHAVIORAL_CLEANUP） |
 
 ### 敏感信息脱敏
 
@@ -424,7 +424,7 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 /harness-test         # 运行测试（30条避坑规则）
 /harness-review       # 代码审查
 /harness-submit       # 提交代码（worktree 模式含合并；/harness-merge 为别名）
-/harness-archive      # 归档产出（harness_archive.py finalize），释放工作区
+/harness-archive      # 归档产出（harness_archive.py execute），释放工作区
 ```
 
 ## 避坑知识来源
@@ -454,7 +454,7 @@ npx hunter-harness   # 初始化阶段检查环境/CodeGraph/基础状态（非 
 - `protocols/evidence-based-reporting-protocol.md`：证据化报告（✅/🟡/❌ 三态，已取代原 `harness-plan/evidence-based-reporting.md`，各 skill 引用此版本）。
 - `protocols/submit-protocol.md`：固定提交交互、中文 commit 文件、禁止 AI footer。
 - `protocols/archive-report-protocol.md`：summary-data、manifest/checksum 与平台归档展示合同。
-- `protocols/report-pipeline-protocol.md`：events.ndjson + `harness_archive.py finalize/replay` + summary-data 一致性校验。
+- `protocols/report-pipeline-protocol.md`：events.ndjson + `harness_archive.py execute/replay` + summary-data 一致性校验。
 - `protocols/state-layout-protocol.md`：`.harness/changes/<cn>/` 子目录分层（meta/logs/evidence/reports/scripts/backups），读取先新后旧。
 
 各 skill 的 `SKILL.md` 只保留阶段目标和硬门禁，细节优先引用这些协议，避免在多个 skill 中复制并产生冲突。
@@ -475,4 +475,4 @@ backups/    未提交但用于验证的测试文件等备份
 
 读取时先读新路径，再兼容旧路径。详见 `protocols/state-layout-protocol.md`。
 
-Archive 最终报告由 `harness_archive.py finalize` 生成 `summary-data.json`。Hunter Platform 直接读取该文件，避免本地重复渲染和两份报告数据不一致。
+Archive 常规入口为 `harness_archive.py execute`，内部 finalize 生成 `summary-data.json`。Hunter Platform 直接读取该文件，避免本地重复渲染和两份报告数据不一致。

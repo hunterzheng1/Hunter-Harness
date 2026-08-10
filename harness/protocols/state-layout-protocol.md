@@ -141,7 +141,7 @@ package SHA-256，且服务端同时确认 `archive_status=durable` 与
 
 ## state-snapshot.json（cluster 3 §3.6）
 
-`meta/state-snapshot.json`（由 `harness_state.py` 写入）集中记录 project/worktree root、HEAD/base、profile/rules/map/knowledge/diff 各段指纹与相关文件。plan/run/test/review/submit 读取该快照；失效时由脚本刷新，**不得仅凭缓存跳过代码或验证门禁**。
+`meta/state-snapshot.json`（由 `harness_state.py` 写入）集中记录 project/worktree root、不可变 `changeBase`、当前 HEAD，以及 profile/rules/map/knowledge/diff 各段指纹与相关文件。Plan 首次捕获把当时 HEAD 写入 `changeBase`；run/test/review/submit/archive 刷新时只能更新当前 HEAD 和各段指纹。失效时由脚本刷新，**不得仅凭缓存跳过代码或验证门禁，也不得把后续 HEAD 覆盖为变更基线**。
 
 schema：
 
@@ -150,6 +150,7 @@ schema：
   "schemaVersion": 1,
   "generatedAt": "<iso>",
   "changeName": "<change-name>",
+  "changeBase": "<首次 Plan 捕获的 sha>",
   "project": {"root": "<abs>"},
   "worktree": {"root": "<abs>"},
   "git": {"base": "<sha>", "head": "<sha>"},
@@ -159,7 +160,7 @@ schema：
 }
 ```
 
-各段独立失效：`is_segment_stale(snapshot, segment, current_fingerprint)` 比较单段指纹；段不存在 → stale（需采集）。`refresh_segments(..., segments=["profile"])` 只重采受影响段，其他段保留原 capturedAt/fingerprint（缓存失效只重采受影响段）。
+各段独立失效：`is_segment_stale(snapshot, segment, current_fingerprint)` 比较单段指纹；段不存在 → stale（需采集）。`refresh_segments(..., segments=["profile"])` 只重采受影响段，其他段保留原 capturedAt/fingerprint（缓存失效只重采受影响段）。`git.base` 是 `changeBase` 的兼容镜像，不是每次 capture 的 HEAD。
 
 segment 的文件集由调用方（各 skill）决定：`capture_snapshot(..., segment_files={"profile": [...], "rules": [...]})`。snapshot 只负责采集 + 比对 + 失效，不负责发现文件。git 段记录 base/head；diff 段指纹由调用方按需用 `harness_ledger.compute_diff_hash` 采集后填入 segment_files。
 

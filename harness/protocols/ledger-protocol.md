@@ -329,7 +329,7 @@ v2 契约下 `record` 写入前强制解析并校验顶层身份字段，缺失�
 | `schemaVersion` | 固定 `3` |
 | `repositoryId` | `harness_paths.repository_identity(repo_root)`（远端规范化 + root commit；无远端回退 git common-dir，跨 worktree 稳定，RET-09） |
 | `changeName` | change 目录名 |
-| `baseCommit` | `--base-commit` → 既有 ledger 值 → `git rev-parse --verify HEAD` |
+| `baseCommit` | `--base-commit` → 既有 ledger 值 → `state-snapshot.json.changeBase`。只有全新 change 的首次 ledger 写入可以用当时 HEAD 建立基线；旧 ledger 迁移缺少以上三种证据时必须报错，禁止用迁移时的当前 HEAD 猜测基线 |
 | `currentHead` | `git rev-parse --verify HEAD`（验证执行时） |
 | `diffHash` | `--diff-hash` → 既有 ledger 值 → 按 ownership 范围重算（§10.3） |
 | `ownershipHash` | 契约 `ownership` 段规范化 JSON 的 sha256 |

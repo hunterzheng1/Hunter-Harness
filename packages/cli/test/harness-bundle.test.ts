@@ -204,7 +204,8 @@ describe("embedded Harness Bundles", () => {
     const readme = await readFile(join(harnessSource, "README.md"), "utf8");
 
     for (const text of [archiveSkill, archiveReference, archiveChecklist, readme]) {
-      expect(text).toContain("finalize 内部负责且仅负责一次 `phase.start` / `phase.end`");
+      expect(text).toContain("`execute`");
+      expect(text).toContain("`phase.start` / `phase.end`");
       expect(text).not.toMatch(/(?:模型|skill|阶段|后续).*append `phase\.end`/);
       expect(text).not.toContain("每个阶段开始和结束都用 Edit 追加");
     }

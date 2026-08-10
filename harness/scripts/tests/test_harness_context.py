@@ -558,6 +558,35 @@ class HarnessContextTest(unittest.TestCase):
                 hashes.add(result["receipt"]["artifacts"][0]["sha256"])
         self.assertEqual(len(hashes), 1)
 
+    def test_close_accepts_artifact_from_split_state_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            state_artifact = (
+                project
+                / ".harness/state/changes/change/evidence/verification-ledger.json"
+            )
+            state_artifact.parent.mkdir(parents=True)
+            state_artifact.write_text('{"schemaVersion":3}\n', encoding="utf-8")
+            CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="runner"
+            )
+
+            result = CONTEXT.close_transition(
+                project,
+                "change",
+                from_phase="run",
+                to_phase="test",
+                executor="runner",
+                artifacts=["evidence/verification-ledger.json"],
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(
+                result["receipt"]["artifacts"][0]["path"],
+                ".harness/state/changes/change/evidence/verification-ledger.json",
+            )
+
     def test_close_rejects_missing_directory_and_outside_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as external:
             project = Path(tmp)
@@ -585,7 +614,7 @@ class HarnessContextTest(unittest.TestCase):
                     )
                     self.assertFalse(result["ok"])
                     self.assertEqual(result["code"], "TRANSITION_ARTIFACT_INVALID")
-                    self.assertEqual(len(result["acceptedBases"]), 2)
+                    self.assertEqual(len(result["acceptedBases"]), 3)
                     self.assertTrue(result["examples"])
 
     def test_close_rejects_an_ambiguous_relative_artifact(self) -> None:

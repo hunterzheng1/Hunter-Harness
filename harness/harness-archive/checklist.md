@@ -32,9 +32,9 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 
 ## 归档前检查（Phase 1）
 
-> ⚠️ **单一所有权**：finalize 内部负责且仅负责一次 `phase.start` / `phase.end`。归档前检查不得自行追加 archive 阶段边界。
+> ⚠️ **单一所有权**：`execute` 负责一次准备记录和一次正式 `phase.start` / `phase.end`。归档前检查不得自行追加 archive 阶段边界。
 
-- [ ] 未在调用 finalize 前手工追加 archive 阶段边界
+- [ ] 未在调用 `execute` 前手工追加 archive 阶段边界，也未串行调用 `auto-gate`、`status`、`finalize`
 - [ ] 只有一个未归档变更目录（多个时终止或让用户选择）
 - [ ] 已确认 `closure`：正常完成 / 主动废弃 / 被其他方案替代；后两者有中文 `closure-reason`
 - [ ] 正常完成按 `plannedPhases` 核对；提前结束只要求可识别变更与安全封存的最小材料
@@ -45,6 +45,9 @@ description: harness-archive 的归档前检查项和归档后验证项。仅在
 - [ ] Git 项目记录 dirty/HEAD/upstream；无 upstream 或仅本地 commit 允许归档，但 `releaseEligible=false`
 - [ ] 非 Git 项目生成确定性内容清单与产品树散列，并记录 `sourceControl=none`
 - [ ] 最终产品身份来自 Submit 收据或当前内容；提交前候选只允许在验证输入未变化时由 `certify-local` 自动重绑定
+- [ ] `changeBase` 来自首次 Plan 快照，后续阶段未用当前 HEAD 覆盖；正常完成时 base 与产品 tip 不得相同
+- [ ] 如使用既有提交范围，`meta/archive-range-adoption.json` 由 `adopt-existing-range --confirm-existing-range` 生成，未手工修改 ledger 或 snapshot
+- [ ] 主动废弃或被替代允许没有产品增量，但必须有中文原因，且不得声明为发布候选
 - [ ] **test/review 报告状态确认**：
   - ✅ `.harness/changes/<change-name>/tests/test-report-*.md` 存在 → 归档正常
   - 🟡 不存在 → 必须在 archive-meta.md 和 summary-data.json 中标记「跳过测试」或「未运行测试」，不得伪造通过率

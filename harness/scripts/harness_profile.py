@@ -838,13 +838,20 @@ def _node_commands(project: Path) -> dict[str, Any]:
         "src/**/*.tsx",
         "test/**/*.ts",
         "test/**/*.tsx",
+        "tests/**/*.ts",
+        "tests/**/*.tsx",
         "packages/*/src/**/*.ts",
         "packages/*/src/**/*.tsx",
         "packages/*/test/**/*.ts",
         "packages/*/test/**/*.tsx",
+        "packages/*/tests/**/*.ts",
+        "packages/*/tests/**/*.tsx",
         "apps/*/src/**/*.ts",
         "apps/*/src/**/*.tsx",
         "apps/*/test/**/*.ts",
+        "apps/*/test/**/*.tsx",
+        "apps/*/tests/**/*.ts",
+        "apps/*/tests/**/*.tsx",
     ]
     # harness dogfood: canonical Python + .mjs sources feed npm run check (vitest
     # imports harness-test/scripts; smoke:pack runs sync-harness.mjs).

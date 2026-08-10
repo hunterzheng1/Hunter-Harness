@@ -59,7 +59,7 @@ disallowed-tools:
 | 阶段 | 动作 |
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
-| 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
+| 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。立即运行一次 `harness_state.py capture --project . --change-dir "<executionRoot>" --json`，把此时 HEAD 固定为不可变 `changeBase`。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
 | 0.6 | 使用 `classify` 返回的默认阶段和项目能力生成 `plannedPhases`，向用户用中文说明可选阶段；确认后运行 `harness_context.py configure-plan --project . --change <id> --phases "plan,run,...,archive" --operator <tool> --reason "<中文原因>" --json`。无 Git 或不需要提交时不得加入 `submit`；快速迭代默认 `plan,run,archive`。省略项由脚本写入 `skippedPhases`，不得伪造阶段事件 |
 | 1 | `harness-knowledge-query` 单次远端 query（失败记 `issue`，不建立本地索引或离线回退） |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
@@ -91,7 +91,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 简单修复探索预算 | 预计不超过 2 个代码文件、且不涉及认证/安全/迁移/并发/API 契约重设时，最多 1 次合并 CodeGraph 查询 + 1 次定向补查、1 个用户澄清问题；无关发现只记非阻断说明 |
 | 精简产物 | 简单修复只保留实现所需的设计、任务、边界和测试；禁止在 spec/plan/detail/scenarios 中重复同一背景和结论 |
 | 测试执行成本 | 场景表必须设计快速反馈层级、预计时长、资源预算、超时和可复用证据；默认先跑受影响测试，再跑模块门禁，候选验证只复用身份一致的全量证据 |
-| state snapshot | 读取 `state-snapshot.json`（`harness_state.py` / state-layout-protocol §state-snapshot.json）了解 project/worktree root、HEAD/base、profile/rules/map/knowledge 指纹；失效由脚本刷新，**不得仅凭缓存跳过代码探索或验证门禁**（design §3.6） |
+| state snapshot | Plan 首次 capture 固定不可变 `changeBase`；后续刷新只更新 HEAD 和各段指纹，不得把当前 HEAD 写回为基线。读取 `state-snapshot.json` 了解 project/worktree root、HEAD/base、profile/rules/map/knowledge 指纹；失效由脚本刷新，**不得仅凭缓存跳过代码探索或验证门禁**（design §3.6） |
 | 协议 | sensitive-info / evidence-based-reporting / state-layout |
 
 产出物表、frontmatter、legacy 兼容、结束输出模板 → `reference.md`

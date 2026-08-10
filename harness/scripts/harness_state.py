@@ -119,6 +119,10 @@ def capture_snapshot(
         "schemaVersion": SNAPSHOT_SCHEMA_VERSION,
         "generatedAt": now_iso(),
         "changeName": change_name,
+        # The first captured Git boundary is the immutable identity of the
+        # change.  Later phases may advance HEAD, but must never silently move
+        # the base and collapse the archive range.
+        "changeBase": base or "",
         "project": {"root": str(project.resolve())},
         "worktree": {"root": str(Path(worktree_root).resolve())},
         "git": {"base": base or "", "head": head or ""},
@@ -250,10 +254,25 @@ def capture_current_state(
     base: str = "",
     head: str = "HEAD",
 ) -> tuple[dict[str, Any], list[str]]:
-    resolved_head = _git(project, "rev-parse", head) or head
-    resolved_base = _git(project, "rev-parse", base) if base else ""
-    files = discover_segment_files(project, change_dir, base=resolved_base, head=resolved_head)
+    git_head = _git(project, "rev-parse", head)
+    resolved_head = git_head or head
     previous = load_snapshot(change_dir)
+    previous_git = previous.get("git") if isinstance(previous, dict) else None
+    previous_base = (
+        str(previous.get("changeBase") or "").strip()
+        if isinstance(previous, dict)
+        else ""
+    )
+    if not previous_base and isinstance(previous_git, dict):
+        previous_base = str(
+            previous_git.get("base") or previous_git.get("baseCommit") or ""
+        ).strip()
+    requested_base = _git(project, "rev-parse", base) if base else ""
+    # First capture establishes the boundary.  A later --base value is an
+    # observation hint only; changing the boundary requires the explicit
+    # archive range-adoption receipt.
+    resolved_base = previous_base or requested_base or git_head
+    files = discover_segment_files(project, change_dir, base=resolved_base, head=resolved_head)
     fresh = capture_snapshot(
         change_dir,
         change_name=change_name,

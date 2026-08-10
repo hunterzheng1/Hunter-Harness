@@ -318,6 +318,45 @@ class FinalizeSuccessTests(unittest.TestCase):
             "capability-profile",
         )
 
+    def test_finalize_without_capability_field_defaults_database_to_not_applicable(self) -> None:
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["validations"].pop("dbCompatibility", None)
+        _write_json(ledger_path, ledger)
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {"schemaVersion": 1, "plannedPhases": ["plan", "archive"]},
+        )
+
+        code, payload = _run(
+            [
+                "finalize",
+                "--intent",
+                "record-only",
+                "--change-dir",
+                str(self.change),
+                "--archive-root",
+                str(self.archive_root),
+                "--skip-ingest",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        summary = json.loads(
+            (
+                Path(payload["archive_dir"])
+                / "reports"
+                / "final"
+                / "summary-data.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["verification"]["dbCompatibility"], "NOT_APPLICABLE")
+        self.assertEqual(
+            summary["verification"]["dbCompatibilityEvidence"]["source"],
+            "capability-profile",
+        )
+
     def test_finalize_writes_and_verifies_durable_archive_before_source_deletion(
         self,
     ) -> None:
@@ -565,10 +604,10 @@ class ValidateErrorKeepsOriginalTests(unittest.TestCase):
             event
             for event in events
             if event.get("phase") == "archive"
-            and event.get("type") == "phase.prepare.end"
+            and event.get("type") == "phase.end"
         ]
         self.assertEqual(len(archive_terminals), 1)
-        self.assertEqual(archive_terminals[0].get("status"), "BLOCKED")
+        self.assertEqual(archive_terminals[0].get("status"), "FAIL")
 
 
 class MoveFailureTests(unittest.TestCase):
@@ -618,6 +657,14 @@ class MoveFailureTests(unittest.TestCase):
 
 
 class ArchiveFactDerivationTests(unittest.TestCase):
+    def test_test_report_discovery_deduplicates_overlapping_patterns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            report = change / "reports" / "test" / "test-report-20260810.md"
+            _write(report, "# 测试报告\n")
+
+            self.assertEqual(ha.find_test_reports(change), [report])
+
     def test_business_goal_skips_frontmatter_and_generic_plan_title(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp)
@@ -825,7 +872,7 @@ class StatusTests(unittest.TestCase):
         _seed_change_dir(change)
         _write_json(change / "meta" / "worktree.json", {"requested": True, "created": True})
         subprocess.run(["git", "init", "-q"], cwd=str(project), check=True)
-        _write(project / "f.txt", "1\n")
+        _write(project / "f.txt", "0\n")
         subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
         env = {
             **os.environ,
@@ -834,6 +881,13 @@ class StatusTests(unittest.TestCase):
             "GIT_COMMITTER_NAME": "t",
             "GIT_COMMITTER_EMAIL": "t@t",
         }
+        subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=str(project), env=env, check=True)
+        base_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(project),
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        _write(project / "f.txt", "1\n")
+        subprocess.run(["git", "add", "-A"], cwd=str(project), check=True)
         subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=str(project), env=env, check=True)
         change_hash = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=str(project),
@@ -846,6 +900,7 @@ class StatusTests(unittest.TestCase):
         # set mergeFinalHash to the (now ancestor) change commit
         ledger = change / "evidence" / "verification-ledger.json"
         data = json.loads(ledger.read_text(encoding="utf-8"))
+        data["baseCommit"] = base_hash
         data["mergeFinalHash"] = change_hash
         ledger.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         code, payload = _run([
@@ -1013,10 +1068,11 @@ class ConditionalOkTests(unittest.TestCase):
 
 
 class ArchiveCliBoundaryTests(unittest.TestCase):
-    """API-013: archive finalize 是唯一归档路径。恢复只消费已验证的持久化
-    receipt；不存在 collect/validate 子命令（已废弃的旧编排路径，
-    report-pipeline-protocol §标准命令 仅保留 finalize/replay，模型不得手写等价
-    summary-data.json）。repair 为 RET-40 新增显式修复子命令（不改写原归档）。"""
+    """API-013: execute 是常规归档入口；finalize 是内部兼容入口。
+
+    恢复只消费已验证的持久化 receipt；不存在 collect/validate 子命令。
+    repair 为 RET-40 新增显式修复子命令（不改写原归档）。
+    """
 
     def test_cli_exposes_only_status_finalize_replay(self) -> None:
         parser = ha.build_parser()
@@ -1030,7 +1086,9 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
             {
                 "status",
                 "auto-gate",
+                "adopt-existing-range",
                 "certify-local",
+                "execute",
                 "finalize",
                 "restore-durable",
                 "replay",
@@ -2400,6 +2458,34 @@ class ArchiveAutoGateTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    def _collapse_archive_boundary(self) -> None:
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger.update(
+            {
+                "baseCommit": "bbbbbbbb",
+                "finalCommit": "bbbbbbbb",
+                "productCommit": "bbbbbbbb",
+                "archiveCommit": "bbbbbbbb",
+            }
+        )
+        _write_json(ledger_path, ledger)
+        _write_json(
+            self.change / "meta" / "state-snapshot.json",
+            {
+                "schemaVersion": 1,
+                "changeBase": "bbbbbbbb",
+                "git": {"base": "bbbbbbbb", "head": "bbbbbbbb"},
+            },
+        )
+        ha.append_event(
+            self.change,
+            phase="merge",
+            type_="phase.end",
+            status="OK",
+            note="merge completed",
+        )
+
     def test_auto_gate_requires_archive_boundary_snapshot(self) -> None:
         result = ha.archive_auto_gate(self.change, archive_intent="record-only")
         self.assertFalse(result["ok"])
@@ -2424,7 +2510,228 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
         self.assertTrue(result["autoArchiveAllowed"])
         self.assertEqual(result["reasonCode"], "ARCHIVE_AUTO_GATE_SATISFIED")
-        self.assertIn("no AskQuestion", result["nextAction"])
+        self.assertIn("execute", result["nextAction"])
+        self.assertIn("不再重复扫描", result["nextAction"])
+
+    def test_status_and_auto_gate_reject_collapsed_completed_boundary(self) -> None:
+        self._collapse_archive_boundary()
+
+        status = ha.check_status(self.change, archive_intent="record-only")
+        auto_gate = ha.archive_auto_gate(
+            self.change,
+            archive_intent="record-only",
+        )
+
+        self.assertFalse(status["archivable"], status)
+        self.assertIn(
+            "ARCHIVE_BASE_EQUALS_FEATURE_TIP",
+            {item["code"] for item in status["blockers"]},
+        )
+        self.assertFalse(auto_gate["ok"], auto_gate)
+        self.assertFalse(auto_gate["autoArchiveAllowed"])
+        self.assertEqual(
+            auto_gate["reasonCode"],
+            "ARCHIVE_REPORT_ADEQUACY_FAILED",
+        )
+
+    def test_status_rejects_snapshot_and_ledger_base_mismatch(self) -> None:
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["baseCommit"] = "bbbbbbbb"
+        _write_json(ledger_path, ledger)
+        _write_json(
+            self.change / "meta" / "state-snapshot.json",
+            {
+                "schemaVersion": 1,
+                "changeBase": "aaaaaaaa",
+                "git": {"base": "aaaaaaaa", "head": "bbbbbbbb"},
+            },
+        )
+
+        status = ha.check_status(self.change, archive_intent="record-only")
+
+        self.assertFalse(status["archivable"], status)
+        self.assertIn(
+            "CHANGE_BASE_IDENTITY_MISMATCH",
+            {item["code"] for item in status["blockers"]},
+        )
+
+    def test_abandoned_zero_delta_is_archivable_with_a_reason(self) -> None:
+        self._collapse_archive_boundary()
+
+        status = ha.check_status(
+            self.change,
+            archive_intent="record-only",
+            closure_disposition="abandoned",
+            closure_reason="本轮实现不再继续",
+        )
+
+        self.assertTrue(status["archivable"], status)
+        self.assertFalse(status["releaseEligible"])
+        self.assertIn(
+            "NO_PRODUCT_DELTA",
+            {item["code"] for item in status["warnings"]},
+        )
+
+    def test_abandoned_zero_delta_executes_as_record_only_archive(self) -> None:
+        self._collapse_archive_boundary()
+
+        code, payload = ha.execute_archive(
+            self.change,
+            self.tmp / ".harness" / "archive",
+            archive_intent="record-only",
+            closure_disposition="abandoned",
+            closure_reason="验证后决定停止该需求",
+            skip_ingest=True,
+        )
+
+        self.assertEqual(code, 0, payload)
+        self.assertTrue(payload["ok"], payload)
+        self.assertFalse(payload["releaseEligible"])
+        self.assertFalse(self.change.exists())
+        archive_dir = Path(payload["archive_dir"])
+        summary = json.loads(
+            (archive_dir / "reports" / "final" / "summary-data.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(summary["closureDisposition"], "abandoned")
+        self.assertEqual(summary["closureReason"], "验证后决定停止该需求")
+        archive_events = he.load_events(he.events_path(archive_dir))
+        starts = [
+            item
+            for item in archive_events
+            if item.get("phase") == "archive" and item.get("type") == "phase.start"
+        ]
+        ends = [
+            item
+            for item in archive_events
+            if item.get("phase") == "archive" and item.get("type") == "phase.end"
+        ]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(len(ends), 1)
+
+    def test_finalize_rejects_known_adequacy_error_before_staging(self) -> None:
+        self._collapse_archive_boundary()
+        archive_root = self.tmp / ".harness" / "archive"
+
+        code, payload = ha.cmd_finalize(
+            self.change,
+            archive_root,
+            archive_intent="record-only",
+        )
+
+        self.assertEqual(code, 1, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_REPORT_ADEQUACY_FAILED")
+        self.assertIn(
+            "ARCHIVE_BASE_EQUALS_FEATURE_TIP",
+            {item["code"] for item in payload["issues"]},
+        )
+        self.assertFalse(Path(payload["operationTempDir"]).exists())
+        operation_root = self.tmp / ".harness" / "archive-operations" / "staging"
+        self.assertFalse(operation_root.exists())
+
+    def test_execute_collects_status_once_before_finalize(self) -> None:
+        _write_json(
+            self.change / "meta" / "state-snapshot.json",
+            {"git": {"base": "aaaaaaaa", "head": "bbbbbbbb"}},
+        )
+        ha.append_event(
+            self.change,
+            phase="merge",
+            type_="phase.end",
+            status="OK",
+            note="merge completed",
+        )
+        original = ha.check_status
+        calls = 0
+
+        def counted(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        with mock.patch.object(ha, "check_status", side_effect=counted):
+            code, payload = _run(
+                [
+                    "execute",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.tmp / ".harness" / "archive"),
+                    "--intent",
+                    "record-only",
+                    "--skip-ingest",
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(calls, 1)
+        self.assertTrue(payload["preflight"]["autoArchiveAllowed"])
+        archive_dir = Path(payload["archive_dir"])
+        events = he.load_events(he.events_path(archive_dir))
+        archive_starts = [
+            item
+            for item in events
+            if item.get("phase") == "archive" and item.get("type") == "phase.start"
+        ]
+        archive_ends = [
+            item
+            for item in events
+            if item.get("phase") == "archive" and item.get("type") == "phase.end"
+        ]
+        prepare_ends = [
+            item
+            for item in events
+            if item.get("phase") == "archive"
+            and item.get("type") == "phase.prepare.end"
+        ]
+        self.assertEqual(len(archive_starts), 1)
+        self.assertEqual(len(archive_ends), 1)
+        self.assertEqual(len(prepare_ends), 1)
+        self.assertGreaterEqual(prepare_ends[0]["duration_ms"], 0)
+
+    def test_execute_certifies_unchanged_local_candidate_before_preflight(self) -> None:
+        receipt = {
+            "schemaVersion": 2,
+            "provider": "local-harness",
+            "assurance": "local-reproducible",
+            "subject": {
+                "productCommit": "bbbbbbbb",
+                "productTreeHash": "sha256:" + "a" * 64,
+            },
+        }
+        blocked_gate = {
+            "ok": False,
+            "reasonCode": "ARCHIVE_BOUNDARY_SNAPSHOT_MISSING",
+            "nextAction": "补齐快照",
+            "status": {"blockers": []},
+        }
+
+        with (
+            mock.patch.object(ha, "load_product_candidate_ci", return_value=None),
+            mock.patch.object(
+                ha,
+                "certify_local_candidate",
+                return_value=receipt,
+            ) as certify,
+            mock.patch.object(ha, "archive_auto_gate", return_value=blocked_gate),
+        ):
+            code, payload = ha.execute_archive(
+                self.change,
+                self.tmp / ".harness" / "archive",
+                archive_intent="record-only",
+                skip_ingest=True,
+            )
+
+        self.assertEqual(code, 1)
+        certify.assert_called_once()
+        self.assertTrue(payload["candidateCertification"]["ok"])
+        self.assertEqual(
+            payload["candidateCertification"]["subject"]["productCommit"],
+            "bbbbbbbb",
+        )
 
     def test_auto_gate_uses_split_state_and_the_last_planned_phase_without_git(self) -> None:
         state = self.tmp / ".harness" / "state" / "changes" / self.change.name
@@ -2489,6 +2796,174 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
         self.assertEqual(result["completedPrerequisitePhase"], "run")
         self.assertEqual(result["plannedPhases"], ["plan", "run", "archive"])
+
+
+class ArchiveRangeAdoptionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-range-"))
+        self.project = self.tmp / "project"
+        self.project.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=self.project,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.project,
+            check=True,
+        )
+        _write(self.project / "src" / "app.py", "value = 1\n")
+        subprocess.run(["git", "add", "src/app.py"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "base"],
+            cwd=self.project,
+            check=True,
+        )
+        self.base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        _write(self.project / "src" / "app.py", "value = 2\n")
+        subprocess.run(["git", "add", "src/app.py"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "product"],
+            cwd=self.project,
+            check=True,
+        )
+        self.tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.change = self.project / ".harness" / "changes" / "existing-product"
+        self.change.mkdir(parents=True)
+        _seed_change_dir(self.change)
+        _write_json(
+            self.change / "meta" / "change-context.json",
+            {
+                "schemaVersion": 2,
+                "changeId": self.change.name,
+                "ownership": {
+                    "productPaths": ["src/"],
+                    "staticEvidencePaths": [
+                        f".harness/changes/{self.change.name}/"
+                    ],
+                },
+            },
+        )
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger.update(
+            {
+                "baseCommit": self.tip,
+                "finalCommit": self.tip,
+                "productCommit": self.tip,
+                "archiveCommit": self.tip,
+            }
+        )
+        _write_json(ledger_path, ledger)
+        _write_json(
+            self.change / "evidence" / "product-candidate-ci.json",
+            {
+                "schemaVersion": 1,
+                "conclusion": "success",
+                "commit": self.tip,
+                "runUrl": "https://ci.example/runs/range",
+            },
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_adopt_existing_range_requires_explicit_confirmation(self) -> None:
+        result = ha.adopt_existing_range(
+            self.change,
+            base=self.base,
+            tip=self.tip,
+            reason="将已有产品提交纳入本变更",
+            confirmed=False,
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reasonCode"], "EXISTING_RANGE_CONFIRMATION_REQUIRED")
+
+    def test_adopt_existing_range_cli_requires_confirmation_flag(self) -> None:
+        code, payload = _run(
+            [
+                "adopt-existing-range",
+                "--change-dir",
+                str(self.change),
+                "--base",
+                self.base,
+                "--tip",
+                self.tip,
+                "--reason",
+                "将已有产品提交纳入本变更",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            payload["reasonCode"],
+            "EXISTING_RANGE_CONFIRMATION_REQUIRED",
+        )
+
+    def test_adopt_existing_range_overrides_collapsed_ledger_with_a_receipt(self) -> None:
+        adopted = ha.adopt_existing_range(
+            self.change,
+            base=self.base,
+            tip=self.tip,
+            reason="将已有产品提交纳入本变更",
+            confirmed=True,
+        )
+        summary = ha.collect_summary_data(self.change, write=False)
+        status = ha.check_status(self.change, archive_intent="record-only")
+
+        self.assertTrue(adopted["ok"], adopted)
+        self.assertTrue(Path(adopted["receiptPath"]).is_file())
+        self.assertEqual(summary["baseCommit"], self.base)
+        self.assertEqual(summary["finalCommit"], self.tip)
+        self.assertEqual(
+            [item["path"] for item in summary["changedFiles"]],
+            ["src/app.py"],
+        )
+        self.assertTrue(status["archivable"], status)
+        self.assertEqual(
+            status["checks"]["range_adoption"]["reasonCode"],
+            "EXISTING_RANGE_ADOPTED",
+        )
+
+    def test_adopt_existing_range_is_idempotent_for_the_same_decision(self) -> None:
+        first = ha.adopt_existing_range(
+            self.change,
+            base=self.base,
+            tip=self.tip,
+            reason="将已有产品提交纳入本变更",
+            confirmed=True,
+        )
+        second = ha.adopt_existing_range(
+            self.change,
+            base=self.base,
+            tip=self.tip,
+            reason="将已有产品提交纳入本变更",
+            confirmed=True,
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second["idempotent"])
+        self.assertEqual(
+            first["receipt"]["receiptId"],
+            second["receipt"]["receiptId"],
+        )
 
 
 class SensitiveEvidencePublicationGateTests(unittest.TestCase):

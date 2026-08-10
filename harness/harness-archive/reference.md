@@ -6,14 +6,30 @@ description: harness-archive 的归档流程、manifest、summary-data 校验、
 
 ## 归档流程（对齐 SKILL.md Workflow）
 
-- **Phase 0 读取上下文**：读 SKILL.md / 本文件 / 共用协议（`../protocols/archive-report-protocol.md`、`../protocols/report-pipeline-protocol.md`、`../protocols/state-layout-protocol.md`、`../protocols/powershell-protocol.md`、`../protocols/sensitive-info-protocol.md`、`../protocols/evidence-based-reporting-protocol.md`）/ 解析 `$ARGUMENTS`。
-- **Phase 1 确认归档对象**：Glob `.harness/changes/*/plans/*-plan.md`（排除 archive），展示概要；多变更让用户选择或终止。
-- **Phase 2 确认归档（强制阻断）**：blocking user confirmation 确认，拒绝即终止。
+- **Phase 0 读取上下文**：读 SKILL.md，解析 `$ARGUMENTS`，刷新一次状态快照。常规路径不预读全部参考资料。
+- **Phase 1 确认归档对象**：使用 `harness_change.py resolve` 解析 contract/state 双层目录；多变更让用户选择或终止。
+- **Phase 2 确定归档结局**：已有明确指令时直接使用；只有结局不明确或需要认领既有提交范围时才询问。
 - **Phase 3 执行归档**：
-  1. 运行 `python <skills-root>/scripts/harness_archive.py status --change-dir ... --json` 做前置检查。
-  2. `meta/archive-meta.md` 由 finalize 生成（与 summary `finalStatus` 同源）；禁止手写。维护者结论写入 events 即可。finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。
-  3. 运行 `python <skills-root>/scripts/harness_archive.py finalize --change-dir ... --archive-root ".harness/archive" --json`；读 JSON 结果。finalize 内部负责且仅负责一次 `phase.start` / `phase.end`，调用者不得重复追加。**finalize 报错或 validate 失败时不删除原 changes 目录**。finalize 为冻结优先（freeze-first）：collect 前先 fsync 事件并写 `evidence/evidence-cutoff.json`，cutoff 后不再追加事件；随后依次执行 source consistency（层 1，写入 `reportPipeline.sourceConsistency`）→ summary consistency（层 2），任一层失败即恢复原目录并非零退出。
-- **Phase 4 验证与提示**：见 `checklist.md` 归档后验证项。
+  1. 运行一次 `python <skills-root>/scripts/harness_archive.py execute --change-dir ... --archive-root ".harness/archive" --intent <...> --closure <...> --json`。不要预先运行 `auto-gate` 或 `status`，也不要随后直接运行 `finalize`。候选收据缺失时，`execute` 会先尝试复用完整且身份一致的 `unitTestFull` ledger；产品内容未变化而 HEAD 因提交前移时，只重绑定候选身份，不重跑测试。
+  2. `execute` 在同一进程中复用预检结果，并负责且仅负责一次正式 `phase.start` / `phase.end`。准备耗时单独记录。`meta/archive-meta.md` 与 summary 均由 finalize 内部生成；禁止手写。
+  3. finalize 在 before-manifest 前执行 cleanup（删除 lock/pid/launcher/credential，截断超大日志）。它采用冻结优先：collect 前 fsync 事件并写 `evidence/evidence-cutoff.json`；cutoff 后不再追加事件。source consistency 或 summary consistency 失败时，脚本保留原 changes 目录并非零退出。
+- **Phase 4 验证与提示**：优先使用 `execute` 返回的 manifest、ZIP 和上传回执；仅在结果缺失或不一致时读取 `checklist.md`。
+
+数据库兼容性由项目能力配置决定。门禁策略既未声明 `database` 能力，也未把 `dbCompatibility` 列为必需验证时，汇总结果为 `NOT_APPLICABLE`，并以 `capability-profile` 作为类型化来源；只有明确具备数据库能力或明确要求该验证时才检查数据库证据。
+
+## 基线折叠的恢复方式
+
+`ARCHIVE_BASE_EQUALS_FEATURE_TIP` 表示正常完成的归档范围为空。不要修改 ledger、state snapshot 或制造空提交。按实际情况选择：
+
+1. 本次变更确实对应仓库中一段已有提交：展示 base、tip 和产品文件清单，获得用户明确确认后运行：
+
+   ```powershell
+   python <skills-root>/scripts/harness_archive.py adopt-existing-range --change-dir ".harness/changes/<change>" --base <base> --tip <tip> --reason "<中文原因>" --confirm-existing-range --json
+   ```
+
+   命令生成不可覆盖的 `meta/archive-range-adoption.json`，并绑定仓库身份、ownership、diffHash 和文件清单。随后只重跑一次 `execute`。
+2. 需求未完成：使用 `--intent record-only --closure abandoned|superseded --closure-reason "<中文原因>"`。零产品增量作为 warning 保存，不阻止封存，且 `releaseEligible=false`。
+3. 无法证明范围或用户拒绝确认：取消归档，保留原目录。
 
 ## manifest 生成
 

@@ -19,12 +19,12 @@ description: 结构化事件、summary-data 生成与校验，以及外部可观
 Skill-bundled 脚本（推荐）：
 
 ```powershell
-python <skills-root>/scripts/harness_archive.py finalize --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --json
+python <skills-root>/scripts/harness_archive.py execute --change-dir ".harness/changes/<change-name>" --archive-root ".harness/archive" --intent record-only --closure completed --json
 python <skills-root>/scripts/harness_archive.py replay --archive-dir ".harness/archive/YYYY-MM-DD-<change-name>" --json
 python <skills-root>/scripts/harness_events.py append --change-dir ".harness/changes/<change-name>" --phase "<phase>" --type <type> [--note "..."]
 ```
 
-归档报告流水线只有两个入口，均由 `harness_archive.py` 提供：`collect` 与 `validate` 是 `finalize` 的内嵌同进程步骤，**不作为独立 CLI 暴露**（不存在 `report collect` / `report validate` 子命令）。`summary-data.json` 只能由 `finalize`（归档时）或 `replay`（回放时）生成；**禁止 agent 临场手写或拼装等价的 `summary-data.json`**。`harness_archive.py` 不可用时归档失败退出，不得退回手写汇总。
+归档报告流水线的常规入口是 `execute`。它只采集一次状态并复用给内部 finalize；`collect` 与 `validate` 是 finalize 的内嵌同进程步骤，**不作为独立 CLI 暴露**（不存在 `report collect` / `report validate` 子命令）。`summary-data.json` 只能由 finalize（归档时）或 `replay`（回放时）生成；**禁止 agent 临场手写或拼装等价的 `summary-data.json`**。`harness_archive.py` 不可用时归档失败退出，不得退回手写汇总。
 
 ## events.ndjson
 
@@ -141,14 +141,16 @@ summary-data 必须保留原 archive final report 维度，并增加事件层摘
 
 新增 `reportPipeline` 不替代这些字段；它负责为这些字段提供可追溯的数据来源和一致性校验结果。
 
-## finalize 责任边界（`harness_archive.py finalize`）
+## execute 与 finalize 责任边界
+
+`execute` 负责一次性状态采集、自动门禁、准备耗时事件和对 finalize 的单次调用。常规调用者不得串行执行 `auto-gate`、`status`、`finalize`。finalize 负责正式归档尝试，并复用 execute 传入的预检结果。
 
 | 阶段 | 责任 | 写入 |
 |---|---|---|
 | `collect` | 从 events/ledger/log/manifest/report/git evidence 收集事实 | `summary-data.json` |
 | `validate` | 检查 summary-data 的身份、验证状态与事实是否一致 | issues；不得静默忽略 error |
 
-> **已废弃**：独立 `enrich` 步骤与 `harness-report` skill；全部并入 `finalize` 单命令。回放见 `harness_archive.py replay`。
+> **已废弃**：独立 `enrich` 步骤与 `harness-report` skill；报告生成并入 finalize，常规归档由 `execute` 调用。回放见 `harness_archive.py replay`。
 
 `validate` error 存在时，`harness-archive` 不得删除原 changes 目录。
 

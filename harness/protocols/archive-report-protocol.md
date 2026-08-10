@@ -6,7 +6,7 @@ description: harness-archive 的结构化归档与 summary-data 校验协议。�
 
 ## 原则
 
-归档不应维护与平台重复的展示文件。事实收集与校验由 `harness_archive.py finalize` 单命令完成（cleanup → **freeze（事件 cutoff）** → collect → source consistency → summary validate → archive-meta）；模型仅通过 events 写入维护结论。`meta/archive-meta.md` 由 finalize 生成，禁止手写。历史 archive 回放用 `harness_archive.py replay`（只读，不写 archive-meta / 不跑 cleanup）。
+归档不应维护与平台重复的展示文件。常规入口是 `harness_archive.py execute`：它一次性完成状态采集与自动门禁，再复用预检结果调用 finalize。finalize 执行 cleanup → **freeze（事件 cutoff）** → collect → source consistency → summary validate → archive-meta。模型仅通过 events 写入维护结论。`meta/archive-meta.md` 由 finalize 生成，禁止手写。历史 archive 回放用 `harness_archive.py replay`（只读，不写 archive-meta / 不跑 cleanup）。
 
 `knownRisks` 仅收录 severity∈{warning,error,critical} 的 issue 事件；无 severity 的 issue 进入 `maintenanceNotes`。`finalStatusReasons` 解释 CONDITIONAL_OK/WARN/FAIL 原因。finalize 在 before-manifest 前 cleanup：删除 lock/pid/launcher/credential，截断超大日志。
 
@@ -141,7 +141,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 
 ## 数据校验
 
-`validate` 是 `harness_archive.py finalize` 的内嵌同进程步骤（不存在独立 `report validate` CLI）。validate error 存在时，finalize 恢复原 changes 目录并 exit 非 0，绝不删除原 changes 目录。Hunter Platform 直接读取已校验的 `summary-data.json`。
+`validate` 是 finalize 的内嵌同进程步骤（不存在独立 `report validate` CLI）。validate error 存在时，finalize 恢复原 changes 目录并 exit 非 0，绝不删除原 changes 目录。warning 保留在报告中，但不会被误判为 validate error。Hunter Platform 直接读取已校验的 `summary-data.json`。
+
+正常完成时，`baseCommit` 与产品 tip 相同属于 `ARCHIVE_BASE_EQUALS_FEATURE_TIP`，必须在暂存前阻断。不得手工改 ledger 或 state snapshot。已有提交确属本变更时，使用 `adopt-existing-range` 生成绑定仓库、ownership 和 diffHash 的不可变收据；主动废弃或被替代时允许零产品增量，但必须记录中文原因，且固定 `releaseEligible=false`。
+
+候选收据缺失时，`execute` 可以复用身份一致、范围完整的 `unitTestFull` ledger 自动生成本地候选认证。提交只改变 commit 身份而产品树和验证输入未变化时，允许安全重绑定到当前 HEAD；该过程不得执行测试。门禁策略未声明数据库能力且未要求 `dbCompatibility` 时，数据库投影为带原因的 `NOT_APPLICABLE`，不得把缺少无关数据库证据升级为归档错误。
 
 ## 冻结优先 finalize 与两层一致性（schemaVersion 2.3 起）
 
@@ -167,7 +171,7 @@ repair 先在 archive 外生成候选 derived version。来源校验与数据校
 archive close 的破坏性事务只执行确定性 close：
 
 ```text
-status -> manifest -> move -> collect -> validate -> compare
+execute(one-shot status + gate) -> manifest -> move -> collect -> validate -> compare
 -> 生成确定性核心 ZIP -> 上传并等待服务端持久化/ingest 收据 -> stop AI service -> return
 ```
 

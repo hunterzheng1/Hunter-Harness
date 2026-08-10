@@ -727,7 +727,14 @@ class NodeCommandsTests(unittest.TestCase):
         _make_node_project(self.tmp)
         profile = hp.detect(self.tmp)["profile"]
         inputs = profile["commands"]["unitTestFull"]["inputs"]
-        for pat in ["package.json", "vitest.config.*", "src/**/*.ts", "test/**/*.ts"]:
+        for pat in [
+            "package.json",
+            "vitest.config.*",
+            "src/**/*.ts",
+            "test/**/*.ts",
+            "tests/**/*.ts",
+            "tests/**/*.tsx",
+        ]:
             self.assertIn(pat, inputs)
         self.assertFalse(any(p.startswith("node_modules") for p in inputs))
 

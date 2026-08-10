@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -213,6 +214,101 @@ class SnapshotCaptureTests(unittest.TestCase):
         self.assertEqual(second["unresolvedSegments"], [])
         self.assertTrue(second["comparisonAvailable"])
         self.assertEqual(second["baselineStatus"], "reused")
+
+    def test_first_git_capture_persists_head_as_immutable_change_base(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=self.project,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.project,
+            check=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "base"],
+            cwd=self.project,
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        snapshot, _ = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+        )
+
+        self.assertEqual(snapshot["changeBase"], base)
+        self.assertEqual(snapshot["git"]["base"], base)
+
+    def test_refresh_does_not_replace_the_initial_change_base(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=self.project,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test"],
+            cwd=self.project,
+            check=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "base"],
+            cwd=self.project,
+            check=True,
+        )
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+            base=base,
+        )
+        _write(self.project / "Svc.java", "class Svc { int v = 2; }\n")
+        subprocess.run(["git", "add", "Svc.java"], cwd=self.project, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "later"],
+            cwd=self.project,
+            check=True,
+        )
+        later = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        refreshed, _ = hst.capture_current_state(
+            project=self.project,
+            change_dir=self.change,
+            change_name="change-1",
+            worktree_root=self.project,
+            base=later,
+        )
+
+        self.assertEqual(refreshed["changeBase"], base)
+        self.assertEqual(refreshed["git"]["base"], base)
+        self.assertEqual(refreshed["git"]["head"], later)
 
     def test_discovery_without_git_keeps_code_segment_empty(self) -> None:
         segments = hst.discover_segment_files(

@@ -78,6 +78,44 @@ class ClosedPhaseDurationTests(unittest.TestCase):
 
 
 class AttemptInvocationTests(unittest.TestCase):
+    def test_archive_preparation_events_do_not_create_attempts(self) -> None:
+        bucket = [
+            ev("2026-07-18T09:58:00.000+08:00", "phase.prepare.start", phase="archive"),
+            ev(
+                "2026-07-18T09:59:00.000+08:00",
+                "phase.prepare.end",
+                phase="archive",
+                status="BLOCKED",
+            ),
+        ]
+
+        self.assertEqual(events.split_phase_attempts(bucket), [])
+        self.assertEqual(events.attempt_invocations(bucket), [])
+
+    def test_archive_preparation_events_do_not_inflate_formal_attempt(self) -> None:
+        bucket = [
+            ev("2026-07-18T09:58:00.000+08:00", "phase.prepare.start", phase="archive"),
+            ev(
+                "2026-07-18T09:59:00.000+08:00",
+                "phase.prepare.end",
+                phase="archive",
+                status="OK",
+            ),
+            ev("2026-07-18T10:00:00.000+08:00", "phase.start", phase="archive"),
+            ev(
+                "2026-07-18T10:00:02.000+08:00",
+                "phase.end",
+                phase="archive",
+                status="OK",
+            ),
+        ]
+
+        invocations = events.attempt_invocations(bucket)
+
+        self.assertEqual(len(invocations), 1)
+        self.assertEqual(invocations[0]["durationMs"], 2_000)
+        self.assertEqual(invocations[0]["warnings"], [])
+
     def test_decision_before_first_start_is_metadata_not_orphan_attempt(self) -> None:
         bucket = [
             ev("2026-07-18T09:59:00.000+08:00", "decision"),
