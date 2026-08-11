@@ -28,7 +28,7 @@ disallowed-tools:
 
 确定 change 后必须运行 `python <skills-root>/scripts/harness_gate.py classify --change <id> --stage plan --json`，并把脚本返回的 risk tier、默认阶段、条件阶段和必需验证写入计划；不得凭模型印象另建风险分级。
 
-需求 → 设计文档 → 任务拆分 → 测试场景表（编码/测试唯一真相源）。项目已绑定远端平台时先执行一次 `harness-knowledge-query`；远端不可用则记录 issue 并继续，不做本地回退。
+需求 → 设计文档 → 任务拆分 → 测试场景表（编码/测试唯一真相源）。项目已绑定远端平台时，阶段 1 只执行下表中的远端查询命令；远端不可用则记录 issue 并继续，不做本地回退。
 
 ## When to Use
 
@@ -61,7 +61,7 @@ disallowed-tools:
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
 | 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。立即运行一次 `harness_state.py capture --project . --change-dir "<executionRoot>" --json`，把此时 HEAD 固定为不可变 `changeBase`。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
 | 0.6 | 使用 `classify` 返回的默认阶段和项目能力生成 `plannedPhases`，向用户用中文说明可选阶段；确认后运行 `harness_context.py configure-plan --project . --change <id> --phases "plan,run,...,archive" --operator <tool> --reason "<中文原因>" --json`。无 Git 或不需要提交时不得加入 `submit`；快速迭代默认 `plan,run,archive`。省略项由脚本写入 `skippedPhases`，不得伪造阶段事件 |
-| 1 | `harness-knowledge-query` 单次远端 query（失败记 `issue`，不建立本地索引或离线回退） |
+| 1 | 直接执行一次 `npx hunter-harness knowledge query "<用户需求原文>" --limit 10 --json`。这是唯一执行入口，不扫描技能目录、不查找其他脚本；失败记 `issue` 并继续，不建立本地索引或离线回退 |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
@@ -86,7 +86,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
 | 阶段 8 | spec/plan/detail/scenarios/gate-policy/worktree 六项标准产物先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log；随后 `verify` 必须确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致，失败不得手工补终态 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
-| 知识查询 | 0.5 失败不得假装已读历史 |
+| 知识查询 | 阶段 1 失败不得假装已读历史，也不得改用本地索引或其他执行入口 |
 | 歧义优先检查 | 否定、对比、动作对象或范围存在多种合理解释时，最小取证后先给推荐理解并一次一问；确认前不深挖错误方向 |
 | 简单修复探索预算 | 预计不超过 2 个代码文件、且不涉及认证/安全/迁移/并发/API 契约重设时，最多 1 次合并 CodeGraph 查询 + 1 次定向补查、1 个用户澄清问题；无关发现只记非阻断说明 |
 | 精简产物 | 简单修复只保留实现所需的设计、任务、边界和测试；禁止在 spec/plan/detail/scenarios 中重复同一背景和结论 |

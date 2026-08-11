@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.73] — hunter-harness / [0.2.64] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-11 远端知识查询入口收敛）
+
+- **唯一查询入口**：Plan 阶段直接执行 `npx hunter-harness knowledge query "<用户需求原文>" --limit 10 --json`，不再扫描技能目录或猜测不存在的 `harness_knowledge.py`。
+- **失败边界明确**：远端查询失败只记录问题并继续，不建立本地索引，也不切换到其他查询入口。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.53`，最低 CLI 版本提升至 `0.2.73`。
+
 ## [0.2.72] — hunter-harness / [0.2.63] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-11 同步状态、Agent 指令入口与中文后续动作修订）

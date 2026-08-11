@@ -135,8 +135,13 @@ describe("embedded Harness Bundles", () => {
     expect(planSkill).toContain("仅高复杂度探索考虑委派");
     expect(planSkill).toContain("executionMode=delegated");
     expect(planSkill).toContain("fallbackPolicy=inline-no-retry");
+    expect(planSkill).toContain(
+      'npx hunter-harness knowledge query "<用户需求原文>" --limit 10 --json',
+    );
+    expect(planSkill).toContain("这是唯一执行入口，不扫描技能目录、不查找其他脚本");
+    expect(planSkill).not.toContain("harness_knowledge.py");
     expect(planSkill.indexOf("harness_context.py prepare --phase plan")).toBeLessThan(
-      planSkill.indexOf("`harness-knowledge-query` 单次远端 query")
+      planSkill.indexOf("npx hunter-harness knowledge query")
     );
 
     for (const text of [planProtocols, planChecklist, planReference, runProtocols]) {
