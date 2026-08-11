@@ -15,7 +15,6 @@ import { canonicalJson } from "@hunter-harness/contracts";
 
 import { sha256Bytes, sha256File } from "../fs/hash.js";
 import { normalizeManagedPath } from "../fs/path-safety.js";
-import { scanSensitiveFiles } from "../security/scanner.js";
 import { atomicWriteFile, atomicWriteJson } from "../state/atomic.js";
 import type {
   SnapshotRecord,
@@ -26,11 +25,6 @@ import type {
 export interface RecoveryStoreOptions {
   root: string;
   managedPaths: readonly string[];
-  /**
-   * Exact hashes of immutable, bundled payloads whose scanner matches are
-   * documented fixture text rather than runtime credentials.
-   */
-  allowedSensitiveContentHashes?: readonly string[];
 }
 
 export interface RecoveryLocationOptions {
@@ -89,15 +83,6 @@ export interface DurableRecoveryMirror {
   mirroredOperationIndexes: number[];
   mirroredSnapshotPaths: string[];
   snapshotDigest: string;
-}
-
-export class RecoveryMirrorSensitiveContentError extends Error {
-  readonly code = "RECOVERY_MIRROR_SENSITIVE_CONTENT";
-
-  constructor() {
-    super("durable recovery payload contains sensitive content");
-    this.name = "RecoveryMirrorSensitiveContentError";
-  }
 }
 
 export class RecoveryMutationConflictError extends Error {
@@ -921,44 +906,9 @@ export async function prepareDurableRecovery(
       const operation = journal.operations[index];
       return operation !== undefined && operationIsManaged(operation, managed);
     });
-  const allowedSensitive = new Set(
-    options.allowedSensitiveContentHashes ?? []
-  );
-  for (const index of mirroredOperationIndexes) {
-    const operation = journal.operations[index];
-    if (operation === undefined || operation.operation === "delete") {
-      continue;
-    }
-    const content = await readFile(
-      join(projectTransactionRoot, "staged", String(index)),
-      "utf8"
-    );
-    if (scanSensitiveFiles({ [`staged/${index}`]: content }).blocked &&
-        (operation.content_sha256 === undefined ||
-          !allowedSensitive.has(operation.content_sha256))) {
-      throw new RecoveryMirrorSensitiveContentError();
-    }
-  }
   const mirroredSnapshots = journal.snapshots.filter((snapshot) =>
     managed.has(snapshot.path)
   );
-  for (const snapshot of mirroredSnapshots) {
-    if (snapshot.snapshot_name === null) continue;
-    const snapshotPath = join(
-      projectTransactionRoot,
-      "before",
-      snapshot.snapshot_name
-    );
-    const [content, digest] = await Promise.all([
-      readFile(snapshotPath, "utf8"),
-      sha256File(snapshotPath)
-    ]);
-    if (scanSensitiveFiles({
-      [`before/${snapshot.snapshot_name}`]: content
-    }).blocked && !allowedSensitive.has(digest)) {
-      throw new RecoveryMirrorSensitiveContentError();
-    }
-  }
 
   const key = projectKey(projectRoot, journal.project_identity);
   const durableRoot = durableTransactionRoot(options.root, key, journal.recovery_id ??

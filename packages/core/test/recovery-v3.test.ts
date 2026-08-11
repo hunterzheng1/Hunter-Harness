@@ -153,7 +153,7 @@ describe("schema v3 durable recovery", () => {
     expect(await textTree(recoveryRoot)).not.toContain("business body");
   });
 
-  it("never persists sensitive staged content in the durable store", async () => {
+  it("preserves managed staged bytes in the private durable store without content inspection", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-durable-secret-"));
     const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-recovery-store-"));
     const sensitive = "Authorization: Bearer unsafe-secret-token-1234567890";
@@ -165,17 +165,24 @@ describe("schema v3 durable recovery", () => {
     }], {
       id: "tx_sensitive",
       kind: "update",
+      interruptAfterApply: 1,
       recoveryStore: { root: recoveryRoot, managedPaths: ["managed.md"] },
       ...identity
-    })).rejects.toMatchObject({ code: "RECOVERY_MIRROR_SENSITIVE_CONTENT" });
+    })).rejects.toThrow(/interrupted/i);
 
-    await expect(readFile(join(root, "managed.md"))).rejects.toMatchObject({
-      code: "ENOENT"
+    expect(await readFile(join(root, "managed.md"), "utf8")).toBe(sensitive);
+    expect(await textTree(recoveryRoot)).toContain(sensitive);
+    await rm(join(root, ".harness"), { recursive: true, force: true });
+
+    const result = await resumeTransaction(root, "tx_sensitive", {
+      recoveryRoot,
+      ...identity
     });
-    expect(await textTree(recoveryRoot)).not.toContain(sensitive);
+    expect(result.status).toBe("committed");
+    expect(await readFile(join(root, "managed.md"), "utf8")).toBe(sensitive);
   });
 
-  it("never persists a sensitive before-snapshot in the durable store", async () => {
+  it("restores exact managed before-snapshot bytes without content inspection", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-durable-before-secret-"));
     const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-recovery-store-"));
     const sensitive = "Authorization: Bearer before-secret-token-1234567890";
@@ -188,12 +195,21 @@ describe("schema v3 durable recovery", () => {
     }], {
       id: "tx_sensitive_before",
       kind: "update",
+      interruptAfterApply: 1,
       recoveryStore: { root: recoveryRoot, managedPaths: ["managed.md"] },
       ...identity
-    })).rejects.toMatchObject({ code: "RECOVERY_MIRROR_SENSITIVE_CONTENT" });
+    })).rejects.toThrow(/interrupted/i);
 
+    expect(await readFile(join(root, "managed.md"), "utf8")).toBe("safe replacement");
+    expect(await textTree(recoveryRoot)).toContain(sensitive);
+    await rm(join(root, ".harness"), { recursive: true, force: true });
+
+    const result = await recoverTransaction(root, "tx_sensitive_before", {
+      recoveryRoot,
+      projectIdentity: identity.projectIdentity
+    });
+    expect(result.status).toBe("rolled_back");
     expect(await readFile(join(root, "managed.md"), "utf8")).toBe(sensitive);
-    expect(await textTree(recoveryRoot)).not.toContain(sensitive);
   });
 
   it("rejects a durable recovery root that overlaps the project", async () => {

@@ -158,6 +158,28 @@ describe("multi-agent initialize", () => {
     expect(await exists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
   });
 
+  it("installs CodeBuddy without inspecting existing instruction content", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-ins-cb-existing-"));
+    const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-ins-cb-recovery-"));
+    const existing = [
+      "# Existing project instructions",
+      "Authorization: Bearer project-owned-placeholder-token-1234567890",
+      ""
+    ].join("\n");
+    await writeFile(join(root, "CODEBUDDY.md"), existing);
+
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
+      dryRun: false,
+      recoveryStore: { root: recoveryRoot }
+    });
+
+    expect(await readFile(join(root, "CODEBUDDY.md"), "utf8")).toBe(existing);
+    expect(await exists(join(root, ".codebuddy", "skills", "harness-review", "SKILL.md"))).toBe(true);
+  });
+
   it("installs all four agents with marker-free Chinese docs, context v2, state v4", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-all-"));
     await initializeProject({

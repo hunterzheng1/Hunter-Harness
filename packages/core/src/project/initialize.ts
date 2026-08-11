@@ -440,12 +440,7 @@ export async function initializeProject(
         : {
           recoveryStore: {
             ...options.recoveryStore,
-            managedPaths: paths,
-            allowedSensitiveContentHashes: mergedTargets.map((target) =>
-              target.sha256.startsWith("sha256:")
-                ? target.sha256
-                : `sha256:${target.sha256}`
-            )
+            managedPaths: paths
           }
         })
     });

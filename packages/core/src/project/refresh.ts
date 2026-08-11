@@ -874,12 +874,6 @@ export async function refreshProject(options: RefreshOptions): Promise<RefreshRe
               operation.operation === "rename"
                 ? [operation.from_path, operation.to_path]
                 : [operation.path]
-            ),
-            allowedSensitiveContentHashes: [
-              ...newManaged.map((target) => target.sha256),
-              ...trusted.values()
-            ].map((digest) =>
-              digest.startsWith("sha256:") ? digest : `sha256:${digest}`
             )
           }
         })
