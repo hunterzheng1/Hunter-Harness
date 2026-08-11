@@ -165,7 +165,45 @@ describe("hunter-harness initialization", () => {
     ]));
   });
 
-  it("detects an adapter build marker as partial state without recreating .harness", async () => {
+  it("fails closed when project.yaml is missing but an active change remains", async () => {
+    const changePath = join(
+      root,
+      ".harness",
+      "changes",
+      "unfinished",
+      "plans",
+      "unfinished-plan.md"
+    );
+    await mkdir(join(changePath, ".."), { recursive: true });
+    await writeFile(changePath, "# 未完成变更\n", "utf8");
+
+    const code = await run([
+      "--profile", "general",
+      "--non-interactive",
+      "--yes",
+      "--json"
+    ]);
+
+    expect(code).toBe(6);
+    expect(await readFile(changePath, "utf8")).toBe("# 未完成变更\n");
+    expect(await pathExists(join(root, ".harness", "project.yaml"))).toBe(false);
+    const output = JSON.parse(stdout.join("")) as {
+      errors: Array<{ sentinels: string[] }>;
+    };
+    expect(output.errors[0]?.sentinels).toContain(".harness/changes");
+  });
+
+  it("reinitializes when only rules, config, codebase, and generated adapter markers remain", async () => {
+    const retainedFiles = new Map([
+      [join(root, ".harness", "config", "local.yaml"), "language: zh-CN\n"],
+      [join(root, ".harness", "rules", "team.md"), "# 团队规则\n"],
+      [join(root, ".harness", "codebase", "map", "summary.md"), "# 代码地图\n"]
+    ]);
+    for (const [path, content] of retainedFiles) {
+      await mkdir(join(path, ".."), { recursive: true });
+      await writeFile(path, content, "utf8");
+    }
+
     const marker = join(
       root,
       ".agents",
@@ -175,22 +213,26 @@ describe("hunter-harness initialization", () => {
     );
     await mkdir(join(marker, ".."), { recursive: true });
     await writeFile(marker, "{\"schemaVersion\":1}\n", "utf8");
+    await writeFile(
+      join(root, "AGENTS.md"),
+      "<!-- hunter-harness:start id=legacy -->\n旧说明\n<!-- hunter-harness:end -->\n",
+      "utf8"
+    );
 
     const code = await run([
-      "--profile", "general",
+      "--agents", "codebuddy",
+      "--profile", "java",
       "--non-interactive",
-      "--dry-run",
+      "--yes",
       "--json"
     ]);
 
-    expect(code).toBe(6);
-    expect(await pathExists(join(root, ".harness"))).toBe(false);
-    const output = JSON.parse(stdout.join("")) as {
-      errors: Array<{ sentinels: string[] }>;
-    };
-    expect(output.errors[0]?.sentinels).toContain(
-      ".agents/skills/harness-run/.harness-build.json"
-    );
+    expect(code).toBe(0);
+    expect(await pathExists(join(root, ".harness", "project.yaml"))).toBe(true);
+    for (const [path, content] of retainedFiles) {
+      expect(await readFile(path, "utf8")).toBe(content);
+    }
+    expect(await readFile(marker, "utf8")).toBe("{\"schemaVersion\":1}\n");
   });
 
   it("defaults a blank non-interactive install to the general profile", async () => {

@@ -19,6 +19,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc -b",
     "pretest": "npm run sync:harness && npm run bundle -w packages/cli",
     "test": "node node_modules/vitest/vitest.mjs run --maxWorkers=2",
+    "test:changed": "node scripts/test-changed.mjs",
     "test:watch": "node node_modules/vitest/vitest.mjs",
     "test:harness:safe": "python harness/scripts/harness_test_runner.py unittest --profile safe --timeout-seconds 300 --verbosity 0",
     "test:harness:system": "python harness/scripts/harness_test_runner.py unittest --profile system --timeout-seconds 600 --verbosity 0",
@@ -29,6 +30,7 @@
     "check:push": "npm run lint && npm run typecheck",
     "check": "npm run lint && npm run typecheck && npm test && npm run build:artifacts",
     "check:all": "npm run check && npm run smoke:pack",
+    "release:preflight": "npm run sync:harness && npm run check:push && npm run test:changed && npm run build:artifacts",
     "setup:git-hooks": "git config core.hooksPath scripts/git-hooks",
     "hh": "node ./packages/cli/dist/bin.js",
     "hunter-harness": "node ./packages/cli/dist/bin.js"

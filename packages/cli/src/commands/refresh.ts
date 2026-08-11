@@ -80,11 +80,14 @@ export async function detectProject(root: string): Promise<ProjectDetection> {
           recoveryTransactions: evidence.recoveryTransactions
         };
       }
-      if (evidence.sentinels.length > 0) {
+      const protectedSentinels = evidence.protectedLocalRoots
+        .filter((inventory) => inventory.files > 0 || inventory.directories > 0)
+        .map((inventory) => inventory.path);
+      if (protectedSentinels.length > 0) {
         return {
           status: "partial",
           reasonCode: "PARTIAL_HARNESS_STATE_DETECTED",
-          sentinels: evidence.sentinels,
+          sentinels: protectedSentinels,
           protectedLocalRoots: evidence.protectedLocalRoots
         };
       }

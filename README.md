@@ -113,7 +113,15 @@ npm ci
 npm run check
 ```
 
-`npm run check` 依次执行 lint、TypeScript、全部测试、CLI 构建与两个 npm 包的 pack/install smoke test。
+`npm run check` 依次执行 lint、TypeScript、全部 Vitest 测试和公开产物构建。需要在本机额外验证 npm 打包与安装时，运行 `npm run check:all`。
+
+发布前默认运行快速预检：
+
+```bash
+npm run release:preflight
+```
+
+快速预检同步 Harness Bundle，执行 lint、TypeScript、受改动影响的测试，并重新构建公开产物。该命令不在本机重复执行全仓测试；完整回归由 CI 承担。CI 在 Ubuntu 执行一次完整检查，在两个 Windows 分片中覆盖全部测试，并行验证 npm 打包和 Node.js 22.17 兼容性。
 
 在本 monorepo 内 dogfood CLI（勿依赖全局 PATH）可用：
 
