@@ -465,6 +465,7 @@ describe("hunter-harness initialization", () => {
       mcpServers: Record<string, unknown>;
     };
     expect(mcp.mcpServers.codegraph).toBeDefined();
+    expect(await readFile(join(root, ".gitignore"), "utf8")).toMatch(/^\/\.mcp\.json$/m);
   }, 90_000);
 
   it("non-interactive --agents all projects four agent roots", async () => {

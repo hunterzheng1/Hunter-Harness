@@ -38,6 +38,7 @@ export const ROOT_INSTRUCTION_DOCUMENTS = [
 const HARNESS_GITIGNORE_ENTRIES = [
   { pattern: "/.harness/", probe: ".harness/__hunter_probe__" },
   { pattern: "/.worktrees/", probe: ".worktrees/__hunter_probe__" },
+  { pattern: "/.mcp.json", probe: ".mcp.json" },
   { pattern: "/.claude/", probe: ".claude/__hunter_probe__" },
   { pattern: "/.agents/", probe: ".agents/__hunter_probe__" },
   { pattern: "/.cursor/", probe: ".cursor/__hunter_probe__" },

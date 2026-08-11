@@ -67,6 +67,29 @@ describe("Harness .gitignore maintenance", () => {
     }
   });
 
+  it("adds the project MCP config to an existing gitignore exactly once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-mcp-"));
+    await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+    await writeFile(join(root, ".gitignore"), "node_modules/\n", "utf8");
+
+    const first = await ensureHarnessGitignore(root);
+    const firstContent = await readFile(join(root, ".gitignore"), "utf8");
+
+    expect(first.changed).toBe(true);
+    expect(first.patternResults).toContainEqual({
+      pattern: "/.mcp.json",
+      status: "added"
+    });
+    expect(firstContent.match(/^\/\.mcp\.json$/gm)).toHaveLength(1);
+    await expect(
+      execFileAsync("git", ["check-ignore", "--no-index", "--", ".mcp.json"], { cwd: root })
+    ).resolves.toMatchObject({ stdout: expect.stringContaining(".mcp.json") });
+
+    const repeated = await ensureHarnessGitignore(root);
+    expect(repeated.changed).toBe(false);
+    expect(await readFile(join(root, ".gitignore"), "utf8")).toBe(firstContent);
+  });
+
   it("reports a generated root document as tracked instead of ignoring it", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-gitignore-tracked-"));
     await execFileAsync("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
