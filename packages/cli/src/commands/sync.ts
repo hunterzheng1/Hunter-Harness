@@ -1,15 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
   assessCodebaseMapOnDisk,
-  atomicWriteJson,
   runManagedProcess,
   type ManagedProcessBudget,
   type ManagedProcessResult,
   refreshProject,
-  sha256File,
   validateInstructionGraph
 } from "@hunter-harness/core";
 import {
@@ -97,16 +95,6 @@ export interface SyncVersions {
 export type ProcessResult = ManagedProcessResult;
 export type ProcessBudget = ManagedProcessBudget;
 
-export interface SyncPointer {
-  schemaVersion: 1;
-  runId: string;
-  status: SyncStatus;
-  completedAt: string;
-  reportPath: string;
-  reportSha256: string;
-  headCommit: string | null;
-}
-
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -124,6 +112,13 @@ export async function runProcess(
 function configuredAgents(values: readonly string[]): HarnessAgent[] {
   const enabled = new Set(values);
   return HARNESS_AGENT_ORDER.filter((agent) => enabled.has(agent));
+}
+
+function instructionEntrypointsForAgents(agents: readonly HarnessAgent[]): string[] {
+  const entrypoints = new Set(["AGENTS.md"]);
+  if (agents.includes("claude-code")) entrypoints.add("CLAUDE.md");
+  if (agents.includes("codebuddy")) entrypoints.add("CODEBUDDY.md");
+  return [...entrypoints];
 }
 
 function receipt(
@@ -158,15 +153,21 @@ function defaultSyncNextAction(
 ): string | null {
   if (status === "OK") return null;
   if (component === "adapter-projection") {
-    return "Review the preserved adapter change, apply the intended update to the `harness/` source of truth, run its focused tests, then refresh adapters; do not overwrite the local adapter file.";
+    return "检查已保留的 Adapter 变更；如需采纳，先更新 `harness/` 真源并运行聚焦测试，再刷新投影。不要直接覆盖本地 Adapter 文件。";
   }
   if (component === "runtime:python") {
-    return "Install or select a usable Python runtime, then re-run `hunter-harness sync`.";
+    return "安装或选择可用的 Python 运行时，然后重新运行 `npx hunter-harness sync`。";
   }
   if (reasonCode === "DRY_RUN_NOT_EXECUTED") {
-    return "Run `hunter-harness sync` without `--dry-run` after reviewing this preview.";
+    return "确认预览结果后，去掉 `--dry-run` 重新运行 `npx hunter-harness sync`。";
   }
-  return `Resolve ${reasonCode} for ${component}, then re-run \`hunter-harness sync\` and inspect its component receipt.`;
+  if (component === "codebase-map") {
+    return "运行 `/harness-codebase-map`，生成技术栈、架构、目录结构、约定、测试与风险等项目地图。";
+  }
+  if (component === "instruction-graph") {
+    return "检查当前已启用 Agent 的入口文档及其引用，修复缺失文件、无效引用或循环引用后重新同步。";
+  }
+  return `处理 ${component} 的“${reasonCode}”问题后，重新运行 \`npx hunter-harness sync\`。`;
 }
 
 interface AdapterConflictEvidence {
@@ -230,8 +231,8 @@ export function summarizePartialEffects(
     persisted,
     notPersisted,
     summary: persisted.length === 0
-      ? "No durable sync effects were recorded before the overall result."
-      : `Durable effects already persisted: ${persisted.join("; ")}.${notPersisted.length === 0 ? "" : ` Not persisted: ${notPersisted.join("; ")}.`}`
+      ? "本次同步没有产生持久化变更。"
+      : `已持久化：${persisted.join("；")}。${notPersisted.length === 0 ? "" : `未持久化：${notPersisted.join("；")}。`}`
   };
 }
 
@@ -312,18 +313,17 @@ export function buildSyncRemediations(
             : [
                 `.${adapter}/**`,
                 ".harness/rules/**",
-                ".harness/runtime/sync/**",
                 ".harness/context-index.json"
               ],
           backup: ".harness/state/transactions/<latest-committed-refresh>/before",
-          rollback: "automatic-on-failure; otherwise restore the committed refresh before snapshot before further edits",
+          rollback: "失败时自动回滚；其他情况可在继续编辑前恢复 refresh 事务的 before 快照",
           estimatedDurationMs: 3_000,
           requiresConfirmation: true,
           previewCommand:
-            `hunter-harness sync --check --fix refresh-managed-adapters-${adapter} --json`,
+            `npx hunter-harness sync --check --fix refresh-managed-adapters-${adapter} --json`,
           applyCommand: adapter === "unknown"
             ? ""
-            : `hunter-harness sync --fix refresh-managed-adapters-${adapter} --yes --json`,
+            : `npx hunter-harness sync --fix refresh-managed-adapters-${adapter} --yes --json`,
           affectedCount: adapterConflicts.length
         });
       }
@@ -346,7 +346,7 @@ export function buildSyncRemediations(
         rollback: null,
         estimatedDurationMs: null,
         requiresConfirmation: true,
-        previewCommand: "hunter-harness knowledge query \"项目概览\" --json",
+        previewCommand: "npx hunter-harness knowledge query \"项目概览\" --json",
         applyCommand: ""
       });
       continue;
@@ -365,8 +365,8 @@ export function buildSyncRemediations(
         rollback: null,
         estimatedDurationMs: null,
         requiresConfirmation: true,
-        previewCommand: "hunter-harness instructions audit --json",
-        applyCommand: "hunter-harness instructions apply --proposal <proposal.json> --yes --json"
+        previewCommand: "npx hunter-harness instructions audit --json",
+        applyCommand: "npx hunter-harness instructions apply --proposal <proposal.json> --yes --json"
       });
       continue;
     }
@@ -378,7 +378,7 @@ export function buildSyncRemediations(
         : component.status === "ADVISORY"
           ? "ADVISORY"
           : "WARN",
-      title: `Resolve ${component.reasonCode}`,
+      title: `需要处理：${component.reasonCode}`,
       autoFixable: false,
       risk: "medium",
       writes: [],
@@ -386,7 +386,7 @@ export function buildSyncRemediations(
       rollback: null,
       estimatedDurationMs: null,
       requiresConfirmation: true,
-      previewCommand: "hunter-harness sync --check --json",
+      previewCommand: "npx hunter-harness sync --check --json",
       applyCommand: ""
     });
   }
@@ -399,8 +399,6 @@ export function buildCompactSyncResult(input: {
   components: readonly ComponentReceipt[];
   remediations: readonly SyncRemediation[];
   versions: SyncVersions;
-  reportPath: string | null;
-  reportSha256: string | null;
   verbose: boolean;
 }): Record<string, unknown> {
   return {
@@ -409,8 +407,8 @@ export function buildCompactSyncResult(input: {
     components: statusCounts(input.components),
     versions: input.versions,
     remediations: input.remediations,
-    reportPath: input.reportPath,
-    reportSha256: input.reportSha256,
+    reportPath: null,
+    reportSha256: null,
     ...(input.verbose
       ? {
           componentOutcomes: input.components,
@@ -466,17 +464,14 @@ function humanSyncSummary(payload: Record<string, unknown>): string {
   const remediations = Array.isArray(payload.remediations)
     ? payload.remediations
     : [];
-  const reportPath = typeof payload.reportPath === "string"
-    ? payload.reportPath
-    : "read-only check (no report written)";
   return [
-    `Sync ${String(payload.status)}: ` +
+    `同步结果：${String(payload.status)}（` +
       `${String(counts.ok ?? 0)} OK, ` +
-      `${String(counts.advisory ?? 0)} advisory, ` +
+      `${String(counts.advisory ?? 0)} ADVISORY, ` +
       `${String(counts.warn ?? 0)} WARN, ` +
-      `${String(counts.fail ?? 0)} FAIL.`,
-    `Remediations: ${remediations.length}.`,
-    `Report: ${reportPath}`
+      `${String(counts.fail ?? 0)} FAIL）。`,
+    `可选修复项：${remediations.length}。`,
+    "本次同步不写运行报告，也不上报生命周期监控。"
   ].join("\n") + "\n";
 }
 
@@ -490,41 +485,6 @@ function emitSyncResult(
       ? JSON.stringify(payload) + "\n"
       : humanSyncSummary(payload)
   );
-}
-
-async function updateContextIndexMetadata(
-  root: string,
-  reportPath: string,
-  reportSha256: string,
-  status: SyncStatus,
-  origins: Awaited<ReturnType<typeof inspectConfigOrigins>>,
-  pointer: SyncPointer,
-  successful: boolean
-): Promise<void> {
-  const path = join(root, ".harness", "context-index.json");
-  const existing = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-  const previousSync = existing.sync;
-  const sync = previousSync !== null && typeof previousSync === "object"
-    ? previousSync as Record<string, unknown>
-    : {};
-  await atomicWriteJson(path, {
-    ...existing,
-    canonicalConfigPaths: origins
-      .filter((origin) => origin.canonicalExists)
-      .map((origin) => origin.canonicalPath),
-    generatedProjectionPaths: origins
-      .filter((origin) => origin.projectionExists)
-      .map((origin) => origin.projectionPath),
-    sync: {
-      ...sync,
-      status,
-      observedAt: nowIso(),
-      reportPath,
-      reportSha256,
-      lastRun: pointer,
-      ...(successful ? { lastSuccess: pointer } : {})
-    }
-  });
 }
 
 async function runPythonComponent(
@@ -648,19 +608,6 @@ export async function probeCodeGraph(
   };
 }
 
-export async function persistSyncPointers(
-  root: string,
-  pointer: SyncPointer,
-  successful: boolean
-): Promise<void> {
-  const directory = join(root, ".harness", "runtime", "sync");
-  await mkdir(directory, { recursive: true });
-  await atomicWriteJson(join(directory, "last-run.json"), pointer);
-  if (successful) {
-    await atomicWriteJson(join(directory, "last-success.json"), pointer);
-  }
-}
-
 export interface SyncWritePolicy {
   adapterReadOnly: boolean;
 }
@@ -691,7 +638,6 @@ export async function runSync(
   const root = resolve(options.project ?? dependencies.cwd);
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const components: ComponentReceipt[] = [];
-  const runStartedAt = nowIso();
   const cliVersion = await readCliVersion();
   const versions = await readSyncVersions(root, dependencies.resourcesRoot, cliVersion);
   const checkMode = options.check === true || options.dryRun === true;
@@ -731,8 +677,6 @@ export async function runSync(
       components,
       remediations: buildSyncRemediations(components),
       versions,
-      reportPath: null,
-      reportSha256: null,
       verbose
     });
     emitSyncResult(dependencies, options, compact);
@@ -759,8 +703,6 @@ export async function runSync(
       components,
       remediations,
       versions,
-      reportPath: null,
-      reportSha256: null,
       verbose
     });
     emitSyncResult(dependencies, options, compact);
@@ -781,8 +723,6 @@ export async function runSync(
       components,
       remediations: buildSyncRemediations(components),
       versions,
-      reportPath: null,
-      reportSha256: null,
       verbose
     });
     emitSyncResult(dependencies, options, compact);
@@ -860,24 +800,24 @@ export async function runSync(
       },
       result.conflicts.length === 0
         ? null
-        : "Review the source/adapter hashes and diff summaries in this receipt. For each intended patch, modify the matching `harness/` source of truth, run focused tests, then refresh adapters; do not overwrite local adapter edits.",
+        : "检查源文件与 Adapter 的哈希及差异摘要。需要采纳的修改应先写入对应 `harness/` 真源，完成聚焦测试后再刷新；不要覆盖本地 Adapter 修改。",
       {
         persisted: writePolicy.adapterReadOnly
           ? []
           : [
-              ...(result.applied.length > 0 ? [`adapter projection applied ${result.applied.length} change(s)`] : []),
-              ...(result.removed.length > 0 ? [`adapter projection removed ${result.removed.length} clean target(s)`] : [])
+              ...(result.applied.length > 0 ? [`Adapter 投影已应用 ${result.applied.length} 项变更`] : []),
+              ...(result.removed.length > 0 ? [`Adapter 投影已移除 ${result.removed.length} 个可安全清理的目标`] : [])
             ],
         notPersisted: [
           ...(writePolicy.adapterReadOnly && result.applied.length > 0
-            ? [`adapter projection previewed ${result.applied.length} change(s)`]
+            ? [`只读预览了 ${result.applied.length} 项 Adapter 投影变更`]
             : []),
           ...(writePolicy.adapterReadOnly && result.removed.length > 0
-            ? [`adapter projection previewed removal of ${result.removed.length} clean target(s)`]
+            ? [`只读预览了 ${result.removed.length} 个 Adapter 清理目标`]
             : []),
           ...(result.conflicts.length === 0
             ? []
-            : [`${result.conflicts.length} locally modified adapter target(s) were preserved`])
+            : [`已保留 ${result.conflicts.length} 个存在本地修改的 Adapter 目标`])
         ]
       }
     ));
@@ -889,7 +829,7 @@ export async function runSync(
       "ADAPTER_REFRESH_FAILED",
       String(error),
       undefined,
-      { persisted: [], notPersisted: ["adapter projection did not complete"] }
+      { persisted: [], notPersisted: ["Adapter 投影未完成"] }
     ));
   }
 
@@ -925,7 +865,7 @@ export async function runSync(
       automaticRuleCandidateApplication: false,
       legacyMarkerInjection: false
     },
-    "运行 `hunter-harness instructions audit --json` 生成提案；审阅后再使用 `instructions apply`。",
+    "运行 `npx hunter-harness instructions audit --json` 生成提案；审阅后再使用 `npx hunter-harness instructions apply`。",
     {
       persisted: [],
       notPersisted: ["sync 不直接改写 AGENTS.md、Agent 文档或规则"]
@@ -947,9 +887,10 @@ export async function runSync(
   ));
 
   const instructionStarted = Date.now();
-  const instructions = await validateInstructionGraph(root);
-  const instructionDiagnosticsRelative =
-    `.harness/runtime/sync/${runId}/instruction-graph-diagnostics.json`;
+  const instructions = await validateInstructionGraph(
+    root,
+    instructionEntrypointsForAgents(agents)
+  );
   components.push(receipt(
     "instruction-graph",
     instructionStarted,
@@ -971,9 +912,7 @@ export async function runSync(
       cycleCount: instructions.cycles.length,
       cycleSamples: instructions.cycles.slice(0, 10),
       edgeTypeCounts: instructions.diagnostics.edgeTypeCounts,
-      diagnosticsPath: checkMode
-        ? null
-        : instructionDiagnosticsRelative
+      diagnosticsPath: null
     }
   ));
 
@@ -1025,77 +964,18 @@ export async function runSync(
     codeGraphStarted,
     codeGraph.status,
     codeGraph.reasonCode,
-    codeGraph
+    codeGraph,
+    codeGraph.status === "OK" ? null : codeGraph.action
   ));
 
   const status = overallStatus(components);
-  const partialEffects = summarizePartialEffects(components);
   const remediations = buildSyncRemediations(components);
-  const reportRelative = `.harness/runtime/sync/${runId}/reports/sync-report.json`;
-  const reportAbsolute = join(root, reportRelative);
-  const report = {
-    schemaVersion: 1,
-    runId,
-    runStartedAt,
-    completedAt: nowIso(),
-    status,
-    projectRoot: root,
-    headCommit: gitDelta.headCommit,
-    versions,
-    components,
-    partialEffects,
-    remediations
-  };
-  if (checkMode) {
-    const compact = buildCompactSyncResult({
-      status,
-      runId,
-      components,
-      remediations,
-      versions,
-      reportPath: null,
-      reportSha256: null,
-      verbose
-    });
-    emitSyncResult(dependencies, options, compact);
-    return syncExitCode(status);
-  }
-  await mkdir(join(root, `.harness/runtime/sync/${runId}/reports`), { recursive: true });
-  await atomicWriteJson(
-    join(root, instructionDiagnosticsRelative),
-    instructions
-  );
-  await atomicWriteJson(reportAbsolute, report);
-  const reportSha256 = (await sha256File(reportAbsolute)).slice(7);
-  const pointer: SyncPointer = {
-    schemaVersion: 1,
-    runId,
-    status,
-    completedAt: nowIso(),
-    reportPath: reportRelative,
-    reportSha256,
-    headCommit: gitDelta.headCommit
-  };
-  const successful =
-    status === "OK" || status === "ADVISORY" || status === "WARN";
-  await persistSyncPointers(root, pointer, successful);
-  await updateContextIndexMetadata(
-    root,
-    reportRelative,
-    reportSha256,
-    status,
-    origins,
-    pointer,
-    successful
-  );
   const compact = buildCompactSyncResult({
     status,
     runId,
     components,
     remediations,
     versions,
-    reportPath: reportRelative,
-    reportSha256,
     verbose
   });
   emitSyncResult(dependencies, options, compact);

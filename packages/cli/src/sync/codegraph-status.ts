@@ -19,7 +19,7 @@ export type CodeGraphCoverage =
   | "UNKNOWN";
 
 export interface CodeGraphStatus {
-  status: "OK" | "WARN" | "UNKNOWN";
+  status: "OK" | "ADVISORY" | "WARN" | "UNKNOWN";
   reasonCode:
     | "OK"
     | "CODEGRAPH_INDEX_MISSING"
@@ -284,7 +284,7 @@ export async function assessCodeGraphStatus(
       indexObservedAt: null,
       watcherObservedAt: null,
       watcherActive: null,
-      action: "Run `codegraph init` explicitly if this project should be indexed."
+      action: "如果希望为该项目建立代码图谱，请显式运行 `codegraph init`。"
     };
   }
 
@@ -339,24 +339,7 @@ export async function assessCodeGraphStatus(
         indexObservedAt,
         watcherObservedAt,
         watcherActive,
-        action: "Restart the CodeGraph integration; no automatic full reindex was triggered."
-      };
-    }
-    if (serviceReachable === null || watcherActive === null) {
-      return {
-        status: "WARN",
-        reasonCode: "CODEGRAPH_WATCHER_UNVERIFIED",
-        serviceReachable,
-        indexedCommit: null,
-        indexedCommitSource: "unavailable",
-        pendingFileCount,
-        pendingSource,
-        watcherLagMs,
-        coverage: "INDEX_PRESENT_UNVERIFIED",
-        indexObservedAt,
-        watcherObservedAt,
-        watcherActive,
-        action: "Verify the CodeGraph daemon and watcher; no automatic full reindex was triggered."
+        action: "CodeGraph 服务或 watcher 已不可用；请检查并重启集成。本次同步不会自动执行全量重建。"
       };
     }
     if (pendingFileCount > 0) {
@@ -373,7 +356,24 @@ export async function assessCodeGraphStatus(
         indexObservedAt,
         watcherObservedAt,
         watcherActive,
-        action: "Wait for incremental synchronization; no automatic full reindex was triggered."
+        action: "仍有源码等待进入 CodeGraph 索引；请等待增量同步完成。本次同步不会自动执行全量重建。"
+      };
+    }
+    if (serviceReachable === null || watcherActive === null) {
+      return {
+        status: "ADVISORY",
+        reasonCode: "CODEGRAPH_WATCHER_UNVERIFIED",
+        serviceReachable,
+        indexedCommit: null,
+        indexedCommitSource: "unavailable",
+        pendingFileCount,
+        pendingSource,
+        watcherLagMs,
+        coverage: "INDEX_PRESENT_UNVERIFIED",
+        indexObservedAt,
+        watcherObservedAt,
+        watcherActive,
+        action: "CodeGraph 索引可用且未发现待同步源码；后台 watcher 尚未验证，可按需检查 daemon 状态。"
       };
     }
     const headCommit = options.headCommit !== undefined &&
@@ -394,7 +394,7 @@ export async function assessCodeGraphStatus(
       indexObservedAt,
       watcherObservedAt,
       watcherActive,
-      action: "No reindex required."
+      action: "索引已是最新状态，无需重建。"
     };
   } catch {
     return {
@@ -410,7 +410,7 @@ export async function assessCodeGraphStatus(
       indexObservedAt: null,
       watcherObservedAt: null,
       watcherActive: null,
-      action: "Inspect CodeGraph diagnostics; no automatic full reindex was triggered."
+      action: "暂时无法判断 CodeGraph 状态；请查看诊断信息。本次同步不会自动执行全量重建。"
     };
   }
 }

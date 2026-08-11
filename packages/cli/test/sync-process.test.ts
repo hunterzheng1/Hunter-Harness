@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +10,6 @@ import {
   buildSyncRemediations,
   buildPromoteCandidates,
   deriveSyncWritePolicy,
-  persistSyncPointers,
   probeCodeGraph,
   runProcess,
   summarizePartialEffects
@@ -103,42 +102,6 @@ describe("sync bounded process runner", () => {
     }
   });
 
-  it("SYNC-006 preserves last-success when a later run fails", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-sync-pointers-"));
-    try {
-      const success = {
-        schemaVersion: 1 as const,
-        runId: "success",
-        status: "OK" as const,
-        completedAt: "2026-07-29T10:00:00.000Z",
-        reportPath: "success.json",
-        reportSha256: "a".repeat(64),
-        headCommit: "head-a"
-      };
-      const failure = {
-        ...success,
-        runId: "failure",
-        status: "FAIL" as const,
-        reportPath: "failure.json",
-        reportSha256: "b".repeat(64),
-        headCommit: "head-b"
-      };
-      await persistSyncPointers(root, success, true);
-      await persistSyncPointers(root, failure, false);
-      const directory = join(root, ".harness", "runtime", "sync");
-      const lastRun = JSON.parse(
-        await readFile(join(directory, "last-run.json"), "utf8")
-      ) as { runId: string };
-      const lastSuccess = JSON.parse(
-        await readFile(join(directory, "last-success.json"), "utf8")
-      ) as { runId: string };
-      expect(lastRun.runId).toBe("failure");
-      expect(lastSuccess.runId).toBe("success");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it("HH-ADAPTER-20260730-001 groups identical local adapter patches into one promotion proposal", () => {
     const candidates = buildPromoteCandidates([
       {
@@ -226,8 +189,6 @@ describe("sync bounded process runner", () => {
         workflowBundleVersion: "0.2.31",
         adapterBundleVersions: {}
       },
-      reportPath: "report.json",
-      reportSha256: "a".repeat(64),
       verbose: false
     });
     const verbose = buildCompactSyncResult({
@@ -240,8 +201,6 @@ describe("sync bounded process runner", () => {
         workflowBundleVersion: "0.2.31",
         adapterBundleVersions: {}
       },
-      reportPath: "report.json",
-      reportSha256: "a".repeat(64),
       verbose: true
     });
 
@@ -280,7 +239,7 @@ describe("sync bounded process runner", () => {
     ]);
     expect(partial.persisted).toEqual(["adapter projection applied 1 change(s)"]);
     expect(partial.notPersisted).toEqual(["remote knowledge was unavailable; no local fallback"]);
-    expect(partial.summary).toContain("Durable effects already persisted");
+    expect(partial.summary).toContain("已持久化");
   });
 
   it("SYNC-007 probes CodeGraph metadata instead of returning a constant", async () => {

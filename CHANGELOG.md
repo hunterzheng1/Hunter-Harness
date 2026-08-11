@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.72] — hunter-harness / [0.2.63] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-11 同步状态、Agent 指令入口与中文后续动作修订）
+
+- **同步不再形成运行历史**：`sync` 不写持久同步报告、change 生命周期事件或监控上传；组件详情只在本次命令输出中返回，旧同步收据也不再充当永久 Git 增量基线。
+- **按 Agent 校验指令入口**：始终检查共享 `AGENTS.md`，仅在启用 Claude Code 时要求 `CLAUDE.md`，仅在启用 CodeBuddy 时要求 `CODEBUDDY.md`。
+- **CodeGraph 状态降噪**：本地索引存在、无待同步源码但 watcher 无法验证时返回建议状态；只有存在 pending、服务不可达或 watcher 已停用时才返回警告。
+- **中文勾选式后续动作**：交互式同步固定使用多选复选框，并说明 Codebase Map 的生成内容、指令审计的用途和是否会修改项目文件；建议命令统一使用 `npx hunter-harness ...`。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.52`，最低 CLI 版本提升至 `0.2.72`。
+
 ## [0.1.3] — @hunter-harness/skill-cli
 
 ### Security（2026-08-11 生产依赖漏洞修复）

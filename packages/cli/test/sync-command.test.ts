@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,10 +65,10 @@ describe("hunter-harness sync", () => {
       expect(payload.partialEffects.persisted).toEqual([]);
       expect(payload.partialEffects.notPersisted).toEqual(
         expect.arrayContaining([
-          expect.stringMatching(/adapter projection previewed \d+ change/)
+          expect.stringMatching(/只读预览了 \d+ 项 Adapter 投影变更/)
         ])
       );
-      expect(payload.partialEffects.summary).toContain("No durable sync effects");
+      expect(payload.partialEffects.summary).toContain("没有产生持久化变更");
       await expect(stat(projectedSkill)).rejects.toMatchObject({ code: "ENOENT" });
       await expect(stat(join(root, ".harness", "runtime", "sync"))).rejects.toMatchObject({
         code: "ENOENT"
@@ -78,7 +78,7 @@ describe("hunter-harness sync", () => {
     }
   }, 120_000);
 
-  it("runs one bounded entrypoint and emits a compact summary plus verifiable report", async () => {
+  it("runs one bounded entrypoint without writing sync logs or monitoring state", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-sync-command-"));
     await initializeProject({
       projectRoot: root,
@@ -107,38 +107,59 @@ describe("hunter-harness sync", () => {
         status: string;
         runId: string;
         components: Record<string, number>;
-        reportPath: string;
-        reportSha256: string;
+        reportPath: string | null;
+        reportSha256: string | null;
       };
       expect(payload.status).toMatch(/^(OK|ADVISORY|WARN)$/);
-      expect(payload.reportPath).toMatch(/^\.harness\/runtime\/sync\//);
-      expect(payload.reportSha256).toMatch(/^[a-f0-9]{64}$/);
-      const report = JSON.parse(
-        await readFile(join(root, payload.reportPath), "utf8")
-      ) as { components: Array<{ component: string; status: string; reasonCode: string }> };
-      expect(report.components.length).toBeGreaterThan(3);
-      expect(report.components.every((item) =>
-        /^(OK|ADVISORY|WARN|FAIL|BLOCKED|UNKNOWN)$/.test(item.status)
-      )).toBe(true);
-      expect(report.components.find((item) => item.component === "knowledge"))
-        .toMatchObject({ status: "OK", reasonCode: "KNOWLEDGE_REMOTE_OWNED" });
+      expect(payload.reportPath).toBeNull();
+      expect(payload.reportSha256).toBeNull();
       await expect(stat(join(root, ".harness", "knowledge")))
         .rejects.toMatchObject({ code: "ENOENT" });
-      const lastRun = JSON.parse(
-        await readFile(
-          join(root, ".harness", "runtime", "sync", "last-run.json"),
-          "utf8"
-        )
-      ) as { runId: string; status: string };
-      const lastSuccess = JSON.parse(
-        await readFile(
-          join(root, ".harness", "runtime", "sync", "last-success.json"),
-          "utf8"
-        )
-      ) as { runId: string; status: string };
-      expect(lastRun.runId).toBe(payload.runId);
-      expect(lastSuccess.runId).toBe(payload.runId);
-      expect(lastRun.status).toBe(payload.status);
+      await expect(stat(join(root, ".harness", "runtime", "sync")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("validates only instruction entrypoints owned by enabled Agents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-sync-codebuddy-entrypoint-"));
+    await initializeProject({
+      projectRoot: root,
+      resourcesRoot,
+      config: { agents: ["codebuddy"], profile: "general" },
+      dryRun: false
+    });
+    const stdout: string[] = [];
+    try {
+      const code = await runCli([
+        "sync", "--project", root, "--profile", "interactive", "--dry-run", "--verbose", "--json"
+      ], {
+        cwd: root,
+        resourcesRoot,
+        stdout: (value) => stdout.push(value),
+        stderr: () => undefined,
+        env: {
+          HUNTER_HARNESS_PYTHON:
+            "C:\\Users\\WINDOWS\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe"
+        }
+      });
+      expect([0, 5]).toContain(code);
+      const payload = JSON.parse(stdout.join("")) as {
+        componentOutcomes: Array<{
+          component: string;
+          status: string;
+          details?: { unresolvedReferenceSamples?: string[]; reachableFileSamples?: string[] };
+        }>;
+      };
+      const instructionGraph = payload.componentOutcomes.find((item) =>
+        item.component === "instruction-graph"
+      );
+      expect(instructionGraph?.status).not.toBe("FAIL");
+      expect(instructionGraph?.details?.unresolvedReferenceSamples ?? []).not.toContain("CLAUDE.md");
+      expect(instructionGraph?.details?.reachableFileSamples).toEqual(
+        expect.arrayContaining(["AGENTS.md", "CODEBUDDY.md"])
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

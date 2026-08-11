@@ -9,6 +9,34 @@ import { assessCodeGraphStatus } from "../src/sync/codegraph-status.js";
 const NOW = new Date("2026-07-29T12:00:00.000Z");
 
 describe("CodeGraph status assessment", () => {
+  it("treats an unchanged local index with an unverified watcher as advisory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-unverified-watcher-"));
+    const graph = join(root, ".codegraph");
+    await mkdir(join(root, "src"), { recursive: true });
+    await mkdir(graph, { recursive: true });
+    try {
+      const indexed = new Date(NOW.getTime() - 1_000);
+      await writeFile(join(root, "src", "app.ts"), "export const value = 1;\n");
+      await writeFile(join(graph, "codegraph.db"), "index");
+      await utimes(join(root, "src", "app.ts"), indexed, indexed);
+      await utimes(join(graph, "codegraph.db"), indexed, indexed);
+
+      const result = await assessCodeGraphStatus(root, {
+        now: () => NOW,
+        headCommit: "a".repeat(40),
+        statusProbe: async () => null
+      });
+
+      expect(result.status).toBe("ADVISORY");
+      expect(result.reasonCode).toBe("CODEGRAPH_WATCHER_UNVERIFIED");
+      expect(result.coverage).toBe("INDEX_PRESENT_UNVERIFIED");
+      expect(result.pendingFileCount).toBe(0);
+      expect(result.action).toContain("索引可用");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports a missing index without triggering a reindex", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-codegraph-missing-"));
     try {

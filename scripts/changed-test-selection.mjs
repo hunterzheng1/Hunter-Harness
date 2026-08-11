@@ -14,6 +14,32 @@ const CONTRACT_TESTS_BY_PATH = new Map([
     ["packages/cli/test/project-detection.test.ts"]
   ],
   [
+    "packages/cli/src/commands/sync.ts",
+    [
+      "packages/cli/test/sync-command.test.ts",
+      "packages/cli/test/sync-process.test.ts"
+    ]
+  ],
+  [
+    "packages/cli/src/sync/codegraph-status.ts",
+    ["packages/cli/test/codegraph-status.test.ts"]
+  ],
+  [
+    "packages/cli/src/sync/git-delta.ts",
+    ["packages/cli/test/git-delta.test.ts"]
+  ],
+  [
+    "packages/core/src/instructions/graph.ts",
+    ["packages/core/test/instruction-graph.test.ts"]
+  ],
+  [
+    "scripts/sync-harness.mjs",
+    [
+      "packages/cli/test/sync-harness-closure.test.ts",
+      "packages/cli/test/sync-harness.test.ts"
+    ]
+  ],
+  [
     "scripts/changed-test-selection.mjs",
     [
       "tests/changed-test-selection.test.ts",

@@ -70,4 +70,26 @@ describe("changed test selection", () => {
       deferredTests: ["packages/cli/test/init.test.ts"]
     });
   });
+
+  it("keeps sync release changes on focused contracts instead of the full Core graph", () => {
+    expect(selectChangedTestInputs([
+      "packages/cli/src/commands/sync.ts",
+      "packages/cli/src/sync/codegraph-status.ts",
+      "packages/cli/src/sync/git-delta.ts",
+      "packages/core/src/instructions/graph.ts",
+      "scripts/sync-harness.mjs"
+    ])).toEqual({
+      directTests: [
+        "packages/cli/test/codegraph-status.test.ts",
+        "packages/cli/test/git-delta.test.ts",
+        "packages/cli/test/sync-command.test.ts",
+        "packages/cli/test/sync-harness-closure.test.ts",
+        "packages/cli/test/sync-harness.test.ts",
+        "packages/cli/test/sync-process.test.ts",
+        "packages/core/test/instruction-graph.test.ts"
+      ],
+      relatedSources: [],
+      deferredTests: []
+    });
+  });
 });

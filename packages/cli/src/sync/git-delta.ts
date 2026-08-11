@@ -1,6 +1,4 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 
 export interface ChangedPathSummary {
   changedFileCount: number;
@@ -18,7 +16,7 @@ export interface ChangedPathSummary {
 export interface GitDeltaObservation extends ChangedPathSummary {
   headCommit: string | null;
   baselineCommit: string | null;
-  baselineSource: "last-success" | "upstream-merge-base" | "none";
+  baselineSource: "upstream-merge-base" | "none";
   shortstat: string | null;
   truncated: boolean;
 }
@@ -114,19 +112,6 @@ async function runGit(root: string, args: readonly string[]): Promise<GitResult>
   });
 }
 
-async function lastSuccessfulHead(root: string): Promise<string | null> {
-  try {
-    const receipt = JSON.parse(
-      await readFile(join(root, ".harness", "runtime", "sync", "last-success.json"), "utf8")
-    ) as { headCommit?: unknown };
-    return typeof receipt.headCommit === "string" && /^[a-f0-9]{40}$/i.test(receipt.headCommit)
-      ? receipt.headCommit
-      : null;
-  } catch {
-    return null;
-  }
-}
-
 export async function observeGitDelta(root: string): Promise<GitDeltaObservation> {
   const headResult = await runGit(root, ["rev-parse", "HEAD"]);
   const headCommit = headResult.code === 0 && /^[a-f0-9]{40}$/i.test(headResult.stdout.trim())
@@ -135,36 +120,21 @@ export async function observeGitDelta(root: string): Promise<GitDeltaObservation
   let baselineCommit: string | null = null;
   let baselineSource: GitDeltaObservation["baselineSource"] = "none";
   if (headCommit !== null) {
-    const receiptHead = await lastSuccessfulHead(root);
-    if (receiptHead !== null) {
-      const ancestor = await runGit(root, [
+    const upstream = await runGit(root, [
+      "rev-parse",
+      "--abbrev-ref",
+      "--symbolic-full-name",
+      "@{upstream}"
+    ]);
+    if (upstream.code === 0 && upstream.stdout.trim() !== "") {
+      const mergeBase = await runGit(root, [
         "merge-base",
-        "--is-ancestor",
-        receiptHead,
-        headCommit
+        headCommit,
+        upstream.stdout.trim()
       ]);
-      if (ancestor.code === 0) {
-        baselineCommit = receiptHead;
-        baselineSource = "last-success";
-      }
-    }
-    if (baselineCommit === null) {
-      const upstream = await runGit(root, [
-        "rev-parse",
-        "--abbrev-ref",
-        "--symbolic-full-name",
-        "@{upstream}"
-      ]);
-      if (upstream.code === 0 && upstream.stdout.trim() !== "") {
-        const mergeBase = await runGit(root, [
-          "merge-base",
-          headCommit,
-          upstream.stdout.trim()
-        ]);
-        if (mergeBase.code === 0 && /^[a-f0-9]{40}$/i.test(mergeBase.stdout.trim())) {
-          baselineCommit = mergeBase.stdout.trim();
-          baselineSource = "upstream-merge-base";
-        }
+      if (mergeBase.code === 0 && /^[a-f0-9]{40}$/i.test(mergeBase.stdout.trim())) {
+        baselineCommit = mergeBase.stdout.trim();
+        baselineSource = "upstream-merge-base";
       }
     }
   }

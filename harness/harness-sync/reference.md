@@ -46,7 +46,8 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 ```
 
 `--check` 是严格只读检查；`--dry-run` 是兼容别名。两者都不生成持久报告、receipt 或
-投影。每个长阶段通过 stderr 输出受限 heartbeat；stdout 默认只输出：
+投影。普通模式可以执行明确请求的 Adapter 事务，但同样不写持久同步报告。每个长阶段
+通过 stderr 输出受限 heartbeat；stdout 默认只输出：
 
 ```json
 {
@@ -59,14 +60,15 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
     "adapterBundleVersions": {}
   },
   "remediations": [],
-  "reportPath": ".harness/runtime/sync/<run-id>/reports/sync-report.json",
-  "reportSha256": "<sha256>"
+  "reportPath": null,
+  "reportSha256": null
 }
 ```
 
-只读检查的 `reportPath/reportSha256` 为 `null`。详细报告必须受大小限制，并包含每个组件
-的 `status`、`reasonCode`、`observedAt`、`durationMs`、输入/输出 hash、证据、是否自动
-修复及 `nextAction`；只有显式 `--verbose` 才把组件级详情写到 stdout。
+所有模式的 `reportPath` 和 `reportSha256` 固定为 `null`。只有显式 `--verbose` 才把每个
+组件的 `status`、`reasonCode`、`observedAt`、`durationMs`、证据、是否自动修复及
+`nextAction` 写到 stdout。`sync` 不写 `.harness/runtime/sync/`，不追加 change 生命周期
+事件，不调用 `events-sync`，也不上传运行监控。
 
 ### 结构化修复
 
@@ -97,17 +99,25 @@ npx hunter-harness sync --check --project <项目路径> --profile general --pro
 
 ## 5. Git 与 CodeGraph
 
-增量基线来自上次成功 sync receipt 的 `headCommit`。首次运行或 receipt 不可用时，仅收集当前 HEAD 和有界文件统计；禁止固定 `HEAD~5`。
+增量基线只使用当前分支的 upstream merge-base；没有 upstream 时仅收集当前 HEAD 和有界文件统计。不得读取旧 `.harness/runtime/sync/last-success.json`，也禁止固定使用 `HEAD~5`。
 
 CodeGraph 状态探测优先读取 `codegraph status --json` 的权威 pending 列表；只有该 API
 不可用时才退回受限文件扫描，并把来源标成 `database-scan` 或 `unverified`。`.agents/`、
 `.cursor/`、`.claude/` 等 Adapter 投影和 Markdown 文档不计入源码 pending。daemon log
-mtime 只写入 `watcherObservedAt`，不能冒充 `indexObservedAt`。只有服务可达、watcher 已
-启用且权威 `pendingFileCount=0` 时为 `CURRENT`。不要在 sync 内执行全量索引。
+mtime 只写入 `watcherObservedAt`，不能冒充 `indexObservedAt`。服务可达、watcher 已启用
+且权威 `pendingFileCount=0` 时为 `CURRENT`。如果 API 不可用，但本地索引存在且受限扫描
+确认 `pendingFileCount=0`，返回 `ADVISORY / INDEX_PRESENT_UNVERIFIED`：索引仍可用于查询，
+只是无法证明 watcher 正在持续运行。存在待同步源码，或已确认 watcher 停用/服务不可达，
+才返回 `WARN`。不要在 sync 内执行全量索引。
 
 ## 6. Instruction graph
 
-验证 `AGENTS.md`、`CLAUDE.md`、`CODEBUDDY.md` 与 `.harness/context-index.json` 的引用图：
+只验证当前已启用 Agent 对应的入口文档及其引用图，而不是固定要求所有 Adapter 文件：
+
+- `AGENTS.md` 是共享入口，始终验证。
+- 仅启用 Claude Code 时验证 `CLAUDE.md`。
+- 仅启用 CodeBuddy 时验证 `CODEBUDDY.md`。
+- Codex 和 Cursor 不要求额外生成 `CLAUDE.md` 或 `CODEBUDDY.md`。
 
 - Claude 可单向引用 AGENTS，共享约束保持单一真源。
 - 禁止 AGENTS 反向引用 CLAUDE 形成环。
@@ -156,10 +166,11 @@ npx hunter-harness instructions apply --proposal <proposal.json> --yes --json
 
 只有以下条件同时满足才能宣称同步成功：
 
-- stdout 摘要与详细报告 hash 一致；
+- stdout 摘要完整给出全局状态；使用 `--verbose` 时包含组件结果；
 - 没有 `FAIL` 或 `BLOCKED`；
 - 所有自动修复均有 post-transaction 证据；
 - knowledge 组件明确为 remote-only，且未创建或刷新本地索引；
 - 文档和规则组件未直接改写项目文件；
+- 未写持久 sync 报告、change 事件或监控上传记录；
 - 未把 `UNKNOWN` 描述成已验证；
 - 第二次无输入变化的运行不产生投影 churn。

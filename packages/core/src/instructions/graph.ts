@@ -305,7 +305,12 @@ function ownershipOf(path: string): "project" | "harness-managed" | "generated" 
   ) {
     return "generated";
   }
-  if (path.startsWith(".harness/rules/") || path === "AGENTS.md" || path === "CLAUDE.md") {
+  if (
+    path.startsWith(".harness/rules/")
+    || path === "AGENTS.md"
+    || path === "CLAUDE.md"
+    || path === "CODEBUDDY.md"
+  ) {
     return "harness-managed";
   }
   return "project";
@@ -313,10 +318,12 @@ function ownershipOf(path: string): "project" | "harness-managed" | "generated" 
 
 export async function validateInstructionGraph(
   projectRoot: string,
-  entrypoint = "CLAUDE.md"
+  entrypoint: string | readonly string[] = "CLAUDE.md"
 ): Promise<InstructionGraphResult> {
   const root = resolve(projectRoot);
-  const entry = resolve(root, entrypoint);
+  const entrypoints = [...new Set(
+    typeof entrypoint === "string" ? [entrypoint] : entrypoint
+  )];
   const reachable = new Map<string, string>();
   const ownership: InstructionGraphResult["ownership"] = {};
   const unresolvedSamples = new Set<string>();
@@ -501,7 +508,9 @@ export async function validateInstructionGraph(
     visiting.pop();
   };
 
-  await visit(entry, 0);
+  for (const configuredEntrypoint of entrypoints) {
+    await visit(resolve(root, configuredEntrypoint), 0);
+  }
   const topics = Object.fromEntries(
     Object.entries(TOPICS).map(([topic, keywords]) => {
       const evidencePaths = [...reachable.entries()]
