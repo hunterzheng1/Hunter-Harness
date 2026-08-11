@@ -909,7 +909,7 @@ export async function runSkillCli(
     ...(overrides.fetchNpmTarball !== undefined ? { fetchNpmTarball: overrides.fetchNpmTarball } : {})
   };
   const program = new Command()
-    .name("hunter-harness-skill")
+    .name("skills")
     .description("Install or upload governed Hunter Harness skills")
     .showHelpAfterError()
     .exitOverride()

@@ -361,7 +361,7 @@ try {
 
   run(process.execPath, [npmCli, "pack", "-w", "packages/skill-cli", "--pack-destination", temporary]);
   const skillArchive = (await readdir(temporary)).find((name) =>
-    name.startsWith("hunter-harness-skill-cli-") && name.endsWith(".tgz")
+    name.startsWith("hunter-harness-skills-") && name.endsWith(".tgz")
   );
   if (skillArchive === undefined) throw new Error("npm pack did not create the Skill CLI archive");
   run(process.execPath, [npmCli, "install", "--prefix", temporary, "--ignore-scripts", "--omit=optional", join(temporary, skillArchive)], { timeout: 180_000 });
@@ -369,10 +369,17 @@ try {
     temporary,
     "node_modules",
     ".bin",
+    process.platform === "win32" ? "skills.cmd" : "skills"
+  );
+  const legacySkillShim = join(
+    temporary,
+    "node_modules",
+    ".bin",
     process.platform === "win32" ? "hunter-harness-skill.cmd" : "hunter-harness-skill"
   );
   await stat(skillShim);
-  const skillBin = join(temporary, "node_modules", "@hunter-harness", "skill-cli", "dist", "bin.js");
+  await stat(legacySkillShim);
+  const skillBin = join(temporary, "node_modules", "@hunter-harness", "skills", "dist", "bin.js");
   const skillHelp = run(process.execPath, [skillBin, "--help"], { cwd: temporary, capture: true });
   if (!skillHelp.includes("install") || !skillHelp.includes("upload") ||
     /\b(search|download|update|uninstall|publish)\b/.test(skillHelp)) {

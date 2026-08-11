@@ -74,8 +74,8 @@ npx hunter-harness update
 独立 Skill 分发使用单独的 npm 包，只提供安装和上传两个动作：
 
 ```bash
-npx @hunter-harness/skill-cli install <skill-slug> --agent claude-code
-npx @hunter-harness/skill-cli upload <directory-or-zip> --agent claude-code
+npx @hunter-harness/skills install <skill-slug> --agent claude-code
+npx @hunter-harness/skills upload <directory-or-zip> --agent claude-code
 ```
 
 - `install`：不存在时安装，已安装且未被本地修改时更新；校验 artifact SHA-256 与 ZIP identity 后原子写入。

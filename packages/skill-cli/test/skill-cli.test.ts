@@ -147,7 +147,7 @@ async function writeSkillSource(source: string, name = "harness-candidate"): Pro
   ].join("\n"));
 }
 
-describe("@hunter-harness/skill-cli", () => {
+describe("@hunter-harness/skills", () => {
   it("prints help with a successful exit code", async () => {
     const output: string[] = [];
     const exitCode = await runSkillCli(["node", "skill-cli", "--help"], {
@@ -157,6 +157,7 @@ describe("@hunter-harness/skill-cli", () => {
     });
 
     expect(exitCode).toBe(0);
+    expect(output.join("")).toContain("Usage: skills");
     expect(output.join("")).toContain("install");
     expect(output.join("")).toContain("upload");
   });

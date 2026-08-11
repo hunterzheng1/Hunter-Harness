@@ -17,7 +17,7 @@ const packageJson = JSON.parse(
 const requireFromWorkspace = createRequire(join(cwd, "package.json"));
 const { build } = requireFromWorkspace("esbuild");
 
-const externals = packageJson.name === "@hunter-harness/skill-cli"
+const externals = packageJson.name === "@hunter-harness/skills"
   ? ["adm-zip", "commander", "yaml", "zod", "pacote"]
   : ["commander", "yaml", "zod", "pacote"];
 

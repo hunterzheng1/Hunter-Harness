@@ -18,6 +18,13 @@
 - **中文勾选式后续动作**：交互式同步固定使用多选复选框，并说明 Codebase Map 的生成内容、指令审计的用途和是否会修改项目文件；建议命令统一使用 `npx hunter-harness ...`。
 - **发布版本绑定**：工作流 Bundle 提升至 `0.2.52`，最低 CLI 版本提升至 `0.2.72`。
 
+## [0.1.4] — @hunter-harness/skills
+
+### Changed（2026-08-11 Skill CLI 包名统一）
+
+- **统一安装入口**：Skill 安装与上传命令改为 `npx @hunter-harness/skills ...`，与产品中的 Skills 命名保持一致。
+- **可执行文件兼容**：新增规范 `skills` bin，并保留 `hunter-harness-skill` 旧 bin，已有全局脚本无需立即改写。
+
 ## [0.1.3] — @hunter-harness/skill-cli
 
 ### Security（2026-08-11 生产依赖漏洞修复）
