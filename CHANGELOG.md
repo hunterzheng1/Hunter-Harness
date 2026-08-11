@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3] — @hunter-harness/skill-cli
+
+### Security（2026-08-11 生产依赖漏洞修复）
+
+- **ZIP 处理依赖**：将 `adm-zip` 提升至 `0.6.0`，修复生产依赖审计中的高危漏洞。
+- **传递依赖锁定**：在保持 `Node >=22.12.0` 兼容范围的前提下，将 `brace-expansion`、`ip-address`、`tar` 与 `undici` 锁定到安全版本；生产依赖审计归零。
+- **回归门禁**：新增依赖安全下限测试，后续锁文件更新若重新引入已知漏洞版本会直接失败。
+
 ## [0.2.66] — hunter-harness / [0.2.60] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-10 阶段归属、归档上传与平台展示修订）
