@@ -804,6 +804,43 @@ paths:
               schema: { $ref: "#/components/schemas/AgentTool" }
         "404": { description: Agent tool not found (AGENT_TOOL_NOT_FOUND) }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/agent-tools/import/inspect:
+    post:
+      operationId: inspectAgentToolGithub
+      description: Read a GitHub repository and suggest Agent catalog fields without changing registry state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InspectAgentToolGithubRequest" }
+      responses:
+        "200":
+          description: GitHub repository metadata and suggested Agent registration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentToolGithubInspection" }
+        "404": { description: GitHub repository not found (EXTERNAL_SOURCE_NOT_FOUND) }
+        "502": { description: GitHub request failed }
+        "504": { description: GitHub request timed out }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/agent-tools/import/ai-prefill:
+    post:
+      operationId: generateAgentToolPrefill
+      description: Use the configured default AI source to create an editable Chinese Agent registration draft from inspected repository metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateAgentToolPrefillRequest" }
+      responses:
+        "200":
+          description: Editable Agent registration draft with a Simplified Chinese description
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentToolSuggestion" }
+        "422": { description: AI source is not configured }
+        "502": { description: AI generation or structured output parsing failed }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families:
     get:
       operationId: listWorkflowFamilies
@@ -993,7 +1030,7 @@ paths:
     get:
       operationId: getExternalSkill
       responses:
-        "200": { description: External skill detail including curation note and snapshot }
+        "200": { description: External skill detail including snapshot, versioned AI summary, tags, and per-release update history }
         "404": { description: External skill not found }
         default: { $ref: "#/components/responses/Error" }
     patch:
@@ -1001,7 +1038,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Curation note/tags updated, or update badge acknowledged }
+        "200": { description: External skill tags updated; legacy curationNote remains accepted for compatibility }
         "409": { description: Revision conflict }
         default: { $ref: "#/components/responses/Error" }
     delete:
@@ -1017,7 +1054,34 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Upstream metadata refreshed; curationNote is never modified }
+        "200": { description: Confirmed upstream update applied; existing AI summary is preserved and every upstream release crossed by the update is recorded when available }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}/check-upstream:
+    post:
+      operationId: checkExternalSkillUpstream
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: Upstream checked without replacing the active snapshot or changing stored update notes }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}/update-history/refresh:
+    post:
+      operationId: refreshExternalSkillUpdateHistory
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [applied_at]
+              properties:
+                applied_at: { type: string, format: date-time }
+              additionalProperties: false
+      responses:
+        "200": { description: Release notes for one stored update record refreshed from upstream }
+        "404": { description: External skill or update record not found }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/external-skills/{id}/summary:
     post:
@@ -1400,6 +1464,8 @@ components:
         - metrics
         - trend
         - distributions
+        - ai_usage
+        - active_runs
         - health
         - services
         - activity
@@ -1420,7 +1486,17 @@ components:
             type: object
         distributions:
           type: object
-          description: Canonical Skill category and Workflow profile counts.
+          description: Skill, Workflow, and project knowledge distribution counts.
+        ai_usage:
+          type: array
+          description: Daily AI request, token, and estimated cost totals for the requested window.
+          items:
+            type: object
+        active_runs:
+          type: array
+          description: Most recently active project runs visible to the authenticated actor.
+          items:
+            type: object
         health:
           type: array
           description: Explainable governance checks; unavailable means insufficient evidence rather than success.
@@ -1546,6 +1622,51 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         request_id: { type: string, format: uuid }
+    InspectAgentToolGithubRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, github_url]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        github_url: { type: string, minLength: 1, maxLength: 1000 }
+    AgentToolGithubInspection:
+      type: object
+      additionalProperties: false
+      required: [source, suggested]
+      properties:
+        source: { $ref: "#/components/schemas/AgentToolSource" }
+        suggested: { $ref: "#/components/schemas/AgentToolSuggestion" }
+        request_id: { type: string, format: uuid }
+    GenerateAgentToolPrefillRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, inspection]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        inspection: { $ref: "#/components/schemas/AgentToolGithubInspectionInput" }
+    AgentToolGithubInspectionInput:
+      type: object
+      additionalProperties: false
+      required: [source, suggested]
+      properties:
+        source: { $ref: "#/components/schemas/AgentToolSource" }
+        suggested: { $ref: "#/components/schemas/AgentToolSuggestion" }
+    AgentToolSuggestion:
+      type: object
+      additionalProperties: false
+      required: [slug, displayName, description, category, status, source, tags, relatedWorkflowFamilies]
+      properties:
+        slug: { $ref: "#/components/schemas/RegistrySlug" }
+        displayName: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 1200 }
+        category: { type: string, enum: [harness, runtime, orchestrator, ade, cli, framework] }
+        status: { type: string, enum: [active, experimental, archived] }
+        source: { $ref: "#/components/schemas/AgentToolSource" }
+        homepage: { type: [string, "null"], format: uri }
+        packageName: { type: [string, "null"], maxLength: 220 }
+        installCommand: { type: [string, "null"], maxLength: 500 }
+        tags: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
+        relatedWorkflowFamilies: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
     WorkflowFamilySource:
       type: object
       additionalProperties: false
