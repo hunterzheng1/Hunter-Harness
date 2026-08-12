@@ -109,6 +109,10 @@ CODEBUDDY.md
 # ===== 需求/设计文档 =====
 requirements/
 docs/
+!docs/
+docs/*
+!docs/harness-improvement-roadmap/
+!docs/harness-improvement-roadmap/**
 
 # local exact-tarball lock dirs
 release-lock-*/
