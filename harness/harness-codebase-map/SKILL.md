@@ -29,8 +29,8 @@ disallowed-tools:
 
 ## 核心边界
 
-- **只写** `.harness/codebase/map/`、`map-summary.md`、`map-manifest.json`、`.harness/reports/codebase-map-*.md`
-- **禁止** `.planning/`、Git 写操作、修改 `.codegraph/`、自动 commit/push
+- **内容只写** `.harness/codebase/map/`、`map-summary.md`、`map-manifest.json`、`.harness/reports/codebase-map-*.md`；平台同步只更新 Harness 协议状态
+- **禁止** `.planning/`、Git 写操作、修改 `.codegraph/`、自动 commit 或 Git push
 - `harness-sync` 只**建议**刷新，不自动跑全量 map
 
 ## When to Use
@@ -61,6 +61,7 @@ disallowed-tools:
 | 6 | 写 summary + manifest（schema → `templates/map-manifest.schema.json`） |
 | 7 | 更新 `.harness/context-index.json` codebase 入口（若存在） |
 | 8 | 控制台 + `.harness/reports/codebase-map-*.md` 报告 |
+| 9 | 项目已绑定平台时，运行 `npx hunter-harness push --yes --non-interactive --json` 上传受控规则与架构快照；失败只报告“平台同步待重试”，不回滚本地地图 |
 
 逐步细节、frontmatter 字段、git 允许列表 → `reference.md` / `checklist.md`
 
@@ -77,7 +78,7 @@ disallowed-tools:
 |---|------|
 | 1 | 唯一输出 `.harness/codebase/map/` |
 | 2 | `generated_reviewable`，不建议手工改 map 正文 |
-| 3 | 不 Git 写操作、不改业务代码 |
+| 3 | 不做 Git 写操作、不改业务代码；受控平台上传不等于 Git push |
 | 4 | 不管理 CodeGraph |
 | 5 | 敏感信息脱敏 → `sensitive-info-protocol` |
 | 6 | 证据化输出 → `evidence-based-reporting-protocol` |
@@ -85,7 +86,7 @@ disallowed-tools:
 
 ## Output Format
 
-模式、范围、7/7 文档路径与行数、manifest/summary、context-index 状态、WARN/FAIL → `reference.md` 报告模板
+模式、范围、7/7 文档路径与行数、manifest/summary、context-index 状态、平台同步状态、WARN/FAIL → `reference.md` 报告模板
 
 ## 渐进披露
 

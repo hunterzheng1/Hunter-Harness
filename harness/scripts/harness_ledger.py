@@ -412,6 +412,131 @@ def input_files_from_args(args: argparse.Namespace) -> tuple[list[str], Path | N
     return resolve_input_files(selected, project_root), project_root
 
 
+def infer_execution_project_root(change_dir: Path) -> Path | None:
+    """Resolve the tree under test from trusted change metadata.
+
+    Worktree changes keep their durable contract under the main checkout while
+    product files live in the execution worktree.  Requiring every caller to
+    reconstruct that split caused ledger commands to hash the main checkout or
+    fail repeatedly.  Prefer the persisted execution root and otherwise leave
+    legacy callers unchanged.
+    """
+    change_dir = change_dir.expanduser().resolve()
+    project_root = next(
+        (ancestor.parent for ancestor in change_dir.parents if ancestor.name == ".harness"),
+        None,
+    )
+    if project_root is None:
+        return None
+
+    def git_common_dir(root: Path) -> Path | None:
+        process = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if process.returncode != 0 or not process.stdout.strip():
+            return None
+        raw = Path(process.stdout.strip()).expanduser()
+        return raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+
+    project_common_dir = git_common_dir(project_root)
+
+    def trusted_worktree(candidate: Path) -> Path | None:
+        if not candidate.is_dir():
+            return None
+        process = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if process.returncode != 0 or not process.stdout.strip():
+            return None
+        top_level = Path(process.stdout.strip()).expanduser().resolve()
+        if top_level != candidate:
+            return None
+        # Origin URL + root commit identifies a repository lineage, not a
+        # linked checkout. Independent clones can share both. A real linked
+        # worktree must share the exact Git common directory with the main tree.
+        if project_common_dir is None or git_common_dir(top_level) != project_common_dir:
+            return None
+        return top_level
+
+    candidates = (
+        (
+            change_dir / "meta" / "change-context.json",
+            ("worktreePath", "path", "worktreeRoot"),
+        ),
+        (
+            change_dir / "meta" / "worktree.json",
+            ("worktreePath", "path", "worktreeRoot"),
+        ),
+    )
+    for metadata_path, keys in candidates:
+        if not metadata_path.is_file():
+            continue
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for key in keys:
+            raw = payload.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            raw_path = Path(raw).expanduser()
+            candidate = (
+                raw_path.resolve()
+                if raw_path.is_absolute()
+                else (project_root / raw_path).resolve()
+            )
+            if key == "worktreeRoot" and candidate.name != change_dir.name:
+                nested = (candidate / change_dir.name).resolve()
+                trusted_nested = trusted_worktree(nested)
+                if trusted_nested is not None:
+                    return trusted_nested
+                if trusted_worktree(candidate) is None:
+                    continue
+            trusted_candidate = trusted_worktree(candidate)
+            if trusted_candidate is not None:
+                return trusted_candidate
+    return None
+
+
+def declares_execution_worktree(change_dir: Path) -> bool:
+    """Return whether persisted metadata explicitly selects another checkout."""
+    for metadata_path in (
+        change_dir / "meta" / "change-context.json",
+        change_dir / "meta" / "worktree.json",
+    ):
+        if not metadata_path.is_file():
+            continue
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and any(
+            isinstance(payload.get(key), str) and str(payload[key]).strip()
+            for key in ("worktreePath", "path", "worktreeRoot")
+        ):
+            return True
+    return False
+
+
+def apply_inferred_project_root(args: argparse.Namespace, change_dir: Path) -> None:
+    """Fill an omitted --project without overriding an explicit caller choice."""
+    if getattr(args, "project", None):
+        return
+    inferred = infer_execution_project_root(change_dir)
+    if inferred is not None:
+        args.project = str(inferred)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -1774,20 +1899,10 @@ def worktree_ready(ledger: dict[str, Any], change_dir: Path) -> bool:
     root = ledger.get("worktreeRoot")
     if root is not None and _nonempty_str(root):
         return True
-    meta = change_dir / "meta" / "worktree.json"
-    if not meta.is_file():
-        return False
-    try:
-        data = json.loads(meta.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(data, dict):
-        return False
-    if data.get("requested") is True and data.get("created") is True:
-        return True
-    if _nonempty_str(data.get("path")) or _nonempty_str(data.get("worktreeRoot")):
-        return True
-    return False
+    # Metadata aliases are accepted only when they resolve to a real linked
+    # worktree of this repository. This keeps install reuse aligned with the
+    # execution root used by context and gate, including `worktreePath`.
+    return infer_execution_project_root(change_dir) is not None
 
 
 def decide_can_reuse(
@@ -2242,6 +2357,7 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     verification = args.verification
     change_dir = resolve_path(args.change_dir)
+    apply_inferred_project_root(args, change_dir)
     ownership_check = frozen_ownership_check(change_dir)
     if not ownership_check.get("ok"):
         return emit_error(
@@ -2359,6 +2475,9 @@ def cmd_can_reuse(args: argparse.Namespace) -> int:
         return emit_error(f"can-reuse failed: {exc}", as_json=as_json)
 
     payload = _attach_invalidation_code(payload)
+    payload["resolvedProjectRoot"] = (
+        str(project_root) if project_root is not None else None
+    )
     emit_compact_or_verbose(
         payload, as_json=as_json, verbose=verbose,
         compact_fn=_compact_can_reuse_payload,
@@ -2370,6 +2489,7 @@ def cmd_record(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     verbose = bool(getattr(args, "verbose", False))
     change_dir = resolve_path(args.change_dir)
+    apply_inferred_project_root(args, change_dir)
     ownership_check = frozen_ownership_check(change_dir)
     if not ownership_check.get("ok"):
         return emit_error(
@@ -2836,11 +2956,26 @@ def cmd_record(args: argparse.Namespace) -> int:
 def cmd_diff_hash(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
     repo_raw = getattr(args, "repo", None)
-    repo = Path(repo_raw).expanduser().resolve() if repo_raw else Path.cwd().resolve()
     base = getattr(args, "base", None)
     change_dir_raw = getattr(args, "change_dir", None)
     try:
         change_dir = resolve_path(change_dir_raw) if change_dir_raw else None
+        repo = Path(repo_raw).expanduser().resolve() if repo_raw else Path.cwd().resolve()
+        # Historical skill text passed ``--repo .`` even when the active change
+        # ran in a linked worktree.  Treat that shorthand like the default and
+        # recover the authoritative execution root captured during Plan.
+        repo_hint = str(repo_raw or "").strip().replace("\\", "/")
+        if change_dir is not None and repo_hint in {"", ".", "./"}:
+            inferred_repo = infer_execution_project_root(change_dir)
+            if inferred_repo is not None:
+                repo = inferred_repo
+            elif declares_execution_worktree(change_dir):
+                return emit_error(
+                    "change metadata declares an execution worktree that is missing or belongs "
+                    "to another repository",
+                    as_json=as_json,
+                    error_code="EXECUTION_WORKTREE_INVALID",
+                )
         if change_dir is not None and _contract_is_v2(change_dir):
             resolved_base = str(base or "").strip()
             if not resolved_base:
@@ -3086,7 +3221,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[shared_json],
         help="compute commit-invariant byte-level diff hash for a repo",
     )
-    p_diff.add_argument("--repo", default=None, help="repo root (default: cwd)")
+    p_diff.add_argument(
+        "--repo",
+        default=None,
+        help="repo root (default: change worktree when recorded, otherwise cwd)",
+    )
     p_diff.add_argument("--base", default=None, help="base commit (default: root commit)")
     p_diff.add_argument(
         "--change-dir",

@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import {
   applyRuleReviewDecisions,
   exportRuleReviewQueue,
+  pushProject,
+  PushWorkflowError,
   uuidV7,
   type RuleDecisionManifest
 } from "@hunter-harness/core";
@@ -38,6 +40,11 @@ export async function runRulesReview(
     const queue = await exportRuleReviewQueue(dependencies.cwd);
     let summary: Record<string, number>;
     let items: unknown[];
+    let remoteSync: {
+      status: "uploaded" | "unchanged" | "deferred";
+      submitted: number;
+      reason_code: string | null;
+    } | null = null;
     if (options.apply === undefined) {
       summary = { pending: queue.pending.length, decided: queue.decided };
       items = queue.pending;
@@ -48,6 +55,28 @@ export async function runRulesReview(
       const result = await applyRuleReviewDecisions(dependencies.cwd, input);
       summary = { applied: result.applied, recorded: result.recorded };
       items = [{ path: result.path, status: "updated" }];
+      try {
+        const pushed = await pushProject({
+          projectRoot: dependencies.cwd,
+          resourcesRoot: dependencies.resourcesRoot,
+          env: dependencies.env,
+          dryRun: false,
+          fetch: dependencies.fetch
+        });
+        remoteSync = {
+          status: "noChanges" in pushed && pushed.noChanges ? "unchanged" : "uploaded",
+          submitted: pushed.preview.operations.length,
+          reason_code: null
+        };
+      } catch (error) {
+        remoteSync = {
+          status: "deferred",
+          submitted: 0,
+          reason_code: error instanceof PushWorkflowError
+            ? error.code
+            : "MANAGED_SNAPSHOT_UPLOAD_FAILED"
+        };
+      }
     }
     const payload: CliResult = {
       schema_version: 1,
@@ -59,6 +88,7 @@ export async function runRulesReview(
       project_id: detection.config.project.project_id,
       summary,
       items,
+      ...(remoteSync === null ? {} : { remote_sync: remoteSync }),
       warnings: [],
       errors: []
     };
@@ -69,7 +99,12 @@ export async function runRulesReview(
       );
     } else {
       dependencies.stdout(
-        `公共规则决策：应用 ${summary.applied ?? 0}，记录 ${summary.recorded ?? 0}。\n`
+        `公共规则决策：应用 ${summary.applied ?? 0}，记录 ${summary.recorded ?? 0}。\n` +
+        (remoteSync?.status === "uploaded"
+          ? `已同步 ${remoteSync.submitted} 个受控文档到平台。\n`
+          : remoteSync?.status === "unchanged"
+            ? "平台上的受控文档已经是最新版本。\n"
+            : `平台同步待重试（${remoteSync?.reason_code ?? "未知原因"}）；本地规则不受影响。\n`)
       );
     }
     return 0;

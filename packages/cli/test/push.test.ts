@@ -344,6 +344,7 @@ describe("hunter-harness push", () => {
 
     stdout = [];
     stderr = [];
+    const requestsAfterFirstPush = requests.length;
     const secondCode = await runCli(["push", "--non-interactive", "--yes", "--json"], {
       cwd: root,
       resourcesRoot,
@@ -354,6 +355,14 @@ describe("hunter-harness push", () => {
     });
     expect(stderr.join("")).toBe("");
     expect(secondCode).toBe(0);
+    expect(requests.slice(requestsAfterFirstPush)).toEqual([
+      "/api/v1/projects/prj_demo"
+    ]);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: true,
+      summary: { planned: 0, submitted: 0 },
+      warnings: ["MANAGED_SNAPSHOT_UNCHANGED"]
+    });
     expect(stderr.join("")).not.toMatch(/stale|update/i);
     baseline = JSON.parse(await readFile(
       join(root, ".harness", "state", "baseline", "manifest.json"), "utf8"

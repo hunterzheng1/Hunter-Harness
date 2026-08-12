@@ -55,6 +55,7 @@ MANIFEST_COMPARE_EXCLUDE = frozenset(
         "logs/execution-log.md",
         "execution-log.md",
         "events.ndjson",
+        "evidence/archive-manifest-after.json",
     }
 )
 
@@ -66,6 +67,21 @@ _RE_UNIT_COUNTS = re.compile(
     r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)"
 )
 _RE_API_PASSED = re.compile(r"(\d+)/(\d+)\s*passed", re.I)
+_RE_RESULT_FRACTION = re.compile(
+    r"(\d{1,7})\s*/\s*(\d{1,7})(?=\s*(?:passed|通过|[（(]|$))",
+    re.I,
+)
+
+
+def _result_fraction(value: str) -> tuple[int, int] | None:
+    match = _RE_RESULT_FRACTION.search(value)
+    if match is None:
+        return None
+    passed = int(match.group(1))
+    total = int(match.group(2))
+    if total <= 0 or passed > total:
+        return None
+    return passed, total
 
 # Ensure sibling harness_events is importable.
 if str(SCRIPTS_DIR) not in sys.path:
@@ -1831,12 +1847,14 @@ def verify_manifest_byte_coverage(
     }
     mismatches: list[dict[str, str]] = []
     checked = 0
+    manifest_paths: set[str] = set()
     for item in manifest.get("files") or []:
         if not isinstance(item, dict):
             continue
         rel = str(item.get("path") or "").replace("\\", "/")
         if not rel or _manifest_path_excluded(rel):
             continue
+        manifest_paths.add(rel)
         if rel in excluded:
             reasons.setdefault(rel, "excluded from checksum coverage")
             continue
@@ -1856,6 +1874,14 @@ def verify_manifest_byte_coverage(
                     "actual": actual,
                 }
             )
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name.endswith(".lock"):
+            continue
+        rel = path.relative_to(root).as_posix()
+        if _manifest_path_excluded(rel) or rel in excluded:
+            continue
+        if rel not in manifest_paths:
+            mismatches.append({"path": rel, "reason": "unexpected"})
     ok = not mismatches
     if ok and reasons:
         checksum_status = "OK_WITH_EXCLUSIONS"
@@ -2907,6 +2933,19 @@ def execute_archive(
         except OSError:
             pass
     if not gate.get("ok"):
+        if state_root.is_dir():
+            try:
+                append_event(
+                    state_root,
+                    phase="archive",
+                    type_="phase.end",
+                    status="BLOCKED",
+                    code=str(gate.get("reasonCode") or "ARCHIVE_PREPARE_BLOCKED"),
+                    message=str(gate.get("nextAction") or "归档条件未满足"),
+                    note="归档未开始，流程已在预检处结束",
+                )
+            except OSError:
+                pass
         status = gate.get("status") if isinstance(gate.get("status"), dict) else {}
         blocked_payload = {
             "ok": False,
@@ -2923,6 +2962,13 @@ def execute_archive(
         }
         if candidate_certification is not None:
             blocked_payload["candidateCertification"] = candidate_certification
+        _best_effort_archive_terminal_sync(
+            find_project_root(change_dir),
+            state_root,
+            change_key=change_dir.name,
+            run_id=hes.run_id_for(change_dir),
+            payload=blocked_payload,
+        )
         return 1, blocked_payload
     code, payload = cmd_finalize(
         change_dir,
@@ -3057,6 +3103,15 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
             skipped = int(m.group(4))
             source = "evidence-text"
             counted = True
+        else:
+            fraction = _result_fraction(evidence_text)
+            if fraction is not None:
+                passed_count, run = fraction
+                failures = max(run - passed_count, 0)
+                errors = 0
+                skipped = 0
+                source = "evidence-text"
+                counted = True
 
     if not counted:
         run = int(unit.get("run", unit.get("testsRun", 0)) or 0)
@@ -3146,6 +3201,11 @@ def _ledger_unit_tests(ledger: dict[str, Any] | None) -> dict[str, Any]:
             )
             or 0
         )
+        if attempt_total == 0 and isinstance(attempt.get("evidence"), str):
+            fraction = _result_fraction(str(attempt["evidence"]))
+            if fraction is not None:
+                attempt_passed, attempt_total = fraction
+                attempt_failed = max(attempt_total - attempt_passed, 0)
         raw_identities = (
             attempt.get("testIdentities")
             or attempt_metrics.get("testIdentities")
@@ -3258,6 +3318,14 @@ def _ledger_api_tests(
             blocked = 0
             source = "evidence-text"
             counted = True
+        else:
+            fraction = _result_fraction(evidence_text)
+            if fraction is not None:
+                passed, total = fraction
+                failed = max(total - passed, 0)
+                blocked = 0
+                source = "evidence-text"
+                counted = True
 
     if not counted and change_dir is not None:
         results_path = change_dir / "runtime" / "api-test-results.json"
@@ -3845,6 +3913,11 @@ def _compute_final_status(
     browser_status = str(browser.get("status") or "")
     reasons: list[str] = []
     for phase, v in stage_status.items():
+        # Archive is closeout/transport state, not a product-quality gate. Keep
+        # its failed attempt visible in stageStatus and the command payload,
+        # but do not let it poison a later finalize retry.
+        if phase == "archive":
+            continue
         if v == "FAIL":
             return "FAIL", [f"stage {phase}=FAIL"]
     unit = verification.get("unitTests") or {}
@@ -3871,6 +3944,8 @@ def _compute_final_status(
     if reasons:
         return "CONDITIONAL_OK", reasons
     for phase, v in stage_status.items():
+        if phase == "archive":
+            continue
         if v == "WARN":
             return "WARN", [f"stage {phase}=WARN"]
         if v in conditional:
@@ -4615,6 +4690,11 @@ def _final_commit_from_sources(
 
 
 def _business_goal_from_sources(change_dir: Path, events: list[dict[str, Any]]) -> str:
+    generic_plan_heading = re.compile(
+        r"(?:(?:任务|实施|执行|变更)?计划|(?:implementation|execution|task)?\s*plan)"
+        r"(?:\s*[—–-]\s*\S+)?",
+        re.IGNORECASE,
+    )
     plans_root = change_dir / "plans"
     primary = sorted(plans_root.glob("*-plan.md"))
     secondary = [
@@ -4653,11 +4733,23 @@ def _business_goal_from_sources(change_dir: Path, events: list[dict[str, Any]]) 
                     break
             if lines:
                 return lines[0]
+        heading = re.search(r"(?m)^#\s+(.+?)\s*$", body)
+        if heading:
+            title = heading.group(1).strip()
+            title = re.sub(
+                r"\s*[—–-]\s*(?:任务拆分|任务表|实施计划|执行计划|计划)\s*$",
+                "",
+                title,
+            ).strip()
+            if title and not generic_plan_heading.fullmatch(title):
+                return title
         first_task = re.search(r"(?m)^\s*\|\s*1\s*\|\s*([^|]+?)\s*\|", body)
         if first_task:
             return first_task.group(1).strip()
         for line in body.splitlines():
             clean = line.strip().lstrip("#").strip()
+            if generic_plan_heading.fullmatch(clean):
+                continue
             if clean and not clean.startswith(("---", ">", "|")) and len(clean) > 8:
                 return clean
     for event in events:
@@ -5328,8 +5420,45 @@ def _append_finalize_failure_terminal(
             message=f"归档条件未满足：{message}",
             note=f"归档操作 {operation_id} 未进入正式执行",
         )
+        append_event(
+            authoritative_change_dir,
+            phase="archive",
+            type_="phase.end",
+            status="BLOCKED",
+            code="ARCHIVE_PREPARE_BLOCKED",
+            message=f"归档条件未满足：{message}",
+            note="归档未开始，流程已在预检处结束",
+        )
     except OSError:
         pass
+
+
+def _best_effort_archive_terminal_sync(
+    project_root: Path,
+    event_dir: Path,
+    *,
+    change_key: str,
+    run_id: str | None,
+    payload: dict[str, Any],
+) -> None:
+    """Publish terminal archive state before any slow post-archive networking."""
+    try:
+        monitor = hes.auto_events_sync(
+            project_root,
+            event_dir,
+            run_id=run_id,
+            change_key=change_key,
+        )
+        payload.setdefault("steps", {})["platform_events_sync"] = monitor
+        if monitor.get("warning"):
+            payload.setdefault("warnings", []).append(str(monitor["warning"]))
+    except Exception as exc:  # noqa: BLE001 — monitoring cannot roll back archive
+        warning = f"events-sync terminal hook failed: {exc}"
+        payload.setdefault("warnings", []).append(warning)
+        payload.setdefault("steps", {})["platform_events_sync"] = {
+            "ok": False,
+            "warning": warning,
+        }
 
 
 def _freeze_evidence_cutoff(work_dir: Path) -> dict[str, Any]:
@@ -5599,7 +5728,11 @@ def validate_summary_data(summary: dict[str, Any]) -> dict[str, Any]:
     )
     stage = summary.get("stageStatus") or {}
     stage = stage if isinstance(stage, dict) else {}
-    has_failed_stage = any(str(value).upper() == "FAIL" for value in stage.values())
+    has_failed_stage = any(
+        str(value).upper() == "FAIL"
+        for phase, value in stage.items()
+        if str(phase).lower() != "archive"
+    )
     if (has_skip or has_failed_verification or has_failed_stage) and final_status == "OK":
         issues.append(
             {
@@ -7374,6 +7507,7 @@ def cmd_finalize(
         if split_state_dir is not None and split_state_dir.is_dir()
         else original_change_dir
     )
+    monitoring_run_id = hes.run_id_for(original_change_dir)
     operation_id = f"a-{uuid.uuid4().hex[:12]}"
     operation_root = project_root / ".harness" / "archive-operations"
     operation_temp_dir = operation_root / "staging" / operation_id / change_dir.name
@@ -7399,6 +7533,13 @@ def cmd_finalize(
                 )
             except OSError:
                 pass
+        _best_effort_archive_terminal_sync(
+            project_root,
+            authoritative_event_dir,
+            change_key=change_name,
+            run_id=monitoring_run_id,
+            payload=payload,
+        )
         try:
             write_json(
                 operation_record,
@@ -7479,11 +7620,16 @@ def cmd_finalize(
         payload["original_preserved"] = original_change_dir.is_dir()
         payload["finalStatus"] = "BLOCKED"
         _append_finalize_failure_terminal(
-            split_state_dir
-            if split_state_dir is not None and split_state_dir.is_dir()
-            else original_change_dir,
+            authoritative_event_dir,
             payload["error"],
             operation_id=operation_id,
+        )
+        _best_effort_archive_terminal_sync(
+            project_root,
+            authoritative_event_dir,
+            change_key=change_name,
+            run_id=monitoring_run_id,
+            payload=payload,
         )
         return 1, payload
 
@@ -8253,7 +8399,6 @@ def cmd_finalize(
     # as mutable staging, so a failed attempt cannot poison the next retry.
     # Capture monitoring run_id from the live change path before it is deleted
     # so archive finalize can report terminal status on the same platform run.
-    monitoring_run_id = hes.run_id_for(original_change_dir)
     try:
         archive_root.mkdir(parents=True, exist_ok=True)
         shutil.move(str(operation_temp_dir), str(archive_dir))
@@ -8300,11 +8445,56 @@ def cmd_finalize(
     }
     payload["knowledgeMaintenance"] = "REMOTE_PENDING"
 
+    # Freeze the platform run immediately after the local archive is published.
+    # Service shutdown, ZIP upload, and managed snapshot synchronization are
+    # independent post-phase work and may wait on process/network deadlines.
+    _best_effort_archive_terminal_sync(
+        project_root,
+        archive_dir,
+        change_key=change_name,
+        run_id=monitoring_run_id,
+        payload=payload,
+    )
+
     service_result = run_service_stop(work_dir)
     payload["steps"]["service_stop"] = service_result
     if service_result.get("warning"):
         warnings.append(str(service_result["warning"]))
 
+    # When remote credentials exist, upload one deterministic core-only ZIP.
+    push_result = auto_push_archive_core(
+        project_root,
+        archive_dir,
+        change_key=change_name,
+    )
+    payload["steps"]["archive_push"] = push_result
+    payload["knowledgeMaintenance"] = _knowledge_maintenance_from_archive_push(
+        push_result
+    )
+    if push_result.get("archiveStatus") == "durable":
+        payload["archiveDurability"] = "ARCHIVED_REMOTE_DURABLE"
+    if push_result.get("warning"):
+        warnings.append(str(push_result["warning"]))
+
+    managed_snapshot = auto_push_managed_snapshot(project_root)
+    payload["steps"]["managed_snapshot_push"] = managed_snapshot
+    if managed_snapshot.get("warning"):
+        warnings.append(str(managed_snapshot["warning"]))
+
+    archive_remote = {
+        key: push_result.get(key)
+        for key in (
+            "archiveId",
+            "archiveStatus",
+            "knowledgeStatus",
+            "uploadStatus",
+            "packageSha256",
+            "manifestSha256",
+            "reasonCode",
+            "remoteReceipt",
+        )
+        if push_result.get(key) is not None
+    }
     try:
         write_json(
             operation_record,
@@ -8321,40 +8511,13 @@ def cmd_finalize(
                     archive_dir / "evidence" / "archive-manifest-after.json"
                 ),
                 "archiveDurability": payload.get("archiveDurability"),
+                "knowledgeMaintenance": payload["knowledgeMaintenance"],
+                "archiveRemote": archive_remote,
+                "managedSnapshot": managed_snapshot,
             },
         )
     except OSError as exc:
         warnings.append(f"could not persist completed archive operation: {exc}")
-
-    # When remote credentials exist, upload one deterministic core-only ZIP.
-    push_result = auto_push_archive_core(
-        project_root,
-        archive_dir,
-        change_key=change_name,
-    )
-    payload["steps"]["archive_push"] = push_result
-    payload["knowledgeMaintenance"] = _knowledge_maintenance_from_archive_push(
-        push_result
-    )
-    if push_result.get("warning"):
-        warnings.append(str(push_result["warning"]))
-
-    # C3: best-effort terminal events-sync so platform run ends (succeeded/failed).
-    # Use the pre-delete change-path run_id + original change_key for continuity.
-    try:
-        monitor = hes.auto_events_sync(
-            project_root,
-            archive_dir,
-            run_id=monitoring_run_id,
-            change_key=change_name,
-        )
-        payload["steps"]["platform_events_sync"] = monitor
-        if monitor.get("warning"):
-            warnings.append(str(monitor["warning"]))
-    except Exception as exc:  # noqa: BLE001 — never roll back archive
-        warn = f"events-sync terminal hook failed: {exc}"
-        warnings.append(warn)
-        payload["steps"]["platform_events_sync"] = {"ok": False, "warning": warn}
 
     payload["ok"] = True
     payload["finalStatus"] = "OK"
@@ -8877,6 +9040,82 @@ def build_archive_package(
     }
 
 
+def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
+    """Best-effort upload of rules and Codebase Map through the normal push protocol."""
+    project_root = project_root.resolve()
+    credentials = _resolve_archive_remote_credentials(project_root, os.environ)
+    if not credentials["configured"]:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reasonCode": "MANAGED_SNAPSHOT_CREDENTIALS_MISSING",
+            "missingCredentials": credentials["missing"],
+        }
+    try:
+        launcher = resolve_npx_launcher()
+    except OSError as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_DEFERRED",
+            "warning": f"项目规则与架构地图上传已延后：{exc}",
+        }
+    command = [
+        *launcher,
+        "--yes",
+        "hunter-harness",
+        "push",
+        "--yes",
+        "--non-interactive",
+        "--json",
+        "--server-url",
+        str(credentials["serverUrl"]),
+    ]
+    if credentials["tokenEnv"] is not None:
+        command.extend(["--token-env", str(credentials["tokenEnv"])])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(project_root),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+            shell=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_DEFERRED",
+            "warning": f"项目规则与架构地图上传已延后：{exc}",
+        }
+    try:
+        output = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        output = None
+    if completed.returncode != 0 or not isinstance(output, dict):
+        return {
+            "ok": False,
+            "skipped": False,
+            "exitCode": completed.returncode,
+            "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_FAILED",
+            "warning": (
+                "项目规则与架构地图未能同步到平台；归档不受影响，"
+                "稍后可运行 npx hunter-harness push --yes --non-interactive 重试。"
+            ),
+        }
+    summary = output.get("summary")
+    submitted = summary.get("submitted", 0) if isinstance(summary, dict) else 0
+    return {
+        "ok": bool(output.get("ok", True)),
+        "skipped": False,
+        "projectId": output.get("project_id"),
+        "submitted": submitted if isinstance(submitted, int) else 0,
+        "unchanged": "MANAGED_SNAPSHOT_UNCHANGED" in output.get("warnings", []),
+    }
+
+
 def auto_push_archive_core(
     project_root: Path,
     archive_dir: Path,
@@ -8911,6 +9150,12 @@ def auto_push_archive_core(
             project_root,
             package_path.with_suffix(".upload.json"),
             label="archive upload receipt",
+            must_exist=False,
+        )
+        remote_receipt_path = _require_archive_project_path(
+            project_root,
+            package_path.with_suffix(".remote.json"),
+            label="durable archive receipt",
             must_exist=False,
         )
     except (OSError, ValueError) as exc:
@@ -9153,6 +9398,45 @@ def auto_push_archive_core(
     else:
         upload_status = "pending"
         reason_code = "ARCHIVE_KNOWLEDGE_INDEXING"
+    durable_receipt = {
+        "schemaVersion": 1,
+        "recordedAt": now_iso(),
+        "changeKey": effective_change_key,
+        "archiveId": cli_payload.get("archive_id"),
+        "archiveStatus": archive_status,
+        "knowledgeStatus": knowledge_status,
+        "uploadStatus": upload_status,
+        "packageSha256": package["packageSha256"],
+        "manifestSha256": package["manifestSha256"],
+        "fileCount": package["fileCount"],
+    }
+    try:
+        remote_receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(remote_receipt_path, durable_receipt)
+    except OSError as exc:
+        try:
+            persist_receipt(
+                upload_status=upload_status,
+                reason_code="ARCHIVE_DURABLE_RECEIPT_WRITE_FAILED",
+                archive_status=archive_status,
+                knowledge_status=knowledge_status,
+                exit_code=completed.returncode,
+            )
+        except OSError:
+            pass
+        return {
+            **base_result,
+            "ok": True,
+            "uploadStatus": upload_status,
+            "archiveId": cli_payload.get("archive_id"),
+            "archiveStatus": archive_status,
+            "knowledgeStatus": knowledge_status,
+            "reasonCode": "ARCHIVE_DURABLE_RECEIPT_WRITE_FAILED",
+            "warning": (
+                "服务端归档已持久化，但无法写入本地归档状态回执；"
+                f"已保留重试文件：{exc}"
+            ),
+        }
     try:
         persist_receipt(
             upload_status=upload_status,
@@ -9180,6 +9464,7 @@ def auto_push_archive_core(
         "archiveStatus": archive_status,
         "knowledgeStatus": knowledge_status,
         "reasonCode": reason_code,
+        "remoteReceipt": str(remote_receipt_path),
     }
     if fully_ready:
         cleanup_warnings: list[str] = []

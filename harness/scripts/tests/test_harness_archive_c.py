@@ -153,6 +153,12 @@ def _authorize_release_fixture(change_dir: Path, project: Path) -> None:
     )
     legacy_path = change_dir / "evidence" / "product-candidate-ci.json"
     legacy_path.unlink(missing_ok=True)
+    events_path = he.events_path(change_dir)
+    events_path.write_text(
+        events_path.read_text(encoding="utf-8").replace("bbbbbbbb", commit),
+        encoding="utf-8",
+        newline="\n",
+    )
     log_path = change_dir / "logs" / "execution-log.md"
     log_path.write_text(
         log_path.read_text(encoding="utf-8").replace("bbbbbbbb", commit),
@@ -597,9 +603,9 @@ class SourceConsistencyTests(_FinalizeFixture):
             event
             for event in _events_in(self.change)
             if event.get("phase") == "archive"
-            and event.get("type") == "phase.prepare.end"
+            and event.get("type") == "phase.end"
         ]
-        self.assertEqual([event.get("status") for event in archive_terminals], ["BLOCKED"])
+        self.assertEqual([event.get("status") for event in archive_terminals], ["FAIL"])
 
     def test_arc_int001_two_failed_attempts_do_not_poison_successful_retry(self) -> None:
         forced = {
@@ -808,7 +814,7 @@ class BusinessGoalTests(unittest.TestCase):
     def test_first_task_fallback_only_when_no_objective(self) -> None:
         _write(
             self.change / "plans" / "g-plan.md",
-            "# Plan\n\n## 任务表\n\n| # | 任务 |\n| 1 | 建立失败夹具和基线断言 |\n",
+            "# Implementation Plan\n\n## 任务表\n\n| # | 任务 |\n| 1 | 建立失败夹具和基线断言 |\n",
         )
         goal = ha._business_goal_from_sources(self.change, [])
         self.assertIn("建立失败夹具", goal)
@@ -843,6 +849,30 @@ class SummaryProjectionTests(unittest.TestCase):
         result = ha.validate_summary_data(summary)
         self.assertTrue(result["ok"])
         self.assertEqual(summary["knownRisks"][0]["message"], "真实风险未渲染")
+
+    def test_archive_failure_does_not_contradict_green_product_status(self) -> None:
+        summary = {
+            "changeName": "retryable-archive",
+            "finalStatus": "OK",
+            "stageStatus": {
+                "plan": "OK",
+                "run": "OK",
+                "test": "OK",
+                "review": "OK",
+                "submit": "OK",
+                "archive": "FAIL",
+            },
+            "verification": {
+                "unitTests": {"failures": 0, "errors": 0},
+                "apiTests": {"status": "OK", "failed": 0},
+                "browserE2E": {"status": "OK", "failed": 0},
+                "dbCompatibility": "OK",
+            },
+        }
+
+        result = ha.validate_summary_data(summary)
+
+        self.assertTrue(result["ok"], result)
 
 
 class ManifestStatsTests(_FinalizeFixture):

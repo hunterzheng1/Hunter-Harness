@@ -87,8 +87,13 @@ describe("hunter-harness rules-review CLI", () => {
     expect(await run(["rules-review", "--apply", decisions, "--json"])).toBe(0);
     const applied = JSON.parse(stdout.join("")) as {
       summary: { applied: number; recorded: number };
+      remote_sync: { status: string; submitted: number; reason_code: string | null };
     };
     expect(applied.summary).toEqual({ applied: 1, recorded: 1 });
+    expect(applied.remote_sync).toMatchObject({
+      status: "deferred",
+      submitted: 0
+    });
     expect(await readFile(target, "utf8")).toBe(after);
   });
 });

@@ -1,7 +1,9 @@
 import {
   applyInstructionProposal,
   auditProjectInstructions,
-  InstructionProposalError
+  InstructionProposalError,
+  pushProject,
+  PushWorkflowError
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
@@ -101,6 +103,33 @@ export async function runInstructionApply(
       projectRoot: dependencies.cwd,
       proposalPath: options.proposal
     });
+    let remoteSync: {
+      status: "uploaded" | "unchanged" | "deferred";
+      submitted: number;
+      reason_code: string | null;
+    };
+    try {
+      const pushed = await pushProject({
+        projectRoot: dependencies.cwd,
+        resourcesRoot: dependencies.resourcesRoot,
+        env: dependencies.env,
+        dryRun: false,
+        fetch: dependencies.fetch
+      });
+      remoteSync = {
+        status: "noChanges" in pushed && pushed.noChanges ? "unchanged" : "uploaded",
+        submitted: pushed.preview.operations.length,
+        reason_code: null
+      };
+    } catch (error) {
+      remoteSync = {
+        status: "deferred",
+        submitted: 0,
+        reason_code: error instanceof PushWorkflowError
+          ? error.code
+          : "MANAGED_SNAPSHOT_UPLOAD_FAILED"
+      };
+    }
     const output = {
       schema_version: 1,
       command: "instructions apply",
@@ -112,11 +141,17 @@ export async function runInstructionApply(
       receipt_path: result.receiptPath,
       transaction_id: result.transaction.transactionId,
       files: result.proposal.files.map((file) => file.path),
-      rule_candidates_applied: false
+      rule_candidates_applied: false,
+      remote_sync: remoteSync
     };
     dependencies.stdout(options.json === true
       ? JSON.stringify(output) + "\n"
-      : `已应用文档提案 ${result.proposal.proposal_id}，规则候选仍待人工评审。\n`);
+      : `已应用文档提案 ${result.proposal.proposal_id}，规则候选仍待人工评审。\n` +
+        (remoteSync.status === "uploaded"
+          ? `已同步 ${remoteSync.submitted} 个受控文档到平台。\n`
+          : remoteSync.status === "unchanged"
+            ? "平台上的受控文档已经是最新版本。\n"
+            : `平台同步待重试（${remoteSync.reason_code ?? "未知原因"}）；本地应用结果不受影响。\n`));
     return 0;
   } catch (error) {
     return failure("instructions apply", error, options.json === true, dependencies);

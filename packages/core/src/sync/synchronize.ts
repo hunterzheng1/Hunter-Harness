@@ -52,6 +52,8 @@ export interface SynchronizeOptions {
   transactionOptions?: Omit<TransactionOptions, "id">;
   stopAfterArtifactId?: string | null;
   protocolOnlyPaths?: ReadonlySet<string>;
+  /** The caller already owns the project protocol lock for this whole sync. */
+  protocolLockHeld?: boolean;
 }
 
 export interface SynchronizeResult {
@@ -442,7 +444,9 @@ export async function synchronizeArtifacts(
       "manifest.json"
     ), manifest);
 
-    const lock = await acquireProtocolLock(root, "update", { requestId: options.requestId });
+    const lock = options.protocolLockHeld === true
+      ? null
+      : await acquireProtocolLock(root, "update", { requestId: options.requestId });
     try {
       const nextBaseline = applyBaselineUpdates(baseline, plan);
       if (plan.baselineAdvanced && plan.conflicts.length === 0) {
@@ -498,7 +502,7 @@ export async function synchronizeArtifacts(
         return aggregate;
       }
     } finally {
-      await lock.release();
+      await lock?.release();
     }
   }
 

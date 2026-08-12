@@ -1,6 +1,7 @@
 import datetime as dt
 import importlib.util
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -32,6 +33,26 @@ def make_change(project: Path, name: str, status: str = "active") -> Path:
         encoding="utf-8",
     )
     return change
+
+
+def init_repo(project: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "tester"], cwd=project, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=project, check=True)
+    (project / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=project, check=True)
+
+
+def add_linked_worktree(project: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(target), "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
 
 
 class HarnessContextTest(unittest.TestCase):
@@ -134,9 +155,10 @@ class HarnessContextTest(unittest.TestCase):
     def test_prepare_resolves_relative_worktree_path_from_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
+            init_repo(project)
             change = make_change(project, "active")
             worktree = project / ".worktrees" / "active"
-            worktree.mkdir(parents=True)
+            add_linked_worktree(project, worktree)
             (change / "meta/worktree.json").write_text(
                 json.dumps(
                     {
@@ -158,6 +180,94 @@ class HarnessContextTest(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["executionRoot"], str(worktree.resolve()))
+
+    def test_prepare_supports_worktree_path_and_exact_worktree_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            cases = (
+                ("worktree-path", "worktreePath"),
+                ("exact-root", "worktreeRoot"),
+            )
+            for change_name, field in cases:
+                with self.subTest(field=field):
+                    change = make_change(project, change_name)
+                    worktree = project / ".worktrees" / change_name
+                    add_linked_worktree(project, worktree)
+                    (change / "meta/worktree.json").write_text(
+                        json.dumps({field: f".worktrees/{change_name}"}),
+                        encoding="utf-8",
+                    )
+                    result = CONTEXT.prepare_context(
+                        project,
+                        change=change_name,
+                        phase="run",
+                        executor="codex",
+                        ttl_seconds=60,
+                    )
+                    self.assertTrue(result["ok"], result)
+                    self.assertEqual(result["executionRoot"], str(worktree.resolve()))
+
+    def test_prepare_rejects_declared_non_git_and_foreign_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            project = base / "project"
+            project.mkdir()
+            init_repo(project)
+            plain = base / "plain"
+            plain.mkdir()
+            foreign = base / "foreign"
+            foreign.mkdir()
+            init_repo(foreign)
+            for change_name, target in (("plain", plain), ("foreign", foreign)):
+                with self.subTest(change=change_name):
+                    change = make_change(project, change_name)
+                    (change / "meta/worktree.json").write_text(
+                        json.dumps({"worktreePath": str(target)}),
+                        encoding="utf-8",
+                    )
+                    result = CONTEXT.prepare_context(
+                        project,
+                        change=change_name,
+                        phase="run",
+                        executor="codex",
+                    )
+                    self.assertFalse(result["ok"], result)
+                    self.assertEqual(result["code"], "EXECUTION_WORKTREE_INVALID")
+
+    def test_prepare_rejects_independent_clone_with_same_origin_and_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            project = base / "project"
+            project.mkdir()
+            init_repo(project)
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://example.test/shared/repo.git"],
+                cwd=project,
+                check=True,
+            )
+            clone = base / "clone"
+            subprocess.run(["git", "clone", "-q", str(project), str(clone)], check=True)
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", "https://example.test/shared/repo.git"],
+                cwd=clone,
+                check=True,
+            )
+            change = make_change(project, "clone")
+            (change / "meta/worktree.json").write_text(
+                json.dumps({"worktreePath": str(clone)}),
+                encoding="utf-8",
+            )
+
+            result = CONTEXT.prepare_context(
+                project,
+                change="clone",
+                phase="run",
+                executor="codex",
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "EXECUTION_WORKTREE_INVALID")
 
     def test_prepare_fails_closed_for_ambiguous_active_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -523,6 +633,44 @@ class HarnessContextTest(unittest.TestCase):
             )
             self.assertFalse(illegal["ok"])
             self.assertEqual(illegal["code"], "TRANSITION_ILLEGAL")
+
+    def test_configure_phase_plan_inserts_merge_for_worktree_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change = make_change(project, "worktree-change")
+            (change / "meta/worktree.json").write_text(
+                json.dumps(
+                    {
+                        "requested": True,
+                        "created": True,
+                        "path": ".worktrees/worktree-change",
+                        "worktreeRoot": ".worktrees",
+                        "branch": "harness/worktree-change",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            configured = CONTEXT.configure_phase_plan(
+                project,
+                "worktree-change",
+                phases=["plan", "run", "test", "review", "submit", "archive"],
+                operator="tester",
+                reason="使用隔离 worktree 完成实现",
+            )
+
+            self.assertTrue(configured["ok"], configured)
+            self.assertEqual(
+                configured["plannedPhases"],
+                ["plan", "run", "test", "review", "submit", "merge", "archive"],
+            )
+            persisted = json.loads(
+                (change / "meta/gate-policy.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(persisted["plannedPhases"], configured["plannedPhases"])
+            self.assertNotIn(
+                "merge", [item["phase"] for item in configured["skippedPhases"]]
+            )
 
     def test_close_accepts_absolute_project_relative_and_change_relative_artifacts(self) -> None:
         forms = (

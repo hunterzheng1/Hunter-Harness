@@ -33,15 +33,21 @@ disallowed-tools:
 
 ## Normal Workflow
 
-1. `harness-archive` 的 finalize 生成确定性 ZIP，并调用：
+1. 先读取最近归档操作记录中的 `archiveRemote`，以及本地状态目录
+   `.harness/state/local/archive-packages/<change-key>.remote.json`。若 `archiveStatus=durable` 且
+   `knowledgeStatus=ready`，直接报告已完成，禁止重新打包或上传。
+2. 若存在 `.harness/state/local/archive-packages/<change-key>.zip`，只重试该包；
+   禁止搜索实现源码、调用 Python 内部函数或手工重新拼包。
+3. 只有旧归档没有 ZIP/回执时，调用公开命令重新生成并上传；`harness-archive`
+   的 finalize 正常情况下会生成确定性 ZIP，并调用：
 
 ```powershell
 powershell.exe -Command "npx hunter-harness archive upload --file '<archive.zip>' --change-key '<change-key>' --yes --non-interactive --json"
 ```
 
-2. 检查响应中的包哈希、服务端保存状态和 `knowledge_status`。
-3. 只有服务端确认原 ZIP 已持久保存且知识状态为 ready，才删除本地待上传 ZIP。
-4. 上传或 ingest 失败时保留 ZIP 与失败收据；修复连接后重试同一个 ZIP，不重新拼散文件。
+4. 检查响应中的包哈希、服务端保存状态和 `knowledge_status`。
+5. 只有服务端确认原 ZIP 已持久保存且知识状态为 ready，才删除本地待上传 ZIP。
+6. 上传或 ingest 失败时保留 ZIP 与失败收据；修复连接后重试同一个 ZIP，不重新拼散文件。
 
 ## Ownership Rules
 

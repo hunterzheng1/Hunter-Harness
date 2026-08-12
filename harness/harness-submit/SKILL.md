@@ -60,7 +60,7 @@ worktree 合并前必须运行 `harness_change.py integration-lock acquire --run
 
 ### 提交流程（步骤 0–7）
 
-0. **启动准备** — `harness_context.py prepare --phase submit --executor <tool> [--change <id>] --json` 确定唯一变更与 executionRoot；`harness_context.py begin --phase submit --change <id> --executor <tool> --json` 校验 review→submit receipt；**`harness_gate.py begin --phase submit --change <id>`**；读 ledger，以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 计算 diffHash + post-test 7 类分类（禁止手写 ledger / 手工 phase.end）
+0. **启动准备** — `harness_context.py prepare --phase submit --executor <tool> [--change <id>] --json` 确定唯一变更与 executionRoot；`harness_context.py begin --phase submit --change <id> --executor <tool> --json` 校验 review→submit receipt；**`harness_gate.py begin --phase submit --change <id>`**；读 ledger，以 `harness_ledger.py diff-hash --repo <executionRoot> --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 计算 diffHash + post-test 7 类分类（`executionRoot` 必须直接取准备回执；禁止手写 ledger / 手工 phase.end）
 1. **合并最新代码** — 主目录与 worktree 均**不在业务工作区 stash/pull**；远端同步由合并段 integration transaction 在隔离 integration worktree 内完成（见「worktree 合并流程」）；**正常路径禁止 `git stash` / `stash pop`**
 2. **最终验证** — ledger 复用优先；提交前只调用 `can-reuse --project . --profile-input unitTestFull --command <profile 规范命令>`。不得传入另一套 `--files`，不得把 runner 包装说明写进 `command`。`reuse=true` 时禁止重跑；只有真实输入、依赖、工具链或环境身份变化时才执行一次同一 profile 验证，并只登记一条结果。不要读取 ledger/archive 实现源码或临时编写散列脚本排查参数。
    - 无远端 CI 且 gate-policy 未强制 remote provider 时，验证通过/复用后运行 `harness_archive.py certify-local --change-dir ... --project . --json`，从同一 ledger 生成 `local-reproducible` 产品候选收据；该命令不执行测试。

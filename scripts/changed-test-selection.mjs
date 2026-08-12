@@ -1,4 +1,5 @@
 const TEST_FILE_PATTERN = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const PYTHON_TEST_FILE_PATTERN = /^harness\/scripts\/tests\/test_.+\.py$/;
 const RELATED_SOURCE_PATTERN =
   /^(?:packages\/[^/]+\/src|scripts)\/.+\.[cm]?[jt]sx?$/;
 const GENERATED_PATH_PATTERN = /(?:^|\/)(?:dist|coverage|resources)\//;
@@ -12,6 +13,18 @@ const CONTRACT_TESTS_BY_PATH = new Map([
   [
     "packages/cli/src/commands/refresh.ts",
     ["packages/cli/test/project-detection.test.ts"]
+  ],
+  [
+    "packages/cli/src/commands/instructions.ts",
+    ["packages/cli/test/instructions.test.ts"]
+  ],
+  [
+    "packages/cli/src/commands/push.ts",
+    ["packages/cli/test/push.test.ts"]
+  ],
+  [
+    "packages/cli/src/commands/rules-review.ts",
+    ["packages/cli/test/rules-review.test.ts"]
   ],
   [
     "packages/cli/src/commands/sync.ts",
@@ -31,6 +44,30 @@ const CONTRACT_TESTS_BY_PATH = new Map([
   [
     "packages/core/src/instructions/graph.ts",
     ["packages/core/test/instruction-graph.test.ts"]
+  ],
+  [
+    "packages/core/src/push/push.ts",
+    [
+      "packages/core/test/push-archive-summary.test.ts",
+      "packages/core/test/push-scan.test.ts",
+      "packages/core/test/push-stale.test.ts"
+    ]
+  ],
+  [
+    "packages/core/src/sync/synchronize.ts",
+    [
+      "packages/core/test/artifact-rebase.test.ts",
+      "packages/core/test/push-stale.test.ts",
+      "packages/core/test/update-auth.test.ts"
+    ]
+  ],
+  [
+    "packages/core/src/transaction/recovery-store.ts",
+    [
+      "packages/core/test/recovery-v3.test.ts",
+      "packages/core/test/recovery.test.ts",
+      "packages/core/test/transaction.test.ts"
+    ]
   ],
   [
     "scripts/sync-harness.mjs",
@@ -55,15 +92,60 @@ const CONTRACT_TESTS_BY_PATH = new Map([
   ]
 ]);
 
+const PYTHON_TESTS_BY_PATH = new Map([
+  [
+    "harness/scripts/harness_archive.py",
+    [
+      "harness/scripts/tests/test_harness_archive.py",
+      "harness/scripts/tests/test_harness_archive_c.py",
+      "harness/scripts/tests/test_harness_archive_preflight.py",
+      "harness/scripts/tests/test_harness_archive_remote.py"
+    ]
+  ],
+  [
+    "harness/scripts/harness_context.py",
+    ["harness/scripts/tests/test_harness_context.py"]
+  ],
+  [
+    "harness/scripts/harness_gate.py",
+    [
+      "harness/scripts/tests/test_harness_gate.py",
+      "harness/scripts/tests/test_harness_gate_severity.py"
+    ]
+  ],
+  [
+    "harness/scripts/harness_ledger.py",
+    [
+      "harness/scripts/tests/test_harness_ledger.py",
+      "harness/scripts/tests/test_harness_ledger_targets.py",
+      "harness/scripts/tests/test_harness_ledger_v3.py"
+    ]
+  ],
+  [
+    "harness/scripts/harness_runtime.py",
+    ["harness/scripts/tests/test_harness_runtime.py"]
+  ]
+]);
+
 export function selectChangedTestInputs(paths) {
   const directTests = new Set();
   const relatedSources = new Set();
   const deferredTests = new Set();
+  const pythonTests = new Set();
   const normalizedPaths = new Set(
     paths.map((path) => path.replaceAll("\\", "/").trim()).filter(Boolean)
   );
 
   for (const path of normalizedPaths) {
+    for (const pythonTest of PYTHON_TESTS_BY_PATH.get(path) ?? []) {
+      pythonTests.add(pythonTest);
+    }
+
+    if (PYTHON_TEST_FILE_PATTERN.test(path)) {
+      pythonTests.add(path);
+      continue;
+    }
+
     for (const contractTest of CONTRACT_TESTS_BY_PATH.get(path) ?? []) {
       directTests.add(contractTest);
     }
@@ -88,6 +170,7 @@ export function selectChangedTestInputs(paths) {
   return {
     directTests: [...directTests].sort(),
     relatedSources: [...relatedSources].sort(),
-    deferredTests: [...deferredTests].sort()
+    deferredTests: [...deferredTests].sort(),
+    pythonTests: [...pythonTests].sort()
   };
 }

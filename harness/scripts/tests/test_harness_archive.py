@@ -678,6 +678,20 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                 "新增年度预算清算场景",
             )
 
+    def test_business_goal_prefers_descriptive_title_over_first_task_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            _write(
+                change / "plans" / "monitor-plan.md",
+                "# 实时监控后端绑定改造 — 任务拆分\n\n"
+                "| # | 任务 |\n|---|---|\n| 1 | 编写数据库迁移脚本 |\n",
+            )
+
+            self.assertEqual(
+                ha._business_goal_from_sources(change, []),
+                "实时监控后端绑定改造",
+            )
+
     def test_final_commit_scope_keeps_all_task_commits_and_ignores_later_commits(self) -> None:
         import subprocess
 
@@ -963,6 +977,24 @@ class ManifestCompareExcludeTests(unittest.TestCase):
         self.assertEqual(result["checksumStatus"], "OK")
         self.assertEqual(result["generatedFiles"], 1)
 
+    def test_byte_coverage_rejects_unlisted_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "spec" / "design.md", "covered\n")
+            manifest_path = root / "evidence" / "archive-manifest-after.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest = ha.generate_manifest(root, manifest_path)
+
+            self.assertTrue(ha.verify_manifest_byte_coverage(root, manifest)["ok"])
+            _write(root / "meta" / "unexpected-receipt.json", "{}\n")
+            result = ha.verify_manifest_byte_coverage(root, manifest)
+
+            self.assertFalse(result["ok"])
+            self.assertIn(
+                {"path": "meta/unexpected-receipt.json", "reason": "unexpected"},
+                result["mismatched"],
+            )
+
 
 class RemoteKnowledgeOwnershipTests(unittest.TestCase):
     """Finalize never creates local knowledge state; ingest follows ZIP upload."""
@@ -1006,6 +1038,123 @@ class RemoteKnowledgeOwnershipTests(unittest.TestCase):
         self.assertFalse((project_root / ".harness" / "knowledge").exists())
         self.assertEqual(payload.get("knowledgeMaintenance"), "REMOTE_PENDING")
         self.assertEqual(payload["steps"]["knowledge"]["localIngest"], False)
+        self.assertEqual(
+            payload["steps"]["archive_push"]["reasonCode"],
+            "ARCHIVE_UPLOAD_CREDENTIALS_MISSING",
+        )
+        self.assertTrue(Path(payload["steps"]["archive_push"]["packagePath"]).is_file())
+
+    def test_completed_operation_records_remote_archive_result(self) -> None:
+        call_order: list[str] = []
+        remote = {
+            "ok": True,
+            "uploadStatus": "ready",
+            "archiveId": "arc_outbox",
+            "archiveStatus": "durable",
+            "knowledgeStatus": "ready",
+            "packageSha256": "sha256:" + "a" * 64,
+            "manifestSha256": "sha256:" + "b" * 64,
+            "remoteReceipt": ".harness/state/local/archive-packages/demo.remote.json",
+        }
+        managed = {"ok": True, "submitted": 4, "unchanged": False}
+        with mock.patch.object(
+            ha,
+            "auto_push_archive_core",
+            side_effect=lambda *_args, **_kwargs: (call_order.append("archive-upload"), remote)[1],
+        ), mock.patch.object(
+            ha,
+            "auto_push_managed_snapshot",
+            side_effect=lambda *_args, **_kwargs: (call_order.append("managed-push"), managed)[1],
+        ), mock.patch.object(
+            ha.hes,
+            "auto_events_sync",
+            side_effect=lambda *_args, **_kwargs: (call_order.append("events-sync"), {"ok": True})[1],
+        ), mock.patch.object(
+            ha,
+            "run_service_stop",
+            side_effect=lambda path, *_args, **_kwargs: (
+                call_order.append(
+                    "service-stop-pre"
+                    if Path(path).resolve() == self.change.resolve()
+                    else "service-stop-post"
+                ),
+                {"ok": True},
+            )[1],
+        ):
+            code, payload = _run(
+                [
+                    "finalize",
+                    "--intent",
+                    "record-only",
+                    "--change-dir",
+                    str(self.change),
+                    "--archive-root",
+                    str(self.archive_root),
+                    "--json",
+                ]
+            )
+
+        self.assertEqual(code, 0, msg=json.dumps(payload, ensure_ascii=False, indent=2))
+        operation = json.loads(
+            Path(payload["operationRecord"]).read_text(encoding="utf-8")
+        )
+        self.assertEqual(operation["archiveRemote"]["archiveId"], "arc_outbox")
+        self.assertEqual(operation["archiveRemote"]["knowledgeStatus"], "ready")
+        self.assertEqual(operation["knowledgeMaintenance"], "REMOTE_READY")
+        self.assertEqual(operation["managedSnapshot"]["submitted"], 4)
+        self.assertEqual(
+            call_order,
+            [
+                "service-stop-pre",
+                "events-sync",
+                "service-stop-post",
+                "archive-upload",
+                "managed-push",
+            ],
+        )
+
+    def test_blocked_execute_syncs_terminal_state(self) -> None:
+        state_root = self.project / ".harness" / "state" / "changes" / self.change.name
+        state_root.mkdir(parents=True)
+        context_path = self.change / "meta" / "change-context.json"
+        context = (
+            json.loads(context_path.read_text(encoding="utf-8"))
+            if context_path.is_file()
+            else {"schemaVersion": 2, "changeName": self.change.name}
+        )
+        context["stateOwnership"] = {
+            "layout": "split-v1",
+            "runtimeRoot": f".harness/state/changes/{self.change.name}",
+        }
+        _write_json(context_path, context)
+        with mock.patch.object(
+            ha, "load_product_candidate_ci", return_value={"ok": True}
+        ), mock.patch.object(
+            ha,
+            "archive_auto_gate",
+            return_value={
+                "ok": False,
+                "reasonCode": "ARCHIVE_PRECONDITIONS_UNSATISFIED",
+                "nextAction": "先完成缺失条件",
+                "status": {"blockers": []},
+            },
+        ), mock.patch.object(
+            ha.hes, "auto_events_sync", return_value={"ok": True}
+        ) as sync:
+            code, payload = ha.execute_archive(self.change, self.archive_root)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["finalStatus"], "BLOCKED")
+        self.assertTrue(payload["steps"]["platform_events_sync"]["ok"])
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.args[1], state_root.resolve())
+        events = he.load_events(he.events_path(state_root))
+        self.assertTrue(any(
+            item.get("phase") == "archive"
+            and item.get("type") == "phase.end"
+            and item.get("status") == "BLOCKED"
+            for item in events
+        ))
 
 
 class ConditionalOkTests(unittest.TestCase):
@@ -1346,6 +1495,41 @@ class LedgerCountFallbackTests(unittest.TestCase):
         result = ha._ledger_api_tests(ledger)
         self.assertEqual(result["total"], 3)
         self.assertEqual(result["passed"], 3)
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["source"], "evidence-text")
+
+    def test_unit_fraction_evidence_from_safe_runner_is_counted(self) -> None:
+        ledger = {
+            "validations": {
+                "unitTestFull": {
+                    "status": "OK",
+                    "evidence": "fixback 后 module 门禁 117/117（+4 修复用例）",
+                }
+            }
+        }
+
+        result = ha._ledger_unit_tests(ledger)
+
+        self.assertEqual(result["run"], 117)
+        self.assertEqual(result["failures"], 0)
+        self.assertEqual(result["passRate"], "100%")
+        self.assertEqual(result["source"], "evidence-text")
+        self.assertEqual(result["latestAuthoritativeAttempt"]["run"], 117)
+
+    def test_api_fraction_evidence_from_safe_runner_is_counted(self) -> None:
+        ledger = {
+            "validations": {
+                "apiTest": {
+                    "status": "OK",
+                    "evidence": "apiTest 7/7（API-001/002、INT-001 + 回归 4 例）",
+                }
+            }
+        }
+
+        result = ha._ledger_api_tests(ledger)
+
+        self.assertEqual(result["total"], 7)
+        self.assertEqual(result["passed"], 7)
         self.assertEqual(result["status"], "OK")
         self.assertEqual(result["source"], "evidence-text")
 
@@ -2615,11 +2799,14 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self._collapse_archive_boundary()
         archive_root = self.tmp / ".harness" / "archive"
 
-        code, payload = ha.cmd_finalize(
-            self.change,
-            archive_root,
-            archive_intent="record-only",
-        )
+        with mock.patch.object(
+            ha.hes, "auto_events_sync", return_value={"ok": True}
+        ) as sync:
+            code, payload = ha.cmd_finalize(
+                self.change,
+                archive_root,
+                archive_intent="record-only",
+            )
 
         self.assertEqual(code, 1, payload)
         self.assertEqual(payload["reasonCode"], "ARCHIVE_REPORT_ADEQUACY_FAILED")
@@ -2630,6 +2817,46 @@ class ArchiveAutoGateTests(unittest.TestCase):
         self.assertFalse(Path(payload["operationTempDir"]).exists())
         operation_root = self.tmp / ".harness" / "archive-operations" / "staging"
         self.assertFalse(operation_root.exists())
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.args[1], self.change.resolve())
+
+    def test_direct_finalize_syncs_blocked_terminal_from_split_state(self) -> None:
+        state_root = self.tmp / ".harness" / "state" / "changes" / self.change.name
+        state_root.mkdir(parents=True)
+        context_path = self.change / "meta" / "change-context.json"
+        context = (
+            json.loads(context_path.read_text(encoding="utf-8"))
+            if context_path.is_file()
+            else {"schemaVersion": 2, "changeName": self.change.name}
+        )
+        context["stateOwnership"] = {
+            "layout": "split-v1",
+            "runtimeRoot": f".harness/state/changes/{self.change.name}",
+        }
+        _write_json(context_path, context)
+        with mock.patch.object(
+            ha.hes, "auto_events_sync", return_value={"ok": True}
+        ) as sync:
+            code, payload = ha.cmd_finalize(
+                self.change,
+                self.tmp / ".harness" / "archive",
+                archive_intent="record-only",
+                preflight_status={
+                    "archivable": False,
+                    "blockers": [{"code": "TEST_BLOCK", "message": "测试阻断"}],
+                },
+            )
+
+        self.assertEqual(code, 1, payload)
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.args[1], state_root.resolve())
+        events = he.load_events(he.events_path(state_root))
+        self.assertTrue(any(
+            item.get("phase") == "archive"
+            and item.get("type") == "phase.end"
+            and item.get("status") == "BLOCKED"
+            for item in events
+        ))
 
     def test_execute_collects_status_once_before_finalize(self) -> None:
         _write_json(

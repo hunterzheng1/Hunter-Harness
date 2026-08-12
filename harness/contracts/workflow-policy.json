@@ -110,7 +110,7 @@
       "artifacts": ["summary-data", "archive-manifest"],
       "events": ["phase.start", "phase.end", "artifact"],
       "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close"]
+      "capabilities": []
     },
     "harness-sync": {
       "phase": "sync",

@@ -111,6 +111,18 @@ class HarnessGateTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
 
+    def test_uses_adjacent_installed_skills_root_when_flag_is_omitted(self) -> None:
+        installed_root = self.project / ".codebuddy" / "skills"
+        scripts_dir = installed_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (installed_root / ".harness-build.json").write_text("{}\n", encoding="utf-8")
+
+        with mock.patch.object(gate, "SCRIPTS_DIR", scripts_dir):
+            self.assertEqual(
+                gate.resolve_skills_root(None),
+                installed_root.resolve(),
+            )
+
     def test_foundation_gate_blocks_task_6_api012(self) -> None:
         blocked = gate.foundation_gate_blocks(6, self.change_dir)
         self.assertIsNotNone(blocked)
@@ -574,19 +586,47 @@ class HarnessGateTests(unittest.TestCase):
         )
 
     def test_risk_classification_uses_change_worktree_root(self) -> None:
-        worktree = self.project / "feature-worktree"
-        worktree.mkdir()
+        worktree = self.project / ".worktrees" / "demo"
+        worktree.parent.mkdir()
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "feature-demo", str(worktree)],
+            cwd=self.project,
+            check=True,
+            capture_output=True,
+        )
         meta = self.change_dir / "meta"
         meta.mkdir(exist_ok=True)
         (meta / "change-context.json").write_text(
-            json.dumps({"worktreeRoot": str(worktree)}) + "\n", encoding="utf-8"
+            json.dumps({"worktreeRoot": ".worktrees"}) + "\n", encoding="utf-8"
         )
         self.assertEqual(gate.change_code_root(self.change_dir), worktree.resolve())
-        (meta / "change-context.json").write_text("{}\n", encoding="utf-8")
         (meta / "worktree.json").write_text(
-            json.dumps({"worktreePath": str(worktree)}) + "\n", encoding="utf-8"
+            json.dumps({"path": ".worktrees/demo"}) + "\n", encoding="utf-8"
         )
         self.assertEqual(gate.change_code_root(self.change_dir), worktree.resolve())
+        plans = self.change_dir / "plans"
+        plans.mkdir(parents=True, exist_ok=True)
+        (plans / "demo-plan.md").write_text("risk: fast\n", encoding="utf-8")
+        changed = worktree / "src" / "auth" / "token-service.ts"
+        changed.parent.mkdir(parents=True)
+        changed.write_text("export const token = 'redacted';\n", encoding="utf-8")
+        classified = gate.classify_risk(self.change_dir, "post-run")
+        self.assertEqual(classified["tier"], "full")
+        self.assertIn("auth", classified["signals"])
+
+    def test_declared_foreign_worktree_fails_closed(self) -> None:
+        foreign = Path(tempfile.mkdtemp(prefix="foreign-gate-repo-"))
+        try:
+            subprocess.run(["git", "init"], cwd=foreign, check=True, capture_output=True)
+            meta = self.change_dir / "meta"
+            meta.mkdir(exist_ok=True)
+            (meta / "worktree.json").write_text(
+                json.dumps({"worktreePath": str(foreign)}) + "\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "EXECUTION_WORKTREE_INVALID"):
+                gate.change_code_root(self.change_dir)
+        finally:
+            shutil.rmtree(foreign, ignore_errors=True)
 
     def test_lint_skills_flags_handwritten_ledger_pattern(self) -> None:
         skills_root = Path(tempfile.mkdtemp(prefix="skills-root-"))
@@ -892,6 +932,33 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.htg, "close", return_value={"ok": True}) as guard_close:
             self.assertEqual(gate.cmd_close(close_args), 0)
         guard_close.assert_called_once_with(execution.resolve(), self.change_dir)
+
+    def test_begin_uses_inferred_skills_root_throughout_phase_capsule(self) -> None:
+        self._write_checkpoints("approved")
+        installed_root = self.project / ".codebuddy" / "skills"
+        scripts_dir = installed_root / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (installed_root / ".harness-build.json").write_text("{}\n", encoding="utf-8")
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        identity = {"adapter": "codebuddy", "bundleHash": "sha256:" + "a" * 64}
+        args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo", "--run-id", "inferred-root-run",
+            "--json",
+        ])
+
+        with mock.patch.object(gate, "SCRIPTS_DIR", scripts_dir), \
+             mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "claim_lease", return_value={"ok": True, "lease": {}}), \
+             mock.patch.object(gate, "validate_identity", return_value=identity), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.htg, "begin", return_value={"ok": True}):
+            self.assertEqual(gate.cmd_begin(args), 0)
+
+        capsule = gate.load_phase_capsule(self.change_dir, "run", "inferred-root-run")
+        self.assertEqual(capsule["skillsRoot"], str(installed_root.resolve()))
 
     def test_corrupt_phase_capsule_is_not_treated_as_absent(self) -> None:
         path = gate._phase_capsule_path(self.change_dir, "run", "corrupt-run")

@@ -9,11 +9,18 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+import harness_ledger as hl  # noqa: E402
 
 
 PHASE_GRAPH = {
@@ -309,6 +316,14 @@ def configure_phase_plan(
             "ok": False,
             "code": "PHASE_PLAN_JUSTIFICATION_REQUIRED",
         }
+    worktree_path = contract_root / "meta" / "worktree.json"
+    if worktree_path.is_file():
+        try:
+            worktree = _read_json(worktree_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            worktree = {}
+        if bool(worktree.get("requested") or worktree.get("created")) and "merge" not in normalized:
+            normalized.insert(normalized.index("archive"), "merge")
     policy_path = contract_root / "meta" / "gate-policy.json"
     policy = _read_json(policy_path) if policy_path.is_file() else {"schemaVersion": 1}
     skipped = [
@@ -382,28 +397,16 @@ def _parse_time(value: Any) -> dt.datetime | None:
 
 
 def _execution_root(project: Path, contract_root: Path, state_root: Path) -> Path:
-    for candidate in (
-        state_root / "meta" / "worktree.json",
-        contract_root / "meta" / "worktree.json",
-    ):
-        if not candidate.is_file():
-            continue
-        try:
-            worktree = _read_json(candidate)
-        except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        path = worktree.get("path")
-        if not path and worktree.get("worktreeRoot"):
-            path = Path(str(worktree["worktreeRoot"])) / contract_root.name
-        if path:
-            unresolved = Path(str(path))
-            resolved = (
-                unresolved.resolve()
-                if unresolved.is_absolute()
-                else (project / unresolved).resolve()
-            )
-            if resolved.is_dir() and _same_repository(project, resolved):
-                return resolved
+    declared = False
+    # Context、ledger 与 gate 必须以同一份可信 worktree 契约为准。split
+    # state 可能携带运行元数据，因此两个根都交给统一解析器检查。
+    for change_root in (state_root, contract_root):
+        inferred = hl.infer_execution_project_root(change_root)
+        if inferred is not None:
+            return inferred
+        declared = declared or hl.declares_execution_worktree(change_root)
+    if declared:
+        raise ValueError("EXECUTION_WORKTREE_INVALID")
     return project.resolve()
 
 
@@ -595,7 +598,14 @@ def _claim_prepared_context(
                     "toPhase": phase,
                 }
 
-        execution_root = _execution_root(project, contract_root, state_root)
+        try:
+            execution_root = _execution_root(project, contract_root, state_root)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "code": "EXECUTION_WORKTREE_INVALID",
+                "error": str(exc),
+            }
         now = _now()
         lease: dict[str, Any] = {
             "schemaVersion": 1,
@@ -950,10 +960,18 @@ def _begin_transition_unlocked(
 ) -> dict[str, Any]:
     project = Path(project).resolve()
     try:
-        _contract_root, _contract_data, state_root = _contract(project, change)
+        contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
     paths = _paths(state_root)
+    try:
+        execution_root = _execution_root(project, contract_root, state_root)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "code": "EXECUTION_WORKTREE_INVALID",
+            "error": str(exc),
+        }
     if preparation_id is not None:
         current = _read_json(paths["current"]) if paths["current"].is_file() else None
         lease = _read_json(paths["lease"]) if paths["lease"].is_file() else None
@@ -1027,7 +1045,7 @@ def _begin_transition_unlocked(
             "changeName": change,
             "phase": phase,
             "executor": executor,
-            "executionRoot": str(_execution_root(project, project / ".harness/changes" / change, state_root)),
+            "executionRoot": str(execution_root),
             "receiptHash": receipt["receiptHash"],
             "begunAt": acknowledgment["begunAt"],
         }

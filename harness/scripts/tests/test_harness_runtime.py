@@ -355,6 +355,39 @@ class ManagedRunSessionTests(unittest.TestCase):
                 quarantined["receipt"]["entries"],
             )
 
+    def test_scan_allows_documented_authorization_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            design = root / "spec" / "api.md"
+            design.parent.mkdir(parents=True)
+            design.write_text(
+                "请求头示例：`Authorization: Bearer <apiKey>`\n",
+                encoding="utf-8",
+            )
+
+            result = runtime.refresh_sensitive_evidence_scan_receipt(root)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["receipt"]["unresolvedFailures"], [])
+
+    def test_scan_still_blocks_real_authorization_credential(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "change"
+            evidence = root / "runtime" / "request.txt"
+            evidence.parent.mkdir(parents=True)
+            evidence.write_text(
+                "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.real-signature\n",
+                encoding="utf-8",
+            )
+
+            result = runtime.refresh_sensitive_evidence_scan_receipt(root)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(
+                result["reasonCode"],
+                "SENSITIVE_EVIDENCE_UNQUARANTINED",
+            )
+
     def test_refresh_rejects_invalid_entries_without_overwriting_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "change"

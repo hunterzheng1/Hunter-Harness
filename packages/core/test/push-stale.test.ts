@@ -71,6 +71,35 @@ describe("pushProject stale baseline UX", () => {
     );
   }
 
+  async function seedCurrentFilesAsBaseline(
+    root: string,
+    projectId: string,
+    projectVersion: string
+  ): Promise<void> {
+    const dry = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: true,
+      sensitiveScanSkip: true
+    });
+    const baseline = await readBaseline(root);
+    for (const operation of dry.preview.operations) {
+      if (operation.operation === "add" || operation.operation === "modify") {
+        baseline.files[operation.path] = {
+          baseline_hash: operation.content_sha256,
+          local_hash_at_apply: operation.content_sha256,
+          file_kind: operation.file_kind,
+          last_applied_version: projectVersion,
+          deleted: false
+        };
+      }
+    }
+    baseline.project_id = projectId;
+    baseline.complete_project_version = projectVersion;
+    await writeBaseline(root, baseline);
+  }
+
   function projectGetResponse(
     projectId: string,
     latestProjectVersion: string | null
@@ -213,6 +242,366 @@ describe("pushProject stale baseline UX", () => {
     expect(confirmConflictStrategy).toHaveBeenCalledTimes(1);
     expect(await readFile(join(root, path), "utf8")).toBe(local);
     expect((await readBaseline(root)).complete_project_version).toBe("pv_00000001");
+  });
+
+  it("returns noChanges when remote rebase already contains the local managed change", async () => {
+    const root = await initRoot();
+    const projectId = "prj_rebase_noop";
+    const path = ".harness/rules/rebase-noop.md";
+    const base = "base\n";
+    const remote = "already published\n";
+    await bindProject(root, projectId, "pv_00000000");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000000");
+    await writeFile(join(root, path), remote);
+    const baseline = await readBaseline(root);
+    baseline.files[path] = {
+      baseline_hash: sha256Bytes(base),
+      local_hash_at_apply: sha256Bytes(base),
+      file_kind: "user_editable",
+      last_applied_version: "pv_00000000",
+      deleted: false
+    };
+    await writeBaseline(root, baseline);
+    const manifestPayload = {
+      schema_version: 1 as const,
+      project_id: projectId,
+      project_version: "pv_00000001",
+      artifact_id: "art_rebase_noop",
+      files: [{
+        operation: "modify" as const,
+        path,
+        file_kind: "user_editable" as const,
+        base_content_sha256: sha256Bytes(base),
+        content_sha256: sha256Bytes(remote),
+        size_bytes: Buffer.byteLength(remote)
+      }]
+    };
+    const manifest = {
+      ...manifestPayload,
+      manifest_sha256: sha256Bytes(canonicalJson(manifestPayload))
+    };
+    const calls: string[] = [];
+    const confirmProposal = vi.fn(async () => true);
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      if (method === "GET" && url.pathname.endsWith("/update-manifest")) {
+        if (url.searchParams.get("base_project_version") === "pv_00000001") {
+          return noDeltaUpdateManifest(projectId, "pv_00000001");
+        }
+        return new Response(JSON.stringify({
+          schema_version: 1,
+          project_id: projectId,
+          observed_project_version: "pv_00000001",
+          artifact_id: manifest.artifact_id,
+          artifact_manifest_url: "/api/v1/artifacts/" + manifest.artifact_id + "/manifest",
+          delta_available: true,
+          request_id: "req_update"
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (method === "GET" && url.pathname.endsWith("/manifest")) {
+        return new Response(JSON.stringify(manifest), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (method === "GET" && url.pathname.includes("/blobs/")) {
+        return new Response(remote, {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "X-Content-SHA256": sha256Bytes(remote),
+            "X-Request-Id": "req_blob"
+          }
+        });
+      }
+      throw new Error("unexpected path: " + method + " " + url.pathname);
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmProposal
+    });
+
+    expect(result).toMatchObject({ noChanges: true, projectId });
+    expect(calls).toContain("GET /api/v1/projects/" + projectId);
+    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
+    expect(confirmProposal).not.toHaveBeenCalled();
+  });
+
+  it("refreshes an advanced remote baseline even when the initial local diff is empty", async () => {
+    const root = await initRoot();
+    const projectId = "prj_initial_noop_rebase";
+    const path = ".harness/rules/remote-added.md";
+    const remote = "# Remote rule\n";
+    await bindProject(root, projectId, "pv_00000000");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000000");
+    const manifestPayload = {
+      schema_version: 1 as const,
+      project_id: projectId,
+      project_version: "pv_00000001",
+      artifact_id: "art_initial_noop_rebase",
+      files: [{
+        operation: "add" as const,
+        path,
+        file_kind: "user_editable" as const,
+        content_sha256: sha256Bytes(remote),
+        size_bytes: Buffer.byteLength(remote)
+      }]
+    };
+    const manifest = {
+      ...manifestPayload,
+      manifest_sha256: sha256Bytes(canonicalJson(manifestPayload))
+    };
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      if (method === "GET" && url.pathname.endsWith("/update-manifest")) {
+        if (url.searchParams.get("base_project_version") === "pv_00000001") {
+          return noDeltaUpdateManifest(projectId, "pv_00000001");
+        }
+        return new Response(JSON.stringify({
+          schema_version: 1,
+          project_id: projectId,
+          observed_project_version: "pv_00000001",
+          artifact_id: manifest.artifact_id,
+          artifact_manifest_url: "/api/v1/artifacts/" + manifest.artifact_id + "/manifest",
+          delta_available: true,
+          request_id: "req_update"
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (method === "GET" && url.pathname.endsWith("/manifest")) {
+        return new Response(JSON.stringify(manifest), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (method === "GET" && url.pathname.includes("/blobs/")) {
+        return new Response(remote, {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "X-Content-SHA256": sha256Bytes(remote),
+            "X-Request-Id": "req_blob"
+          }
+        });
+      }
+      throw new Error("unexpected path: " + method + " " + url.pathname);
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch
+    });
+
+    expect(result).toMatchObject({ noChanges: true, projectId });
+    expect(calls[0]).toBe("GET /api/v1/projects/" + projectId);
+    expect(calls.filter((call) => call.endsWith("/update-manifest"))).toHaveLength(2);
+    expect(calls.some((call) => call.endsWith("/manifest"))).toBe(true);
+    expect(calls.some((call) => call.includes("/blobs/"))).toBe(true);
+    expect((await readBaseline(root)).complete_project_version).toBe("pv_00000001");
+    expect(await readFile(join(root, path), "utf8")).toBe(remote);
+  });
+
+  it("returns noChanges when files converge before the push lock recheck", async () => {
+    const root = await initRoot();
+    const projectId = "prj_lock_noop";
+    const path = ".harness/rules/lock-noop.md";
+    const base = "base\n";
+    await bindProject(root, projectId, "pv_00000001");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await writeFile(join(root, path), "temporary local edit\n");
+    const baseline = await readBaseline(root);
+    baseline.files[path] = {
+      baseline_hash: sha256Bytes(base),
+      local_hash_at_apply: sha256Bytes(base),
+      file_kind: "user_editable",
+      last_applied_version: "pv_00000001",
+      deleted: false
+    };
+    await writeBaseline(root, baseline);
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      throw new Error("unexpected path: " + method + " " + url.pathname);
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmProposal: async () => {
+        await writeFile(join(root, path), base);
+        return true;
+      }
+    });
+
+    expect(result).toMatchObject({ noChanges: true, projectId });
+    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
+  });
+
+  it("rereads a baseline advanced by another push before the lock is claimed", async () => {
+    const root = await initRoot();
+    const projectId = "prj_lock_baseline_advanced";
+    const path = ".harness/rules/concurrent-push.md";
+    const base = "base\n";
+    const current = "concurrent result\n";
+    await bindProject(root, projectId, "pv_00000001");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await writeFile(join(root, path), current);
+    const initialBaseline = await readBaseline(root);
+    initialBaseline.files[path] = {
+      baseline_hash: sha256Bytes(base),
+      local_hash_at_apply: sha256Bytes(base),
+      file_kind: "user_editable",
+      last_applied_version: "pv_00000001",
+      deleted: false
+    };
+    await writeBaseline(root, initialBaseline);
+    let remoteVersion = "pv_00000001";
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, remoteVersion);
+      }
+      throw new Error("proposal must not be created after the concurrent baseline advance: " +
+        method + " " + url.pathname);
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmProposal: async () => {
+        const concurrentBaseline = await readBaseline(root);
+        concurrentBaseline.complete_project_version = "pv_00000002";
+        concurrentBaseline.files[path] = {
+          baseline_hash: sha256Bytes(current),
+          local_hash_at_apply: sha256Bytes(current),
+          file_kind: "user_editable",
+          last_applied_version: "pv_00000002",
+          deleted: false
+        };
+        await writeBaseline(root, concurrentBaseline);
+        remoteVersion = "pv_00000002";
+        return true;
+      }
+    });
+
+    expect(result).toMatchObject({ noChanges: true, projectId });
+    expect(calls.filter((call) => call === "GET /api/v1/projects/" + projectId)).toHaveLength(2);
+    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
+  });
+
+  it("requires confirmation again when the final locked proposal changes", async () => {
+    const root = await initRoot();
+    const projectId = "prj_lock_reconfirm";
+    const path = ".harness/rules/reconfirm.md";
+    await bindProject(root, projectId, "pv_00000001");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await writeFile(join(root, path), "proposal A\n");
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      throw new Error("proposal must not be created after final confirmation is denied: " +
+        method + " " + url.pathname);
+    });
+    const confirmProposal = vi.fn(async () => {
+      if (confirmProposal.mock.calls.length === 1) {
+        await writeFile(join(root, path), "proposal B\n");
+        return true;
+      }
+      return false;
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmProposal
+    });
+
+    expect(result).toMatchObject({ cancelled: true, projectId });
+    expect(confirmProposal).toHaveBeenCalledTimes(2);
+    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
+  });
+
+  it("requires sensitive-scan approval again when locked content changes", async () => {
+    const root = await initRoot();
+    const projectId = "prj_lock_rescan";
+    const path = ".harness/rules/rescan.md";
+    await bindProject(root, projectId, "pv_00000001");
+    await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
+    await writeFile(join(root, path), "Authorization: Bearer secret-A-12345678901234567890\n");
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method + " " + url.pathname);
+      if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
+        return projectGetResponse(projectId, "pv_00000001");
+      }
+      throw new Error("proposal must not be created after final scan approval is denied: " +
+        method + " " + url.pathname);
+    });
+    const confirmSensitiveScanSkip = vi.fn(async () => {
+      if (confirmSensitiveScanSkip.mock.calls.length === 1) {
+        await writeFile(
+          join(root, path),
+          "Authorization: Bearer secret-B-09876543210987654321\n"
+        );
+        return { skip: true, reason: "first preview only" } as const;
+      }
+      return "cancelled" as const;
+    });
+
+    const result = await pushProject({
+      projectRoot: root,
+      resourcesRoot,
+      env: {},
+      dryRun: false,
+      fetch,
+      confirmSensitiveScanSkip
+    });
+
+    expect(result).toMatchObject({ cancelled: true, projectId });
+    expect(confirmSensitiveScanSkip).toHaveBeenCalledTimes(2);
+    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
   });
 
   it("API-006 stale guidance must not mention unconditional git pull", { timeout: 60_000 }, async () => {

@@ -981,28 +981,24 @@ def read_identity(skills_root: Path) -> dict[str, Any]:
     return identity
 
 
+def resolve_skills_root(raw: str | None) -> Path | None:
+    """Resolve an explicit root or the installed bundle beside this script."""
+    if isinstance(raw, str) and raw.strip():
+        return Path(raw).expanduser().resolve()
+    adjacent = SCRIPTS_DIR.parent.resolve()
+    return adjacent if (adjacent / ".harness-build.json").is_file() else None
+
+
 def change_code_root(change_dir: Path) -> Path:
     project = change_dir.parents[2]
-    metadata = (
-        (change_dir / "meta" / "change-context.json", ("worktreeRoot",)),
-        (change_dir / "meta" / "worktree.json", ("worktreePath", "path")),
-    )
-    for context_path, fields in metadata:
-        if not context_path.is_file():
-            continue
-        try:
-            context = json.loads(context_path.read_text(encoding="utf-8"))
-            raw_root = next(
-                (str(context.get(field) or "").strip() for field in fields if context.get(field)),
-                "",
-            )
-            if raw_root:
-                raw_path = Path(raw_root).expanduser()
-                candidate = (raw_path if raw_path.is_absolute() else project / raw_path).resolve()
-                if candidate.is_dir():
-                    return candidate
-        except (OSError, ValueError, json.JSONDecodeError):
-            pass
+    inferred = hl.infer_execution_project_root(change_dir)
+    if inferred is not None:
+        return inferred
+    if hl.declares_execution_worktree(change_dir):
+        raise ValueError(
+            "EXECUTION_WORKTREE_INVALID: declared worktree is missing, not a Git root, "
+            "or belongs to another repository"
+        )
     return project
 
 
@@ -2388,16 +2384,15 @@ def cmd_begin(args: argparse.Namespace) -> int:
         return emit_error("POLICY_LOAD_FAILED", str(exc), as_json=as_json)
 
     executor_tool = args.executor_tool or os.environ.get("HUNTER_HARNESS_TOOL")
-    if not args.skills_root:
+    skills_root = resolve_skills_root(args.skills_root)
+    if skills_root is None:
         return emit_error(
             "BUNDLE_IDENTITY_REQUIRED",
             "--skills-root is required; refresh the selected Harness adapter if identity is missing",
             as_json=as_json,
         )
     try:
-        identity = validate_identity(
-            project, Path(args.skills_root).expanduser().resolve(), executor_tool
-        )
+        identity = validate_identity(project, skills_root, executor_tool)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         return emit_error("BUNDLE_IDENTITY_INVALID", str(exc), as_json=as_json)
     executor_tool = executor_tool or str(identity.get("adapter") or "") or None
@@ -2446,7 +2441,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 run_id=run_id,
                 project=project,
                 execution_root=execution_root,
-                skills_root=Path(args.skills_root).expanduser(),
+                skills_root=skills_root,
             )
         except ValueError as exc:
             if gate_soft_allowed(severity_mode, args.phase, "capsule"):
@@ -2532,7 +2527,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 "projectRoot": str(project.resolve()),
                 "stateRoot": str(state_root),
                 "executionRoot": str(execution_root),
-                "skillsRoot": str(Path(args.skills_root).expanduser().resolve()),
+                "skillsRoot": str(skills_root.resolve()),
                 "repositoryId": hp.repository_identity(execution_root),
                 "baseCommit": base_commit or current_head,
                 "currentHead": current_head,
@@ -2574,7 +2569,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
         "projectRoot": str(project),
         "stateRoot": capsule.get("stateRoot") if capsule else None,
         "executionRoot": capsule.get("executionRoot") if capsule else str(execution_root),
-        "skillsRoot": capsule.get("skillsRoot") if capsule else str(Path(args.skills_root).resolve()),
+        "skillsRoot": capsule.get("skillsRoot") if capsule else str(skills_root.resolve()),
         "lease": claim.get("lease"),
         "identity": identity,
         "event": event_result,

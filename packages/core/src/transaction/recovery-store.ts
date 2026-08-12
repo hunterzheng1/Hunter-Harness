@@ -800,12 +800,39 @@ function projectionRetryDelay(attempt: number): Promise<void> {
   });
 }
 
-async function writeIndexProjection(root: string): Promise<void> {
+async function writeIndexProjection(
+  root: string,
+  seedEntry?: DurableRecoveryIndexEntry
+): Promise<void> {
   const indexPath = join(resolve(root), "index.json");
   for (let attempt = 0; attempt < MAX_INDEX_PROJECTION_ATTEMPTS; attempt += 1) {
     let intended: DurableRecoveryIndex;
     try {
-      intended = await readIndex(root);
+      const entries = new Map<string, DurableRecoveryIndexEntry>();
+      for (const entry of await readLegacyIndex(root)) {
+        entries.set(indexEntryKey(entry), entry);
+      }
+      if (seedEntry !== undefined) {
+        entries.set(indexEntryKey(seedEntry), seedEntry);
+      }
+      const authoritativeNames = await readAuthoritativeIndexEntryNames(root);
+      const projectedNames = new Set([...entries.values()].map(indexEntryName));
+      if (authoritativeNames.some((name) => !projectedNames.has(name))) {
+        // A missing projection entry means a prior writer crashed or another
+        // writer raced us. Only that recovery path scans authoritative files;
+        // the normal append path reuses index.json plus the freshly written
+        // seed, avoiding an O(n²) sequence of filesystem reads.
+        for (const entry of await readAuthoritativeIndexEntries(root)) {
+          entries.set(indexEntryKey(entry), entry);
+        }
+      }
+      intended = {
+        schemaVersion: 1,
+        entries: [...entries.values()].sort((left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.recoveryId.localeCompare(right.recoveryId)
+        )
+      };
     } catch (error) {
       if (!retryableProjectionContentionError(error) ||
           attempt + 1 === MAX_INDEX_PROJECTION_ATTEMPTS) {
@@ -865,7 +892,7 @@ async function writeIndexEntry(
   await assertSafeContainedFileDestination(root, entryPath);
   await atomicWriteJson(entryPath, entry);
   await makePrivateFile(entryPath);
-  await writeIndexProjection(root);
+  await writeIndexProjection(root, entry);
 }
 
 async function copiedSnapshotDigest(

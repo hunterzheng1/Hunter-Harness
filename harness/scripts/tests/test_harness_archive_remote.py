@@ -63,6 +63,48 @@ def _npx_upload_calls(run: mock.Mock) -> list[object]:
 
 
 class ArchiveRemoteUploadStateTests(unittest.TestCase):
+    def test_managed_snapshot_push_uses_existing_project_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_local_credentials(root)
+            completed = subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "project_id": "prj_one",
+                        "summary": {"planned": 3, "submitted": 3},
+                        "warnings": [],
+                    }
+                ),
+                stderr="",
+            )
+            with mock.patch.object(
+                ha.subprocess, "run", return_value=completed
+            ) as run:
+                result = ha.auto_push_managed_snapshot(root)
+
+            self.assertTrue(result["ok"])
+            command = run.call_args.args[0]
+            self.assertIn("push", command)
+            self.assertNotIn("archive", command)
+            self.assertIn("--non-interactive", command)
+            self.assertIn("--yes", command)
+            self.assertEqual(result["submitted"], 3)
+
+    def test_managed_snapshot_push_is_non_blocking_without_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(ha.subprocess, "run") as run:
+                result = ha.auto_push_managed_snapshot(root)
+
+            run.assert_not_called()
+            self.assertTrue(result["skipped"])
+            self.assertEqual(
+                result["reasonCode"], "MANAGED_SNAPSHOT_CREDENTIALS_MISSING"
+            )
+
     def test_windows_npx_launcher_uses_node_instead_of_bare_cmd_shim(self) -> None:
         with mock.patch.object(
             ha.shutil,
@@ -198,6 +240,17 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
             self.assertEqual(result.get("uploadStatus"), "ready")
             self.assertFalse(Path(str(result["packagePath"])).exists())
             self.assertFalse(Path(str(result["pending"])).exists())
+            durable_receipt = (
+                root / ".harness" / "state" / "local" / "archive-packages"
+                / "change-env.remote.json"
+            )
+            self.assertEqual(Path(str(result["remoteReceipt"])), durable_receipt)
+            self.assertTrue(durable_receipt.is_file())
+            receipt = json.loads(durable_receipt.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["archiveId"], "arc_env")
+            self.assertEqual(receipt["archiveStatus"], "durable")
+            self.assertEqual(receipt["knowledgeStatus"], "ready")
+            self.assertEqual(receipt["packageSha256"], result["packageSha256"])
 
     def test_nested_credential_like_fields_are_not_treated_as_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,6 +359,17 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             self.assertEqual(receipt["uploadStatus"], "pending")
             self.assertEqual(receipt["knowledgeStatus"], "indexing")
+            durable_receipt = (
+                root / ".harness" / "state" / "local" / "archive-packages"
+                / "change-indexing.remote.json"
+            )
+            self.assertTrue(durable_receipt.is_file())
+            self.assertEqual(
+                json.loads(durable_receipt.read_text(encoding="utf-8"))[
+                    "knowledgeStatus"
+                ],
+                "indexing",
+            )
 
     def test_success_exit_with_invalid_cli_receipt_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

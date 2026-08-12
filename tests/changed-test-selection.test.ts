@@ -13,7 +13,8 @@ describe("changed test selection", () => {
     ).toEqual({
       directTests: ["tests/release-pipeline.test.ts"],
       relatedSources: [],
-      deferredTests: []
+      deferredTests: [],
+      pythonTests: []
     });
   });
 
@@ -30,7 +31,8 @@ describe("changed test selection", () => {
         "packages/cli/src/bin.ts",
         "packages/core/src/index.ts"
       ],
-      deferredTests: []
+      deferredTests: [],
+      pythonTests: []
     });
   });
 
@@ -45,7 +47,8 @@ describe("changed test selection", () => {
     ).toEqual({
       directTests: ["packages/core/test/gitignore.test.ts"],
       relatedSources: [],
-      deferredTests: []
+      deferredTests: [],
+      pythonTests: []
     });
   });
 
@@ -56,7 +59,8 @@ describe("changed test selection", () => {
         "tests/release-pipeline.test.ts"
       ],
       relatedSources: [],
-      deferredTests: []
+      deferredTests: [],
+      pythonTests: []
     });
   });
 
@@ -67,7 +71,8 @@ describe("changed test selection", () => {
     ])).toEqual({
       directTests: ["packages/cli/test/project-detection.test.ts"],
       relatedSources: [],
-      deferredTests: ["packages/cli/test/init.test.ts"]
+      deferredTests: ["packages/cli/test/init.test.ts"],
+      pythonTests: []
     });
   });
 
@@ -89,7 +94,55 @@ describe("changed test selection", () => {
         "packages/core/test/instruction-graph.test.ts"
       ],
       relatedSources: [],
-      deferredTests: []
+      deferredTests: [],
+      pythonTests: []
+    });
+  });
+
+  it("keeps push and recovery releases on explicit focused contracts", () => {
+    expect(selectChangedTestInputs([
+      "packages/cli/src/commands/instructions.ts",
+      "packages/cli/src/commands/push.ts",
+      "packages/cli/src/commands/rules-review.ts",
+      "packages/core/src/push/push.ts",
+      "packages/core/src/sync/synchronize.ts",
+      "packages/core/src/transaction/recovery-store.ts"
+    ])).toEqual({
+      directTests: [
+        "packages/cli/test/instructions.test.ts",
+        "packages/cli/test/push.test.ts",
+        "packages/cli/test/rules-review.test.ts",
+        "packages/core/test/artifact-rebase.test.ts",
+        "packages/core/test/push-archive-summary.test.ts",
+        "packages/core/test/push-scan.test.ts",
+        "packages/core/test/push-stale.test.ts",
+        "packages/core/test/recovery-v3.test.ts",
+        "packages/core/test/recovery.test.ts",
+        "packages/core/test/transaction.test.ts",
+        "packages/core/test/update-auth.test.ts"
+      ],
+      relatedSources: [],
+      deferredTests: [],
+      pythonTests: []
+    });
+  });
+
+  it("runs changed Python lifecycle contracts through focused unittest modules", () => {
+    expect(selectChangedTestInputs([
+      "harness/scripts/harness_archive.py",
+      "harness/scripts/harness_context.py",
+      "harness/scripts/tests/test_harness_archive_remote.py"
+    ])).toEqual({
+      directTests: [],
+      relatedSources: [],
+      deferredTests: [],
+      pythonTests: [
+        "harness/scripts/tests/test_harness_archive.py",
+        "harness/scripts/tests/test_harness_archive_c.py",
+        "harness/scripts/tests/test_harness_archive_preflight.py",
+        "harness/scripts/tests/test_harness_archive_remote.py",
+        "harness/scripts/tests/test_harness_context.py"
+      ]
     });
   });
 });

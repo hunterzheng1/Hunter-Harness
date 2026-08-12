@@ -464,6 +464,17 @@ function assertPreviewAllowed(
   }
 }
 
+function previewAuthorizationHash(
+  preview: ReturnType<typeof generateProposalPreview>
+): string {
+  return sha256Bytes(canonicalJson({
+    operations: preview.operations,
+    blocked: preview.blocked,
+    scanner_version: preview.security.scanner_version,
+    findings: preview.security.findings
+  }));
+}
+
 const CREDENTIALS_HINT =
   "可在交互模式下录入，或写入 .harness/credentials.local.yaml（勿提交 git）";
 
@@ -535,7 +546,8 @@ async function syncToLatest(
   project: ProjectConfig,
   baseline: BaselineManifest,
   client: HunterHarnessApiClient,
-  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"]
+  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"],
+  protocolLockHeld = false
 ): Promise<BaselineManifest> {
   const syncResult = await synchronizeArtifacts({
     projectRoot: root,
@@ -546,7 +558,8 @@ async function syncToLatest(
     conflictStrategy: "manual",
     ...(confirmConflictStrategy === undefined
       ? {}
-      : { confirmConflictStrategy })
+      : { confirmConflictStrategy }),
+    ...(protocolLockHeld ? { protocolLockHeld: true } : {})
   }, baseline);
   if (syncResult.conflicts.length > 0) {
     throw staleBaselineError("PROJECT_VERSION_CONFLICT", syncResult.conflicts);
@@ -560,13 +573,14 @@ async function autoRebaseIfServerAdvanced(
   baseline: BaselineManifest,
   client: HunterHarnessApiClient,
   remoteVersion: string | null,
-  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"]
+  confirmConflictStrategy?: PushProjectOptions["confirmConflictStrategy"],
+  protocolLockHeld = false
 ): Promise<BaselineManifest> {
   if (remoteVersion === baseline.complete_project_version) {
     return baseline;
   }
   const updated = await syncToLatest(
-    root, project, baseline, client, confirmConflictStrategy
+    root, project, baseline, client, confirmConflictStrategy, protocolLockHeld
   );
   if (remoteVersion !== null &&
       updated.complete_project_version !== remoteVersion) {
@@ -632,7 +646,7 @@ export async function pushProject(options: PushProjectOptions) {
   let project = await readProject(root);
   let baseline = await readBaseline(root);
   const profile = parseHarnessProfile(project.project.profiles[0]);
-  const installedPaths = profile === null
+  let installedPaths = profile === null
     ? new Set<string>()
     : new Set(await Promise.all(
       enabledHarnessAgents(project).map((agent) =>
@@ -645,6 +659,19 @@ export async function pushProject(options: PushProjectOptions) {
     options.confirmedProjectLocal ?? [],
     installedPaths
   );
+  // 已绑定项目即使本地没有差异，也必须先确认远端版本。归档入库或其他
+  // 客户端可能已推进项目；若在鉴权前直接返回，本地 baseline 会永久落后。
+  // 尚未绑定的空项目没有可同步的远端身份，仍可保持真正的本地 no-op。
+  if (!options.dryRun &&
+      preview.operations.length === 0 &&
+      project.project.project_id === null) {
+    return {
+      preview,
+      proposalId: null,
+      projectId: project.project.project_id,
+      noChanges: true as const
+    };
+  }
   if (options.dryRun) {
     const drySkip = await resolveSensitiveScanSkip(preview, options);
     if (drySkip.cancelled === true) {
@@ -722,15 +749,33 @@ export async function pushProject(options: PushProjectOptions) {
       options.confirmedProjectLocal ?? [],
       installedPaths
     );
+    if (preview.operations.length === 0) {
+      return {
+        preview,
+        proposalId: null,
+        projectId: project.project.project_id,
+        noChanges: true as const
+      };
+    }
   }
-  const initialSkip = await resolveSensitiveScanSkip(preview, options);
-  if (initialSkip.cancelled === true) {
-    return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
-  }
-  let sensitiveScanSkip = initialSkip.skip;
-  let sensitiveScanSkipReason = initialSkip.reason;
-  assertPreviewAllowed(preview, sensitiveScanSkip);
-  if (options.confirmProposal !== undefined && !await options.confirmProposal(preview)) {
+  let sensitiveScanSkip = false;
+  let sensitiveScanSkipReason: string | undefined;
+  let authorizedPreviewHash: string | null = null;
+  const authorizePreview = async (): Promise<boolean> => {
+    const nextHash = previewAuthorizationHash(preview);
+    if (nextHash === authorizedPreviewHash) return true;
+    const nextSkip = await resolveSensitiveScanSkip(preview, options);
+    if (nextSkip.cancelled === true) return false;
+    assertPreviewAllowed(preview, nextSkip.skip);
+    if (options.confirmProposal !== undefined && !await options.confirmProposal(preview)) {
+      return false;
+    }
+    sensitiveScanSkip = nextSkip.skip;
+    sensitiveScanSkipReason = nextSkip.reason;
+    authorizedPreviewHash = nextHash;
+    return true;
+  };
+  if (!await authorizePreview()) {
     return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
   }
   const workflowPath = join(
@@ -743,12 +788,40 @@ export async function pushProject(options: PushProjectOptions) {
     : uuidV7();
   const lock = await acquireProtocolLock(root, "push", { requestId: provisionalRequestId });
   try {
+    // Confirmation and lock acquisition are separate await boundaries. Another
+    // push may have advanced both the local baseline and the server while this
+    // caller was waiting, so all mutable push inputs must be refreshed under
+    // the lock before deciding whether a proposal still exists.
+    project = await readProject(root);
+    baseline = await readBaseline(root);
+    const lockedProjectId = project.project.project_id;
+    if (lockedProjectId !== null) {
+      const remote = await client.getProject(lockedProjectId, uuidV7());
+      baseline = await autoRebaseIfServerAdvanced(
+        root,
+        project,
+        baseline,
+        client,
+        remote.latest_project_version,
+        options.confirmConflictStrategy,
+        true
+      );
+      project = await readProject(root);
+    }
+    const lockedProfile = parseHarnessProfile(project.project.profiles[0]);
+    installedPaths = lockedProfile === null
+      ? new Set<string>()
+      : new Set(await Promise.all(
+        enabledHarnessAgents(project).map((agent) =>
+          managedBundleTargets(options.resourcesRoot, lockedProfile, agent)
+        )
+      ).then((targets) => targets.flatMap((target) => [...target])));
     const clientId = await clientIdFor(root, options.clientId);
-    let workflow = priorWorkflow?.local_project_key === project.project.local_project_key
-      ? priorWorkflow
+    const lockedPriorWorkflow = await readOptionalJson<PushWorkflowState>(workflowPath);
+    let workflow = lockedPriorWorkflow?.local_project_key === project.project.local_project_key
+      ? lockedPriorWorkflow
       : newWorkflowState(project, clientId);
     workflow.client_id = clientId;
-    await atomicWriteJson(workflowPath, workflow);
     preview = makePreview(
       baseline,
       await managedFiles(root, project),
@@ -756,6 +829,18 @@ export async function pushProject(options: PushProjectOptions) {
       installedPaths,
       workflow.created_at
     );
+    if (preview.operations.length === 0) {
+      return {
+        preview,
+        proposalId: null,
+        projectId: project.project.project_id,
+        noChanges: true as const
+      };
+    }
+    if (!await authorizePreview()) {
+      return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
+    }
+    await atomicWriteJson(workflowPath, workflow);
     const requestId = workflow.request_id;
     if (project.project.project_id === null) {
       // C2: never silently create/bind a platform project.
@@ -800,15 +885,17 @@ export async function pushProject(options: PushProjectOptions) {
         installedPaths,
         workflow.created_at
       );
-      if (!sensitiveScanSkip) {
-        const reboundSkip = await resolveSensitiveScanSkip(preview, options);
-        if (reboundSkip.cancelled === true) {
-          return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
-        }
-        sensitiveScanSkip = reboundSkip.skip;
-        sensitiveScanSkipReason = reboundSkip.reason;
+      if (preview.operations.length === 0) {
+        return {
+          preview,
+          proposalId: null,
+          projectId: project.project.project_id,
+          noChanges: true as const
+        };
       }
-      assertPreviewAllowed(preview, sensitiveScanSkip);
+      if (!await authorizePreview()) {
+        return { preview, proposalId: null, projectId: project.project.project_id, cancelled: true };
+      }
     }
     const projectId = project.project.project_id;
     if (projectId === null) {
@@ -914,7 +1001,7 @@ export async function pushProject(options: PushProjectOptions) {
           !finalizeRetried) {
         finalizeRetried = true;
         baseline = await syncToLatest(
-          root, project, baseline, client, options.confirmConflictStrategy
+          root, project, baseline, client, options.confirmConflictStrategy, true
         );
         workflow = resetSession(workflow, proposalManifestHash);
         await atomicWriteJson(workflowPath, workflow);

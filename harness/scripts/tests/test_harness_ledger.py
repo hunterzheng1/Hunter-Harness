@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -792,6 +792,219 @@ class RecordTests(unittest.TestCase):
 
 
 class CliSmokeTests(unittest.TestCase):
+    @staticmethod
+    def _linked_worktree(project: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(target), "HEAD"],
+            cwd=project,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_infers_worktree_project_from_change_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_repo(root, {"tracked.txt": "base\n"})
+            change = root / ".harness" / "changes" / "demo"
+            worktree = root / ".worktrees" / "demo"
+            (change / "meta").mkdir(parents=True)
+            self._linked_worktree(root, worktree)
+            (change / "meta" / "change-context.json").write_text(
+                json.dumps({"worktreeRoot": str(worktree)}) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                harness_ledger.infer_execution_project_root(change),
+                worktree.resolve(),
+            )
+
+    def test_infers_relative_worktree_metadata_from_main_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            _init_repo(root, {"tracked.txt": "base\n"})
+            outside = Path(tmp) / "outside"
+            outside.mkdir(parents=True)
+            original_cwd = Path.cwd()
+            cases = (
+                ("change-context.json", "worktreeRoot", ".worktrees/direct-context"),
+                ("worktree.json", "path", ".worktrees/direct-path"),
+                ("worktree.json", "worktreePath", ".worktrees/direct-worktree-path"),
+                ("worktree.json", "worktreeRoot", ".worktrees"),
+            )
+            try:
+                os.chdir(outside)
+                for metadata_name, field, value in cases:
+                    change_name = (
+                        "container-root"
+                        if field == "worktreeRoot" and value == ".worktrees"
+                        else value.rsplit("/", 1)[-1]
+                    )
+                    change = root / ".harness" / "changes" / change_name
+                    worktree = root / ".worktrees" / change_name
+                    (change / "meta").mkdir(parents=True)
+                    self._linked_worktree(root, worktree)
+                    (change / "meta" / metadata_name).write_text(
+                        json.dumps({field: value}) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    with self.subTest(field=field, value=value):
+                        self.assertEqual(
+                            harness_ledger.infer_execution_project_root(change),
+                            worktree.resolve(),
+                        )
+            finally:
+                os.chdir(original_cwd)
+
+    def test_can_reuse_uses_inferred_worktree_for_relative_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_repo(root, {"tracked.txt": "base\n"})
+            change = root / ".harness" / "changes" / "demo"
+            worktree = root / ".worktrees" / "demo"
+            source = worktree / "src" / "app.ts"
+            (change / "meta").mkdir(parents=True)
+            self._linked_worktree(root, worktree)
+            source.parent.mkdir(parents=True)
+            source.write_text("export const ready = true;\n", encoding="utf-8")
+            (change / "meta" / "change-context.json").write_text(
+                json.dumps({"worktreeRoot": str(worktree)}) + "\n",
+                encoding="utf-8",
+            )
+
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = harness_ledger.main(
+                    [
+                        "can-reuse",
+                        "--change-dir",
+                        str(change),
+                        "--verification",
+                        "unitTestFull",
+                        "--files",
+                        "src/app.ts",
+                        "--json",
+                        "--verbose",
+                    ]
+                )
+
+            self.assertEqual(code, 0, msg=output.getvalue())
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["resolvedProjectRoot"], str(worktree.resolve()))
+
+    def test_install_reuse_accepts_valid_worktree_path_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            _init_repo(root, {"tracked.txt": "base\n"})
+            change = root / ".harness" / "changes" / "demo"
+            (change / "meta").mkdir(parents=True)
+            worktree = root / ".worktrees" / "demo"
+            self._linked_worktree(root, worktree)
+            source = worktree / "tracked.txt"
+            inputs_hash, inputs_files = harness_ledger.compute_inputs_hash([str(source)])
+            (change / "evidence").mkdir()
+            (change / "evidence" / "verification-ledger.json").write_text(
+                json.dumps({
+                    "changeName": "demo",
+                    "diffHash": "sha256:x",
+                    "validations": {
+                        "install": {
+                            "status": "OK",
+                            "command": "npm install",
+                            "scope": "module-am",
+                            "evidence": "install completed",
+                            "inputsHash": inputs_hash,
+                            "inputsFiles": inputs_files,
+                            "algorithmVersion": "harness-ledger-2",
+                            "coverage": "module-am",
+                        }
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            (change / "meta" / "worktree.json").write_text(
+                json.dumps({"worktreePath": ".worktrees/demo"}) + "\n",
+                encoding="utf-8",
+            )
+
+            result = harness_ledger.decide_can_reuse(
+                change_dir=change,
+                verification="install",
+                files=[str(source)],
+            )
+
+            self.assertTrue(result["reuse"], result)
+            self.assertEqual(result["reason"], "reuse")
+
+    def test_rejects_non_git_and_foreign_repository_worktree_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            root.mkdir()
+            _init_repo(root, {"tracked.txt": "base\n"})
+            change = root / ".harness" / "changes" / "demo"
+            (change / "meta").mkdir(parents=True)
+
+            plain = base / "plain"
+            plain.mkdir()
+            (change / "meta" / "worktree.json").write_text(
+                json.dumps({"worktreePath": str(plain)}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(harness_ledger.infer_execution_project_root(change))
+
+            foreign = base / "foreign"
+            foreign.mkdir()
+            _init_repo(foreign, {"tracked.txt": "foreign\n"})
+            (change / "meta" / "worktree.json").write_text(
+                json.dumps({"worktreePath": str(foreign)}) + "\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(harness_ledger.infer_execution_project_root(change))
+
+            output = io.StringIO()
+            with mock.patch.object(harness_ledger, "compute_diff_hash") as compute, redirect_stderr(output):
+                code = harness_ledger.main([
+                    "--json", "diff-hash", "--repo", ".", "--change-dir", str(change)
+                ])
+            self.assertNotEqual(code, 0)
+            self.assertEqual(json.loads(output.getvalue())["code"], "EXECUTION_WORKTREE_INVALID")
+            compute.assert_not_called()
+
+    def test_rejects_independent_clone_with_same_origin_and_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            root.mkdir()
+            _init_repo(root, {"tracked.txt": "base\n"})
+            subprocess.run(
+                ["git", "remote", "add", "origin", "https://example.test/shared/repo.git"],
+                cwd=root,
+                check=True,
+            )
+            clone = base / "clone"
+            subprocess.run(
+                ["git", "clone", "-q", str(root), str(clone)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", "https://example.test/shared/repo.git"],
+                cwd=clone,
+                check=True,
+            )
+            change = root / ".harness" / "changes" / "demo"
+            (change / "meta").mkdir(parents=True)
+            (change / "meta" / "worktree.json").write_text(
+                json.dumps({"worktreePath": str(clone)}) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(harness_ledger.infer_execution_project_root(change))
+
     def test_can_reuse_rejects_relative_files_without_project_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp) / "change-cli"
@@ -1135,6 +1348,41 @@ class DiffHashTests(unittest.TestCase):
                 )
             self.assertEqual(code, 0, msg=buf.getvalue())
             self.assertEqual(json.loads(buf.getvalue())["trackedTestFileCount"], 1)
+
+    def test_diff_hash_dot_repo_uses_change_worktree_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _init_repo(root, {"tracked.txt": "base\n"})
+            execution_root = root / "feature-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(execution_root), "HEAD"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            change_dir = root / ".harness" / "changes" / "fix"
+            meta = change_dir / "meta"
+            meta.mkdir(parents=True)
+            (meta / "change-context.json").write_text(
+                json.dumps({"worktreeRoot": str(execution_root)}),
+                encoding="utf-8",
+            )
+            from contextlib import redirect_stdout
+            from io import StringIO
+
+            buf = StringIO()
+            with mock.patch.object(
+                harness_ledger,
+                "compute_diff_hash",
+                return_value=("sha256:" + "a" * 64, {"fileCount": 0}),
+            ) as compute, redirect_stdout(buf):
+                code = harness_ledger.main([
+                    "--json", "diff-hash", "--repo", ".",
+                    "--change-dir", str(change_dir),
+                ])
+
+            self.assertEqual(code, 0, msg=buf.getvalue())
+            self.assertEqual(compute.call_args.args[0], execution_root.resolve())
 
 
 class LedgerV2Tests(unittest.TestCase):

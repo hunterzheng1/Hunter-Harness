@@ -33,11 +33,15 @@ SCHEMA_VERSION = 1
 RUN_SESSION_SCHEMA_VERSION = 1
 RUN_TERMINAL_STATUSES = {"OK", "FAIL", "INCOMPLETE", "CANCELLED"}
 _CHANGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-SECRET_SCAN_RULES_VERSION = "secret-scan-v1"
+SECRET_SCAN_RULES_VERSION = "secret-scan-v2"
 SECRET_SCAN_RECEIPT_REL = Path("meta") / "secret-scan-receipt.json"
 _SENSITIVE_ASSIGNMENT = re.compile(
-    rb"(?i)[\"']?(?:password|passwd|token|secret|cookie|authorization|database[_-]?url)"
-    rb"[\"']?\s*[:=]\s*[\"']?[^\s\"']{4,}"
+    rb"(?i)[\"']?(?:password|passwd|token|secret|cookie|database[_-]?url)"
+    rb"[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"']{4,})"
+)
+_AUTHORIZATION_ASSIGNMENT = re.compile(
+    rb"(?i)[\"']?authorization[\"']?\s*[:=]\s*[\"']?"
+    rb"(?:(?:bearer|basic)\s+)?(?P<value>[^\s\"']{4,})"
 )
 _ADAPTERS = {
     "claude-code": (".worktrees", "harness/"),
@@ -193,8 +197,16 @@ def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
             raw = path.read_bytes()
         except OSError:
             continue
-        match = _SENSITIVE_ASSIGNMENT.search(raw)
-        if match is None:
+        finding = next(
+            (
+                match
+                for pattern in (_SENSITIVE_ASSIGNMENT, _AUTHORIZATION_ASSIGNMENT)
+                for match in pattern.finditer(raw)
+                if not _is_sensitive_placeholder(match.group("value"))
+            ),
+            None,
+        )
+        if finding is None:
             continue
         candidates.append({
             "path": path.relative_to(root).as_posix(),
@@ -202,6 +214,20 @@ def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
             "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
         })
     return candidates
+
+
+def _is_sensitive_placeholder(value: bytes) -> bool:
+    text = value.decode("utf-8", errors="ignore").strip().strip("`'").strip()
+    return bool(
+        re.fullmatch(r"<[^<>]+>", text)
+        or re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", text)
+        or re.fullmatch(r"\{\{[^{}]+\}\}", text)
+        or re.fullmatch(
+            r"(?i)(?:example|placeholder|redacted|masked|bearer|basic|"
+            r"your[-_][A-Za-z0-9_-]+|x{4,})",
+            text,
+        )
+    )
 
 
 def publishable_tree_digest(root: Path) -> str:

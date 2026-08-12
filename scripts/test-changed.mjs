@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import console from "node:console";
+import { basename, delimiter } from "node:path";
 import process from "node:process";
 import { URL, fileURLToPath } from "node:url";
 
@@ -16,12 +17,19 @@ const vitestEntry = fileURLToPath(
 console.log(`运行受改动影响的测试（比较基准：${base}）`);
 
 const rootDir = fileURLToPath(new URL("..", import.meta.url));
+const pythonTestRoot = fileURLToPath(
+  new URL("../harness/scripts/tests/", import.meta.url)
+);
 
-function run(command, args, { allowFailure = false } = {}) {
+function run(
+  command,
+  args,
+  { allowFailure = false, cwd = rootDir, env = process.env } = {}
+) {
   const result = spawnSync(command, args, {
-    cwd: rootDir,
+    cwd,
     encoding: "utf8",
-    env: process.env,
+    env,
     stdio: allowFailure ? "pipe" : "inherit"
   });
   if (result.error) {
@@ -90,13 +98,30 @@ function runVitest(args) {
   ]);
 }
 
+function runPythonTests(paths) {
+  const modules = paths.map((path) => basename(path, ".py"));
+  run(process.env.HUNTER_HARNESS_PYTHON || "python", [
+    "-m",
+    "unittest",
+    ...modules
+  ], {
+    cwd: pythonTestRoot,
+    env: {
+      ...process.env,
+      PYTHONPATH: [rootDir, pythonTestRoot, process.env.PYTHONPATH]
+        .filter(Boolean)
+        .join(delimiter)
+    }
+  });
+}
+
 try {
   const changedPaths = collectChangedPaths();
-  const { directTests, relatedSources, deferredTests } = selectChangedTestInputs(changedPaths);
+  const { directTests, relatedSources, deferredTests, pythonTests } = selectChangedTestInputs(changedPaths);
   console.log(
     `检测到 ${new Set(changedPaths).size} 个改动文件；` +
       `直接测试 ${directTests.length} 个，关联源码 ${relatedSources.length} 个，` +
-      `CI 完整矩阵 ${deferredTests.length} 个`
+      `Python 聚焦测试 ${pythonTests.length} 个，CI 完整矩阵 ${deferredTests.length} 个`
   );
 
   if (deferredTests.length > 0) {
@@ -111,7 +136,10 @@ try {
   if (relatedSources.length > 0) {
     runVitest(["related", ...relatedSources]);
   }
-  if (directTests.length === 0 && relatedSources.length === 0) {
+  if (pythonTests.length > 0) {
+    runPythonTests(pythonTests);
+  }
+  if (directTests.length === 0 && relatedSources.length === 0 && pythonTests.length === 0) {
     console.log("未发现需要本地执行的关联测试；完整回归将由 CI 承担。");
   }
 } catch (error) {

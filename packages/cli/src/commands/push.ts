@@ -234,13 +234,17 @@ export async function runPush(
           findings: result.preview.security.findings.length
         },
         items,
-        warnings: result.preview.skipped,
+        warnings: "noChanges" in result && result.noChanges
+          ? ["MANAGED_SNAPSHOT_UNCHANGED"]
+          : result.preview.skipped,
         errors: []
       };
       dependencies.stdout(options.json === true
         ? serializeCliResult(output)
-        : options.dryRun === true
+          : options.dryRun === true
           ? "Push preview contains " + items.length + " operations.\n"
+          : "noChanges" in result && result.noChanges
+            ? "受控项目快照没有变化，无需上传。\n"
           : "Pushed artifact " +
             ("artifactId" in result ? String(result.artifactId) : "unknown") +
             " (proposal " + result.proposalId + ").\n");

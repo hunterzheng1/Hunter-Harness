@@ -198,6 +198,36 @@ paths:
       responses:
         "200": { description: Canonical Skill Registry }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/skill-catalog/order:
+    get:
+      operationId: getSkillCatalogOrder
+      responses:
+        "200": { description: Persisted manual ordering for local and external skill cards }
+        default: { $ref: "#/components/responses/Error" }
+    put:
+      operationId: updateSkillCatalogOrder
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [items, revision]
+              properties:
+                items:
+                  type: array
+                  maxItems: 10000
+                  uniqueItems: true
+                  items: { type: string, pattern: "^(registry|external):[A-Za-z0-9][A-Za-z0-9._-]*$" }
+                revision: { type: integer, minimum: 0 }
+      responses:
+        "200": { description: Skill card order saved }
+        "409": { description: Skill card order revision conflict }
+        "422": { description: Order contains an unknown skill }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/skills/{slug}:
     get:
       operationId: getSkill
@@ -425,18 +455,93 @@ paths:
         "422": { description: Agent not enabled for this skill (AGENT_NOT_ENABLED) or request body validation failed }
         "409": { description: Skill revision conflict (REVISION_CONFLICT) }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/system/npm-publishing:
+    get:
+      operationId: getNpmPublishingCredentialStatus
+      summary: Read the server-wide npm publishing credential status
+      description: Owner session only. The response never contains the credential token or encrypted envelope.
+      responses:
+        "200":
+          description: Active managed or deployment credential metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NpmPublishingCredentialStatus" }
+        "403": { description: A human Owner session is required }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/system/npm-publishing/credential:
+    put:
+      operationId: replaceNpmPublishingCredential
+      summary: Verify and atomically replace the managed npm credential
+      description: Owner session only. The write-only token is verified with npm before its encrypted envelope replaces the active managed credential.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NpmPublishingCredentialReplaceRequest" }
+      responses:
+        "200":
+          description: Managed credential verified and encrypted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NpmPublishingCredentialStatus" }
+        "403": { description: A human Owner session is required }
+        "422": { description: npm rejected the credential or the supplied expiration has passed }
+        "503": { description: The server credential-encryption key is unavailable }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: removeNpmPublishingCredential
+      summary: Remove the managed credential and fall back to the deployment secret
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SchemaVersionRequest" }
+      responses:
+        "200":
+          description: Managed credential removed; response describes the active fallback
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NpmPublishingCredentialStatus" }
+        "403": { description: A human Owner session is required }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/system/npm-publishing/verify:
+    post:
+      operationId: verifyNpmPublishingCredential
+      summary: Verify the active credential against npm
+      description: Owner session only. Managed credentials are decrypted only in memory for the verification request.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SchemaVersionRequest" }
+      responses:
+        "200":
+          description: Active credential identity verified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NpmPublishingCredentialStatus" }
+        "403": { description: A human Owner session is required }
+        "422": { description: npm rejected the active credential or it has expired }
+        "503": { description: The managed credential cannot be decrypted }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers:
     get:
       operationId: listAiProviders
       responses:
-        "200": { description: AI provider configurations without secrets }
+        "200": { description: API-key provider configurations without secrets; Codex account authorization is managed by its independent endpoint }
         default: { $ref: "#/components/responses/Error" }
     post:
       operationId: createAiProvider
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "201": { description: AI provider created with optional daily_request_limit/daily_token_limit quota (null=unlimited) }
+        "201": { description: API-key provider created }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/providers/{provider_id}:
     patch:
@@ -444,7 +549,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: AI provider updated (label/base_url/model/enabled/api_key_env/daily_request_limit/daily_token_limit) }
+        "200": { description: API-key provider updated }
         default: { $ref: "#/components/responses/Error" }
     delete:
       operationId: deleteAiProvider
@@ -460,6 +565,112 @@ paths:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "200": { description: AI provider connectivity test result }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/codex:
+    get:
+      operationId: getCodexConnection
+      responses:
+        "200":
+          description: ChatGPT account connection and the models currently visible to Codex; never contains tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexConnectionState" }
+        default: { $ref: "#/components/responses/Error" }
+    patch:
+      operationId: updateCodexConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version]
+              anyOf:
+                - required: [selected_model]
+                - required: [enabled]
+              properties:
+                schema_version: { const: 1 }
+                selected_model: { type: [string, "null"] }
+                enabled:
+                  type: boolean
+                  description: Enables Codex as the single platform-wide model source; enabling it disables every API provider
+      responses:
+        "200":
+          description: Codex default model or platform-wide enabled state updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexConnectionState" }
+        "409": { description: ChatGPT account is not connected }
+        "422": { description: Model is not available for this account }
+        default: { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: disconnectCodex
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200": { description: ChatGPT account disconnected and Codex model preference cleared }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/codex/login:
+    post:
+      operationId: startCodexLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version]
+              properties:
+                schema_version: { const: 1 }
+      responses:
+        "200":
+          description: Official ChatGPT device-code authorization instructions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodexLoginStart" }
+        "503": { description: Codex App Server is unavailable }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/codex/login/cancel:
+    post:
+      operationId: cancelCodexLogin
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version, login_id]
+              properties:
+                schema_version: { const: 1 }
+                login_id: { type: string, minLength: 1 }
+      responses:
+        "200": { description: Pending ChatGPT device-code authorization cancelled }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/ai-config/codex/test:
+    post:
+      operationId: testCodexConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version]
+              properties:
+                schema_version: { const: 1 }
+      responses:
+        "200": { description: Codex account and selected-model connectivity result }
+        "409": { description: ChatGPT account is not connected }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/ai-config/usage:
     get:
@@ -543,6 +754,56 @@ paths:
       responses:
         "200": { description: Tag removed from Skill }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/agent-tools:
+    get:
+      operationId: listAgentTools
+      responses:
+        "200":
+          description: Registered Agent tools, including exact source references and workflow relationships
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, request_id]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AgentTool" }
+                  request_id: { type: string, format: uuid }
+        default: { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createAgentTool
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgentToolRequest" }
+      responses:
+        "201":
+          description: Agent tool registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTool" }
+        "409": { description: Agent tool slug already exists (AGENT_TOOL_EXISTS) }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/agent-tools/{slug}:
+    get:
+      operationId: getAgentTool
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent tool detail with its exact npm, GitHub, or website source
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTool" }
+        "404": { description: Agent tool not found (AGENT_TOOL_NOT_FOUND) }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families:
     get:
       operationId: listWorkflowFamilies
@@ -555,6 +816,48 @@ paths:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "201": { description: Workflow family created }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/import/inspect:
+    post:
+      operationId: inspectWorkflowFamilySource
+      description: Resolve an npm package or exact GitHub tree path, detect its workflow-family manifest, profiles, and remote version without changing registry state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InspectWorkflowFamilySourceRequest" }
+      responses:
+        "200":
+          description: Source inspection and import readiness
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowFamilySourceInspection" }
+        "404": { description: npm package or GitHub repository not found (EXTERNAL_SOURCE_NOT_FOUND) }
+        "422": { description: GitHub subpath missing or no workflow profiles detected }
+        "502": { description: Upstream npm or GitHub request failed }
+        "504": { description: Upstream npm or GitHub request timed out }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/import:
+    post:
+      operationId: importWorkflowFamilySource
+      description: Import the inspected source as a new workflow family and stage every detected profile as one unpublished draft.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportWorkflowFamilySourceRequest" }
+      responses:
+        "201":
+          description: Workflow family created with a reviewable profile draft
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowFamilySourceImportResult" }
+        "409": { description: "Workflow family slug already exists, or source content changed after preflight (WORKFLOW_SOURCE_CHANGED)" }
+        "422": { description: Source profiles are incomplete or the GitHub subpath is invalid }
+        "502": { description: Upstream npm or GitHub request failed }
+        "504": { description: Upstream npm or GitHub request timed out }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families/{slug}:
     get:
@@ -574,7 +877,11 @@ paths:
     get:
       operationId: getWorkflowFamilyDraft
       responses:
-        "200": { description: Unpublished workflow family draft with per-profile bundles }
+        "200":
+          description: Lightweight unpublished workflow family draft metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowFamilySourceImportResult/properties/draft" }
         default: { $ref: "#/components/responses/Error" }
     delete:
       operationId: discardWorkflowFamilyDraft
@@ -597,7 +904,11 @@ paths:
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
-        "200": { description: Published workflow family version covering all required profiles }
+        "200":
+          description: Published workflow family version metadata covering all required profiles
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowFamilyVersionSummary" }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families/{slug}/draft/diff:
     get:
@@ -609,7 +920,36 @@ paths:
     get:
       operationId: listWorkflowFamilyVersions
       responses:
-        "200": { description: Published workflow family version sequence }
+        "200":
+          description: Published workflow family version metadata sequence
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items, request_id]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/WorkflowFamilyVersionSummary" }
+                  request_id: { type: string, format: uuid }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/workflow-families/{slug}/sync:
+    post:
+      operationId: syncWorkflowFamilyFromSource
+      description: Check the registered npm or GitHub source and stage newer required profiles as a draft.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: Source checked; updated indicates whether a draft was staged
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkflowFamilySyncResult" }
+        "409": { description: "Source content changed without a version bump (WORKFLOW_SOURCE_VERSION_CONFLICT), or the family changed during resolution (WORKFLOW_FAMILY_CHANGED)" }
+        "422": { description: Family has no source or the source lacks required profile bundles }
+        "502": { description: Upstream npm or GitHub request failed }
+        "504": { description: Upstream npm or GitHub request timed out }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/workflow-families/{slug}/npm-release:
     post:
@@ -678,6 +1018,28 @@ paths:
         - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "200": { description: Upstream metadata refreshed; curationNote is never modified }
+        default: { $ref: "#/components/responses/Error" }
+  /api/v1/external-skills/{id}/summary:
+    post:
+      operationId: generateExternalSkillSummary
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 1 }
+                force: { type: boolean, default: false }
+              additionalProperties: false
+      responses:
+        "200": { description: Cached or newly generated structured Chinese AI summary }
+        "409": { description: Revision conflict or upstream content changed during generation }
+        "422": { description: Neither a default API provider nor a connected Codex account is available }
+        "502": { description: AI generation or structured response parsing failed }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/workflow-binding:
     get:
@@ -792,11 +1154,24 @@ paths:
       responses:
         "200": { description: Rule documents derived from the latest project artifact }
         default: { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/semantic/architecture:
+    get:
+      operationId: listProjectSemanticArchitecture
+      responses:
+        "200": { description: Codebase Map documents derived from the latest managed project snapshot }
+        default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/semantic/changes:
     get:
       operationId: listProjectSemanticChanges
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string }
       responses:
-        "200": { description: Archive change documents derived from the latest project artifact }
+        "200": { description: Paginated archive change documents derived from the latest project artifact }
         default: { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/semantic/graph:
     get:
@@ -940,6 +1315,82 @@ components:
       schema:
         $ref: "#/components/schemas/RegistryAgent"
   schemas:
+    SchemaVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version]
+      properties:
+        schema_version: { type: integer, const: 1 }
+    NpmPublishingCredentialReplaceRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, token, expires_at]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        token:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          writeOnly: true
+          format: password
+          description: npm Granular Access Token; never returned or logged
+        expires_at:
+          type: [string, "null"]
+          format: date-time
+          description: Operator-recorded token expiration used to block expired publishing credentials
+    NpmPublishingCredentialStatus:
+      type: object
+      additionalProperties: false
+      required: [scope, source, state, username, expires_at, last_verified_at, can_manage]
+      properties:
+        scope: { type: [string, "null"] }
+        source: { type: string, enum: [none, deployment, managed] }
+        state: { type: string, enum: [not_configured, configured, ready, expired, invalid, locked] }
+        username: { type: [string, "null"] }
+        expires_at: { type: [string, "null"], format: date-time }
+        last_verified_at: { type: [string, "null"], format: date-time }
+        can_manage:
+          type: boolean
+          description: Whether the server has a valid encryption key for page-managed credentials
+        request_id: { type: string, format: uuid }
+    CodexModelOption:
+      type: object
+      additionalProperties: false
+      required: [id, display_name, is_default, reasoning_efforts]
+      properties:
+        id: { type: string }
+        display_name: { type: string }
+        is_default: { type: boolean }
+        reasoning_efforts:
+          type: array
+          items: { type: string }
+    CodexConnectionState:
+      type: object
+      additionalProperties: true
+      required: [status, auth_mode, email, plan_type, enabled, selected_model, models, error]
+      properties:
+        status: { type: string, enum: [connected, disconnected, unavailable] }
+        auth_mode: { type: [string, "null"], enum: [chatgpt, null] }
+        email: { type: [string, "null"] }
+        plan_type: { type: [string, "null"] }
+        enabled:
+          type: boolean
+          description: Whether Codex is the single platform-wide active model source
+        selected_model: { type: [string, "null"] }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/CodexModelOption" }
+        error: { type: [string, "null"] }
+        request_id: { type: string, format: uuid }
+    CodexLoginStart:
+      type: object
+      additionalProperties: true
+      required: [login_id, verification_url, user_code]
+      properties:
+        login_id: { type: string }
+        verification_url: { type: string, format: uri }
+        user_code: { type: string }
+        request_id: { type: string, format: uuid }
     DashboardOverview:
       type: object
       additionalProperties: false
@@ -1037,6 +1488,274 @@ components:
     SkillTargetAgent:
       type: string
       enum: ["claude-code", "codex", "cursor", "codebuddy"]
+    RegistrySlug:
+      type: string
+      pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    AgentToolSource:
+      type: object
+      additionalProperties: false
+      required: [type, ref]
+      properties:
+        type: { type: string, enum: [github, npm, website] }
+        ref:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Exact curator-provided source; GitHub tree branch and subpath are preserved
+    CreateAgentToolRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, slug, displayName, description, category, source]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        slug: { $ref: "#/components/schemas/RegistrySlug" }
+        displayName: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 1200 }
+        category: { type: string, enum: [harness, runtime, orchestrator, ade, cli, framework] }
+        status: { type: string, enum: [active, experimental, archived], default: active }
+        source: { $ref: "#/components/schemas/AgentToolSource" }
+        homepage: { type: [string, "null"], format: uri }
+        packageName: { type: [string, "null"], maxLength: 220 }
+        installCommand: { type: [string, "null"], maxLength: 500 }
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/RegistrySlug" }
+          default: []
+        relatedWorkflowFamilies:
+          type: array
+          items: { $ref: "#/components/schemas/RegistrySlug" }
+          default: []
+    AgentTool:
+      type: object
+      additionalProperties: false
+      required: [tool_id, slug, displayName, description, category, status, source, homepage, packageName, installCommand, tags, relatedWorkflowFamilies, revision, created_at, updated_at]
+      properties:
+        tool_id: { type: string, pattern: "^atl_" }
+        slug: { $ref: "#/components/schemas/RegistrySlug" }
+        displayName: { type: string }
+        description: { type: string }
+        category: { type: string, enum: [harness, runtime, orchestrator, ade, cli, framework] }
+        status: { type: string, enum: [active, experimental, archived] }
+        source: { $ref: "#/components/schemas/AgentToolSource" }
+        homepage: { type: [string, "null"], format: uri }
+        packageName: { type: [string, "null"] }
+        installCommand: { type: [string, "null"] }
+        tags: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
+        relatedWorkflowFamilies: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
+        revision: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        request_id: { type: string, format: uuid }
+    WorkflowFamilySource:
+      type: object
+      additionalProperties: false
+      required: [type, ref]
+      properties:
+        type: { type: string, enum: [npm, github] }
+        ref:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: npm package name or exact GitHub repository/tree URL
+    InspectWorkflowFamilySourceRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, source]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        source: { $ref: "#/components/schemas/WorkflowFamilySource" }
+    WorkflowFamilySourceInspection:
+      type: object
+      additionalProperties: false
+      required: [source, remote_version, source_digest, manifest_detected, ready, suggested, profiles, warnings]
+      properties:
+        source: { $ref: "#/components/schemas/WorkflowFamilySource" }
+        remote_version: { type: [string, "null"], pattern: "^\\d+\\.\\d+\\.\\d+$" }
+        source_digest: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        manifest_detected: { type: boolean }
+        ready: { type: boolean }
+        suggested:
+          type: object
+          additionalProperties: false
+          required: [slug, displayName, description, tags]
+          properties:
+            slug: { $ref: "#/components/schemas/RegistrySlug" }
+            displayName: { type: string }
+            description: { type: string }
+            tags: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
+        profiles:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [profile, file_count]
+            properties:
+              profile: { $ref: "#/components/schemas/RegistrySlug" }
+              file_count: { type: integer, minimum: 1 }
+        warnings: { type: array, items: { type: string } }
+        request_id: { type: string, format: uuid }
+    WorkflowFamilySyncResult:
+      type: object
+      additionalProperties: false
+      required: [updated, request_id]
+      properties:
+        updated: { type: boolean }
+        version: { type: string, pattern: "^\\d+\\.\\d+\\.\\d+$" }
+        request_id: { type: string, format: uuid }
+    ImportWorkflowFamilySourceRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, source, source_digest, slug, displayName, description]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        source: { $ref: "#/components/schemas/WorkflowFamilySource" }
+        source_digest: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        slug: { $ref: "#/components/schemas/RegistrySlug" }
+        displayName: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 1000 }
+        tags: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" }, default: [] }
+    WorkflowFamilySourceImportResult:
+      type: object
+      additionalProperties: false
+      required: [family, draft, inspection, request_id]
+      properties:
+        family:
+          type: object
+          additionalProperties: false
+          description: Created WorkflowFamily registry record
+          required: [family_id, slug, displayName, description, tags, latest_version, required_profiles, revision, npmReleases, source, created_at, updated_at]
+          properties:
+            family_id: { type: string, pattern: "^wff_" }
+            slug: { $ref: "#/components/schemas/RegistrySlug" }
+            displayName: { type: string, minLength: 1, maxLength: 120 }
+            description: { type: string, minLength: 1, maxLength: 1000 }
+            tags: { type: array, items: { $ref: "#/components/schemas/RegistrySlug" } }
+            latest_version: { type: [string, "null"], pattern: "^\\d+\\.\\d+\\.\\d+$" }
+            required_profiles: { type: array, minItems: 1, items: { $ref: "#/components/schemas/RegistrySlug" } }
+            revision: { type: integer, minimum: 1 }
+            npmReleases:
+              type: array
+              items:
+                type: object
+                additionalProperties: false
+                required: [version, packageName, status, publishedAt, error]
+                properties:
+                  version: { type: string, pattern: "^\\d+\\.\\d+\\.\\d+$" }
+                  packageName: { type: string, minLength: 1 }
+                  status: { type: string, enum: [published, failed, conflict] }
+                  publishedAt: { type: string, format: date-time }
+                  error: { type: [string, "null"] }
+            source: { $ref: "#/components/schemas/WorkflowFamilySource" }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+        draft:
+          type: object
+          additionalProperties: false
+          description: Lightweight staged draft metadata; source contents remain in artifact storage
+          required: [family_slug, profiles, required_profiles, draftVersion, checks, releaseNote, revision, created_at, updated_at]
+          properties:
+            family_slug: { $ref: "#/components/schemas/RegistrySlug" }
+            profiles:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                additionalProperties: false
+                required: [profile, file_count]
+                properties:
+                  profile: { $ref: "#/components/schemas/RegistrySlug" }
+                  file_count: { type: integer, minimum: 0 }
+            required_profiles: { type: array, minItems: 1, items: { $ref: "#/components/schemas/RegistrySlug" } }
+            draftVersion: { type: [string, "null"], pattern: "^\\d+\\.\\d+\\.\\d+$" }
+            checks:
+              oneOf:
+                - type: "null"
+                - type: object
+                  additionalProperties: false
+                  required: [items, summary, checkedAt]
+                  properties:
+                    items:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [id, label, status, message, filePath, fixable]
+                        properties:
+                          id: { type: string }
+                          label: { type: string }
+                          status: { type: string, enum: [green, yellow, red] }
+                          message: { type: string }
+                          filePath: { type: [string, "null"] }
+                          fixable: { type: boolean }
+                    summary:
+                      type: object
+                      additionalProperties: false
+                      required: [green, yellow, red]
+                      properties:
+                        green: { type: integer, minimum: 0 }
+                        yellow: { type: integer, minimum: 0 }
+                        red: { type: integer, minimum: 0 }
+                    checkedAt: { type: string }
+            releaseNote: { type: [string, "null"] }
+            revision: { type: integer, minimum: 1 }
+            created_at: { type: string }
+            updated_at: { type: string }
+            request_id: { type: string, format: uuid }
+        inspection: { $ref: "#/components/schemas/WorkflowFamilySourceInspection" }
+        request_id: { type: string, format: uuid }
+    WorkflowFamilyVersionSummary:
+      type: object
+      additionalProperties: false
+      required: [family_slug, version, profiles, artifacts, changeNote, created_at]
+      properties:
+        family_slug: { $ref: "#/components/schemas/RegistrySlug" }
+        version: { type: string, pattern: "^\\d+\\.\\d+\\.\\d+$" }
+        profiles:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [profile, bundle_manifest, artifact_id, file_count]
+            properties:
+              profile: { $ref: "#/components/schemas/RegistrySlug" }
+              artifact_id: { type: string, pattern: "^wfb_" }
+              file_count: { type: integer, minimum: 0 }
+              bundle_manifest:
+                type: object
+                additionalProperties: false
+                required: [schema_version, profile, files]
+                properties:
+                  schema_version: { type: integer, const: 1 }
+                  profile: { $ref: "#/components/schemas/RegistrySlug" }
+                  files:
+                    type: array
+                    minItems: 1
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [path, sha256]
+                      properties:
+                        path: { type: string, minLength: 1 }
+                        sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+        artifacts:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [artifact_id, family_slug, profile, version, content_sha256, size_bytes, bundle_manifest, created_at]
+            properties:
+              artifact_id: { type: string, pattern: "^wfb_" }
+              family_slug: { $ref: "#/components/schemas/RegistrySlug" }
+              profile: { $ref: "#/components/schemas/RegistrySlug" }
+              version: { type: string, pattern: "^\\d+\\.\\d+\\.\\d+$" }
+              content_sha256: { type: string, pattern: "^sha256:[a-f0-9]{64}$" }
+              size_bytes: { type: integer, minimum: 0 }
+              bundle_manifest: { $ref: "#/components/schemas/WorkflowFamilyVersionSummary/properties/profiles/items/properties/bundle_manifest" }
+              created_at: { type: string, format: date-time }
+        changeNote: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        request_id: { type: string, format: uuid }
     SensitiveReviewSubmission:
       type: object
       additionalProperties: false
