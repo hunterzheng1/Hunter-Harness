@@ -1480,6 +1480,52 @@ describe("RemoteSync HTTP CLI port", () => {
       .resolves.toBe("changed after preview\n");
   });
 
+  it("rejects a Pull rename when its source changed after preview", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-rename-drift-"));
+    temporaryRoots.push(workspaceRoot);
+    const sourcePath = ".harness/rules/old-name.md";
+    const targetPath = ".harness/rules/new-name.md";
+    const previewSource = rule(sourcePath, "source at preview\n");
+    const remote = rule(targetPath, "source at preview\n");
+    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
+    await writeFile(join(workspaceRoot, sourcePath), "source changed after preview\n");
+    const runWorkspaceTransaction = vi.fn(async (root, operations, options) =>
+      runTransaction(root, operations, options));
+    const port = createRemoteSyncHttpPort({
+      serverUrl: "https://platform.example",
+      token: "token",
+      actorId: "actor_alpha",
+      workspaceRoot,
+      fetch: vi.fn(),
+      runWorkspaceTransaction
+    });
+
+    await expect(port.commitPull({
+      source_ref: source,
+      expected_revision: "revision_1",
+      preview_hash: `sha256:${"4".repeat(64)}`,
+      idempotency_key: `sha256:${"5".repeat(64)}`,
+      payload_hash: `sha256:${"6".repeat(64)}`,
+      files: [remote],
+      baseline_files: [remote],
+      operations: [{
+        path: targetPath,
+        source_path: sourcePath,
+        content_kind: "rule",
+        action: "rename",
+        local_hash: previewSource.content_hash,
+        remote_hash: remote.content_hash,
+        base_hash: previewSource.content_hash
+      }],
+      skipped: []
+    })).rejects.toMatchObject({ code: "SYNC_PREVIEW_STALE" });
+    expect(runWorkspaceTransaction).not.toHaveBeenCalled();
+    await expect(readFile(join(workspaceRoot, sourcePath), "utf8"))
+      .resolves.toBe("source changed after preview\n");
+    await expect(readFile(join(workspaceRoot, targetPath), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("resumes an interrupted Pull transaction without replaying completed writes", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-recovery-"));
     temporaryRoots.push(workspaceRoot);

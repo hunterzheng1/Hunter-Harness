@@ -600,6 +600,30 @@ describe("RemoteSyncModule v1", () => {
     })).toMatchObject({ ok: false, reason_code: "SYNC_PATH_NOT_ELIGIBLE" });
   });
 
+  it("binds a Pull rename local hash to the source file", async () => {
+    const content = "renamed remotely\n";
+    const oldFile = rule(".harness/rules/old.md", content);
+    const port = new InMemoryRemoteSyncPort();
+    port.seed(source_ref, {
+      base_version: "pv_1",
+      baseline_files: [oldFile],
+      local_files: [oldFile],
+      remote_files: [rule(".harness/rules/new.md", content)]
+    });
+
+    const preview = await new RemoteSyncModule(port).previewPull(["rules"], source_ref);
+
+    expect(preview.operations).toEqual([{
+      path: ".harness/rules/new.md",
+      source_path: ".harness/rules/old.md",
+      content_kind: "rule",
+      action: "rename",
+      local_hash: oldFile.content_hash,
+      remote_hash: oldFile.content_hash,
+      base_hash: oldFile.content_hash
+    }]);
+  });
+
   it("requires branch_file to be an explicit source and never relies on mtime", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {

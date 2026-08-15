@@ -249,7 +249,7 @@ function detectRenames(
       source_path: removed.path,
       content_kind: added.content_kind,
       action: "rename",
-      local_hash: added.local_hash,
+      local_hash: direction === "push" ? added.local_hash : removed.local_hash,
       remote_hash: added.remote_hash,
       base_hash: removed.base_hash
     };
