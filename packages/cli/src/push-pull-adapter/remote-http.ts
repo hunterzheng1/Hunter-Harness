@@ -935,6 +935,17 @@ async function readDurablePullTransactionReceipt(
     throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
   const journal = raw as TransactionJournal;
+  const protectedRoots = journal.protected_local_roots as unknown;
+  const verificationOutcomes = journal.verification_outcomes as unknown;
+  const protectedRootsUnchanged = protectedRoots !== null && typeof protectedRoots === "object" &&
+    !Array.isArray(protectedRoots) &&
+    (protectedRoots as { readonly unchanged?: unknown }).unchanged === true;
+  const protectedRootsCheckPassed = Array.isArray(verificationOutcomes) &&
+    verificationOutcomes.some((outcome) => {
+      if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) return false;
+      const candidate = outcome as { readonly name?: unknown; readonly status?: unknown };
+      return candidate.name === "protected-local-roots" && candidate.status === "passed";
+    });
   if (journal.transaction_id !== transactionId || journal.recovery_id !== transactionId ||
       journal.state !== "committed" || journal.kind !== undefined || journal.cli_version !== null ||
       journal.failure !== null || typeof journal.project_identity !== "string" ||
@@ -942,9 +953,8 @@ async function readDurablePullTransactionReceipt(
       !Array.isArray(journal.pending_operations) || !Array.isArray(journal.completed_operations) ||
       !Array.isArray(journal.verification_outcomes) || journal.pending_operations.length !== 0 ||
       journal.completed_operations.length !== journal.operations.length ||
-      journal.applied_count !== journal.operations.length || journal.protected_local_roots === undefined ||
-      !journal.protected_local_roots.unchanged || !journal.verification_outcomes.some((outcome) =>
-        outcome.name === "protected-local-roots" && outcome.status === "passed")) {
+      journal.applied_count !== journal.operations.length || !protectedRootsUnchanged ||
+      !protectedRootsCheckPassed) {
     throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
   let identity: unknown;

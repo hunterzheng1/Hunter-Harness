@@ -1752,15 +1752,29 @@ describe("RemoteSync HTTP CLI port", () => {
       });
       await factory().commitPull(command);
       const transactionsRoot = join(workspaceRoot, ".harness", "state", "transactions");
-      const transactionId = (await readdir(transactionsRoot)).find((name) =>
+      const transactionNames = await readdir(transactionsRoot);
+      const transactionId = transactionNames.find((name) =>
         /^tx_remote_pull_[a-f0-9]{64}$/u.test(name));
       if (transactionId === undefined) throw new Error("expected Pull transaction journal");
+      const receiptTransactionId = transactionNames.find((name) =>
+        /^tx_remote_receipt_[a-f0-9]{64}$/u.test(name));
+      if (receiptTransactionId === undefined) throw new Error("expected durable receipt projection");
+      await rm(join(transactionsRoot, receiptTransactionId), { recursive: true, force: true });
       const journalPath = join(transactionsRoot, transactionId, "journal.json");
       const journal = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
       if (mutation === "null-outcome") journal.verification_outcomes = [null];
       else journal.protected_local_roots = null;
       await writeFile(journalPath, JSON.stringify(journal));
 
+      await expect(factory().getIdempotentSyncReceipt(
+        source,
+        "pull",
+        command.idempotency_key,
+        command.payload_hash
+      )).rejects.toMatchObject({
+        code: "REMOTE_UNAVAILABLE",
+        retryable: true
+      });
       await expect(factory().commitPull(command)).rejects.toMatchObject({
         code: "REMOTE_UNAVAILABLE",
         retryable: true
