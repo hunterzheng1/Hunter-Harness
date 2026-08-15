@@ -824,6 +824,13 @@ export function validateRemoteSyncPushMetadata(input: unknown): void {
   }
   const files = dataArray(values.files, "SYNC_CONTENT_INVALID")
     .map((file) => validateRemoteSnapshotFile(file));
+  let totalBytes = 0;
+  for (const file of files) {
+    totalBytes += file.size;
+    if (!Number.isSafeInteger(totalBytes) || totalBytes > REMOTE_SYNC_MAX_PULL_BYTES) {
+      invalid("SYNC_STREAM_TOO_LARGE");
+    }
+  }
   const operations = dataArray(values.operations, "SYNC_CONTENT_INVALID")
     .map((operation) => validateOperation(operation));
   const skipped = dataArray(values.skipped, "SYNC_CONTENT_INVALID")

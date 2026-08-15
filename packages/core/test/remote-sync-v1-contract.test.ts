@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { sha256Bytes } from "../src/fs/hash.js";
 import {
   InMemoryRemoteSyncV1,
+  REMOTE_SYNC_MAX_FILE_BYTES,
   RemoteSyncV1Module,
   remoteSyncPushPayloadHash,
   validateRemoteSyncPushMetadata,
@@ -98,6 +99,36 @@ describe("RemoteSync v1 contract reference", () => {
       operations: command.operations,
       skipped: command.skipped
     })).toThrowError(/SYNC_CONTENT_INVALID/u);
+  });
+
+  it("rejects Push metadata whose files exceed the 256 MiB aggregate limit", () => {
+    const files = Array.from({ length: 5 }, (_, index) => ({
+      path: `.harness/rules/aggregate-${index}.md`,
+      content_hash: `sha256:${String(index).repeat(64)}`,
+      size: REMOTE_SYNC_MAX_FILE_BYTES,
+      content_kind: "rule" as const
+    }));
+    const operations = files.map((item) => ({
+      path: item.path,
+      content_kind: "rule" as const,
+      action: "add" as const,
+      local_hash: item.content_hash
+    }));
+    const payload = {
+      source,
+      expected_revision: "revision_aggregate",
+      preview_hash: `sha256:${"a".repeat(64)}`,
+      idempotency_key: "push-aggregate-limit",
+      files: files.map((item) => ({ ...item, content: new Uint8Array(0) })),
+      operations,
+      skipped: []
+    };
+
+    expect(() => validateRemoteSyncPushMetadata({
+      ...payload,
+      files,
+      payload_hash: remoteSyncPushPayloadHash(payload)
+    })).toThrow(expect.objectContaining({ code: "SYNC_STREAM_TOO_LARGE" }));
   });
 
   it("rejects accessor-bearing HTTP metadata before reading the accessor", async () => {
