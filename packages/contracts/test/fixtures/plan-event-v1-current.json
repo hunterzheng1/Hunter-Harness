@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "lifecycle_kind": "change",
+  "run_id": "run:quality",
+  "change_key": "change:quality",
+  "events": [
+    {
+      "schema_version": 1,
+      "lifecycle_kind": "change",
+      "run_id": "run:quality",
+      "change_key": "change:quality",
+      "phase": "plan",
+      "attempt": 1,
+      "type": "phase_started",
+      "producer_seq": 1,
+      "occurred_at": "2026-08-13T10:00:00.000Z",
+      "event_id": "plan_event:ee15a60a8e116a5fb02ad6409dcd484a02a1533d3a92302db6a999e60c0ed6ef",
+      "idempotency_key": "sha256:0c1fb7a9d4c9394269e6793e4a2c494d3a8088d011e13de011250bb1ac8c7bea"
+    },
+    {
+      "schema_version": 1,
+      "lifecycle_kind": "change",
+      "run_id": "run:quality",
+      "change_key": "change:quality",
+      "phase": "plan",
+      "attempt": 1,
+      "type": "phase_ended",
+      "producer_seq": 2,
+      "occurred_at": "2026-08-13T10:00:01.000Z",
+      "event_id": "plan_event:439cb21ed2c94ad73ae5963f8b93da904a4c553ddcb9713960c2b7a59a0bb508",
+      "idempotency_key": "sha256:3d26187d3daaa535585a9cdbc69e81ed501df85665c7647f223fe1e2c978b535"
+    }
+  ],
+  "bundle_hash": "sha256:7646213e9576c8c80db5d01bafe741662ce65db71b813388db5a45c86075a5dd"
+}

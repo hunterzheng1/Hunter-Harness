@@ -6,7 +6,11 @@ export const apiErrorCodeSchema = z.enum([
   "INVALID_PATH",
   "AUTH_REQUIRED",
   "TOKEN_INVALID",
+  "SESSION_INVALID",
   "AUTH_FORBIDDEN",
+  "PROJECT_KEY_SCOPE",
+  "PROJECT_KEY_MISMATCH",
+  "PROJECT_INFORMATION_FORBIDDEN",
   "PROJECT_BIND_FORBIDDEN",
   "PROJECT_NOT_FOUND",
   "PROPOSAL_NOT_FOUND",
@@ -37,17 +41,33 @@ export const apiErrorCodeSchema = z.enum([
   "WORKFLOW_PACKAGE_REDIRECT",
   "NPM_PUBLISH_NOT_CONFIGURED",
   "NPM_PUBLISH_NOT_PUBLISHED",
-  "NPM_PUBLISH_CONFLICT"
+  "NPM_PUBLISH_CONFLICT",
+  "PLATFORM_INFORMATION_CURSOR_INVALID",
+  "PLATFORM_INFORMATION_DETAIL_NOT_FOUND",
+  "KNOWLEDGE_EXTRACTION_JOB_NOT_FOUND",
+  "BRANCH_FILES_PULL_CONFIRMATION_MISMATCH",
+  "KNOWLEDGE_EXTRACTION_GENERATION_CONFLICT",
+  "PLATFORM_INFORMATION_SOURCE_INVALID",
+  "BRANCH_FILES_RESTORE_PREVIEW_INVALID",
+  "BRANCH_FILES_PULL_CONFIRMATION_INVALID",
+  "KNOWLEDGE_EXTRACTION_RETRY_REQUEST_INVALID",
+  "KNOWLEDGE_EXTRACTION_RETRY_INTENT_INVALID",
+  "KNOWLEDGE_EXTRACTION_RETRY_AUTHORITY_INVALID",
+  "PLATFORM_INFORMATION_UNAVAILABLE",
 ]);
 
-export const apiErrorEnvelopeSchema = z.object({
-  error: z.object({
-    code: apiErrorCodeSchema,
-    message: z.string().min(1),
-    request_id: z.uuid(),
-    details: z.record(z.string(), z.unknown())
-  }).strict()
-}).strict();
+export const apiErrorEnvelopeSchema = z
+  .object({
+    error: z
+      .object({
+        code: apiErrorCodeSchema,
+        message: z.string().min(1),
+        request_id: z.uuid(),
+        details: z.record(z.string(), z.unknown()),
+      })
+      .strict(),
+  })
+  .strict();
 
 // Skill 相关错误码命名常量（含 wire + 非 wire 码），供各层复用（R2 契约单一来源）。
 // wire 码进 apiErrorCodeSchema；非 wire 码（SLUG_INVALID/FRONTMATTER_INVALID）仅本地使用。
@@ -60,7 +80,7 @@ export const SKILL_ERROR_CODE = {
   ADAPTER_NOT_INSTALLABLE: "ADAPTER_NOT_INSTALLABLE",
   WORKFLOW_PACKAGE_REDIRECT: "WORKFLOW_PACKAGE_REDIRECT",
   SLUG_INVALID: "SKILL_SLUG_INVALID",
-  FRONTMATTER_INVALID: "FRONTMATTER_INVALID"
+  FRONTMATTER_INVALID: "FRONTMATTER_INVALID",
 } as const;
 
 export const cliExitCodeSchema = z.union([
@@ -72,7 +92,7 @@ export const cliExitCodeSchema = z.union([
   z.literal(5),
   z.literal(6),
   z.literal(7),
-  z.literal(8)
+  z.literal(8),
 ]);
 
 export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;

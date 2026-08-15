@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "enums": {
+    "content_kind": [
+      "config",
+      "rule",
+      "architecture",
+      "instruction",
+      "branch_file",
+      "change_document",
+      "archive_package",
+      "knowledge_entry",
+      "knowledge_candidate",
+      "project_content_candidate"
+    ],
+    "sync_scope": [
+      "config",
+      "rules",
+      "architecture",
+      "instructions",
+      "branch_files",
+      "archive"
+    ],
+    "sync_direction": ["push", "pull"],
+    "sync_action": ["add", "modify", "delete", "restore", "rename", "no_change"],
+    "conflict_resolution": ["keep_local", "accept_remote", "skip", "cancel"],
+    "project_content_candidate_type": ["rule", "architecture-decision", "glossary"],
+    "project_content_candidate_status": [
+      "pending",
+      "proposed",
+      "accepted",
+      "rejected",
+      "superseded"
+    ],
+    "knowledge_candidate_status": ["pending", "accepted", "rejected", "superseded"],
+    "provenance_source_kind": ["archive", "plan", "review", "manual", "migration"],
+    "instruction_entrypoint": ["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md"],
+    "archive_status": ["absent", "uploading", "stored", "failed"],
+    "change_index_status": ["not_scheduled", "queued", "indexing", "ready", "failed"],
+    "knowledge_extraction_status": [
+      "not_scheduled",
+      "queued",
+      "extracting",
+      "ready",
+      "failed"
+    ],
+    "managed_snapshot_status": ["absent", "publishing", "ready", "conflict", "failed"],
+    "pull_policy": ["regular", "explicit_source_only", "not_pullable"],
+    "content_scan_policy": ["required", "skip_content_scan"],
+    "content_sync_validation_reason_code": [
+      "CONTENT_SYNC_ENUM_INVALID",
+      "CONTENT_SYNC_UNKNOWN_FIELD",
+      "CONTENT_SYNC_SCHEMA_INVALID"
+    ],
+    "content_path_reason_code": [
+      "CONTENT_PATH_EMPTY",
+      "CONTENT_PATH_TOO_LONG",
+      "CONTENT_PATH_ABSOLUTE",
+      "CONTENT_PATH_BACKSLASH_AMBIGUOUS",
+      "CONTENT_PATH_TRAVERSAL",
+      "CONTENT_PATH_NON_CANONICAL",
+      "CONTENT_PATH_ILLEGAL_SEGMENT",
+      "CONTENT_PATH_RESERVED_NAME",
+      "CONTENT_PATH_VCS_EXCLUDED",
+      "CONTENT_PATH_CREDENTIALS_EXCLUDED",
+      "CONTENT_PATH_ENV_EXCLUDED",
+      "CONTENT_PATH_STATE_EXCLUDED",
+      "CONTENT_PATH_RUNTIME_EXCLUDED",
+      "CONTENT_PATH_NON_SCANNABLE_KIND",
+      "CONTENT_PATH_SELECTED_ENTRYPOINT_INVALID",
+      "CONTENT_PATH_UNDECLARED",
+      "CONTENT_PATH_UNCLASSIFIED"
+    ]
+  },
+  "statuses": {
+    "schema_version": 1,
+    "archive_status": {
+      "status": "uploading",
+      "updated_at": "2026-08-12T01:00:00.000Z",
+      "retryable": true
+    },
+    "change_index_status": {
+      "status": "indexing",
+      "updated_at": "2026-08-12T01:01:00.000Z",
+      "retryable": true
+    },
+    "knowledge_extraction_status": {
+      "status": "extracting",
+      "updated_at": "2026-08-12T01:02:00.000Z",
+      "retryable": true
+    },
+    "managed_snapshot_status": {
+      "status": "conflict",
+      "updated_at": "2026-08-12T01:03:00.000Z",
+      "retryable": true,
+      "reason_code": "REMOTE_VERSION_CONFLICT"
+    }
+  },
+  "archive_ingest_receipts": {
+    "queued": {
+      "schema_version": 1,
+      "request_id": "archive_request:1111111111111111111111111111111111111111111111111111111111111111",
+      "idempotency_key": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "project_id": "prj_stage01",
+      "change_key": "change-stage-01",
+      "archive_id": "arc_stage01_queued",
+      "package_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "manifest_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "project_version": "pv_00000002",
+      "stored_at": "2026-08-12T01:10:00.000Z",
+      "retryable": false,
+      "archive_status": { "status": "stored", "updated_at": "2026-08-12T01:10:00.000Z", "retryable": false },
+      "change_index_status": { "status": "queued", "updated_at": "2026-08-12T01:11:00.000Z", "retryable": true },
+      "knowledge_extraction_status": { "status": "queued", "updated_at": "2026-08-12T01:11:00.000Z", "retryable": true },
+      "change_projection_job_id": "job_change_stage01",
+      "knowledge_extraction_job_id": "job_knowledge_stage01",
+      "project_content_job_id": "job_content_stage01"
+    },
+    "planning_failed": {
+      "schema_version": 1,
+      "request_id": "archive_request:3333333333333333333333333333333333333333333333333333333333333333",
+      "idempotency_key": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "project_id": "prj_stage01",
+      "change_key": "change-stage-01-failed",
+      "archive_id": "arc_stage01_failed",
+      "package_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "manifest_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "project_version": "pv_00000003",
+      "stored_at": "2026-08-12T01:12:00.000Z",
+      "retryable": false,
+      "archive_status": { "status": "stored", "updated_at": "2026-08-12T01:12:00.000Z", "retryable": false },
+      "change_index_status": { "status": "failed", "updated_at": "2026-08-12T01:13:00.000Z", "retryable": true, "reason_code": "PIPELINE_QUEUE_CAPACITY_EXCEEDED" },
+      "knowledge_extraction_status": { "status": "failed", "updated_at": "2026-08-12T01:13:00.000Z", "retryable": true, "reason_code": "PIPELINE_QUEUE_CAPACITY_EXCEEDED" }
+    }
+  },
+  "candidates": {
+    "project_content_candidate": {
+      "schema_version": 1,
+      "candidate_id": "pcc_project_boundary_01",
+      "source_change_key": "change-stage-01",
+      "candidate_type": "architecture-decision",
+      "evidence_refs": ["archive:arc_stage01/design.md#boundary"],
+      "rationale": "The boundary is repeated and should be governed as project content.",
+      "proposed_content": "Remote knowledge remains server-derived and read-only to local sync.",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "confidence": 0.82,
+      "status": "proposed",
+      "provenance": {
+        "source_kind": "review",
+        "source_ref": "review:stage-01",
+        "producer": "hunter-platform",
+        "producer_version": "1.0.0",
+        "created_at": "2026-08-12T01:04:00.000Z"
+      }
+    },
+    "knowledge_candidate": {
+      "schema_version": 1,
+      "candidate_id": "kc_reusable_sync_boundary_01",
+      "source_change_key": "change-stage-01",
+      "source_refs": ["archive:arc_stage01/summary.md"],
+      "summary": "Configuration skips content scanning but never path or integrity checks.",
+      "reusability_scope": "cross_project",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "confidence": 0.91,
+      "status": "pending",
+      "provenance": {
+        "source_kind": "archive",
+        "source_ref": "archive:arc_stage01",
+        "producer": "hunter-platform",
+        "producer_version": "1.0.0",
+        "created_at": "2026-08-12T01:05:00.000Z"
+      }
+    }
+  },
+  "remote_version_identity": {
+    "project_id": "prj_stage01",
+    "branch_name": "feature/content-sync",
+    "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+    "change_key": "change-stage-01",
+    "artifact_id": "art_stage01_snapshot_02",
+    "project_version": "pv_00000002",
+    "uploaded_at": "2026-08-12T01:06:00.000Z",
+    "client_id": "cli_stage01",
+    "manifest_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "branch_snapshots_page": {
+    "items": [
+      {
+        "project_id": "prj_stage01",
+        "branch_name": "feature/content-sync",
+        "latest_version": "pv_00000002",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "artifact_id": "art_stage01_snapshot_02",
+        "manifest_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "file_count": 3,
+        "changed_count": 2,
+        "uploaded_at": "2026-08-12T01:06:00.000Z"
+      }
+    ],
+    "next_cursor": "opaque:branches:page-2"
+  },
+  "snapshot_versions_page": {
+    "items": [
+      {
+        "branch_name": "feature/content-sync",
+        "project_version": "pv_00000002",
+        "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "artifact_id": "art_stage01_snapshot_02",
+        "manifest_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "uploaded_at": "2026-08-12T01:06:00.000Z"
+      }
+    ],
+    "next_cursor": "opaque:versions:page-2"
+  },
+  "snapshot_files_page": {
+    "items": [
+      {
+        "path": ".harness/project.yaml",
+        "content_kind": "config",
+        "size": 512,
+        "content_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "action": "modify"
+      },
+      {
+        "path": ".harness/rules/security.md",
+        "content_kind": "rule",
+        "size": 1024,
+        "content_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "action": "add"
+      },
+      {
+        "path": "AGENTS.md",
+        "content_kind": "instruction",
+        "size": 768,
+        "content_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ]
+  },
+  "path_cases": [
+    {
+      "name": "project config",
+      "input": {"schema_version": 1, "path": ".harness/project.yaml"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "config",
+        "sync_scope": "config",
+        "pull_policy": "regular",
+        "content_scan_policy": "skip_content_scan"
+      }
+    },
+    {
+      "name": "nested config",
+      "input": {"schema_version": 1, "path": ".harness/config/providers.yaml"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "config",
+        "sync_scope": "config",
+        "pull_policy": "regular",
+        "content_scan_policy": "skip_content_scan"
+      }
+    },
+    {
+      "name": "rule",
+      "input": {"schema_version": 1, "path": ".harness/rules/security.md"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "rule",
+        "sync_scope": "rules",
+        "pull_policy": "regular",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "architecture map",
+      "input": {"schema_version": 1, "path": ".harness/codebase/map/architecture.md"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "architecture",
+        "sync_scope": "architecture",
+        "pull_policy": "regular",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "architecture map manifest",
+      "input": {"schema_version": 1, "path": ".harness/codebase/map-manifest.json"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "architecture",
+        "sync_scope": "architecture",
+        "pull_policy": "regular",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "default instruction entrypoint",
+      "input": {"schema_version": 1, "path": "AGENTS.md"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "instruction",
+        "sync_scope": "instructions",
+        "pull_policy": "regular",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "selected instruction entrypoint",
+      "input": {
+        "schema_version": 1,
+        "path": "CLAUDE.md",
+        "selected_instruction_entrypoints": ["CLAUDE.md"]
+      },
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "instruction",
+        "sync_scope": "instructions",
+        "pull_policy": "regular",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "explicit branch file",
+      "input": {"schema_version": 1, "path": "src/app.ts", "source_kind": "branch_file"},
+      "expected": {
+        "schema_version": 1,
+        "content_kind": "branch_file",
+        "sync_scope": "branch_files",
+        "pull_policy": "explicit_source_only",
+        "content_scan_policy": "required"
+      }
+    },
+    {
+      "name": "ordinary source is not implicitly a branch file",
+      "input": {"schema_version": 1, "path": "src/app.ts"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_UNCLASSIFIED"}
+    },
+    {
+      "name": "environment file is excluded",
+      "input": {"schema_version": 1, "path": ".env.local", "source_kind": "branch_file"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_ENV_EXCLUDED"}
+    },
+    {
+      "name": "credentials file is excluded",
+      "input": {"schema_version": 1, "path": ".harness/credentials.local.yaml"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_CREDENTIALS_EXCLUDED"}
+    },
+    {
+      "name": "git metadata is excluded",
+      "input": {"schema_version": 1, "path": ".git/config", "source_kind": "branch_file"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_VCS_EXCLUDED"}
+    },
+    {
+      "name": "undeclared harness namespace is excluded",
+      "input": {
+        "schema_version": 1,
+        "path": ".harness/unknown/file.txt",
+        "source_kind": "branch_file"
+      },
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_UNDECLARED"}
+    },
+    {
+      "name": "state is excluded",
+      "input": {"schema_version": 1, "path": ".harness/state/local/baseline.json"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_STATE_EXCLUDED"}
+    },
+    {
+      "name": "runtime log is excluded",
+      "input": {"schema_version": 1, "path": ".harness/runtime/sync.log"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_RUNTIME_EXCLUDED"}
+    },
+    {
+      "name": "archive cannot be forged by path scan",
+      "input": {"schema_version": 1, "path": ".harness/archive/change-one/package.zip"},
+      "expected": {"schema_version": 1, "reason_code": "CONTENT_PATH_NON_SCANNABLE_KIND"}
+    }
+  ]
+}

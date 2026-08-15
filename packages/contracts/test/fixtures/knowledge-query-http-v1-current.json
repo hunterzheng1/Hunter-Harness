@@ -1,0 +1,28 @@
+{
+  "query": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/knowledge/query",
+    "operation_id": "queryProjectKnowledge",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "knowledge:read"
+    },
+    "request_schema": "KnowledgeQueryHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "request_id_header": "X-Request-Id",
+    "success_status": 201,
+    "replay_status": 200,
+    "success_schema": "KnowledgeQueryHttpResponse",
+    "errors": {
+      "400": ["KNOWLEDGE_QUERY_INVALID"],
+      "401": ["AUTH_REQUIRED", "TOKEN_INVALID", "SESSION_INVALID"],
+      "403": ["PROJECT_INFORMATION_FORBIDDEN", "PROJECT_KEY_SCOPE", "PROJECT_KEY_MISMATCH"],
+      "409": ["KNOWLEDGE_QUERY_IDEMPOTENCY_CONFLICT", "KNOWLEDGE_QUERY_SNAPSHOT_STALE"],
+      "422": ["KNOWLEDGE_QUERY_RECEIPT_INVALID"],
+      "499": ["KNOWLEDGE_QUERY_ABORTED"],
+      "503": ["REMOTE_UNAVAILABLE", "KNOWLEDGE_QUERY_TIMEOUT"]
+    }
+  }
+}

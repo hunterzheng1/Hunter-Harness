@@ -4,10 +4,13 @@ import { isRuntimeProxy } from "./browser-safe-proxy.js";
 import { sha256Text } from "./browser-safe-sha256.js";
 
 export const REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES = 512 * 1024 * 1024;
+export const REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES = 10 * 1024 * 1024;
 export const REMOTE_CONTENT_UPLOAD_HTTP_MAX_CHUNK_BYTES = 1024 * 1024;
 export const REMOTE_CONTENT_UPLOAD_HTTP_MAX_EXPIRY_MS = 15 * 60_000;
 
-export const remoteContentUploadHttpScopeSchema = z.enum(["archive:read", "archive:write"]);
+export const remoteContentUploadHttpScopeSchema = z.enum([
+  "archive:read", "archive:write", "files:read", "files:write"
+]);
 export const remoteContentUploadHttpAuthSchema = z.object({
   actor_source: z.literal("authenticated_principal"),
   project_allowlist_source: z.literal("server_authority"),
@@ -75,7 +78,7 @@ export const remoteContentUploadHttpPrincipalSchema = z.object({
   actor_id: boundedText(160)
 }).strict();
 export const remoteContentUploadHttpRequestHeadersSchema = z.object({
-  "Content-Type": z.literal("application/zip"),
+  "Content-Type": z.enum(["application/zip", "application/octet-stream"]),
   "Content-Length": canonicalIntegerHeader(REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES),
   "Idempotency-Key": sha256Schema,
   "X-Content-SHA256": sha256Schema,
@@ -86,7 +89,7 @@ export const remoteContentUploadHttpRequestHeadersSchema = z.object({
 }).strict();
 export const remoteContentUploadHttpBodyStreamDescriptorSchema = z.object({
   kind: z.literal("single_binary_stream"),
-  media_type: z.literal("application/zip"),
+  media_type: z.enum(["application/zip", "application/octet-stream"]),
   content_encoding: z.literal("identity"),
   content_length_bytes: z.number().int().min(1).max(REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES),
   content_sha256: sha256Schema,
@@ -94,6 +97,7 @@ export const remoteContentUploadHttpBodyStreamDescriptorSchema = z.object({
 }).strict();
 export const remoteContentUploadHttpRequestDescriptorSchema = z.object({
   schema_version: z.literal(1),
+  purpose: z.enum(["remote_archive", "remote_sync_file"]),
   path: remoteContentUploadHttpPathSchema,
   auth: remoteContentUploadHttpPrincipalSchema,
   headers: remoteContentUploadHttpRequestHeadersSchema,
@@ -108,6 +112,14 @@ export const remoteContentUploadHttpRequestDescriptorSchema = z.object({
   if (value.headers["Content-Type"] !== value.body_stream.media_type) {
     context.addIssue({ code: "custom", path: ["headers", "Content-Type"], message: "media type binding mismatch" });
   }
+  const expectedMediaType = value.purpose === "remote_archive" ? "application/zip" : "application/octet-stream";
+  if (value.headers["Content-Type"] !== expectedMediaType) {
+    context.addIssue({ code: "custom", path: ["purpose"], message: "purpose and media type mismatch" });
+  }
+  if (value.purpose === "remote_sync_file" &&
+      value.body_stream.content_length_bytes > REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES) {
+    context.addIssue({ code: "custom", path: ["body_stream", "content_length_bytes"], message: "remote sync file exceeds durable snapshot limit" });
+  }
 });
 export const remoteContentUploadHttpStatusHeadersSchema = z.object({
   "Idempotency-Key": sha256Schema,
@@ -117,6 +129,7 @@ export const remoteContentUploadHttpStatusHeadersSchema = z.object({
 }).strict();
 export const remoteContentUploadHttpStatusDescriptorSchema = z.object({
   schema_version: z.literal(1),
+  purpose: z.enum(["remote_archive", "remote_sync_file"]),
   path: remoteContentUploadHttpPathSchema,
   auth: remoteContentUploadHttpPrincipalSchema,
   headers: remoteContentUploadHttpStatusHeadersSchema
@@ -141,7 +154,7 @@ function canonicalRemoteContentUploadRecord(value: {
   upload_id: string;
   source: z.infer<typeof remoteContentUploadHttpSourceSchema>;
   idempotency_key: string;
-  purpose: "remote_archive";
+  purpose: "remote_archive" | "remote_sync_file";
   content_sha256: string;
   size_bytes: number;
   upload_ref: z.infer<typeof remoteContentUploadHttpRefSchema>;
@@ -177,7 +190,7 @@ export const remoteContentUploadHttpRecordSchema = z.object({
   upload_id: z.string().regex(/^remote_content_upload:[A-Za-z0-9_-]{43}$/u),
   source: remoteContentUploadHttpSourceSchema,
   idempotency_key: sha256Schema,
-  purpose: z.literal("remote_archive"),
+  purpose: z.enum(["remote_archive", "remote_sync_file"]),
   content_sha256: sha256Schema,
   size_bytes: z.number().int().min(1).max(REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES),
   upload_ref: remoteContentUploadHttpRefSchema,
@@ -193,6 +206,9 @@ export const remoteContentUploadHttpRecordSchema = z.object({
   }
   if (value.upload_ref.sha256 !== value.content_sha256 || value.upload_ref.size_bytes !== value.size_bytes) {
     context.addIssue({ code: "custom", path: ["upload_ref"], message: "upload reference identity mismatch" });
+  }
+  if (value.purpose === "remote_sync_file" && value.size_bytes > REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES) {
+    context.addIssue({ code: "custom", path: ["size_bytes"], message: "remote sync file exceeds durable snapshot limit" });
   }
   if (duration <= 0 || duration > REMOTE_CONTENT_UPLOAD_HTTP_MAX_EXPIRY_MS) {
     context.addIssue({ code: "custom", path: ["expires_at"], message: "upload expiry is outside bounds" });
@@ -294,6 +310,16 @@ const writeAuth = Object.freeze({
   project_allowlist_source: "server_authority" as const,
   project_key_scope: "archive:write" as const
 });
+const fileReadAuth = Object.freeze({
+  actor_source: "authenticated_principal" as const,
+  project_allowlist_source: "server_authority" as const,
+  project_key_scope: "files:read" as const
+});
+const fileWriteAuth = Object.freeze({
+  actor_source: "authenticated_principal" as const,
+  project_allowlist_source: "server_authority" as const,
+  project_key_scope: "files:write" as const
+});
 const operation = <const T extends object>(
   value: T,
   errors: Readonly<Record<number, readonly string[]>>
@@ -349,6 +375,67 @@ export const REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS = Object.freeze({
     success_status: 200 as const,
     success_schema: "RemoteContentUploadHttpStatus" as const,
     identity_bindings: Object.freeze([
+      Object.freeze(["path.project_id", "response.record.source.project_id"] as const),
+      Object.freeze(["path.branch_name", "response.record.source.branch_name"] as const),
+      Object.freeze(["auth.actor_id", "response.record.source.actor_id"] as const),
+      Object.freeze(["header.Idempotency-Key", "response.record.idempotency_key"] as const),
+      Object.freeze(["header.X-Commit-SHA", "response.record.source.commit_sha"] as const),
+      Object.freeze(["header.X-Client-Id", "response.record.source.client_id"] as const),
+      Object.freeze(["header.X-Change-Key", "response.record.source.change_key"] as const)
+    ])
+  }, {
+    400: validation,
+    401: unauthorized,
+    403: Object.freeze([...forbidden, "REMOTE_CONTENT_UPLOAD_SCOPE_MISMATCH"] as const),
+    503: unavailable
+  }),
+  upload_remote_sync_file: operation({
+    method: "POST" as const,
+    path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload" as const,
+    operation_id: "stageRemoteSyncFileUpload" as const,
+    request_placement: "path_headers_and_binary_body" as const,
+    request_media_type: "application/octet-stream" as const,
+    body_transport: "single_bounded_stream" as const,
+    auth: fileWriteAuth,
+    request_descriptor_schema: "RemoteContentUploadHttpRequestDescriptor" as const,
+    success_status: 201 as const,
+    replay_status: 200 as const,
+    success_schema: "RemoteContentUploadHttpResult" as const,
+    identity_bindings: Object.freeze([
+      Object.freeze(["descriptor.purpose", "response.record.purpose"] as const),
+      Object.freeze(["path.project_id", "response.record.source.project_id"] as const),
+      Object.freeze(["path.branch_name", "response.record.source.branch_name"] as const),
+      Object.freeze(["auth.actor_id", "response.record.source.actor_id"] as const),
+      Object.freeze(["header.Idempotency-Key", "response.record.idempotency_key"] as const),
+      Object.freeze(["header.X-Content-SHA256", "body_stream.content_sha256"] as const),
+      Object.freeze(["header.Content-Length", "body_stream.content_length_bytes"] as const),
+      Object.freeze(["header.X-Commit-SHA", "response.record.source.commit_sha"] as const),
+      Object.freeze(["header.X-Client-Id", "response.record.source.client_id"] as const),
+      Object.freeze(["header.X-Change-Key", "response.record.source.change_key"] as const),
+      Object.freeze(["header.X-Upload-Expires-In-Ms", "response.record.created_at..expires_at"] as const)
+    ])
+  }, {
+    400: validation,
+    401: unauthorized,
+    403: forbidden,
+    409: Object.freeze(["REMOTE_CONTENT_UPLOAD_IDEMPOTENCY_CONFLICT"] as const),
+    410: Object.freeze(["REMOTE_CONTENT_UPLOAD_EXPIRED"] as const),
+    413: Object.freeze(["REMOTE_CONTENT_UPLOAD_TOO_LARGE"] as const),
+    415: Object.freeze(["REMOTE_CONTENT_UPLOAD_MEDIA_TYPE_UNSUPPORTED"] as const),
+    499: Object.freeze(["REMOTE_CONTENT_UPLOAD_ABORTED"] as const),
+    503: unavailable
+  }),
+  remote_sync_file_status: operation({
+    method: "GET" as const,
+    path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload/status" as const,
+    operation_id: "getRemoteSyncFileUploadStatus" as const,
+    request_placement: "path_and_headers" as const,
+    auth: fileReadAuth,
+    request_descriptor_schema: "RemoteContentUploadHttpStatusDescriptor" as const,
+    success_status: 200 as const,
+    success_schema: "RemoteContentUploadHttpStatus" as const,
+    identity_bindings: Object.freeze([
+      Object.freeze(["descriptor.purpose", "response.record.purpose"] as const),
       Object.freeze(["path.project_id", "response.record.source.project_id"] as const),
       Object.freeze(["path.branch_name", "response.record.source.branch_name"] as const),
       Object.freeze(["auth.actor_id", "response.record.source.actor_id"] as const),

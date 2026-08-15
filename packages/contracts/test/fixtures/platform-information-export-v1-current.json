@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "contract_kind": "platform_information_export_artifact_receipt",
+  "export_id": "export_knowledge_1",
+  "project_id": "prj_demo",
+  "view": "project_knowledge",
+  "range": {
+    "query_scope": {
+      "actor_id": "actor_1",
+      "accessible_project_ids": ["prj_demo"],
+      "content_types": ["knowledge_entry"]
+    },
+    "limit": 25,
+    "source_cursor": null,
+    "cursor_verification": "server_port_required",
+    "sort": "extracted_at_desc_knowledge_id_asc"
+  },
+  "m4_proof": {
+    "pages": [
+      { "request_cursor": null, "response_next_cursor": null, "result_count": 1 }
+    ],
+    "exported_count": 1,
+    "items_sha": "sha256:60602777cda045cc08a49b70ee4b8f986022a1e10539ae142dbe3a9b96422324",
+    "completed": true
+  },
+  "proof_sha": "sha256:be3f70d66fd8cb7f83a1e71f9af423b57fa0133706803b87cd2686b494fb68f5",
+  "artifact": {
+    "format": "canonical_jsonl_v1",
+    "media_type": "application/x-ndjson",
+    "content_sha": "sha256:9aa27141630c0c2c4c362c4f366496242740781da857470fed73e60099871759",
+    "items_sha": "sha256:60602777cda045cc08a49b70ee4b8f986022a1e10539ae142dbe3a9b96422324",
+    "byte_count": 1457,
+    "item_count": 1,
+    "page_count": 1
+  },
+  "download_ref": {
+    "export_id": "export_knowledge_1",
+    "project_id": "prj_demo",
+    "content_sha": "sha256:9aa27141630c0c2c4c362c4f366496242740781da857470fed73e60099871759"
+  },
+  "status": "ready",
+  "created_at": "2026-08-14T00:00:00Z",
+  "expires_at": "2026-08-15T00:00:00Z"
+}

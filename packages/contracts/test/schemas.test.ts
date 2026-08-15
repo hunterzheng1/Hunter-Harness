@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -991,14 +992,42 @@ describe("aiJobState schema (dedup key: slug+agent)", () => {
 });
 
 describe("OpenAPI v1", () => {
+  it("matches its reproducible protocol hash and exposes stage 01 projections", async () => {
+    const openApiUrl = new URL("../openapi/hunter-harness-v1.yaml", import.meta.url);
+    const bytes = await readFile(openApiUrl);
+    const expectedHash = (await readFile(
+      new URL("../openapi/hunter-harness-v1.yaml.sha256", import.meta.url),
+      "utf8"
+    )).trim();
+    const document = parseYaml(bytes.toString("utf8")) as {
+      components: { schemas: Record<string, { additionalProperties?: boolean }> };
+    };
+
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(expectedHash);
+    for (const name of [
+      "ContentKind", "SyncScope", "SyncDirection", "SyncAction",
+      "ConflictResolution", "PullPolicy", "ContentScanPolicy", "ContentSyncStatuses",
+      "ProjectContentCandidate", "KnowledgeCandidate", "RemoteVersionIdentity",
+      "BranchSnapshot", "SnapshotVersion", "SnapshotFile", "BranchSnapshotPage",
+      "SnapshotVersionPage", "SnapshotFilePage", "LegacyArchiveCompatibilityResult"
+    ]) {
+      expect(document.components.schemas[name], name).toBeDefined();
+    }
+  });
+
   it("covers every required client/server route", async () => {
     const path = fileURLToPath(
       new URL("../openapi/hunter-harness-v1.yaml", import.meta.url)
     );
     const document = parseYaml(await readFile(path, "utf8")) as {
       openapi: string;
-      paths: Record<string, unknown>;
+      paths: Record<string, {
+        post?: { parameters?: Array<{ $ref?: string }> };
+      }>;
       components: {
+        parameters: Record<string, {
+          schema?: Record<string, unknown>;
+        }>;
         schemas: Record<string, {
           required?: string[];
           properties?: Record<string, unknown>;
@@ -1036,6 +1065,59 @@ describe("OpenAPI v1", () => {
           ]
         }
       });
+    const pushFile = document.components.schemas.RemoteSyncPushFileMetadataHttp as
+      ({ oneOf?: unknown[] } & Record<string, unknown>) | undefined;
+    expect(pushFile?.oneOf).toEqual([
+      {
+        properties: { size: { const: 0 } },
+        not: { required: ["upload_ref"] }
+      },
+      {
+        required: ["upload_ref"],
+        properties: { size: { minimum: 1 } }
+      }
+    ]);
+    expect(pushFile?.["x-hunter-validator-id"]).toBe("validateRemoteSyncPushMetadata");
+    const pushPrepare = document.components.schemas.RemoteSyncPushPrepareHttpRequest as
+      Record<string, unknown> | undefined;
+    expect(pushPrepare?.["x-hunter-identity-bindings"]).toEqual(expect.arrayContaining([
+      expect.stringContaining("payload_hash")
+    ]));
+    expect((pushPrepare?.properties as Record<string, Record<string, unknown>> | undefined)?.files)
+      .toMatchObject({ "x-hunter-max-total-bytes": 268_435_456 });
+    expect(document.components.parameters.RemoteSyncIdempotencyKey?.schema).toEqual({
+      type: "string",
+      minLength: 1,
+      maxLength: 240,
+      pattern: "^[!-~]+$"
+    });
+    for (const schemaName of [
+      "RemoteSyncPushPrepareHttpRequest",
+      "RemoteSyncPreparedPush",
+      "RemoteSyncPushCommitHttpRequest",
+      "RemoteSyncPushReceipt",
+      "RemoteSyncPushStatusHttpResponse",
+      "RemoteSyncPullHttpRequest",
+      "RemoteSyncPullReceipt"
+    ]) {
+      const schema = document.components.schemas[schemaName] as {
+        properties?: Record<string, Record<string, unknown>>;
+      } | undefined;
+      expect(schema?.properties?.idempotency_key, schemaName)
+        .toMatchObject({ minLength: 1, maxLength: 240, pattern: "^[!-~]+$" });
+    }
+    for (const remoteSyncPath of [
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases",
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases/{lease_id}:renew",
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases/{lease_id}:release",
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push:prepare",
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push:commit",
+      "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/pull"
+    ]) {
+      expect(document.paths[remoteSyncPath]?.post?.parameters, remoteSyncPath).toContainEqual({
+        $ref: "#/components/parameters/RemoteSyncIdempotencyKey"
+      });
+    }
   });
 });
 

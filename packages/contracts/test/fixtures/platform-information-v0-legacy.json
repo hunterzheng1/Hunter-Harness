@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 0,
+  "projectId": "prj_demo",
+  "page": "files",
+  "items": [
+    { "path": ".harness/config/team.yaml", "content": "legacy body is read-only" }
+  ]
+}

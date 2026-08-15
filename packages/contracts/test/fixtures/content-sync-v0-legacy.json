@@ -1,0 +1,124 @@
+{
+  "fixture_version": 0,
+  "receipts": [
+    {
+      "schema_version": 1,
+      "archive_id": "arc_legacy_indexing",
+      "project_id": "prj_stage01",
+      "change_key": "change-legacy-indexing",
+      "package_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "manifest_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "artifact_id": "art_legacy_indexing",
+      "archive_status": "durable",
+      "knowledge_status": "indexing",
+      "stored_files": 3,
+      "uploaded_at": "2026-08-11T01:00:00.000Z",
+      "request_id": "00000000-0000-7000-8000-000000000011"
+    },
+    {
+      "schema_version": 1,
+      "archive_id": "arc_legacy_ready",
+      "project_id": "prj_stage01",
+      "change_key": "change-legacy-ready",
+      "package_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "manifest_sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "artifact_id": "art_legacy_ready",
+      "archive_status": "durable",
+      "knowledge_status": "ready",
+      "stored_files": 4,
+      "uploaded_at": "2026-08-11T02:00:00.000Z",
+      "request_id": "00000000-0000-7000-8000-000000000012"
+    },
+    {
+      "schema_version": 1,
+      "archive_id": "arc_legacy_failed",
+      "project_id": "prj_stage01",
+      "change_key": "change-legacy-failed",
+      "package_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "manifest_sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "artifact_id": null,
+      "archive_status": "durable",
+      "knowledge_status": "failed",
+      "stored_files": 2,
+      "uploaded_at": "2026-08-11T03:00:00.000Z",
+      "request_id": "00000000-0000-7000-8000-000000000013"
+    }
+  ],
+  "compatibility_results": [
+    {
+      "schema_version": 1,
+      "source_format": "legacy_archive_package_receipt",
+      "complete_v1_statuses": false,
+      "archive_status": {
+        "availability": "available",
+        "value": {
+          "status": "stored",
+          "updated_at": "2026-08-11T01:00:00.000Z",
+          "retryable": false
+        }
+      },
+      "change_index_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_CHANGE_INDEX_STATUS_UNAVAILABLE"
+      },
+      "knowledge_extraction_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_KNOWLEDGE_EXTRACTION_STATUS_UNAVAILABLE"
+      },
+      "managed_snapshot_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_MANAGED_SNAPSHOT_STATUS_UNAVAILABLE"
+      }
+    },
+    {
+      "schema_version": 1,
+      "source_format": "legacy_archive_package_receipt",
+      "complete_v1_statuses": false,
+      "archive_status": {
+        "availability": "available",
+        "value": {
+          "status": "stored",
+          "updated_at": "2026-08-11T02:00:00.000Z",
+          "retryable": false
+        }
+      },
+      "change_index_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_CHANGE_INDEX_STATUS_UNAVAILABLE"
+      },
+      "knowledge_extraction_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_KNOWLEDGE_EXTRACTION_STATUS_UNAVAILABLE"
+      },
+      "managed_snapshot_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_MANAGED_SNAPSHOT_STATUS_UNAVAILABLE"
+      }
+    },
+    {
+      "schema_version": 1,
+      "source_format": "legacy_archive_package_receipt",
+      "complete_v1_statuses": false,
+      "archive_status": {
+        "availability": "available",
+        "value": {
+          "status": "stored",
+          "updated_at": "2026-08-11T03:00:00.000Z",
+          "retryable": false
+        }
+      },
+      "change_index_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_CHANGE_INDEX_STATUS_UNAVAILABLE"
+      },
+      "knowledge_extraction_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_KNOWLEDGE_EXTRACTION_STATUS_UNAVAILABLE"
+      },
+      "managed_snapshot_status": {
+        "availability": "unavailable",
+        "reason_code": "LEGACY_MANAGED_SNAPSHOT_STATUS_UNAVAILABLE"
+      }
+    }
+  ]
+}

@@ -1,23 +1,10 @@
 import { z } from "zod";
 
+import { legacyArchivePackageReceiptSchema } from "./content-sync.js";
 import { fileKindSchema } from "./file-policy.js";
 
 export const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-
-export const archivePackageReceiptSchema = z.object({
-  schema_version: z.literal(1),
-  archive_id: z.string().regex(/^arc_/u),
-  project_id: z.string().regex(/^prj_/u),
-  change_key: z.string().min(1).max(160),
-  package_sha256: sha256Schema,
-  manifest_sha256: sha256Schema,
-  artifact_id: z.string().min(1).nullable(),
-  archive_status: z.literal("durable"),
-  knowledge_status: z.enum(["indexing", "ready", "failed"]),
-  stored_files: z.number().int().nonnegative(),
-  uploaded_at: z.iso.datetime(),
-  request_id: z.uuid()
-}).strict();
+export const archivePackageReceiptSchema = legacyArchivePackageReceiptSchema;
 export const relativePathSchema = z.string().min(1).refine(
   (path) => !path.startsWith("/") && !path.startsWith("\\") && !/^[A-Za-z]:/.test(path),
   "path must be relative"

@@ -7,6 +7,7 @@ import {
   REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES,
   REMOTE_CONTENT_UPLOAD_HTTP_MAX_CHUNK_BYTES,
   REMOTE_CONTENT_UPLOAD_HTTP_MAX_EXPIRY_MS,
+  REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES,
   REMOTE_CONTENT_UPLOAD_HTTP_ERROR_CODES,
   REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS,
   remoteContentUploadHttpRecordHash,
@@ -24,6 +25,7 @@ const CONTENT_SHA256 = `sha256:${"a".repeat(64)}` as const;
 const IDEMPOTENCY_KEY = `sha256:${"b".repeat(64)}` as const;
 const uploadDescriptor = {
   schema_version: 1 as const,
+  purpose: "remote_archive" as const,
   path: { project_id: "project-http", branch_name: "main" },
   auth: { actor_id: "actor-http" },
   headers: {
@@ -44,6 +46,12 @@ const uploadDescriptor = {
     content_sha256: CONTENT_SHA256,
     max_chunk_bytes: 1024 * 1024
   }
+};
+const fileUploadDescriptor = {
+  ...uploadDescriptor,
+  purpose: "remote_sync_file" as const,
+  headers: { ...uploadDescriptor.headers, "Content-Type": "application/octet-stream" as const },
+  body_stream: { ...uploadDescriptor.body_stream, media_type: "application/octet-stream" as const }
 };
 const UPLOAD_TOKEN = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const uploadRecord = {
@@ -101,12 +109,15 @@ describe("remote content upload HTTP v1 contract", () => {
   });
 
   it("freezes one binary upload plus scoped ambiguity lookup under server authority", () => {
-    expect(remoteContentUploadHttpScopeSchema.options).toEqual(["archive:read", "archive:write"]);
+    expect(remoteContentUploadHttpScopeSchema.options).toEqual([
+      "archive:read", "archive:write", "files:read", "files:write"
+    ]);
     expect([
       REMOTE_CONTENT_UPLOAD_HTTP_MAX_BYTES,
       REMOTE_CONTENT_UPLOAD_HTTP_MAX_CHUNK_BYTES,
-      REMOTE_CONTENT_UPLOAD_HTTP_MAX_EXPIRY_MS
-    ]).toEqual([512 * 1024 * 1024, 1024 * 1024, 15 * 60_000]);
+      REMOTE_CONTENT_UPLOAD_HTTP_MAX_EXPIRY_MS,
+      REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES
+    ]).toEqual([512 * 1024 * 1024, 1024 * 1024, 15 * 60_000, 10 * 1024 * 1024]);
     expect(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS.upload_content).toMatchObject({
       method: "POST",
       path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/content-upload",
@@ -146,6 +157,21 @@ describe("remote content upload HTTP v1 contract", () => {
       success_schema: "RemoteContentUploadHttpStatus",
       auth: { project_key_scope: "archive:read" }
     });
+    expect(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS.upload_remote_sync_file).toMatchObject({
+      method: "POST",
+      path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload",
+      operation_id: "stageRemoteSyncFileUpload",
+      request_media_type: "application/octet-stream",
+      auth: { project_key_scope: "files:write" },
+      request_descriptor_schema: "RemoteContentUploadHttpRequestDescriptor"
+    });
+    expect(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS.remote_sync_file_status).toMatchObject({
+      method: "GET",
+      path: "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/file-upload/status",
+      operation_id: "getRemoteSyncFileUploadStatus",
+      auth: { project_key_scope: "files:read" },
+      request_descriptor_schema: "RemoteContentUploadHttpStatusDescriptor"
+    });
     expect(JSON.stringify(REMOTE_CONTENT_UPLOAD_HTTP_OPERATIONS)).not.toMatch(
       /base64|range|resum|filesystem|file_path|caller_path/iu
     );
@@ -154,13 +180,22 @@ describe("remote content upload HTTP v1 contract", () => {
   it("binds canonical headers exactly to one bounded binary body descriptor", () => {
     expect(validateRemoteContentUploadHttpRequestDescriptor(uploadDescriptor))
       .toEqual({ success: true, data: uploadDescriptor });
+    expect(validateRemoteContentUploadHttpRequestDescriptor(fileUploadDescriptor))
+      .toEqual({ success: true, data: fileUploadDescriptor });
     const invalid = [
       { ...uploadDescriptor, headers: { ...uploadDescriptor.headers, "Content-Type": "application/json" } },
+      { ...fileUploadDescriptor, headers: { ...fileUploadDescriptor.headers, "Content-Type": "application/zip" } },
+      { ...uploadDescriptor, purpose: "remote_sync_file" },
       { ...uploadDescriptor, headers: { ...uploadDescriptor.headers, "Content-Length": "043" } },
       { ...uploadDescriptor, headers: { ...uploadDescriptor.headers, "Content-Length": "41" } },
       { ...uploadDescriptor, headers: { ...uploadDescriptor.headers, "X-Content-SHA256": `sha256:${"c".repeat(64)}` } },
       { ...uploadDescriptor, headers: { ...uploadDescriptor.headers, "X-Upload-Expires-In-Ms": "900001" } },
       { ...uploadDescriptor, body_stream: { ...uploadDescriptor.body_stream, max_chunk_bytes: 1024 * 1024 + 1 } },
+      { ...fileUploadDescriptor,
+        headers: { ...fileUploadDescriptor.headers,
+          "Content-Length": String(REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES + 1) },
+        body_stream: { ...fileUploadDescriptor.body_stream,
+          content_length_bytes: REMOTE_CONTENT_UPLOAD_HTTP_MAX_REMOTE_SYNC_FILE_BYTES + 1 } },
       { ...uploadDescriptor, body_stream: { ...uploadDescriptor.body_stream, bytes: "base64:forbidden" } }
     ];
     for (const value of invalid) {
@@ -171,6 +206,7 @@ describe("remote content upload HTTP v1 contract", () => {
   it("uses the same full source plus idempotency scope for ambiguity lookup", () => {
     const descriptor = {
       schema_version: 1,
+      purpose: "remote_archive",
       path: uploadDescriptor.path,
       auth: uploadDescriptor.auth,
       headers: {
