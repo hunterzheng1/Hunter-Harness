@@ -1,0 +1,12 @@
+{
+  "schema_version": 0,
+  "ruleset_version": "legacy-2026-08",
+  "canonical_root": ".harness/rules",
+  "files": [
+    {
+      "path": ".harness/rules/project-guidance.md",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target_agents": ["codex", "claude_code"]
+    }
+  ]
+}

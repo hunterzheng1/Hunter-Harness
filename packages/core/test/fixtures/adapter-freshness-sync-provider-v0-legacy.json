@@ -1,0 +1,9 @@
+{
+  "schema_version": 0,
+  "status": "WARN",
+  "cliVersion": "0.2.69",
+  "workflowBundleVersion": "0.2.70",
+  "adapterBundleVersions": {
+    "codex": "0.2.69"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-14T08:00:00.000Z",
+  "agents": [
+    {
+      "agent": "codex",
+      "profile": "general",
+      "status": "CURRENT",
+      "identity": {
+        "adapter": "codex",
+        "bundleVersion": "0.2.70",
+        "installedBundleVersion": "0.2.70",
+        "manifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "installedManifestHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "coreHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "installedCoreHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "adapterHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "installedAdapterHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "installedContentHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "verifiedAt": "2026-08-14T08:00:00.000Z",
+        "verificationStatus": "verified",
+        "mismatchDetails": []
+      },
+      "driftedFiles": [],
+      "missingFiles": []
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "map_bundle": {
+    "schema_version": 2,
+    "manifest_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "source_commit": "0123456789abcdef0123456789abcdef01234567",
+    "requested_topics": ["architecture", "structure", "testing"],
+    "snippets": [
+      {
+        "topic": "architecture",
+        "source_path": "packages/core/src/index.ts",
+        "content": "The core package never performs network I/O.",
+        "confidence": "verified",
+        "evidence_source": "codegraph"
+      },
+      {
+        "topic": "structure",
+        "source_path": "packages/core/src/index.ts",
+        "content": "Core exports stable module interfaces from package-local entrypoints.",
+        "confidence": "verified",
+        "evidence_source": "codegraph"
+      },
+      {
+        "topic": "testing",
+        "source_path": "packages/core/test/example.test.ts",
+        "content": "Run focused tests before the affected package typecheck.",
+        "confidence": "inferred",
+        "evidence_source": "filesystem"
+      }
+    ],
+    "used_budget": {"characters": 100, "tokens": 25},
+    "truncation_reasons": []
+  },
+  "candidates": [
+    {
+      "schema_version": 1,
+      "candidate_id": "pcc_rule_01",
+      "source_change_key": "change-01",
+      "candidate_type": "rule",
+      "evidence_refs": ["review:01#rule", "plan:01#rule"],
+      "rationale": "Repeated review evidence supports a durable testing rule.",
+      "proposed_content": "Every changed package must pass its focused tests and typecheck.",
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "confidence": 0.9,
+      "status": "pending",
+      "provenance": {
+        "source_kind": "review",
+        "source_ref": "review:01",
+        "producer": "hunter-platform",
+        "producer_version": "1.0.0",
+        "created_at": "2026-08-13T01:00:00.000Z"
+      }
+    },
+    {
+      "schema_version": 1,
+      "candidate_id": "pcc_arch_01",
+      "source_change_key": "change-02",
+      "candidate_type": "architecture-decision",
+      "evidence_refs": ["review:02#boundary"],
+      "rationale": "A review observed the boundary once.",
+      "proposed_content": "Core modules must use injected ports for external effects.",
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "confidence": 0.95,
+      "status": "pending",
+      "provenance": {
+        "source_kind": "review",
+        "source_ref": "review:02",
+        "producer": "hunter-platform",
+        "producer_version": "1.0.0",
+        "created_at": "2026-08-13T01:01:00.000Z"
+      }
+    },
+    {
+      "schema_version": 1,
+      "candidate_id": "pcc_glossary_01",
+      "source_change_key": "change-03",
+      "candidate_type": "glossary",
+      "evidence_refs": ["manual:glossary"],
+      "rationale": "Display terminology for reviewers.",
+      "proposed_content": "Harness means the local governance runtime.",
+      "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "confidence": 1,
+      "status": "pending",
+      "provenance": {
+        "source_kind": "manual",
+        "source_ref": "manual:glossary",
+        "producer": "human",
+        "producer_version": "1",
+        "created_at": "2026-08-13T01:02:00.000Z"
+      }
+    }
+  ]
+}

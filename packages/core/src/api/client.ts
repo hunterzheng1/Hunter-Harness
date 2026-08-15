@@ -1,4 +1,9 @@
-import { isAllowedServerUrl } from "@hunter-harness/contracts";
+import {
+  isAllowedServerUrl,
+  validateKnowledgeQueryHttpResponse,
+  type KnowledgeQueryHttpRequest,
+  type KnowledgeQueryHttpResponse
+} from "@hunter-harness/contracts";
 
 import { sha256Bytes } from "../fs/hash.js";
 import { withRetry } from "./retry.js";
@@ -48,6 +53,42 @@ interface RequestOptions {
   body?: unknown;
   rawBody?: Uint8Array;
   headers?: Record<string, string>;
+  maxResponseBytes?: number;
+}
+
+async function readResponseText(response: Response, maximumBytes?: number): Promise<string> {
+  if (maximumBytes === undefined) return response.text();
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null && /^\d+$/u.test(contentLength) &&
+      Number(contentLength) > maximumBytes) {
+    throw new ApiError(503, "REMOTE_UNAVAILABLE", "server response exceeds the bounded limit", null, {});
+  }
+  if (response.body === null) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maximumBytes) {
+      throw new ApiError(503, "REMOTE_UNAVAILABLE", "server response exceeds the bounded limit", null, {});
+    }
+    return text;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let bytes = 0;
+  let text = "";
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > maximumBytes) {
+        await reader.cancel();
+        throw new ApiError(503, "REMOTE_UNAVAILABLE", "server response exceeds the bounded limit", null, {});
+      }
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export class HunterHarnessApiClient {
@@ -118,7 +159,7 @@ export class HunterHarnessApiClient {
         throw error;
       }
     }
-    const text = await response.text();
+    const text = await readResponseText(response, options.maxResponseBytes);
     const payload = text === "" ? {} : JSON.parse(text) as Record<string, unknown>;
     if (!response.ok) {
       const envelope = payload.error as Record<string, unknown> | undefined;
@@ -287,6 +328,35 @@ export class HunterHarnessApiClient {
         "/semantic/search?" + parameters.toString(),
       { requestId: options.requestId }
     );
+  }
+
+  async queryKnowledge(options: {
+    projectId: string;
+    body: KnowledgeQueryHttpRequest;
+    requestId: string;
+    idempotencyKey: string;
+  }): Promise<KnowledgeQueryHttpResponse> {
+    const response = await this.request<unknown>(
+      "POST",
+      "/api/v1/projects/" + encodeURIComponent(options.projectId) + "/knowledge/query",
+      {
+        requestId: options.requestId,
+        idempotencyKey: options.idempotencyKey,
+        body: options.body,
+        maxResponseBytes: 128 * 1024
+      }
+    );
+    const verified = validateKnowledgeQueryHttpResponse(response, options.body);
+    if (!verified.success) {
+      throw new ApiError(
+        503,
+        "REMOTE_UNAVAILABLE",
+        "knowledge query response is invalid",
+        null,
+        {}
+      );
+    }
+    return verified.data;
   }
 
   async createInstructionProposal(options: {

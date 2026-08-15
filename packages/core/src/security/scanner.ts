@@ -48,6 +48,10 @@ interface RawFinding {
   value: string;
 }
 
+function compareCodepoint(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 const RULES: ReadonlyArray<{
   id: string;
   severity: FindingSeverity;
@@ -166,7 +170,7 @@ export function scanSensitiveFiles(
   const evidence: Array<Readonly<OverrideEvidence>> = [];
   const recordedAt = (options.now ?? new Date()).toISOString();
   for (const [inputPath, content] of Object.entries(files).sort(([a], [b]) =>
-    a.localeCompare(b)
+    compareCodepoint(a, b)
   )) {
     const path = normalizeManagedPath(inputPath);
     const ignores = parseInlineIgnores(content);

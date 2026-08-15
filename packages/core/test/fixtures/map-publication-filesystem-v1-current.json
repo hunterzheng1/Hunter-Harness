@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "record_kind": "map_publication",
+  "root_identity": {
+    "schema_version": 1,
+    "project_identity": "project-one",
+    "project_root_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "target_root": ".harness/codebase/map",
+    "ownership_paths": [
+      ".harness/codebase/map/STACK.md",
+      ".harness/codebase/map/INTEGRATIONS.md",
+      ".harness/codebase/map/ARCHITECTURE.md",
+      ".harness/codebase/map/STRUCTURE.md",
+      ".harness/codebase/map/CONVENTIONS.md",
+      ".harness/codebase/map/TESTING.md",
+      ".harness/codebase/map/CONCERNS.md",
+      ".harness/codebase/map-summary.md",
+      ".harness/codebase/map-manifest.json"
+    ]
+  },
+  "operation_id": "map_operation:one",
+  "action_id": "codebase_map:refresh",
+  "idempotency_key": "map_publication:key-one",
+  "binding": {
+    "operation_id": "map_operation:one",
+    "action_id": "codebase_map:refresh",
+    "idempotency_key": "map_publication:key-one",
+    "input_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "plan_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "expected_previous_manifest": {
+      "state": "sha256",
+      "manifest_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "new_manifest_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "ownership_paths": [
+      ".harness/codebase/map/STACK.md",
+      ".harness/codebase/map/INTEGRATIONS.md",
+      ".harness/codebase/map/ARCHITECTURE.md",
+      ".harness/codebase/map/STRUCTURE.md",
+      ".harness/codebase/map/CONVENTIONS.md",
+      ".harness/codebase/map/TESTING.md",
+      ".harness/codebase/map/CONCERNS.md",
+      ".harness/codebase/map-summary.md",
+      ".harness/codebase/map-manifest.json"
+    ],
+    "expected_payload_hashes": {
+      ".harness/codebase/map/STACK.md": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      ".harness/codebase/map/INTEGRATIONS.md": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      ".harness/codebase/map/ARCHITECTURE.md": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      ".harness/codebase/map/STRUCTURE.md": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      ".harness/codebase/map/CONVENTIONS.md": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      ".harness/codebase/map/TESTING.md": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      ".harness/codebase/map/CONCERNS.md": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      ".harness/codebase/map-summary.md": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      ".harness/codebase/map-manifest.json": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "expected_readback_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "staging": {
+    "staging_id": "map_stage:one",
+    "staging_root_hash": "sha256:abababababababababababababababababababababababababababababababab",
+    "target_set_hash": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "state": "verified"
+  },
+  "recovery": {
+    "recovery_id": "map_recovery:one",
+    "recovery_token": "map_recovery:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "safety_policy": {
+    "same_volume": "same_volume_required",
+    "atomic_replace": "atomic_replace_set_required",
+    "fsync": "file_and_parent_directory_required",
+    "symlink_policy": "reject_symlink_and_reparse_point",
+    "target_allowlist": "exact_nine_targets"
+  },
+  "state": "committed",
+  "commit_ambiguity": "resolved_committed",
+  "readback": "verified",
+  "cleanup": "completed",
+  "created_at": "2026-08-14T00:00:00.000Z",
+  "updated_at": "2026-08-14T00:00:00.000Z"
+}

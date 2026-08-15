@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "paths": [
+    "plans/change-11-publication-design.md",
+    "plans/change-11-publication-plan.md",
+    "plans/change-11-publication-test-scenarios.md",
+    "plans/change-11-publication-implementation-detail.md",
+    "meta/gate-policy.json",
+    "meta/worktree.json",
+    "meta/implementation-checkpoints.json",
+    "meta/scenario-manifest.json"
+  ],
+  "classifications": [
+    "human_truth",
+    "human_truth",
+    "human_truth",
+    "compatibility_derived",
+    "machine_derived",
+    "machine_derived",
+    "machine_derived",
+    "machine_derived"
+  ]
+}

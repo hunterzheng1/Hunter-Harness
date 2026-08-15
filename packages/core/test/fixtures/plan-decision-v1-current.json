@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "input_hash": "sha256:b086de7b32510701e873f3d4ae742917ca1cc1141ffe4a8387d604ef474ef9e4",
+  "planning_context_ref": "planning_context:1111111111111111111111111111111111111111111111111111111111111111",
+  "plan_profile_ref": "plan_profile:2222222222222222222222222222222222222222222222222222222222222222",
+  "planned_phase_set_ref": "planned_phase_set:3333333333333333333333333333333333333333333333333333333333333333",
+  "nodes": [],
+  "frontier_round": 0,
+  "current_frontier": [],
+  "unresolved_decision_ids": [],
+  "blocked_decision_ids": [],
+  "question_budget": {
+    "minimum": 0,
+    "maximum": 1,
+    "used": 0,
+    "remaining": 1
+  },
+  "status": "ready_for_approval",
+  "reason_codes": [],
+  "evaluated_at": "2026-08-13T10:00:00.000Z",
+  "graph_id": "decision_graph:b7f13a07a3c7b34ca1eec34720090431fb4b7420bf0dcfb811e54b3526d7f110"
+}

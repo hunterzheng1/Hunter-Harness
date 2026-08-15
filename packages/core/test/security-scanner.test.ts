@@ -134,4 +134,23 @@ describe("sensitive information scanner", () => {
     )).toEqual([]);
     expect(result.blocked).toBe(false);
   });
+
+  it("orders scanned paths without depending on the host locale", () => {
+    const originalLocaleCompare = String.prototype.localeCompare;
+    String.prototype.localeCompare = () => {
+      throw new Error("localeCompare must not participate in protocol ordering");
+    };
+    try {
+      const result = scanSensitiveFiles({
+        "zeta.env": "password=supersecretvalue\n",
+        "alpha.env": "password=anothersecretvalue\n"
+      }, { now: new Date(0) });
+      expect(result.findings.map((finding) => finding.path)).toEqual([
+        "alpha.env",
+        "zeta.env"
+      ]);
+    } finally {
+      String.prototype.localeCompare = originalLocaleCompare;
+    }
+  });
 });

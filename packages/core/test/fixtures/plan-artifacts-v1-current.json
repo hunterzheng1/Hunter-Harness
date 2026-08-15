@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "structured_input": {
+    "change_key": "change-11-standard",
+    "tasks": [
+      {
+        "task_id": "task:module",
+        "objective": "实现 PlanArtifactModel",
+        "affected_paths": ["packages/core/src/plan-artifacts/module.ts"],
+        "depends_on": [],
+        "owner_phase": "run",
+        "decision_refs": [],
+        "scenario_refs": ["scenario:normal", "scenario:parameter", "scenario:integration"]
+      },
+      {
+        "task_id": "task:test",
+        "objective": "验证产物派生",
+        "affected_paths": ["packages/core/test/plan-artifacts-module.test.ts"],
+        "depends_on": ["task:module"],
+        "owner_phase": "test",
+        "decision_refs": [],
+        "scenario_refs": ["scenario:normal", "scenario:parameter", "scenario:integration"]
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "scenario:normal",
+        "title": "验证 normal_path",
+        "acceptance": "normal_path 行为符合批准设计",
+        "coverage_dimension": "normal_path",
+        "execution_level": "unit",
+        "evidence_requirements": ["focused_test"],
+        "verification_command": "npm test -- scenario:normal",
+        "risk_level": "medium"
+      },
+      {
+        "scenario_id": "scenario:parameter",
+        "title": "验证 parameter_validation",
+        "acceptance": "parameter_validation 行为符合批准设计",
+        "coverage_dimension": "parameter_validation",
+        "execution_level": "unit",
+        "evidence_requirements": ["focused_test"],
+        "verification_command": "npm test -- scenario:parameter",
+        "risk_level": "medium"
+      },
+      {
+        "scenario_id": "scenario:integration",
+        "title": "验证 integration_impact",
+        "acceptance": "integration_impact 行为符合批准设计",
+        "coverage_dimension": "integration_impact",
+        "execution_level": "integration",
+        "evidence_requirements": ["focused_test"],
+        "verification_command": "npm test -- scenario:integration",
+        "risk_level": "high"
+      }
+    ],
+    "coverage": [
+      { "coverage_dimension": "business_rules", "applicability": "not_applicable", "scenario_refs": [], "not_applicable_reason": "当前变更不涉及 business_rules" },
+      { "coverage_dimension": "concurrency_idempotency", "applicability": "not_applicable", "scenario_refs": [], "not_applicable_reason": "当前变更不涉及 concurrency_idempotency" },
+      { "coverage_dimension": "data_compatibility", "applicability": "not_applicable", "scenario_refs": [], "not_applicable_reason": "当前变更不涉及 data_compatibility" },
+      { "coverage_dimension": "error_codes", "applicability": "not_applicable", "scenario_refs": [], "not_applicable_reason": "当前变更不涉及 error_codes" },
+      { "coverage_dimension": "integration_impact", "applicability": "applicable", "scenario_refs": ["scenario:integration"] },
+      { "coverage_dimension": "normal_path", "applicability": "applicable", "scenario_refs": ["scenario:normal"] },
+      { "coverage_dimension": "parameter_validation", "applicability": "applicable", "scenario_refs": ["scenario:parameter"] },
+      { "coverage_dimension": "permission_boundaries", "applicability": "not_applicable", "scenario_refs": [], "not_applicable_reason": "当前变更不涉及 permission_boundaries" }
+    ]
+  }
+}

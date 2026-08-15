@@ -1,0 +1,39 @@
+{
+  "schema_version": 0,
+  "inspection_input": {
+    "schema_version": 2,
+    "project_identity": "project-1",
+    "repository_identity": "repository-1",
+    "worktree_identity": "worktree-1",
+    "is_git": true,
+    "branch_name": "main",
+    "current_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "last_mapped_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "dirty_paths": [],
+    "untracked_paths": [],
+    "affected_paths": [],
+    "input_group_fingerprints": {},
+    "feature_flags": {
+      "map_enabled": true,
+      "auto_check_enabled": false,
+      "explicit_request": false,
+      "codegraph_enabled": false,
+      "codegraph_available": false
+    },
+    "manifest": {
+      "schema_version": 1,
+      "generator": "harness-codebase-map",
+      "generated_at": "2026-07-28T00:00:00.000Z",
+      "last_mapped_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "documents": [
+        ".harness/codebase/map/STACK.md",
+        ".harness/codebase/map/INTEGRATIONS.md",
+        ".harness/codebase/map/ARCHITECTURE.md",
+        ".harness/codebase/map/STRUCTURE.md",
+        ".harness/codebase/map/CONVENTIONS.md",
+        ".harness/codebase/map/TESTING.md",
+        ".harness/codebase/map/CONCERNS.md"
+      ]
+    }
+  }
+}

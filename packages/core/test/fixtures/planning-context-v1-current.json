@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "plan_profile_ref": "plan_profile:f1f84cd99be4beabe3cd0142eaf62307c599d42acad7082587102021976b9b40",
+  "planned_phase_set_ref": "planned_phase_set:6c605d4351d1ea518f17b3e9aebac9755a5c34dd85c4d39757aa27e4d5cfdc03",
+  "intent_contract_ref": "intent:78822a900d745a3a1ee28eb80d06c22101065091db2427ed775eceb9df004e97",
+  "evidence_map_ref": "evidence_map:d2c40a9e73a8a77de5166b910528c40a1be17ef55333e601299b96d43a43568d",
+  "rules_manifest_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+  "map_manifest_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "partition_hashes": {
+    "intent": "sha256:bd0ad1d32027ce655ee67ae510e0892223d9417b0a5e686b6f77f76a4f4c07b8",
+    "knowledge": null,
+    "evidence": "sha256:7f2012930772c2f634d75786bfe428e9ee188234b2d4f5a30114e490a3520e27",
+    "rules": "sha256:5e9e0435b9b78839c01ddc7f85cd784c94bfe72d311eec13548bd8ca1b9e3586",
+    "map": "sha256:f39da12188822f27bf78a0673027c1b8705faca4b1974f0dca84ccf5ca3b5338",
+    "profile": "sha256:780c0231dfced0b8181c90fbbe1958901ba415bf4486b9cd487e0f53220b1f6f",
+    "phases": "sha256:c2201fcd8c4e23b8b70a4500351e5a0cdc3b5b86e76a0e5c0e74cec8681866c7"
+  },
+  "unresolved_decision_ids": [],
+  "created_at": "2026-08-13T10:00:00.000Z",
+  "status": "ready",
+  "context_id": "planning_context:b8e20f3b497d1ed7fa57f0cce4ef1ba7896ac209a188bc502ab50b3a7bb542af"
+}

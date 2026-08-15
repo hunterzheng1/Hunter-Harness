@@ -1,0 +1,9 @@
+{
+  "schema_version": 0,
+  "component": "rules",
+  "status": "ADVISORY",
+  "reason_code": "INSTRUCTION_AUDIT_REQUIRED",
+  "input_hash": null,
+  "report_path": null,
+  "report_sha256": null
+}

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "direction": "push",
+  "source_ref": {
+    "project_id": "prj_current",
+    "branch_name": "unmarked",
+    "commit_sha": "0123456789abcdef",
+    "client_id": "cli_current"
+  },
+  "source_mode": "current",
+  "scopes": ["rules"]
+}

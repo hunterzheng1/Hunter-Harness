@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "status": "succeeded",
+  "finalizer_action": "publish",
+  "legacy_readiness": "read_only"
+}

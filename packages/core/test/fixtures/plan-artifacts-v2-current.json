@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "semantic_contract": {
+    "requirements": [
+      {
+        "requirement_id": "requirement:fb43b7631170946dc60b8fee5f21bdfd0e4f556daf18671dbec24e736fc1f000",
+        "kind": "behavior",
+        "text": "三份人类真相源驱动机器派生物",
+        "evidence_refs": ["module:plan_artifacts", "symbol:PlanArtifactModel"],
+        "approved_scope_refs": ["scope:64588534f5391a47e601e3ba196e82af96ec2b052fbff105857f59d96e218ef2"]
+      },
+      {
+        "requirement_id": "requirement:c2eb8576bc56e52da39b3495db4f40ae58b664f4384c51efa2c20971731cf493",
+        "kind": "invariant",
+        "text": "机器产物不得引入人工事实",
+        "evidence_refs": ["module:plan_artifacts", "symbol:PlanArtifactModel"],
+        "approved_scope_refs": ["scope:64588534f5391a47e601e3ba196e82af96ec2b052fbff105857f59d96e218ef2"]
+      },
+      {
+        "requirement_id": "requirement:4377a133db49353300cd4d0fe61c66aa4bae5332293268993cd2f43c877fcf48",
+        "kind": "failure_behavior",
+        "text": "来源漂移时拒绝验证",
+        "evidence_refs": ["module:plan_artifacts", "symbol:PlanArtifactModel"],
+        "approved_scope_refs": ["scope:64588534f5391a47e601e3ba196e82af96ec2b052fbff105857f59d96e218ef2"]
+      }
+    ],
+    "approved_scopes": [
+      {
+        "scope_ref": "scope:64588534f5391a47e601e3ba196e82af96ec2b052fbff105857f59d96e218ef2",
+        "text": "plan_artifacts"
+      }
+    ],
+    "ownership": [
+      {
+        "ownership_ref": "ownership:0950889e584d900ba8a7fa11960d0bd6b344f8525ae196bdaa9234710f95092a",
+        "path": "packages/core/src/plan-artifacts/module.ts",
+        "approved_scope_refs": ["scope:64588534f5391a47e601e3ba196e82af96ec2b052fbff105857f59d96e218ef2"],
+        "evidence_refs": ["module:plan_artifacts", "symbol:PlanArtifactModel"]
+      }
+    ]
+  }
+}

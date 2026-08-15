@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "inspection_input": {
+    "schema_version": 2,
+    "project_identity": "project-1",
+    "repository_identity": "repository-1",
+    "worktree_identity": "worktree-1",
+    "is_git": true,
+    "branch_name": "main",
+    "current_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "last_mapped_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "dirty_paths": [],
+    "untracked_paths": [],
+    "affected_paths": ["packages/core/src/example.ts"],
+    "input_group_fingerprints": {},
+    "feature_flags": {
+      "map_enabled": true,
+      "auto_check_enabled": true,
+      "explicit_request": false,
+      "codegraph_enabled": true,
+      "codegraph_available": true
+    },
+    "manifest_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "manifest": {
+      "schema_version": 2,
+      "generator": { "name": "harness-codebase-map", "version": "2.0.0" },
+      "project_identity": "project-1",
+      "repository_identity": "repository-1",
+      "branch_name": "main",
+      "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "worktree_identity": "worktree-1",
+      "mode": "full",
+      "scope": "repository",
+      "path_filters": [],
+      "input_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "documents": [
+        { "path": ".harness/codebase/map/STACK.md", "topics": ["stack"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/INTEGRATIONS.md", "topics": ["integrations"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/ARCHITECTURE.md", "topics": ["architecture"], "evidence_sources": ["codegraph"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/STRUCTURE.md", "topics": ["structure"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/CONVENTIONS.md", "topics": ["conventions"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/TESTING.md", "topics": ["testing"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" },
+        { "path": ".harness/codebase/map/CONCERNS.md", "topics": ["concerns"], "evidence_sources": ["filesystem"], "input_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222", "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "estimated_tokens": 20, "status": "current" }
+      ],
+      "summary_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "warnings": [],
+      "degradation_reasons": [],
+      "status": "ready",
+      "published_at": "2026-08-12T00:00:00.000Z"
+    }
+  }
+}

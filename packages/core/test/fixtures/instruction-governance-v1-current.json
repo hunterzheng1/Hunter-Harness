@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "ruleset_version": "ruleset-2026-08",
+  "generator": {
+    "name": "hunter-harness",
+    "version": "0.1.0",
+    "prompt_version": "instruction-v1"
+  },
+  "project_identity": "project:hunter-harness",
+  "canonical_root": ".harness/rules",
+  "files": [
+    {
+      "path": ".harness/rules/core.md",
+      "topic": "core",
+      "status": "active",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "activation": "always",
+      "globs": [],
+      "module_refs": ["module:core"],
+      "target_agents": ["codex", "claude_code", "cursor", "codebuddy"],
+      "context_budget": 400,
+      "evidence_refs": ["evidence:manual:core"]
+    },
+    {
+      "path": ".harness/rules/testing.md",
+      "topic": "testing",
+      "status": "active",
+      "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "activation": "path",
+      "globs": ["packages/**", "harness/**"],
+      "module_refs": ["module:test"],
+      "target_agents": ["codex", "claude_code", "cursor", "codebuddy"],
+      "context_budget": 600,
+      "evidence_refs": ["map:TESTING.md#commands"]
+    }
+  ],
+  "map_manifest_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "archive_evidence_cursor": "archive:cursor:42",
+  "proposal_id": "proposal:rules:42",
+  "reviewed_at": "2026-08-12T12:00:00+08:00",
+  "supersedes": "ruleset-2026-07"
+}

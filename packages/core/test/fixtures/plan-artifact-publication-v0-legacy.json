@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "change_key": "legacy-change",
+  "trusted": {
+    "schemaVersion": 0,
+    "changeName": "legacy-change",
+    "frontmatterStatus": "approved",
+    "standardInputs": [
+      "design.md",
+      "plan.md",
+      "implementation-detail.md",
+      "test-scenarios.md",
+      "gate-policy.json",
+      "worktree.json"
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "generator": "harness-codebase-map",
+  "generated_at": "2026-07-28T00:00:00.000Z",
+  "last_mapped_commit": "abc123",
+  "documents": [
+    ".harness/codebase/map/STACK.md",
+    {
+      "path": ".harness/codebase/map/ARCHITECTURE.md",
+      "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "generated"
+    }
+  ]
+}

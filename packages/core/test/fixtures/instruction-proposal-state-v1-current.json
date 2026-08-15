@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "aggregate": {
+    "schema_version": 1,
+    "project_id": "project-demo",
+    "change_key": "change-07"
+  },
+  "record_kind": "instruction_proposal_state",
+  "record_id": "proposal:demo",
+  "record_schema_version": 1,
+  "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}

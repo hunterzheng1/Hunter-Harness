@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "operation_id": "map_operation:one",
+  "action_id": "codebase_map:refresh",
+  "idempotency_key": "map_publication:key-one",
+  "plan_hash": "sha256:ff0ba8462b737aa28a71181ebbd27cb628ba61e4073af5a5bb346723310af8ed",
+  "input_hash": "sha256:932404ca001f01ad6409a15e004c2b76bdb66ecf942f9901368b801981de06e3",
+  "previous_manifest_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "new_manifest_hash": "sha256:ed1dc795c1b33146bf7470bdaea020a37d5ca060e0ab200984e743dcf47d744f",
+  "modified_paths": [
+    ".harness/codebase/map/STACK.md",
+    ".harness/codebase/map/INTEGRATIONS.md",
+    ".harness/codebase/map/ARCHITECTURE.md",
+    ".harness/codebase/map/STRUCTURE.md",
+    ".harness/codebase/map/CONVENTIONS.md",
+    ".harness/codebase/map/TESTING.md",
+    ".harness/codebase/map/CONCERNS.md",
+    ".harness/codebase/map-summary.md",
+    ".harness/codebase/map-manifest.json"
+  ],
+  "preserved_paths": [],
+  "verification": {
+    "manifest_hash_verified": true,
+    "payloads_verified": true,
+    "journal_committed": true,
+    "readback_hash": "sha256:b85b21995ca59ee0fc0764f0e5694620b6654ef4c0585294c5361bb48498c468"
+  },
+  "recovery_token": "map_recovery:569f54169bd0b9f1e329119dbdc1a4eca15272a9936385d6d5c474fd62c455ec",
+  "completed_at": "2026-08-14T00:00:00.000Z",
+  "receipt_id": "map_publication_receipt:91797ae4cb2650979b05664e8f794387338dc29170a4a1aab23ca4045c5b8324"
+}

@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 0,
+  "status": "passed",
+  "checks": ["standard_files", "frontmatter", "hashes", "lifecycle"]
+}

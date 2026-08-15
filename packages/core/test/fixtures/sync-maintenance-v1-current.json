@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "plan_id": "sync_plan:0b162e99ccbaceb9a797128faab1e44f47327d3bcb7e80806448f7763863071a",
+  "context_hash": "sha256:47f1c79fd6af2ecb86b39312dd88839a948a90e0e5bdd6f429d42c475095e28a",
+  "input_hash": "sha256:207c144e6063a6cb6997bd2ba021bfd18373494764f83d2191a21f8fe9c734a7",
+  "provider_results": [
+    {
+      "provider_id": "adapter",
+      "applicability": "applicable",
+      "status": "WARN",
+      "urgency": "recommended",
+      "reason_code": "CONTENT_DRIFT",
+      "findings": [
+        {
+          "schema_version": 1,
+          "finding_id": "adapter:drift",
+          "provider_id": "adapter",
+          "status": "WARN",
+          "urgency": "recommended",
+          "reason_code": "CONTENT_DRIFT",
+          "display_title_zh": "内容存在漂移",
+          "display_message_zh": "建议更新受管投影。",
+          "evidence": {
+            "source": "provider_inspection",
+            "input_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "observed_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      ],
+      "duration_ms": 0
+    }
+  ],
+  "findings": [
+    {
+      "schema_version": 1,
+      "finding_id": "adapter:drift",
+      "provider_id": "adapter",
+      "status": "WARN",
+      "urgency": "recommended",
+      "reason_code": "CONTENT_DRIFT",
+      "display_title_zh": "内容存在漂移",
+      "display_message_zh": "建议更新受管投影。",
+      "evidence": {
+        "source": "provider_inspection",
+        "input_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "observed_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "schema_version": 1,
+      "action_id": "adapter:update",
+      "provider_id": "adapter",
+      "finding_ids": ["adapter:drift"],
+      "depends_on": [],
+      "conflicts_with": [],
+      "invalidates_providers": ["adapter"],
+      "expected_writes": [".harness/generated/adapter.json"],
+      "network_access": false,
+      "model_access": false,
+      "risk": "low",
+      "rollback_strategy": "automatic",
+      "invalidation_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "estimated_duration_ms": 10
+    }
+  ],
+  "expected_writes": [".harness/generated/adapter.json"],
+  "preview_hash": "sha256:57f85331533d205e8a10024f09e5ce279ad23fbd0a0cfa104007b1e0610c36c3",
+  "created_at": "2026-08-13T10:00:00.000Z",
+  "expires_at": "2026-08-13T10:05:00.000Z",
+  "summary": {
+    "schema_version": 1,
+    "provider_count": 1,
+    "not_applicable_count": 0,
+    "unavailable_count": 0,
+    "status_counts": { "WARN": 1 },
+    "urgency_counts": { "recommended": 1 }
+  }
+}

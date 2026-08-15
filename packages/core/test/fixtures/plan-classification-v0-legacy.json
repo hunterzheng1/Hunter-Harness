@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "changeId": "legacy-plan-change",
+  "tier": "full",
+  "source": "plan:legacy-plan.md",
+  "signals": ["migration", "shared-state"],
+  "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
+  "plannedPhases": ["plan", "run", "test", "review", "submit", "archive"],
+  "skippedPhases": [
+    {
+      "phase": "package",
+      "reason": "本次不需要构建发布包",
+      "operator": "legacy-agent",
+      "decidedAt": "2026-08-12T00:00:00Z"
+    }
+  ],
+  "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"],
+  "classifiedAt": "2026-08-12T00:00:00Z"
+}

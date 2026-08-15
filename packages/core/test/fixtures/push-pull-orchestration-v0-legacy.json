@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 0,
+  "inputs": [
+    {
+      "command": "upload",
+      "projectId": "prj_legacy_upload",
+      "commitSha": "deadbeef12345678",
+      "clientId": "cli_legacy",
+      "scope": "rules"
+    },
+    {
+      "command": "sync",
+      "direction": "pull",
+      "projectId": "prj_legacy_sync",
+      "branchName": "feature/docs",
+      "commitSha": "feedface12345678",
+      "clientId": "cli_legacy",
+      "scope": "branch_files"
+    }
+  ]
+}

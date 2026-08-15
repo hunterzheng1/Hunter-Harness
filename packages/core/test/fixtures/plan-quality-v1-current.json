@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "artifact_schema_version": 2,
+  "artifact_generator_version": "hunter-harness-plan-artifacts/2",
+  "stage_id": "stage:quality",
+  "publication_intent_id": "publication:quality",
+  "files": [],
+  "ownership_paths": ["packages/core/src/plan-quality/module.ts"],
+  "approval_receipt_ref": "approval_receipt:quality",
+  "artifact_derivation_receipt_refs": [
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+  ],
+  "semantic_contract": {
+    "requirement_kinds": ["behavior", "invariant", "failure_behavior"],
+    "task_refs_required": true,
+    "scenario_refs_required": true,
+    "ownership_refs_required": true,
+    "evidence_refs_required": true
+  }
+}

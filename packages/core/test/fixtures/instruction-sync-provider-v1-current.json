@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "configured": true,
+  "inspection_input": {
+    "schema_version": 1,
+    "project_identity": "project-1",
+    "enabled_agents": ["codex"],
+    "manifest": {
+      "schema_version": 1,
+      "ruleset_version": "ruleset-2026-08",
+      "generator": {
+        "name": "hunter-harness",
+        "version": "0.1.0",
+        "prompt_version": "instruction-v1"
+      },
+      "project_identity": "project-1",
+      "canonical_root": ".harness/rules",
+      "files": [
+        {
+          "path": ".harness/rules/core.md",
+          "topic": "core",
+          "status": "active",
+          "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "activation": "always",
+          "globs": [],
+          "module_refs": [],
+          "target_agents": ["codex"],
+          "context_budget": 500,
+          "evidence_refs": ["manual:core"]
+        },
+        {
+          "path": ".harness/rules/testing.md",
+          "topic": "testing",
+          "status": "active",
+          "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "activation": "path",
+          "globs": ["packages/**"],
+          "module_refs": [],
+          "target_agents": ["codex"],
+          "context_budget": 500,
+          "evidence_refs": ["map:testing"]
+        }
+      ],
+      "map_manifest_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "archive_evidence_cursor": "archive:cursor:7"
+    },
+    "canonical_files": [
+      {
+        "path": ".harness/rules/core.md",
+        "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "references": []
+      },
+      {
+        "path": ".harness/rules/testing.md",
+        "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "references": []
+      }
+    ],
+    "entrypoints": [
+      {
+        "agent": "codex",
+        "path": "AGENTS.md",
+        "content_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "references": [".harness/rules/core.md"]
+      }
+    ],
+    "projection_files": [],
+    "map_evidence_refs": ["map:manifest:7"],
+    "archive_evidence_cursor": "archive:cursor:7",
+    "configuration_hashes": {
+      "package_manifest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "prompt_version": "instruction-v1",
+    "agent_context_usage": {"codex": 500},
+    "agent_context_budgets": {"codex": 8000}
+  }
+}

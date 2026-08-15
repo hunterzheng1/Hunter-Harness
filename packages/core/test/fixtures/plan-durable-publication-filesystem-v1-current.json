@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "record_kind": "plan_durable_publication_filesystem",
+  "authority": {
+    "schema_version": 1,
+    "record_kind": "plan_durable_publication_filesystem_authority",
+    "root_identity": {
+      "schema_version": 1,
+      "project_identity": "project-contract",
+      "project_root_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "target_identity": {
+      "schema_version": 1,
+      "change_key": "change-contract",
+      "target_root": "host-selected/plan-root",
+      "target_set_hash": "sha256:068fc2c60c180020a210d8910594fc2acf627d3a93e27cf93f9a50de251f5b76",
+      "ownership_paths": [
+        "plans/change-contract-design.md",
+        "plans/change-contract-plan.md",
+        "plans/change-contract-test-scenarios.md",
+        "plans/change-contract-implementation-detail.md",
+        "meta/gate-policy.json",
+        "meta/worktree.json",
+        "meta/implementation-checkpoints.json",
+        "meta/scenario-manifest.json"
+      ]
+    },
+    "journal_identity": {
+      "schema_version": 1,
+      "journal_root": "host-selected/journal",
+      "journal_root_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "operation_id": "publication:12:one",
+  "idempotency_key": "idem:12:one",
+  "project_id": "project-contract",
+  "change_key": "change-contract",
+  "binding": {
+    "operation_id": "publication:12:one",
+    "idempotency_key": "idem:12:one",
+    "plan_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "expected_baseline": {
+      "state": "absent",
+      "manifest_hash": null,
+      "generation": 0
+    },
+    "new_manifest_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "ownership_paths": [
+      "plans/change-contract-design.md",
+      "plans/change-contract-plan.md",
+      "plans/change-contract-test-scenarios.md",
+      "plans/change-contract-implementation-detail.md",
+      "meta/gate-policy.json",
+      "meta/worktree.json",
+      "meta/implementation-checkpoints.json",
+      "meta/scenario-manifest.json"
+    ],
+    "expected_payload_hashes": {
+      "plans/change-contract-design.md": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "plans/change-contract-plan.md": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "plans/change-contract-test-scenarios.md": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "plans/change-contract-implementation-detail.md": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "meta/gate-policy.json": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "meta/worktree.json": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "meta/implementation-checkpoints.json": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "meta/scenario-manifest.json": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "expected_readback_hash": "sha256:a37be3616b86d0c66c38341e1abc5b0df025c26e6f588555ed74d0f7ea294553"
+  },
+  "staging": {
+    "schema_version": 1,
+    "staging_id": "plan_stage:9999999999999999999999999999999999999999999999999999999999999999",
+    "staging_root_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "target_set_hash": "sha256:068fc2c60c180020a210d8910594fc2acf627d3a93e27cf93f9a50de251f5b76",
+    "state": "verified"
+  },
+  "recovery": {
+    "schema_version": 1,
+    "recovery_id": "plan_recovery_id:20a7108c8be2ab78b0e2e43df9ac8175041958d196d1e109d1474a52177e6476",
+    "recovery_token": "plan_recovery:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "safety_policy": {
+    "same_volume": "same_volume_required",
+    "atomic_replace": "atomic_replace_set_required",
+    "fsync": "file_and_parent_directory_required",
+    "symlink_policy": "reject_symlink_and_reparse_point",
+    "target_allowlist": "exact_eight_plan_targets"
+  },
+  "state": "committed",
+  "commit_ambiguity": "resolved_committed",
+  "readback": "verified",
+  "cleanup": "completed",
+  "created_at": "2026-08-14T00:00:00.000Z",
+  "updated_at": "2026-08-14T00:00:00.000Z"
+}

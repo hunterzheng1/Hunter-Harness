@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "approval_input_hash": "sha256:ff030fa237b2b5d1bb5b43d38bebaae534345f6630c93b09b0e982bde8be7165",
+  "intent_contract_ref": "intent:abb9d036bd3171a514ceb5916d4d0168d157e0461136c8f6e50ed1d253999daf",
+  "planning_context_ref": "planning_context:285401aaf4c3de0c532207d4309c78764c6c59d0ee3000f847989f824bb66cf6",
+  "plan_profile_ref": "plan_profile:5d89e289494be2eadb82cd211f7cbaf8e4ed8b261a9e03690f3124a6f7932e99",
+  "planned_phase_set_ref": "planned_phase_set:5d1e4fe18763acd54c45d205d6f7f58a4f24e0ac26c32b1034c7f584e3e60e56",
+  "decision_graph_ref": "decision_graph:5c94535823d33b05480b0802243ea057b29152637b938f7df31bd84b592fcdfc",
+  "status": "ready",
+  "sections": {
+    "goal_and_outcome": {
+      "goal": "收敛产品决策",
+      "user_visible_outcome": "用户一次确认关键行为"
+    },
+    "scope": {
+      "in_scope": ["decision_frontier"],
+      "out_of_scope": ["cli"]
+    },
+    "design": {
+      "recommended_design": "按依赖计算前沿",
+      "key_alternatives": ["一次展示全部问题"]
+    },
+    "boundaries": {
+      "invariants": ["事实不询问用户"],
+      "failure_behaviors": ["超预算暂停"],
+      "compatibility_boundaries": ["旧记录只读"]
+    },
+    "risks": [
+      {
+        "risk": "问题过多",
+        "mitigation": "按模式限制预算"
+      }
+    ],
+    "acceptance_examples": ["独立问题同轮", "依赖问题分轮", "取消不生成 approved 文档"],
+    "unresolved_decisions": []
+  },
+  "created_at": "2026-08-13T10:00:00.000Z",
+  "approval_package_hash": "sha256:2845e81b539b44fd6d309f835b3b5ee0ce7b7a957e5436698f5bf722b6ce5c9b",
+  "approval_package_id": "approval_package:2845e81b539b44fd6d309f835b3b5ee0ce7b7a957e5436698f5bf722b6ce5c9b"
+}

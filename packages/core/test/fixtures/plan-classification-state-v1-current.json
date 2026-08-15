@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "project_id": "project-08",
+  "change_id": "change-08",
+  "change_key": "change-08",
+  "profile_ref": {
+    "schema_version": 1,
+    "record_kind": "plan_profile",
+    "record_id": "plan_profile:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "record_schema_version": 1,
+    "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "planned_phase_set_ref": {
+    "schema_version": 1,
+    "record_kind": "planned_phase_set",
+    "record_id": "planned_phase_set:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "record_schema_version": 1,
+    "content_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  }
+}

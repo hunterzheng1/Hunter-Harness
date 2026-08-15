@@ -31,6 +31,92 @@ export * from "./proposal/diff.js";
 export * from "./proposal/preview.js";
 export * from "./push/credentials.js";
 export * from "./push/push.js";
+export type {
+  ArchiveRemoteAdapter,
+  ArchiveRemotePublishResult
+} from "./archive-remote-adapter/index.js";
+export type {
+  ArchiveOutboxClaim,
+  ArchiveRetentionPolicy
+} from "./archive-outbox/index.js";
+export type { SourceRef } from "./remote-sync/index.js";
+export {
+  InMemoryRemoteSyncV1,
+  REMOTE_SYNC_MAX_CHUNK_BYTES,
+  RemoteSyncV1Module,
+  createInMemoryRemoteSyncV1,
+  isRemoteSyncContentChunk,
+  remoteSyncPushPayloadHash,
+  remoteSyncSnapshotManifestHash,
+  validateRemoteSyncPushMetadata,
+  validateRemoteSyncRemoteSnapshot
+} from "./remote-sync/index.js";
+export { RemoteSyncError } from "./remote-sync/module.js";
+export { RemoteSyncModule } from "./remote-sync/module.js";
+export type {
+  ArchiveCommit,
+  ArchiveSyncReceipt,
+  BranchRef,
+  BranchSnapshotPage,
+  ContentFile,
+  PullCommit,
+  ProjectRef,
+  PushCommit,
+  RemoteSyncPort,
+  SnapshotFile,
+  SnapshotFilePage,
+  SnapshotRef,
+  SnapshotVersionPage,
+  SyncDirection,
+  SyncOperation,
+  SyncReceipt,
+  SyncStatus,
+  SyncView
+} from "./remote-sync/types.js";
+export type {
+  RemoteSyncContentChunk,
+  RemoteSyncContentStreamOptions,
+  RemoteSyncIdempotencyResult,
+  RemoteSyncLease,
+  RemoteSyncLeaseOptions,
+  RemoteSyncLocalTransactionResult,
+  RemoteSyncLocalWorkspacePort,
+  RemoteSyncLocalWorkspaceTransaction,
+  RemoteSyncPreparedPush,
+  RemoteSyncPullReceipt,
+  RemoteSyncPullRequest,
+  RemoteSyncPushCommitCommand,
+  RemoteSyncPushMetadataInput,
+  RemoteSyncPushPrepareCommand,
+  RemoteSyncPushStatus,
+  RemoteSyncPushStatusQuery,
+  RemoteSyncRemoteFileMetadata,
+  RemoteSyncReceipt,
+  RemoteSyncRemotePort,
+  RemoteSyncRemoteSnapshot,
+  RemoteSyncSourceRef,
+  RemoteSyncWorkspaceFile
+} from "./remote-sync/index.js";
+export * from "./remote-sync/archive/index.js";
+export * from "./remote-sync/content-upload/index.js";
+export { createPushPullOrchestration } from "./push-pull-orchestration/module.js";
+export type {
+  PushPullDecisionInput,
+  PushPullDecisionResult,
+  PushPullDirection,
+  PushPullExecutionReceipt,
+  PushPullInteractionInput,
+  PushPullOrchestration,
+  PushPullPreview
+} from "./push-pull-orchestration/types.js";
+export { normalizeArchiveRemoteRequest } from "./archive-remote-adapter/compatibility.js";
+export { snapshotArchiveRemotePublishResult } from "./archive-remote-adapter/validation.js";
+export * from "./plan-decision/index.js";
+export {
+  readPushPullDecisionOutput,
+  readPushPullExecutionOutput,
+  readPushPullPreviewOutput
+} from "./push-pull-orchestration/output-validation.js";
 export * from "./security/allowlist.js";
 export * from "./security/entropy.js";
 export * from "./security/scanner.js";
@@ -60,3 +146,5 @@ export * from "./update/update.js";
 export * from "./verification/capability-graph.js";
 export * from "./runtime/python.js";
 export * from "./runtime/managed-execution.js";
+export * from "./durable-state-primitives/index.js";
+export * from "./planning-context/remote-query/index.js";

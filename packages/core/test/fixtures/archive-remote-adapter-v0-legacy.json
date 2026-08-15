@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 0,
+  "entryId": "archive_outbox:legacy",
+  "localZipPath": ".harness/state/archive-retry/legacy.zip"
+}

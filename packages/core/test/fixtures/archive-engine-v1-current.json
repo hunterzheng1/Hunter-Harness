@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "operation_id": "archive_operation:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "change_identity": "project-1/change-1",
+  "closure_disposition": "completed",
+  "archive_intent": "record_only",
+  "source_snapshot_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "archive_schema_version": 1,
+  "archive_path": ".harness/archive/2026-08-13-change-1",
+  "archive_manifest_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "completed_at": "2026-08-13T08:00:00.000Z"
+}

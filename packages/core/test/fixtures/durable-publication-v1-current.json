@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "payload_count": 8,
+  "event_policy": "event_allowed_after_verified_durable_receipt",
+  "baseline_policy": "compare_and_swap"
+}
