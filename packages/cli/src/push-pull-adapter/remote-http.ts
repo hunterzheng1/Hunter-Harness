@@ -1774,13 +1774,18 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
               (existingJournal as Record<string, unknown>).project_identity !== identity.projectIdentity) {
             throw new RemoteSyncError("SYNC_IDEMPOTENCY_CONFLICT");
           }
-          const journal = validatedPullJournal(existingJournal, {
-            transactionId: identity.transactionId,
-            projectIdentity: identity.projectIdentity,
-            targetBundleVersion: command.expected_revision,
-            ownershipManifestHash: manifestHash,
-            operations
-          });
+          let journal: TransactionJournal;
+          try {
+            journal = validatedPullJournal(existingJournal, {
+              transactionId: identity.transactionId,
+              projectIdentity: identity.projectIdentity,
+              targetBundleVersion: command.expected_revision,
+              ownershipManifestHash: manifestHash,
+              operations
+            });
+          } catch {
+            throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+          }
           if (journal.state !== "committed") {
             const resumed = await resumeTransaction(options.workspaceRoot, identity.transactionId, {
               projectIdentity: identity.projectIdentity,

@@ -1722,9 +1722,50 @@ describe("RemoteSync HTTP CLI port", () => {
     });
 
     await expect(replay.commitPull(command)).rejects.toMatchObject({
-      code: "SYNC_PULL_WORKSPACE_FAILED"
+      code: "REMOTE_UNAVAILABLE",
+      retryable: true
     });
     await expect(readFile(receiptPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("maps malformed committed Pull journal records to a typed remote failure", async () => {
+    for (const mutation of ["null-outcome", "null-roots"] as const) {
+      const workspaceRoot = await mkdtemp(join(tmpdir(), `hunter-remote-pull-malformed-${mutation}-`));
+      temporaryRoots.push(workspaceRoot);
+      const command = {
+        source_ref: source,
+        expected_revision: "revision_1",
+        preview_hash: `sha256:${"1".repeat(64)}`,
+        idempotency_key: `sha256:${mutation === "null-outcome" ? "2" : "3"}${"0".repeat(63)}`,
+        payload_hash: `sha256:${mutation === "null-outcome" ? "4" : "5"}${"0".repeat(63)}`,
+        files: [],
+        baseline_files: [],
+        operations: [],
+        skipped: []
+      } as const;
+      const factory = () => createRemoteSyncHttpPort({
+        serverUrl: "https://platform.example",
+        token: "token",
+        actorId: "actor_alpha",
+        workspaceRoot,
+        fetch: vi.fn()
+      });
+      await factory().commitPull(command);
+      const transactionsRoot = join(workspaceRoot, ".harness", "state", "transactions");
+      const transactionId = (await readdir(transactionsRoot)).find((name) =>
+        /^tx_remote_pull_[a-f0-9]{64}$/u.test(name));
+      if (transactionId === undefined) throw new Error("expected Pull transaction journal");
+      const journalPath = join(transactionsRoot, transactionId, "journal.json");
+      const journal = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+      if (mutation === "null-outcome") journal.verification_outcomes = [null];
+      else journal.protected_local_roots = null;
+      await writeFile(journalPath, JSON.stringify(journal));
+
+      await expect(factory().commitPull(command)).rejects.toMatchObject({
+        code: "REMOTE_UNAVAILABLE",
+        retryable: true
+      });
+    }
   });
 
   it("does not follow a Pull transaction junction when reconstructing a receipt", async () => {
