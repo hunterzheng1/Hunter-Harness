@@ -1,0 +1,36 @@
+{
+  "schema_version": 0,
+  "source_ref": {
+    "project_id": "prj_legacy",
+    "commit_sha": "deadbeef12345678",
+    "client_id": "cli_legacy"
+  },
+  "base_version": "pv_legacy",
+  "baseline_files": [
+    {
+      "path": ".harness/rules/legacy.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
+      "size": 7,
+      "content": "legacy\n"
+    }
+  ],
+  "local_files": [
+    {
+      "path": ".harness/rules/legacy.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
+      "size": 7,
+      "content": "legacy\n"
+    }
+  ],
+  "remote_files": [
+    {
+      "path": ".harness/rules/legacy.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:777d90290a75129dbd33a5ac590f4633ec91d0eb381213761c728004961c3320",
+      "size": 7,
+      "content": "legacy\n"
+    }
+  ]
+}

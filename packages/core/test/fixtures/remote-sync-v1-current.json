@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "source_ref": {
+    "project_id": "prj_fixture",
+    "branch_name": "unmarked",
+    "commit_sha": "0123456789abcdef",
+    "client_id": "cli_fixture"
+  },
+  "base_version": "pv_1",
+  "baseline_files": [
+    {
+      "path": ".harness/rules/fixture.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:f34848ca92665c342abd5816c9e3eda0e82180671195362bcd0080544a3bc2ac",
+      "size": 5,
+      "content": "base\n"
+    }
+  ],
+  "local_files": [
+    {
+      "path": ".harness/rules/fixture.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:efb83f2a277e9f49b38efd505f5cbb93885e721b6bd16b788937c9396174c006",
+      "size": 6,
+      "content": "local\n"
+    }
+  ],
+  "remote_files": [
+    {
+      "path": ".harness/rules/fixture.md",
+      "content_kind": "rule",
+      "content_hash": "sha256:c81662749eb30a2c7f6b6b9b1a561a7b0be5cc115759b72442ddb476e7712751",
+      "size": 7,
+      "content": "remote\n"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "source_ref": {
+    "project_id": "prj_archive_fixture",
+    "branch_name": "main",
+    "commit_sha": "0123456789abcdef",
+    "client_id": "cli_archive_fixture"
+  },
+  "package_ref": {
+    "request_id": "550e8400-e29b-41d4-a716-446655440010",
+    "archive_id": "arc_fixture_stable",
+    "change_key": "change-fixture",
+    "archive_schema_version": 1,
+    "package_sha256": "sha256:b82d14bd3717287c78a2e1351107a49a925192cae59c0f844437eed8a0d6caef",
+    "content_utf8": "fixture archive\n"
+  }
+}
