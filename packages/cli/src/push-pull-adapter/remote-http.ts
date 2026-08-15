@@ -514,7 +514,7 @@ async function readBoundedResponseJson(response: Response): Promise<unknown> {
     if (declaredLength !== undefined && declaredLength !== 0) {
       throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
     }
-    return undefined;
+    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
@@ -557,11 +557,11 @@ async function readBoundedResponseJson(response: Response): Promise<unknown> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  if (bytes.byteLength === 0) return undefined;
+  if (bytes.byteLength === 0) throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    return undefined;
+    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
 }
 
@@ -792,7 +792,12 @@ function validatedPullJournal(
       typeof journal.snapshot_digest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(journal.snapshot_digest) ||
       !Array.isArray(journal.completed_operations) || !Array.isArray(journal.pending_operations) ||
       !Array.isArray(journal.completed_target_states) || !Array.isArray(journal.verification_outcomes) ||
-      roots === undefined || !Array.isArray(roots.before) || !Array.isArray(roots.after) ||
+      !journal.verification_outcomes.every((outcome) =>
+        outcome !== null && typeof outcome === "object" && !Array.isArray(outcome) &&
+        typeof outcome.name === "string" &&
+        (outcome.status === "passed" || outcome.status === "failed")) ||
+      roots === undefined || roots === null || typeof roots !== "object" ||
+      !Array.isArray(roots.before) || !Array.isArray(roots.after) ||
       typeof roots.unchanged !== "boolean" ||
       (journal.state !== "committed" && !PULL_RECOVERABLE_STATES.has(journal.state))) {
     throw new RemoteSyncError("SYNC_PULL_WORKSPACE_FAILED");
@@ -873,13 +878,18 @@ async function readDurableReceiptTransaction(
   if (receiptTransactionId(record.idempotency_key) !== transactionId) {
     throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
-  const journal = validatedPullJournal(raw, {
-    transactionId,
-    projectIdentity: canonicalJson(record),
-    targetBundleVersion: record.payload_hash,
-    ownershipManifestHash: receiptOwnershipHash(record.idempotency_key, record.payload_hash),
-    operations: []
-  });
+  let journal: TransactionJournal;
+  try {
+    journal = validatedPullJournal(raw, {
+      transactionId,
+      projectIdentity: canonicalJson(record),
+      targetBundleVersion: record.payload_hash,
+      ownershipManifestHash: receiptOwnershipHash(record.idempotency_key, record.payload_hash),
+      operations: []
+    });
+  } catch {
+    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+  }
   if (journal.state !== "committed") return null;
   return record;
 }
@@ -1004,7 +1014,7 @@ async function readDurableReceiptStatus(
     if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return { source_ref: source };
     }
-    throw error;
+    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   }
   const records: StoredReceipt[] = [];
   let seen = 0;

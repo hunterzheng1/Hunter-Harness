@@ -708,6 +708,64 @@ describe("RemoteSync HTTP CLI port", () => {
     });
   });
 
+  it("maps an invalid durable status directory to a typed remote failure", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-status-not-directory-"));
+    temporaryRoots.push(workspaceRoot);
+    await mkdir(join(workspaceRoot, ".harness", "state"), { recursive: true });
+    await writeFile(join(workspaceRoot, ".harness", "state", "transactions"), "not a directory\n");
+    const port = createRemoteSyncHttpPort({
+      serverUrl: "https://platform.example",
+      token: "token",
+      actorId: "actor_alpha",
+      workspaceRoot,
+      fetch: vi.fn()
+    });
+
+    await expect(port.getSyncStatus(source)).rejects.toMatchObject({
+      code: "REMOTE_UNAVAILABLE",
+      retryable: true
+    });
+  });
+
+  it("maps null entries in a durable receipt journal to a typed remote failure", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-status-null-journal-"));
+    temporaryRoots.push(workspaceRoot);
+    const port = createRemoteSyncHttpPort({
+      serverUrl: "https://platform.example",
+      token: "token",
+      actorId: "actor_alpha",
+      workspaceRoot,
+      fetch: vi.fn()
+    });
+    await port.storeIdempotentSyncReceipt(
+      source,
+      "push",
+      `sha256:${"7".repeat(64)}`,
+      `sha256:${"8".repeat(64)}`,
+      {
+        preview_hash: `sha256:${"9".repeat(64)}`,
+        no_changes: true,
+        applied: [],
+        skipped: [],
+        retryable: []
+      }
+    );
+    const transactionsRoot = join(workspaceRoot, ".harness", "state", "transactions");
+    const transactionIds = await readdir(transactionsRoot);
+    expect(transactionIds).toHaveLength(1);
+    const transactionId = transactionIds[0];
+    if (transactionId === undefined) throw new Error("durable receipt transaction was not written");
+    const journalPath = join(transactionsRoot, transactionId, "journal.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8")) as Record<string, unknown>;
+    journal.verification_outcomes = [null];
+    await writeFile(journalPath, JSON.stringify(journal));
+
+    await expect(port.getSyncStatus(source)).rejects.toMatchObject({
+      code: "REMOTE_UNAVAILABLE",
+      retryable: true
+    });
+  });
+
   it("fails closed when a snapshot response drifts from the requested source", async () => {
     const fetcher = vi.fn(async () => response({
       value: {
@@ -980,6 +1038,23 @@ describe("RemoteSync HTTP CLI port", () => {
 
     await expect(port.readSyncView(source)).rejects.toMatchObject({ code: "REMOTE_UNAVAILABLE" });
     expect(json).not.toHaveBeenCalled();
+  });
+
+  it("maps a successful non-JSON response to a typed remote failure", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-non-json-"));
+    temporaryRoots.push(workspaceRoot);
+    const port = createRemoteSyncHttpPort({
+      serverUrl: "https://platform.example",
+      token: "token",
+      actorId: "actor_alpha",
+      workspaceRoot,
+      fetch: vi.fn(async () => new Response("not JSON", { status: 200 }))
+    });
+
+    await expect(port.readSyncView(source)).rejects.toMatchObject({
+      code: "REMOTE_UNAVAILABLE",
+      retryable: true
+    });
   });
 
   it("rejects an oversized local file from metadata before reading its bytes", async () => {
