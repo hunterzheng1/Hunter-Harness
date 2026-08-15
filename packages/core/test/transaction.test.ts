@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -252,5 +252,41 @@ describe("protocol state", () => {
     await expect(readFile(join(root, "managed.txt"))).rejects.toMatchObject({
       code: "ENOENT"
     });
+  });
+
+  it("fails closed when the transaction root is replaced before commit", async () => {
+    const external = await mkdtemp(join(tmpdir(), "hunter-state-external-"));
+    const transactionId = "tx_root_reparse_race";
+    const transactionRoot = join(stateLayout(root).transactions, transactionId);
+    const displacedRoot = join(root, "displaced-transaction");
+    let replaced = false;
+
+    await expect(runTransaction(root, [], {
+      id: transactionId,
+      pauseBeforeApply: async () => {
+        try {
+          await rename(transactionRoot, displacedRoot);
+          await symlink(
+            external,
+            transactionRoot,
+            process.platform === "win32" ? "junction" : "dir"
+          );
+          replaced = true;
+        } catch (error) {
+          // A held no-follow authority may make the hostile replacement itself
+          // fail on Windows. That is also a safe, fail-closed outcome.
+          if (!(error instanceof Error && "code" in error && error.code === "EPERM")) {
+            throw error;
+          }
+          throw error;
+        }
+      }
+    })).rejects.toBeDefined();
+
+    expect(replaced || process.platform === "win32").toBe(true);
+    await expect(readFile(join(external, "journal.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(external, "status.json"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 });

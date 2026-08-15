@@ -3,14 +3,17 @@ import {
   copyFile,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
+  realpath,
   rename,
   rm,
   stat,
+  type FileHandle,
   writeFile
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { canonicalJson } from "@hunter-harness/contracts";
 
@@ -115,6 +118,93 @@ class InterruptedTransactionError extends Error {
   constructor() {
     super("transaction interrupted by failure injection");
     this.name = "InterruptedTransactionError";
+  }
+}
+
+interface TransactionRootAuthority {
+  readonly storageRoot: string;
+  assertCurrent(): Promise<void>;
+  close(): Promise<void>;
+}
+
+function transactionRootUnsafe(): Error {
+  return Object.assign(
+    new Error("transaction state root changed while the transaction was active"),
+    { code: "RECOVERY_PRECONDITION_FAILED" }
+  );
+}
+
+function equivalentFilesystemPath(left: string, right: string): boolean {
+  const lhs = resolve(left);
+  const rhs = resolve(right);
+  return process.platform === "win32"
+    ? lhs.toLowerCase() === rhs.toLowerCase()
+    : lhs === rhs;
+}
+
+/**
+ * Keep an authority file open for the lifetime of the transaction. Windows
+ * will not allow the containing directory to be renamed while this handle is
+ * live. On Unix, state I/O is rooted through the already-open directory fd so
+ * a later pathname replacement cannot redirect journal bytes.
+ */
+async function openTransactionRootAuthority(
+  transactionRoot: string
+): Promise<TransactionRootAuthority> {
+  const expectedRoot = resolve(transactionRoot);
+  const initial = await lstat(expectedRoot);
+  if (!initial.isDirectory() || initial.isSymbolicLink()) {
+    throw transactionRootUnsafe();
+  }
+  const canonicalRoot = await realpath(expectedRoot);
+  const directory = await open(expectedRoot, "r");
+  let guardian: FileHandle | undefined;
+  try {
+    guardian = await open(join(expectedRoot, ".transaction-authority"), "wx+");
+    const opened = await directory.stat();
+    const current = await stat(expectedRoot);
+    if (opened.dev !== current.dev || opened.ino !== current.ino) {
+      throw transactionRootUnsafe();
+    }
+
+    const storageRoot = process.platform === "linux"
+      ? `/proc/self/fd/${directory.fd}`
+      : process.platform === "darwin"
+        ? `/dev/fd/${directory.fd}`
+        : expectedRoot;
+
+    return {
+      storageRoot,
+      async assertCurrent(): Promise<void> {
+        let pathStat;
+        let pathReal;
+        try {
+          pathStat = await lstat(expectedRoot);
+          pathReal = await realpath(expectedRoot);
+        } catch {
+          throw transactionRootUnsafe();
+        }
+        if (!pathStat.isDirectory() || pathStat.isSymbolicLink() ||
+            !equivalentFilesystemPath(pathReal, canonicalRoot)) {
+          throw transactionRootUnsafe();
+        }
+        const [handleStat, followedStat] = await Promise.all([
+          directory.stat(),
+          stat(expectedRoot)
+        ]);
+        if (handleStat.dev !== followedStat.dev || handleStat.ino !== followedStat.ino) {
+          throw transactionRootUnsafe();
+        }
+      },
+      async close(): Promise<void> {
+        await guardian?.close().catch(() => undefined);
+        await directory.close().catch(() => undefined);
+      }
+    };
+  } catch (error) {
+    await guardian?.close().catch(() => undefined);
+    await directory.close().catch(() => undefined);
+    throw error;
   }
 }
 
@@ -600,9 +690,20 @@ export async function assertRollbackRecoveryPreconditions(
 async function rollbackTransactionWithoutLock(
   projectRoot: string,
   transactionId: string,
-  options: RecoveryLocationOptions = {}
+  options: RecoveryLocationOptions = {},
+  trustedTransactionRoot?: string
 ): Promise<TransactionResult> {
-  const location = await locateRecovery(projectRoot, transactionId, options);
+  const location = trustedTransactionRoot === undefined
+    ? await locateRecovery(projectRoot, transactionId, options)
+    : {
+        source: "project" as const,
+        transactionRoot: trustedTransactionRoot,
+        journal: JSON.parse(await readFile(
+          join(trustedTransactionRoot, "journal.json"),
+          "utf8"
+        )) as TransactionJournal,
+        mirror: null
+      };
   if (location === null) {
     throw Object.assign(new Error("recoveryId does not exist"), {
       code: "RECOVERY_NOT_FOUND"
@@ -772,6 +873,8 @@ export async function runTransaction(
   const snapshots = await snapshotPaths(projectRoot, transactionRoot, paths);
   const snapshotDigest = await computeSnapshotDigest(transactionRoot, snapshots);
   await stageOperations(transactionRoot, operations);
+  const authority = await openTransactionRootAuthority(transactionRoot);
+  const trustedTransactionRoot = authority.storageRoot;
   const journal: TransactionJournal = {
     schema_version: 3,
     transaction_id: transactionId,
@@ -799,21 +902,29 @@ export async function runTransaction(
       unchanged: true
     }
   };
-  const release = await acquireRecoveryMutationLock(transactionRoot);
+  let release: () => Promise<void>;
   try {
-    await writeTransactionJournal(transactionRoot, journal);
+    release = await acquireRecoveryMutationLock(trustedTransactionRoot);
+  } catch (error) {
+    await authority.close();
+    throw error;
+  }
+  try {
+    await authority.assertCurrent();
+    await writeTransactionJournal(trustedTransactionRoot, journal);
     if (recoveryStore !== undefined) {
       await prepareDurableRecovery(
         projectRoot,
-        transactionRoot,
+        trustedTransactionRoot,
         journal,
         recoveryStore
       );
     }
     await options.pauseBeforeApply?.();
+    await authority.assertCurrent();
     try {
       journal.state = "applying";
-      await writeTransactionJournal(transactionRoot, journal);
+      await writeTransactionJournal(trustedTransactionRoot, journal);
       if (recoveryStore !== undefined) {
         await syncDurableRecovery(projectRoot, journal, recoveryStore);
       }
@@ -822,13 +933,15 @@ export async function runTransaction(
         if (operation === undefined) {
           continue;
         }
+        await authority.assertCurrent();
         await applyTransactionOperation(
           projectRoot,
-          transactionRoot,
+          trustedTransactionRoot,
           operation,
           index,
           transactionId
         );
+        await authority.assertCurrent();
         journal.applied_count = index + 1;
         journal.completed_operations = operations
           .map((_item, operationIndex) => operationIndex)
@@ -848,14 +961,14 @@ export async function runTransaction(
         ];
         // The canonical checkpoint must reach disk before another operation
         // can begin. Recovery never guesses between status and journal.
-        await writeTransactionJournal(transactionRoot, journal);
+        await writeTransactionJournal(trustedTransactionRoot, journal);
         if (recoveryStore !== undefined) {
           await syncDurableRecovery(projectRoot, journal, recoveryStore);
         }
         if (options.interruptAfterApply === journal.applied_count) {
           journal.state = "interrupted";
           journal.failure = "injected interruption";
-          await writeTransactionJournal(transactionRoot, journal);
+          await writeTransactionJournal(trustedTransactionRoot, journal);
           if (recoveryStore !== undefined) {
             await syncDurableRecovery(
               projectRoot,
@@ -880,9 +993,10 @@ export async function runTransaction(
         });
       }
       await atomicWriteJson(
-        join(transactionRoot, "after", "manifest.json"),
+        join(trustedTransactionRoot, "after", "manifest.json"),
         after
       );
+      await authority.assertCurrent();
       const protectedAfter = await collectProtectedLocalRootsInventory(projectRoot);
       const protectedUnchanged = inventoriesEqual(protectedBefore, protectedAfter);
       journal.protected_local_roots = {
@@ -905,8 +1019,10 @@ export async function runTransaction(
         name: "protected-local-roots",
         status: "passed"
       }];
+      await authority.assertCurrent();
       journal.state = "committed";
-      await writeTransactionJournal(transactionRoot, journal);
+      await writeTransactionJournal(trustedTransactionRoot, journal);
+      await authority.assertCurrent();
       if (recoveryStore !== undefined) {
         await syncDurableRecovery(projectRoot, journal, recoveryStore);
       }
@@ -914,16 +1030,25 @@ export async function runTransaction(
       if (error instanceof InterruptedTransactionError) {
         throw error;
       }
+      if (journal.state === "committed") {
+        journal.state = "recovery_required";
+      }
       journal.failure = error instanceof Error ? error.message : String(error);
-      await writeTransactionJournal(transactionRoot, journal);
+      await writeTransactionJournal(trustedTransactionRoot, journal);
       if (recoveryStore !== undefined) {
         await syncDurableRecovery(projectRoot, journal, recoveryStore);
       }
-      await rollbackTransactionWithoutLock(projectRoot, transactionId);
+      await rollbackTransactionWithoutLock(
+        projectRoot,
+        transactionId,
+        {},
+        trustedTransactionRoot
+      );
       throw error;
     }
     // 成功提交后删 staged/，并按 kind 保留最新成功事务。
-    await rm(join(transactionRoot, "staged"), { recursive: true, force: true });
+    await authority.assertCurrent();
+    await rm(join(trustedTransactionRoot, "staged"), { recursive: true, force: true });
     await pruneOlderSuccessful(layout, transactionId, options.kind);
     return {
       transactionId,
@@ -938,6 +1063,7 @@ export async function runTransaction(
     };
   } finally {
     await release();
+    await authority.close();
   }
 }
 
