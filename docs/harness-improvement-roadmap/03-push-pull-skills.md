@@ -90,3 +90,44 @@ Skill 的 Interface 只做以下映射：普通用户范围 → `SyncScope`，�
 - 不在 Push 中构建归档、结束 Change 或触发知识提取。
 - 不在 Pull 中下载归档历史或恢复运行时状态。
 - 不在 Skill 中复制三方合并、事务回滚或版本查询逻辑。
+
+## 实施记录
+
+### 03-M1：Push/Pull 交互编排 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- 普通 Push/Pull 的预览、确认、取消、冲突选择和执行投影统一由 `push-pull-orchestration` Module 编排；三方 diff、冲突、幂等、锁内 stale 校验和实际变更仍由阶段 02 `RemoteSyncModule` 唯一实现。
+- `all` 只包含普通项目内容和分支受管文件，不包含 `archive`。普通 Push/Pull request、current compatibility 与 legacy compatibility 共用同一请求不变量验证。
+- Push 无变化时返回 `no_changes`，不创建确认或调用执行入口。Pull 默认只读预览，不恢复本地有意删除；分支文件必须显式来源分支。
+- 删除恢复只允许 `accept_remote`，并绑定 preview hash、artifact、version 和来源；rename 保留 `source_path`。冲突选择只投影阶段 02 已冻结的机器决策，不增加新冲突类型。
+- hard 敏感阻断不能生成确认；可覆盖风险必须显式确认。伪造、跨方向、过期或错 preview 的确认均不调用执行入口。
+- 执行成功前重新验证阶段 02 receipt 的 `preview_hash` 与已确认 preview 完全一致；错绑回执固定返回 `PUSH_PULL_RECEIPT_INVALID`。
+- 机器收据和中文展示投影分离；legacy `sync`/`upload` 输入只读归一化，语义无效、双写或必须走独立 Archive 路由的输入 fail closed。
+
+完成证据：
+
+- 聚焦测试：`18/18` 通过。
+- 受影响的阶段 01 契约与阶段 02 RemoteSync 测试：`4` 个文件、`420/420` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过；CLI 类型检查通过。
+- hostile 矩阵覆盖错绑 dependency receipt、current/legacy 普通 Archive 请求、错误 Pull source mode、缺失分支的 legacy restore、伪造确认和零执行调用计数。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/push-pull-orchestration/**`、聚焦测试和 current/legacy fixture；未修改 CLI 注册、Core barrel、阶段 02、OpenAPI、Skill 或文档入口。
+
+### 03-M2：CLI Push/Pull Adapter 与预注册入口
+
+状态：适配器已落盘。CLI 已注册 `harness-push`、`harness-pull`（及 `pull` 兼容别名）；配置 `HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN` 与 `HUNTER_REMOTE_SYNC_ACTOR_ID` 时使用带认证、SourceRef/actor 绑定的真实 HTTP transport，否则固定 fail closed。Platform 端 Pull 工作区事务与生产 GC 调度仍需独立门禁后才能关闭本阶段。
+
+- `PushPullCliPort` 只负责输入边界快照、方向与 preview/confirm/execute 绑定、中文与 JSON 投影；三方 diff、敏感扫描、幂等和本地事务仍由 Core Module/RemoteSync Port 负责。
+- `archive` 是显式 Push 分支，只消费已有 outbox claim，不进入普通 Push/Pull 预览。
+- 缺失或不可信 Adapter 不调用旧 HTTP fallback，命令返回稳定 `PUSH_PULL_CLI_UNAVAILABLE`；HTTP transport 只走合同化 Push/Pull 路由，不把旧 archive fallback 当作同步实现。
+
+完成证据：CLI Push/Pull focused `35/35`、HTTP transport actor-binding focused `1/1` 通过；CLI/Core 类型检查和构建通过。Skill bundle 发布、Platform Pull 工作区事务与跨进程生产 GC 仍列为后续关键路径工作包。
+
+03-M1 关闭后仍未接入的 Adapter：
+
+- 现有 `update` 兼容别名与旧 Push/Update 调用面的迁移；本工作包未把旧 CLI 长跑测试计入通过证据。
+- 阶段 06B-3 Archive Adapter。显式 Archive Push 只消费既有 outbox 包并调用 `publishArchive()`，不进入普通请求。
+- 真实远端错误、断网重试和页面/终端交互验收，由 CLI/Skill Adapter 与阶段 14 真实流程统一验证。

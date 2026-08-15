@@ -163,6 +163,52 @@ Plan 不直接覆盖规则、架构或领域文档。规则候选和可执行架
 - 不定义 Plan 最终产物字段或执行 finalizer。
 - 不直接应用或上传项目级候选。
 
+## 实施记录
+
+### 10-M1：决策前沿与设计审批纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- DecisionGraph 绑定阶段 08 Profile/阶段集和阶段 09 PlanningContext、Intent、EvidenceMap 的完整可信输入。所有公开入口先执行递归 descriptor-only snapshot；accessor、symbol、Proxy、自定义 prototype、sparse/extra array 和输入 coercion 均无执行失败。
+- `fact` 只能由当前 EvidenceMap、PlanningContext 分区和实际 source/ref 证明并使用 `resolved_by=evidence`；`engineering_default` 只能自动采用工程默认并保留理由；`product_decision` 与 `risk_decision` 只能由用户解决。
+- canonical graph derivation 统一验证依赖存在、无环、resolved 角色闭包、eligible frontier、轮次、预算、blocked/unresolved、status、reason 和 identity。builder、current parser 和 approval 共用该派生，不能接受自重哈希循环、未知依赖或提前 frontier。
+- quick、standard、assurance 分别执行冻结的每轮与总预算；每轮最多三个互不依赖问题。超过预算固定 paused/not publishable，不继续制造问题。worktree、阶段集、Agent 路由和完整覆盖表不形成 blocking 问题。
+- PlanningContext 为 `decisions_required` 但缺少对应决策节点时入口 fail closed，不生成 current parser 无法恢复的图。
+- `canonicalApprovalPackage(...)` 是七类审批内容的唯一 projector，由 trusted profile、phase set、context、intent、evidence、graph 和独立 package input 完整重建。build、签署和 verify 均使用同一 projector，不信任包或收据自哈希。
+- approved 只允许 graph `ready_for_approval`、package `ready` 且无 unresolved/blocker。questions-required 或 not-publishable 不能签发/验证 approved receipt，也不返回 approved 文档；cancelled/rejected 明确返回 null 文档。
+- ADR 候选仅在难以撤销、缺少背景会困惑、已比较多个方案三项都成立时生成阶段 01 current pending candidate；Module 不应用、不写项目文档、不调用 Push。
+- v0 只读 fail closed；current graph/approval record 缺少可信输入时不能凭自哈希恢复为 current。
+
+完成证据：
+
+- 聚焦测试：`20/20` 通过。
+- 阶段 08、09、10 与契约受影响测试：`324/324` 通过。
+- 稳定树 Core 全量测试：`60` 个文件、`912/912` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖 getter/Proxy/symbol/coercion、伪造 resolved_by、依赖环/未知依赖/提前 frontier、foreign fact evidence、不可恢复 context、自重哈希 foreign intent/goal package 和 not-publishable approved receipt。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/plan-decision/**`、聚焦测试和 current/legacy fixture；未修改阶段 08/09、现有 Plan 状态机、CLI、Skill、finalizer、OpenAPI 或 Platform。
+
+### 10-M2：交互呈现与答案收集适配器
+
+状态：已关闭。该工作包只负责从已验证的 current `DecisionGraph`/`ApprovalPackage` 机械生成一轮问题呈现，并收集完整或取消的 request-only 意图；不写 Plan 状态、不记录审批、不生成 approved 产物，也不调用 Push。独立终审 Ready，Standards 与 Spec 均为 `Yes`，阻断 finding 为 `0`。
+
+完成证据：
+
+- 聚焦测试：`9/9` 通过，无跳过。
+- CLI/Core 类型检查、CLI 构建与 bundle、限定 ESLint 和 diff check 通过。
+- 输入边界覆盖 descriptor-only snapshot、Proxy/getter/自定义对象拒绝、graph/frontier 机械派生校验、问题批次 SHA-256 绑定、最多三个问题、规范文本、重复问题、畸形节点和取消/部分答案的零写入行为。
+- 修改范围仅为 `packages/cli/src/plan-interaction-presentation/**`、对应聚焦测试和 Core 窄导出；未修改持久化、审批写入、现有 Plan 状态机、Platform 或 OpenAPI。
+
+10-M2 关闭后仍未接入的 Adapter：
+
+- 真实交互宿主的中文界面、用户身份和事件持久化。
+- DecisionGraph、ApprovalPackage 和 ApprovalReceipt 的恢复存储及现有 `harness-plan` / Python 状态机接线。
+- 项目内容候选到阶段 07/13 的只读消费与归档上传；本 Module 不直接应用或 Push。
+- 阶段 11 产物模型与阶段 12 finalizer。二者必须严格串行消费本工作包冻结的 approved receipt。
+
 ## 停止条件和回退
 
 如果宿主交互能力无法在一轮稳定展示多个问题，保留决策前沿模型，但按同一轮中的固定顺序逐个呈现。不要退回没有依赖关系的全局问题列表。

@@ -173,6 +173,37 @@ Plan 只允许以下 blocking 交互：
 - 不让 `PlanProfile` 直接写规则、架构或项目资料。
 - 不保留两套同时有效的复杂度或阶段计划字段。
 
+## 实施记录
+
+### 08-M1：Plan 分类与阶段集纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `classifyPlan(input)` 从稳定 Change 身份、风险信号和能力输入生成唯一 `PlanProfile`。可变中文标题和时间戳不参与稳定身份。
+- `configurePlannedPhases(profile, capabilities, requests)` 生成 `PlannedPhaseSet`。普通流程不产生 blocking 交互；高风险必需阶段被省略或不可用时返回 `not_publishable`，只允许 `product_or_risk_decision`。
+- `reclassifyPlan(previous, input)` 生成带 `supersedes` 的新版本，不覆盖旧 Profile。Profile 与阶段集的版本、前序引用和稳定身份具有严格交叉校验。
+- `normalizeLegacyPlanState(input)` 只读投影旧 `fast | standard | full`，分别映射为 `quick | standard | assurance`。旧中文原因和操作员文案不参与恢复或哈希，也不从缺失的 `submit` 推断 Git 或远端能力。
+- Current Schema 与 builder 共用同一组纯派生函数：风险信号唯一决定模式、必需和可选阶段、验证、预算与原因；省略项唯一决定 outcome、原因码和 blocking 交互。
+- `planned_phases` 与 `omitted_phases` 对冻结的全部阶段形成精确分区。省略原因码必须与 disposition 精确一致；optional 阶段是否被选择只由 `planned_phases` 表达，不接受无法独立验证的冗余 provenance。
+- 无 Git 时禁止远端和 worktree 能力，且不会加入 `submit`；worktree 情况按冻结规则加入 `merge`。高风险必需阶段不能通过同步重算哈希或 ID 降级绕过。
+
+完成证据：
+
+- 聚焦测试：`34/34` 通过，无跳过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- 对抗矩阵覆盖 Profile 全字段篡改并重算身份、必需阶段删除并重算阶段集、阶段完整分区、原因码残留或缺失、版本 lineage、能力矛盾、blocking 交互和 legacy `standard` 映射。
+- Core 全量测试曾在 06B-1 的 TDD 中间 RED 期间运行，因此未计入 08-M1 的关闭证据；08-M1 自身聚焦测试与受影响模块门禁没有失败或跳过。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/plan-classification/**`、聚焦测试和 current/legacy fixture；未修改现有 Plan Skill、Python 状态机、CLI、事件、持久化或共享入口。
+
+08-M1 关闭后仍未接入的 Adapter：
+
+- 现有 `classify`、`configure-plan`、`harness-plan` Skill、协议、checklist 和 Python Context/Gate 的调用接线与旧字段读取迁移。
+- `PlanProfile` 与 `PlannedPhaseSet` 的持久化、事件和监控投影；重新分类事件由后续阶段接入。
+- 阶段 09～12 的 Context、状态机、审批包、标准产物和 finalizer。后续工作包只能消费本工作包冻结的分类与阶段集，不能建立第二套有效来源。
+
 ## 停止条件和回退
 
 出现以下情况时停止该阶段，不继续修改现有 Plan 流程的第 2 阶段：

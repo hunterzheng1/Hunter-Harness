@@ -117,8 +117,8 @@ ArchiveIngestReceipt = {
   archive_id,
   package_sha256,
   archive_status,
-  change_projection_job_id,
-  knowledge_extraction_job_id,
+  change_projection_job_id,      # 规划成功时必需；原子规划失败时缺省
+  knowledge_extraction_job_id,   # 规划成功时必需；原子规划失败时缺省
   project_content_job_id?,
   project_version,
   stored_at,
@@ -286,6 +286,189 @@ Preparing
 `LocallyArchived` 是本地 Archive 阶段终态。后续网络和后台处理失败只更新各自状态，不能把已经成功的本地归档改成失败。
 
 `PackageReady` 由独立 `ArchivePackageReceipt` 证明，不属于本地 Archive 阶段成功条件。`RemoteStored` 由 `ArchiveSyncReceipt.archive_status=stored` 证明，不等待知识任务。
+
+## 实施记录
+
+### 06A-M1：归档接收与知识流水线 Module
+
+状态：已关闭。当前产物保留在 Hunter Platform 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `createKnowledgePipeline(...)` 的归档接收、任务规划恢复、知识任务入队与重试、Worker 完成/失败、知识查询和规则候选分页入口。
+- `ArchiveStore`、`JobRepository`、`KnowledgeIndex` 与 `KnowledgeCommitPort`。结果可见性、Job generation/status、项目最新 generation、ready 状态和 output hash 必须在同一条件事务中提交。
+- `ValidatedArchivePackage` 只由验证构造器形成。每个 ZIP entry 在读取内容、发放品牌和写 CAS 前先通过阶段 01 canonical 路径分类，再通过 core-v2 路径 allowlist、ZIP 资源边界、manifest、声明哈希、候选来源和 provenance 校验。
+- canonical 归档身份由项目、包哈希、manifest 哈希和包/归档 Schema 版本组成；相同 canonical payload 的客户端 archive、Change 或项目版本元数据冲突固定为不可重试错误，不能形成重复归档或错绑 Job。
+- 知识任务幂等身份包含包哈希、提取器、提示词和索引 Schema 版本，并按项目隔离。相同 generation 与相同 output 可幂等重放；不同 output 或旧项目 generation 被拒绝且不产生可查询结果。
+- KnowledgeCandidate 与 ProjectContentCandidate 严格分流；知识结果限制为 `0..5` 条，按内容哈希去重并合并来源；规则候选在存储 Port 层固定类型、状态、limit 和 opaque cursor。
+- legacy `knowledge_status` 只作为兼容输入，不推导阶段 01 拆分后的远端状态。
+
+完成证据：
+
+- 聚焦测试：`30/30` 通过。
+- Server 回归：`525` 项通过；另有既有 PostgreSQL 集成测试 `8` 项因缺少测试数据库环境而跳过，这些跳过未计入通过证据。
+- Server 类型检查、构建、限定范围 ESLint、根级 ESLint 和 diff check 通过。
+- ZIP 级矩阵覆盖 nested `.env*`、`credentials.local*`、Windows 保留名与上标、ADS、非法字符、控制字符、反斜杠、点段、重复分隔符、大小写与 NFC collision；合法 nested `spec/**`、`plans/**` 和固定 core-v2 路径通过。
+- 竞争探针覆盖旧 generation 与不同内容哈希晚到、项目隔离、提交失败回滚和并发同输出重放；拒绝路径均保持 Job 与 Index 零部分提交。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为 Platform 新的 `apps/server/src/knowledge-pipeline/**`、聚焦测试和 current/legacy fixture；未修改现有路由、迁移、数据库仓储、OpenAPI、页面或既有 Archive/Semantic 实现。
+
+06A-M1 关闭后仍未接入的生产组合：
+
+- 任务队列、真实 PostgreSQL Change Projection transaction 与生产 Worker Host 调度组合；Stage06A PostgreSQL pipeline Adapter、迁移和回滚边界以及 bounded Worker Host seam 已接入，但真实 PostgreSQL integration 仍需数据库环境。
+- Platform HTTP 接收与查询路由、鉴权、OpenAPI 投影和生产 ZIP 验证器接线。
+- `ChangeProjectionWorker`、`KnowledgeExtractionWorker`、`ProjectContentCandidateWorker` 与历史补处理作业。
+
+### 06A-PG：Knowledge Pipeline PostgreSQL Adapter
+
+状态：Adapter 与迁移已关闭；真实生产 Worker/队列调度组合仍待接入。
+
+`apps/server/src/knowledge-pipeline/pg.ts`、迁移 `023_knowledge_pipeline_pg.sql` 与聚焦测试现已覆盖 Archive CAS、Knowledge/Change 事务回滚、generation/lease、全局容量 fence、严格 Job 状态闭包、复合项目外键、候选 cursor anchor 和 ready replay。PG focused/affected 门禁为 `89` 通过、`2` 个真实 PG integration 因缺少 `HUNTER_HARNESS_TEST_DATABASE_URL` 跳过；Server typecheck/build、限定 ESLint 和 diff check 通过，独立复审 Ready。跳过的 integration 不计入已验证通过数。
+
+### 06A-2C：Change Projection Job 与原子提交契约
+
+状态：已关闭。当前产物保留在 Hunter Platform 本地工作区，未提交、推送、合并或发布。
+
+新增的 `ChangeProjectionJob`、Task Port 与 `ChangeProjectionCommitPort` 将项目归档排序用的 `project_generation` 与同任务 retry/lease `generation` 分离；旧 Archive 及其重试不能越过较新的项目投影。claim、renew、fail、retry、reap 和 commit 使用 owner、lease token、generation 与严格过期边界，旧 Worker 或过期 capability 不可发布。投影 input hash 只绑定 Archive/Package/Manifest/Change/Project Version 与 Schema 身份，不受知识 extractor、prompt 或 index 版本影响。
+
+`ChangeDocument` 只允许 design、plan、test scenarios 和 change summary；路径复用阶段 01 canonical classifier 并应用类型 allowlist，时间为严格 Gregorian RFC 3339，文档数组 exact、dense、唯一且 code-point 稳定排序。公开 identity/hash helper、Task Port 与 commit seam 对 Proxy、accessor、symbol 和自定义原型零执行。内存 commit 同时校验最新项目代、活动租约、Job 状态与输出身份；失败不会部分发布，也不回滚耐久 Archive 或 Knowledge Job。
+
+完成证据：聚焦 `42/42`；Server `539` 项通过，PostgreSQL `8` 项因缺少数据库环境跳过且未计为通过；Server 类型检查、构建、限定 ESLint 与 diff check 通过。最终独立复审 Ready，Critical、Important、Minor 均为 `0`。真实数据库事务与 Worker Adapter 仍待接入。
+
+### 06A-2D/2E 与 ChangeProjectionWorker Adapter
+
+状态：已关闭。当前产物保留在 Hunter Platform 本地工作区，未提交、推送、合并或发布。
+
+- `test_scenarios` 精确绑定到阶段 11/12 的 `plans/<change>-test-scenarios.md`；普通 plan 不吞入场景，虚构 spec 路径和跨 Change 路径 fail closed。
+- Change Projection ready 终态清除 owner、lease token 和 expiry；同输出重放返回无租约 ready，commit failure 保留原 projecting 租约和空文档快照。
+- Worker 使用冻结的 lease capability，只投影 design、plan、test scenarios 与 change summary；独立 `ArchivePackageVerifierPort` 使用构造时固定的资源预算和完整验证收据，不从 Archive/ZIP 自报值放宽限制。
+- Task、Archive、Verifier、Commit 返回值使用 descriptor-only exact snapshot。Job 是 queued/projecting/ready/failed 判别联合；所有可选标量、租约、输出和失败语义按状态闭合，hostile getter/Proxy 零执行且拒绝后无下游调用。
+- 六种 mutating transition 验证 immutable identity、状态、项目代、任务代、attempt、lease、输出与失败语义；旧 Worker、过期 lease、stale project generation 和不同输出重放均 fail closed。失败不回滚耐久 Archive 或 Knowledge 状态。
+
+完成证据：Worker 聚焦 `14/14`，Knowledge `46/46`，Server `558` 项通过；PostgreSQL `8` 项因缺少数据库环境跳过且未计为通过。Root typecheck、build、Platform Web production build、root lint 和 diff check 通过。06A-2D、06A-2E 与 Worker 最终独立复审均 Ready，Critical、Important、Minor 均为 `0`。
+
+仍未接入：真实数据库 Change Projection transaction、生产队列调度与 Worker Host 组合、迁移与 PostgreSQL 集成测试、HTTP 查询与阶段 13 页面。
+
+### 06A-WH：受控 Worker Host Adapter
+
+状态：已关闭 bounded Worker Host seam。该工作包不伪造生产队列扫描、持久 owner/token/expiry lease 或缺失的 extractor/candidate producer；它只消费显式 job/batch dispatch，并把真实执行能力保留在注入 Port。
+
+- Change Projection 路径按 job identity 调用既有 Worker，保留 allowlisted lease、generation 和 project-generation 错误及 retryability。
+- Knowledge Extraction 路径执行 generation-bound `start → extract → complete/fail`；extractor 缺失、结果越界、候选身份或 receipt 漂移均 fail closed，complete 的 domain/storage/stale 错误不会污染 durable Job。
+- Project Content Candidate 使用独立 result schema；未注入 authoritative producer 时明确返回 unavailable，不生成模拟候选。
+- 所有 Port/result 经过 descriptor-only、Proxy/accessor/thenable、原型、时间、哈希、候选 schema 和状态闭包验证；batch 有界、去重、并发有界且保持输入顺序。
+
+完成证据：
+
+- worker-host focused `19/19`；worker-host、Knowledge、Change Projection 与 PG affected `108/108`；
+- Server typecheck、build、限定 ESLint 与 diff check 通过；
+- 独立双轴复审 Ready，P1/P2 finding 为 `0`，最终 worker host SHA-256 为 `E983ABB25863D5B93583C32B269BBC92158280532E34CBF74D40462C69DCFB32`。
+
+该 seam 关闭后仍未接入真实队列 scheduler、durable worker lease fields、HTTP 路由、生产 extractor/candidate producer 和历史补处理；这些仍需各自的持久契约与生产组合。
+- 06B 本地 `ArchiveEngine`、核心包、outbox 和阶段 02 `RemoteSyncModule` Archive Adapter。
+
+### 06B-1：本地 ArchiveEngine 与关闭策略 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `prepareArchive(change, policy)` 根据关闭方式、归档意图、阶段 08 `PlannedPhaseSet`、证据和一次性内容清单生成只读 `ArchivePlan`。
+- `finalizeLocalArchive(plan)` 验证计划身份、来源快照和 staging 闭环后，原子提交不可变本地归档、终态 operation 证据与 `LocalArchiveReceipt`。
+- `resumeArchive(operation_id)` 从 staging、发布后或收据写入后的崩溃点恢复；`reconcileArchive(change_identity)` 只根据完整身份和哈希协调本地终态。
+- ArchiveEngine 直接使用阶段 08 公开 `plannedPhaseSetSchema` 验证完整阶段集和 `outcome=configured`，再投影 `planned_phases`。弱 ID/hash/list 引用、伪造身份或不可发布阶段集固定拒绝，未建立第二套 Plan Schema。
+- `completed + release-candidate` 严格检查发布证据且不能静默降级；`completed + record-only` 只检查实际计划阶段；`abandoned` 和 `superseded` 的 record-only 路径不被 Git、upstream、Push 或 CI 缺失阻断。
+- operation 身份由 Change 身份、来源快照哈希和归档 Schema 版本形成。输入漂移使计划过期；相同输入、相同完成证据和相同收据可幂等重放。
+- staging 恢复会从实际文件重算每个 entry 的路径、内容哈希、大小、manifest payload 与 manifest 哈希。已发布归档、operation 和 receipt 的 operation、Change、关闭方式、意图、Schema、路径、来源、manifest 与 `completed_at` 全字段绑定。
+- 内容路径在 NFC 与大小写折叠后检测来源间和生成文件碰撞；Current/legacy 收据的归档路径和身份使用 canonical 相对路径边界。一次内容 inventory 供预算、路径、摘要和 manifest 复用。
+
+完成证据：
+
+- Archive 聚焦测试：`51/51` 通过；与阶段 08 合并聚焦测试：`85/85` 通过，无跳过。
+- 稳定树 Core 全量测试：`51` 个文件、`720` 项测试通过，无跳过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- 崩溃与 hostile 矩阵覆盖 staging 内容篡改、已发布内容篡改、收据全字段与完成时间篡改、Port 修改或清除终态证据、NFC/大小写路径碰撞，以及弱、伪造和不可发布阶段集。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/archive-engine/**`、聚焦测试和 current/legacy fixture；未修改现有 Archive、CLI、共享入口、阶段 08、OpenAPI 或 Platform。
+
+06B-1 关闭后仍未接入的 Adapter：
+
+- 真实文件系统 inventory、quiesce、staging、原子 rename/跨卷验证、终态事件和操作进度 Adapter。
+- 06B-2 `ArchivePackageBuilder`、core-v2、`ArchiveOutbox`、租约、reaper 和 ZIP 恢复。
+- 06B-3 阶段 02 `RemoteSyncModule.publishArchive()` Adapter，以及 06A `ArchiveIngestReceipt` 的严格投影。
+- 现有 Archive/CLI/Skill 的兼容迁移和旧流程接线；本工作包未移除嵌套命令或旧上传入口。
+
+### 06B-2a：确定性 ArchivePackageBuilder Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v2 Interface：
+
+- `buildPackage(...)` 严格消费 06B-1 的 `LocalArchiveReceipt`、canonical 本地 inventory 和独立 `CoreV2Projection`。06B-1 不被要求临时生成候选或 change-context；投影由独立 Adapter 提供。
+- source manifest 的 canonical bytes、精确 entry 清单、哈希、大小和 inventory 形成闭包。包使用固定 ordering、mtime、mode 与 compression 配置，内容身份可跨重试复用。
+- package manifest 内嵌完整 source receipt identity、inventory/projection hash、读取计数和完成时间。operation/cache 身份绑定三侧完整不可变输入；同 operation 的任一漂移固定返回 immutable conflict。
+- `verifyPackage(...)` 不信任 ZIP、manifest 或 receipt 的自哈希。它从可信 expected 三元组和持久 completion evidence 重建 expected entries、manifest、package bytes 与完整 receipt，再逐项比较并重新执行 canonical path、Core-v2 allowlist 和 candidate provenance 闭包。
+- candidate 只能引用已经读取、校验哈希且不是 candidate 的 package entry；self/cross-candidate、change/archive/evidence identity 漂移均拒绝。
+- immutable completion evidence 通过 `ArchivePackagePort` 持久化。新 Builder 实例可在同一 Port 上验证已有包；verify 不依赖进程内 Map，损坏或漂移证据使用稳定机器错误。
+- Module 与 current v2 compatibility normalizer 共用唯一严格验证：plain own-data/exact keys、dense canonical unique string arrays、canonical 相对路径和 Gregorian RFC3339。无效日期、traversal、accessor 或 throwing coercion 均无抛失败；core-v1 只读投影为 `legacy_read_only`。
+
+完成证据：
+
+- 聚焦测试：`27/27` 通过。
+- 06B-2a 与真实 06B-1 的受影响测试：`78/78` 通过。
+- 稳定树 Core 全量测试：`58` 个文件、`858/858` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖 `../escape` 全量自重哈希、schema/package/ZIP 配置漂移、项目身份伪造、重启验证、损坏 completion 时间、候选 self/cross 引用、compat 日期/路径/accessor/throwing `toString`。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/archive-package-builder/**`、聚焦测试和 v2/v1 fixture；未修改 06B-1、阶段 02、Outbox、Remote Adapter、CLI、Skill 或共享契约。
+
+06B-2a 关闭后仍未接入的 Adapter：
+
+- `ArchiveOutbox` 的持久记录、租约、claim/ack/nack、重启恢复和本地 ZIP 保留策略。
+- `ArchiveRemoteAdapter` 到阶段 02 `publishArchive()` 与 06A `ArchiveIngestReceipt` 的接线、远端 durable receipt 和知识入队状态。
+- 真实 ZIP/文件系统 Port、现有 Archive CLI/Skill 迁移、Platform Worker、历史补处理与页面状态。
+
+### 06B-2b：ArchiveOutbox 纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `enqueue / claim / renew / ack / nack / reap / inspect` 使用注入式原子 `ArchiveOutboxPort`，记录 `pending | leased | retry_wait | acknowledged | dead_letter`。进程重启只读取 Port，不依赖内存真相。
+- enqueue 不接受调用方伪造的 `{ valid: true }`。Module 必须调用注入的 `ArchiveOutboxPackageVerifierPort`；验证证据完整绑定 package operation、receipt/package/manifest hash、ZIP 引用与大小、immutable identity、验证时间和 evidence hash，并持久化到记录。
+- 相同 package operation 和完整不可变输入幂等；receipt、package、manifest 或 ZIP 引用漂移固定 immutable conflict。缺失、拒绝、异常或 hostile verifier 均 `PACKAGE_UNVERIFIED` 且零写入。
+- lease 绑定 owner、token、generation 和 expiry。claim/renew/nack/ack/reap 共享唯一 CAS 边界；`swapped=true` 的返回记录必须与 proposed next 的完整 stable identity 精确相等，漂移固定 Port 错误。
+- capability 输入先经过 descriptor-only plain/exact snapshot。getter、错误 entry/token/owner/generation 或 stale lease 不执行时钟、读取或 CAS；过期 lease 不能 ack，也不产生 cleanup intent。
+- nack 使用有界确定性退避并可进入 dead-letter。断网、远端失败或重启不删除本地 ZIP，也不修改 `LocalArchiveReceipt`。
+- ack 只接受与 package、项目、Change、archive、idempotency 和 durable 状态完整绑定的阶段 02 `ArchiveSyncReceipt`。只有 verified durable ack 且 retention policy 允许时才返回 cleanup intent；Module 从不删除文件。
+- current record 和所有 Port 返回使用严格运行时闭包；v0 只读、fail closed，不恢复租约、durable receipt 或 cleanup 权限。
+
+完成证据：
+
+- 聚焦测试：`18/18` 通过。
+- Outbox、06B-1、06B-2a、阶段 02 与契约受影响测试：`396/396` 通过。
+- 稳定树 Core 全量测试：`60` 个文件、`905/905` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖伪造/拒绝/异常 verifier、过期 ack、五条 CAS 返回漂移、claim getter、stale token/owner/generation、重启、退避、dead-letter、retention 和 legacy。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/archive-outbox/**`、聚焦测试和 current/legacy fixture；未修改 PackageBuilder、RemoteSync、CLI、Skill、OpenAPI 或 Platform。
+
+06B-2b 关闭后仍未接入的 Adapter：
+
+- 真实持久 Outbox Port、ZIP 读取与 06B-2a verifier bridge、租约/reaper 调度和可恢复 cleanup 执行。
+- Archive CLI/Skill 的 outbox 触发、重试和中文状态接线，以及 Platform Worker、页面和历史补处理。
+
+### 06B-3：ArchiveRemoteAdapter
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+Adapter 直接消费阶段 01 canonical serialized `ArchiveIngestReceipt`，不保留本地影子 v1 类型或 fixture。规划成功和原子规划失败都以 `archive_status=stored` 为耐久事实；后台 Change/Knowledge 失败只留在嵌套状态，不触发 nack 或 ZIP 重传。request、idempotency、project、change、stable archive、package、manifest、project version 与时间均精确绑定；阶段 02 stored/failed 收据同样绑定 stable archive identity。只有验证后的 acknowledged Outbox 后继状态才能产生绑定原 opaque ZIP ref 的 cleanup intent；伪造 ack/nack、alias、throw、过期 lease 与收据漂移均 fail closed。
+
+完成证据：聚焦 `24/24`，扩大受影响矩阵 `378/378`，Core 全量 `63` 个文件、`997/997`；Core typecheck、build、限定 lint、跨仓 parity 与 diff check 通过。最终独立功能审查无 finding，唯一 EOF 格式项修复后复核 Ready。
+
+仍未接入：真实持久 Outbox/ZIP reader/verifier bridge、HTTP Remote Port、cleanup executor、调度宿主和 Archive CLI/Skill 触发。
+
+06B-2b/06B-3 的生产接线当前暂停在 T0 契约包：`LocalArchiveZipRef` 尚无受信 resolver/root 绑定，`ArchiveOutboxPort` 尚无持久序列化、事务和跨进程重启语义，verifier bridge 缺少可信 `LocalArchiveReceipt + inventory + CoreV2Projection` 输入，RemoteSync production 尚无 Archive publish seam，旧 `change_archive_packages`/`/archive-package` 也不能无损冒充新收据。接线前必须冻结 durable layout/CAS、ZIP/CAS 项目隔离、verifier 输入、canonical Archive publish/legacy 迁移及 cleanup/reaper 语义；本轮未发明 migration、HTTP path 或生产 wiring。
 
 ## 操作进度与监控
 

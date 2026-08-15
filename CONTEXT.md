@@ -91,3 +91,19 @@ _Avoid_: auto-upgrade, content sync
 **npm Release Action**:
 The explicit, per-Skill console action that publishes the latest published registry version to npm. It never runs automatically, never rolls back the registry on failure, and records its outcome (published, failed, version conflict) in the registry for display.
 _Avoid_: auto-sync, force publish, re-publish
+
+**Planning Context State**:
+The single authoritative, project-and-change-scoped durable Planning Context payload, committed together with its descriptor and audit event under CAS and idempotency. Platform events and legacy context files are projections or read-only migration inputs, never parallel sources of truth.
+_Avoid_: descriptor-only context, run-owned context, shadow context map
+
+**Publication Event Outbox**:
+The durable local handoff created only after a Plan publication receipt is verified. It records that filesystem publication is committed while canonical PlanEvents still require delivery, so recovery never treats two independent systems as one transaction.
+_Avoid_: best-effort event write, pre-publication event, distributed filesystem transaction
+
+**Archive Package Authority**:
+The project-scoped authority that resolves an opaque Local Archive reference to bytes in a controlled CAS and verifies its project identity, content hash, and size. Durable records never store an arbitrary filesystem path.
+_Avoid_: ZIP path, caller-owned archive file, unverified local reference
+
+**Branch Snapshot Producer**:
+The Remote Sync commit participant that publishes immutable Branch Snapshots from explicit source, version, diff, tombstone, and content metadata. Legacy finalize paths do not fabricate missing branch or commit identity.
+_Avoid_: finalize snapshot hook, guessed main branch, inferred tombstone metadata

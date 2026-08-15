@@ -457,3 +457,97 @@ flowchart LR
 - 不把 Codebase Map 的观察结果自动升级为治理规则。
 - 不把 Skill 内容、项目知识、设计和计划文档混入始终加载规则。
 - 不要求所有 Agent 的文件字节一致，只要求来源唯一、语义一致和可验证。
+
+## 实施记录
+
+### 07A-M1：清单、确定性 Inspect 与 Agent 投影 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `readRulesManifest(input)` 严格读取 current `rules-manifest.json`，并保守投影 legacy 清单。legacy 缺失的生成器、项目身份和文件元数据保持不可用，不补造当前事实。
+- `inspectInstructions(input)` 只消费类型化快照，确定性返回输入指纹、canonical 与投影哈希、结构问题、质量建议和 `inspection_ref`，不访问文件系统、网络或模型。
+- `planAgentProjection(canonicalRef, requests, expectedProjectionHashes)` 为 Codex、Claude Code、Cursor 和 CodeBuddy 生成只读写入计划。任一必需投影的渲染、预算、路径、期望基线或共享路径冲突失败时，返回 `executable=false` 且 `operations=[]`。
+- canonical 根固定为 `.harness/rules`。manifest 与 Inspect 的 canonical 文件集合必须精确一致；globs、引用和目标路径使用项目内安全边界，不能读取或投影阶段 01 排除的敏感路径。
+- 投影按实际渲染后的 UTF-8 字节执行请求预算。Codex 另强制 32 KiB 上限，Claude Code 的 `CLAUDE.md` 另强制 200 行上限。根 `AGENTS.md` 的依赖引用包含所有实际影响正文和导航的 active canonical 文件。
+- 投影文件保存 canonical 哈希、内容哈希、Adapter 版本和稳定来源集合；观察到的投影哈希与期望基线不一致时固定返回冲突，不覆盖本地修改。
+
+完成证据：
+
+- 聚焦测试：`17/17` 通过，无跳过。
+- Core 全量测试：`50` 个文件、`666` 项测试通过，无跳过。
+- Core 类型检查、构建、限定范围 ESLint、根级 ESLint 和 diff check 通过。
+- 对抗矩阵覆盖 manifest 外 canonical snapshot、安全 glob、四个 Agent 的真实渲染预算、Codex 32 KiB、Claude Code 200 行以及共享根投影的依赖追踪。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/instruction-governance/**`、聚焦测试和 current/legacy fixture；未修改 CLI 注册、Skill、Sync、Update、初始化流程、现有 Agent 文件或 canonical 规则。
+
+07A-M1 关闭后仍未接入的 Adapter：
+
+- 07B 的 Map/Platform 候选证据选择、规则提案、逐条审阅、应用收据和候选生命周期。
+- 真实文件系统事务、回滚、受影响指令图验证和投影冲突恢复操作。
+- `instructions` CLI、`harness-instructions` Skill、旧 `rules-sync` 兼容别名及中文迁移提示。
+- Sync、Update、初始化和阶段 04 Provider Adapter；这些调用方必须消费同一 `InstructionHealth` 与 `inspection_ref`，不能复制检查算法。
+- Platform 提案、历史证据与页面接入，以及应用完成后交回阶段 03 Push 的显式上传选择。
+
+### 07B-M1：证据提案与应用事务 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `selectInstructionEvidence(...)` 从阶段 05 Map 片段和阶段 01 `ProjectContentCandidate` 选择有界、按主题、带版本与路径引用的证据。单次 Map 观察保持低置信，不拼接全部七份文档。
+- `proposeInstructionChanges(...)` 绑定完整 `inspection_ref`、canonical baseline、证据哈希、模型和 prompt 身份、proposal hash 与 expiry。proposal 入口从 raw candidate、raw Map snippet 和 selection scope 重新构造证据，不信任调用方自声明派生字段或自哈希。
+- `architecture-decision` 只有被 scope 明确标记为已确认、可执行时才能提案；`glossary` 永远为 `display_only`，不能形成文件写入。
+- accept、reject、retain 三种选择保留逐条结果和证据。全 reject/retain 可生成零写入但可追踪的 receipt；任一 accepted action 的 baseline、expiry、CAS 或必需投影失败时，整个计划 `operations=[]` 并保留 rollback 计划。
+- canonical 文档、`.harness/rules/rules-manifest.json` 和 Agent projection 位于同一事务。manifest 是严格、带内容、内容哈希和 expected hash 的真实 CAS write operation，参与操作顺序、rollback、transaction hash、changed paths 和 receipt。
+- receipt 验证从可信 proposal、apply plan 和 execution evidence 重建完整预期 payload；修改 action outcomes、applied/skipped、paths、projection ref、verification、rollback 或完成身份后重新计算自哈希仍然无效。
+- canonical 路径和敏感内容复用阶段 01 classifier 与共享 scanner；Module 不访问文件系统、Platform 或网络，不调用 Push。
+- legacy proposal 只读归一化且永不进入 ready；新写入只使用 current v1。
+
+完成证据：
+
+- 聚焦测试：`13/13` 通过。
+- 07A、阶段 05 与阶段 01 契约的受影响测试：`4` 个文件、`437/437` 通过。
+- 稳定树 Core 全量测试：`54` 个文件、`764/764` 通过；后续整合门禁达到 `769/769`。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖自哈希 glossary evidence、八类 receipt 字段篡改、manifest 旁路、CAS/expiry/projection 失败和全 reject/retain 零写入。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/instruction-proposal/**`、聚焦测试和 current/legacy fixture；未修改 07A、共享契约、CLI、Skill、Sync 或 Platform。
+
+07B-M1 关闭后仍未接入的 Adapter：
+
+- Platform 候选查询、模型调用、proposal 持久化与候选状态 Adapter；本地 Module 只接受已冻结 wire 和注入 Port。
+- 真实文件系统事务、受保护写入、rollback 执行、受影响指令图验证和 receipt 持久化。
+- `instructions propose/apply` CLI、`harness-instructions` Skill、中文逐条审阅和旧 `rules-sync` 迁移。
+- 阶段 04B `SyncActionProvider`、初始化与 Update Adapter，以及应用完成后交回阶段 03 Push 的一次显式选择。
+
+### 07B-M2：Current InstructionProposal 可信验证 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `verifyCurrentInstructionProposal(proposal_json, trusted_json)` 是 current proposal 的唯一可信验证入口。公开边界只接受各自不超过 1 MiB 的 JSON string；对象、Proxy 或 getter 在任何反射前拒绝，trap 调用为零。
+- trusted 输入显式包含 raw Map snippets、阶段 01 raw candidates、selection scope、inspection/baseline/canonical identities、时间与模型 metadata，以及持久化的 `raw_model_actions`。待验 `proposal.actions` 不能充当模型语义真相源。
+- proposer 与 verifier 共用同一私有 builder：先从 raw Map/candidate/scope 重建唯一 EvidenceBundle，再用 trusted raw actions 与 metadata 生成唯一 expected proposal，最后对待验 proposal 做 stable exact 比较。
+- trusted 顶层、inspection、Map/snippet/budget、scope、candidate/provenance 与 raw action 均使用 exact runtime schema。未知字段、nested extra、cycle、accessor、symbol 或资源预算超限 fail closed；snapshot 使用 null-prototype 记录。
+- invented evidence、错误资格/topic、glossary 可执行化、未确认 architecture、absolute/noncanonical path、move/source、baseline/content/action/proposal/evidence identity 和敏感内容均由 07B 现有重建与共享 scanner 验证，不由 Adapter 复制。
+- 同一 trusted actions 下修改 proposal 内容并自重哈希固定 mismatch；trusted actions 自身包含密码等敏感内容或未知字段固定 invalid。
+- 时间严格满足 `created_at <= verified_at < expires_at` 且使用 RFC3339；legacy proposal 只读 fail closed。验证成功返回 frozen verified proposal 与重建 evidence。
+
+完成证据：
+
+- 聚焦测试：`27/27` 通过。
+- 07A、04B、scanner 与契约受影响测试：`6` 个文件、`455/455` 通过。
+- 稳定共享 Core 全量测试：`62` 个文件、`952/952` 通过。
+- Root 类型检查、Core/Contracts 构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖 Proxy 零 trap、trusted/raw nested extra、invented evidence、Delete-all-tests 自重哈希、敏感 pinned action、资格/路径/身份/时间和 legacy。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为 `packages/core/src/instruction-proposal/**` 与其聚焦测试；proposal wire 未改变，未修改 04B Provider、07A、scanner、barrel、CLI、Skill、OpenAPI 或 Platform。
+
+07B-M2 关闭后仍未接入的 Adapter：
+
+- 04B-2 Instruction Provider 必须序列化 untrusted proposal 与 trusted raw inputs并只消费本 verifier；不得保留第二套 proposal/action/evidence 规则。
+- 模型 raw action、trusted evidence snapshot 和 verifier receipt 的真实持久化 Adapter。
+- 07B-M1 已记录的文件系统事务、CLI/Skill、候选生命周期、Platform 和 Push 接线。

@@ -167,3 +167,65 @@ knowledge candidate status = pending | accepted | rejected | superseded
 - 配置内容不会因为安全字段名称而被拒绝，但凭据路径仍不会进入清单。
 - 归档和变更资料不再被标为项目知识。
 - 四种状态可以独立表达成功、处理中和失败。
+
+## 实施记录
+
+### 01-M1：内容分类与共享 Schema Module
+
+状态：已关闭。当前产物保留在本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `ContentKind`、`SyncScope`、同步动作、冲突处理、候选、状态及路径分类 Schema。
+- `classifyContentPath(input)` 与 `validateContentPathClassificationResult(input)` 的成功结果、失败原因码和错误优先级。
+- current fixture、legacy fixture，以及旧归档收据的兼容读取。兼容读取只确认可证明的 `archive_status=stored`；其余三种 v1 状态保持 `unavailable`。
+
+完成证据：
+
+- 聚焦测试：`260/260` 通过。
+- Contracts 全量测试：`386/386` 通过，未跳过测试。
+- Contracts 类型检查、全仓 ESLint、Contracts 构建和 diff check 通过。
+- Hunter Harness 工作区仅包含本工作包的 Module、测试、fixture 和 barrel export；Hunter Platform 工作区保持 clean。
+- 两仓现有 OpenAPI SHA-256 一致：`D443F93E6FB75994D5FD4E86C51F7D40A3C2254B9939DFCFA989E35F264A4C64`。该文件尚未包含 01-M2 的新字段，因此此项只证明基线未漂移，不代表 01-M2 已完成。
+
+阶段验收进度：
+
+| 验收条件 | 01-M1 证据 | 阶段状态 |
+|---|---|---|
+| Push、Pull、Archive 和 Platform 分类一致 | canonical 路径、内容类型、Pull 策略、扫描策略和失败原因已冻结；两仓 TS、fixture 与 OpenAPI 投影一致 | 阶段 01 契约通过；真实 Adapter 待阶段 02、06、13 |
+| 分支文件不进入常规 Pull | `branch_file` 固定为 `explicit_source_only`；相关契约测试通过 | 契约通过；真实恢复流程待阶段 02、03、14 |
+| 配置不做内容敏感扫描，但凭据路径始终排除 | 只有 `config` 使用 `skip_content_scan`；任意路径段的 `credentials.local*`、`.env*` 均拒绝 | 契约通过；清单接入待阶段 02 |
+| 归档和变更资料不标为项目知识 | 归档、变更、知识和候选本地路径均为 `CONTENT_PATH_NON_SCANNABLE_KIND`；候选 Schema 和 ID 命名空间独立 | 契约通过；服务端投影待阶段 06、13 |
+| 四种状态独立表达 | 四个 strict 状态对象可独立表示处理中、成功和失败；legacy 不推导未知状态；OpenAPI 投影与 TS 一致 | 通过 |
+
+### 01-M2：跨仓契约 Adapter
+
+状态：已关闭。当前产物保留在两仓本地工作区，未提交、推送、合并或发布。
+
+已冻结和验证的 v1 投影：
+
+- `RemoteVersionIdentity` 要求 `commit_sha`；只有 `change_key` 可选。阶段 02 的 `BranchSnapshot` 与 `SnapshotVersion` 仍允许旧数据缺少 `commit_sha`。
+- `BranchSnapshot`、`SnapshotVersion`、`SnapshotFile` 及三个有界分页对象使用 opaque cursor 和稳定排序。
+- 两类候选、四类独立状态和 legacy compatibility result 在两仓 OpenAPI、TypeScript 与 fixture 中逐字节一致。
+- 既有 `ArchivePackageReceipt` OpenAPI 和全部 88 个 HTTP paths 未改变；既有与兼容 TypeScript parser 指向同一 wire schema。旧 `knowledge_status` 不推导三个未知的新状态。
+- canonical artifacts 使用精确 `eol=lf` 规则；只读跨仓门禁显式接收 Platform 根路径，并检查 OpenAPI、sidecar、TypeScript source、current/legacy fixture 和生成声明的字节一致性。
+
+完成证据：
+
+- Harness 聚焦测试：`373/373` 通过；包含既有 CLI archive caller 的补充聚焦测试：`374/374` 通过。
+- Harness 根级测试：`1095/1095` 通过。Contracts 类型检查、构建和全仓 ESLint 通过。
+- Platform 聚焦测试：`125/125` 通过；根级测试 `969` 项通过。根级测试另有仓内既有 `1` 个文件、`8` 项跳过；这些跳过不属于本工作包，也未用于证明阶段 01 验收条件。
+- Platform Contracts、Server 类型检查与构建、全仓 ESLint、Web production build 通过。
+- 两仓 OpenAPI SHA-256 均为 `4770f494cd438783a7a66c608c6538abce5fe1b2f6469044569e8d0117f03c4b`；跨仓 source、fixture 与生成声明直接比较通过。
+- 真实 Fastify/Ajv 与 Zod 边界矩阵覆盖必填提交身份、legacy empty/nullable 字段、hash、UUID、RFC 3339 offset、未知与缺失字段、整数边界；接受与拒绝结果一致。
+- 两条独立复审均为 Ready，Critical 和 Important 均为 `0`；diff check 和精确修改范围检查通过。
+
+01-M2 后续补充冻结了跨仓 canonical `ArchiveIngestReceipt v1`：归档、变更投影和知识提取使用独立嵌套状态；顶层 `retryable` 为必需且在归档已耐久保存时固定为 `false`，禁止顶层 `reason_code`，因此后台规划或知识任务失败不会要求客户端重传 ZIP。规划成功时两个任务 ID 必需，原子规划失败时不得伪造不存在的任务 ID。Platform 已移除私有收据联合类型并在产出边界使用共享 Schema；真实 Fastify/Ajv 与 Zod 的五组收据矩阵一致。补充验证为 Harness `374/374`、Platform `168/168`，两仓类型检查、构建、全量 lint、diff check 与字节 parity 通过；数据库测试未运行且未计为通过。最终独立复审 Ready，Critical、Important、Minor 均为 `0`。
+
+01-M3 将共享 receipt reader 收敛为 browser-safe 的有界 serialized JSON 入口，移除 `node:util` 等 Node-only 依赖；非字符串 Proxy/getter 在任何反射前 fail closed。`request_id=archive_request:<64hex>` 与 `idempotency_key=sha256:<64hex>` 由真实 ArchiveOutbox fixture 冻结，Schema 只校验 wire 形状，不复制 Outbox 派生算法。补充验证为 Harness affected `437/437`、Contracts `403/403`、Platform Contracts/OpenAPI `126/126`、Platform Web production build `11/11` 页面，以及 10 项 artifact、17 项 Platform Information、6 项 Archive receipt parity；最终独立复审 Ready，Critical、Important、Minor 均为 `0`。
+
+阶段 01 关闭后仍未接入的 Adapter：
+
+- 阶段 02 Remote Sync Adapter：让既有 Core 路径策略消费阶段 01 的 canonical 分类，消除 `.harness/config/**` 等旧策略差异。
+- 阶段 06 Archive 与 Platform Adapter：通过可信收据和 Worker Interface 产生归档、变更、知识与候选分类；不得通过本地路径字符串伪造这些来源。
+- 阶段 13 页面 Adapter：按共享 `ContentKind` 和独立状态展示项目资料、分支文件、变更记录与项目知识。

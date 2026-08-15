@@ -181,19 +181,19 @@ Interface 发生破坏性变化时，暂停依赖方并更新契约；不得让�
 
 | 顺序 | 文档 | 主要交付物 | 状态 |
 |---:|---|---|---|
-| 01 | [内容边界与协议](./01-content-boundaries-and-contracts.md) | 同步范围、内容类型、状态和 API 契约 | 待实施 |
-| 02 | [远端同步核心](./02-remote-sync-core-and-branch-snapshots.md) | Core 深模块、分支快照、版本与冲突算法 | 待实施 |
-| 03 | [Push / Pull](./03-push-pull-skills.md) | 手动上传、下拉恢复和兼容入口 | 待实施 |
-| 04 | [Sync 本地维护](./04-sync-maintenance.md) | 只读检查、选择性优化、局部复查、可选上传 | 待实施 |
-| 05 | [Codebase Map](./05-codebase-map-upgrade.md) | 漂移检测、增量生成、原子发布和按需消费 | 待实施 |
-| 06 | [归档与服务端知识](./06-archive-and-knowledge-automation.md) | ZIP 持久化、自动提取、重试和历史补处理 | 待实施 |
-| 07 | [指令与规则治理](./07-instruction-rule-governance.md) | 深模块、规则集、证据提案、Agent 投影和持续更新 | 待实施 |
-| 08 | [Plan 规划契约](./08-plan-contract-and-profiles.md) | 唯一 `PlanProfile`、阶段计划和交互边界 | 待实施 |
-| 09 | [Plan 意图与证据](./09-plan-intent-knowledge-and-evidence.md) | `IntentContract`、远端知识和 `EvidenceMap` | 待实施 |
-| 10 | [Plan 决策与审批](./10-plan-decision-frontier-and-approval.md) | 决策前沿、批量澄清和精简审批 | 待实施 |
-| 11 | [Plan 产物收敛](./11-plan-artifact-model-and-document-pruning.md) | 人类真相源、机器派生物和指导文档收敛 | 待实施 |
-| 12 | [Plan 分层质量门](./12-plan-quality-gates-and-finalization.md) | 结构检查、语义一致性和高风险评审 | 待实施 |
-| 13 | [Platform 信息架构](./13-platform-information-architecture.md) | 分支文件、项目资料、项目知识和变更记录 | 待实施 |
+| 01 | [内容边界与协议](./01-content-boundaries-and-contracts.md) | 同步范围、内容类型、状态和 API 契约 | 已关闭（01-M1、01-M2 验收通过） |
+| 02 | [远端同步核心](./02-remote-sync-core-and-branch-snapshots.md) | Core 深模块、分支快照、版本与冲突算法 | 实施中（02-M1/M2、Platform 分支快照读模型 M3～M6 与 PostgreSQL Adapter M7 已关闭；Harness CLI 已有 actor-bound HTTP transport，Platform 生产装配、Pull 工作区与页面仍待接入） |
+| 03 | [Push / Pull](./03-push-pull-skills.md) | 手动上传、下拉恢复和兼容入口 | 实施中（03-M1 交互编排 Module 与 03-M2 CLI HTTP 适配器已关闭；Platform Pull 工作区事务、GC/恢复和完整生产复审仍待接入） |
+| 04 | [Sync 本地维护](./04-sync-maintenance.md) | 只读检查、选择性优化、局部复查、可选上传 | 实施中（04A、04B-1 Map 与 04B-2 Instruction Provider 已关闭；其余 Provider、现有 Sync 与交互 Adapter 待接入） |
+| 05 | [Codebase Map](./05-codebase-map-upgrade.md) | 漂移检测、增量生成、原子发布和按需消费 | 实施中（05-M1 纯 Module 与 M3U-FS filesystem contract/Adapter 已关闭；执行编排与消费者 Adapter 待接入） |
+| 06 | [归档与服务端知识](./06-archive-and-knowledge-automation.md) | ZIP 持久化、自动提取、重试和历史补处理 | 实施中（06A-M1、06B-1、06B-2a PackageBuilder、06B-2b Outbox、Stage06A PostgreSQL pipeline Adapter/迁移与 06A-WH bounded Worker Host 已关闭；生产队列调度、路由和历史补处理待接入） |
+| 07 | [指令与规则治理](./07-instruction-rule-governance.md) | 深模块、规则集、证据提案、Agent 投影和持续更新 | 实施中（07A 与 07B 纯 Module 已关闭；真实执行、CLI、Skill 与 Sync Adapter 待接入） |
+| 08 | [Plan 规划契约](./08-plan-contract-and-profiles.md) | 唯一 `PlanProfile`、阶段计划和交互边界 | 实施中（08-M1 分类与阶段集纯 Module 已关闭；现有 Plan、持久化与事件 Adapter 待接入） |
+| 09 | [Plan 意图与证据](./09-plan-intent-knowledge-and-evidence.md) | `IntentContract`、远端知识和 `EvidenceMap` | 实施中（09-M1 PlanningContext、09-M2 Knowledge Query contract/route/CLI，以及 PostgreSQL 知识索引/查询收据持久化与生产 main 接线已关闭；真实 PG integration 仍需数据库环境，PlanningContext/Plan Adapter 与后续页面接入待完成） |
+| 10 | [Plan 决策与审批](./10-plan-decision-frontier-and-approval.md) | 决策前沿、批量澄清和精简审批 | 实施中（10-M1 决策前沿与审批纯 Module、10-M2 交互呈现与答案收集适配器已关闭；审批写入、持久化与现有 Plan Adapter 待接入） |
+| 11 | [Plan 产物收敛](./11-plan-artifact-model-and-document-pruning.md) | 人类真相源、机器派生物和指导文档收敛 | 实施中（11-M1/11-M2 语义引用契约与 M4A publication plan 已关闭；renderer、真实持久发布与旧 finalizer Adapter 待接入） |
+| 12 | [Plan 分层质量门](./12-plan-quality-gates-and-finalization.md) | 结构检查、语义一致性和高风险评审 | 实施中（12-M1/M2 验证 Module、M4T durable publication contract 与 Plan-specific FS contract seam 已关闭；真实 StageVerifier、文件发布、事件持久化与状态机 Adapter 待接入） |
+| 13 | [Platform 信息架构](./13-platform-information-architecture.md) | 分支文件、项目资料、项目知识和变更记录 | 实施中（13.1～13.5 查询契约、只读 Server Adapter、13.6a 分支监控 Query Adapter、13.6b Materials PG source/production composition、13.6c 导出内部 contract/stream/CAS/metadata 与 13.7 Web 工作台性能/可访问性已关闭；分支快照生产者、知识/变更持久源、导出 HTTP 生命周期与完整生产 API 接线待实施） |
 | 14 | [迁移、发布与整体验收](./14-migration-rollout-and-acceptance.md) | 兼容迁移、效果指标、回滚和真实流程验证 | 待实施 |
 
 ## 阶段与工作包切分规则

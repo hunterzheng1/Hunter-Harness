@@ -4,7 +4,7 @@
 
 在不破坏已有项目、归档、基线和 Skill 调用方式的前提下，分批启用新同步与知识模型，并建立可观测的回滚点。
 
-当前验收边界（2026-08-15）：Upload/CAS、Remote Archive v2 及其 HTTP/OpenAPI 已完成本地候选门禁；Platform 已接入 transaction-bound Remote Sync → Branch Snapshot producer。Remote Sync HTTP Push 仍保持缺省 503，因为现行 Push 合同只传文件元数据，尚无安全的非零文件内容/上传引用输入；在该合同完成前，阶段 14 不宣称整体验收通过。
+当前验收边界（2026-08-15）：Upload/CAS、Remote Archive v2 及其 HTTP/OpenAPI 已完成本地候选门禁；Harness CLI 已具备显式配置的 actor-bound RemoteSync HTTP transport，Remote Sync 合同也已支持受限的非零文件上传引用。Platform 端仍必须完成 Pull 工作区事务、生产 GC 调度、跨事务恢复与双仓独立复审；在这些门禁完成前，阶段 14 不宣称整体验收通过。
 
 ## 依赖与并行边界
 

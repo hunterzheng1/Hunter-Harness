@@ -365,3 +365,38 @@ MappingExecutionPolicy = {
 - 不建立本地语义知识库。
 - 不把设计、计划或变更总结归类为可复用知识。
 - 不在本阶段修改 Platform 页面布局；远端展示由阶段 13 处理。
+
+## 实施记录
+
+### 05-M1：Manifest、Inspect、Evidence 与 Publication 纯 Module
+
+状态：已关闭。当前产物保留在本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v2 Interface：
+
+- `projectMapManifest(input)` 严格读取 v2，并把 legacy manifest 投影为兼容读取模型；无法证明的项目、仓库、分支、worktree、生成器和指纹保持缺失并记录 degradation，不能被判为 `current`。
+- `inspectMap(input)` 只消费类型化输入，确定性返回适用性、版本、指纹、漂移、冲突、受影响文档和建议动作；不执行 Git、文件、模型、网络或上传操作。
+- `assessMapEvidencePath(path)` 是 Collect Adapter 的读取前准入决策；它复用阶段 01 canonical 分类并补充包管理认证、私钥和精确 credential 配置 basename。`selectMapEvidence(input)` 复用同一决策，按主题、置信度、code-point 稳定顺序和字符/token 双硬预算选择证据。
+- `selectMappingExecutionPolicy(input)` 固定 quick、incremental、full 的轻量/标准模型、有界并行、超时、预算和最多两次模型尝试。
+- `planMapPublication(input)` 只形成完整 staging 与原子替换计划。它要求调用方冻结 `published_at`，输出完整 manifest 与 canonical payload；七份文档、摘要、manifest、stage hash、plan hash 和 Reader 回读使用同一内容。
+- publication 在产生操作前复用 canonical 敏感扫描器，扫描七份文档、摘要和 manifest；ARCHITECTURE 与 CONVENTIONS 中的治理命令被阻断，不能未经阶段 07 审阅成为规则。
+- canonical Map 文件本地修改返回精确受影响文档和 `keep_local`、`use_new_result`、`view_diff` 三种机器动作；失败计划保持旧 manifest hash 且 `operations=[]`。
+
+完成证据：
+
+- 最终 Map 聚焦测试扩展至 `146/146`；与既有 Map、Remote Sync 和 canonical scanner 的联合关闭复核为 `421/421`，未跳过测试。
+- 稳定工作树上的 Core 全量曾达到 `614/614`；后续并行 07A/08 的预期 RED 不计为本包失败。最终关闭以 Map 聚焦、联合回归、Core 类型检查、构建、限定范围与根级 ESLint、diff check 为准，均通过。
+- 路径矩阵覆盖 `.env*`、`credentials.local*`、package auth、private key、`client_secret`/`client-secret` 的 bare、单段和多段后缀，以及必须允许的 lookalike。
+- token 预算对 ASCII、CJK、emoji 和混合文本使用 UTF-8 byte upper bound，返回的 `used_budget` 不低估实际保守成本，且字符/token 任一上限均不会突破。
+- Reader 拒绝空白数组成员和非 RFC 3339 时间；合法 `Z` 与 offset 时间、完整 publication payload、所有 stage-write hash 和时间篡改敏感性通过闭环测试。
+- 稳定哈希、Evidence、Manifest 投影和 canonical scanner 的协议排序均使用 code-point 比较，不依赖系统 locale。共享 scanner 的最小整合由 T0 测试先行完成，并同时通过 Remote Sync 回归。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/codebase/map-v2/**`、聚焦测试、legacy fixture，以及 T0 负责的 canonical scanner 排序收尾；未修改既有 Map、CLI、Skill、canonical 文档或 Platform。
+
+05-M1 关闭后仍未接入的 Adapter：
+
+- Collect 与 Mapper Adapter：按 pre-read policy 收集确定性证据，执行模型策略并产生结构化文档修改建议。
+- 文件系统 Publication Adapter：创建独立 staging，校验完整 payload，并在 CAS 前提下原子替换七份文档、摘要和 manifest；失败时验证旧地图保持不变。
+- `harness-codebase-map` Skill 与 CLI Adapter：收敛 quick、paths、模型路由和中文提示，移除自动 Push、永久报告和生命周期上报。
+- 阶段 04、07、09 的消费者 Adapter：只读取 `MapHealth` 或有预算的 `MapEvidenceBundle`，不拼接全部七份文档。
+- Platform 分支快照与阶段 13 页面 Adapter，以及阶段 14 的真实首次/增量/回滚和性能验收。

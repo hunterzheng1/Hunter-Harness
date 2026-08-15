@@ -182,6 +182,61 @@ PlanningContext = {
 - 不在阶段 10～12 重新执行相同知识查询或二次压缩。
 - 不让远端历史知识覆盖当前用户的明确目标和约束。
 
+## 实施记录
+
+### 09-M1：Plan 意图、知识与证据上下文纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `buildIntent(...)` 将原始需求收敛为稳定 `IntentContract`；原文只参与哈希，不复制进恢复状态。验收项保持 2～5 条并具有稳定身份。
+- `buildKnowledgeQuery(...)` 生成有界查询并最多允许一次带明确原因的定向补充查询。查询状态和嵌套条件使用 plain-own、exact 的运行时校验；额外字段或错误类型不会触发查询。
+- `compressKnowledge(...)` 只处理完整、canonical 的 `KnowledgeQueryReceipt`。收据 ID、结果集哈希、结果 ID、来源版本、状态和失败语义形成交叉闭包；空结果不能携带孤立来源版本，缺少来源版本的结果保持 `incomplete`，不伪造来源。
+- `buildEvidenceMap(...)` 生成一次性有界证据引用。来源引用只包含类型、身份、版本和内容哈希；预算与实际来源、引用数量精确一致，不保存完整文档正文。
+- `buildPlanningContext(...)` 完整解析阶段 08 Profile/阶段集、KnowledgeContext 和 EvidenceMap。KnowledgeContext 内嵌 canonical 查询收据，并由外部 `trusted_knowledge_receipt` 再次锚定；知识意图必须与当前 Intent 相同，不能通过重算自哈希替换收据或混入 foreign intent。
+- 冲突项与 `unresolved_decision_ids` 形成可重算闭包。存在未决冲突时上下文固定为 `decisions_required`，历史知识不能静默覆盖当前要求。
+- `invalidatePartitions(...)` 使用显式 `unchanged | set | remove` 更新，能够区分未变化与已删除。删除 knowledge、rules 或 map 会失效对应旧分区；删除 map 同时失效依赖它的 EvidenceMap。
+- legacy fixture 只读投影且不能恢复为 ready；当前写入只使用 v1。
+
+完成证据：
+
+- 聚焦测试：`7/7` 通过。
+- 阶段 05、07A、08 与 09 的受影响测试：`4` 个文件、`202/202` 通过。
+- 稳定树 Core 全量测试：`57` 个文件、`828/828` 通过，无跳过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖收据与结果集自重哈希、冲突隐藏、foreign intent、孤立来源版本、查询状态额外字段和错误类型、证据预算与正文夹带，以及分区删除的级联失效。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/planning-context/**`、聚焦测试和 current/legacy fixture；未修改阶段 05～08 的冻结 Interface、现有 Plan 状态机、CLI、Skill、OpenAPI 或 Platform。
+
+### 09-M2：Knowledge Query HTTP Contract、Platform Route 与 CLI Consumer
+
+状态：契约、边界路由、CLI 消费端，以及 PostgreSQL 知识索引/查询收据持久化 Adapter 已关闭；生产 `main` 已注入该 Adapter。真实数据库 integration 仍依赖 `HUNTER_HARNESS_TEST_DATABASE_URL`，未注入服务时路由与 CLI 继续 fail closed。
+
+- 两仓共享 `knowledge-query-http` v1 contract 绑定 `query_id`、`query_hash`、`receipt_id`、`result_set_hash`、项目身份、失败收据和摘要预算；响应只携带 bounded summary，不携带正文或本地索引回退。
+- Hunter Platform 提供认证、项目绑定、幂等结果和稳定错误映射的 POST route；未知或 hostile service output 统一拒绝，不泄漏后端错误。
+- `hunter-harness knowledge query` 已迁移到该 bounded endpoint，输出 `query_id`、完整可验证 `receipt` 锚点以及 `result_id/kind/summary/relevance/source` 等字段；不再调用旧 semantic-search 正文接口。解析、网络和 hostile transport 错误统一为固定 `REMOTE_UNAVAILABLE`，不回显远端原文。
+
+完成证据：Harness contract `7/7`；Platform contract/route/OpenAPI `26/26`；PG 查询 focused `18/18`，知识 pipeline/route/PG affected `100/100`；Server 类型检查、构建、限定 ESLint 与 diff check 通过；OpenAPI hash 和 source/test/fixture 镜像校验通过；真实 PG integration 因缺少 `HUNTER_HARNESS_TEST_DATABASE_URL` 保留为环境限定。
+
+### 09-M3：PlanningContext durable State Port
+
+状态：合同与 reference Port 已关闭；生产文件系统 Adapter 和现有 `harness-plan` / Python 恢复接线仍未实施。
+
+- 聚合身份固定为 `{project_id, change_key}`，并要求 `change_key === PlanProfile.change_id`。每个 Change 只有一个权威 current；完整 bounded canonical PlanningContext payload、descriptor/hash、append-only audit、command receipt 和待投递事件在同一 CAS/idempotent commit 中原子更新，不维护 payload shadow Map。
+- 事件只允许 `context_created`、`context_replaced`、`partitions_invalidated`。替换必须绑定正确 `supersedes`；`context_replaced` 只允许零 partition delta，`partitions_invalidated` 必须携带更新并精确等于纯 `invalidatePartitions()` 的依赖闭包，包括 intent、map 和 profile 的级联失效。
+- Profile partition witness 精确绑定 `stableHash(profile.classification_hash)`。conflict 不追加 current、audit 或 delivery；pending delivery 可在重启后查询并通过 exact identity ack，replay/conflict fail closed。
+- v0 只读；Proxy、accessor、thenable、cycle、深度、节点、数组和总字节均在信任边界拒绝。
+
+完成证据：最终 focused `10/10`、affected `23/23`；Core typecheck/build、scoped ESLint、diff check 通过；原 reviewer 最终 Standards/Spec Ready，profile witness、事件 delta、durable delivery 与 hostile seam findings 全部闭合。
+
+09-M1 关闭后仍未接入的 Adapter：
+
+- PlanningContext 的生产持久化、事件、恢复和现有 `harness-plan` / Python 状态机接线；PG 查询 Adapter 只负责索引快照与 durable receipt，不替代 PlanningContext 真相源。调用方必须把可信收据作为外部锚传给 PlanningContext，不能只信任内嵌自哈希。
+- Codebase Map、canonical 规则、EvidenceMap 收集和模型压缩的真实调用 Adapter；纯 Module 不访问文件系统、网络或模型。
+- PlanningContext 的持久化、事件、恢复和现有 `harness-plan` / Python 状态机接线。
+- 阶段 10～12 的决策、产物与质量门必须消费该唯一上下文，不得重复查询、再次压缩或建立第二套意图来源。
+
 ## 停止条件和回退
 
 如果现有知识 API 无法返回来源或时效字段，先保留兼容字段并在客户端标记「来源信息不完整」。不要为了完成本阶段伪造验证时间或相关性分数。

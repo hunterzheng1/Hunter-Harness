@@ -299,3 +299,99 @@ Sync 将选择交给阶段 02 的 Core 模块。Codebase Map、规则治理等�
 - 紧凑摘要包含 Schema 版本、全部状态计数和跳过原因；`BLOCKED` 不会被降级成普通建议。
 - 输入未变化时不运行规则模型、不重建 Map，也不显示上传询问。
 - 应用多个本地动作后只出现一次上传确认，并调用同一 `RemoteSyncModule`。
+
+## 实施记录
+
+### 04A-M1：Sync 计划与动作框架 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `createSyncMaintenance({ providers, clock, max_concurrency })` 提供只读 inspect、受保护 apply 和 receipt verify。Provider 使用 `applicable / inspect / plan / apply / verify / rollback` 单一 seam。
+- `SyncContext` 使用严格 canonical 身份。enabled Agent 非空、有界且与 plain own-data `agent_profiles` 精确对应；空值、数组、accessor、自定义 prototype 和非法 identity/ref 在哈希前 fail closed，accessor getter 不执行。
+- 默认 inspect 零写入；`applicability`、`status`、`urgency` 独立表达。有界并发和 Provider 故障隔离保证 Python 或单个能力不可用不阻断其他结果。
+- `SyncActionPlan` 固定动作 DAG、依赖闭包、冲突、风险、写入路径、网络、模型、rollback、preview hash 和 expiry。选择、确认、stale、过期和重放在首个副作用前验证。
+- 多动作按拓扑执行。后续 apply、receipt 校验或 verify 失败时，对已成功动作按逆拓扑调用 rollback，并保留原始 receipts、每项 rollback outcome、reason 和 evidence；rollback 失败使用稳定机器语义且不丢失证据。
+- 一旦跨过副作用调用边界，计划保持 consumed；首个副作用前的 refresh/stale 失败按明确语义允许重新规划或重试。
+- 写后只复查动作声明失效的 Provider。只有可信 receipt 证明实际 `changed_paths` 且 Context 已绑定 Platform 时，返回一个 RemoteSync request intent；Module 不调用 Remote，无变化不返回上传意图。
+- 所有 plan、preview、fixture 和 receipt 身份使用 codepoint canonical ordering，不依赖环境 locale。
+- legacy 状态只读投影，不恢复占位 hash、evidence、receipt 或双写当前格式。
+
+完成证据：
+
+- 聚焦测试：`17/17` 通过。
+- 与 07B 的稳定整合聚焦：`30/30` 通过。
+- 稳定树 Core 全量测试：`54` 个文件、`769/769` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖多动作 apply/receipt/verify 失败、rollback 失败、计划消费边界、空/数组/accessor Profile、非法 refs 和 locale monkeypatch。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/sync-maintenance/**`、聚焦测试和 current/legacy fixture；未修改现有 Sync、CLI、Skill、RemoteSync、Map、Instruction 或共享入口。
+
+04A-M1 关闭后仍未接入的 Adapter：
+
+- 04B 的版本、Agent Adapter、配置来源、阶段 05 Map、阶段 07 Instruction、Change 和 CodeGraph Provider。
+- 真实文件系统/子进程事务、受保护 Refresh、rollback 和写后重新读取 Adapter。
+- 现有 `sync`、`--check`、`--apply safe`、`--fix` CLI 与交互复选框接线、兼容迁移和旧逻辑清理。
+- request intent 到阶段 03/02 的单一上传询问 Adapter；本 Module 不调用 Remote，也不写 Change 事件或监控。
+
+### 04B-1：Codebase Map SyncActionProvider
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Adapter：
+
+- `codebase_map` Provider 完整实现 04A 的 `applicable / inspect / plan / apply / verify / rollback` seam，并只消费阶段 05 的 `inspectMap`、`planMapPublication` 与执行策略；不复制 Map 漂移或发布算法。
+- inspect 不访问文件系统、网络或模型。未配置时返回 `not_applicable`，当前状态不制造动作；CodeGraph 不可用时保留可读 advisory，不能宣称 Map current。
+- publication plan 精确绑定项目、仓库、分支、worktree、source commit、input fingerprint、previous manifest CAS 和 affected document 集合；full 模式写入七份文档、summary 与 manifest，incremental 模式不得遗漏健康检查标记的受影响文档。
+- apply 只把已确认且未 stale 的阶段 05 发布计划交给注入的 `MapExecutionPort`。执行结果、MapReceipt、执行策略、预算、模型重试、升级原因、写入集合和 verification 均经过 plain-own、exact 的运行时边界。
+- effectful 执行之后，任何 receipt/readback/verify 结构或值失败都先由 Provider 内部补偿。三条 rollback 路径共用唯一无抛边界；`null`、accessor、自定义 prototype 或漂移结果不会泄漏 TypeError，也不会触发第二次物理 rollback。
+- 成功内部补偿和补偿失败都形成 04A 可消费的稳定终态，并保留首次 evidence。重复 `verify` 返回同一缓存结果，不再次 readback 或 rollback；04A 的公开 rollback 调用保持幂等。
+- `changed_documents`、`preserved_documents`、`modified_paths` 和嵌套原因数组必须为 dense、ordinary、唯一且 codepoint canonical；完成时间使用严格 Gregorian RFC3339，不接受日期归一化、`24:00:00` 或无效月日。
+
+完成证据：
+
+- 聚焦测试：`43/43` 通过。
+- 04A、04B-1 与阶段 05 的受影响测试：`204/204` 通过。
+- 稳定树 Core 全量测试：`57` 个文件、`839/839` 通过。
+- Core 类型检查、构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖 effectful Port 原始值、getter/custom prototype、重复与非 canonical 数组、非法 RFC3339、补偿失败、重复 verify、publication 身份漂移、预算与升级状态。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/sync-providers/codebase-map/**`、聚焦测试和 current/legacy fixture；未修改 04A、阶段 05、现有 Sync、CLI、Skill 或共享契约。
+
+04B-1 关闭后仍未接入的 Adapter：
+
+- Instruction、Agent/config、Change、版本与 Adapter 新鲜度等其他 Provider；每项必须独立实现并消费对应冻结 Interface。
+- 真实 Map 文件系统生成、原子 swap、readback 和持久 rollback Adapter；当前内存 Port 只证明事务 seam。
+- 现有 `sync` CLI、`--check`、`--apply safe`、`--fix`、交互复选框、中文摘要与兼容迁移。
+- 04A 产生的单一 RemoteSync request intent 到阶段 03/02 的上传询问接线。
+
+### 04B-2：Instruction SyncActionProvider
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Adapter：
+
+- Provider 完整实现 04A 六方法，并只消费 07A inspection/projection、07B apply/receipt 和 07B-M2 `verifyCurrentInstructionProposal`；不复制 evidence、proposal、敏感扫描或治理算法。
+- proposal 与 trusted inputs 以 exact bounded JSON strings 交 07B verifier。只有 `VERIFIED` 的 normalized proposal 进入真实 `planInstructionApply`；invented evidence、敏感正文、自重哈希 rewrite、非法 operation/review/path 在 Port 前固定 `INSTRUCTION_SNAPSHOT_INVALID`。
+- proposal-needed 只报告状态，不调用模型、不伪造 action。accept/reject/retain、manifest、projection、baseline/CAS、expiry 与 affected topics 均沿用 07B 冻结事务。
+- effectful execution request 在调用前生成 operation/transaction/rollback capability。execute reject 按可能已产生副作用处理并内部补偿一次；补偿成功/失败形成 04A 可消费的稳定 receipt/verification，evidence 同时保留 `execute_error_name` 与 rollback result/error。
+- 重复 verify/public rollback 不二次物理补偿。所有缓存命中前验证完整 receipt 的有界 ordinary/exact snapshot、stable hash 与 canonical serialization；rollback 还绑定完整 action identity。修改路径、wrote、rollback、evidence、时间或 action 后保留 input/output hash也不能复用缓存。
+- runtime snapshot 深度有界，深层 hostile、accessor、非 canonical arrays 和非法 Gregorian RFC3339 fail closed，不泄漏 RangeError/TypeError。
+- 只有可信执行证明实际 changed paths 时，04A 才生成统一 RemoteSync intent；Provider 不 Push。legacy 只读，不恢复 proposal、receipt 或执行权限。
+
+完成证据：
+
+- 聚焦测试：`35/35` 通过。
+- 04A、07A、07B 与 Instruction Provider 受影响测试：`5` 个文件、`107/107` 通过。
+- 稳定共享 Core 全量测试达到 `62` 个文件、`965/965` 通过。
+- Root/Core 类型检查、Core 构建、限定范围与根 ESLint、diff check 通过。
+- hostile 矩阵覆盖 serialized verifier 拒绝、execute reject 补偿、compensation failure、重复 verify/rollback、五类 receipt 篡改、action 篡改、accessor 与 20k 深度输入。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/sync-providers/instruction/**`、聚焦测试和 current/legacy fixture；未修改 04A、07A/07B、scanner、CLI、Skill、OpenAPI 或 Platform。
+
+04B-2 关闭后仍未接入的 Adapter：
+
+- 真实 Instruction 文件系统事务、proposal/trusted raw inputs 持久化、投影 readback 与 rollback Port。
+- Agent/config、Change、版本/Adapter 新鲜度等其他 Provider，以及真实 CodeGraph/外部能力 Adapter。
+- 现有 Sync/Instructions CLI、Skill、逐条中文审阅、兼容迁移和应用后的统一上传询问。

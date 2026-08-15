@@ -223,7 +223,7 @@ Pull 在写入前生成完整事务计划和 before snapshot。任一文件写�
 
 ### 02-M7：Platform PostgreSQL 分支快照持久 Adapter
 
-状态：已关闭。当前产物保留在 Hunter Platform 本地工作区，未提交、推送、合并或发布；HTTP 路由、生产仓储装配、CLI 和页面接线仍未实现。
+状态：已关闭。当前产物保留在 Hunter Platform 本地工作区，未提交、推送、合并或发布；HTTP 路由与生产仓储装配在后续 M9 slice 接入，CLI 和页面接线仍未实现。
 
 - `PgBranchSnapshotPort` 复用 M3～M6 已冻结的 `BranchSnapshotRepositoryPort`、`BlobReadPort` 与 `CursorVerifierPort`，不另建查询模型。迁移 `018_branch_snapshots.sql` 分离不可变快照 metadata、文件引用、内容 Blob 与 opaque cursor capability；相同正文按 `content_hash` 去重，不为不同页面复制 Blob。
 - 快照身份冲突在同一事务内 fail closed；失败事务不会遗留本次新增 Blob。项目版本、分支版本和文件分页继续使用稳定排序与持久 cursor，cursor 精确绑定 actor、项目、查询类型、分支或快照身份及 offset。
@@ -233,7 +233,7 @@ Pull 在写入前生成完整事务计划和 before snapshot。任一文件写�
 
 02-M7 关闭后仍未接入：
 
-- Platform HTTP 路由和生产仓储装配，以及阶段 03 的 CLI/Skill 恢复入口。
+- 阶段 03 的 CLI/Skill 恢复入口。
 - 阶段 04 Sync Adapter：只投影检查输入和用户选择，不复制差异、基线或上传算法。
 - 阶段 06B-3 Archive Adapter：把核心包和 outbox 收据投影到 `publishArchive()`，并校验 Platform 收据后再清理重试包。
 
@@ -247,4 +247,13 @@ Pull 在写入前生成完整事务计划和 before snapshot。任一文件写�
 
 完成证据：producer 与既有 Branch Snapshot 聚焦测试 `35/35`；Platform Server typecheck、build、scoped ESLint 与 diff check 通过；独立终审 Standards/Spec Ready，原资源边界、Promise rejection、Port exact shape、SourceRef 丢失和空版本 findings 全部闭合。
 
-02-M8 的事务写入 seam 已实现：Platform 现有 `remote-sync-pg` 以同一 `PoolClient` 原子写入 Remote Sync version、artifact、Branch Snapshot、branch pointer 和 durable receipt，并由 `main.ts` 注入 transaction-bound Branch Snapshot producer。HTTP `remoteSync` 仍不注入：冻结的 Push prepare/commit 合同只携带文件元数据，没有受控的文件内容/上传引用，不能安全地把非零文件写入 Branch Snapshot；在该合同补齐前继续 fail closed，而不把 memory service 或 legacy Finalize 冒充生产实现。
+02-M8 的事务写入 seam 已实现：Platform 现有 `remote-sync-pg` 以同一 `PoolClient` 原子写入 Remote Sync version、artifact、Branch Snapshot、branch pointer 和 durable receipt，并由 `main.ts` 注入 transaction-bound Branch Snapshot producer。
+
+### 02-M9：Remote Sync HTTP、上传引用与生产装配
+
+状态：实现完成，等待本轮停止编辑后的双轴终审与安全 Git checkpoint；不把缺少真实 PostgreSQL 环境的 integration skip 冒充为数据库证据。
+
+- 双仓 `remote-sync-http` 合同现要求每个非空 push 文件携带项目作用域的 `upload_ref`，并绑定 ref 的 hash/size；显式 `branch_file` 内容可安全通过路径分类边界。
+- Platform 新增 PostgreSQL HTTP service、受控上传 resolver、migrations `030_remote_sync_http.sql`、`031_remote_sync_http_upload_refs.sql`，以及上传 GC 对 prepared/committing/committed push 引用的 live-ref 保护。
+- `main.ts` 以同一 Pool 注入上传 resolver、Remote Sync HTTP service 与 transaction-bound Branch Snapshot producer；HTTP 路由仍在 service/response schema 和 operation-specific error allowlist 内 fail closed。
+- OpenAPI 已登记 leases、snapshot/content、push prepare/commit/status/receipt 与 pull 路径及对应 bounded schemas；OpenAPI hash 由 focused regression 固定。

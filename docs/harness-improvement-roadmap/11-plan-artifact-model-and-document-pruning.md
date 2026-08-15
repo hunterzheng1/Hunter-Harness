@@ -152,6 +152,70 @@
 - 不删除下游仍需兼容读取的旧文件或字段。
 - 不在文档中重复 finalizer 已能确定执行的结构检查。
 
+## 实施记录
+
+### 11-M1：Plan 产物模型与兼容派生纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- `design / plan / test_scenarios` 是唯一三份人类真相源。Module 从阶段 08～10 的 trusted profile、phase set、PlanningContext、Intent、EvidenceMap、DecisionGraph、ApprovalPackage/Receipt 和结构化输入重建 canonical HumanArtifactSet。
+- design 只包含目标、行为、约束、不变量、方案取舍和兼容边界；plan 只包含 task、依赖、路径、owner phase、decision/scenario refs；scenarios 只包含验收层级、证据、适用性和不适用原因。三者不引入相互重复的新事实。
+- plan task 依赖必须存在且无环，owner phase 必须属于当前 `planned_phases`。quick 阶段集不能把任务伪归属到未计划的 test/review 等阶段。
+- 八个覆盖维度逐项表达 applicable 或带理由的 not-applicable；高风险维度不能无理由跳过。
+- gate policy、worktree、implementation checkpoints 和 scenario manifest 全部由 trusted HumanArtifactSet、Profile 和能力输入派生，包含 schema、source hashes、冻结 generator version、content hash 与稳定 ID，不能人工成为第四真相源。
+- `implementation-detail` 是模式有界的兼容派生视图。quick 只保留关键修改、命令和易误判边界；standard/assurance 逐级增加接口、迁移、失败恢复、并发、权限和 rollback，但不增加人类来源中不存在的事实。
+- machine/detail/verify 均携带完整 `human_input`，通过唯一 `canonicalHumanArtifacts` 从 trusted 输入重建 expected HumanArtifactSet，再与候选 exact 比较。修改 plan 会同步改变 checkpoints 和 detail；人工修改 objective 后自重哈希仍拒绝。
+- `MODULE_GENERATOR_VERSION` 是唯一冻结常量；验证不能从待验产物读取 expected generator。source/content/set hash、ID、深冻结和 descriptor-only runtime 边界均严格校验。
+- legacy 只接受已知 `approved` frontmatter 和精确 canonical 六文件集合，保持只读；未知状态、重排、缺失或 traversal 路径 fail closed。现有 finalizer 未被修改。
+
+完成证据：
+
+- 聚焦测试：`14/14` 通过。
+- 阶段 08～11 与契约受影响测试：`338/338` 通过。
+- 稳定树 Core 全量测试：`61` 个文件、`934/934` 通过。
+- Core/root 类型检查、Core 构建、限定范围 ESLint 和 diff check 通过。
+- hostile 矩阵覆盖取消审批、foreign profile、人工 objective 自重哈希、evil generator、task cycle/dangling、未计划 owner phase、覆盖缺理由、source drift、accessor 和 legacy 状态/路径。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/plan-artifacts/**`、聚焦测试和 current/legacy fixture；未修改阶段 10、阶段 12、现有 finalizer、CLI、Skill、指导文档、OpenAPI 或 Platform。
+
+11-M1 关闭后仍未接入的 Adapter：
+
+- Markdown/JSON 渲染、真实文件系统写入、CAS/原子发布、恢复和人工编辑漂移处理。
+- 现有 finalizer 六文件输入与 current machine artifacts 的兼容 Adapter；迁移前不删除旧文件或字段。
+- `harness-plan` Skill、protocol/checklist/reference 的指针化裁剪，以及 Run/Review/Archive/Platform 消费者迁移。
+- 阶段 12 分层质量门与 finalization receipt；只能消费本工作包冻结的 artifact identities。
+
+### 11-M2：v2 语义引用与 ownership 契约扩展
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+冻结的 current v2 增量：
+
+- current `HumanArtifactBuildInput`、ArtifactIdentity、人类/机器产物、detail、builder、derive、verify 和输出全部固定 `schema_version=2` 与 generator `/2`；schema v1 不能继续写 current 产物。
+- v1 使用独立 LegacyV1 types 和 exact parser，只允许冻结的 generator `/1` 与旧字段，拒绝 v2 requirements、scope/ownership 和引用字段混入；normalize 只返回 `legacy_read_only`，没有 derive 路径。
+- design structured input 使用稳定 requirement records：`behavior | invariant | failure_behavior` 各有唯一 ID、文本、evidence refs 和 approved scope refs。
+- approved scope 与 ownership 是稳定 records；plan task 增加 requirement/evidence/ownership refs，affected paths 必须由 ownership 覆盖且满足 canonical path；scenario 增加 task/requirement refs。
+- canonical builder 验证全集、唯一、dangling、cycle、evidence/scope/ownership、每个 requirement 至少由 task 与 scenario 覆盖。
+- `task.scenario_refs` 与 `scenario.task_refs` 双向精确一致；scenario 的每个 requirement 必须由其 `task_refs` 中至少一个 task 实现，防止交叉错配被固化进 checkpoints/manifest。
+- machine artifacts、implementation detail、verify 和 current normalizer 全部从同一 v2 canonical HumanArtifactSet 重建，修改引用后自重哈希仍无效。
+
+完成证据：
+
+- 聚焦测试：`19/19` 通过。
+- 阶段 08～11 受影响测试：`80/80` 通过。
+- Root/Core 类型检查、Core 构建、限定范围与根 ESLint、diff check 通过。
+- hostile 矩阵覆盖 v1 current 写入、v1/v2 混合 wire、双向 task/scenario 错配、局部 requirement 错配、dangling evidence/ownership 和 self-hash mismatch。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改仍限于 `packages/core/src/plan-artifacts/**`、聚焦测试和 v0/v1/v2 fixture；未修改阶段 12 或旧 finalizer。
+
+11-M2 关闭后仍未接入的 Adapter：
+
+- v1 持久目录到 v2 current 的显式迁移写入与回滚；v1 在迁移前保持只读。
+- v2 Markdown/JSON renderer、真实存储/发布 Adapter 和旧 finalizer 六文件兼容投影。
+- 阶段 12 必须只消费 v2 requirement、scope、ownership、task/scenario refs 做确定语义检查，不得退回文本相似度猜测。
+
 ## 停止条件和回退
 
 如果发现 Run、Review、Archive 或 Platform 直接依赖 `implementation-detail.md` 的特定自由文本结构，先记录消费者契约并提供兼容适配。不要在同一提交中删除文件并修改所有下游消费者。

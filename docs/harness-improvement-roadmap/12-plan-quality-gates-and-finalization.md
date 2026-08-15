@@ -184,6 +184,59 @@ PlanEvent = {
 - 不要求普通任务默认启动独立 evaluator。
 - 不为了精简页面而删除恢复、委派和审计所需的机器证据。
 
+## 实施记录
+
+### 12-M1：分层质量门、finalization receipt 与事件纯 Module
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布。
+
+已冻结的 v1 Interface：
+
+- Layer 1 对所有模式执行确定检查。输入是阶段 11 v2 trusted ArtifactSet、serialized staged file projection 和必需 `PlanStageVerifierPort`；不接受调用方自报 `atomic/verified` 布尔。
+- Stage verification evidence 完整绑定 stage/input/files/content hashes、approval receipt、三项 artifact derivation refs、atomic publication receipt、readback hash、verified_at 和 evidence hash。missing/reject/hostile/foreign/drift 均不能产生 publication intent。
+- Markdown 使用受控、exact delimiter/key/order frontmatter parser；JSON 使用 JSON parser。路径、生命周期、receipt、task/checkpoint、scenario manifest、ownership、placeholder、staging 和 readback 从可信 bytes/evidence 重建。
+- Layer 2 对 standard/assurance 执行内建确定语义检查，即使没有 evaluator Port 也不能直接 passed。它只消费阶段 11 v2 requirement、task/scenario 双向 refs、ownership/evidence、Intent scope identity 和明确 decision refs，不做文本相似度猜测。
+- 用户明确 `resolved_by=user, resolution=rejected` 且任务再次引用时生成 canonical blocking finding；不存在明确机器 outcome 时该 lens 为 not-applicable，不把 `key_alternatives` 猜成已拒绝。
+- semantic anchor 绑定完整输入、内建 findings、可选 evaluator 结果与时间。finalize/verify 重放 builtin projection并要求 Layer2 与外部 anchor exact；删除 finding 后自重哈希仍失败。
+- Layer 3 只在 assurance、显式 adversarial 或可信 Layer2/能力高风险时执行。lenses 从 trusted artifacts、capabilities、scenarios 和 Layer2 唯一派生；reviewer 接收完整有界输入。
+- delegated 不可用/失败最多一次 inline fallback，不循环。无 reviewer Port 时 outcome 为 unavailable，不能出现 succeeded/reviewer_unavailable 矛盾。
+- finalize 接收外部 `trusted_stage_verification`、`trusted_semantic_projection`、trusted review execution 和独立 execution identity；只有所有必需层通过才输出唯一 publication intent，Module 不写文件。
+- PlanEvent 使用 exact machine envelope、attempt/producer_seq/idempotency；只产生阶段、决策、风险、发布、失败和结束事件，不生成叙述式「协议自检通过」或把技术哈希塞进默认中文正文。
+- v0 只读 fail closed；结构、语义、对抗层 receipt 和 final receipt 保持独立状态与完整机器审计。
+
+完成证据：
+
+- 聚焦测试：`15/15` 通过。
+- 阶段 08～12 受影响测试：`95/95` 通过。
+- 稳定树 Core 全量测试：`62` 个文件、`967/967` 通过。
+- Root/Core 类型检查、Core 构建、限定范围与全量 ESLint、diff check 通过。
+- hostile 矩阵覆盖伪造 StageVerifier evidence、错误 Markdown frontmatter、v2 引用缺口、rejected reuse、semantic finding 删除、风险隐藏、delegation/fallback、foreign execution identity、final receipt 篡改和 legacy。
+- 最终独立复审为 Ready，Critical、Important 和 Minor 均为 `0`。
+- 修改范围仅为新的 `packages/core/src/plan-quality/**`、聚焦测试和 current/legacy fixture；未修改阶段 08～11、旧 Python finalizer、状态机、CLI、Skill、OpenAPI 或 Platform。
+
+12-M1 关闭后仍未接入的 Adapter：
+
+- 真实 StageVerifier Port、Markdown/JSON renderer、原子 staging/publish/readback 和旧 Python finalizer 六文件兼容 Adapter。
+- semantic/adversarial evaluator 的真实 inline/delegated 调度、持久 review execution 和 fallback 监控。
+- Plan 事件持久化、现有状态机/CLI/Skill 接线和 Platform 事件展示；current v1 事件冻结后调用方不能继续写旧叙述式自检事件。
+- 阶段 14 的旧 Plan 目录迁移、回滚与真实流程验收。
+
+### 12-M2：current/nonterminal `PlanEventBundle` 公共验证入口
+
+状态：已关闭。当前产物保留在 Hunter Harness 本地工作区，未提交、推送、合并或发布；事件持久化、旧状态机、CLI、Skill 和 Platform 生产接线仍未实现。
+
+- `PlanQualityModule.readEventBundle()` 只接受有界 serialized JSON；拒绝对象输入、超过 `4,000,000` 字符的 payload、非 v1 Schema、非 `change` 生命周期、空事件和超过 `4,096` 项的事件序列。
+- current 表示最后一个 attempt 尚未收到 `phase_ended` 的 nonterminal bundle；terminal 表示最后一个 attempt 已结束。验证器保留此前完成的 attempt，要求每个阶段或重试从 `phase_started` 开始，并拒绝阶段回退、attempt 跳号、同 attempt 的 `producer_seq` 非递增、结束后继续追加、时间倒退和跨 run/Change 混合。
+- 每个事件重算 `event_id` 与 `idempotency_key`，bundle 重算 `bundle_hash`；重复事件身份、重复幂等键、伪造哈希和未知字段均 fail closed。成功结果与事件数组冻结，调用方不能修改已验证投影。
+
+完成证据：本轮聚焦测试 `18/18` 通过，无跳过。新增矩阵覆盖 current/nonterminal、terminal、完成后重试、跨阶段前进、legacy version、身份伪造、混合 run、阶段回退、attempt 跳号和资源上限。该入口只验证事件 bundle，不负责写入 Plan 事件，也不代表现有状态机或 Platform 已接线。
+
+### 12-M3：StageVerifier、发布与事件生产接线（T0 前置未实施）
+
+当前纯 Module、M4A renderer、durable-publication contract 和 Platform monitor read adapter 均已具备，但没有可以安全直接实现的生产闭包：`PlanStageVerifierPort`、真实 project/target/journal root、FS 原子发布/恢复、旧 Python finalizer 兼容边界、PlanEvent publisher 与 RunStore 的 branch/run identity 仍未形成同一权威事务。
+
+开始接线前必须冻结：root/identity authority、八个 current target 与 legacy `plan-finalization.json` 的迁移策略、FS commit 与 `artifact_published/phase_ended` 的原子性（含 outbox/reconcile 状态）、`run_id/change_key/branch_name/attempt` 的拥有者，以及 missing event、ambiguous FS、pending receipt 的公开恢复语义。不得从旧 Python finalizer、已有 monitor read adapter 或 branch snapshot 猜测这些字段。
+
 ## 停止条件和回退
 
 如果语义检查依赖模型输出且结果不稳定，先将它设为 `standard` 的建议项、`assurance` 的阻塞项，并收集误报。不要让不稳定检查立即阻塞所有普通需求。
