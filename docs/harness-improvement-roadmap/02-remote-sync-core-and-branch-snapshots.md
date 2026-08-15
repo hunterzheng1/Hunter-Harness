@@ -229,7 +229,7 @@ Pull 在写入前生成完整事务计划和 before snapshot。任一文件写�
 - 快照身份冲突在同一事务内 fail closed；失败事务不会遗留本次新增 Blob。项目版本、分支版本和文件分页继续使用稳定排序与持久 cursor，cursor 精确绑定 actor、项目、查询类型、分支或快照身份及 offset。
 - 并发写入验证同一不可变身份只有一个 winner；loser 回滚其新增 Blob。`20` 个并发请求对同一 canonical capability 只形成一个持久 token，跨 Adapter 实例可继续验证；actor、allowlist、查询 scope 或身份漂移均被拒绝。
 
-完成证据：独立终审在真实 PostgreSQL 上执行聚焦测试 `5/5`、受影响矩阵 `8` 个文件 `228/228`，均无跳过；并发 winner/loser、Blob 回滚和单 token 证据通过，lint、typecheck、build、Web production build `11` 个 route 与 diff check 通过，终审 Ready。本文档整合时另行复跑分支快照单元测试 `26/26`；由于未配置 `TEST_DATABASE_URL`，本轮 PostgreSQL integration 的 `5` 项被测试框架跳过，因此不将其计为本轮通过证据。独立终审使用的临时数据库容器已删除。
+完成证据：分支快照单元测试 `26/26`、Server typecheck/build、Web production build `11` 个 route、scoped lint 与 diff check 通过；独立终审 Ready。当前环境未配置 `TEST_DATABASE_URL`，因此 PostgreSQL integration 的 `5` 项明确 skip，不将 fake/memory 结果冒充真实 PostgreSQL 证据；独立终审使用的临时数据库容器已删除。
 
 02-M7 关闭后仍未接入：
 
