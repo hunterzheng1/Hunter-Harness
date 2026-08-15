@@ -1098,6 +1098,38 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       readWorkspaceFileFromContainedHandle(options.workspaceRoot, path))
   };
 
+  async function assertPullLocalHashes(
+    operations: readonly PullCommit["operations"][number][]
+  ): Promise<void> {
+    for (const operation of operations) {
+      if (operation.action === "no_change" || operation.local_hash === undefined) continue;
+      const operationPath = operation.action === "rename"
+        ? operation.source_path
+        : operation.path;
+      if (operationPath === undefined) throw new RemoteSyncError("SYNC_CONTENT_INVALID");
+      const absolute = join(options.workspaceRoot, safeRelative(operationPath));
+      let metadata: { readonly size: number };
+      try {
+        metadata = await workspaceFileIo.stat(absolute);
+      } catch {
+        throw new RemoteSyncError("SYNC_PREVIEW_STALE");
+      }
+      if (!Number.isSafeInteger(metadata.size) || metadata.size < 0 ||
+          metadata.size > remoteSyncHttpMaxFileBytes) {
+        throw new RemoteSyncError("SYNC_PREVIEW_STALE");
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await workspaceFileIo.read(absolute));
+      } catch {
+        throw new RemoteSyncError("SYNC_PREVIEW_STALE");
+      }
+      if (bytes.byteLength !== metadata.size || contentHash(bytes) !== operation.local_hash) {
+        throw new RemoteSyncError("SYNC_PREVIEW_STALE");
+      }
+    }
+  }
+
   async function request(path: string, init: RequestInit & { json?: unknown } = {}): Promise<unknown> {
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${options.token}`);
@@ -1759,6 +1791,7 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
           );
           return receipt;
         }
+        await assertPullLocalHashes(command.operations);
         const transaction = await (options.runWorkspaceTransaction ?? runTransaction)(
           options.workspaceRoot,
           operations,

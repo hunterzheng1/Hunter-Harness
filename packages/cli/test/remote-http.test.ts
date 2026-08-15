@@ -1364,6 +1364,47 @@ describe("RemoteSync HTTP CLI port", () => {
     });
   });
 
+  it("rejects a Pull when a local file changed after preview", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-local-drift-"));
+    temporaryRoots.push(workspaceRoot);
+    const path = ".harness/rules/drift.md";
+    const previewLocal = rule(path, "local at preview\n");
+    const remote = rule(path, "remote content\n");
+    await mkdir(join(workspaceRoot, ".harness", "rules"), { recursive: true });
+    await writeFile(join(workspaceRoot, path), "changed after preview\n");
+    const runWorkspaceTransaction = vi.fn(async (root, operations, options) =>
+      runTransaction(root, operations, options));
+    const port = createRemoteSyncHttpPort({
+      serverUrl: "https://platform.example",
+      token: "token",
+      actorId: "actor_alpha",
+      workspaceRoot,
+      fetch: vi.fn(),
+      runWorkspaceTransaction
+    });
+
+    await expect(port.commitPull({
+      source_ref: source,
+      expected_revision: "revision_1",
+      preview_hash: `sha256:${"1".repeat(64)}`,
+      idempotency_key: `sha256:${"2".repeat(64)}`,
+      payload_hash: `sha256:${"3".repeat(64)}`,
+      files: [remote],
+      baseline_files: [previewLocal],
+      operations: [{
+        path,
+        content_kind: "rule",
+        action: "modify",
+        local_hash: previewLocal.content_hash,
+        remote_hash: remote.content_hash
+      }],
+      skipped: []
+    })).rejects.toMatchObject({ code: "SYNC_PREVIEW_STALE" });
+    expect(runWorkspaceTransaction).not.toHaveBeenCalled();
+    await expect(readFile(join(workspaceRoot, path), "utf8"))
+      .resolves.toBe("changed after preview\n");
+  });
+
   it("resumes an interrupted Pull transaction without replaying completed writes", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-pull-recovery-"));
     temporaryRoots.push(workspaceRoot);
