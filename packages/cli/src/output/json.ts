@@ -6,6 +6,7 @@ export interface CliResult {
     | "configure"
     | "update"
     | "push"
+    | "pull"
     | "refresh"
     | "cleanup"
     | "rules-sync"
@@ -21,6 +22,9 @@ export interface CliResult {
   items: unknown[];
   warnings: unknown[];
   errors: unknown[];
+  /** Stage 03 Push/Pull receipt binding. */
+  preview_hash?: string;
+  outcome?: string;
   /** Guarded local mutation contract. */
   plan_hash?: string;
   recovery_id?: string | null;

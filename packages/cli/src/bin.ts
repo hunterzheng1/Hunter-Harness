@@ -78,11 +78,40 @@ import {
   WorkflowCompatibilityError
 } from "./workflow-data/compatibility.js";
 import { readCliVersion } from "./version.js";
+import {
+  createPushPullCliPort,
+  type PushPullCliPort
+} from "./push-pull-adapter/index.js";
+import { createRemoteSyncHttpPort } from "./push-pull-adapter/remote-http.js";
+import {
+  resolvePushPullSource,
+  runPushPull,
+  type ArchivePublishInput,
+  type PushPullCommandOptions
+} from "./commands/push-pull.js";
+import {
+  createPushPullOrchestration,
+  RemoteSyncModule,
+  type SourceRef
+} from "@hunter-harness/core";
 
 export interface CliDependencies extends Partial<CommandDependencies> {
   cwd?: string;
   resourcesRoot?: string;
   pacoteExtract?: ResolveWorkflowDataOptions["pacoteExtract"];
+  /** Stage 03 command adapter seam; omitted dependencies remain fail closed. */
+  pushPull?: PushPullCliPort;
+  pushPullSource?: (input: Readonly<{
+    direction: "push" | "pull";
+    branch?: string;
+  }>) => Promise<SourceRef>;
+  pushPullArchive?: (change: string) => Promise<ArchivePublishInput>;
+}
+
+interface ResolvedCliDependencies extends CommandDependencies {
+  pushPull: PushPullCliPort;
+  pushPullSource: NonNullable<CliDependencies["pushPullSource"]>;
+  pushPullArchive: CliDependencies["pushPullArchive"] | undefined;
 }
 
 interface SecretInputStream extends NodeJS.ReadableStream {
@@ -126,7 +155,23 @@ export async function promptSecret(
   }
 }
 
-function defaultDependencies(overrides: CliDependencies): CommandDependencies {
+function defaultDependencies(overrides: CliDependencies): ResolvedCliDependencies {
+  const env = overrides.env ?? process.env;
+  const remoteSyncUrl = env.HUNTER_REMOTE_SYNC_URL?.trim();
+  const remoteSyncToken = env.HUNTER_REMOTE_SYNC_TOKEN?.trim();
+  const remoteSyncActor = env.HUNTER_REMOTE_SYNC_ACTOR_ID?.trim();
+  const workspaceRoot = overrides.cwd ?? process.cwd();
+  const remoteOrchestration = remoteSyncUrl !== undefined && remoteSyncUrl !== "" &&
+      remoteSyncToken !== undefined && remoteSyncToken !== "" &&
+      remoteSyncActor !== undefined && remoteSyncActor !== ""
+    ? createPushPullOrchestration(new RemoteSyncModule(createRemoteSyncHttpPort({
+      serverUrl: remoteSyncUrl,
+      token: remoteSyncToken,
+      actorId: remoteSyncActor,
+      workspaceRoot,
+      fetch: overrides.fetch ?? globalThis.fetch
+    })))
+    : undefined;
   return {
     cwd: overrides.cwd ?? process.cwd(),
     resourcesRoot: overrides.resourcesRoot ?? "",
@@ -142,7 +187,13 @@ function defaultDependencies(overrides: CliDependencies): CommandDependencies {
     }),
     promptSecret: overrides.promptSecret ?? overrides.prompt ?? promptSecret,
     fetch: overrides.fetch ?? globalThis.fetch,
-    env: overrides.env ?? process.env,
+    env,
+    pushPull: overrides.pushPull ?? createPushPullCliPort(
+      remoteOrchestration === undefined ? {} : { orchestration: remoteOrchestration }
+    ),
+    pushPullSource: overrides.pushPullSource ?? ((input) =>
+      resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
+    pushPullArchive: overrides.pushPullArchive,
     ...(overrides.terminalColumns !== undefined
       ? { terminalColumns: overrides.terminalColumns }
       : typeof process.stdout.columns === "number"
@@ -257,7 +308,7 @@ export async function runCli(
       );
     });
   addCommonOptions(program.command("update"))
-    .description("应用已批准的服务端产物")
+    .description("现有兼容入口：应用已批准的服务端产物；Stage 03 Pull 生产接线完成前继续使用本命令")
     .option("--guarded", "使用本地保守刷新，不调用服务端更新")
     .option(
       "--conflict-strategy <strategy>",
@@ -276,10 +327,46 @@ export async function runCli(
       );
     });
   addCommonOptions(program.command("push"))
-    .description("创建受治理的变更提案")
+    .description("现有兼容入口：创建受治理的变更提案；Stage 03 Push 生产接线完成前继续使用本命令")
     .option("--skip-sensitive-scan", "显式跳过敏感扫描阻断（非交互需配合 --yes）")
     .action(async (options: PushOptions) => {
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
+    });
+  addCommonOptions(program.command("harness-push"))
+    .description("RemoteSync 未配置时安全失败；配置 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID 后使用生产 HTTP Adapter")
+    .option("--scope <scopes>", "config,rules,architecture,instructions,branch_files 或 all")
+    .option("--branch <branch>", "显式来源分支")
+    .option("--change <change-key>", "仅配合 --scope archive 使用")
+    .option(
+      "--resolve <path=resolution>",
+      "逐路径选择 keep-local|accept-remote|skip（可重复）",
+      (value: string, previous: string[]) => [...previous, value],
+      [] as string[]
+    )
+    .action(async (options: PushPullCommandOptions) => {
+      exitCode = await runPushPull(
+        "push",
+        { ...program.opts<PushPullCommandOptions>(), ...options },
+        dependencies
+      );
+    });
+  addCommonOptions(program.command("harness-pull"))
+    .alias("pull")
+    .description("RemoteSync 未配置时安全失败；配置 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID 后使用生产 HTTP Adapter")
+    .option("--scope <scopes>", "config,rules,architecture,instructions 或 branch_files")
+    .option("--branch <branch>", "恢复 branch_files 时必需的来源分支")
+    .option(
+      "--resolve <path=resolution>",
+      "逐路径选择 keep-local|accept-remote|skip（可重复）",
+      (value: string, previous: string[]) => [...previous, value],
+      [] as string[]
+    )
+    .action(async (options: PushPullCommandOptions) => {
+      exitCode = await runPushPull(
+        "pull",
+        { ...program.opts<PushPullCommandOptions>(), ...options },
+        dependencies
+      );
     });
   const archive = program.command("archive")
     .description("管理核心变更归档包");
@@ -297,7 +384,7 @@ export async function runCli(
     .description("访问远端项目知识库（无本地索引或离线回退）");
   addCommonOptions(knowledge.command("query <query>"))
     .description("只查询远端语义知识；远端不可用时直接失败")
-    .option("--limit <count>", "最多返回 1-50 条", (value: string) => Number(value), 10)
+    .option("--limit <count>", "最多返回 1-10 条", (value: string) => Number(value), 10)
     .action(async (query: string, options: KnowledgeQueryOptions) => {
       exitCode = await runKnowledgeQuery(
         query,

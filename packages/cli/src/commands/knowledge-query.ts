@@ -28,13 +28,15 @@ export async function runKnowledgeQuery(
       fetch: dependencies.fetch
     });
     const items = result.items.map((item) => ({
-      document_id: item.document.document_id,
-      kind: item.document.kind,
-      title: item.document.title,
-      body: item.document.body,
-      source_path: item.document.source_path,
-      content_sha256: item.document.content_sha256,
-      metadata: item.document.metadata
+      result_id: item.result_id,
+      kind: item.kind,
+      summary: item.summary,
+      relevance: item.relevance,
+      ...(item.source === undefined ? {} : { source: item.source }),
+      ...(item.verified_at === undefined ? {} : { verified_at: item.verified_at }),
+      ...(item.source_version === undefined ? {} : { source_version: item.source_version }),
+      conflicts_with_intent: item.conflicts_with_intent,
+      ...(item.conflict_summary === undefined ? {} : { conflict_summary: item.conflict_summary })
     }));
     const output = {
       schema_version: 1,
@@ -44,6 +46,8 @@ export async function runKnowledgeQuery(
       source: "remote",
       fallback: false,
       project_id: result.project_id,
+      query_id: result.query_id,
+      receipt: result.receipt,
       query,
       count: items.length,
       items,
@@ -54,15 +58,14 @@ export async function runKnowledgeQuery(
       : items.length === 0
         ? "远端知识库中没有匹配内容。\n"
         : items.map((item, index) =>
-          `${index + 1}. ${item.title}\n   来源：${item.source_path}\n   ${item.body}`
+          `${index + 1}. ${item.kind}（${item.relevance}）\n   来源：${item.source ?? "未提供"}\n   ${item.summary}`
         ).join("\n\n") + "\n");
     return 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = error instanceof RemoteKnowledgeQueryError
-      ? error.code
-      : "REMOTE_KNOWLEDGE_UNAVAILABLE";
-    const exitCode = error instanceof RemoteKnowledgeQueryError ? error.exitCode : 1;
+    const typedError = error instanceof RemoteKnowledgeQueryError ? error : undefined;
+    const message = typedError?.message ?? "远端知识查询不可用";
+    const code = typedError?.code ?? "REMOTE_UNAVAILABLE";
+    const exitCode = typedError?.exitCode ?? 3;
     dependencies.stderr(message + "\n");
     if (options.json === true) {
       dependencies.stdout(JSON.stringify({
@@ -72,7 +75,9 @@ export async function runKnowledgeQuery(
         exit_code: exitCode,
         source: "remote",
         fallback: false,
-        project_id: null,
+        project_id: typedError?.receipt?.project_id ?? null,
+        ...(typedError?.query_id === undefined ? {} : { query_id: typedError.query_id }),
+        ...(typedError?.receipt === undefined ? {} : { receipt: typedError.receipt }),
         items: [],
         errors: [{ code, message }]
       }) + "\n");

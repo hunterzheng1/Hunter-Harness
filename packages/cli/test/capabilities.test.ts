@@ -46,6 +46,8 @@ describe("CLI/workflow capability contract", () => {
       expect(payload.commands.archive).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands.knowledge).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.commands.instructions).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands["harness-push"]).toEqual({ available: true, schemaVersion: 1 });
+      expect(payload.commands["harness-pull"]).toEqual({ available: true, schemaVersion: 1 });
       expect(payload.capabilities).toEqual(expect.arrayContaining([
         "build-profile@3",
         "verification-graph@1",
@@ -56,6 +58,10 @@ describe("CLI/workflow capability contract", () => {
         "codegraph-status@2",
         "doctor-capability@1",
         "registry-governance@1"
+      ]));
+      expect(payload.capabilities).not.toEqual(expect.arrayContaining([
+        "remote-sync-push@1",
+        "remote-sync-pull@1"
       ]));
       expect(payload.compatibility.compatible).toBe(true);
     } finally {
