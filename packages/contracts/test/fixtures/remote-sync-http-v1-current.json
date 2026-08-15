@@ -1,0 +1,440 @@
+{
+  "acquire_lease": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases",
+    "operation_id": "acquireRemoteSyncLease",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncLeaseAcquireHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 201,
+    "replay_status": 200,
+    "success_schema": "RemoteSyncLeaseHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "SYNC_LEASE_BUSY",
+        "SYNC_IDEMPOTENCY_CONFLICT"
+      ],
+      "422": [
+        "SYNC_LEASE_INVALID"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "renew_lease": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases/{lease_id}:renew",
+    "operation_id": "renewRemoteSyncLease",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncLeaseRenewHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 200,
+    "success_schema": "RemoteSyncLeaseHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "SYNC_IDEMPOTENCY_CONFLICT",
+        "SYNC_LEASE_FENCED",
+        "SYNC_LEASE_SCOPE_MISMATCH"
+      ],
+      "410": [
+        "SYNC_LEASE_EXPIRED"
+      ],
+      "422": [
+        "SYNC_LEASE_INVALID"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "release_lease": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/leases/{lease_id}:release",
+    "operation_id": "releaseRemoteSyncLease",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncLeaseReleaseHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 200,
+    "success_schema": "RemoteSyncLeaseReleaseHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "SYNC_IDEMPOTENCY_CONFLICT",
+        "SYNC_LEASE_FENCED",
+        "SYNC_LEASE_SCOPE_MISMATCH"
+      ],
+      "410": [
+        "SYNC_LEASE_EXPIRED"
+      ],
+      "422": [
+        "SYNC_LEASE_INVALID"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "snapshot": {
+    "method": "GET",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/snapshot",
+    "operation_id": "getRemoteSyncSnapshot",
+    "request_placement": "path_and_query",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:read"
+    },
+    "request_schema": "RemoteSyncSnapshotHttpRequest",
+    "success_status": 200,
+    "success_schema": "RemoteSyncRemoteSnapshotHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "SYNC_SNAPSHOT_NOT_FOUND"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "content_stream": {
+    "method": "GET",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/snapshots/{snapshot_id}/content",
+    "operation_id": "streamRemoteSyncContent",
+    "request_placement": "path_and_query",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:read"
+    },
+    "request_schema": "RemoteSyncContentStreamHttpRequest",
+    "success_status": 200,
+    "success_media_type": "application/octet-stream",
+    "success_schema": null,
+    "success_headers": {
+      "content_sha256": "X-Content-SHA256",
+      "snapshot_id": "X-Remote-Snapshot-Id",
+      "revision": "X-Remote-Revision"
+    },
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED",
+        "SYNC_STREAM_INVALID"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "SYNC_SNAPSHOT_NOT_FOUND"
+      ],
+      "409": [
+        "SYNC_PREVIEW_STALE"
+      ],
+      "413": [
+        "SYNC_STREAM_TOO_LARGE"
+      ],
+      "499": [
+        "SYNC_STREAM_ABORTED"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "prepare_push": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push:prepare",
+    "operation_id": "prepareRemoteSyncPush",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncPushPrepareHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 201,
+    "replay_status": 200,
+    "success_schema": "RemoteSyncPushPrepareHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED",
+        "SYNC_STREAM_INVALID"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "SYNC_IDEMPOTENCY_CONFLICT",
+        "SYNC_LEASE_BUSY",
+        "SYNC_LEASE_FENCED",
+        "SYNC_LEASE_SCOPE_MISMATCH",
+        "SYNC_PREVIEW_STALE"
+      ],
+      "410": [
+        "SYNC_LEASE_EXPIRED"
+      ],
+      "413": [
+        "SYNC_STREAM_TOO_LARGE"
+      ],
+      "422": [
+        "SYNC_LEASE_INVALID"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "commit_push": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push:commit",
+    "operation_id": "commitRemoteSyncPush",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncPushCommitHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 200,
+    "replay_status": 200,
+    "success_schema": "RemoteSyncPushCommitHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "SYNC_PREPARE_NOT_FOUND"
+      ],
+      "409": [
+        "SYNC_IDEMPOTENCY_CONFLICT",
+        "SYNC_LEASE_FENCED",
+        "SYNC_LEASE_SCOPE_MISMATCH",
+        "SYNC_COMMIT_AMBIGUOUS",
+        "SYNC_PREVIEW_STALE"
+      ],
+      "410": [
+        "SYNC_LEASE_EXPIRED",
+        "SYNC_PREPARE_EXPIRED"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "push_status": {
+    "method": "GET",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push/status",
+    "operation_id": "getRemoteSyncPushStatus",
+    "request_placement": "path_and_query",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncPushStatusHttpRequest",
+    "success_status": 200,
+    "success_schema": "RemoteSyncPushStatusHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "SYNC_PREPARE_NOT_FOUND"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "push_receipt": {
+    "method": "GET",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/push/{prepare_id}/receipt",
+    "operation_id": "getRemoteSyncPushReceipt",
+    "request_placement": "path_and_query",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:write"
+    },
+    "request_schema": "RemoteSyncPushReceiptHttpRequest",
+    "success_status": 200,
+    "success_schema": "RemoteSyncPushReceiptHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "404": [
+        "SYNC_PREPARE_NOT_FOUND"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  },
+  "pull": {
+    "method": "POST",
+    "path": "/api/v1/projects/{project_id}/branches/{branch_name}/remote-sync/pull",
+    "operation_id": "pullRemoteSync",
+    "request_placement": "path_and_json_body",
+    "auth": {
+      "actor_source": "authenticated_principal",
+      "project_allowlist_source": "server_authority",
+      "project_key_scope": "files:read"
+    },
+    "request_schema": "RemoteSyncPullHttpRequest",
+    "idempotency_header": "Idempotency-Key",
+    "success_status": 201,
+    "replay_status": 200,
+    "success_schema": "RemoteSyncPullHttpResponse",
+    "request_id_header": "X-Request-Id",
+    "errors": {
+      "400": [
+        "VALIDATION_FAILED"
+      ],
+      "401": [
+        "AUTH_REQUIRED",
+        "TOKEN_INVALID",
+        "SESSION_INVALID"
+      ],
+      "403": [
+        "PROJECT_INFORMATION_FORBIDDEN",
+        "PROJECT_KEY_SCOPE",
+        "PROJECT_KEY_MISMATCH"
+      ],
+      "409": [
+        "SYNC_IDEMPOTENCY_CONFLICT",
+        "SYNC_PREVIEW_STALE"
+      ],
+      "413": [
+        "SYNC_STREAM_TOO_LARGE"
+      ],
+      "422": [
+        "SYNC_PULL_WORKSPACE_FAILED"
+      ],
+      "503": [
+        "REMOTE_UNAVAILABLE"
+      ]
+    }
+  }
+}
