@@ -16,6 +16,7 @@ import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runConnect, type ConnectOptions } from "./commands/connect.js";
 import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
+import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   runArchiveUpload,
@@ -432,6 +433,13 @@ export async function runCli(
       exitCode = await runEventsSync(options, dependencies);
     });
   const planCmd = program.command("plan").description("Plan v2 产物与最终化");
+  planCmd.command("evidence-pack")
+    .description("把规划自然产出组装为 plan finalize 可消费的证据包（阶段 14 桥）")
+    .requiredOption("--input <file>", "结构化规划输入 JSON（intent/审批/tasks/scenarios）")
+    .requiredOption("--output <file>", "证据包输出路径")
+    .action(async (options: PlanEvidencePackOptions) => {
+      exitCode = await runPlanEvidencePack(options, dependencies);
+    });
   planCmd.command("finalize")
     .description("v2 Plan 最终化：质量门 + FS 发布 + 事件 outbox（输入为编排方产出的结构化证据包）")
     .requiredOption("--input <file>", "结构化证据包 JSON（trusted/publication/context/baseline）")

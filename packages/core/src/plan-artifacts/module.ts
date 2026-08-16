@@ -410,6 +410,7 @@ function buildHumanArtifactsCanonical(input: HumanArtifactBuildInput): HumanArti
     "evidence", "graph", "approval_package", "approval_package_input", "approval_receipt", "structured_input",
     ]) || input.schema_version !== 2 ||
     !planProfileSchema.safeParse(input.profile).success || !plannedPhaseSetSchema.safeParse(input.phase_set).success) {
+    console.error("ART-CHK", { rec: plainRecord(input), keys: plainRecord(input) ? exact(input, ["schema_version", "profile", "phase_set", "context", "intent", "evidence", "graph", "approval_package", "approval_package_input", "approval_receipt", "structured_input"]) : "n/a", sv: input.schema_version === 2, profile: planProfileSchema.safeParse(input.profile).success, phaseSet: plannedPhaseSetSchema.safeParse(input.phase_set).success });
     return fail("PLAN_ARTIFACT_INPUT_INVALID");
   }
   const approval = createPlanDecisionModule().verifyApprovalReceipt({ receipt: input.approval_receipt,
