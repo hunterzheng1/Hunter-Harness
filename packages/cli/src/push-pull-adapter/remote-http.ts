@@ -1849,12 +1849,22 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       // 路由缺失/不 conform 由 errorFromResponse/模块 validateArchiveReceipt fail closed，
       // 绝不投影 legacy 形状冒充新收据。
       const packageRef = command.package_ref;
+      // 传输层 Idempotency-Key（uuid 形状）：从协议 idempotency 确定性派生，
+      // 同一 command 的重试复用同一 key（服务端 mutation 去重）。
+      const transportIdempotency = [
+        command.idempotency_key.slice(7, 15),
+        command.idempotency_key.slice(15, 19),
+        `4${command.idempotency_key.slice(20, 23)}`,
+        `8${command.idempotency_key.slice(24, 27)}`,
+        command.idempotency_key.slice(28, 40)
+      ].join("-");
       const response = await request(
         `/api/v1/projects/${encodeURIComponent(command.source_ref.project_id)}/archives:ingest`,
         {
           method: "POST",
           headers: {
-            "content-type": "application/octet-stream",
+            "content-type": "application/zip",
+            "idempotency-key": transportIdempotency,
             "x-archive-request-id": packageRef.request_id,
             "x-archive-id": packageRef.archive_id,
             "x-archive-change-key": packageRef.change_key,
