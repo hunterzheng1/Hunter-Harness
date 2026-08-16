@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.77] — hunter-harness / [0.2.68] — @hunter-harness/workflow-harness
+
+### Added（2026-08-16 03 收尾：Push/Pull skill 层补齐）
+
+- **新增 `harness-push` / `harness-pull` skill**：03 承诺的用户侧交互入口落地——意图理解 → 预览展示（分支/提交/远端基线/变化文件）→ 确认收集 → 调 CLI 命令；归档显式 `--scope archive --change`；无变化不上传；本地修改保护与删除恢复绑定 preview hash；未配置 RemoteSync 时 fail closed。
+- 工作流 Bundle 提升至 `0.2.57`，最低 CLI 版本 `0.2.77`。
+
 ## [0.2.76] — hunter-harness / [0.2.67] — @hunter-harness/workflow-harness
 
 ### Added / Fixed（2026-08-16 Plan v2 结构化证据链全链路贯通）
