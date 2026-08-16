@@ -245,9 +245,9 @@ PlanEvent = {
 - ✅ **PlanEvent publisher 的 outbox 适配器**（工作项 2 前半）：`fs-event-outbox-port.ts`——outbox/transaction 记录落盘 + deliver 时 TS PlanEvent 追加 `meta/plan-events.ndjson`（event_id 去重幂等）+ fsync。**记录偏离**：TS 事件不混入 Python `events.ndjson`（schema 不同）；事件上传平台（Python sync 读取并转换本文件）列为后续工作项。
 - ✅ **PlanStageVerifierPort 生产实现**（工作项 3 前半）：`packages/core/src/plan-quality/stage-verifier.ts`——files_hash 复核 + 逐文件三方一致（重算 stableHash = 声明 = 期望），markdown frontmatter 与 JSON 双格式解析，证据自哈希；semantic/adversarial evaluator 的真实 inline/delegated 调度与 fallback 监控仍单列。
 - ✅ **CLI finalize 命令与生产 port 组**（工作项 4 前半）：`hunter-harness plan finalize --input <evidence.json>`——L1 确定性门（生产 StageVerifier）→ L2/L3 内联裁决 → finalizeQuality → finalization-transaction；新增 `fs-durable-publication-port.ts`（PlanDurablePublicationPort 生产实现，recovery_token 以 journal 为权威防漂移）、`production-ports.ts`（renderer/quality_verifier/path-authority 生产实现）。**renderer 归一化（已记录偏离）**：planArtifactPublication 的 plan/manifest ownership_paths（任务级产品归属）在事务层归一为排序后的八 target 精确集合（durable 契约冻结语义），manifest_hash 与 intent 随之重算。
-- **集成阻塞（待 owner 决策）**：全链路 e2e 打通到 durable 发布层时发现冻结模块限制——`durable-publication` 的 `snapshot()` 信任边界拒绝 >4096 元素的数组，payload `bytes` 展开后任意 >4KB 文档即超界（真实规划文档通常 5-50KB；冻结测试只用 ~10B 载荷从未暴露）。候选修正：a) durable 层 snapshot 对 bytes 数组放宽到 `max_payload_bytes`（2MB）并调整 nodes 上限；b) commit 边界改为传 payload 描述符（无 bytes），bytes 只在 FS prepare 边界出现（需改 validPlan/commitInput 校验）。全链路 e2e 已写好并以 `it.skip` 挂起（`packages/cli/test/plan-finalize-command.e2e.test.ts`），决策后取消 skip 即为验收。
-- 聚焦测试 12/12 通过（1 个 skip 为上述阻塞项）；core 全量 1280/1280。
-- 剩余：工作项 4 后半（legacy 六文件兼容投影 + Python finalizer 切换 + run_id/attempt 入参，依赖阻塞解除）、工作项 5（skill 指针化）、工作项 6（阶段 14 验收）、事件上传接线。
+- ~~集成阻塞~~ **已解除（owner 批准方案 b 方向，按载荷边界对齐实施）**：`durable-publication` 的 `snapshot()` 数组/节点/字符上限从 4096/5 万/1200 万对齐到发布载荷边界（2MB 每 payload × 八 payload = 200 万元素/1600 万节点/1600 万字符），所有 hash 身份零漂移；完整 b 方案（commit 边界纯描述符化）需重排三层 plan_hash 身份，留作契约版本演进候选。durable 模块新增 2 个回归/对抗测试（27KB 真实载荷通过、2MB 超限 fail closed）。
+- 聚焦测试：FS port 3、outbox/verifier 4、CLI e2e 2（**全链路已通过**，无 skip）、durable 回归/对抗 2；core 全量 1282/1282。
+- 剩余：工作项 4 后半（legacy 六文件兼容投影 + Python finalizer 切换 + run_id/attempt 入参）、工作项 5（skill 指针化）、工作项 6（阶段 14 验收）、事件上传接线。
 
 ## 停止条件和回退
 

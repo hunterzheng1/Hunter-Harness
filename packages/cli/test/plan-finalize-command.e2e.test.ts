@@ -234,9 +234,7 @@ describe("hunter-harness plan finalize (e2e)", () => {
     expect(finalized.events.length).toBeGreaterThan(0);
   });
 
-  // 阻塞：core durable-publication 的 snapshot 信任边界拒绝 >4096 元素的数组
-  // （payload bytes 展开后超界），冻结契约修正待 owner 决策（见 12-m3 文档）。
-  it.skip("runs the full v2 chain: gates → finalize → FS publication → event outbox", async () => {
+  it("runs the full v2 chain: gates → finalize → FS publication → event outbox", async () => {
     const outputs: string[] = [];
     const exitCode = await runPlanFinalize({ input: inputPath }, {
       cwd: root,

@@ -71,6 +71,39 @@ function portFor(value = plan(), behavior: (request: unknown) => unknown = () =>
 }
 
 describe("Stage12-M4T durable publication contract", () => {
+  it("accepts realistic-size payloads (bytes arrays beyond the old 4096 snapshot cap)", async () => {
+    // 回归：集成时暴露的阻塞——snapshot 曾把数组限死在 4096 元素，
+    // 任意 >4KB 的规划文档的 bytes 展开即被拒。现已对齐载荷边界（2MB/payload）。
+    const value = plan();
+    const big = "规".repeat(9_000); // ~27KB UTF-8
+    (value.payloads[0] as { serialized_content: string }).serialized_content = big;
+    const bytes = [...Buffer.from(big, "utf8")];
+    (value.payloads[0] as { bytes: number[] }).bytes = bytes;
+    (value.payloads[0] as { byte_length: number }).byte_length = bytes.length;
+    (value.payloads[0] as { serialized_sha256: string }).serialized_sha256 = rawHash(big);
+    const entries = value.payloads.map((item) => Object.fromEntries(Object.entries(item)
+      .filter(([key]) => key !== "serialized_content" && key !== "bytes")));
+    const manifest = { ...value.manifest, entries };
+    const manifest_hash = hash(manifest);
+    const normalized = { ...value, manifest, manifest_hash,
+      publication_intent_id: "plan_publication:" + manifest_hash.slice(7) };
+    const port = portFor(normalized, () => ({ state: "committed", receipt: receipt(normalized) }));
+    const result = await createDurablePlanPublicationModule(port).publish(input({ plan: normalized }));
+    expect(result.ok).toBe(true);
+  });
+
+  it("still rejects payloads beyond the 2MB publication bound (fail closed)", async () => {
+    const value = plan();
+    const tooBig = "x".repeat(2_000_001);
+    (value.payloads[0] as { serialized_content: string }).serialized_content = tooBig;
+    const bytes = [...Buffer.from(tooBig, "utf8")];
+    (value.payloads[0] as { bytes: number[] }).bytes = bytes;
+    (value.payloads[0] as { byte_length: number }).byte_length = bytes.length;
+    (value.payloads[0] as { serialized_sha256: string }).serialized_sha256 = rawHash(tooBig);
+    await expect(createDurablePlanPublicationModule(portFor(value)).publish(input({ plan: value })))
+      .rejects.toThrow("PLAN_DURABLE_PUBLICATION_INPUT_INVALID");
+  });
+
   it("publishes exact eight M4A payloads and allows the event only after verified durable receipt", async () => {
     const value = plan(); const port = portFor(value); const module = createDurablePlanPublicationModule(port);
     const result = await module.publish(input({ plan: value }));

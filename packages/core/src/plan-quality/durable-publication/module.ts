@@ -48,14 +48,21 @@ function exact(value: Record<string, unknown>, required: readonly string[], opti
   return keys.length >= required.length && required.every((key) => Object.hasOwn(value, key)) &&
     keys.every((key) => required.includes(key) || optional.includes(key));
 }
+// 上限对齐发布载荷边界：单 payload ≤ 2MB（bytes 逐字节展开 ≤ 2M 元素），
+// 八 payload 合计 ≤ 16M 节点/字符。该边界位于模块内部（renderer 产出 plan），
+// 超限仍 fail closed——真实规划文档（5-50KB）远低于此界。
+const SNAPSHOT_MAX_NODES = 16_000_000;
+const SNAPSHOT_MAX_STRINGS = 16_000_000;
+const SNAPSHOT_MAX_ARRAY_LENGTH = 2_000_000;
+
 function snapshot(input: unknown): unknown {
   const active = new WeakSet<object>();
   let nodes = 0; let strings = 0;
   const copy = (value: unknown, depth: number): unknown => {
     if (value === null || typeof value === "boolean") return value;
     if (typeof value === "number") { if (!Number.isFinite(value)) throw new Error("number"); return value; }
-    if (typeof value === "string") { strings += value.length; if (strings > 12_000_000) throw new Error("string"); return value; }
-    if (typeof value !== "object" || isProxy(value) || depth > 64 || ++nodes > 50_000 || active.has(value)) throw new Error("hostile");
+    if (typeof value === "string") { strings += value.length; if (strings > SNAPSHOT_MAX_STRINGS) throw new Error("string"); return value; }
+    if (typeof value !== "object" || isProxy(value) || depth > 64 || ++nodes > SNAPSHOT_MAX_NODES || active.has(value)) throw new Error("hostile");
     const array = Array.isArray(value);
     const prototype = Object.getPrototypeOf(value);
     if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) throw new Error("prototype");
@@ -71,7 +78,7 @@ function snapshot(input: unknown): unknown {
       }
       if (array) {
         const length = descriptors.length?.value;
-        if (!Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > 4096 ||
+        if (!Number.isSafeInteger(length) || (length as number) < 0 || (length as number) > SNAPSHOT_MAX_ARRAY_LENGTH ||
             keys.length !== (length as number) + 1) throw new Error("array");
         const result: unknown[] = [];
         for (let index = 0; index < (length as number); index += 1) {
