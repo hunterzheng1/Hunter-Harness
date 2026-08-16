@@ -237,7 +237,15 @@ PlanEvent = {
 
 开始接线前必须冻结：root/identity authority、八个 current target 与 legacy `plan-finalization.json` 的迁移策略、FS commit 与 `artifact_published/phase_ended` 的原子性（含 outbox/reconcile 状态）、`run_id/change_key/branch_name/attempt` 的拥有者，以及 missing event、ambiguous FS、pending receipt 的公开恢复语义。不得从旧 Python finalizer、已有 monitor read adapter 或 branch snapshot 猜测这些字段。
 
-**T0 冻结提案已起草**：`docs/harness-improvement-roadmap/12-m3-t0-freeze-proposal.md`（2026-08-08），含 5 项决策的现状证据、具体冻结方案与备选风险，以及冻结后 6 个可施工工作项的依赖序。待 owner 签字后按提案施工。
+**T0 冻结提案已起草并获 owner 签字**：`docs/harness-improvement-roadmap/12-m3-t0-freeze-proposal.md`（2026-08-08 起草、同日批准）。
+
+**接线进度（2026-08-08，工作项 1/2/3 已落地）**：
+
+- ✅ **FS publisher**（工作项 1）：`packages/cli/src/plan-finalization/fs-publication-port.ts`——staging 全量渲染（八 target 精确集合+哈希逐位核验）→ 写 tmp+fsync+原子 rename → journal 三段式（prepared/applying/committed，transition 矩阵合规，契约 reader 校验通过）；apply 幂等可重放；ambiguous FS → recovery_required fail closed；Windows 目录 fsync 降级（EPERM 跳过，POSIX 强制）。
+- ✅ **PlanEvent publisher 的 outbox 适配器**（工作项 2 前半）：`fs-event-outbox-port.ts`——outbox/transaction 记录落盘 + deliver 时 TS PlanEvent 追加 `meta/plan-events.ndjson`（event_id 去重幂等）+ fsync。**记录偏离**：TS 事件不混入 Python `events.ndjson`（schema 不同）；事件上传平台（Python sync 读取并转换本文件）列为后续工作项。
+- ✅ **PlanStageVerifierPort 生产实现**（工作项 3 前半）：`packages/core/src/plan-quality/stage-verifier.ts`——files_hash 复核 + 逐文件三方一致（重算 stableHash = 声明 = 期望），markdown frontmatter 与 JSON 双格式解析，证据自哈希；semantic/adversarial evaluator 的真实 inline/delegated 调度与 fallback 监控仍单列。
+- 聚焦测试 10/10 通过；core 全量 1280/1280。
+- 剩余：工作项 4（legacy 六文件兼容投影 + finalizer 切换 + run_id/attempt 入参）、工作项 5（skill 指针化）、工作项 6（阶段 14 验收）、事件上传接线。
 
 ## 停止条件和回退
 

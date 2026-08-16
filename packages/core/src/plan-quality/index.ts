@@ -1,6 +1,7 @@
 export * from "./types.js";
 export * from "./errors.js";
 export { createPlanQualityModule } from "./module.js";
+export { createPlanStageVerifier } from "./stage-verifier.js";
 export {
   createDurablePlanPublicationModule,
   publishDurablePlanPublication,
