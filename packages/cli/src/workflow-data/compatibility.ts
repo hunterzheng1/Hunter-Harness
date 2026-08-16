@@ -14,7 +14,9 @@ export const CLI_CAPABILITIES = [
   "doctor-capability@1",
   "registry-governance@1",
   "progress-sync@1",
-  "headless-stage@1"
+  "headless-stage@1",
+  "remote-sync-push@1",
+  "remote-sync-pull@1"
 ] as const;
 
 export interface WorkflowRequirements {

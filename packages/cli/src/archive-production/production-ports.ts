@@ -21,6 +21,7 @@ interface PackageReceiptLike {
   readonly package_sha256: string;
   readonly manifest_sha256: string;
   readonly receipt_hash: string;
+  readonly project_id: string;
   readonly [key: string]: unknown;
 }
 
@@ -37,8 +38,7 @@ export function createArchivePackageVerifier(options: { readonly projectRoot: st
     async verify(input: {
       readonly package_receipt: PackageReceiptLike;
       readonly local_zip_ref: LocalArchiveZipRef;
-      readonly project_id: string;
-    }): Promise<{ readonly schema_version: 1; readonly verdict: "verified"; readonly verified_at: string; readonly evidence: Record<string, unknown> } |
+    }): Promise<Record<string, unknown> |
       { readonly schema_version: 1; readonly verdict: "rejected"; readonly reason_codes: readonly string[]; readonly verified_at: string }> {
       const verifiedAt = new Date().toISOString();
       const reasons: string[] = [];
@@ -48,12 +48,15 @@ export function createArchivePackageVerifier(options: { readonly projectRoot: st
       }
       let bytes: Uint8Array | null = null;
       try {
-        bytes = await resolver.resolve(input.local_zip_ref, input.project_id);
+        bytes = await resolver.resolve(input.local_zip_ref, input.package_receipt.project_id);
       } catch {
         reasons.push("ZIP_REF_UNTRUSTED");
       }
       if (bytes !== null && `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== input.package_receipt.package_sha256) {
         reasons.push("RECEIPT_BYTES_HASH_MISMATCH");
+      }
+      if (typeof input.package_receipt.project_id !== "string" || input.package_receipt.project_id === "") {
+        reasons.push("RECEIPT_PROJECT_MISSING");
       }
       if (!receiptSealValid(input.package_receipt)) {
         reasons.push("RECEIPT_SEAL_INVALID");
@@ -62,15 +65,27 @@ export function createArchivePackageVerifier(options: { readonly projectRoot: st
         return Object.freeze({ schema_version: 1 as const, verdict: "rejected" as const,
           reason_codes: reasons, verified_at: verifiedAt });
       }
-      return Object.freeze({
+      // 与冻结 evidence 契约一致（validation.ts:144-163）：body → evidence_hash → verification_id 派生
+      const body = {
         schema_version: 1 as const,
         verdict: "verified" as const,
-        verified_at: verifiedAt,
-        evidence: {
-          package_sha256: input.package_receipt.package_sha256,
-          manifest_sha256: input.package_receipt.manifest_sha256,
-          byte_length: (bytes as Uint8Array).byteLength
-        }
+        package_operation_id: input.package_receipt.package_operation_id,
+        receipt_hash: input.package_receipt.receipt_hash,
+        package_sha256: input.package_receipt.package_sha256,
+        manifest_sha256: input.package_receipt.manifest_sha256,
+        local_zip_ref_id: input.local_zip_ref.ref_id,
+        local_zip_size_bytes: input.local_zip_ref.size_bytes,
+        expected_immutable_identity: sha256Tagged({
+          package_receipt: input.package_receipt,
+          local_zip_ref: input.local_zip_ref
+        }),
+        verified_at: verifiedAt
+      };
+      const evidenceHash = sha256Tagged(body);
+      return Object.freeze({
+        ...body,
+        verification_id: `archive_outbox_package_verification:${evidenceHash.slice(7)}`,
+        evidence_hash: evidenceHash
       });
     }
   });

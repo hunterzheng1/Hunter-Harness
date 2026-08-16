@@ -8,7 +8,10 @@
     "processTreeCleanup": true,
     "detachedProcessPreflight": true,
     "confirmationFlag": "--confirm-resource-intensive",
-    "confirmationRequiredProfiles": ["system", "full"],
+    "confirmationRequiredProfiles": [
+      "system",
+      "full"
+    ],
     "resourceIntensiveModules": [
       "test_harness_integration.py",
       "test_harness_service.py"
@@ -34,140 +37,392 @@
   "riskTiers": {
     "fast": {
       "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency. Policy notes: checkpointRules apply only when meta/implementation-checkpoints.json defines the entry for this change; missing file/entry = disabled (gate must not require --task).",
-      "defaultPhases": ["plan", "run", "archive"],
-      "requiredValidations": ["unitTest"],
-      "conditionalStages": ["review", "package", "apidoc"],
-      "upgradeTriggers": ["api-change", "security", "migration", "concurrency", "breaking-contract"]
+      "defaultPhases": [
+        "plan",
+        "run",
+        "archive"
+      ],
+      "requiredValidations": [
+        "unitTest"
+      ],
+      "conditionalStages": [
+        "review",
+        "package",
+        "apidoc"
+      ],
+      "upgradeTriggers": [
+        "api-change",
+        "security",
+        "migration",
+        "concurrency",
+        "breaking-contract"
+      ]
     },
     "standard": {
       "description": "Ordinary production code and non-breaking API/features. Policy notes: requiredValidations may close DEGRADED when ledger status=NOT_RUN and evidence starts with 'DEGRADED: <reason>' (close code CLOSED_DEGRADED, phase status <= WARN); do not fake OK with unrelated tests.",
-      "defaultPhases": ["plan", "run", "test", "submit", "archive"],
-      "requiredValidations": ["compile", "unitTest", "unitTestFull"],
-      "conditionalStages": ["review", "package", "apidoc"],
-      "upgradeTriggers": ["auth", "security", "delete", "migration", "concurrency", "artifact-protocol", "shared-state", "breaking-api"]
+      "defaultPhases": [
+        "plan",
+        "run",
+        "test",
+        "submit",
+        "archive"
+      ],
+      "requiredValidations": [
+        "compile",
+        "unitTest",
+        "unitTestFull"
+      ],
+      "conditionalStages": [
+        "review",
+        "package",
+        "apidoc"
+      ],
+      "upgradeTriggers": [
+        "auth",
+        "security",
+        "delete",
+        "migration",
+        "concurrency",
+        "artifact-protocol",
+        "shared-state",
+        "breaking-api"
+      ]
     },
     "full": {
       "description": "Auth/security/delete/migration/concurrency/service protocol/shared state/breaking contracts. Policy notes: (1) DEGRADED close — ledger status=NOT_RUN and evidence 'DEGRADED: <reason>' → CLOSED_DEGRADED with phase <= WARN; never fake OK with unrelated tests. (2) checkpointRules — only when plan created meta/implementation-checkpoints.json entry; missing file/entry = not enabled, gate must not require --task.",
-      "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
-      "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"],
-      "conditionalStages": ["package", "apidoc"],
+      "defaultPhases": [
+        "plan",
+        "run",
+        "test",
+        "review",
+        "submit",
+        "archive"
+      ],
+      "requiredValidations": [
+        "compile",
+        "unitTest",
+        "unitTestFull",
+        "apiTest"
+      ],
+      "conditionalStages": [
+        "package",
+        "apidoc"
+      ],
       "upgradeTriggers": []
     }
   },
   "skills": {
     "harness-plan": {
       "phase": "plan",
-      "inputs": ["requirements", "change-context"],
-      "artifacts": ["plans", "spec", "test-scenarios", "implementation-detail"],
-      "events": ["phase.start", "phase.end", "decision"],
+      "inputs": [
+        "requirements",
+        "change-context"
+      ],
+      "artifacts": [
+        "plans",
+        "spec",
+        "test-scenarios",
+        "implementation-detail"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "decision"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["risk-classify-plan"]
+      "capabilities": [
+        "risk-classify-plan"
+      ]
     },
     "harness-run": {
       "phase": "run",
-      "inputs": ["implementation-detail", "state-snapshot"],
-      "artifacts": ["code", "verification-ledger"],
-      "events": ["phase.start", "phase.end", "command", "verification"],
+      "inputs": [
+        "implementation-detail",
+        "state-snapshot"
+      ],
+      "artifacts": [
+        "code",
+        "verification-ledger"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command",
+        "verification"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close", "ledger-record"]
+      "capabilities": [
+        "gate-begin",
+        "gate-close",
+        "ledger-record"
+      ]
     },
     "harness-test": {
       "phase": "test",
-      "inputs": ["test-scenarios", "verification-ledger"],
-      "artifacts": ["test-reports", "verification-ledger"],
-      "events": ["phase.start", "phase.end", "command", "verification"],
-      "allowedInteractions": ["resource-intensive-test-confirmation"],
-      "capabilities": ["gate-begin", "gate-close", "test-guard", "ledger-record", "resource-safe-test-runner"]
+      "inputs": [
+        "test-scenarios",
+        "verification-ledger"
+      ],
+      "artifacts": [
+        "test-reports",
+        "verification-ledger"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command",
+        "verification"
+      ],
+      "allowedInteractions": [
+        "resource-intensive-test-confirmation"
+      ],
+      "capabilities": [
+        "gate-begin",
+        "gate-close",
+        "test-guard",
+        "ledger-record",
+        "resource-safe-test-runner"
+      ]
     },
     "harness-review": {
       "phase": "review",
-      "inputs": ["diff", "verification-ledger", "test-reports"],
-      "artifacts": ["review-report"],
-      "events": ["phase.start", "phase.end", "issue", "artifact"],
+      "inputs": [
+        "diff",
+        "verification-ledger",
+        "test-reports"
+      ],
+      "artifacts": [
+        "review-report"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "issue",
+        "artifact"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close"]
+      "capabilities": [
+        "gate-begin",
+        "gate-close"
+      ]
     },
     "harness-submit": {
       "phase": "submit",
-      "inputs": ["verification-ledger", "test-tracking"],
-      "artifacts": ["git-integration"],
-      "events": ["phase.start", "phase.end", "command", "artifact"],
-      "allowedInteractions": ["merge-conflict-resolution"],
-      "capabilities": ["gate-begin", "gate-close", "integration-lock", "test-guard-stage"]
+      "inputs": [
+        "verification-ledger",
+        "test-tracking"
+      ],
+      "artifacts": [
+        "git-integration"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command",
+        "artifact"
+      ],
+      "allowedInteractions": [
+        "merge-conflict-resolution"
+      ],
+      "capabilities": [
+        "gate-begin",
+        "gate-close",
+        "integration-lock",
+        "test-guard-stage"
+      ]
     },
     "harness-package": {
-      "profiles": ["java"],
+      "profiles": [
+        "java"
+      ],
       "phase": "package",
-      "inputs": ["verification-ledger", "final-commit"],
-      "artifacts": ["deploy-artifact"],
-      "events": ["phase.start", "phase.end", "command", "verification"],
+      "inputs": [
+        "verification-ledger",
+        "final-commit"
+      ],
+      "artifacts": [
+        "deploy-artifact"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command",
+        "verification"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close", "ledger-can-reuse"]
+      "capabilities": [
+        "gate-begin",
+        "gate-close",
+        "ledger-can-reuse"
+      ]
     },
     "harness-archive": {
       "phase": "archive",
-      "inputs": ["events", "verification-ledger", "reports"],
-      "artifacts": ["summary-data", "archive-manifest"],
-      "events": ["phase.start", "phase.end", "artifact"],
+      "inputs": [
+        "events",
+        "verification-ledger",
+        "reports"
+      ],
+      "artifacts": [
+        "summary-data",
+        "archive-manifest"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "artifact"
+      ],
       "allowedInteractions": [],
       "capabilities": []
     },
     "harness-sync": {
       "phase": "sync",
-      "inputs": ["canonical-harness"],
-      "artifacts": ["bundle-projection"],
-      "events": ["phase.start", "phase.end", "command"],
+      "inputs": [
+        "canonical-harness"
+      ],
+      "artifacts": [
+        "bundle-projection"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command"
+      ],
       "allowedInteractions": [],
       "capabilities": []
     },
     "harness-codebase-map": {
       "phase": "codebase-map",
-      "inputs": ["project-root"],
-      "artifacts": ["codebase-map"],
-      "events": ["phase.start", "phase.end"],
+      "inputs": [
+        "project-root"
+      ],
+      "artifacts": [
+        "codebase-map"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end"
+      ],
       "allowedInteractions": [],
       "capabilities": []
     },
     "harness-knowledge-query": {
       "phase": "knowledge-query",
-      "inputs": ["knowledge-index"],
+      "inputs": [
+        "knowledge-index"
+      ],
       "artifacts": [],
-      "events": ["phase.start", "phase.end"],
+      "events": [
+        "phase.start",
+        "phase.end"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["read-only"]
+      "capabilities": [
+        "read-only"
+      ]
     },
     "harness-knowledge-ingest": {
       "phase": "knowledge-ingest",
-      "inputs": ["archive-evidence"],
-      "artifacts": ["knowledge-index"],
-      "events": ["phase.start", "phase.end", "command"],
+      "inputs": [
+        "archive-evidence"
+      ],
+      "artifacts": [
+        "knowledge-index"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "command"
+      ],
       "allowedInteractions": [],
       "capabilities": []
     },
     "harness-apidoc": {
-      "profiles": ["java"],
+      "profiles": [
+        "java"
+      ],
       "phase": "apidoc",
-      "inputs": ["api-diff"],
-      "artifacts": ["api-contract-summary"],
-      "events": ["phase.start", "phase.end", "artifact"],
+      "inputs": [
+        "api-diff"
+      ],
+      "artifacts": [
+        "api-contract-summary"
+      ],
+      "events": [
+        "phase.start",
+        "phase.end",
+        "artifact"
+      ],
       "allowedInteractions": [],
-      "capabilities": ["gate-begin", "gate-close"]
+      "capabilities": [
+        "gate-begin",
+        "gate-close"
+      ]
+    },
+    "harness-push": {
+      "phase": "sync",
+      "inputs": [
+        "remote-baseline",
+        "local-content"
+      ],
+      "artifacts": [
+        "push-receipt"
+      ],
+      "events": [],
+      "allowedInteractions": [
+        "upload-confirmation"
+      ],
+      "capabilities": [
+        "remote-sync-push@1"
+      ]
+    },
+    "harness-pull": {
+      "phase": "sync",
+      "inputs": [
+        "remote-snapshot"
+      ],
+      "artifacts": [
+        "pull-receipt"
+      ],
+      "events": [],
+      "allowedInteractions": [
+        "conflict-decision"
+      ],
+      "capabilities": [
+        "remote-sync-pull@1"
+      ]
     }
   },
   "requiredArtifacts": {
-    "plan": ["plans", "spec"],
+    "plan": [
+      "plans",
+      "spec"
+    ],
     "run": [],
-    "test": ["tests/test-report-*.md"],
-    "review": ["reports/review/review-report-*.md"],
+    "test": [
+      "tests/test-report-*.md"
+    ],
+    "review": [
+      "reports/review/review-report-*.md"
+    ],
     "submit": [],
     "package": [],
-    "archive": ["reports/final/summary-data.json"]
+    "archive": [
+      "reports/final/summary-data.json"
+    ]
   },
   "requiredValidations": {
-    "run": ["compile", "unitTest"],
-    "test": ["unitTestFull"],
+    "run": [
+      "compile",
+      "unitTest"
+    ],
+    "test": [
+      "unitTestFull"
+    ],
     "submit": [],
-    "package": ["package"]
+    "package": [
+      "package"
+    ]
   },
   "validationPhases": {
     "compile": "run",
@@ -180,50 +435,108 @@
   },
   "capabilityGates": {
     "deployment": {
-      "signals": ["deploy-required"],
-      "requiredStages": ["package"],
-      "requiredValidations": ["package"]
+      "signals": [
+        "deploy-required"
+      ],
+      "requiredStages": [
+        "package"
+      ],
+      "requiredValidations": [
+        "package"
+      ]
     },
     "container": {
-      "signals": ["install-verification"],
-      "requiredStages": ["package"],
-      "requiredValidations": ["package"]
+      "signals": [
+        "install-verification"
+      ],
+      "requiredStages": [
+        "package"
+      ],
+      "requiredValidations": [
+        "package"
+      ]
     },
     "api": {
-      "signals": ["api-diff-present"],
-      "requiredStages": ["apidoc"],
-      "requiredValidations": ["apiTest"]
+      "signals": [
+        "api-diff-present"
+      ],
+      "requiredStages": [
+        "apidoc"
+      ],
+      "requiredValidations": [
+        "apiTest"
+      ]
     },
     "database": {
-      "signals": ["migration"],
+      "signals": [
+        "migration"
+      ],
       "requiredStages": [],
-      "requiredValidations": ["dbCompatibility"]
+      "requiredValidations": [
+        "dbCompatibility"
+      ]
     }
   },
   "conditionalStages": {
     "review": {
-      "tiers": ["standard", "full"],
-      "signals": ["security", "auth", "breaking-api", "shared-state"]
+      "tiers": [
+        "standard",
+        "full"
+      ],
+      "signals": [
+        "security",
+        "auth",
+        "breaking-api",
+        "shared-state"
+      ]
     },
     "package": {
-      "tiers": ["standard", "full"],
-      "signals": ["deploy-required", "install-verification"]
+      "tiers": [
+        "standard",
+        "full"
+      ],
+      "signals": [
+        "deploy-required",
+        "install-verification"
+      ]
     },
     "apidoc": {
-      "tiers": ["standard", "full"],
-      "signals": ["api-diff-present"]
+      "tiers": [
+        "standard",
+        "full"
+      ],
+      "signals": [
+        "api-diff-present"
+      ]
     }
   },
   "interactionWhitelist": {
     "global": [],
-    "harness-test": ["resource-intensive-test-confirmation"],
-    "harness-submit": ["merge-conflict-resolution"],
-    "harness-plan": ["risk-confirmation"]
+    "harness-test": [
+      "resource-intensive-test-confirmation"
+    ],
+    "harness-submit": [
+      "merge-conflict-resolution"
+    ],
+    "harness-plan": [
+      "risk-confirmation"
+    ]
   },
   "checkpointRules": {
     "foundation-gate": {
-      "afterTasks": [1, 2, 3, 4],
-      "beforeTasks": [6, 7, 8, 9, 10],
+      "afterTasks": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "beforeTasks": [
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
       "blocking": true,
       "requiredReport": "reports/review/foundation-gate-review.md",
       "reviewerTool": "codex"

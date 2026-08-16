@@ -37,6 +37,10 @@ export type {
 } from "./archive-remote-adapter/index.js";
 export { createArchiveRemoteAdapter } from "./archive-remote-adapter/index.js";
 export { createArchiveOutbox } from "./archive-outbox/index.js";
+export { createArchivePackageBuilder } from "./archive-package-builder/index.js";
+export { InMemoryArchivePackagePort } from "./archive-package-builder/index.js";
+export { sha256Bytes } from "./fs/hash.js";
+export { stableJson } from "./archive-package-builder/stable.js";
 export type {
   ArchiveOutboxClaim,
   ArchiveRetentionPolicy

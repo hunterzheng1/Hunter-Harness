@@ -11,17 +11,19 @@
   "minimumCliVersion": "0.2.77",
   "workflowPackageVersion": "0.2.68",
   "capabilities": [
-    "sync@2",
-    "rules-sync@1",
-    "rules-review@1",
-    "knowledge-sync@3",
     "build-profile@3",
-    "verification-graph@1",
-    "execution-session@1",
-    "external-convergence@1",
     "codegraph-status@2",
     "doctor-capability@1",
-    "registry-governance@1"
+    "execution-session@1",
+    "external-convergence@1",
+    "knowledge-sync@3",
+    "registry-governance@1",
+    "remote-sync-pull@1",
+    "remote-sync-push@1",
+    "rules-review@1",
+    "rules-sync@1",
+    "sync@2",
+    "verification-graph@1"
   ],
   "requires": {
     "minimumCliVersion": "0.2.77",

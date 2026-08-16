@@ -68,7 +68,7 @@ export function composeArchiveProduction(options: {
     do {
       const page = await port.list(cursor, 100);
       for (const candidate of page.records as unknown as readonly { entry_id: string; state: string; change_identity?: string; project_id?: string }[]) {
-        if ((candidate.state === "queued" || candidate.state === "retry_wait") &&
+        if ((candidate.state === "pending" || candidate.state === "retry_wait") &&
             candidate.change_identity === change) {
           record = candidate;
           break;

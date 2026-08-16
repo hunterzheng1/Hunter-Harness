@@ -12,11 +12,12 @@ import { createArchivePackageVerifier } from "../src/archive-production/producti
 const sha256Tagged = (value: unknown): string =>
   `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
 
-function receiptFor(packageSha256: string) {
+function receiptFor(packageSha256: string, projectId = "prj_v") {
   const body = {
     package_sha256: packageSha256,
     manifest_sha256: `sha256:${"b".repeat(64)}`,
-    package_operation_id: "op_x"
+    package_operation_id: "op_x",
+    project_id: projectId
   };
   return { ...body, receipt_hash: sha256Tagged(body) };
 }
@@ -38,8 +39,7 @@ describe("archive package verifier (06B-3 W3 T0-3)", () => {
     const verifier = createArchivePackageVerifier({ projectRoot: root });
     const result = await verifier.verify({
       package_receipt: receiptFor(ref.package_sha256),
-      local_zip_ref: ref,
-      project_id: "prj_v"
+      local_zip_ref: ref
     });
     expect(result.verdict).toBe("verified");
   });
@@ -49,8 +49,7 @@ describe("archive package verifier (06B-3 W3 T0-3)", () => {
     const verifier = createArchivePackageVerifier({ projectRoot: root });
     const result = await verifier.verify({
       package_receipt: receiptFor(`sha256:${"9".repeat(64)}`),
-      local_zip_ref: ref,
-      project_id: "prj_v"
+      local_zip_ref: ref
     });
     expect(result.verdict).toBe("rejected");
     expect((result as { reason_codes: string[] }).reason_codes).toContain("RECEIPT_REF_HASH_MISMATCH");
@@ -69,9 +68,8 @@ describe("archive package verifier (06B-3 W3 T0-3)", () => {
     const ref = await putArchiveCas(root, new TextEncoder().encode("PK-c"), { project_id: "prj_v" });
     const verifier = createArchivePackageVerifier({ projectRoot: root });
     const result = await verifier.verify({
-      package_receipt: receiptFor(ref.package_sha256),
-      local_zip_ref: ref,
-      project_id: "prj_other"
+      package_receipt: receiptFor(ref.package_sha256, "prj_other"),
+      local_zip_ref: ref
     });
     expect(result.verdict).toBe("rejected");
     expect((result as { reason_codes: string[] }).reason_codes).toContain("ZIP_REF_UNTRUSTED");

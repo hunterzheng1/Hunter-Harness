@@ -59,7 +59,7 @@ describe("CLI/workflow capability contract", () => {
         "doctor-capability@1",
         "registry-governance@1"
       ]));
-      expect(payload.capabilities).not.toEqual(expect.arrayContaining([
+      expect(payload.capabilities).toEqual(expect.arrayContaining([
         "remote-sync-push@1",
         "remote-sync-pull@1"
       ]));

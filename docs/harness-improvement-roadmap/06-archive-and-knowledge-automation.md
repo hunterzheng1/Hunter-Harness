@@ -470,6 +470,16 @@ Adapter 直接消费阶段 01 canonical serialized `ArchiveIngestReceipt`，不�
 
 06B-2b/06B-3 的生产接线当前暂停在 T0 契约包：`LocalArchiveZipRef` 尚无受信 resolver/root 绑定，`ArchiveOutboxPort` 尚无持久序列化、事务和跨进程重启语义，verifier bridge 缺少可信 `LocalArchiveReceipt + inventory + CoreV2Projection` 输入，RemoteSync production 尚无 Archive publish seam，旧 `change_archive_packages`/`/archive-package` 也不能无损冒充新收据。接线前必须冻结 durable layout/CAS、ZIP/CAS 项目隔离、verifier 输入、canonical Archive publish/legacy 迁移及 cleanup/reaper 语义；本轮未发明 migration、HTTP path 或生产 wiring。
 
+**接线进度（2026-08-16，T0 提案已批准并施工完成）**：
+
+- ✅ **T0 契约包**：五项冻结决策见 `06b3-t0-freeze-proposal.md`（owner 已批准）。
+- ✅ **W1 ZIP resolver + CAS**：`packages/cli/src/archive-production/cas-store.ts`——内容寻址存储 + 自签 binding + 字节复核 + 项目隔离；hostile 矩阵 8/8。
+- ✅ **W2 FS Outbox Port + gc**：`fs-outbox-port.ts`（durable layout/CAS/重启语义）+ `hunter-harness archive outbox gc`（显式选择器、intent 先落盘、CAS 引用计数、dead-letter）；测试 11/11。
+- ✅ **W3 包验证器 + publish seam**：`production-ports.ts`（字节级三方一致 + receipt 自签 + 冻结 evidence 契约形状）；`remote-http.ts` 的 `commitArchive` stub 实装为 POST `archives:ingest`（路由缺失/不 conform 均 fail closed，绝不冒充 legacy）；平台路由实现属阶段 13 切片。
+- ✅ **W4 生产组合接线**：`compose.ts` 单实例组合（FS outbox + resolver + verifier + RemoteSyncModule publisher → ArchiveRemoteAdapter）；`harness-push --scope archive` 从 durable record claim；core barrel 补导出冻结工厂。
+- ✅ **W5 全链路 e2e**：build → CAS → enqueue → claim → publish → ack(acknowledged) → gc(cleaned) 真实收据全通；push/pull skill 契约测试翻转为发布语义（policy/capabilities/bundle 三处登记）。
+- 剩余：平台侧 `archives:ingest` 路由实现（阶段 13 切片）与真实环境联调、Platform Worker reaper。
+
 ## 操作进度与监控
 
 不可变归档事件只记录生命周期事实。归档进行中的可变进度写入归档树外的本地状态，例如：

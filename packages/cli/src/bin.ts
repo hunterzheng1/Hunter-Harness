@@ -165,17 +165,21 @@ function defaultDependencies(overrides: CliDependencies): ResolvedCliDependencie
   const remoteSyncToken = env.HUNTER_REMOTE_SYNC_TOKEN?.trim();
   const remoteSyncActor = env.HUNTER_REMOTE_SYNC_ACTOR_ID?.trim();
   const workspaceRoot = overrides.cwd ?? process.cwd();
-  const remoteOrchestration = remoteSyncUrl !== undefined && remoteSyncUrl !== "" &&
-      remoteSyncToken !== undefined && remoteSyncToken !== "" &&
-      remoteSyncActor !== undefined && remoteSyncActor !== ""
-    ? createPushPullOrchestration(new RemoteSyncModule(createRemoteSyncHttpPort({
-      serverUrl: remoteSyncUrl,
-      token: remoteSyncToken,
-      actorId: remoteSyncActor,
+  const remoteConfigured = remoteSyncUrl !== undefined && remoteSyncUrl !== "" &&
+    remoteSyncToken !== undefined && remoteSyncToken !== "" &&
+    remoteSyncActor !== undefined && remoteSyncActor !== "";
+  const remoteSyncModule = remoteConfigured
+    ? new RemoteSyncModule(createRemoteSyncHttpPort({
+      serverUrl: remoteSyncUrl as string,
+      token: remoteSyncToken as string,
+      actorId: remoteSyncActor as string,
       workspaceRoot,
       fetch: overrides.fetch ?? globalThis.fetch
-    })))
+    }))
     : undefined;
+  const remoteOrchestration = remoteSyncModule === undefined
+    ? undefined
+    : createPushPullOrchestration(remoteSyncModule);
   return {
     cwd: overrides.cwd ?? process.cwd(),
     resourcesRoot: overrides.resourcesRoot ?? "",
@@ -197,7 +201,7 @@ function defaultDependencies(overrides: CliDependencies): ResolvedCliDependencie
       ? (() => {
           const archiveComposition = composeArchiveProduction({
             projectRoot: overrides.cwd ?? process.cwd(),
-            publisher: remoteOrchestration as never,
+            publisher: remoteSyncModule as never,
             resolveSource: () =>
               resolvePushPullSource(overrides.cwd ?? process.cwd(), { direction: "push" })
           });
