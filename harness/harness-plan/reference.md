@@ -299,7 +299,7 @@ status: approved
 
    > 如果 frontmatter 缺失，后续 run/test/review/submit/archive 不得依赖模型猜测 change-name。
 
-4. **初始化结构化事件**：确定 change-name 后，立即生成稳定的 `<plan-run-id>`（同一次 plan 尝试内不得改变；首次 `<attempt>` 为 `1`），运行 `harness_events.py append --change-dir ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>`。finalizer 必须复用完全相同的 `--run-id` / `--attempt`，否则 verify 会按生命周期身份 fail-closed。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
+4. **初始化结构化事件**：确定 change-name 后，立即生成稳定的 `<plan-run-id>`（必须小写字母开头：v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒——统一用 `plan_<uuid>` 形状，contracts `createPlanRunId()`；同一次 plan 尝试内不得改变；首次 `<attempt>` 为 `1`），运行 `harness_events.py append --change-dir ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>`。finalizer 必须复用完全相同的 `--run-id` / `--attempt`，否则 verify 会按生命周期身份 fail-closed。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
 5. **保存计划文件**：计划文件包含 YAML frontmatter（含 change-name），保存到：
    - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）

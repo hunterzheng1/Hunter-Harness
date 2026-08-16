@@ -59,7 +59,7 @@ disallowed-tools:
 | 阶段 | 动作 |
 |------|------|
 | 0 | 用当前解释器运行 `harness_runtime.py doctor`，后续消费绝对 argv；git status；脏工作区 → baseline 隔离 + `decision`，不询问 |
-| 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。立即运行一次 `harness_state.py capture --project . --change-dir "<executionRoot>" --json`，把此时 HEAD 固定为不可变 `changeBase`。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
+| 0.5 | 确定英文 `change-name` 后，根据需求生成一次简洁的中文展示标题（建议 6～24 个可见字符，保留必要产品名），执行 `harness_context.py prepare --phase plan --executor <tool> [--change <id>] --title "<中文标题>" --json`；英文名继续作为目录与稳定标识。立即运行一次 `harness_state.py capture --project . --change-dir "<executionRoot>" --json`，把此时 HEAD 固定为不可变 `changeBase`。以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1）；run-id 必须小写字母开头（v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒）——统一用 `plan_<uuid>` 形状（contracts `createPlanRunId()`），用同一身份追加 `phase.start`；从第一条知识查询起保留事件证据，并在 finalizer 中复用该身份 |
 | 0.6 | 使用 `classify` 返回的默认阶段和项目能力生成 `plannedPhases`，向用户用中文说明可选阶段；确认后运行 `harness_context.py configure-plan --project . --change <id> --phases "plan,run,...,archive" --operator <tool> --reason "<中文原因>" --json`。无 Git 或不需要提交时不得加入 `submit`；快速迭代默认 `plan,run,archive`。省略项由脚本写入 `skippedPhases`，不得伪造阶段事件 |
 | 1 | 直接执行一次 `npx hunter-harness knowledge query "<用户需求原文>" --limit 10 --json`。这是唯一执行入口，不扫描技能目录、不查找其他脚本；失败记 `issue` 并继续，不建立本地索引或离线回退 |
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
