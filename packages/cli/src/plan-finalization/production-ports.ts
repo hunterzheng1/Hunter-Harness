@@ -92,15 +92,20 @@ export function createPlanFinalizationQualityVerifier(): PlanFinalizationQuality
       if (!bundleRead.ok) {
         return { valid: false, reason_code: bundleRead.reason_code };
       }
-      const body = {
-        schema_version: 1 as const,
-        valid: true as const,
+      // 证明语义与冻结模板一致：proof_hash = canonical hash of
+      // {receipt_hash, plan_hash, layer_receipt_hashes, event_bundle_hash}（无 schema_version/valid 包装键）
+      const proof_body = {
         receipt_hash: input.finalization.receipt.receipt_hash as PlanDurablePublicationSha256,
         plan_hash: input.plan_hash,
         layer_receipt_hashes: input.finalization.receipt.layer_receipt_hashes as readonly [PlanDurablePublicationSha256, PlanDurablePublicationSha256, PlanDurablePublicationSha256],
         event_bundle_hash: input.event_bundle_hash
       };
-      return Object.freeze({ ...body, proof_hash: canonicalHash(body) });
+      return Object.freeze({
+        schema_version: 1 as const,
+        valid: true as const,
+        ...proof_body,
+        proof_hash: canonicalHash(proof_body)
+      });
     }
   });
 }

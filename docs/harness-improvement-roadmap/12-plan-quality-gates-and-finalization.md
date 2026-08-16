@@ -249,7 +249,9 @@ PlanEvent = {
 - 聚焦测试：FS port 3、outbox/verifier 4、CLI e2e 2（**全链路已通过**，无 skip）、durable 回归/对抗 2；core 全量 1282/1282。
 - ✅ **工作项 5（skill 指针化，2026-08-16）**：harness-plan SKILL 阶段 8 与关键规则表改为 v2/legacy 二选一（不得混用）；reference.md 新增「阶段 8 v2 路径」——证据包契约（PlanFinalizeInputFile）、成功语义（exit 0 + PLAN_FINALIZED）、落盘事实（八 target + journal committed + plan-events.ndjson）、验证与回退规则。T0-4 确认：Python finalize_plan 已持 run_id/attempt 入参，v2 路径由证据包 context 承载。
 - **工作项 4 后半重定界（基于冻结发现）**：legacy v1 产物在冻结模块中是只读身份投影（LegacyV1HumanArtifactSet 只含身份+哈希，无内容），不存在 v1→v2 内容升格器——按冻结语义不应发明。因此「Python finalizer 切换」重定界为：legacy 路径原样保留至阶段 14 退役；v2 证据包由 v2 规划流程（classify/context/decision 模块）产出，而非从 legacy 六文件反向重建。Python 状态机产出证据包的接线归入阶段 14 迁移工作。
-- 剩余：工作项 6（阶段 14 验收：legacy 退役 + 真实流程 e2e + Python 状态机证据包产出）、事件上传接线（Python sync 读 plan-events.ndjson）。
+- ✅ **事件上传接线（2026-08-16）**：`harness_events_sync.py` 新增 `_sync_plan_events_stream`——TS PlanEvent（meta/plan-events.ndjson）按 hunter-progress-sync/v1 线上格式投影上传（event_type 保留 TS 原值），独立 ACK 游标（plan-events-sync-cursor.json），producer_seq 以主流总行数为 base 避让冲突；无 events.ndjson 时计划流仍单独上报。测试 4 个（上传+游标偏移、重放幂等、坏行隔离推进、纯计划流），sync 套件 28/28。
+- 剩余：工作项 6（阶段 14 验收：legacy 退役 + 真实流程 e2e + Python 状态机证据包产出）。
+- 顺带发现（与本项无关，预存问题未修）：test_harness_multiday_resilience 的 archive 预算断言在 HEAD 上即失败（错误消息文案漂移）。
 
 ## 停止条件和回退
 

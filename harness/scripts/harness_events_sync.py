@@ -533,6 +533,187 @@ def run_id_for(change_dir: Path) -> str:
     return "run_" + digest
 
 
+PLAN_EVENTS_STREAM_NAME = "plan-events.ndjson"
+PLAN_EVENTS_CURSOR_NAME = "plan-events-sync-cursor.json"
+
+
+def _plan_events_path(change_dir: Path) -> Path:
+    return _state_dir(change_dir) / "meta" / PLAN_EVENTS_STREAM_NAME
+
+
+def _plan_events_cursor_path(change_dir: Path) -> Path:
+    return _state_dir(change_dir) / "meta" / PLAN_EVENTS_CURSOR_NAME
+
+
+def _load_plan_cursor(change_dir: Path, *, initial_base: int) -> tuple[int, int]:
+    path = _plan_events_cursor_path(change_dir)
+    if not path.is_file():
+        return 0, initial_base
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, initial_base
+    acked = data.get("acked_lines") if isinstance(data, dict) else None
+    base = data.get("producer_seq_base") if isinstance(data, dict) else None
+    if not isinstance(acked, int) or isinstance(acked, bool) or acked < 0:
+        acked = 0
+    if not isinstance(base, int) or isinstance(base, bool) or base < 0:
+        base = initial_base
+    return acked, base
+
+
+def _save_plan_cursor(change_dir: Path, *, acked: int, base: int) -> None:
+    path = _plan_events_cursor_path(change_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": 1,
+        "acked_lines": acked,
+        "producer_seq_base": base,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _sync_plan_events_stream(
+    change_dir: Path,
+    *,
+    endpoint: dict[str, str],
+    rid: str,
+    resolved_key: str,
+    display_title: str,
+    main_stream_total_lines: int,
+) -> dict[str, Any]:
+    """Upload the TS PlanEvent stream (meta/plan-events.ndjson) with its own ACK cursor.
+
+    producer_seq base starts after the Python stream's total line count, so the two
+    streams never collide in (run_id, producer_seq) space. 事件语义与转换边界见
+    12-M3 文档：TS 事件按 hunter-progress-sync/v1 线上格式投影，event_type 保留
+    TS 原值（artifact_published 等）。
+    """
+    project_id = endpoint["project_id"]
+    plan_file = _plan_events_path(change_dir)
+    if not plan_file.is_file():
+        return {"ok": True, "uploaded": 0, "quarantined": 0, "reason": "no plan-events.ndjson"}
+    lines = _event_lines_snapshot(plan_file)
+    acked, base = _load_plan_cursor(change_dir, initial_base=main_stream_total_lines)
+    if acked > len(lines):
+        # 文件被截断重建：从头重放（event_id 服务端幂等去重）
+        acked = 0
+    pending = lines[acked:]
+    uploaded = 0
+    quarantined = 0
+    client_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for chunk_start in range(0, len(pending), MAX_BATCH_SIZE):
+        raw_chunk = pending[chunk_start:chunk_start + MAX_BATCH_SIZE]
+        batch: list[dict[str, Any]] = []
+        line_by_event_id: dict[str, int] = {}
+        local_invalid: list[tuple[str, int, str]] = []
+        for offset, raw_line in enumerate(raw_chunk, start=1):
+            line_number = acked + chunk_start + offset
+            line = raw_line.strip()
+            if not line:
+                local_invalid.append((f"{resolved_key}:plan:{line_number}", line_number, "EMPTY_LINE"))
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                local_invalid.append((f"{resolved_key}:plan:{line_number}", line_number, "INVALID_JSON"))
+                continue
+            if not isinstance(event, dict):
+                local_invalid.append((f"{resolved_key}:plan:{line_number}", line_number, "INVALID_EVENT"))
+                continue
+            event_id = str(event.get("event_id") or f"{resolved_key}:plan:{line_number}")
+            item: dict[str, Any] = {
+                "event_id": event_id,
+                "producer_seq": base + line_number,
+                "event_type": str(event.get("type") or "unknown"),
+                "occurred_at": str(event.get("occurred_at") or client_time),
+                "payload": sanitize(event),
+            }
+            if event.get("phase") is not None:
+                item["phase"] = event.get("phase")
+            batch.append(item)
+            line_by_event_id[event_id] = line_number
+
+        if batch:
+            try:
+                result = post_json(
+                    endpoint,
+                    f"/api/v1/projects/{project_id}/runs/events:batch",
+                    {
+                        "protocol_version": "hunter-progress-sync/v1",
+                        "run_id": rid,
+                        "change_key": resolved_key,
+                        "title": display_title,
+                        "events": batch,
+                    },
+                )
+            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                return {
+                    "ok": False,
+                    "error": f"plan-events batch failed: {exc}",
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                }
+            items = result.get("items") if isinstance(result, dict) else None
+            if not isinstance(items, list) or len(items) != len(batch):
+                return {
+                    "ok": False,
+                    "error": "plan-events batch response did not acknowledge every event",
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                }
+            response_by_id = {
+                str(item.get("id") or item.get("event_id") or ""): item
+                for item in items if isinstance(item, dict)
+            }
+            for event in batch:
+                event_id = str(event["event_id"])
+                item = response_by_id.get(event_id)
+                status = str((item or {}).get("status") or "")
+                if status in ACCEPTED_STATUSES:
+                    uploaded += 1
+                    continue
+                if status in QUARANTINE_STATUSES:
+                    append_quarantine(
+                        change_dir,
+                        event_id=event_id,
+                        line_number=line_by_event_id[event_id],
+                        error_code=str((item or {}).get("error_code") or status.upper()),
+                        status=status,
+                    )
+                    quarantined += 1
+                    continue
+                return {
+                    "ok": False,
+                    "error": f"plan event {event_id} was not durably acknowledged",
+                    "uploaded": uploaded,
+                    "quarantined": quarantined,
+                    "server": result,
+                }
+
+        for event_id, line_number, error_code in local_invalid:
+            append_quarantine(
+                change_dir,
+                event_id=event_id,
+                line_number=line_number,
+                error_code=error_code,
+                status="local_invalid",
+            )
+            quarantined += 1
+        _save_plan_cursor(change_dir, acked=acked + chunk_start + len(raw_chunk), base=base)
+
+    return {
+        "ok": True,
+        "uploaded": uploaded,
+        "quarantined": quarantined,
+        "acked_lines": len(lines),
+        "producer_seq_base": base,
+    }
+
+
 def post_json(endpoint: dict[str, str], path: str, body: dict[str, Any]) -> dict[str, Any]:
     url = endpoint["server_url"] + path
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -685,13 +866,26 @@ def sync_change(
     _migrate_pending_legacy_stream(change_dir)
     events_file = _state_dir(change_dir) / "events.ndjson"
     if not events_file.is_file():
-        return {
-            "ok": True,
+        plan_result = _sync_plan_events_stream(
+            change_dir,
+            endpoint=endpoint,
+            rid=rid,
+            resolved_key=resolved_key,
+            display_title=display_title,
+            main_stream_total_lines=0,
+        )
+        result: dict[str, Any] = {
+            "ok": bool(plan_result.get("ok")),
             "run_id": rid,
             "change_key": resolved_key,
-            "uploaded": 0,
+            "uploaded": int(plan_result.get("uploaded") or 0),
+            "quarantined": int(plan_result.get("quarantined") or 0),
             "reason": "no events.ndjson",
+            "plan_events": {key: value for key, value in plan_result.items() if key != "ok"},
         }
+        if not plan_result.get("ok"):
+            result["error"] = plan_result.get("error")
+        return result
 
     lines = _event_lines_snapshot(events_file)
     cursor = load_cursor_state(
@@ -830,7 +1024,7 @@ def sync_change(
             producer_seq_base=producer_seq_base,
         )
 
-    return {
+    main_result: dict[str, Any] = {
         "ok": True,
         "run_id": rid,
         "change_key": resolved_key,
@@ -841,6 +1035,21 @@ def sync_change(
         "producer_seq_base": producer_seq_base,
         "server": last_result,
     }
+    plan_result = _sync_plan_events_stream(
+        change_dir,
+        endpoint=endpoint,
+        rid=rid,
+        resolved_key=resolved_key,
+        display_title=display_title,
+        main_stream_total_lines=len(lines),
+    )
+    main_result["uploaded"] += int(plan_result.get("uploaded") or 0)
+    main_result["quarantined"] += int(plan_result.get("quarantined") or 0)
+    main_result["plan_events"] = {key: value for key, value in plan_result.items() if key != "ok"}
+    if not plan_result.get("ok"):
+        main_result["ok"] = False
+        main_result["error"] = plan_result.get("error")
+    return main_result
 
 
 def auto_events_sync(

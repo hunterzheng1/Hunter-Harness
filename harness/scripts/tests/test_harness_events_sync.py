@@ -726,5 +726,134 @@ class HarnessEventsSyncTests(unittest.TestCase):
         self.assertIn(True, calls)
 
 
+class HarnessPlanEventsSyncTests(unittest.TestCase):
+    """meta/plan-events.ndjson（TS PlanEvent 流）上报：独立 ACK 游标 + producer_seq 避让。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="hh-plan-events-sync-")
+        self.project = Path(self._tmp.name)
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        self.change_dir.mkdir(parents=True)
+        (self.project / ".harness" / "credentials.local.yaml").write_text(
+            "server_url: https://platform.example.test\n"
+            "token: test-token\n"
+            "project_id: prj_demo\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def write_plan_events(self, events: list[dict]) -> None:
+        meta = self.change_dir / "meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "plan-events.ndjson").write_text(
+            "".join(json.dumps(event) + "\n" for event in events), encoding="utf-8"
+        )
+
+    @staticmethod
+    def plan_event(seq: int) -> dict:
+        return {
+            "schema_version": 1,
+            "event_id": f"plan_event:{'%064x' % seq}",
+            "lifecycle_kind": "change",
+            "run_id": "run_plan1",
+            "change_key": "demo",
+            "phase": "plan",
+            "attempt": 1,
+            "type": "artifact_published" if seq % 2 else "phase_ended",
+            "producer_seq": seq,
+            "occurred_at": "2026-08-16T08:00:00.000Z",
+            "idempotency_key": "sha256:" + "a" * 64,
+        }
+
+    def test_uploads_plan_stream_with_own_cursor_and_seq_offset(self) -> None:
+        main_lines = [json.dumps({"id": f"evt-{i}", "type": "decision", "phase": "plan"}) for i in range(1, 4)]
+        (self.change_dir / "events.ndjson").write_text("\n".join(main_lines) + "\n", encoding="utf-8")  # 主流 3 行 → 计划流 base 从 3 开始
+        self.write_plan_events([self.plan_event(1), self.plan_event(2)])
+        batches: list[dict] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            batches.append(body)
+            return {"items": [{"id": event["event_id"], "status": "accepted"} for event in body["events"]]}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        # 两个流各一个 batch
+        self.assertEqual(len(batches), 2)
+        plan_batch = batches[1]["events"]
+        self.assertEqual([item["event_type"] for item in plan_batch], ["artifact_published", "phase_ended"])
+        self.assertEqual([item["producer_seq"] for item in plan_batch], [4, 5])
+        self.assertEqual(plan_batch[0]["phase"], "plan")
+        # 计划流游标独立持久化
+        cursor = json.loads((self.change_dir / "meta" / "plan-events-sync-cursor.json").read_text(encoding="utf-8"))
+        self.assertEqual(cursor["acked_lines"], 2)
+        self.assertEqual(cursor["producer_seq_base"], 3)
+        self.assertEqual(result["uploaded"], 5)
+        self.assertIn("plan_events", result)
+
+    def test_resync_is_noop_when_plan_cursor_current(self) -> None:
+        self.write_plan_events([self.plan_event(1)])
+        calls: list[dict] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            calls.append(body)
+            return {"items": [{"id": event["event_id"], "status": "accepted"} for event in body["events"]]}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            first = hes.sync_change(self.project, self.change_dir)
+            second = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertEqual(len(calls), 1)  # 仅首轮上报一次
+
+    def test_quarantines_invalid_plan_lines_and_advances_cursor(self) -> None:
+        meta = self.change_dir / "meta"
+        meta.mkdir(exist_ok=True)
+        (meta / "plan-events.ndjson").write_text(
+            "{not-json}\n" + json.dumps(self.plan_event(1)) + "\n",
+            encoding="utf-8",
+        )
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            return {"items": [{"id": event["event_id"], "status": "accepted"} for event in body["events"]]}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["quarantined"], 1)
+        cursor = json.loads((self.change_dir / "meta" / "plan-events-sync-cursor.json").read_text(encoding="utf-8"))
+        self.assertEqual(cursor["acked_lines"], 2)  # 坏行不得卡死后续
+
+    def test_plan_stream_alone_when_no_python_events(self) -> None:
+        self.write_plan_events([self.plan_event(1)])
+        batches: list[dict] = []
+
+        def post_json(_endpoint, path: str, body: dict):
+            if path.endswith("/heartbeats"):
+                return {"ok": True}
+            batches.append(body)
+            return {"items": [{"id": event["event_id"], "status": "accepted"} for event in body["events"]]}
+
+        with mock.patch.object(hes, "post_json", side_effect=post_json):
+            result = hes.sync_change(self.project, self.change_dir)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["reason"], "no events.ndjson")
+        self.assertEqual(result["uploaded"], 1)
+        self.assertEqual(len(batches), 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
