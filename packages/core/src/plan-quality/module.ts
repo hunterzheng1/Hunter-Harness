@@ -356,7 +356,8 @@ function derivedHighRiskFindings(artifacts: TrustedArtifactSetInput,
   return findings([
     ...semanticFindings.filter((finding) => finding.severity === "blocking"),
     ...artifacts.human.test_scenarios.content.scenarios.filter((scenario) => scenario.risk_level === "high")
-      .map((scenario) => ({ finding_id: `risk:${scenario.scenario_id.replace(/[^a-z0-9_.:-]/gu, "_")}`,
+      // HP-03：不用有损字符替换构造身份（大写片段碰撞）；稳定哈希派生 + 原文保留在内容
+      .map((scenario) => ({ finding_id: `risk:${hash(scenario.scenario_id).slice(7)}`,
         category: "high_risk_scenario", severity: "advisory" as const, source_refs: ["test-scenarios.md"],
         message_zh: `高风险场景需要独立复核：${scenario.title}`, suggested_location: "test-scenarios.md" }))
   ]);

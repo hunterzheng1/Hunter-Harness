@@ -109,3 +109,41 @@ export function createPlanFinalizationQualityVerifier(): PlanFinalizationQuality
     }
   });
 }
+
+/**
+ * HP-01：对抗评审收据端口。
+ * 绑定规则：review() 时校验收据 input_hash 与 core 传入值相等、findings_hash 与
+ * findings 的 canonical 哈希相等、review_mode 与请求 mode 相等；任一不符返回
+ * undefined（core 判 review_unavailable，CLI 映射为 PLAN_REVIEW_BINDING_FAILED）。
+ */
+export interface AdversarialReviewReceiptInput {
+  readonly schema_version: 1;
+  readonly reviewer_identity: string;
+  readonly review_mode: "inline" | "delegated";
+  readonly input_hash: string;
+  readonly findings_hash: string;
+  readonly findings: readonly Record<string, unknown>[];
+  readonly completed_at: string;
+}
+
+export function createAdversarialReviewPort(receipt: AdversarialReviewReceiptInput) {
+  const frozenReceipt = Object.freeze(receipt);
+  return Object.freeze({
+    review(input: { readonly mode: "inline" | "delegated"; readonly input_hash: string }):
+      { readonly reviewer_identity: string; readonly findings: readonly Record<string, unknown>[] } | undefined {
+      if (frozenReceipt.schema_version !== 1 ||
+          typeof frozenReceipt.reviewer_identity !== "string" || frozenReceipt.reviewer_identity.trim() === "" ||
+          frozenReceipt.review_mode !== input.mode ||
+          frozenReceipt.input_hash !== input.input_hash ||
+          !Array.isArray(frozenReceipt.findings)) {
+        return undefined;
+      }
+      const findingsHash = `sha256:${createHash("sha256").update(canonicalJson(frozenReceipt.findings), "utf8").digest("hex")}`;
+      if (findingsHash !== frozenReceipt.findings_hash) return undefined;
+      return Object.freeze({
+        reviewer_identity: frozenReceipt.reviewer_identity,
+        findings: frozenReceipt.findings
+      });
+    }
+  });
+}

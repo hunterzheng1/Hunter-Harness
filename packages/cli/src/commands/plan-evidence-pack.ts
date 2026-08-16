@@ -215,7 +215,8 @@ export async function runPlanEvidencePack(
       capabilities: input.machine.capabilities as never, worktree_policy: input.machine.worktree_policy as never };
     const machine = model.deriveMachineArtifacts({ ...machine_input, human_input, human });
     const detail = model.deriveImplementationDetail({
-      mode: input.mode ?? "standard", human_input, human });
+      // HP-06：detail mode 唯一事实源是 profile.mode（分类结果）；自然输入的 mode 字段已弃用
+      mode: profile.mode, human_input, human });
     const trusted = { human_input, human, machine_input, machine, detail };
 
     // 发布证据：文件来自产物，intent 由生产 renderer（事务层归一化）推导

@@ -17,6 +17,7 @@ import { createFsPlanPublicationPort, buildFsPublicationAuthority } from "../pla
 import { createFsPlanEventOutboxPort } from "../plan-finalization/fs-event-outbox-port.js";
 import { createFsDurablePublicationPort } from "../plan-finalization/fs-durable-publication-port.js";
 import {
+  createAdversarialReviewPort,
   createPlanFinalizationQualityVerifier,
   createPlanFinalizationRenderer
 } from "../plan-finalization/production-ports.js";
@@ -26,6 +27,8 @@ export interface PlanFinalizeOptions {
   input: string;
   changeDir?: string;
   json?: boolean;
+  /** 测试/重放 seam：固定评审输入哈希的时间锚（生产省略） */
+  completedAt?: string;
 }
 
 interface PlanFinalizeInputFile {
@@ -38,6 +41,16 @@ interface PlanFinalizeInputFile {
   idempotency_key?: string;
   explicit_adversarial?: boolean;
   phase?: string;
+  /** HP-01：对抗评审收据（inline 评审的可验证绑定），缺失时 assurance/高风险 fail closed */
+  adversarial_review?: {
+    readonly schema_version: 1;
+    readonly reviewer_identity: string;
+    readonly review_mode: "inline" | "delegated";
+    readonly input_hash: string;
+    readonly findings_hash: string;
+    readonly findings: readonly Record<string, unknown>[];
+    readonly completed_at: string;
+  };
 }
 
 const canonicalHash = (value: unknown): string =>
@@ -72,7 +85,7 @@ export async function runPlanFinalize(
 
     const quality = createPlanQualityModule();
     const stageVerifier = createPlanStageVerifier({ now });
-    const completedAt = now();
+    const completedAt = options.completedAt ?? now();
 
     const layer1 = quality.runDeterministicGates({
       trusted: input.trusted,
@@ -89,13 +102,42 @@ export async function runPlanFinalize(
       return 1;
     }
     const layer2 = quality.runSemanticGates({ trusted: input.trusted, completed_at: completedAt });
+    // HP-01：assurance/高风险触发时必须有可验证评审收据；缺失→PLAN_REVIEW_REQUIRED
+    const reviewRequired = input.trusted.human_input.profile.mode === "assurance" ||
+      input.explicit_adversarial === true ||
+      input.trusted.human.test_scenarios.content.scenarios.some((scenario) => scenario.risk_level === "high") ||
+      layer2.findings.some((finding) => finding.severity === "blocking");
+    if (reviewRequired && input.adversarial_review === undefined) {
+      dependencies.stdout(JSON.stringify({
+        ok: false,
+        code: "PLAN_REVIEW_REQUIRED",
+        reason_code: "PLAN_REVIEW_REQUIRED",
+        message: "assurance/高风险计划需要对抗评审收据（adversarial_review 字段）；缺失时 fail closed"
+      }) + "\n");
+      return 1;
+    }
+    const reviewerPort = input.adversarial_review === undefined
+      ? undefined
+      : createAdversarialReviewPort(input.adversarial_review);
     const layer3 = quality.runAdversarialGates({
       trusted: input.trusted,
       semantic: layer2,
       explicit_adversarial: input.explicit_adversarial === true,
       prefer_delegated: false,
+      ...(reviewerPort === undefined ? {} : { reviewer_port: reviewerPort as never }),
       completed_at: completedAt
     });
+    if (layer3.status === "blocked" &&
+        layer3.review_execution.reviewer_identity === "review_unavailable") {
+      dependencies.stdout(JSON.stringify({
+        ok: false,
+        code: "PLAN_REVIEW_BINDING_FAILED",
+        reason_code: "PLAN_REVIEW_BINDING_FAILED",
+        message: "评审收据与当前产物/发现/透镜的 input_hash 或 findings_hash 绑定失败；请重跑评审",
+        review_execution: layer3.review_execution
+      }) + "\n");
+      return 1;
+    }
     const finalized = quality.finalizeQuality({
       trusted: input.trusted,
       layer1,
