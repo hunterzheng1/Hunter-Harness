@@ -35,6 +35,8 @@ export type {
   ArchiveRemoteAdapter,
   ArchiveRemotePublishResult
 } from "./archive-remote-adapter/index.js";
+export { createArchiveRemoteAdapter } from "./archive-remote-adapter/index.js";
+export { createArchiveOutbox } from "./archive-outbox/index.js";
 export type {
   ArchiveOutboxClaim,
   ArchiveRetentionPolicy

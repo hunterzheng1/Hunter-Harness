@@ -18,6 +18,7 @@ import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
 import { runArchiveOutboxGc, type ArchiveOutboxGcOptions } from "./commands/archive-outbox-gc.js";
+import { composeArchiveProduction } from "./archive-production/compose.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   runArchiveUpload,
@@ -191,12 +192,33 @@ function defaultDependencies(overrides: CliDependencies): ResolvedCliDependencie
     promptSecret: overrides.promptSecret ?? overrides.prompt ?? promptSecret,
     fetch: overrides.fetch ?? globalThis.fetch,
     env,
-    pushPull: overrides.pushPull ?? createPushPullCliPort(
-      remoteOrchestration === undefined ? {} : { orchestration: remoteOrchestration }
-    ),
-    pushPullSource: overrides.pushPullSource ?? ((input) =>
-      resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
-    pushPullArchive: overrides.pushPullArchive,
+    // 06B-3 W4：archive 生产组合单实例（adapter 的 zip_reader 与 claim 供应共享项目上下文）
+    ...(overrides.pushPullArchive === undefined && remoteOrchestration !== undefined
+      ? (() => {
+          const archiveComposition = composeArchiveProduction({
+            projectRoot: overrides.cwd ?? process.cwd(),
+            publisher: remoteOrchestration as never,
+            resolveSource: () =>
+              resolvePushPullSource(overrides.cwd ?? process.cwd(), { direction: "push" })
+          });
+          return {
+            pushPull: overrides.pushPull ?? createPushPullCliPort({
+              orchestration: remoteOrchestration,
+              archive: archiveComposition.remoteAdapter as never
+            }),
+            pushPullSource: overrides.pushPullSource ?? ((input) =>
+              resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
+            pushPullArchive: archiveComposition.pushPullArchive
+          };
+        })()
+      : {
+          pushPull: overrides.pushPull ?? createPushPullCliPort(
+            remoteOrchestration === undefined ? {} : { orchestration: remoteOrchestration }
+          ),
+          pushPullSource: overrides.pushPullSource ?? ((input) =>
+            resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
+          pushPullArchive: overrides.pushPullArchive
+        }),
     ...(overrides.terminalColumns !== undefined
       ? { terminalColumns: overrides.terminalColumns }
       : typeof process.stdout.columns === "number"

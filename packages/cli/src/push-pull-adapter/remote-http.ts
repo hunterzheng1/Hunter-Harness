@@ -1845,8 +1845,28 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       }
     },
     async commitArchive(command: ArchiveCommit): Promise<ArchiveSyncReceipt> {
-      void command;
-      throw new RemoteSyncError("REMOTE_UNAVAILABLE");
+      // 06B-3 W3 生产 seam：POST archives:ingest（canonical 收据）。
+      // 路由缺失/不 conform 由 errorFromResponse/模块 validateArchiveReceipt fail closed，
+      // 绝不投影 legacy 形状冒充新收据。
+      const packageRef = command.package_ref;
+      const response = await request(
+        `/api/v1/projects/${encodeURIComponent(command.source_ref.project_id)}/archives:ingest`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/octet-stream",
+            "x-archive-request-id": packageRef.request_id,
+            "x-archive-id": packageRef.archive_id,
+            "x-archive-change-key": packageRef.change_key,
+            "x-archive-schema-version": String(packageRef.archive_schema_version),
+            "x-archive-package-sha256": packageRef.package_sha256,
+            "x-archive-idempotency-key": command.idempotency_key,
+            "x-archive-logical-slot": command.logical_slot
+          },
+          body: Buffer.from(packageRef.content)
+        }
+      );
+      return response as ArchiveSyncReceipt;
     },
     async listBranchSnapshots(project: ProjectRef, cursor: string | undefined, limit: number): Promise<BranchSnapshotPage> {
       void project; void cursor; void limit;
