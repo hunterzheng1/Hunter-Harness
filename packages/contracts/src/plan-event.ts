@@ -169,3 +169,103 @@ export async function readPlanEventBundle(
   return freeze({ ok: true, mode: value.events.at(-1)?.type === "phase_ended" ? "terminal" : "current",
     source_schema_version: 1, value });
 }
+
+// ─── PlanAttemptEventBundle（单次尝试事件包，HP-02 语义拆分）───────────────
+// PlanEventBundle 是完整生命周期聚合（跨 attempt 连续校验，由 durable outbox/监控层消费）；
+// PlanAttemptEventBundle 是一次操作（如 finalization）产出的单 phase 单 attempt 事件包，
+// 首事件只要求 attempt >= 1（不得再把"本次操作"冒充为"完整生命周期"）。
+
+export const planAttemptEventBundleSchema = z.object({
+  schema_version: z.literal(1),
+  lifecycle_kind: z.literal("change"),
+  run_id: identitySchema,
+  change_key: identitySchema,
+  attempt: z.number().int().min(1).max(1_000_000),
+  events: z.array(planEventSchema).min(1).max(4_096),
+  bundle_hash: hashSchema
+}).strict();
+
+export type PlanAttemptEventBundle = z.infer<typeof planAttemptEventBundleSchema>;
+
+export type PlanAttemptEventBundleReadResult =
+  | { readonly ok: true; readonly mode: "current" | "terminal"; readonly source_schema_version: 1;
+      readonly value: PlanAttemptEventBundle }
+  | { readonly ok: false; readonly reason_code:
+      | "PLAN_EVENT_SERIALIZED_JSON_REQUIRED"
+      | "PLAN_EVENT_SERIALIZED_JSON_TOO_LARGE"
+      | "PLAN_EVENT_VERSION_UNSUPPORTED"
+      | "PLAN_EVENT_BUNDLE_INVALID" };
+
+function validAttemptSequence(bundle: PlanAttemptEventBundle): boolean {
+  const events = bundle.events;
+  const first = events[0];
+  // 包内所有事件必须等于 bundle.attempt 且同 phase；首事件 phase_started
+  if (first === undefined || first.type !== "phase_started" || first.attempt !== bundle.attempt) return false;
+  let previous: PlanEvent | undefined;
+  const eventIds = new Set<string>();
+  const idempotencyKeys = new Set<string>();
+  for (const current of events) {
+    if (current.run_id !== bundle.run_id || current.change_key !== bundle.change_key ||
+        current.attempt !== bundle.attempt || current.phase !== first.phase ||
+        eventIds.has(current.event_id) || idempotencyKeys.has(current.idempotency_key)) return false;
+    eventIds.add(current.event_id);
+    idempotencyKeys.add(current.idempotency_key);
+    if (previous !== undefined) {
+      // 单 attempt 内：producer_seq 严格递增、时间不倒退、phase_started 只出现一次
+      if (current.producer_seq <= previous.producer_seq ||
+          Date.parse(current.occurred_at) < Date.parse(previous.occurred_at) ||
+          current.type === "phase_started" || previous.type === "phase_ended") return false;
+    }
+    previous = current;
+  }
+  return true;
+}
+
+export async function readPlanAttemptEventBundle(
+  serialized: unknown,
+  hash_port: PlanEventBundleSha256Port
+): Promise<PlanAttemptEventBundleReadResult> {
+  if (typeof serialized !== "string") {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_SERIALIZED_JSON_REQUIRED" });
+  }
+  if (serialized.length > 4_000_000) {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_SERIALIZED_JSON_TOO_LARGE" });
+  }
+  let parsedValue: unknown;
+  try {
+    parsedValue = JSON.parse(serialized) as unknown;
+  } catch {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+  }
+  if (parsedValue !== null && typeof parsedValue === "object" && !Array.isArray(parsedValue) &&
+      Object.hasOwn(parsedValue, "schema_version") &&
+      (parsedValue as Record<string, unknown>).schema_version !== 1) {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_VERSION_UNSUPPORTED" });
+  }
+  const parsed = planAttemptEventBundleSchema.safeParse(parsedValue);
+  if (!parsed.success || !validAttemptSequence(parsed.data)) {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+  }
+  const value = parsed.data;
+  try {
+    for (const event of value.events) {
+      const machine = eventMachine(event);
+      const idempotencyHash = await hash_port.sha256(canonicalJson(machine));
+      const eventHash = await hash_port.sha256(canonicalJson({ ...machine, occurred_at: event.occurred_at }));
+      if (!hashSchema.safeParse(idempotencyHash).success || !hashSchema.safeParse(eventHash).success ||
+          event.idempotency_key !== idempotencyHash || event.event_id !== `plan_event:${eventHash.slice(7)}`) {
+        return freeze({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+      }
+    }
+    const { bundle_hash: ignored, ...body } = value;
+    void ignored;
+    const bundleHash = await hash_port.sha256(canonicalJson(body));
+    if (!hashSchema.safeParse(bundleHash).success || value.bundle_hash !== bundleHash) {
+      return freeze({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+    }
+  } catch {
+    return freeze({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+  }
+  return freeze({ ok: true, mode: value.events.at(-1)?.type === "phase_ended" ? "terminal" : "current",
+    source_schema_version: 1, value });
+}

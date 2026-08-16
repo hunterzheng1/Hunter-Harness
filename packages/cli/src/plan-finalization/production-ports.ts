@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson, readPlanEventBundle } from "@hunter-harness/contracts";
+import { canonicalJson, readPlanAttemptEventBundle } from "@hunter-harness/contracts";
 import {
   planArtifactPublication,
   planDurablePublicationTargetPaths,
@@ -78,14 +78,17 @@ export function createPlanFinalizationRenderer(): PlanFinalizationRendererPort {
 export function createPlanFinalizationQualityVerifier(): PlanFinalizationQualityVerifierPort {
   return Object.freeze({
     async verify(input: PlanFinalizationQualityVerificationInput): Promise<PlanFinalizationQualityVerificationProof | { valid: false; reason_code?: string }> {
+      // HP-02：finalization 事件包是 PlanAttemptEventBundle（单 attempt），
+      // 完整生命周期聚合校验归 durable outbox/监控层（PlanEventBundle）
       const bundleBody = {
         schema_version: 1 as const,
         lifecycle_kind: "change" as const,
         run_id: input.context.run_id,
         change_key: input.context.change_key,
+        attempt: input.context.attempt,
         events: input.finalization.events
       };
-      const bundleRead = await readPlanEventBundle(JSON.stringify({
+      const bundleRead = await readPlanAttemptEventBundle(JSON.stringify({
         ...bundleBody,
         bundle_hash: sha256(canonicalJson(bundleBody))
       }), { sha256 });

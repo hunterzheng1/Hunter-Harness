@@ -137,4 +137,32 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
       join(root, ".harness", "changes", CHANGE_KEY, "meta", "plan-events.ndjson"), "utf8");
     expect(ndjson.trim().split("\n").length).toBeGreaterThan(0);
   });
+
+  it("attempt=2 finalization bundle 通过质量验证（HP-02）", async () => {
+    const inputPath = join(root, "natural-attempt2.json");
+    const packPath = join(root, "evidence-attempt2.json");
+    const natural = naturalInput() as { context: { attempt: number } };
+    natural.context.attempt = 2;
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+
+    const deps = (outputs: string[]) => ({
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+    const packOut: string[] = [];
+    expect(await runPlanEvidencePack({ input: inputPath, output: packPath }, deps(packOut))).toBe(0);
+    const finalizeOut: string[] = [];
+    const finalizeExit = await runPlanFinalize({ input: packPath }, deps(finalizeOut));
+    if (finalizeExit !== 0) console.error("FIN2-OUT:", finalizeOut.join(""));
+    expect(finalizeExit).toBe(0);
+    const result = JSON.parse(finalizeOut.join("")) as { ok: boolean; code: string };
+    expect(result.code).toBe("PLAN_FINALIZED");
+    const ndjson = await fs.readFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "plan-events.ndjson"), "utf8");
+    const events = ndjson.trim().split("\n")
+      .map((line) => JSON.parse(line) as { attempt: number; type: string });
+    expect(events.every((event) => event.attempt === 2)).toBe(true);
+    expect(events.map((event) => event.type)).toEqual(["phase_started", "artifact_published", "phase_ended"]);
+  });
 });

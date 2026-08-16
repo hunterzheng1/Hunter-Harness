@@ -238,7 +238,7 @@ function eventBundle(value: unknown, context: PlanFinalizationExecutionContext, 
   if (first.type !== "phase_started" || last.type !== "phase_ended" || phaseStarted !== 1 || phaseEnded !== 1 || artifactCount !== 1) {
     throw new PlanFinalizationTransactionError("PLAN_FINALIZATION_INPUT_INVALID");
   }
-  return hash({ schema_version: 1, lifecycle_kind: "change", run_id: context.run_id, change_key: context.change_key, events: value });
+  return hash({ schema_version: 1, lifecycle_kind: "change", run_id: context.run_id, change_key: context.change_key, attempt: context.attempt, events: value });
 }
 
 function validReadback(value: unknown, operationId: string, changeKey: string, manifestHash: string,
@@ -311,9 +311,9 @@ function validOutbox(value: unknown, input: PlanFinalizationEventOutboxEnqueueIn
       !Array.isArray(value.events) || value.state === undefined || !["pending", "delivered", "ambiguous", "failed"].includes(String(value.state)) ||
       !timestamp(value.created_at) || !timestamp(value.updated_at)) return false;
   const expectedBundleHash = hash({ schema_version: 1, lifecycle_kind: "change", run_id: input.context.run_id,
-    change_key: input.context.change_key, events: input.events });
+    change_key: input.context.change_key, attempt: input.context.attempt, events: input.events });
   const returnedBundleHash = hash({ schema_version: 1, lifecycle_kind: "change", run_id: input.context.run_id,
-    change_key: input.context.change_key, events: value.events });
+    change_key: input.context.change_key, attempt: input.context.attempt, events: value.events });
   return expectedBundleHash === input.event_bundle_hash && returnedBundleHash === input.event_bundle_hash;
 }
 
@@ -356,7 +356,7 @@ function validOutboxShape(value: unknown): value is PlanFinalizationEventOutboxR
     receipt_id: value.publication_receipt_id, event_bundle_hash: value.event_bundle_hash, run_id: value.run_id,
     change_key: value.change_key, branch_name: value.branch_name, attempt: value.attempt }).slice(7)}`;
   return value.outbox_id === expectedId && events.every((event) => event.run_id === value.run_id && event.change_key === value.change_key && event.attempt === value.attempt) &&
-    hash({ schema_version: 1, lifecycle_kind: "change", run_id: value.run_id, change_key: value.change_key, events }) === value.event_bundle_hash;
+    hash({ schema_version: 1, lifecycle_kind: "change", run_id: value.run_id, change_key: value.change_key, attempt: value.attempt, events }) === value.event_bundle_hash;
 }
 
 function validOutboxForRecord(value: unknown, transaction: PlanFinalizationTransactionRecord): value is PlanFinalizationEventOutboxRecord {

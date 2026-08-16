@@ -136,3 +136,80 @@ describe("PlanEventBundle shared contract", () => {
     }
   });
 });
+
+describe("PlanAttemptEventBundle（HP-02 语义拆分）", () => {
+  function attemptEvent(overrides: Record<string, unknown>): Record<string, unknown> {
+    return {
+      schema_version: 1,
+      event_id: "plan_event:" + "0".repeat(64),
+      lifecycle_kind: "change",
+      run_id: "plan_run01",
+      change_key: "change-attempt-01",
+      phase: "plan",
+      attempt: 2,
+      type: "phase_started",
+      producer_seq: 1,
+      occurred_at: "2026-08-17T01:00:00.000Z",
+      idempotency_key: "sha256:" + "0".repeat(64),
+      ...overrides
+    };
+  }
+
+  function attemptBundle(events: Record<string, unknown>[], attempt = 2): Record<string, unknown> {
+    const bundle = {
+      schema_version: 1,
+      lifecycle_kind: "change",
+      run_id: "plan_run01",
+      change_key: "change-attempt-01",
+      attempt,
+      events,
+      bundle_hash: ""
+    };
+    rehash(bundle);
+    return bundle;
+  }
+
+  it("接受仅含当前 attempt=2 的合法包（首事件 attempt>=1）", async () => {
+    const bundle = attemptBundle([
+      attemptEvent({}),
+      attemptEvent({ type: "artifact_published", producer_seq: 2, occurred_at: "2026-08-17T01:00:01.000Z" }),
+      attemptEvent({ type: "phase_ended", producer_seq: 3, occurred_at: "2026-08-17T01:00:02.000Z" })
+    ]);
+    const { readPlanAttemptEventBundle } = await import("../src/index.js");
+    const result = await readPlanAttemptEventBundle(JSON.stringify(bundle), { sha256 });
+    expect(result).toMatchObject({ ok: true, mode: "terminal" });
+  });
+
+  it("拒绝 attempt 不一致的事件混入", async () => {
+    const bundle = attemptBundle([
+      attemptEvent({}),
+      attemptEvent({ type: "phase_ended", producer_seq: 2, attempt: 1, occurred_at: "2026-08-17T01:00:01.000Z" })
+    ]);
+    const { readPlanAttemptEventBundle } = await import("../src/index.js");
+    const result = await readPlanAttemptEventBundle(JSON.stringify(bundle), { sha256 });
+    expect(result).toMatchObject({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
+  });
+
+  it("拒绝重复 phase_started 与 producer_seq 倒退", async () => {
+    const bundle = attemptBundle([
+      attemptEvent({}),
+      attemptEvent({ type: "phase_started", producer_seq: 2, occurred_at: "2026-08-17T01:00:01.000Z" })
+    ]);
+    const { readPlanAttemptEventBundle } = await import("../src/index.js");
+    const result = await readPlanAttemptEventBundle(JSON.stringify(bundle), { sha256 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("aggregate reader 仍要求首事件 attempt=1（生命周期语义不变）", async () => {
+    const aggregate = attemptBundle([
+      attemptEvent({}),
+      attemptEvent({ type: "phase_ended", producer_seq: 2, occurred_at: "2026-08-17T01:00:01.000Z" })
+    ]);
+    // aggregate schema 无 attempt 字段，删除后按生命周期规则校验
+    const { attempt: ignored, ...aggregateBody } = aggregate;
+    void ignored;
+    rehash(aggregateBody);
+    const result = await readPlanEventBundle(JSON.stringify(aggregateBody), { sha256 });
+    expect(result.ok).toBe(false);
+  });
+});
