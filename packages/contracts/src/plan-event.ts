@@ -269,3 +269,19 @@ export async function readPlanAttemptEventBundle(
   return freeze({ ok: true, mode: value.events.at(-1)?.type === "phase_ended" ? "terminal" : "current",
     source_schema_version: 1, value });
 }
+
+// ─── Plan run ID 统一构造（HP-07）──────────────────────────────────────────
+// 新写入一律 plan_<uuid>；v2 identity 规则要求小写字母开头，裸 UUID 有 10/16
+// 概率以数字开头而被拒绝。legacy 裸 UUID 事件由旧 Python 监控路径兼容读取，
+// 不放宽本文件 identitySchema（新写入必须合规）。
+const PLAN_RUN_ID_PATTERN = /^[a-z][a-z0-9_.:-]{0,159}$/u;
+
+export function createPlanRunId(randomUuid: () => string = () => crypto.randomUUID()): string {
+  const id = `plan_${randomUuid()}`;
+  if (!PLAN_RUN_ID_PATTERN.test(id)) throw new Error("PLAN_RUN_ID_INVALID");
+  return id;
+}
+
+export function isValidPlanRunId(value: unknown): value is string {
+  return typeof value === "string" && PLAN_RUN_ID_PATTERN.test(value);
+}

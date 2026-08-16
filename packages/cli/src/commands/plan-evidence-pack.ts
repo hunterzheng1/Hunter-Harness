@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson } from "@hunter-harness/contracts";
+import { canonicalJson, isValidPlanRunId } from "@hunter-harness/contracts";
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
@@ -116,6 +116,32 @@ export async function runPlanEvidencePack(
   const now = () => new Date().toISOString();
   try {
     const input = JSON.parse(await readFile(options.input, "utf8")) as EvidencePackInputFile;
+    // HP-07：run_id 必须在写入任何 legacy 事件前满足 v2 identity（小写字母开头）；
+    // 裸 UUID 有 10/16 概率数字开头——边界拒绝并给出字段路径，不等到 finalization
+    if (!isValidPlanRunId(input.context?.run_id)) {
+      dependencies.stdout(JSON.stringify({
+        ok: false,
+        code: "PLAN_RUN_ID_INVALID",
+        field_path: "context.run_id",
+        message: "run_id 必须满足 v2 identity（小写字母开头）；请使用 createPlanRunId() 生成 plan_<uuid>"
+      }) + "\n");
+      return 1;
+    }
+    // HP-11：decided_at 边界规范化为 canonical UTC（Z 与 +08:00 等价）
+    const rawDecidedAt = input.approval.decided_at;
+    if (rawDecidedAt !== undefined) {
+      const parsedTime = Date.parse(String(rawDecidedAt));
+      if (!Number.isFinite(parsedTime)) {
+        dependencies.stdout(JSON.stringify({
+          ok: false,
+          code: "PLAN_TIME_INVALID",
+          field_path: "approval.decided_at",
+          message: "decided_at 不是可解析的 ISO 8601 时间"
+        }) + "\n");
+        return 1;
+      }
+      input.approval.decided_at = new Date(parsedTime).toISOString();
+    }
     const createdAt = input.approval.decided_at ?? now();
     const planning = createPlanningContextModule();
     const decision = createPlanDecisionModule();

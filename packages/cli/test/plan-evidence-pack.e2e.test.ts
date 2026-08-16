@@ -165,4 +165,42 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     expect(events.every((event) => event.attempt === 2)).toBe(true);
     expect(events.map((event) => event.type)).toEqual(["phase_started", "artifact_published", "phase_ended"]);
   });
+
+  it("HP-07：数字开头的 run_id 在边界拒绝并给出字段路径", async () => {
+    const inputPath = join(root, "bad-run-id.json");
+    const natural = naturalInput() as { context: { run_id: string } };
+    natural.context.run_id = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "x.json") }, {
+      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit).toBe(1);
+    const result = JSON.parse(out.join("")) as { code: string; field_path: string };
+    expect(result.code).toBe("PLAN_RUN_ID_INVALID");
+    expect(result.field_path).toBe("context.run_id");
+  });
+
+  it("HP-11：等价的 +08:00 与 Z 时间生成相同产物身份", async () => {
+    const buildWithTime = async (decidedAt: string, dir: string) => {
+      await fs.mkdir(join(dir, ".harness", "changes", CHANGE_KEY), { recursive: true });
+      const natural = naturalInput() as { approval: { decided_at?: string } };
+      natural.approval.decided_at = decidedAt;
+      const inputPath = join(dir, "natural.json");
+      const packPath = join(dir, "pack.json");
+      await fs.writeFile(inputPath, JSON.stringify(natural));
+      const out: string[] = [];
+      const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
+        cwd: dir, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+      });
+      expect(exit).toBe(0);
+      return JSON.parse(await fs.readFile(packPath, "utf8")) as {
+        publication: { publication_intent_id: string };
+      };
+    };
+    const withOffset = await buildWithTime("2026-08-17T03:44:55.964+08:00", join(root, "a"));
+    const withZulu = await buildWithTime("2026-08-16T19:44:55.964Z", join(root, "b"));
+    expect(withOffset.publication.publication_intent_id)
+      .toBe(withZulu.publication.publication_intent_id);
+  });
 });
