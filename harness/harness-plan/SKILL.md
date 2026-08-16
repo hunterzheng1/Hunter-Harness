@@ -67,7 +67,7 @@ disallowed-tools:
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | 在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | **v2 路径（新 change 优先）**：证据包可用时执行 `npx hunter-harness plan finalize --input <evidence.json>`，exit 0 且 `code:"PLAN_FINALIZED"` 即发布完成（契约见 `reference.md` 阶段 8 v2 路径）。**legacy 路径**：证据包不可用时才在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 
@@ -84,7 +84,7 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 产品边界 | `ownership.productPaths` 必须覆盖计划会修改的源文件、测试文件和构建入口；只写目录前缀或精确文件，禁止 `**` 通配。finalize 前对照任务表补齐，避免归档阶段才发现边界缺口 |
 | 空目录 | 不得为“预留目录”生成 `.gitkeep`；只有产品明确需要跟踪空目录时才能创建，并在计划中说明业务原因 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
-| 阶段 8 | spec/plan/detail/scenarios/gate-policy/worktree 六项标准产物先进入 staging；仅 finalizer 校验成功后发布并写唯一 `phase.end`/log；随后 `verify` 必须确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致，失败不得手工补终态 |
+| 阶段 8 | 二选一且不得混用：**v2** = `hunter-harness plan finalize`（证据包 → 八 target + journal committed + plan-events.ndjson）；**legacy** = 六项标准产物先进入 staging，仅 finalizer 校验成功后发布并写唯一 `phase.end`/log，随后 `verify` 确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致。失败均不得手工补终态 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
 | 知识查询 | 阶段 1 失败不得假装已读历史，也不得改用本地索引或其他执行入口 |
 | 歧义优先检查 | 否定、对比、动作对象或范围存在多种合理解释时，最小取证后先给推荐理解并一次一问；确认前不深挖错误方向 |

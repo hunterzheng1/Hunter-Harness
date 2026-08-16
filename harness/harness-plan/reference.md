@@ -345,6 +345,20 @@ status: approved
 
 `plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
 
+### 阶段 8 v2 路径（结构化证据包流程，新 change 优先）
+
+当 change 的规划数据经由 v2 结构化流程产出（classify → PlanningContext → 决策审批包 → 产物模型）时，阶段 8 改用 CLI 最终化命令，不再调用 Python finalizer：
+
+```bash
+npx hunter-harness plan finalize --input <evidence.json>
+```
+
+- **证据包**（`PlanFinalizeInputFile`，权威定义在 `packages/cli/src/commands/plan-finalize.ts`）：`{ trusted, publication, context, expected_baseline, operation_id?, idempotency_key?, phase? }`。`trusted` 为完整 `TrustedPlanArtifactSetInput`（含 approval_receipt）；`publication` 为 staged 证据（八文件 staged 内容 + 哈希 + 审批/派生收据引用）；`context` 提供 `project_id/change_key/run_id/branch_name/attempt`；`expected_baseline` 首次发布为 `{state:"absent", manifest_hash:null, generation:0}`。
+- **成功语义**：exit 0 且输出 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。失败 exit 1，`code` 区分确定性门失败（`PLAN_FINALIZE_DETERMINISTIC_FAILED`，附 findings）与事务失败。
+- **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
+- **legacy 收据**：过渡期（阶段 14 前）v2 路径不写 `plan-finalization.json`；消费方若仍读 legacy receipt，由兼容投影单独提供，不得反向要求 v2 双写。
+- **回退**：v2 证据包不可用时才允许走 Python finalizer（legacy 路径）；同一次发布不得两条路径混用。
+
 ### Plan 结束行为规则
 
 - **禁止询问执行模式**：Subagent-Driven / Inline Execution 属于 /harness-run 阶段

@@ -247,7 +247,9 @@ PlanEvent = {
 - ✅ **CLI finalize 命令与生产 port 组**（工作项 4 前半）：`hunter-harness plan finalize --input <evidence.json>`——L1 确定性门（生产 StageVerifier）→ L2/L3 内联裁决 → finalizeQuality → finalization-transaction；新增 `fs-durable-publication-port.ts`（PlanDurablePublicationPort 生产实现，recovery_token 以 journal 为权威防漂移）、`production-ports.ts`（renderer/quality_verifier/path-authority 生产实现）。**renderer 归一化（已记录偏离）**：planArtifactPublication 的 plan/manifest ownership_paths（任务级产品归属）在事务层归一为排序后的八 target 精确集合（durable 契约冻结语义），manifest_hash 与 intent 随之重算。
 - ~~集成阻塞~~ **已解除（owner 批准方案 b 方向，按载荷边界对齐实施）**：`durable-publication` 的 `snapshot()` 数组/节点/字符上限从 4096/5 万/1200 万对齐到发布载荷边界（2MB 每 payload × 八 payload = 200 万元素/1600 万节点/1600 万字符），所有 hash 身份零漂移；完整 b 方案（commit 边界纯描述符化）需重排三层 plan_hash 身份，留作契约版本演进候选。durable 模块新增 2 个回归/对抗测试（27KB 真实载荷通过、2MB 超限 fail closed）。
 - 聚焦测试：FS port 3、outbox/verifier 4、CLI e2e 2（**全链路已通过**，无 skip）、durable 回归/对抗 2；core 全量 1282/1282。
-- 剩余：工作项 4 后半（legacy 六文件兼容投影 + Python finalizer 切换 + run_id/attempt 入参）、工作项 5（skill 指针化）、工作项 6（阶段 14 验收）、事件上传接线。
+- ✅ **工作项 5（skill 指针化，2026-08-16）**：harness-plan SKILL 阶段 8 与关键规则表改为 v2/legacy 二选一（不得混用）；reference.md 新增「阶段 8 v2 路径」——证据包契约（PlanFinalizeInputFile）、成功语义（exit 0 + PLAN_FINALIZED）、落盘事实（八 target + journal committed + plan-events.ndjson）、验证与回退规则。T0-4 确认：Python finalize_plan 已持 run_id/attempt 入参，v2 路径由证据包 context 承载。
+- **工作项 4 后半重定界（基于冻结发现）**：legacy v1 产物在冻结模块中是只读身份投影（LegacyV1HumanArtifactSet 只含身份+哈希，无内容），不存在 v1→v2 内容升格器——按冻结语义不应发明。因此「Python finalizer 切换」重定界为：legacy 路径原样保留至阶段 14 退役；v2 证据包由 v2 规划流程（classify/context/decision 模块）产出，而非从 legacy 六文件反向重建。Python 状态机产出证据包的接线归入阶段 14 迁移工作。
+- 剩余：工作项 6（阶段 14 验收：legacy 退役 + 真实流程 e2e + Python 状态机证据包产出）、事件上传接线（Python sync 读 plan-events.ndjson）。
 
 ## 停止条件和回退
 
