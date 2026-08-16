@@ -251,7 +251,8 @@ PlanEvent = {
 - **工作项 4 后半重定界（基于冻结发现）**：legacy v1 产物在冻结模块中是只读身份投影（LegacyV1HumanArtifactSet 只含身份+哈希，无内容），不存在 v1→v2 内容升格器——按冻结语义不应发明。因此「Python finalizer 切换」重定界为：legacy 路径原样保留至阶段 14 退役；v2 证据包由 v2 规划流程（classify/context/decision 模块）产出，而非从 legacy 六文件反向重建。Python 状态机产出证据包的接线归入阶段 14 迁移工作。
 - ✅ **事件上传接线（2026-08-16）**：`harness_events_sync.py` 新增 `_sync_plan_events_stream`——TS PlanEvent（meta/plan-events.ndjson）按 hunter-progress-sync/v1 线上格式投影上传（event_type 保留 TS 原值），独立 ACK 游标（plan-events-sync-cursor.json），producer_seq 以主流总行数为 base 避让冲突；无 events.ndjson 时计划流仍单独上报。测试 4 个（上传+游标偏移、重放幂等、坏行隔离推进、纯计划流），sync 套件 28/28。
 - ✅ **阶段 14-1（证据包产出桥，2026-08-16）**：`hunter-harness plan evidence-pack --input <natural.json> --output <evidence.json>`——规划自然产出（intent/审批内容/tasks/scenarios/evidence sources）经冻结模块链（classify → planning-context → decision → artifact-model → renderer）组装为 plan finalize 直接可消费的证据包；refs/scope_ref/ownership 派生身份由命令按冻结规则接线；staged 证据为 frontmatter+规范 JSON 形态（与实际发布的人类可读渲染由 content_hash 绑定）；审批语义诚实：approver_id/decided_at 必须来自阶段 4 真实 blocking confirmation。e2e：自然输入 → 证据包 → finalize → 八 target 落盘全通。
-- 剩余：阶段 14 验收收尾（legacy 退役门径 + Python 状态机调用 evidence-pack 的 skill 接线）。
+- ✅ **阶段 14 skill 接线（2026-08-16）**：阶段 8 v2 三步流落成契约——阶段 5-6 沉淀 `meta/plan-evidence-input.json`（自然输入，11 字段定稿时点映射 0.5→2→3→4→5→6→7→8）→ evidence-pack → finalize；legacy 回退收窄为「自然输入不完整（如缺真实审批记录）」。
+- 剩余：legacy 退役门径（v2 采用证据积累后的治理动作，属 roadmap 阶段 14 验收自身排期）。
 - 顺带发现（与本项无关，预存问题未修）：test_harness_multiday_resilience 的 archive 预算断言在 HEAD 上即失败（错误消息文案漂移）。
 
 ## 停止条件和回退
