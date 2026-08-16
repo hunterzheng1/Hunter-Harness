@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.75] — hunter-harness / [0.2.66] — @hunter-harness/workflow-harness
+
+### Added / Fixed（2026-08-16 远端同步生产闭环）
+
+- **Remote Sync 合同与持久收据**：补齐 lease、push、pull 的严格身份绑定、幂等重放、异常响应 fail-closed 与受界资源校验。
+- **事务化 Pull**：使用 Core durable transaction 执行工作区变更，支持恢复、漂移检测、陈旧文件删除和准确的 applied 收据。
+- **跨仓契约同步**：Harness 与 Platform 的 Remote Sync/Content Upload/OpenAPI 产物保持字节级一致。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.55`，最低 CLI 版本提升至 `0.2.75`。
+
 ## [0.2.74] — hunter-harness / [0.2.65] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-12 全流程归档、知识分类与平台展示收敛）
