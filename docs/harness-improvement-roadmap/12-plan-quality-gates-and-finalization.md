@@ -237,6 +237,8 @@ PlanEvent = {
 
 开始接线前必须冻结：root/identity authority、八个 current target 与 legacy `plan-finalization.json` 的迁移策略、FS commit 与 `artifact_published/phase_ended` 的原子性（含 outbox/reconcile 状态）、`run_id/change_key/branch_name/attempt` 的拥有者，以及 missing event、ambiguous FS、pending receipt 的公开恢复语义。不得从旧 Python finalizer、已有 monitor read adapter 或 branch snapshot 猜测这些字段。
 
+**T0 冻结提案已起草**：`docs/harness-improvement-roadmap/12-m3-t0-freeze-proposal.md`（2026-08-08），含 5 项决策的现状证据、具体冻结方案与备选风险，以及冻结后 6 个可施工工作项的依赖序。待 owner 签字后按提案施工。
+
 ## 停止条件和回退
 
 如果语义检查依赖模型输出且结果不稳定，先将它设为 `standard` 的建议项、`assurance` 的阻塞项，并收集误报。不要让不稳定检查立即阻塞所有普通需求。
