@@ -112,6 +112,7 @@ export type {
 export { normalizeArchiveRemoteRequest } from "./archive-remote-adapter/compatibility.js";
 export { snapshotArchiveRemotePublishResult } from "./archive-remote-adapter/validation.js";
 export * from "./plan-decision/index.js";
+export * from "./planning-context/module.js";
 export * from "./plan-artifacts/index.js";
 export * from "./plan-classification/index.js";
 export * from "./plan-quality/index.js";

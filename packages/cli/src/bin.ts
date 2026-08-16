@@ -15,6 +15,7 @@ import {
 import { runCleanup, type CleanupCommandOptions } from "./commands/cleanup.js";
 import { runConnect, type ConnectOptions } from "./commands/connect.js";
 import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
+import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   runArchiveUpload,
@@ -429,6 +430,14 @@ export async function runCli(
     .option("--json")
     .action(async (options: EventsSyncOptions) => {
       exitCode = await runEventsSync(options, dependencies);
+    });
+  const planCmd = program.command("plan").description("Plan v2 产物与最终化");
+  planCmd.command("finalize")
+    .description("v2 Plan 最终化：质量门 + FS 发布 + 事件 outbox（输入为编排方产出的结构化证据包）")
+    .requiredOption("--input <file>", "结构化证据包 JSON（trusted/publication/context/baseline）")
+    .option("--change-dir <path>", "change 目录（默认按 context.change_key 推导）")
+    .action(async (options: PlanFinalizeOptions) => {
+      exitCode = await runPlanFinalize(options, dependencies);
     });
   addCommonOptions(program.command("cleanup"))
     .description("清理已完成事务和过期服务端缓存")

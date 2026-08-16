@@ -51,11 +51,11 @@ function changeDir(root: string, changeKey: string): string {
 }
 
 function journalPath(root: string, changeKey: string, operationId: string): string {
-  return join(changeDir(root, changeKey), JOURNALS_DIR, `${operationId}.json`);
+  return join(changeDir(root, changeKey), JOURNALS_DIR, `${encodeURIComponent(operationId)}.json`);
 }
 
 function stagingPath(root: string, changeKey: string, operationId: string): string {
-  return join(changeDir(root, changeKey), STAGING_DIR, operationId);
+  return join(changeDir(root, changeKey), STAGING_DIR, encodeURIComponent(operationId));
 }
 
 async function writeFileAtomic(path: string, bytes: Uint8Array): Promise<void> {

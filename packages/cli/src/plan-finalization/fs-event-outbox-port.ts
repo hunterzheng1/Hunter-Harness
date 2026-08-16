@@ -33,11 +33,11 @@ function changeDir(root: string, changeKey: string): string {
 }
 
 function outboxPath(root: string, changeKey: string, outboxId: string): string {
-  return join(changeDir(root, changeKey), "meta", "plan-event-outbox", `${outboxId}.json`);
+  return join(changeDir(root, changeKey), "meta", "plan-event-outbox", `${encodeURIComponent(outboxId)}.json`);
 }
 
 function transactionPath(root: string, changeKey: string, operationId: string): string {
-  return join(changeDir(root, changeKey), "meta", "plan-finalization-transactions", `${operationId}.json`);
+  return join(changeDir(root, changeKey), "meta", "plan-finalization-transactions", `${encodeURIComponent(operationId)}.json`);
 }
 
 function eventsPath(root: string, changeKey: string): string {
@@ -104,7 +104,7 @@ export function createFsPlanEventOutboxPort(options: FsPlanEventOutboxOptions): 
         return prior;
       }
       await writeJsonAtomic(path, input);
-      return input;
+      return JSON.parse(JSON.stringify(input)) as PlanFinalizationTransactionRecord;
     },
 
     async updateTransaction(input: PlanFinalizationTransactionRecord): Promise<PlanFinalizationTransactionRecord> {
@@ -116,7 +116,7 @@ export function createFsPlanEventOutboxPort(options: FsPlanEventOutboxOptions): 
         throw new Error("PLAN_FINALIZATION_TRANSACTION_IDENTITY_MISMATCH");
       }
       await writeJsonAtomic(path, input);
-      return input;
+      return JSON.parse(JSON.stringify(input)) as PlanFinalizationTransactionRecord;
     },
 
     async inspectTransaction(input: { readonly operation_id: string; readonly idempotency_key?: string }): Promise<PlanFinalizationTransactionRecord | undefined> {
