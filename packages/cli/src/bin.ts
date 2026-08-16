@@ -17,6 +17,7 @@ import { runConnect, type ConnectOptions } from "./commands/connect.js";
 import { runEventsSync, type EventsSyncOptions } from "./commands/events-sync.js";
 import { runPlanFinalize, type PlanFinalizeOptions } from "./commands/plan-finalize.js";
 import { runPlanEvidencePack, type PlanEvidencePackOptions } from "./commands/plan-evidence-pack.js";
+import { runArchiveOutboxGc, type ArchiveOutboxGcOptions } from "./commands/archive-outbox-gc.js";
 import { runPush, type PushOptions } from "./commands/push.js";
 import {
   runArchiveUpload,
@@ -381,6 +382,15 @@ export async function runCli(
         { ...program.opts<ArchiveUploadOptions>(), ...options },
         dependencies
       );
+    });
+  const outbox = archive.command("outbox").description("Archive outbox 维护（06B-3 生产接线）");
+  outbox.command("gc")
+    .description("回收终态 outbox 记录引用的 CAS 对象（默认 dry-run，必须显式 --entry 或 --retain-days）")
+    .option("--apply", "实际执行删除（默认只预览）", false)
+    .option("--entry <id...>", "显式 entry_id 列表")
+    .option("--retain-days <n>", "只回收 updated_at 早于 n 天的终态记录")
+    .action(async (options: ArchiveOutboxGcOptions) => {
+      exitCode = await runArchiveOutboxGc(options, dependencies);
     });
   const knowledge = program.command("knowledge")
     .description("访问远端项目知识库（无本地索引或离线回退）");
