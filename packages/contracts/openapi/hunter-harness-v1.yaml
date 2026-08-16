@@ -2581,6 +2581,47 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/projects/{project_id}/information/branch_files/{detail_id}/files:
+    get:
+      operationId: listPlatformInformationBranchFiles
+      summary: List files of one branch snapshot by its server-issued locator
+      x-hunter-auth-source: authenticated_principal
+      x-hunter-project-allowlist-source: server_authority
+      x-hunter-normalizer-id: normalizePlatformInformationListHttpQuery
+      x-hunter-project-key-scope-by-view:
+        {
+          branch_monitor: "platform:read",
+          branch_files: "files:read",
+          project_materials: "files:read",
+          project_knowledge: "knowledge:read",
+          change_records: "files:read",
+          version_records: "files:read",
+        }
+      x-hunter-error-codes:
+        "400": [VALIDATION_FAILED]
+        "401": [AUTH_REQUIRED, TOKEN_INVALID, SESSION_INVALID]
+        "403": [PROJECT_INFORMATION_FORBIDDEN, PROJECT_KEY_SCOPE, PROJECT_KEY_MISMATCH]
+        "404": [PLATFORM_INFORMATION_DETAIL_NOT_FOUND]
+        "503": [PLATFORM_INFORMATION_SOURCE_INVALID, PLATFORM_INFORMATION_UNAVAILABLE]
+      parameters:
+        - $ref: "#/components/parameters/ProjectId"
+        - $ref: "#/components/parameters/PlatformInformationDetailId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Canonical branch files page with per-file content locators
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/RequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlatformInformationBranchFilesPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/projects/{project_id}/information/branch-files:preview-restore:
     post:
       operationId: previewBranchFilesRestore
@@ -4763,6 +4804,29 @@ components:
               ],
           }
         retryable: { type: boolean }
+    PlatformInformationBranchFilesPage:
+      type: object
+      additionalProperties: false
+      description: Branch snapshot file listing; each item carries a server-issued bff_ content locator for the detail route.
+      required: [schema_version, contract_kind, project_id, detail_id, items, next_cursor]
+      properties:
+        schema_version: { type: integer, const: 1 }
+        contract_kind: { type: string, const: branch_files_page }
+        project_id: { type: string }
+        detail_id: { type: string }
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, size, content_hash, detail_id]
+            properties:
+              path: { type: string }
+              size: { type: integer, minimum: 0 }
+              content_hash: { type: string }
+              detail_id: { type: string }
+        next_cursor: { type: [string, "null"] }
     PlatformInformationPage:
       type: object
       additionalProperties: false
