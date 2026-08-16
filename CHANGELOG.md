@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.76] — hunter-harness / [0.2.67] — @hunter-harness/workflow-harness
+
+### Added / Fixed（2026-08-16 Plan v2 结构化证据链全链路贯通）
+
+- **Plan v2 发布链路落地**：`hunter-harness plan evidence-pack`（规划自然产出 → 结构化证据包）+ `hunter-harness plan finalize`（三层质量门 → 原子发布八 target → 事件 outbox）两条 CLI 命令；harness-plan 阶段 8 改为 v2 三步流契约，legacy 路径收窄为回退。
+- **durable 发布边界修正**：durable-publication snapshot 上限对齐发布载荷边界（2MB/payload），真实尺寸规划文档不再被误拒；quality verifier 证明哈希语义与事务层校验对齐。
+- **事件上传闭环**：Python sync 新增 TS PlanEvent 流上报（meta/plan-events.ndjson → 平台 RunStore），独立 ACK 游标与 producer_seq 避让。
+- **发布版本绑定**：工作流 Bundle 提升至 `0.2.56`，最低 CLI 版本提升至 `0.2.76`。
+
 ## [0.2.75] — hunter-harness / [0.2.66] — @hunter-harness/workflow-harness
 
 ### Added / Fixed（2026-08-16 远端同步生产闭环）
