@@ -60,7 +60,7 @@ interface EvidencePackInputFile {
     scenarios: readonly Record<string, unknown>[];
     coverage?: readonly Record<string, unknown>[];
     requirements?: readonly Record<string, unknown>[];
-    approved_scopes: readonly { scope_ref: string; text: string }[];
+    approved_scopes: readonly { scope_ref?: string; text: string }[];
     ownership?: readonly Record<string, unknown>[];
   };
   machine: {
@@ -194,14 +194,24 @@ export async function runPlanEvidencePack(
       decided_at: createdAt }).receipt;
 
     // refs 接线由命令完成（与 core fixture 同一规则），调用方只给自然字段
-    // scope_ref 是 text 的派生身份（validScope 冻结校验），不得由调用方指定；
-    // scopes 按 text 码点排序（交叉引用校验要求）
+    // scope_ref 是 text 的派生身份（validScope 冻结校验），不得由调用方指定（HP-12
+    // 删除伪输入）；兼容期：传入的 scope_ref 若与派生不符 → 伪造拒绝，相符 → 接受
     const approvedScopes = [...input.structured_input.approved_scopes]
       .sort((left, right) => (left.text < right.text ? -1 : left.text > right.text ? 1 : 0))
       .map((scope) => ({
         scope_ref: stableId("scope", { text: scope.text }),
         text: scope.text
       }));
+    const forgedScope = input.structured_input.approved_scopes.find((scope) =>
+      scope.scope_ref !== undefined &&
+      scope.scope_ref !== stableId("scope", { text: scope.text }));
+    if (forgedScope !== undefined) {
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
+        code: "PLAN_SCOPE_REF_FORGED",
+        field_path: "structured_input.approved_scopes",
+        message: "scope_ref 是 text 的派生身份，不得指定；请只传 text"
+      }));
+    }
     const scopeRefs = approvedScopes.map((scope) => scope.scope_ref);
     // allowedEvidence 是 EvidenceMap 的加前缀投影（module:/symbol:/consumer:/test:/constraint:/source:）
     const evidenceRefs = [
@@ -244,13 +254,59 @@ export async function runPlanEvidencePack(
     const ownershipRefs = sortRefs(ownership.map((item) => String(item.ownership_ref)));
     const taskIds = input.structured_input.tasks.map((task) => String(task.task_id));
     const scenarioIds = input.structured_input.scenarios.map((scenario) => String(scenario.scenario_id));
+    // HP-12：task↔scenario 引用确定性闭包——显式引用 + 互逆补全，天然双向一致；
+    // 闭包后仍为空的一侧回退全集（单任务无歧义才静默；多任务记密度警告）
+    let fullFanout = false;
+    const closedTaskRefs = new Map<string, Set<string>>();
+    const closedScenarioRefs = new Map<string, Set<string>>();
+    for (const taskId of taskIds) closedTaskRefs.set(taskId, new Set());
+    for (const scenarioId of scenarioIds) closedScenarioRefs.set(scenarioId, new Set());
+    for (const task of input.structured_input.tasks) {
+      const taskId = String(task.task_id);
+      for (const scenarioId of (task.scenario_refs as string[] | undefined) ?? []) {
+        closedTaskRefs.get(taskId)?.add(scenarioId);
+        closedScenarioRefs.get(scenarioId)?.add(taskId);
+      }
+    }
+    for (const scenario of input.structured_input.scenarios) {
+      const scenarioId = String(scenario.scenario_id);
+      for (const taskId of (scenario.task_refs as string[] | undefined) ?? []) {
+        closedScenarioRefs.get(scenarioId)?.add(taskId);
+        closedTaskRefs.get(taskId)?.add(scenarioId);
+      }
+    }
+    // 闭包后仍为空的一侧：对称回退（双向同时补全，保持一致性）
+    for (const taskId of taskIds) {
+      if ((closedTaskRefs.get(taskId)?.size ?? 0) === 0) {
+        if (input.structured_input.tasks.length > 1) fullFanout = true;
+        for (const scenarioId of scenarioIds) {
+          closedTaskRefs.get(taskId)?.add(scenarioId);
+          closedScenarioRefs.get(scenarioId)?.add(taskId);
+        }
+      }
+    }
+    for (const scenarioId of scenarioIds) {
+      if ((closedScenarioRefs.get(scenarioId)?.size ?? 0) === 0) {
+        if (input.structured_input.scenarios.length > 1 && input.structured_input.tasks.length > 1) {
+          fullFanout = true;
+        }
+        for (const taskId of taskIds) {
+          closedScenarioRefs.get(scenarioId)?.add(taskId);
+          closedTaskRefs.get(taskId)?.add(scenarioId);
+        }
+      }
+    }
+    const deriveTaskScenarioRefs = (task: Record<string, unknown>): string[] =>
+      [...(closedTaskRefs.get(String(task.task_id)) ?? new Set())];
+    const deriveScenarioTaskRefs = (scenario: Record<string, unknown>): string[] =>
+      [...(closedScenarioRefs.get(String(scenario.scenario_id)) ?? new Set())];
     const structured_input = {
       change_key: input.change_key,
       tasks: input.structured_input.tasks.map((task) => ({
         ...task,
         depends_on: sortRefs((task.depends_on as string[] | undefined) ?? []),
         decision_refs: sortRefs((task.decision_refs as string[] | undefined) ?? []),
-        scenario_refs: sortRefs((task.scenario_refs as string[] | undefined) ?? scenarioIds),
+        scenario_refs: sortRefs(deriveTaskScenarioRefs(task)),
         requirement_refs: sortRefs((task.requirement_refs as string[] | undefined)?.length
           ? task.requirement_refs as string[] : requirementRefs),
         evidence_refs: sortRefs((task.evidence_refs as string[] | undefined)?.length
@@ -260,8 +316,7 @@ export async function runPlanEvidencePack(
       })),
       scenarios: input.structured_input.scenarios.map((scenario) => ({
         ...scenario,
-        task_refs: sortRefs((scenario.task_refs as string[] | undefined)?.length
-          ? scenario.task_refs as string[] : taskIds),
+        task_refs: sortRefs(deriveScenarioTaskRefs(scenario)),
         requirement_refs: sortRefs((scenario.requirement_refs as string[] | undefined)?.length
           ? scenario.requirement_refs as string[] : requirementRefs)
       })),
@@ -347,7 +402,8 @@ export async function runPlanEvidencePack(
       code: "PLAN_EVIDENCE_PACK_BUILT",
       output: options.output,
       publication_intent_id: plan.publication_intent_id,
-      approval_receipt_id: approval_receipt.receipt_id
+      approval_receipt_id: approval_receipt.receipt_id,
+      ...(fullFanout ? { warnings: ["graph_density_full_fanout"] } : {})
     }) + "\n");
     return 0;
   } catch (error) {

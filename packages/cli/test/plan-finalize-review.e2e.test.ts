@@ -87,7 +87,7 @@ function naturalInput() {
         ownership_refs: []
       }],
       scenarios,
-      approved_scopes: [{ scope_ref: "scope:" + "b".repeat(64), text: "plan_bridge" }]
+      approved_scopes: [{ text: "plan_bridge" }]
     },
     machine: { capabilities: ["api"], worktree_policy: "project_default" },
     context: {

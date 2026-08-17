@@ -81,7 +81,7 @@ function naturalInput() {
         ownership_refs: []
       }],
       scenarios,
-      approved_scopes: [{ scope_ref: "scope:" + "b".repeat(64), text: "plan_bridge" }]
+      approved_scopes: [{ text: "plan_bridge" }]
     },
     machine: { capabilities: ["api"], worktree_policy: "project_default" },
     context: {
@@ -219,10 +219,10 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     // intent 与 approval 同集合、顺序不同 → 应通过
     natural.intent.in_scope = ["plan_bridge", "zz_extra_order"];
     natural.approval.content.in_scope = ["zz_extra_order", "plan_bridge"];
-    (natural as unknown as { structured_input: { approved_scopes: { text: string; scope_ref: string }[] } })
+    (natural as unknown as { structured_input: { approved_scopes: { text: string }[] } })
       .structured_input.approved_scopes = [
-        { scope_ref: "scope:" + "a".repeat(64), text: "plan_bridge" },
-        { scope_ref: "scope:" + "c".repeat(64), text: "zz_extra_order" }
+        { text: "plan_bridge" },
+        { text: "zz_extra_order" }
       ];
     await fs.writeFile(inputPath, JSON.stringify(natural));
     const out1: string[] = [];
@@ -258,8 +258,8 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     natural.intent.in_scope = ["alpha_scope", "beta_scope"];
     natural.approval.content.in_scope = ["beta_scope", "alpha_scope"];
     natural.structured_input.approved_scopes = [
-      { scope_ref: "scope:" + "0".repeat(64), text: "alpha_scope" },
-      { scope_ref: "scope:" + "0".repeat(64), text: "beta_scope" }
+      { text: "alpha_scope" },
+      { text: "beta_scope" }
     ];
     // 多个同 kind requirement（不变量两条）
     natural.approval.content.invariants = ["结构失败绝不发布", "旧路径只读"];
@@ -297,5 +297,87 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     });
     if (finalizeExit !== 0) console.error("HP05-FIN:", finalizeOut.join(""));
     expect(finalizeExit).toBe(0);
+  });
+
+
+  it("HP-12：多任务反向推导引用 + 全量 fan-out 密度警告 + 伪 scope_ref 拒绝", async () => {
+    const natural = naturalInput() as unknown as {
+      structured_input: {
+        tasks: Record<string, unknown>[];
+        scenarios: Record<string, unknown>[];
+      };
+    };
+    // 两个任务：task2 显式 scenario_refs=[scenario:normal_path]，
+    // scenario 侧未显式 task_refs → 反向推导（scenario:normal_path 只连 task2）
+    // 每个 scenario 都显式连接（4→t1，4→t2），闭包无回退
+    natural.structured_input.scenarios = natural.structured_input.scenarios.map((scenario, index) => {
+      const next = { ...scenario } as Record<string, unknown>;
+      next.task_refs = [index % 2 === 0 ? "task:t1" : "task:t2"];
+      return next;
+    });
+    natural.structured_input.tasks = ["task:t1", "task:t2"].map((taskId) => {
+      const next = { ...natural.structured_input.tasks[0], task_id: taskId } as Record<string, unknown>;
+      delete next.scenario_refs;
+      return next;
+    });
+    const inputPath = join(root, "hp12.json");
+    const packPath = join(root, "hp12-pack.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
+      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    if (exit !== 0) console.error("HP12-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as {
+      trusted: { human_input: { structured_input: {
+        scenarios: { scenario_id: string; task_refs: string[] }[];
+        tasks: { task_id: string; scenario_refs: string[] }[];
+      } } };
+    };
+    const normal = pack.trusted.human_input.structured_input.scenarios
+      .find((scenario) => scenario.scenario_id === "scenario:normal_path");
+    // task2 显式引用 → scenario 反向推导只连 task2（非全量）
+    expect(normal?.task_refs).toEqual(["task:t2"]);
+    // 双侧均有显式/推导关系 → 无全量 fan-out 警告
+    const output = JSON.parse(out.join("")) as { warnings?: string[] };
+    expect(output.warnings ?? []).not.toContain("graph_density_full_fanout");
+
+    // 全隐式多任务 → 全量 fan-out 警告
+    const implicit = naturalInput() as unknown as {
+      structured_input: {
+        tasks: Record<string, unknown>[];
+        scenarios: Record<string, unknown>[];
+      };
+    };
+    implicit.structured_input.tasks = [
+      { ...implicit.structured_input.tasks[0], task_id: "task:a", scenario_refs: undefined },
+      { ...implicit.structured_input.tasks[0], task_id: "task:b", scenario_refs: undefined }
+    ];
+    implicit.structured_input.scenarios = implicit.structured_input.scenarios.map((scenario) => {
+      const next = { ...scenario } as Record<string, unknown>;
+      delete next.task_refs;
+      return next;
+    });
+    await fs.writeFile(inputPath, JSON.stringify(implicit));
+    const fanoutOut: string[] = [];
+    expect(await runPlanEvidencePack({ input: inputPath, output: join(root, "fanout.json") }, {
+      cwd: root, stdout: (chunk: string) => { fanoutOut.push(chunk); return true; }, stderr: () => true
+    })).toBe(0);
+    expect((JSON.parse(fanoutOut.join("")) as { warnings?: string[] }).warnings)
+      .toContain("graph_density_full_fanout");
+
+    // 伪 scope_ref（与派生不符）→ 拒绝
+    const forged = naturalInput() as unknown as {
+      structured_input: { approved_scopes: { scope_ref?: string; text: string }[] };
+    };
+    forged.structured_input.approved_scopes = [{ scope_ref: "scope:" + "9".repeat(64), text: "plan_bridge" }];
+    await fs.writeFile(inputPath, JSON.stringify(forged));
+    const forgedOut: string[] = [];
+    const forgedExit = await runPlanEvidencePack({ input: inputPath, output: join(root, "forged.json") }, {
+      cwd: root, stdout: (chunk: string) => { forgedOut.push(chunk); return true; }, stderr: () => true
+    });
+    expect(forgedExit).toBe(1);
+    expect(JSON.parse(forgedOut.join("")).code).toBe("PLAN_SCOPE_REF_FORGED");
   });
 });

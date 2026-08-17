@@ -334,3 +334,23 @@ Plan v2 的原子发布主链已经可用：两次运行最终都发布了固定
 4. finalize 成功后 canonical 生命周期、context、后续 Skill 和 Platform 对 Plan 终态结论一致。
 5. 每个失败 fixture 都能从 CLI JSON 直接得到失败层、稳定原因码和字段路径。
 6. 8 个目标文件、publication journal、readback、event outbox 和幂等重放仍通过现有原子发布门禁。
+
+## 修复关闭记录（2026-08-17，CLI 350/350 + core 1282/1282 验证）
+
+| 编号 | 状态 | 关闭方式 |
+|---|---|---|
+| HP-01 | 已关闭 | `AdversarialReviewReceipt` 接入 finalize；缺收据 `PLAN_REVIEW_REQUIRED`、绑定失败 `PLAN_REVIEW_BINDING_FAILED` |
+| HP-02 | 已关闭 | `PlanAttemptEventBundle` 语义拆分；attempt=2 finalize e2e 全通，聚合层仍校验历史完整 |
+| HP-03 | 已关闭 | 高风险 finding ID 稳定哈希派生（`risk:<hash>`） |
+| HP-04 | 已关闭 | scope 集合语义统一（构造即 canonical + 集合比较 + 边界等价校验 `PLAN_SCOPE_MISMATCH`） |
+| HP-05 | 已关闭 | 隐式 requirements/ownership 与 validator 共享 canonical comparator + 终态排序 |
+| HP-06 | 已关闭 | detail mode 唯一事实源 = `profile.mode` |
+| HP-07 | 已关闭 | `createPlanRunId()` + 边界 `PLAN_RUN_ID_INVALID`（含 field_path） |
+| HP-08 | 已关闭 | 统一错误信封（code/stage/reason_code/field_path/retryable）；core 直接 console 输出已删除 |
+| HP-09 | 已关闭 | finalize 成功向 legacy events.ndjson 幂等投影终态（v2 outbox 唯一事实源；重复执行 already_closed） |
+| HP-10 | 已关闭 | `--change-dir` 真实参与解析（realpath + 形状校验 + change_key 绑定） |
+| HP-11 | 已关闭 | 边界时间规范化（Z 与 offset 等价生成相同产物身份） |
+| HP-12 | 已关闭（renderer 裁剪除外） | 伪 scope_ref 输入删除（`PLAN_SCOPE_REF_FORGED`）；task↔scenario 引用确定性闭包 + 全量 fan-out 密度警告 |
+
+**遗留（下一工作包）**：Markdown renderer 裁剪——人类文档只展示局部关系、机器引用留在 meta artifact。
+该改动会改变产物字节与内容哈希，需要独立的 golden fixture 更新周期，不在本轮 dogfood 修复内。
