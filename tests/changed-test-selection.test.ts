@@ -76,6 +76,17 @@ describe("changed test selection", () => {
     });
   });
 
+  it("defers the heavyweight refresh CLI matrix to CI as well", () => {
+    expect(
+      selectChangedTestInputs(["packages/cli/test/refresh-cli.test.ts"])
+    ).toEqual({
+      directTests: [],
+      relatedSources: [],
+      deferredTests: ["packages/cli/test/refresh-cli.test.ts"],
+      pythonTests: []
+    });
+  });
+
   it("keeps sync release changes on focused contracts instead of the full Core graph", () => {
     expect(selectChangedTestInputs([
       "packages/cli/src/commands/sync.ts",

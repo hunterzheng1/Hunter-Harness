@@ -115,6 +115,8 @@ npm run check
 
 `npm run check` 依次执行 lint、TypeScript、全部 Vitest 测试和公开产物构建。需要在本机额外验证 npm 打包与安装时，运行 `npm run check:all`。
 
+本机默认跳过 `scripts/changed-test-selection.mjs` 中 `CI_ONLY_TEST_FILES` 列出的重型初始化矩阵：这批用例每条都重建整套 Harness Bundle，两个文件就占掉本地增量测试约七成墙钟。CI 始终执行完整矩阵；本机需要跑全量时设置 `HUNTER_TEST_INCLUDE_CI_ONLY=1`（PowerShell：`$env:HUNTER_TEST_INCLUDE_CI_ONLY=1; npm test`）。
+
 发布前默认运行快速预检：
 
 ```bash

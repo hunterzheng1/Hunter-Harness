@@ -3,9 +3,15 @@ const PYTHON_TEST_FILE_PATTERN = /^harness\/scripts\/tests\/test_.+\.py$/;
 const RELATED_SOURCE_PATTERN =
   /^(?:packages\/[^/]+\/src|scripts)\/.+\.[cm]?[jt]sx?$/;
 const GENERATED_PATH_PATTERN = /(?:^|\/)(?:dist|coverage|resources)\//;
-const CI_ONLY_TEST_FILES = new Set([
-  "packages/cli/test/init.test.ts"
-]);
+// 每个用例都重建一整套 718 文件 harness bundle，本机单文件墙钟 init 640s、
+// refresh-cli 289s。仅靠下面的 deferredTests 分支拦不住 `vitest related`，
+// 因此 vitest.config.ts 直接消费这份清单做 project 级 exclude：本地跳过、CI 照跑。
+export const CI_ONLY_TEST_FILES = [
+  "packages/cli/test/init.test.ts",
+  "packages/cli/test/refresh-cli.test.ts"
+];
+
+const ciOnlyTestFiles = new Set(CI_ONLY_TEST_FILES);
 
 const CONTRACT_TESTS_BY_PATH = new Map([
   [".github/workflows/check.yml", ["tests/release-pipeline.test.ts"]],
@@ -151,7 +157,7 @@ export function selectChangedTestInputs(paths) {
     }
 
     if (TEST_FILE_PATTERN.test(path)) {
-      if (CI_ONLY_TEST_FILES.has(path)) {
+      if (ciOnlyTestFiles.has(path)) {
         deferredTests.add(path);
       } else {
         directTests.add(path);

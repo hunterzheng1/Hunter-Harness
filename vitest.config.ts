@@ -1,6 +1,9 @@
+import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
+
+import { CI_ONLY_TEST_FILES } from "./scripts/changed-test-selection.mjs";
 
 // I/O 密集型集成测试：每个用例都真实部署 14MB/718 文件 harness bundle。
 // 当某测试文件单文件耗时 > 60s 或在 30s testTimeout 下 flaky 超时时，加入此列表。
@@ -12,6 +15,15 @@ const integrationTestFiles = [
   "packages/core/test/bundle-content-projection.test.ts",
   "packages/core/test/agent-adapters.test.ts"
 ];
+
+// CI_ONLY 清单里的文件本地默认不跑：它们每用例重建整套 bundle，两个文件就占掉
+// 本地增量测试约七成墙钟。仅在选择器里 defer 拦不住 `vitest related` 的传递命中，
+// 所以在 project 级 exclude 里兜底。CI 上照跑完整矩阵；本地要跑全量走：
+//   $env:HUNTER_TEST_INCLUDE_CI_ONLY=1; npm test
+const includeCiOnlyTests = Boolean(
+  process.env.CI || process.env.HUNTER_TEST_INCLUDE_CI_ONLY
+);
+const locallySkippedTestFiles = includeCiOnlyTests ? [] : CI_ONLY_TEST_FILES;
 
 export default defineConfig({
   oxc: {
@@ -53,7 +65,7 @@ export default defineConfig({
             "packages/**/*.test.ts",
             "tests/**/*.test.ts"
           ],
-          exclude: integrationTestFiles
+          exclude: [...integrationTestFiles, ...locallySkippedTestFiles]
         }
       },
       {
@@ -62,7 +74,8 @@ export default defineConfig({
           name: "integration",
           testTimeout: 120000,
           hookTimeout: 120000,
-          include: integrationTestFiles
+          include: integrationTestFiles,
+          exclude: locallySkippedTestFiles
         }
       }
     ]

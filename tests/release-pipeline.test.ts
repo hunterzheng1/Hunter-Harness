@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+
+import { CI_ONLY_TEST_FILES } from "../scripts/changed-test-selection.mjs";
 
 const rootDir = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -28,6 +30,24 @@ describe("release pipeline", () => {
     expect(changedRunner).toContain('"--passWithNoTests"');
     expect(changedRunner).toContain("process.execPath");
     expect(changedRunner).toContain("完整矩阵交由 CI");
+  });
+
+  it("excludes the CI-only matrix from every local vitest project, from a single list", () => {
+    const config = readFileSync(join(rootDir, "vitest.config.ts"), "utf8");
+
+    // 清单只能有一份来源；config 里另抄一份迟早和选择器漂移
+    expect(config).toContain("CI_ONLY_TEST_FILES");
+    expect(config).toContain("./scripts/changed-test-selection.mjs");
+
+    // CI 必须照跑完整矩阵，本地必须留有跑全量的正规出路
+    expect(config).toContain("process.env.CI");
+    expect(config).toContain("HUNTER_TEST_INCLUDE_CI_ONLY");
+
+    // 清单里不允许留下已删除的测试文件，否则排除会静默失效
+    expect(CI_ONLY_TEST_FILES.length).toBeGreaterThan(0);
+    for (const relativePath of CI_ONLY_TEST_FILES) {
+      expect(existsSync(join(rootDir, relativePath))).toBe(true);
+    }
   });
 
   it("keeps one complete Linux check and shards every Windows test across two jobs", () => {
