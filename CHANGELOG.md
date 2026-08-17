@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.82] — hunter-harness
+
+### Fixed（2026-08-18 幻影 durable 索引条目容错）
+
+- **恢复候选对幻影条目容错**（`44c70f5`）：外部清理恢复存储（删事务目录、留 durable 索引）后，bare 启动在恢复菜单的 durable 循环抛 `RECOVERY_NOT_FOUND` 直接崩溃，非交互路径也会选中幻影候选以 BLOCKED 卡住 configure。按"索引近似定位、locateRecovery 完整校验"的分层语义改消费侧容错：菜单与状态视图跳过幻影、自动选择取首个仍可定位条目；显式指定 recoveryId 的报错语义不变。
+- Bundle 与 workflow-harness 数据包无变更（保持 `0.2.72` / Bundle `0.2.61`）。
+
 ## [0.2.81] — hunter-harness
 
 ### Performance（2026-08-18 recovery 索引读路径有界化）
