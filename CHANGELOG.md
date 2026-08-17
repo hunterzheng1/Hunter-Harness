@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.78] — hunter-harness / [0.2.69] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-17 Plan v2 双仓 dogfood 十二项修复 + 门禁版本错配收口）
+
+- **Plan dogfood 全量修复**（详见 `docs/harness-improvement-roadmap/plan-v2-dogfood-findings-2026-08-17.md` 关闭记录）：
+  - HP-01 对抗评审收据接入 finalize（缺失 `PLAN_REVIEW_REQUIRED`、篡改 `PLAN_REVIEW_BINDING_FAILED`，均可操作错误）；
+  - HP-02 `PlanAttemptEventBundle` 语义拆分（attempt=2 可 finalize，生命周期聚合层仍校验历史完整）；
+  - HP-03 高风险 finding ID 稳定哈希派生；HP-04 scope 集合语义统一；HP-05 隐式引用与 validator 共享 canonical comparator；HP-06 detail mode 唯一事实源 = profile.mode；
+  - HP-07 `createPlanRunId()` + 边界校验；HP-08 统一结构化错误信封（stage/reason_code/field_path/retryable）；HP-09 finalize 成功向 legacy events.ndjson 幂等投影终态；
+  - HP-10 `--change-dir` 真实参与解析；HP-11 边界时间规范化（Z 与 offset 等价）；HP-12 伪 scope_ref 删除 + task↔scenario 引用确定性闭包 + 全量 fan-out 密度警告。
+- **run 门禁兼容 v2 收据**：Python `verify_plan` 新增 v2 结构验收（transaction 终态 + journal committed/readback verified + durable targets 字节哈希），0.2.77 v2 finalizer 的 Plan 不再被旧门禁误判 `RECEIPT_MISSING`。
+- **平台修复**：项目绑定 API key 可访问无 `:projectId` 路径的项目路由（`projects:resolve`），resolve 结果强制等于 key 绑定项目（hunter-platform `102bdd4`）。
+- **archives:ingest 服务端路由落地**（hunter-platform `11620a5`）：06B-3 canonical 发布缝，契约测试 5/5。
+- 工作流 Bundle 提升至 `0.2.58`，最低 CLI 版本 `0.2.78`。
+
 ## [0.2.77] — hunter-harness / [0.2.68] — @hunter-harness/workflow-harness
 
 ### Added（2026-08-16 03 收尾：Push/Pull skill 层补齐）
