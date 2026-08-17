@@ -10,6 +10,7 @@ import {
   readRecoveryTargetBundleState,
   readDurableRecoveryIds,
   recoverTransaction,
+  RecoveryPreconditionError,
   resolveRecoveryRoot,
   resumeTransaction,
   rollbackCommittedUpdate,
@@ -117,10 +118,19 @@ async function runRecoveryStatusUnchecked(
     projectIdentity
   )) {
     if (known.has(recoveryId)) continue;
-    const inspection = await inspectRecovery(dependencies.cwd, recoveryId, {
-      recoveryRoot,
-      ...(projectIdentity === undefined ? {} : { projectIdentity })
-    });
+    let inspection: RecoveryInspection;
+    try {
+      inspection = await inspectRecovery(dependencies.cwd, recoveryId, {
+        recoveryRoot,
+        ...(projectIdentity === undefined ? {} : { projectIdentity })
+      });
+    } catch (error) {
+      // 幻影索引条目（目录已被外部清理）不进入状态视图。
+      if (error instanceof RecoveryPreconditionError && error.code === "RECOVERY_NOT_FOUND") {
+        continue;
+      }
+      throw error;
+    }
     if (inspection.state === "committed" || inspection.state === "rolled_back") {
       continue;
     }
@@ -396,6 +406,30 @@ async function safeActionsForCurrentEnvironment(
   }
 }
 
+/** durable 索引是近似结构：跳过目录已被外部清理的幻影候选，返回首个仍可定位的条目。 */
+async function firstLocatableDurableId(
+  dependencies: CommandDependencies,
+  durableIds: readonly string[],
+  recoveryRoot: string,
+  projectIdentity: string | undefined
+): Promise<string | undefined> {
+  for (const candidate of durableIds) {
+    try {
+      await inspectRecovery(dependencies.cwd, candidate, {
+        recoveryRoot,
+        ...(projectIdentity === undefined ? {} : { projectIdentity })
+      });
+      return candidate;
+    } catch (error) {
+      if (error instanceof RecoveryPreconditionError && error.code === "RECOVERY_NOT_FOUND") {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return undefined;
+}
+
 async function runRecoveryCommandUnchecked(
   recoveryId: string | undefined,
   options: RecoveryCommandOptions,
@@ -410,7 +444,8 @@ async function runRecoveryCommandUnchecked(
     recoveryRoot,
     projectIdentity
   );
-  const selectedId = recoveryId ?? pending[0]?.recoveryId ?? durableIds[0];
+  const selectedId = recoveryId ?? pending[0]?.recoveryId ??
+    await firstLocatableDurableId(dependencies, durableIds, recoveryRoot, projectIdentity);
   if (selectedId === undefined) {
     return emitRecoveryError(
       Object.assign(new Error("没有可恢复的事务"), {
@@ -686,10 +721,20 @@ export async function runRecoveryMenuIfApplicable(
     projectIdentity
   )) {
     if (pending.some((item) => item.recoveryId === recoveryId)) continue;
-    const inspection = await inspectRecovery(dependencies.cwd, recoveryId, {
-      recoveryRoot,
-      ...(projectIdentity === undefined ? {} : { projectIdentity })
-    });
+    let inspection: RecoveryInspection;
+    try {
+      inspection = await inspectRecovery(dependencies.cwd, recoveryId, {
+        recoveryRoot,
+        ...(projectIdentity === undefined ? {} : { projectIdentity })
+      });
+    } catch (error) {
+      // 索引是近似定位结构（投影可能滞后于事务目录的实际清理）：
+      // 目录已不存在的幻影候选直接跳过，不能让 bare 启动崩在过期条目上。
+      if (error instanceof RecoveryPreconditionError && error.code === "RECOVERY_NOT_FOUND") {
+        continue;
+      }
+      throw error;
+    }
     if (inspection.state !== "committed" && inspection.state !== "rolled_back") {
       durablePendingIds.push(recoveryId);
     }
