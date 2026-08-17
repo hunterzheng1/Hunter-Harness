@@ -1116,3 +1116,95 @@ class PlanVerifyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanVerifyV2Tests(unittest.TestCase):
+    """v2 finalizer（TS）证据路径：无 legacy receipt 时的结构验收。"""
+
+    def _seed_v2_change(self, change: str = "v2-demo") -> tuple[Path, Path, dict]:
+        root = Path(tempfile.mkdtemp(prefix="plan-verify-v2-"))
+        change_dir = root / ".harness" / "changes" / change
+        plans = change_dir / "plans"
+        meta = change_dir / "meta"
+        plans.mkdir(parents=True)
+        meta.mkdir(parents=True)
+        targets = [
+            f"plans/{change}-design.md",
+            f"plans/{change}-plan.md",
+            f"plans/{change}-implementation-detail.md",
+            f"plans/{change}-test-scenarios.md",
+            "meta/gate-policy.json",
+            "meta/worktree.json",
+            "meta/implementation-checkpoints.json",
+            "meta/scenario-manifest.json",
+        ]
+        payload_hashes = {}
+        for rel in targets:
+            content = (f"{change}:{rel}\n").encode("utf-8")
+            (change_dir / rel).write_bytes(content)
+            payload_hashes[rel] = "sha256:" + hashlib.sha256(content).hexdigest()
+        operation_id = f"plan_finalize:{change}:abc123"
+        journal = {
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "state": "committed",
+            "readback": "verified",
+            "binding": {
+                "ownership_paths": targets,
+                "expected_payload_hashes": payload_hashes,
+            },
+        }
+        journal_dir = meta / "publication-journals"
+        journal_dir.mkdir()
+        (journal_dir / f"{operation_id.replace(':', '%3A')}.json").write_text(
+            json.dumps(journal), encoding="utf-8"
+        )
+        transaction = {
+            "schema_version": 1,
+            "operation_id": operation_id,
+            "change_key": change,
+            "status": "publication_committed_event_complete",
+            "run_id": "plan_runv2",
+            "attempt": 1,
+        }
+        transactions_dir = meta / "plan-finalization-transactions"
+        transactions_dir.mkdir()
+        (transactions_dir / f"{operation_id.replace(':', '%3A')}.json").write_text(
+            json.dumps(transaction), encoding="utf-8"
+        )
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        return change_dir, meta, payload_hashes
+
+    def test_v2_committed_journal_verifies(self) -> None:
+        change_dir, _meta, _hashes = self._seed_v2_change()
+        result = finalizer.verify_plan(change_dir)
+        self.assertTrue(result["ok"], msg=result)
+        self.assertEqual(result["code"], "PLAN_V2_VERIFIED")
+        self.assertTrue(result["v2"])
+
+    def test_v2_artifact_drift_fails_closed(self) -> None:
+        change_dir, _meta, _hashes = self._seed_v2_change()
+        target = change_dir / "meta" / "worktree.json"
+        target.write_bytes(b"tampered")
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "ARTIFACT_HASH_DRIFT")
+
+    def test_v2_uncommitted_transaction_rejected(self) -> None:
+        change_dir, meta, _hashes = self._seed_v2_change()
+        transactions_dir = meta / "plan-finalization-transactions"
+        for path in transactions_dir.glob("*.json"):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["status"] = "publication_staged"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "RECEIPT_NOT_FINALIZED")
+
+    def test_v2_missing_journal_rejected(self) -> None:
+        change_dir, meta, _hashes = self._seed_v2_change()
+        for path in (meta / "publication-journals").glob("*.json"):
+            path.unlink()
+        result = finalizer.verify_plan(change_dir)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PUBLICATION_JOURNAL_MISSING")

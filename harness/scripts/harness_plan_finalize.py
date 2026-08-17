@@ -796,6 +796,121 @@ def _receipt_artifact_targets(
     return targets, None
 
 
+def _verify_plan_v2(change_dir: Path) -> dict[str, Any] | None:
+    """v2 finalizer（TS）证据的只读验收。
+
+    v2 不产生 meta/plan-finalization.json；canonical 证据是
+    meta/plan-finalization-transactions/ + meta/publication-journals/。
+    本路径只做结构验收：最新事务终态、匹配 journal 的 committed/readback、
+    durable targets 存在且字节哈希与 binding 一致。内容质量由 TS 质量层裁决，
+    Python 不重复审判。无 v2 证据时返回 None（调用方回退 RECEIPT_MISSING）。
+    """
+    transactions_dir = change_dir / "meta" / "plan-finalization-transactions"
+    if not transactions_dir.is_dir():
+        return None
+    transactions = sorted(
+        transactions_dir.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not transactions:
+        return None
+    latest: dict[str, Any] | None = None
+    for candidate in reversed(transactions):
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            latest = payload
+            break
+    if latest is None:
+        return None
+    if latest.get("change_key") != change_dir.name:
+        return _result_error(
+            "RECEIPT_CHANGE_NAME_INVALID",
+            "v2 transaction change_key does not match the change directory",
+        )
+    if latest.get("status") != "publication_committed_event_complete":
+        return _result_error(
+            "RECEIPT_NOT_FINALIZED",
+            f"v2 transaction status is {latest.get('status')!r}, "
+            "expected 'publication_committed_event_complete'",
+        )
+    operation_id = str(latest.get("operation_id") or "")
+    journals_dir = change_dir / "meta" / "publication-journals"
+    journal: dict[str, Any] | None = None
+    if journals_dir.is_dir():
+        for candidate in sorted(journals_dir.glob("*.json")):
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("operation_id") == operation_id:
+                journal = payload
+                break
+    if journal is None:
+        return _result_error(
+            "PUBLICATION_JOURNAL_MISSING",
+            f"no publication journal matches v2 operation {operation_id!r}",
+        )
+    if journal.get("state") != "committed" or journal.get("readback") != "verified":
+        return _result_error(
+            "PUBLICATION_JOURNAL_NOT_COMMITTED",
+            "v2 publication journal is not committed with verified readback",
+        )
+    binding = journal.get("binding")
+    if not isinstance(binding, dict):
+        return _result_error("PUBLICATION_BINDING_INVALID", "v2 journal binding missing")
+    payload_hashes = binding.get("expected_payload_hashes")
+    ownership_paths = binding.get("ownership_paths")
+    if not isinstance(payload_hashes, dict) or not isinstance(ownership_paths, list):
+        return _result_error("PUBLICATION_BINDING_INVALID", "v2 binding fields malformed")
+    required = {
+        f"plans/{change_dir.name}-design.md",
+        f"plans/{change_dir.name}-plan.md",
+        f"plans/{change_dir.name}-implementation-detail.md",
+        f"plans/{change_dir.name}-test-scenarios.md",
+        "meta/gate-policy.json",
+        "meta/worktree.json",
+    }
+    missing_required = sorted(required - set(ownership_paths))
+    if missing_required:
+        return _result_error(
+            "RECEIPT_FILES_INCOMPLETE",
+            "v2 journal omits required artifacts: " + ", ".join(missing_required),
+        )
+    for rel, expected_hash in payload_hashes.items():
+        if not isinstance(expected_hash, str) or not expected_hash.startswith("sha256:"):
+            return _result_error("PUBLICATION_BINDING_INVALID", f"{rel}: malformed hash")
+        target = change_dir / rel
+        try:
+            resolved = target.resolve()
+            resolved.relative_to(change_dir.resolve())
+        except (OSError, ValueError):
+            return _result_error(
+                "RECEIPT_FILE_PATH_INVALID",
+                f"v2 artifact path resolves outside the change directory: {rel}",
+            )
+        if not target.is_file():
+            return _result_error("ARTIFACT_MISSING", f"published artifact missing: {rel}")
+        actual_hash = "sha256:" + hashlib.sha256(target.read_bytes()).hexdigest()
+        if actual_hash != expected_hash:
+            return _result_error(
+                "ARTIFACT_HASH_DRIFT",
+                f"{rel}: content hash {actual_hash} != v2 binding {expected_hash}",
+            )
+    return {
+        "ok": True,
+        "code": "PLAN_V2_VERIFIED",
+        "v2": True,
+        "operationId": operation_id,
+        "runId": latest.get("run_id"),
+        "attempt": latest.get("attempt"),
+        "artifactCount": len(payload_hashes),
+        "status": latest.get("status"),
+    }
+
+
 def verify_plan(change_dir: Path) -> dict[str, Any]:
     """Read-only verification of a finalized plan (retro §5.8).
 
@@ -807,6 +922,10 @@ def verify_plan(change_dir: Path) -> dict[str, Any]:
     change_dir = change_dir.resolve()
     receipt_path = change_dir / "meta" / "plan-finalization.json"
     if not receipt_path.is_file():
+        # v2 finalizer 证据路径（canonical 事实源是 transactions + journals）
+        v2_result = _verify_plan_v2(change_dir)
+        if v2_result is not None:
+            return v2_result
         return _result_error("RECEIPT_MISSING", f"receipt not found: {receipt_path}")
 
     try:
