@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.81] — hunter-harness
+
+### Performance（2026-08-18 recovery 索引读路径有界化）
+
+- **`readIndex` 投影复用**（`e5e2e69`）：恢复索引读路径不再逐个打开全部权威条目——写路径每次写入都同步刷新投影，投影覆盖全部条目名时直接复用，仅在投影缺名字（写入者崩溃或并发竞态）时回退全量重建。完整性防线不变：恢复前 `locateRecovery` 仍完整校验 journal 与 mirror。实测 12691 条目下索引读取 ~10s → ~90ms。
+- 新增 2 个读路径测试（含"投影不完整必须回退全量读"的崩溃安全网）。
+- 测试基建：durable recovery store 与 vitest 临时根隔离（`e5e2e69`、`e9692f5`），CI_ONLY 重型矩阵改为 project 级 exclude 消除 related 传递命中（`6d2d14d`）。
+- Bundle 与 workflow-harness 数据包无变更（保持 `0.2.72` / Bundle `0.2.61`）。
+
 ## [0.2.80] — hunter-harness / [0.2.72] — @hunter-harness/workflow-harness
 
 ### Added（2026-08-17 harness-push/pull 凭据共用与 actor_id 自愈）
