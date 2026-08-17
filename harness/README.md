@@ -376,7 +376,7 @@ $out = "<build-output-dir>"
 # 通用项目
 python "$skillsRoot/scripts/harness_deploy.py" build --skills-root $skillsRoot --out $out --json
 
-# Java 后端（core + java overlay → 12 skill 自包含树）
+# Java 后端（core + java overlay → 14 skill 自包含树：12 base + 2 java-only）
 python "$skillsRoot/scripts/harness_deploy.py" build --skills-root $skillsRoot --overlay java --out $out --json
 
 python "$skillsRoot/scripts/harness_deploy.py" install --from $out --project "<目标项目>" --json
