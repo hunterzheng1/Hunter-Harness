@@ -817,6 +817,55 @@ describe("schema v3 durable recovery", () => {
       .toBe(count);
   });
 
+  it("rebuilds from authoritative entries when the index projection is incomplete", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-index-fallback-"));
+    const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-recovery-store-"));
+    await writeFile(join(root, "one.md"), "before");
+    await runTransaction(root, [
+      { operation: "modify", path: "one.md", content: "first" }
+    ], {
+      id: "tx_projected",
+      kind: "update",
+      recoveryStore: { root: recoveryRoot, managedPaths: ["one.md"] },
+      ...identity
+    });
+
+    // 写入者写完权威条目、还没更新投影就崩溃：投影缺名字时必须回退到全量读，
+    // 否则崩溃前那笔事务会从索引里消失，再也恢复不了。
+    await writeFile(
+      join(recoveryRoot, "index.json"),
+      JSON.stringify({ schemaVersion: 1, entries: [] })
+    );
+
+    expect(await readDurableRecoveryIds(root, recoveryRoot))
+      .toEqual(["tx_projected"]);
+  });
+
+  it("does not reread authoritative entry bodies already covered by the projection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-index-covered-"));
+    const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-recovery-store-"));
+    await writeFile(join(root, "one.md"), "before");
+    await runTransaction(root, [
+      { operation: "modify", path: "one.md", content: "first" }
+    ], {
+      id: "tx_covered",
+      kind: "update",
+      recoveryStore: { root: recoveryRoot, managedPaths: ["one.md"] },
+      ...identity
+    });
+
+    // 投影已覆盖全部权威条目名时，读路径只比对文件名、不再逐个打开条目体——
+    // 这里把条目体写坏来证明它确实没被读。索引只用于定位候选，真正的完整性
+    // 校验发生在 locateRecovery 读取 journal/mirror 时。
+    const entryRoot = join(recoveryRoot, "recoveries", ".index");
+    for (const name of await readdir(entryRoot)) {
+      await writeFile(join(entryRoot, name), "{not-json");
+    }
+
+    expect(await readDurableRecoveryIds(root, recoveryRoot))
+      .toEqual(["tx_covered"]);
+  });
+
   it("blocks terminal recovery while the live transaction owner holds the lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-live-owner-lock-"));
     let announcePrepared: (() => void) | undefined;

@@ -2,6 +2,11 @@
 // 曾泄漏 >100GB 到系统 Temp。这里为每次 vitest 运行创建专属临时根目录，并通过
 // TMPDIR/TMP/TEMP 让 os.tmpdir()（含 fork worker 与测试内 spawn 的子进程）指向它，
 // 运行结束后整树删除，测试本身无需再各自注册清理。
+//
+// 事务恢复存储是同一问题的漏网之鱼：resolveRecoveryRoot() 默认落到
+// %LOCALAPPDATA%/HunterHarness/recovery，而 init/refresh 每个用例都会往那里写一份
+// durable 副本且从不回收——实测 18 天堆出 1.87M 文件 / 37GB，并让每次 runCli 多花
+// 十几秒遍历索引。HUNTER_HARNESS_RECOVERY_ROOT 一并指进临时根，随 teardown 消失。
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +44,7 @@ export async function setup(): Promise<void> {
   process.env["TMPDIR"] = tempRoot;
   process.env["TMP"] = tempRoot;
   process.env["TEMP"] = tempRoot;
+  process.env["HUNTER_HARNESS_RECOVERY_ROOT"] = join(tempRoot, "recovery");
 }
 
 export async function teardown(): Promise<void> {

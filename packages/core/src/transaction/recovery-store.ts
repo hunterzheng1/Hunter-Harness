@@ -761,8 +761,17 @@ async function readIndex(root: string): Promise<DurableRecoveryIndex> {
   for (const entry of await readLegacyIndex(root)) {
     entries.set(indexEntryKey(entry), entry);
   }
-  for (const entry of await readAuthoritativeIndexEntries(root)) {
-    entries.set(indexEntryKey(entry), entry);
+  // 与 writeIndexProjection 同源的判据：writeIndexEntry 写完权威条目后总会同步刷新
+  // 投影，所以投影缺名字只可能是写入者崩溃或并发竞态——只有那时才值得逐个打开条目
+  // 体重建。名字齐全时跳过全量读：恢复存储会累积上万条目，此处曾是每次 CLI 启动
+  // O(n) 打开索引文件的来源。索引只用于定位候选，恢复前 locateRecovery 仍会完整
+  // 校验 journal 与 mirror。
+  const authoritativeNames = await readAuthoritativeIndexEntryNames(root);
+  const projectedNames = new Set([...entries.values()].map(indexEntryName));
+  if (authoritativeNames.some((name) => !projectedNames.has(name))) {
+    for (const entry of await readAuthoritativeIndexEntries(root)) {
+      entries.set(indexEntryKey(entry), entry);
+    }
   }
   return {
     schemaVersion: 1,

@@ -231,22 +231,33 @@ describe("transaction recovery", () => {
   });
 
   it("rolls back only the explicitly selected committed transaction", async () => {
+    // 本例断言的是「没有 durable 镜像可回退」时的行为：tx_first 的项目内事务目录
+    // 已被更晚的 tx_second 取代，locateRecovery 找不到它。全局 recovery root 一旦
+    // 可用，locateRecovery 会从 durable store 找回 tx_first，该前提就不成立了。
     const root = await mkdtemp(join(tmpdir(), "hunter-exact-rollback-"));
-    await writeFile(join(root, "one.md"), "before");
-    await runTransaction(root, [
-      { operation: "modify", path: "one.md", content: "first" }
-    ], { id: "tx_first", kind: "update" });
-    await runTransaction(root, [
-      { operation: "modify", path: "one.md", content: "second" }
-    ], { id: "tx_second", kind: "update" });
+    const previous = process.env.HUNTER_HARNESS_RECOVERY_ROOT;
+    delete process.env.HUNTER_HARNESS_RECOVERY_ROOT;
+    try {
+      await writeFile(join(root, "one.md"), "before");
+      await runTransaction(root, [
+        { operation: "modify", path: "one.md", content: "first" }
+      ], { id: "tx_first", kind: "update" });
+      await runTransaction(root, [
+        { operation: "modify", path: "one.md", content: "second" }
+      ], { id: "tx_second", kind: "update" });
 
-    await expect(
-      rollbackCommittedUpdate(root, "tx_first")
-    ).rejects.toThrow(/not available/i);
-    const result = await rollbackCommittedUpdate(root, "tx_second");
+      await expect(
+        rollbackCommittedUpdate(root, "tx_first")
+      ).rejects.toThrow(/not available/i);
+      const result = await rollbackCommittedUpdate(root, "tx_second");
 
-    expect(result.status).toBe("committed");
-    expect(await readFile(join(root, "one.md"), "utf8")).toBe("first");
+      expect(result.status).toBe("committed");
+      expect(await readFile(join(root, "one.md"), "utf8")).toBe("first");
+    } finally {
+      if (previous !== undefined) {
+        process.env.HUNTER_HARNESS_RECOVERY_ROOT = previous;
+      }
+    }
   });
 
   it("refuses committed rollback when its before snapshot is tampered", async () => {
