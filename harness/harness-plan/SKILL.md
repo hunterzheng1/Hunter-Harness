@@ -85,6 +85,8 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 空目录 | 不得为“预留目录”生成 `.gitkeep`；只有产品明确需要跟踪空目录时才能创建，并在计划中说明业务原因 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`） |
 | 阶段 8 | 二选一且不得混用：**v2** = `hunter-harness plan finalize`（证据包 → 八 target + journal committed + plan-events.ndjson）；**legacy** = 六项标准产物先进入 staging，仅 finalizer 校验成功后发布并写唯一 `phase.end`/log，随后 `verify` 确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致。失败均不得手工补终态 |
+| 发布后改产物 | 用 `harness_plan_finalize.py republish --run-id <全新> --reason "<why>"` 一次完成（新 attempt + 换收据 + 重新派生 manifest）。重跑 `finalize` 会报 `PLAN_FINALIZATION_HASH_CONFLICT`；**绝不手改 `meta/scenario-manifest.json`**（派生物，手改必致 `ARTIFACT_HASH_DRIFT`）→ `reference.md`「发布后修订计划」 |
+| v2 输入骨架 | 不要猜 `plan-evidence-input.json` 结构，也不要去翻 TS 接口/npx 缓存：`npx hunter-harness plan evidence-pack --print-template` 直接给带占位符的完整骨架 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-run` |
 | 知识查询 | 阶段 1 失败不得假装已读历史，也不得改用本地索引或其他执行入口 |
 | 歧义优先检查 | 否定、对比、动作对象或范围存在多种合理解释时，最小取证后先给推荐理解并一次一问；确认前不深挖错误方向 |

@@ -22,7 +22,83 @@ import { createPlanFinalizationRenderer } from "../plan-finalization/production-
 export interface PlanEvidencePackOptions {
   input: string;
   output: string;
+  printTemplate?: boolean;
 }
+
+/**
+ * `EvidencePackInputFile` 的可运行骨架。
+ *
+ * 这个模板是为了让 v2 路径可被发现：此前 schema 的唯一权威定义就是本文件的
+ * TypeScript 接口，agent 在 npx 缓存、全局 node_modules、归档里翻遍也找不到样例，
+ * 最后只能退回 legacy 路径。`--print-template` 让 CLI 自己交出结构。
+ *
+ * 占位值用 `<...>` 包裹，便于逐项替换与 grep 自检；数组给出一条示例元素。
+ */
+const EVIDENCE_PACK_TEMPLATE = {
+  change_key: "<change-name>",
+  risk_signals: ["<如 db-migration / public-api / permission>"],
+  mode: "standard",
+  intent: {
+    source_input: "<用户原话需求>",
+    goal: "<一句话目标>",
+    user_visible_outcome: "<用户能观察到的结果>",
+    in_scope: ["<纳入范围条目>"],
+    out_of_scope: ["<明确排除条目>"],
+    constraints: ["<约束，可省略>"],
+    acceptance_examples: ["<可验收的具体例子>"],
+    uncertainties: ["<待澄清项，可省略>"]
+  },
+  approval: {
+    // 必须来自阶段 4 blocking confirmation 的真实结果，本命令不伪造审批
+    content: {
+      goal: "<同 intent.goal>",
+      user_visible_outcome: "<同 intent.user_visible_outcome>",
+      in_scope: ["<必须与 intent.in_scope 集合相等>"],
+      out_of_scope: ["<必须与 intent.out_of_scope 集合相等>"],
+      recommended_design: "<采纳的设计方案>",
+      key_alternatives: ["<被否决的方案及原因>"],
+      invariants: ["<必须始终成立的性质>"],
+      failure_behaviors: ["<失败时的预期行为>"],
+      compatibility_boundaries: ["<兼容性边界>"],
+      risks: [{ risk: "<风险>", mitigation: "<缓解措施>" }],
+      acceptance_examples: ["<同 intent.acceptance_examples>"]
+    },
+    approver_id: "<真实审批人标识>",
+    decided_at: "<ISO 8601，如 2026-08-17T10:00:00Z；可省略则取当前时间>"
+  },
+  evidence_sources: [
+    { kind: "<如 code / db / doc>", ref: "<文件路径或查询>", note: "<结论>" }
+  ],
+  structured_input: {
+    tasks: [
+      { task_id: "<T1>", cluster: "<簇名>", title: "<任务>", owner_phase: "run" }
+    ],
+    scenarios: [
+      {
+        scenario_id: "<UT-001>",
+        priority: "P0",
+        coverage_dimension: "normal_path",
+        owner_phase: "test",
+        title: "<场景描述>",
+        executable_test_id: "<unit::xxx>",
+        test_file: "<tests/xxx.spec.ts>",
+        test_title: "<测试标题>"
+      }
+    ],
+    approved_scopes: [{ text: "<获批范围条目，与 in_scope 对应>" }]
+  },
+  machine: {
+    capabilities: ["<如 db-migration / api-contract>"],
+    worktree_policy: "<none | required>"
+  },
+  context: {
+    project_id: "<project.yaml 的 project_id>",
+    run_id: "<plan_<uuid>，必须小写字母开头>",
+    branch_name: "<当前分支>",
+    attempt: 1
+  },
+  expected_baseline: { state: "absent", manifest_hash: null, generation: 0 }
+} as const;
 
 /**
  * `hunter-harness plan evidence-pack --input <structured.json> --output <evidence.json>`
@@ -116,6 +192,11 @@ export async function runPlanEvidencePack(
   dependencies: CommandDependencies
 ): Promise<number> {
   const now = () => new Date().toISOString();
+  if (options.printTemplate === true) {
+    // 结构可发现性优先于输出洁癖：直接把骨架打到 stdout，可重定向成输入文件
+    dependencies.stdout(`${JSON.stringify(EVIDENCE_PACK_TEMPLATE, null, 2)}\n`);
+    return 0;
+  }
   try {
     const input = JSON.parse(await readFile(options.input, "utf8")) as EvidencePackInputFile;
     // HP-07：run_id 必须在写入任何 legacy 事件前满足 v2 identity（小写字母开头）；

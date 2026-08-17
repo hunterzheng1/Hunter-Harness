@@ -704,7 +704,11 @@ def append_event(
         return {
             "ok": False,
             "code": "PHASE_ALREADY_CLOSED",
-            "message": "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same attempt",
+            "message": (
+                "PHASE_ALREADY_CLOSED: refusing a second phase.end for the "
+                "same attempt. A retry needs a fresh run id AND the next "
+                "attempt number (attempts are global per phase, not per run id)."
+            ),
             "event": event,
             "autoSealed": result.get("autoSealed") or [],
         }
@@ -1931,7 +1935,9 @@ def cmd_append(args: argparse.Namespace) -> int:
                     ):
                         attempt_error = (
                             "EVENT_ATTEMPT_CONFLICT: run_id is already bound to "
-                            f"attempt {expected_attempt}, received {explicit_attempt}"
+                            f"attempt {expected_attempt}, received "
+                            f"{explicit_attempt}. One run id maps to exactly one "
+                            "attempt — allocate a fresh run id for the next attempt."
                         )
                     else:
                         event["attempt"] = expected_attempt
@@ -1972,7 +1978,10 @@ def cmd_append(args: argparse.Namespace) -> int:
         return emit_error(f"append failed: {exc}", as_json=as_json)
     if phase_closed:
         return emit_error(
-            "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same attempt",
+            "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same "
+            "attempt. A retry needs a fresh run id AND the next attempt number "
+            "(attempts are global per phase, not per run id). For a published "
+            "plan use harness_plan_finalize.py republish, which allocates both.",
             as_json=as_json,
             error_code="PHASE_ALREADY_CLOSED",
         )

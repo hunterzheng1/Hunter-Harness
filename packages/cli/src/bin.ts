@@ -471,9 +471,18 @@ export async function runCli(
   const planCmd = program.command("plan").description("Plan v2 产物与最终化");
   planCmd.command("evidence-pack")
     .description("把规划自然产出组装为 plan finalize 可消费的证据包（阶段 14 桥）")
-    .requiredOption("--input <file>", "结构化规划输入 JSON（intent/审批/tasks/scenarios）")
-    .requiredOption("--output <file>", "证据包输出路径")
+    .option("--input <file>", "结构化规划输入 JSON（intent/审批/tasks/scenarios）")
+    .option("--output <file>", "证据包输出路径")
+    .option("--print-template", "打印 --input 文件的结构骨架到 stdout 后退出（不读写文件）")
     .action(async (options: PlanEvidencePackOptions) => {
+      if (options.printTemplate !== true
+        && (options.input === undefined || options.output === undefined)) {
+        dependencies.stderr(
+          "error: --input 与 --output 为必填；先用 --print-template 获取输入结构骨架\n"
+        );
+        exitCode = 1;
+        return;
+      }
       exitCode = await runPlanEvidencePack(options, dependencies);
     });
   planCmd.command("finalize")

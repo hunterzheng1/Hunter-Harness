@@ -1208,3 +1208,150 @@ class PlanVerifyV2Tests(unittest.TestCase):
         result = finalizer.verify_plan(change_dir)
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "PUBLICATION_JOURNAL_MISSING")
+
+
+class PlanRepublishTests(unittest.TestCase):
+    """Amending a published plan must be one sanctioned command, not a
+    five-step lifecycle dance that ends in a hand-edited manifest."""
+
+    def _publish(self) -> tuple[Path, Path, Path]:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        staging = root / "staging"
+        change_dir = root / ".harness" / "changes" / "demo"
+        seed_staging(staging)
+        seed_plan_start(change_dir)
+        result = finalizer.finalize_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run", attempt=1
+        )
+        self.assertTrue(result["ok"], result)
+        return root, staging, change_dir
+
+    @staticmethod
+    def _add_scenario(staging: Path) -> None:
+        path = staging / "plans" / "demo-test-scenarios.md"
+        write(
+            path,
+            path.read_text(encoding="utf-8")
+            + "| API-004 | P0 | real-data conflict repro | api test | test |\n",
+        )
+
+    def test_finalize_still_refuses_a_silent_artifact_change(self) -> None:
+        _root, staging, change_dir = self._publish()
+        self._add_scenario(staging)
+
+        result = finalizer.finalize_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run", attempt=1
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PLAN_FINALIZATION_HASH_CONFLICT")
+        # The error must name the sanctioned way out.
+        self.assertIn("republish", result["error"])
+
+    def test_republish_publishes_the_amendment_and_verifies(self) -> None:
+        _root, staging, change_dir = self._publish()
+        self._add_scenario(staging)
+
+        result = finalizer.republish_plan(
+            change_dir,
+            staging,
+            change_name="demo",
+            run_id="plan-run-2",
+            reason="用户要求把真实报错数据加为回归场景",
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["action"], "republish")
+        self.assertEqual(result["attempt"], 2)
+        self.assertEqual(result["supersedes"]["runId"], "plan-run")
+        # The whole point: verify is green again, no drift left behind.
+        self.assertTrue(finalizer.verify_plan(change_dir)["ok"])
+
+    def test_republish_regenerates_the_derived_manifest(self) -> None:
+        _root, staging, change_dir = self._publish()
+        manifest = change_dir / "meta" / "scenario-manifest.json"
+        before = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual([s["id"] for s in before["scenarios"]], ["UT-001"])
+
+        self._add_scenario(staging)
+        result = finalizer.republish_plan(
+            change_dir,
+            staging,
+            change_name="demo",
+            run_id="plan-run-2",
+            reason="add regression scenario",
+        )
+        self.assertTrue(result["ok"], result)
+
+        after = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual([s["id"] for s in after["scenarios"]], ["UT-001", "API-004"])
+
+    def test_republish_records_the_superseded_receipt(self) -> None:
+        _root, staging, change_dir = self._publish()
+        receipt_path = change_dir / "meta" / "plan-finalization.json"
+        old_hash = json.loads(receipt_path.read_text(encoding="utf-8"))["artifactsHash"]
+
+        self._add_scenario(staging)
+        finalizer.republish_plan(
+            change_dir,
+            staging,
+            change_name="demo",
+            run_id="plan-run-2",
+            reason="add regression scenario",
+        )
+
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["status"], "finalized")
+        self.assertNotEqual(receipt["artifactsHash"], old_hash)
+        self.assertEqual(receipt["supersedes"]["artifactsHash"], old_hash)
+        self.assertEqual(receipt["amendReason"], "add regression scenario")
+
+    def test_republish_requires_a_reason(self) -> None:
+        _root, staging, change_dir = self._publish()
+        self._add_scenario(staging)
+
+        result = finalizer.republish_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run-2", reason="  "
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PLAN_AMEND_REASON_REQUIRED")
+
+    def test_republish_rejects_a_reused_run_id(self) -> None:
+        _root, staging, change_dir = self._publish()
+        self._add_scenario(staging)
+
+        result = finalizer.republish_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run", reason="x"
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PLAN_AMEND_RUN_ID_IN_USE")
+
+    def test_republish_without_a_prior_publication_is_rejected(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        staging = root / "staging"
+        change_dir = root / ".harness" / "changes" / "demo"
+        seed_staging(staging)
+        seed_plan_start(change_dir)
+
+        result = finalizer.republish_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run-2", reason="x"
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PLAN_NOT_FINALIZED")
+
+    def test_republish_is_idempotent_when_nothing_changed(self) -> None:
+        _root, staging, change_dir = self._publish()
+
+        result = finalizer.republish_plan(
+            change_dir, staging, change_name="demo", run_id="plan-run-2", reason="noop"
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["idempotent"])

@@ -357,7 +357,14 @@ npx hunter-harness plan evidence-pack --input .harness/changes/<cn>/meta/plan-ev
 npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidence.json
 ```
 
-**自然输入文件**（`meta/plan-evidence-input.json`，权威定义 `packages/cli/src/commands/plan-evidence-pack.ts` 的 `EvidencePackInputFile`）由规划阶段逐步沉淀，各字段定稿时点不得倒置：
+**自然输入文件**（`meta/plan-evidence-input.json`，权威定义 `packages/cli/src/commands/plan-evidence-pack.ts` 的 `EvidencePackInputFile`）由规划阶段逐步沉淀，各字段定稿时点不得倒置。
+
+> 📋 **先取骨架，别猜结构**：CLI 自带模板输出，不需要去找 TS 接口或翻 npx 缓存——
+> ```bash
+> npx hunter-harness plan evidence-pack --print-template > .harness/changes/<cn>/meta/plan-evidence-input.json
+> ```
+> 输出是带 `<...>` 占位符的完整骨架，逐项替换即可；替换完 grep 一次 `<` 自检有无遗漏。
+> `--print-template` 不读写任何文件，只打到 stdout。
 
 | 字段 | 内容 | 定稿阶段 |
 |------|------|:---:|
@@ -378,6 +385,29 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 - **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
 - **legacy 收据**：过渡期（阶段 14 前）v2 路径不写 `plan-finalization.json`；消费方若仍读 legacy receipt，由兼容投影单独提供，不得反向要求 v2 双写。
 - **回退**：v2 自然输入不完整（如缺真实审批记录）时才允许走 Python finalizer（legacy 路径）；同一次发布不得两条路径混用。
+
+### 发布后修订计划（republish）
+
+计划发布后又要改产物，是**正常且高频**的情况——用户看完计划补一个回归场景、修正一条任务、调整验收标准。这时不要与哈希守卫搏斗：
+
+```bash
+python <skills-root>/scripts/harness_plan_finalize.py republish \
+  --change-dir ".harness/changes/<cn>" --staging-dir ".harness/changes/<cn>/runtime/plan-staging" \
+  --change <cn> --run-id "plan_$(uuidgen)" --reason "<为什么要改>" --json
+```
+
+它一次性完成整套动作：校验 staging → 分配新 attempt（自动取已用最大值 +1）→ 追加 `phase.start` → 替换收据 → 重新派生 `scenario-manifest.json` 与 `implementation-checkpoints.json` → 写 `phase.end`。收据里保留 `supersedes`（被取代的 hash/runId/attempt）与 `amendReason`，修订全程可审计。
+
+| 约束 | 说明 |
+|------|------|
+| `--reason` 必填 | 修订已发布计划必须留下理由，否则 `PLAN_AMEND_REASON_REQUIRED` |
+| `--run-id` 必须全新 | 复用旧 run-id 报 `PLAN_AMEND_RUN_ID_IN_USE`（attempt 与 run-id 一一绑定） |
+| 首次发布不能用它 | 无收据时报 `PLAN_NOT_FINALIZED`，首次发布走 `finalize` |
+| 内容没变则空操作 | 返回 `idempotent:true`，不写事件、不消耗 attempt |
+
+⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，run 阶段 `validate_plan_handoff` 也会记 WARN。`republish` 会重新派生它，这才是唯一正确入口。
+
+> 直接重跑 `finalize` 会报 `PLAN_FINALIZATION_HASH_CONFLICT`——这是守卫在防止发布后产物被悄悄改动，不是 bug。报错信息里已经给出 `republish` 命令行。
 
 ### Plan 结束行为规则
 

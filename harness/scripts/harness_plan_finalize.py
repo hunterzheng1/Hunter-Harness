@@ -728,7 +728,9 @@ def _validate_plan_start(
     if not matching:
         return _result_error(
             "PHASE_START_MISSING",
-            "no matching plan phase.start event found for finalizer runId/attempt",
+            "no matching plan phase.start event found for finalizer runId/attempt; "
+            "append one with the same run id and attempt before finalizing, or use "
+            "the `republish` subcommand which allocates and appends both for you",
         )
     if len(matching) > 1:
         return _result_error(
@@ -1299,6 +1301,72 @@ def _append_terminal(change_dir: Path, run_id: str, attempt: int) -> tuple[int, 
     return code, stderr.getvalue().strip()
 
 
+def _rollback_publish(
+    created: list[Path], replaced: list[tuple[Path, bytes]]
+) -> None:
+    """Undo a failed publish: delete new files, restore overwritten ones."""
+    for target in reversed(created):
+        target.unlink(missing_ok=True)
+    for target, original in reversed(replaced):
+        try:
+            target.write_bytes(original)
+        except OSError:
+            # Best effort: the caller already reports the publish failure.
+            pass
+
+
+def _plan_attempts(change_dir: Path) -> list[int]:
+    """Every attempt number already used by a plan lifecycle event."""
+    try:
+        events = harness_events.load_events(harness_events.events_path(change_dir))
+    except (OSError, ValueError):
+        return []
+    attempts: list[int] = []
+    for event in events:
+        if event.get("phase") != "plan":
+            continue
+        value = event.get("attempt")
+        if isinstance(value, int) and not isinstance(value, bool):
+            attempts.append(value)
+    return attempts
+
+
+def _run_id_in_use(change_dir: Path, run_id: str) -> bool:
+    try:
+        events = harness_events.load_events(harness_events.events_path(change_dir))
+    except (OSError, ValueError):
+        return False
+    return any(event.get("run_id") == run_id for event in events)
+
+
+def _append_plan_start(
+    change_dir: Path, run_id: str, attempt: int, reason: str
+) -> tuple[int, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        code = harness_events.main(
+            [
+                "append",
+                "--change-dir",
+                str(change_dir),
+                "--phase",
+                "plan",
+                "--type",
+                "phase.start",
+                # phase.start accepts only `note` beyond provenance fields.
+                "--note",
+                reason,
+                "--run-id",
+                run_id,
+                "--attempt",
+                str(attempt),
+                "--json",
+            ]
+        )
+    return code, stderr.getvalue().strip()
+
+
 def finalize_plan(
     change_dir: Path,
     staging: Path,
@@ -1306,6 +1374,8 @@ def finalize_plan(
     change_name: str,
     run_id: str,
     attempt: int,
+    allow_amend: bool = False,
+    amend_reason: str | None = None,
 ) -> dict[str, Any]:
     change_dir = change_dir.resolve()
     staging = staging.resolve()
@@ -1331,6 +1401,7 @@ def finalize_plan(
     receipt_path = change_dir / "meta" / "plan-finalization.json"
     lock_path = change_dir / "meta" / "plan-finalize.lock"
     receipt: dict[str, Any] | None = None
+    supersedes: dict[str, Any] | None = None
     if receipt_path.is_file():
         try:
             loaded = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
@@ -1338,11 +1409,22 @@ def finalize_plan(
         except (OSError, json.JSONDecodeError) as exc:
             return _result_error("PLAN_FINALIZATION_RECEIPT_INVALID", str(exc))
         if receipt and receipt.get("artifactsHash") != validation["artifactsHash"]:
-            return _result_error(
-                "PLAN_FINALIZATION_HASH_CONFLICT",
-                "finalizer was already invoked with a different artifact set",
-            )
-        if (
+            if not allow_amend:
+                return _result_error(
+                    "PLAN_FINALIZATION_HASH_CONFLICT",
+                    "finalizer was already invoked with a different artifact set; "
+                    "to publish an approved amendment run: harness_plan_finalize.py "
+                    "republish --change-dir <dir> --staging-dir <dir> --change "
+                    f"{change_name} --run-id <fresh-run-id> --reason \"<why>\"",
+                )
+            # Authorized amendment: keep the superseded identity in the new
+            # receipt so the published history stays auditable.
+            supersedes = {
+                "artifactsHash": receipt.get("artifactsHash"),
+                "runId": receipt.get("runId"),
+                "attempt": receipt.get("attempt"),
+            }
+        elif (
             receipt
             and receipt.get("status") == "finalized"
             and _terminal_exists(change_dir, run_id, attempt)
@@ -1365,21 +1447,33 @@ def finalize_plan(
         return _result_error("PLAN_FINALIZATION_LOCKED", f"lock exists: {lock_path}")
 
     created: list[Path] = []
+    # Amendment overwrites replace already-published bytes. Keep the originals
+    # so a failed publish restores them instead of deleting the published plan.
+    replaced: list[tuple[Path, bytes]] = []
     terminal_committed = False
     try:
         for rel_text in validation["files"]:
             source = staging / rel_text
             target = change_dir / rel_text
-            if target.exists() and target.read_bytes() != source.read_bytes():
+            if (
+                not allow_amend
+                and target.exists()
+                and target.read_bytes() != source.read_bytes()
+            ):
                 return _result_error(
-                    "PLAN_TARGET_CONFLICT", f"refusing to overwrite {rel_text}"
+                    "PLAN_TARGET_CONFLICT",
+                    f"refusing to overwrite {rel_text}; publish an approved "
+                    "amendment with the `republish` subcommand instead",
                 )
 
         for rel_text in validation["files"]:
             source = staging / rel_text
             target = change_dir / rel_text
-            if target.exists():
-                continue
+            existed = target.exists()
+            if existed:
+                original = target.read_bytes()
+                if not allow_amend or original == source.read_bytes():
+                    continue
             target.parent.mkdir(parents=True, exist_ok=True)
             fd, raw_tmp = tempfile.mkstemp(
                 prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
@@ -1389,7 +1483,10 @@ def finalize_plan(
             try:
                 shutil.copyfile(source, tmp)
                 os.replace(tmp, target)
-                created.append(target)
+                if existed:
+                    replaced.append((target, original))
+                else:
+                    created.append(target)
             finally:
                 tmp.unlink(missing_ok=True)
 
@@ -1403,8 +1500,11 @@ def finalize_plan(
                 "tasks": tasks,
                 "foundationGate": "approved",
             }
+            if checkpoints_path.is_file():
+                replaced.append((checkpoints_path, checkpoints_path.read_bytes()))
+            else:
+                created.append(checkpoints_path)
             _atomic_write_json(checkpoints_path, checkpoints_payload)
-            created.append(checkpoints_path)
 
         # C9: write scenario-manifest.json with parsed scenarios.
         scenarios = validation.get("scenarios") or []
@@ -1421,8 +1521,11 @@ def finalize_plan(
                 for scenario in scenarios
             ],
         }
+        if manifest_path.is_file():
+            replaced.append((manifest_path, manifest_path.read_bytes()))
+        else:
+            created.append(manifest_path)
         _atomic_write_json(manifest_path, manifest_payload)
-        created.append(manifest_path)
 
         pending_receipt = {
             "schemaVersion": SCHEMA_VERSION,
@@ -1433,12 +1536,14 @@ def finalize_plan(
             "runId": run_id,
             "attempt": attempt,
         }
+        if supersedes is not None:
+            pending_receipt["supersedes"] = supersedes
+            pending_receipt["amendReason"] = amend_reason or ""
         _atomic_write_json(receipt_path, pending_receipt)
         terminal_code, terminal_error = _append_terminal(change_dir, run_id, attempt)
         terminal_committed = _terminal_exists(change_dir, run_id, attempt)
         if terminal_code != 0 and not terminal_committed:
-            for target in reversed(created):
-                target.unlink(missing_ok=True)
+            _rollback_publish(created, replaced)
             receipt_path.unlink(missing_ok=True)
             return _result_error(
                 "PLAN_TERMINAL_APPEND_FAILED",
@@ -1446,9 +1551,9 @@ def finalize_plan(
             )
         pending_receipt["status"] = "finalized"
         _atomic_write_json(receipt_path, pending_receipt)
-        return {
+        result: dict[str, Any] = {
             "ok": True,
-            "action": "finalize",
+            "action": "republish" if supersedes is not None else "finalize",
             "idempotent": False,
             "artifactsHash": validation["artifactsHash"],
             "files": validation["files"],
@@ -1456,23 +1561,145 @@ def finalize_plan(
             "artifactRef": "meta/plan-finalization.json",
             "executionLogPath": str(harness_events.execution_log_path(change_dir)),
         }
+        if supersedes is not None:
+            result["supersedes"] = supersedes
+            result["scenarioCount"] = len(scenarios)
+            result["taskCount"] = len(tasks)
+        return result
     except OSError as exc:
         if terminal_committed or _terminal_exists(change_dir, run_id, attempt):
             return _result_error(
                 "PLAN_FINALIZATION_RECOVERY_REQUIRED",
                 f"terminal committed; retry finalization to complete receipt: {exc}",
             )
-        for target in reversed(created):
-            target.unlink(missing_ok=True)
+        _rollback_publish(created, replaced)
         receipt_path.unlink(missing_ok=True)
         return _result_error("PLAN_FINALIZATION_IO_ERROR", str(exc))
     finally:
         lock_path.unlink(missing_ok=True)
 
 
+def republish_plan(
+    change_dir: Path,
+    staging: Path,
+    *,
+    change_name: str,
+    run_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Publish an approved amendment to an already-finalized plan.
+
+    Amending a published plan (adding a scenario, correcting a task) used to
+    require reverse-engineering a five-step lifecycle dance across three
+    modules — new run id, incremented attempt, stale receipt removal, dangling
+    attempt sealing — and every wrong turn produced a different error code
+    (PLAN_FINALIZATION_HASH_CONFLICT / PHASE_START_MISSING /
+    EVENT_ATTEMPT_CONFLICT / PHASE_ALREADY_CLOSED). Agents that gave up
+    hand-edited meta/scenario-manifest.json, creating exactly the drift the
+    hash guard exists to prevent.
+
+    This performs the whole sequence atomically and keeps the superseded
+    identity in the receipt, so amendment stays auditable rather than silent.
+    """
+    change_dir = change_dir.resolve()
+    staging = staging.resolve()
+
+    if not str(reason).strip():
+        return _result_error(
+            "PLAN_AMEND_REASON_REQUIRED",
+            "--reason is required: an amendment to a published plan must record why",
+        )
+
+    receipt_path = change_dir / "meta" / "plan-finalization.json"
+    if not receipt_path.is_file():
+        return _result_error(
+            "PLAN_NOT_FINALIZED",
+            "no plan-finalization.json to amend; use `finalize` for the first "
+            "publication",
+        )
+
+    if _run_id_in_use(change_dir, run_id):
+        return _result_error(
+            "PLAN_AMEND_RUN_ID_IN_USE",
+            f"run id {run_id} already appears in this change's events; "
+            "an amendment needs a fresh run id",
+        )
+
+    # Nothing to amend is a no-op, not a new attempt: probe the staged hash
+    # before writing any lifecycle event.
+    reclassify = _reclassify_gate_policy(staging, change_name)
+    if not reclassify.get("ok"):
+        return _result_error(
+            "CAPABILITY_GATE_DRIFT", reclassify.get("error", "reclassify failed")
+        )
+    probe = validate_staging(staging, change_name)
+    if not probe["ok"]:
+        return probe
+    try:
+        published = json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _result_error("PLAN_FINALIZATION_RECEIPT_INVALID", str(exc))
+    if (
+        isinstance(published, dict)
+        and published.get("status") == "finalized"
+        and published.get("artifactsHash") == probe["artifactsHash"]
+    ):
+        return {
+            "ok": True,
+            "action": "republish",
+            "idempotent": True,
+            "artifactsHash": probe["artifactsHash"],
+            "files": probe["files"],
+            "receiptPath": str(receipt_path),
+            "artifactRef": "meta/plan-finalization.json",
+            "note": "published plan already matches staging; nothing to amend",
+        }
+
+    attempt = max(_plan_attempts(change_dir), default=0) + 1
+    start_code, start_error = _append_plan_start(
+        change_dir, run_id, attempt, f"plan amendment: {reason}"
+    )
+    if start_code != 0:
+        return _result_error(
+            "PLAN_AMEND_START_FAILED",
+            start_error or "failed to append plan phase.start for the amendment",
+        )
+
+    result = finalize_plan(
+        change_dir,
+        staging,
+        change_name=change_name,
+        run_id=run_id,
+        attempt=attempt,
+        allow_amend=True,
+        amend_reason=reason,
+    )
+    if isinstance(result, dict):
+        result.setdefault("runId", run_id)
+        result.setdefault("attempt", attempt)
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_plan_finalize.py")
     sub = parser.add_subparsers(dest="command", required=True)
+    republish = sub.add_parser(
+        "republish",
+        help=(
+            "publish an approved amendment to an already-finalized plan "
+            "(allocates a fresh attempt and records what it supersedes)"
+        ),
+    )
+    republish.add_argument("--change-dir", required=True)
+    republish.add_argument("--staging-dir", required=True)
+    republish.add_argument("--change", required=True)
+    republish.add_argument(
+        "--run-id", required=True, help="a fresh run id, unused by this change"
+    )
+    republish.add_argument(
+        "--reason", required=True, help="why the published plan is being amended"
+    )
+    republish.add_argument("--json", action="store_true")
     finalize = sub.add_parser("finalize")
     finalize.add_argument("--change-dir", required=True)
     finalize.add_argument("--staging-dir", required=True)
@@ -1490,6 +1717,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "verify":
         result = verify_plan(Path(args.change_dir))
+    elif args.command == "republish":
+        result = republish_plan(
+            Path(args.change_dir),
+            Path(args.staging_dir),
+            change_name=args.change,
+            run_id=args.run_id,
+            reason=args.reason,
+        )
     else:
         result = finalize_plan(
             Path(args.change_dir),
