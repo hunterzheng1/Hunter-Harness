@@ -6,10 +6,10 @@
     "general",
     "java"
   ],
-  "bundle_version": "0.2.59",
-  "content_sha256": "sha256:581316812ca13dcf911fecee5213b8e4cde232ca7403cf0f90e29dd89a633497",
+  "bundle_version": "0.2.60",
+  "content_sha256": "sha256:7ee8db2ec1dd8c636dc8fdb1fa315e396d2105f82c404aa21555b3570966feab",
   "minimumCliVersion": "0.2.79",
-  "workflowPackageVersion": "0.2.70",
+  "workflowPackageVersion": "0.2.71",
   "capabilities": [
     "sync@2",
     "rules-sync@1",

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.71] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-17 存量测试断言收口）
+
+- **java overlay skill 计数断言修正**：base 实际 12 个 + java-only 2 个（`harness-apidoc`/`harness-package`)= 14。`86e897b` 迁移 canonical 工作流源时 README 与 `test_harness_acceptance.py` 断言都写成 12（误以为 base 只有 10 个），长期 fail。
+- **`test_harness_multiday_resilience.test_artifact_budget_fails_before_staging_and_blobs_are_reused` 修 mock**：只设 budget 超限、没构造可 archivable 的 change,preflight 就被拦，从未到 budget 门。补 mock `check_status` / `refresh_sensitive_evidence_scan_receipt` / `validate_sensitive_evidence_publication_gate`，让流程直达 budget 断言点；门顺序本身的集成测试由 `test_harness_archive.py` 覆盖。
+- `test:harness:safe` 从 29/58 修复到 58/58。
+- Bundle 提升至 `0.2.60`,CLI 保持 `0.2.79`（代码无变更）。
+
 ## [0.2.79] — hunter-harness / [0.2.70] — @hunter-harness/workflow-harness
 
 ### Added（2026-08-17 Plan 发布后修订入口）
