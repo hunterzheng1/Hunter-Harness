@@ -6,10 +6,10 @@
     "general",
     "java"
   ],
-  "bundle_version": "0.2.60",
-  "content_sha256": "sha256:7ee8db2ec1dd8c636dc8fdb1fa315e396d2105f82c404aa21555b3570966feab",
-  "minimumCliVersion": "0.2.79",
-  "workflowPackageVersion": "0.2.71",
+  "bundle_version": "0.2.61",
+  "content_sha256": "sha256:9ed6be6e399917a05ab249ba7aa0ebe42df623f3c7a228c21d7288988583bef4",
+  "minimumCliVersion": "0.2.80",
+  "workflowPackageVersion": "0.2.72",
   "capabilities": [
     "sync@2",
     "rules-sync@1",
@@ -26,7 +26,7 @@
     "remote-sync-pull@1"
   ],
   "requires": {
-    "minimumCliVersion": "0.2.79",
+    "minimumCliVersion": "0.2.80",
     "capabilities": [
       "sync@2",
       "rules-sync@1",

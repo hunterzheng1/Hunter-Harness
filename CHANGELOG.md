@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.80] — hunter-harness / [0.2.72] — @hunter-harness/workflow-harness
+
+### Added（2026-08-17 harness-push/pull 凭据共用与 actor_id 自愈）
+
+- **harness-push/pull 复用 connect 绑定凭据**：RemoteSync 凭据解析改为 env（`HUNTER_REMOTE_SYNC_URL`/`TOKEN`/`ACTOR_ID`）优先、缺失字段逐字段回退 `.harness/credentials.local.yaml`；绑定齐备时不再需要任何环境变量（`d7362d2`）。
+- **connect 落盘 actor_id**：key-info 返回的 actor_id 写入绑定文件；重复 connect 按 server+project 保留缓存值（`d7362d2`）。
+- **旧绑定 actor_id 自动补全**：url+token 齐备但缺 actor_id 时，push/pull 命令路径懒调 key-info 补全并写回绑定文件（之后不再依赖网络）；env-only 场景仅内存使用、不落盘；补全失败维持 fail closed（`PUSH_PULL_CLI_UNAVAILABLE`）并输出修复提示（`d7362d2`）。
+- 工作流 Bundle 提升至 `0.2.61`，最低 CLI 版本 `0.2.80`（harness-push/pull SKILL 前置条件改述凭据回退与自愈行为）。
+
 ## [0.2.71] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-17 存量测试断言收口）
