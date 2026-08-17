@@ -11,10 +11,22 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { resolveRecoveryRoot } from "../../packages/core/src/transaction/recovery-store.js";
+
 const ROOT_PREFIX = "hunter-vitest-";
 const STALE_MS = 24 * 60 * 60 * 1000;
 
 let tempRoot: string | undefined;
+let realRecoveryBaseline: { path: string; count: number } | undefined;
+
+/** 真实恢复存储的索引条目数；用于在 teardown 时发现泄漏。 */
+async function countRecoveryIndexEntries(root: string): Promise<number> {
+  try {
+    return (await readdir(join(root, "recoveries", ".index"))).length;
+  } catch {
+    return 0;
+  }
+}
 
 /** 进程被强杀时 teardown 不执行，这里清扫上次运行残留的陈旧根目录。 */
 async function sweepStaleRoots(base: string): Promise<void> {
@@ -39,6 +51,12 @@ async function sweepStaleRoots(base: string): Promise<void> {
 }
 
 export async function setup(): Promise<void> {
+  // 必须在覆盖 HUNTER_HARNESS_RECOVERY_ROOT 之前取真实路径，否则量到的是临时根。
+  const realRecoveryRoot = resolveRecoveryRoot(process.env);
+  realRecoveryBaseline = {
+    path: realRecoveryRoot,
+    count: await countRecoveryIndexEntries(realRecoveryRoot)
+  };
   await sweepStaleRoots(tmpdir());
   tempRoot = await mkdtemp(join(tmpdir(), ROOT_PREFIX));
   process.env["TMPDIR"] = tempRoot;
@@ -48,6 +66,20 @@ export async function setup(): Promise<void> {
 }
 
 export async function teardown(): Promise<void> {
+  // 泄漏守卫：重定向只作用于 process.env，注入了精简 env 的用例仍会让
+  // resolveRecoveryRoot 回退到真实目录。靠人记得不可靠，这里让它自己喊出来。
+  if (realRecoveryBaseline !== undefined) {
+    const after = await countRecoveryIndexEntries(realRecoveryBaseline.path);
+    const leaked = after - realRecoveryBaseline.count;
+    if (leaked > 0) {
+      console.warn(
+        `[global-temp] 本次测试向真实恢复存储写入了 ${leaked} 个条目：` +
+        `${realRecoveryBaseline.path}\n` +
+        "  常见原因：某个用例给 runCli 注入了精简 env 却没带 " +
+        "HUNTER_HARNESS_RECOVERY_ROOT（参见 packages/cli/test/init.test.ts 的 recoveryEnv）。"
+      );
+    }
+  }
   if (tempRoot === undefined) return;
   try {
     // Windows 上文件可能被杀毒/索引短暂占用，重试提高删除成功率。

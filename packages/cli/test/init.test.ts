@@ -67,6 +67,14 @@ function terminalCellWidth(value: string): number {
   return width;
 }
 
+// 注入精简 env 的用例必须带上恢复存储重定向：resolveRecoveryRoot 读的是
+// dependencies.env，缺了这个键就会回退到真实的 %LOCALAPPDATA% / XDG_STATE_HOME，
+// 把测试事务写进开发者机器（tests/setup/global-temp.ts 的重定向只覆盖 process.env）。
+const recoveryEnv: Record<string, string> =
+  process.env["HUNTER_HARNESS_RECOVERY_ROOT"] === undefined
+    ? {}
+    : { HUNTER_HARNESS_RECOVERY_ROOT: process.env["HUNTER_HARNESS_RECOVERY_ROOT"] };
+
 describe("hunter-harness initialization", () => {
   let root: string;
   let stdout: string[];
@@ -427,7 +435,7 @@ describe("hunter-harness initialization", () => {
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
       terminalColumns: 40,
-      env: { COLUMNS: "120" },
+      env: { COLUMNS: "120", ...recoveryEnv },
       prompt: async (question) => {
         questions.push(question);
         return answers.shift() ?? "";
@@ -466,7 +474,7 @@ describe("hunter-harness initialization", () => {
       resourcesRoot,
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
-      env: {},
+      env: { ...recoveryEnv },
       fetch,
       promptSecret: async () => "hh_test_key",
       prompt: async () => answers.shift() ?? ""
