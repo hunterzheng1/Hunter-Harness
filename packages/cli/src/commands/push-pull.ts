@@ -111,7 +111,10 @@ export async function resolvePushPullSource(
     project_id: detection.config.project.project_id,
     branch_name: currentBranch,
     commit_sha: commit,
-    client_id: detection.config.project.local_project_key
+    // remoteSyncSourceRefSchema requires client_id to start with `cli_`;
+    // local_project_key is a UUID, so prefix it here. Server echoes this back
+    // in source refs, so the same shape round-trips into sameHttpSource checks.
+    client_id: `cli_${detection.config.project.local_project_key}`
   };
 }
 
@@ -432,6 +435,10 @@ export async function runPushPull(
       attempts += 1;
     }
   } catch (error) {
+    if (process.env.HUNTER_DEBUG_HTTP === "1" && error instanceof Error) {
+      console.error("[hunter-push] uncaught: " + error.message);
+      console.error((error.stack ?? "").split("\n").slice(0, 12).join("\n"));
+    }
     const code = safeErrorCode(error);
     const retryable = error instanceof RemoteSyncError && error.retryable ||
       code === "REMOTE_UNAVAILABLE" || code === "SYNC_LOCK_UNAVAILABLE" ||
@@ -441,13 +448,15 @@ export async function runPushPull(
       : code.includes("CONFIRMATION_REQUIRED") ? 2
         : code.includes("DECISION_REQUIRED") ? 5
           : code.includes("SENSITIVE") ? 6 : 3;
-    dependencies.stderr(`${code}：Push/Pull 命令未执行。\n`);
+    const serverCode = error instanceof RemoteSyncError ? error.serverCode : undefined;
+    const detail = serverCode === undefined ? "" : `（服务端返回：${serverCode}）`;
+    dependencies.stderr(`${code}${detail}：Push/Pull 命令未执行。\n`);
     if (options.json === true) dependencies.stdout(serializeCliResult({
       schema_version: 1, command: direction, request_id: uuidV7(),
       dry_run: options.dryRun === true, ok: false,
       exit_code: exitCode,
       project_id: null, summary: { planned: 0, applied: 0 }, items: [], warnings: [],
-      errors: [{ code, message: "Push/Pull 命令未执行" }]
+      errors: [{ code, message: "Push/Pull 命令未执行", ...(serverCode === undefined ? {} : { server_code: serverCode }) }]
     }));
     return exitCode;
   }

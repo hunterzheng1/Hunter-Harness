@@ -205,7 +205,9 @@ describe("Stage 03 Push/Pull CLI commands", () => {
         project_id: "prj_source",
         branch_name: "release",
         commit_sha: expect.stringMatching(/^[0-9a-f]{40}$/),
-        client_id: expect.stringMatching(/^[0-9a-f-]+$/)
+        // local_project_key is a UUID; the wire format adds the `cli_` prefix
+        // required by remoteSyncSourceRefSchema.
+        client_id: expect.stringMatching(/^cli_[0-9a-f-]+$/)
       });
   }, 30_000);
 

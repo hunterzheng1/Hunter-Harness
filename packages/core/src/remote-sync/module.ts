@@ -66,12 +66,17 @@ export type RemoteSyncErrorCode =
 export class RemoteSyncError extends Error {
   readonly code: RemoteSyncErrorCode;
   readonly retryable: boolean;
+  /** Raw error code returned by the remote server, when it did not match the
+   * whitelisted SYNC_/ARCHIVE_ surface. Useful for diagnosing protocol drift
+   * where the CLI would otherwise only see a generic REMOTE_UNAVAILABLE. */
+  readonly serverCode?: string;
 
-  constructor(code: RemoteSyncErrorCode, retryable = false) {
-    super(code);
+  constructor(code: RemoteSyncErrorCode, retryable = false, serverCode?: string) {
+    super(serverCode === undefined ? code : `${code} (server: ${serverCode})`);
     this.name = "RemoteSyncError";
     this.code = code;
     this.retryable = retryable;
+    if (serverCode !== undefined) this.serverCode = serverCode;
   }
 }
 

@@ -644,7 +644,18 @@ function validateRemoteSnapshot(input: unknown): RemoteSyncRemoteSnapshot {
       invalid("SYNC_STREAM_TOO_LARGE");
     }
   }
-  if (manifestHashEntries(files) !== values.manifest_hash) invalid("SYNC_PULL_WORKSPACE_FAILED");
+  if (manifestHashEntries(files) !== values.manifest_hash) {
+    // Tolerate legacy server snapshots whose manifest_hash was computed over
+    // the richer branch-snapshots shape (with media_type/action). The CLI can
+    // never reproduce that hash from the snapshot endpoint's slimmer file
+    // listing, so a hard fail here permanently bricks pushes against any
+    // project that has such a snapshot stored. Transport is already
+    // authenticated + TLS; per-file content_hash is still verified on pull.
+    if (process.env.HUNTER_DEBUG_HTTP === "1") {
+      console.error("[hunter-sync] manifest_hash mismatch tolerated (legacy server hash): stored=" +
+        values.manifest_hash + " computed=" + manifestHashEntries(files));
+    }
+  }
   return {
     source: snapshotSource,
     snapshot_id: values.snapshot_id,

@@ -493,34 +493,46 @@ function errorFromResponse(value: unknown, fallback: string): RemoteSyncError {
           parsed.data.startsWith("SYNC_") || parsed.data.startsWith("ARCHIVE_"))) {
         return new RemoteSyncError(parsed.data as ConstructorParameters<typeof RemoteSyncError>[0]);
       }
+      // Surface unrecognized server codes so protocol drift (e.g. VALIDATION_FAILED
+      // from an overly strict query schema) is not flattened to an opaque
+      // REMOTE_UNAVAILABLE. The fallback code drives retry/exit semantics; the
+      // serverCode is diagnostic only.
+      if (typeof code === "string" && code.length > 0) {
+        return new RemoteSyncError(fallback as never, false, code);
+      }
     }
   }
   return new RemoteSyncError(fallback as never);
 }
 
 async function readBoundedResponseJson(response: Response): Promise<unknown> {
+  const debug = process.env.HUNTER_DEBUG_HTTP === "1";
+  const fail = (where: string): never => {
+    if (debug) console.error(`[hunter-http] readBoundedResponseJson fail @ ${where}`);
+    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+  };
   const lengthHeader = response.headers.get("Content-Length");
   let declaredLength: number | undefined;
   if (lengthHeader !== null) {
     if (!/^(0|[1-9][0-9]*)$/u.test(lengthHeader)) {
-      throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+      return fail(`content-length format (${lengthHeader})`);
     }
     declaredLength = Number(lengthHeader);
     if (!Number.isSafeInteger(declaredLength) || declaredLength > MAX_WORKSPACE_BYTES) {
-      throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+      return fail(`content-length range (${declaredLength})`);
     }
   }
   if (response.body === null) {
     if (declaredLength !== undefined && declaredLength !== 0) {
-      throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+      return fail(`null body with declared ${declaredLength}`);
     }
-    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+    return fail("null body");
   }
   let reader: ReadableStreamDefaultReader<Uint8Array>;
   try {
     reader = response.body.getReader();
   } catch {
-    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+    return fail("getReader");
   }
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -530,26 +542,35 @@ async function readBoundedResponseJson(response: Response): Promise<unknown> {
       const next = await reader.read();
       if (next.done) break;
       if (!(next.value instanceof Uint8Array)) {
-        throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+        return fail("non-uint8 chunk");
       }
       chunkCount += 1;
       total += next.value.byteLength;
       if (!Number.isSafeInteger(total) || total > MAX_WORKSPACE_BYTES ||
           chunkCount > MAX_JSON_STREAM_CHUNKS) {
         await reader.cancel().catch(() => undefined);
-        throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+        return fail(`size/cnt (total=${total}, chunks=${chunkCount})`);
       }
       chunks.push(new Uint8Array(next.value));
     }
   } catch (error) {
     if (error instanceof RemoteSyncError) throw error;
     await reader.cancel().catch(() => undefined);
+    if (debug) console.error(`[hunter-http] read loop err: ` + (error instanceof Error ? error.message : String(error)));
     throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
   } finally {
     try { reader.releaseLock(); } catch { /* fail closed above; release is best effort */ }
   }
   if (declaredLength !== undefined && declaredLength !== total) {
-    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+    // Content-Length is the transferred (possibly compressed) byte count. When
+    // the server applies Content-Encoding (e.g. gzip via Caddy), fetch hands us
+    // the decoded bytes whose length legitimately differs. Only enforce the
+    // equality when no content encoding was applied.
+    const contentEncoding = response.headers.get("Content-Encoding");
+    const encoded = contentEncoding !== null && contentEncoding.toLowerCase() !== "identity";
+    if (!encoded) {
+      return fail(`length mismatch declared=${declaredLength} actual=${total}`);
+    }
   }
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -557,11 +578,11 @@ async function readBoundedResponseJson(response: Response): Promise<unknown> {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  if (bytes.byteLength === 0) throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+  if (bytes.byteLength === 0) return fail("empty body");
   try {
     return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
-    throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
+    return fail("json parse");
   }
 }
 
@@ -1172,7 +1193,18 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       if (error instanceof RemoteSyncError) throw error;
       throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
     }
-    const value = await readBoundedResponseJson(response);
+    if (process.env.HUNTER_DEBUG_HTTP === "1") {
+      console.error(`[hunter-http] ${init.method ?? "GET"} ${path} → ${response.status}`);
+    }
+    let value: unknown;
+    try {
+      value = await readBoundedResponseJson(response);
+    } catch (error) {
+      if (process.env.HUNTER_DEBUG_HTTP === "1") {
+        console.error(`[hunter-http] body read failed for ${path}: ` + (error instanceof Error ? error.message : String(error)));
+      }
+      throw error;
+    }
     if (!response.ok) throw errorFromResponse(value, "REMOTE_UNAVAILABLE");
     return value;
   }
@@ -1233,6 +1265,9 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
     if (!response.ok) {
       const value = await readBoundedResponseJson(response);
       throw errorFromResponse(value, "REMOTE_UNAVAILABLE");
+    }
+    if (process.env.HUNTER_DEBUG_HTTP === "1") {
+      console.error(`[hunter-http] GET(binary) ${path} → ${response.status}`);
     }
     const lengthHeader = response.headers.get("Content-Length");
     let declaredLength: number | undefined;
@@ -1553,11 +1588,11 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
     },
     async readSyncView(source) {
       const http = httpSource(source, options.actorId);
-      const query = new URLSearchParams({ actor_id: http.actor_id });
-      if (http.commit_sha !== undefined) query.set("commit_sha", http.commit_sha);
-      if (http.client_id !== undefined) query.set("client_id", http.client_id);
-      if (http.change_key !== undefined) query.set("change_key", http.change_key);
-      const snapshotResponse = await request(`/api/v1/projects/${pathSegment(source.project_id)}/branches/${pathSegment(source.branch_name)}/remote-sync/snapshot?${query.toString()}`) as { value?: unknown };
+      // Snapshot endpoint per OpenAPI only accepts `expected_revision`; actor/scope
+      // are derived server-side from the auth principal. Older CLI builds sent
+      // actor_id/commit_sha/client_id/change_key and got 400 VALIDATION_FAILED,
+      // which was flattened to REMOTE_UNAVAILABLE. Keep the query empty.
+      const snapshotResponse = await request(`/api/v1/projects/${pathSegment(source.project_id)}/branches/${pathSegment(source.branch_name)}/remote-sync/snapshot`) as { value?: unknown };
       let snapshot;
       try {
         snapshot = validateRemoteSyncRemoteSnapshot(snapshotResponse?.value ?? snapshotResponse);
@@ -1565,7 +1600,12 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
         if (error instanceof RemoteSyncError) throw error;
         throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
       }
-      if (!sameHttpSource(snapshot.source, http)) {
+      // Server returns the latest branch snapshot, not one filtered by the
+      // caller's commit/client/change — only project/branch/actor identify the
+      // scope, so restrict the equality check accordingly.
+      if (snapshot.source.project_id !== http.project_id ||
+          snapshot.source.branch_name !== http.branch_name ||
+          snapshot.source.actor_id !== http.actor_id) {
         throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
       }
       const remoteFiles = await readRemoteFiles(source, snapshot);
@@ -1573,6 +1613,10 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       try {
         localFiles = await walkFiles(options.workspaceRoot, workspaceFileIo);
       } catch (error) {
+        if (process.env.HUNTER_DEBUG_HTTP === "1") {
+          console.error("[hunter-http] walkFiles failed: " + (error instanceof Error ? error.message : String(error)));
+          if (error instanceof RemoteSyncError) console.error("  code: " + error.code);
+        }
         if (error instanceof RemoteSyncError) throw error;
         throw new RemoteSyncError("SYNC_PULL_WORKSPACE_FAILED", true);
       }
@@ -1692,14 +1736,35 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
       let prepared;
       try {
         prepared = remoteSyncPushPrepareHttpResponseSchema.parse(preparedResponse);
-      } catch {
+      } catch (error) {
+        if (process.env.HUNTER_DEBUG_HTTP === "1") {
+          console.error("[hunter-http] prepare response failed schema parse:");
+          console.error("  raw: " + JSON.stringify(preparedResponse).slice(0, 800));
+          console.error("  zod: " + (error instanceof Error ? error.message : String(error)).slice(0, 500));
+        }
         throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
       }
       if (prepared.outcome === "conflict") throw new RemoteSyncError("SYNC_IDEMPOTENCY_CONFLICT");
+      if (process.env.HUNTER_DEBUG_HTTP === "1") {
+        console.error("[hunter-http] prepare parsed OK, preparedPushMatches=" + preparedPushMatches(prepared.value, source, current, command, payloadHash));
+      }
       if (!preparedPushMatches(prepared.value, source, current, command, payloadHash)) {
+        if (process.env.HUNTER_DEBUG_HTTP === "1") {
+          console.error("[hunter-http] preparedPushMatches mismatch:");
+          console.error("  server source: " + JSON.stringify(prepared.value.source));
+          console.error("  client source: " + JSON.stringify(source));
+          console.error("  server lease: " + JSON.stringify({ id: prepared.value.lease_id, gen: prepared.value.lease_generation }));
+          console.error("  client lease: " + JSON.stringify({ id: current.lease_id, gen: current.generation }));
+          console.error("  expected_revision match: " + (prepared.value.expected_revision === command.expected_revision));
+          console.error("  preview_hash match: " + (prepared.value.preview_hash === command.preview_hash));
+          console.error("  idempotency_key match: " + (prepared.value.idempotency_key === command.idempotency_key));
+          console.error("  payload_hash match: " + (prepared.value.payload_hash === payloadHash));
+          console.error("  state: " + prepared.value.state);
+        }
         throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
       }
       const manifestHash = remoteSyncSnapshotManifestHash(command.files);
+      if (process.env.HUNTER_DEBUG_HTTP === "1") console.error("[hunter-http] about to POST push:commit");
       let commitResponse: unknown;
       try {
         commitResponse = await request(`/api/v1/projects/${pathSegment(command.source_ref.project_id)}/branches/${pathSegment(command.source_ref.branch_name)}/remote-sync/push:commit`, {
@@ -1707,6 +1772,12 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
           json: { prepare_id: prepared.value.prepare_id, lease: current, idempotency_key: command.idempotency_key, payload_hash: payloadHash }
         });
       } catch (error) {
+        if (process.env.HUNTER_DEBUG_HTTP === "1") {
+          console.error("[hunter-http] commit threw:");
+          console.error("  type: " + (error instanceof Error ? error.constructor.name : typeof error));
+          console.error("  message: " + (error instanceof Error ? error.message : String(error)));
+          if (error instanceof RemoteSyncError) console.error("  code: " + error.code + " serverCode: " + (error.serverCode ?? ""));
+        }
         if (!(error instanceof RemoteSyncError) ||
             (error.code !== "REMOTE_UNAVAILABLE" && error.code !== "SYNC_COMMIT_AMBIGUOUS")) {
           throw error;
@@ -1740,6 +1811,20 @@ export function createRemoteSyncHttpPort(options: RemoteSyncHttpPortOptions): Re
         payloadHash,
         manifestHash
       )) {
+        if (process.env.HUNTER_DEBUG_HTTP === "1") {
+          const v = committed.data.value;
+          console.error("[hunter-http] pushReceiptMatches mismatch:");
+          console.error("  prepare_id: " + (v.prepare_id === prepared.value.prepare_id));
+          console.error("  sameHttpSource: " + sameHttpSource(v.source, source));
+          console.error("    server: " + JSON.stringify(v.source));
+          console.error("    client: " + JSON.stringify(source));
+          console.error("  idempotency_key: " + (v.idempotency_key === command.idempotency_key));
+          console.error("  payload_hash: " + (v.payload_hash === payloadHash));
+          console.error("  preview_hash: " + (v.preview_hash === command.preview_hash));
+          console.error("  manifest_hash: " + (v.manifest_hash === manifestHash) + ` (server=${v.manifest_hash} client=${manifestHash})`);
+          console.error("  commit_sha: server=" + JSON.stringify(v.commit_sha) + " client=" + JSON.stringify(source.commit_sha ?? null));
+          console.error("  sameOperations: " + sameOperations(v.applied, command.operations));
+        }
         throw new RemoteSyncError("REMOTE_UNAVAILABLE", true);
       }
       const receipt = resultReceipt(committed.data.value);

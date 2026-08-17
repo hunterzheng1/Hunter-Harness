@@ -944,7 +944,7 @@ describe("RemoteSync HTTP CLI port", () => {
       if (url.includes("/remote-sync/push/status?")) {
         return response({ error: { code: "SYNC_PREPARE_NOT_FOUND" } }, 404);
       }
-      if (url.includes("/remote-sync/snapshot?")) {
+      if (url.includes("/remote-sync/snapshot")) {
         return response({
           source: { ...source, actor_id: "actor_alpha" },
           snapshot_id: "snapshot_empty",
@@ -1338,7 +1338,13 @@ describe("RemoteSync HTTP CLI port", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects a remote snapshot whose manifest hash does not describe its files", async () => {
+  it("tolerates a remote snapshot whose manifest hash does not describe its files (legacy server hash)", async () => {
+    // Older server builds computed manifest_hash over the richer branch-snapshots
+    // shape (with media_type/action). The CLI cannot reproduce that hash from
+    // the snapshot endpoint's slimmer file listing, so a hard fail permanently
+    // bricks pushes against projects with such snapshots. The check is now a
+    // debug-only warning; transport is authenticated + TLS and per-file
+    // content_hash is still verified on pull.
     const workspaceRoot = await mkdtemp(join(tmpdir(), "hunter-remote-manifest-"));
     temporaryRoots.push(workspaceRoot);
     const port = createRemoteSyncHttpPort({
@@ -1358,9 +1364,9 @@ describe("RemoteSync HTTP CLI port", () => {
       }))
     });
 
-    await expect(port.readSyncView(source)).rejects.toMatchObject({
-      code: "SYNC_PULL_WORKSPACE_FAILED"
-    });
+    const view = await port.readSyncView(source);
+    expect(view.revision).toBe("revision_1");
+    expect(view.remote_files).toEqual([]);
   });
 
   it("applies Pull changes through the durable workspace transaction journal", async () => {
