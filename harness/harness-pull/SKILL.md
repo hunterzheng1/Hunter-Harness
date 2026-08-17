@@ -34,7 +34,7 @@ disallowed-tools:
 
 ## 前置条件
 
-- 远端同步已配置：`HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN`、`HUNTER_REMOTE_SYNC_ACTOR_ID`。缺失时 CLI 固定 fail closed（`PUSH_PULL_CLI_UNAVAILABLE`）。
+- 远端同步已配置：优先读环境变量 `HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN`、`HUNTER_REMOTE_SYNC_ACTOR_ID`；缺失字段回退到 `hunter-harness connect` 写入的 `.harness/credentials.local.yaml`（含 actor_id；旧绑定缺该字段时 CLI 经 key-info 自动补全并写回）。两者都缺时 CLI 固定 fail closed（`PUSH_PULL_CLI_UNAVAILABLE`）。
 - 分支文件恢复必须显式 `--scope branch_files --branch <来源分支>`；归档不出现在常规下拉范围（单个归档 ZIP 经 Platform 变更记录单独下载）。
 
 ## 交互流程

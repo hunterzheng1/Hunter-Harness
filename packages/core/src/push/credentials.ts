@@ -18,6 +18,8 @@ export interface LocalCredentials {
   project_id?: string;
   /** Human-readable platform project name cached during connect. */
   project_display_name?: string;
+  /** Actor id returned by key-info during connect; consumed by RemoteSync push/pull. */
+  actor_id?: string;
 }
 
 export class InvalidCredentialsError extends Error {
@@ -63,6 +65,10 @@ function validateLocalCredentials(credentials: LocalCredentials): LocalCredentia
     credentials.project_display_name.trim().length > 0
     ? credentials.project_display_name.trim()
     : undefined;
+  const actorId = typeof credentials.actor_id === "string" &&
+    credentials.actor_id.trim().length > 0
+    ? credentials.actor_id.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     throw new InvalidCredentialsError("credentials.local must include token and/or server_url");
   }
@@ -70,7 +76,8 @@ function validateLocalCredentials(credentials: LocalCredentials): LocalCredentia
     ...(token === undefined ? {} : { token }),
     ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
     ...(projectId === undefined ? {} : { project_id: projectId }),
-    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
+    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName }),
+    ...(actorId === undefined ? {} : { actor_id: actorId })
   };
 }
 
@@ -102,6 +109,10 @@ function parseLocalCredentials(raw: unknown): LocalCredentials | null {
     record.project_display_name.trim().length > 0
     ? record.project_display_name.trim()
     : undefined;
+  const actorId = typeof record.actor_id === "string" &&
+    record.actor_id.trim().length > 0
+    ? record.actor_id.trim()
+    : undefined;
   if (token === undefined && serverUrl === undefined) {
     return null;
   }
@@ -109,7 +120,8 @@ function parseLocalCredentials(raw: unknown): LocalCredentials | null {
     ...(token === undefined ? {} : { token }),
     ...(serverUrl === undefined ? {} : { server_url: serverUrl }),
     ...(projectId === undefined ? {} : { project_id: projectId }),
-    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
+    ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName }),
+    ...(actorId === undefined ? {} : { actor_id: actorId })
   };
 }
 
@@ -124,6 +136,7 @@ export function mergeLocalCredentials(
     ...(existing?.project_display_name === undefined
       ? {}
       : { project_display_name: existing.project_display_name }),
+    ...(existing?.actor_id === undefined ? {} : { actor_id: existing.actor_id }),
     ...patch
   });
 }

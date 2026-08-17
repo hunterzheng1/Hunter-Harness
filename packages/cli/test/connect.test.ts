@@ -64,10 +64,11 @@ describe("hunter-harness connect", () => {
 
     const credentials = parseYaml(
       await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8")
-    ) as { token: string; server_url: string; project_display_name: string };
+    ) as { token: string; server_url: string; project_display_name: string; actor_id: string };
     expect(credentials.token).toBe("hh_test_key");
     expect(credentials.server_url).toBe("https://platform.example.test");
     expect(credentials.project_display_name).toBe("示例项目");
+    expect(credentials.actor_id).toBe("actor_owner");
 
     const gitignore = await readFile(join(root, ".gitignore"), "utf8");
     expect(gitignore).toContain(".harness/credentials.local.yaml");

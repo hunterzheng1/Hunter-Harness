@@ -137,4 +137,30 @@ describe("push credentials.local", () => {
       token: "new-token"
     });
   });
+
+  it("round-trips actor_id for RemoteSync push/pull", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-cred-actor-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeLocalCredentials(root, {
+      token: "local-token",
+      server_url: "https://server.example.test",
+      actor_id: "actor_owner"
+    });
+    expect(await readLocalCredentials(root)).toEqual({
+      token: "local-token",
+      server_url: "https://server.example.test",
+      actor_id: "actor_owner"
+    });
+  });
+
+  it("mergeLocalCredentials preserves actor_id when the patch omits it", () => {
+    expect(mergeLocalCredentials(
+      { server_url: "https://stored.example.test", actor_id: "actor_owner" },
+      { token: "new-token" }
+    )).toEqual({
+      server_url: "https://stored.example.test",
+      actor_id: "actor_owner",
+      token: "new-token"
+    });
+  });
 });

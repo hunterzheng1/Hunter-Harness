@@ -218,11 +218,14 @@ export async function runConnect(
       existing.project_id === info.project_id;
     const projectDisplayName = info.project_display_name ??
       (preserveCachedName ? existing?.project_display_name : undefined);
+    const actorId = info.actor_id ??
+      (preserveCachedName ? existing?.actor_id : undefined);
     await writeLocalCredentials(dependencies.cwd, {
       server_url: serverUrl,
       token: key,
       ...(info.project_id === undefined ? {} : { project_id: info.project_id }),
-      ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName })
+      ...(projectDisplayName === undefined ? {} : { project_display_name: projectDisplayName }),
+      ...(actorId === undefined ? {} : { actor_id: actorId })
     });
     await ensureCredentialsGitignore(dependencies.cwd);
     await ensureHarnessGitignore(dependencies.cwd, { platformBound: true });

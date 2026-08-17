@@ -95,7 +95,10 @@ import {
 } from "./commands/push-pull.js";
 import {
   createPushPullOrchestration,
+  mergeLocalCredentials,
+  readLocalCredentials,
   RemoteSyncModule,
+  writeLocalCredentials,
   type SourceRef
 } from "@hunter-harness/core";
 
@@ -159,15 +162,72 @@ export async function promptSecret(
   }
 }
 
-function defaultDependencies(overrides: CliDependencies): ResolvedCliDependencies {
+const REMOTE_SYNC_COMMANDS = new Set(["harness-push", "harness-pull", "pull"]);
+
+/** Best-effort actor_id 补全：用已齐备的 url/token 调 key-info（connect 同款只读接口）。 */
+async function fetchRemoteSyncActorId(
+  serverUrl: string,
+  token: string,
+  fetchImpl: typeof fetch
+): Promise<string | undefined> {
+  try {
+    const response = await fetchImpl(
+      serverUrl.replace(/\/+$/, "") + "/api/v1/auth/key-info",
+      { headers: { Accept: "application/json", Authorization: "Bearer " + token } }
+    );
+    if (!response.ok) return undefined;
+    const info: unknown = await response.json();
+    if (info === null || typeof info !== "object" || Array.isArray(info)) return undefined;
+    const actor = (info as { actor_id?: unknown }).actor_id;
+    return typeof actor === "string" && actor.trim().length > 0 ? actor.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function defaultDependencies(
+  overrides: CliDependencies,
+  options: { healActor?: boolean } = {}
+): Promise<ResolvedCliDependencies> {
   const env = overrides.env ?? process.env;
-  const remoteSyncUrl = env.HUNTER_REMOTE_SYNC_URL?.trim();
-  const remoteSyncToken = env.HUNTER_REMOTE_SYNC_TOKEN?.trim();
-  const remoteSyncActor = env.HUNTER_REMOTE_SYNC_ACTOR_ID?.trim();
   const workspaceRoot = overrides.cwd ?? process.cwd();
-  const remoteConfigured = remoteSyncUrl !== undefined && remoteSyncUrl !== "" &&
-    remoteSyncToken !== undefined && remoteSyncToken !== "" &&
-    remoteSyncActor !== undefined && remoteSyncActor !== "";
+  let remoteSyncUrl = env.HUNTER_REMOTE_SYNC_URL?.trim();
+  let remoteSyncToken = env.HUNTER_REMOTE_SYNC_TOKEN?.trim();
+  let remoteSyncActor = env.HUNTER_REMOTE_SYNC_ACTOR_ID?.trim();
+  const missing = (value: string | undefined): boolean => value === undefined || value === "";
+  let local: Awaited<ReturnType<typeof readLocalCredentials>> = null;
+  if (missing(remoteSyncUrl) || missing(remoteSyncToken) || missing(remoteSyncActor)) {
+    // env 优先，缺失字段回退到 `hunter-harness connect` 写入的绑定凭据。
+    local = await readLocalCredentials(workspaceRoot);
+    if (missing(remoteSyncUrl)) remoteSyncUrl = local?.server_url;
+    if (missing(remoteSyncToken)) remoteSyncToken = local?.token;
+    if (missing(remoteSyncActor)) remoteSyncActor = local?.actor_id;
+  }
+  if (options.healActor === true && missing(remoteSyncActor) &&
+      !missing(remoteSyncUrl) && !missing(remoteSyncToken)) {
+    const healed = await fetchRemoteSyncActorId(
+      remoteSyncUrl as string, remoteSyncToken as string,
+      overrides.fetch ?? globalThis.fetch
+    );
+    if (healed !== undefined) {
+      remoteSyncActor = healed;
+      if (local !== null) {
+        // 写回绑定文件（best-effort），之后不再依赖网络补全；env-only 场景不落盘。
+        try {
+          await writeLocalCredentials(workspaceRoot, mergeLocalCredentials(local, { actor_id: healed }));
+        } catch { /* 写回失败不影响本次运行 */ }
+      }
+    }
+  }
+  if (options.healActor === true && missing(remoteSyncActor) &&
+      !missing(remoteSyncUrl) && !missing(remoteSyncToken)) {
+    (overrides.stderr ?? ((value) => process.stderr.write(value)))(
+      "缺少 actor_id（key-info 自动补全未成功）：重新运行 hunter-harness connect，" +
+      "或设置 HUNTER_REMOTE_SYNC_ACTOR_ID。\n"
+    );
+  }
+  const remoteConfigured = !missing(remoteSyncUrl) && !missing(remoteSyncToken) &&
+    !missing(remoteSyncActor);
   const remoteSyncModule = remoteConfigured
     ? new RemoteSyncModule(createRemoteSyncHttpPort({
       serverUrl: remoteSyncUrl as string,
@@ -250,7 +310,9 @@ export async function runCli(
   argv: readonly string[],
   overrides: CliDependencies = {}
 ): Promise<number> {
-  const dependencies = defaultDependencies(overrides);
+  const dependencies = await defaultDependencies(overrides, {
+    healActor: REMOTE_SYNC_COMMANDS.has(argv.find((value) => !value.startsWith("-")) ?? "")
+  });
   try {
     const resolveOptions: ResolveWorkflowDataOptions = {
       cwd: dependencies.cwd,
@@ -362,7 +424,7 @@ export async function runCli(
       exitCode = await runPush({ ...program.opts<PushOptions>(), ...options }, dependencies);
     });
   addCommonOptions(program.command("harness-push"))
-    .description("RemoteSync 未配置时安全失败；配置 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID 后使用生产 HTTP Adapter")
+    .description("RemoteSync 未配置时安全失败；优先读 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID，缺失时回退 connect 写入的 credentials.local.yaml")
     .option("--scope <scopes>", "config,rules,architecture,instructions,branch_files 或 all")
     .option("--branch <branch>", "显式来源分支")
     .option("--change <change-key>", "仅配合 --scope archive 使用")
@@ -381,7 +443,7 @@ export async function runCli(
     });
   addCommonOptions(program.command("harness-pull"))
     .alias("pull")
-    .description("RemoteSync 未配置时安全失败；配置 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID 后使用生产 HTTP Adapter")
+    .description("RemoteSync 未配置时安全失败；优先读 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID，缺失时回退 connect 写入的 credentials.local.yaml")
     .option("--scope <scopes>", "config,rules,architecture,instructions 或 branch_files")
     .option("--branch <branch>", "恢复 branch_files 时必需的来源分支")
     .option(

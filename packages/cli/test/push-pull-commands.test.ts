@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -500,5 +500,141 @@ describe("Stage 03 Push/Pull CLI commands", () => {
       ok: false,
       errors: [{ code: "PUSH_PULL_CLI_UNAVAILABLE" }]
     });
+  });
+
+  it("falls back to credentials.local.yaml when RemoteSync env is unset", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-pushpull-cred-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://platform.example.test\ntoken: file-token\nactor_id: actor_owner\n",
+      "utf8");
+    const deps = dependencies(vi.fn());
+    delete deps.pushPull;
+    deps.cwd = root;
+    deps.fetch = vi.fn(async () => {
+      throw new Error("network-down");
+    });
+
+    expect(await runCli([
+      "harness-push", "--scope", "rules", "--dry-run", "--json"
+    ], deps)).toBe(4);
+
+    expect(deps.fetch).toHaveBeenCalled();
+    const [url, init] = vi.mocked(deps.fetch).mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toContain("https://platform.example.test");
+    expect((init.headers as Headers).get("Authorization")).toBe("Bearer file-token");
+    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "REMOTE_UNAVAILABLE" }]
+    });
+  });
+
+  it("mixes env overrides with bound credentials per field", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-pushpull-mix-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://file.example.test\ntoken: file-token\nactor_id: actor_owner\n",
+      "utf8");
+    const deps = dependencies(vi.fn());
+    delete deps.pushPull;
+    deps.cwd = root;
+    deps.env = { HUNTER_REMOTE_SYNC_URL: "https://env.example.test" };
+    deps.fetch = vi.fn(async () => {
+      throw new Error("network-down");
+    });
+
+    expect(await runCli([
+      "harness-push", "--scope", "rules", "--dry-run", "--json"
+    ], deps)).toBe(4);
+
+    const [url, init] = vi.mocked(deps.fetch).mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toContain("https://env.example.test");
+    expect((init.headers as Headers).get("Authorization")).toBe("Bearer file-token");
+  });
+
+  it("stays fail closed with a stderr hint when actor_id healing fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-pushpull-legacy-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://platform.example.test\ntoken: file-token\n", "utf8");
+    const deps = dependencies(vi.fn());
+    delete deps.pushPull;
+    deps.cwd = root;
+    deps.fetch = vi.fn(async () => ({ ok: false, status: 401, json: async () => ({}) }));
+
+    expect(await runCli([
+      "harness-push", "--scope", "rules", "--dry-run", "--json"
+    ], deps)).toBe(4);
+
+    // 只尝试过 key-info 自动补全，未进入同步传输。
+    const calls = vi.mocked(deps.fetch).mock.calls.map(([url]) => String(url));
+    expect(calls).toEqual(["https://platform.example.test/api/v1/auth/key-info"]);
+    expect(vi.mocked(deps.stderr).mock.calls.join("")).toContain("actor_id");
+    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "PUSH_PULL_CLI_UNAVAILABLE" }]
+    });
+    // 补全失败不得写回绑定文件。
+    expect(await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8"))
+      .not.toContain("actor_id");
+  });
+
+  it("heals a legacy binding via key-info and persists actor_id", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-pushpull-heal-"));
+    await mkdir(join(root, ".harness"), { recursive: true });
+    await writeFile(join(root, ".harness", "credentials.local.yaml"),
+      "server_url: https://platform.example.test\ntoken: file-token\n", "utf8");
+    const deps = dependencies(vi.fn());
+    delete deps.pushPull;
+    deps.cwd = root;
+    deps.fetch = vi.fn(async (input: unknown) => {
+      if (String(input).includes("/api/v1/auth/key-info")) {
+        return { ok: true, json: async () => ({ kind: "project-key", actor_id: "actor_owner" }) };
+      }
+      throw new Error("network-down");
+    });
+
+    expect(await runCli([
+      "harness-push", "--scope", "rules", "--dry-run", "--json"
+    ], deps)).toBe(4);
+
+    const calls = vi.mocked(deps.fetch).mock.calls.map(([url]) => String(url));
+    expect(calls[0]).toBe("https://platform.example.test/api/v1/auth/key-info");
+    expect(calls.length).toBeGreaterThan(1);
+    // 补全成功：后续进入真实同步传输（网络失败 → REMOTE_UNAVAILABLE 而非 fail closed）。
+    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "REMOTE_UNAVAILABLE" }]
+    });
+    expect(await readFile(join(root, ".harness", "credentials.local.yaml"), "utf8"))
+      .toContain("actor_id: actor_owner");
+  });
+
+  it("heals env-only credentials in memory without writing a binding file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hh-pushpull-envheal-"));
+    const deps = dependencies(vi.fn());
+    delete deps.pushPull;
+    deps.cwd = root;
+    deps.env = {
+      HUNTER_REMOTE_SYNC_URL: "https://platform.example.test",
+      HUNTER_REMOTE_SYNC_TOKEN: "env-token"
+    };
+    deps.fetch = vi.fn(async (input: unknown) => {
+      if (String(input).includes("/api/v1/auth/key-info")) {
+        return { ok: true, json: async () => ({ kind: "project-key", actor_id: "actor_env" }) };
+      }
+      throw new Error("network-down");
+    });
+
+    expect(await runCli([
+      "harness-push", "--scope", "rules", "--dry-run", "--json"
+    ], deps)).toBe(4);
+
+    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "REMOTE_UNAVAILABLE" }]
+    });
+    await expect(readFile(join(root, ".harness", "credentials.local.yaml"), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
   });
 });

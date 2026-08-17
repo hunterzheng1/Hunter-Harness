@@ -34,7 +34,7 @@ disallowed-tools:
 
 ## 前置条件
 
-- 远端同步已配置：`HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN`、`HUNTER_REMOTE_SYNC_ACTOR_ID`。缺失时 CLI 固定 fail closed（`PUSH_PULL_CLI_UNAVAILABLE`），**不得**改用旧 HTTP fallback 或手工 API 调用。
+- 远端同步已配置：优先读环境变量 `HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN`、`HUNTER_REMOTE_SYNC_ACTOR_ID`；缺失字段回退到 `hunter-harness connect` 写入的 `.harness/credentials.local.yaml`（含 actor_id；旧绑定缺该字段时 CLI 经 key-info 自动补全并写回）。两者都缺时 CLI 固定 fail closed（`PUSH_PULL_CLI_UNAVAILABLE`），**不得**改用旧 HTTP fallback 或手工 API 调用。
 - 归档上传只选择已写入 outbox 的确定性包（阶段 06 产物）；不存在可复用包时提示先完成本地归档，**不得**在 Push 内隐式补做 finalize/重建 ZIP。
 
 ## 交互流程

@@ -118,7 +118,7 @@ Skill 的 Interface 只做以下映射：普通用户范围 → `SyncScope`，�
 
 ### 03-M2：CLI Push/Pull Adapter 与预注册入口
 
-状态：适配器已落盘。CLI 已注册 `harness-push`、`harness-pull`（及 `pull` 兼容别名）；配置 `HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN` 与 `HUNTER_REMOTE_SYNC_ACTOR_ID` 时使用带认证、SourceRef/actor 绑定的真实 HTTP transport，否则固定 fail closed。Platform 端 Pull 工作区事务与生产 GC 调度仍需独立门禁后才能关闭本阶段。
+状态：适配器已落盘。CLI 已注册 `harness-push`、`harness-pull`（及 `pull` 兼容别名）；优先读 `HUNTER_REMOTE_SYNC_URL`、`HUNTER_REMOTE_SYNC_TOKEN` 与 `HUNTER_REMOTE_SYNC_ACTOR_ID`，缺失字段回退 `hunter-harness connect` 写入的 `.harness/credentials.local.yaml`（connect 现会落盘 actor_id；旧绑定缺 actor_id 时 push/pull 路径经 key-info 自动补全并写回）；两者齐备时使用带认证、SourceRef/actor 绑定的真实 HTTP transport，否则固定 fail closed。Platform 端 Pull 工作区事务与生产 GC 调度仍需独立门禁后才能关闭本阶段。
 
 - `PushPullCliPort` 只负责输入边界快照、方向与 preview/confirm/execute 绑定、中文与 JSON 投影；三方 diff、敏感扫描、幂等和本地事务仍由 Core Module/RemoteSync Port 负责。
 - `archive` 是显式 Push 分支，只消费已有 outbox claim，不进入普通 Push/Pull 预览。
