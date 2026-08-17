@@ -1462,6 +1462,10 @@ def _job_id_path(change_dir: Path) -> Path:
     return _runtime_dir(change_dir) / "_harness_service.job.id"
 
 
+def _breakaway_note_path(change_dir: Path) -> Path:
+    return _runtime_dir(change_dir) / "_harness_service.breakaway.json"
+
+
 def _child_pid_path(change_dir: Path) -> Path:
     return _runtime_dir(change_dir) / "_harness_service.child.pid"
 
@@ -1574,20 +1578,56 @@ def _start_detached_service_windows(
         str(pid_path),
         job_id,
     ]
-    win_flags = (
-        _DETACHED_PROCESS
-        | _CREATE_NEW_PROCESS_GROUP
-        | _CREATE_NO_WINDOW
-        | _CREATE_BREAKAWAY_FROM_JOB
-    )
-    launcher_proc = subprocess.Popen(
-        launcher_args,
-        cwd=str(cwd),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=win_flags,
-        close_fds=False,
+    base_flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
+    # CREATE_BREAKAWAY_FROM_JOB fails with ERROR_ACCESS_DENIED (WinError 5)
+    # whenever the *caller* already runs inside a Job Object that was created
+    # without JOB_OBJECT_LIMIT_BREAKAWAY_OK — which is exactly how agent CLIs
+    # (Claude Code / CodeBuddy / Codex) contain their child processes. Breakaway
+    # is an optimisation (the service outlives the agent session), not a
+    # requirement, so fall back to spawning inside the caller's job rather than
+    # failing the whole start.
+    launcher_proc = None
+    breakaway = True
+    try:
+        launcher_proc = subprocess.Popen(
+            launcher_args,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=base_flags | _CREATE_BREAKAWAY_FROM_JOB,
+            close_fds=False,
+        )
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        breakaway = False
+        launcher_proc = subprocess.Popen(
+            launcher_args,
+            cwd=str(cwd),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=base_flags,
+            close_fds=False,
+        )
+    _breakaway_note_path(change_dir).write_text(
+        json.dumps(
+            {
+                "breakawayFromJob": breakaway,
+                "note": (
+                    None
+                    if breakaway
+                    else "spawned inside the caller's Job Object "
+                    "(CREATE_BREAKAWAY_FROM_JOB denied); the service is "
+                    "terminated when the agent session ends"
+                ),
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     _launcher_pid_path(change_dir).write_text(str(launcher_proc.pid), encoding="utf-8")
     _wait_for_child_pid(pid_path)
@@ -2400,7 +2440,21 @@ def _start_and_record(
             }
         )
         write_json(mutation_state_path(change_dir), mutation_state)
-        return emit_error(f"failed to start service: {exc}", as_json=as_json)
+        if getattr(exc, "winerror", None) == 5:
+            return emit_error(
+                "failed to start service: Windows denied process creation "
+                f"({exc}). The agent shell blocks detached spawns; start the "
+                "service from a terminal the agent does not own (or use the "
+                "documented nohup fallback) and re-run `ensure` so the harness "
+                "adopts the running instance.",
+                as_json=as_json,
+                reasonCode="SERVICE_SPAWN_DENIED",
+            )
+        return emit_error(
+            f"failed to start service: {exc}",
+            as_json=as_json,
+            reasonCode="SERVICE_START_FAILED",
+        )
 
     # Give the OS a moment to register the process before identity/create-time reads
     time.sleep(0.15)

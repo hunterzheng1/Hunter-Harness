@@ -219,10 +219,30 @@ def _same_repository(project: Path, candidate: Path) -> bool:
     return candidate.is_relative_to(project)
 
 
+def _contract_error_code(exc: BaseException) -> str:
+    """Keep PROJECT_ROOT_INVALID distinct from a genuinely missing change."""
+    if str(exc).startswith("PROJECT_ROOT_INVALID"):
+        return "PROJECT_ROOT_INVALID"
+    return "CHANGE_NOT_FOUND"
+
+
 def _contract(project: Path, change: str) -> tuple[Path, dict[str, Any], Path]:
     root = project.resolve()
-    contract_root = (root / ".harness" / "changes" / change).resolve()
+    # A bare project *name* (--project udp) resolves to <cwd>/udp and then
+    # reports CHANGE_NOT_FOUND, which sends the caller hunting for the change
+    # instead of fixing the argument. Separate the two failures.
+    if not root.is_dir():
+        raise ValueError(
+            f"PROJECT_ROOT_INVALID: {root} is not a directory — --project takes "
+            "a path to the project root (use '.'), not the project name"
+        )
     changes_root = (root / ".harness" / "changes").resolve()
+    if not changes_root.is_dir():
+        raise ValueError(
+            f"PROJECT_ROOT_INVALID: {changes_root} does not exist — "
+            f"{root} is not a harness project root"
+        )
+    contract_root = (root / ".harness" / "changes" / change).resolve()
     if not contract_root.is_relative_to(changes_root) or not contract_root.is_dir():
         raise ValueError(f"CHANGE_NOT_FOUND: {change}")
     context_path = contract_root / "meta" / "change-context.json"
@@ -296,7 +316,7 @@ def configure_phase_plan(
     try:
         contract_root, _contract_data, _state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     normalized = [str(item).strip() for item in phases if str(item).strip()]
     if (
         not normalized
@@ -802,7 +822,7 @@ def close_transition(
     try:
         contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     allowed_next = _allowed_next_phases(contract_root, from_phase)
     if to_phase not in allowed_next:
         planned_phases, source = _phase_plan(contract_root)
@@ -962,7 +982,7 @@ def _begin_transition_unlocked(
     try:
         contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     paths = _paths(state_root)
     try:
         execution_root = _execution_root(project, contract_root, state_root)
@@ -1074,7 +1094,7 @@ def begin_transition(
     try:
         _contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     paths = _paths(state_root)
     with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
         return _begin_transition_unlocked(
@@ -1100,7 +1120,7 @@ def cancel_prepared_context(
     try:
         _contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     paths = _paths(state_root)
     removed: list[str] = []
     receipt_hash: str | None = None
@@ -1186,7 +1206,7 @@ def context_view(project: Path, change: str) -> dict[str, Any]:
     try:
         contract_root, contract, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return {"ok": False, "code": "CHANGE_NOT_FOUND", "error": str(exc)}
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     paths = _paths(state_root)
     transitions = _read_ndjson(paths["transitions"])
     begins = _read_ndjson(paths["begins"])

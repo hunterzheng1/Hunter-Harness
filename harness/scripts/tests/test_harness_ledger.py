@@ -2246,5 +2246,123 @@ class ExpandProfileInputLayeredTests(unittest.TestCase):
         self.assertIn("unreadable", err.lower())
 
 
+class ScenarioReceiptPathTests(unittest.TestCase):
+    """--scenario-receipt-file must resolve against CWD *and* --change-dir."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.change_dir = Path(self._tmp.name) / ".harness" / "changes" / "demo"
+        (self.change_dir / "runtime").mkdir(parents=True, exist_ok=True)
+
+    def test_change_dir_relative_path_resolves(self) -> None:
+        target = self.change_dir / "runtime" / "receipt.json"
+        target.write_text("{}", encoding="utf-8")
+
+        resolved, tried = harness_ledger._resolve_receipt_path(
+            "runtime/receipt.json", self.change_dir
+        )
+
+        self.assertEqual(resolved, target.resolve())
+        self.assertIn(target.resolve(), tried)
+
+    def test_absolute_path_resolves(self) -> None:
+        target = self.change_dir / "runtime" / "receipt.json"
+        target.write_text("{}", encoding="utf-8")
+
+        resolved, _ = harness_ledger._resolve_receipt_path(
+            str(target), self.change_dir
+        )
+
+        self.assertEqual(resolved, target.resolve())
+
+    def test_missing_path_reports_every_candidate(self) -> None:
+        resolved, tried = harness_ledger._resolve_receipt_path(
+            "runtime/nope.json", self.change_dir
+        )
+
+        self.assertIsNone(resolved)
+        self.assertIn(
+            (self.change_dir / "runtime" / "nope.json").resolve(), tried
+        )
+        self.assertIn((Path.cwd() / "runtime" / "nope.json").resolve(), tried)
+
+
+class ScenarioReceiptTemplateTests(unittest.TestCase):
+    """The template must produce a receipt `record` already accepts."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.change_dir = Path(self._tmp.name) / ".harness" / "changes" / "demo"
+        (self.change_dir / "meta").mkdir(parents=True, exist_ok=True)
+        (self.change_dir / "meta" / "scenario-manifest.json").write_text(
+            json.dumps({
+                "schemaVersion": 2,
+                "changeName": "demo",
+                "scenarios": [
+                    {
+                        "id": "UT-001",
+                        "priority": "P1",
+                        "ownerPhase": "run",
+                        "requiredEvidenceKind": "ledger",
+                        "executableTestId": "unit::ut1",
+                        "testFile": "tests/unit.spec.ts",
+                        "testTitle": "ut1",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+
+    def _run(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = harness_ledger.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_template_output_passes_receipt_validation(self) -> None:
+        code, out, _ = self._run(
+            "scenario-receipt-template",
+            "--change-dir", str(self.change_dir),
+            "--scenario-ids", "UT-001",
+            "--runner", "vitest",
+        )
+        self.assertEqual(code, 0)
+        receipt = json.loads(out)
+
+        result = harness_ledger.validate_scenario_execution_receipt(
+            change_dir=self.change_dir,
+            scenario_ids=["UT-001"],
+            receipt=receipt,
+        )
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result["coverage"]["passed"], ["UT-001"])
+
+    def test_out_path_is_change_dir_relative(self) -> None:
+        code, _, _ = self._run(
+            "scenario-receipt-template",
+            "--change-dir", str(self.change_dir),
+            "--scenario-ids", "UT-001",
+            "--runner", "vitest",
+            "--out", "runtime/receipt.json",
+            "--json",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue((self.change_dir / "runtime" / "receipt.json").is_file())
+
+    def test_unknown_scenario_id_is_rejected(self) -> None:
+        code, _, err = self._run(
+            "scenario-receipt-template",
+            "--change-dir", str(self.change_dir),
+            "--scenario-ids", "NOPE-1",
+            "--runner", "vitest",
+            "--json",
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("SCENARIO_ID_UNKNOWN", err)
+
+
 if __name__ == "__main__":
     unittest.main()

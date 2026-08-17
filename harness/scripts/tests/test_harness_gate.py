@@ -1510,6 +1510,39 @@ class ScenarioCoverageTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _write_receipt_ledger(self, scenario_ids: list[str]) -> None:
+        """Ledger whose entry carries a schema-v2 passing execution receipt."""
+        self._write_ledger(scenario_ids)
+        ledger_path = self.change_dir / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        executable = {
+            "UT-001": ("unit::ut1", "tests/unit.spec.ts", "ut1"),
+            "API-001": ("api::a1", "tests/api.spec.ts", "a1"),
+        }
+        entries = [executable[sid] for sid in scenario_ids]
+        ledger["validations"]["unitTest"]["scenarioReceipt"] = {
+            "schemaVersion": 1,
+            "runner": {"name": "vitest", "version": "3.2.4"},
+            "attempt": 1,
+            "declared": [test_id for test_id, _, _ in entries],
+            "selected": [test_id for test_id, _, _ in entries],
+            "collected": [
+                {"testId": test_id, "file": file, "title": title}
+                for test_id, file, title in entries
+            ],
+            "executed": [
+                {
+                    "testId": test_id,
+                    "file": file,
+                    "title": title,
+                    "attempt": 1,
+                    "status": "PASSED",
+                }
+                for test_id, file, title in entries
+            ],
+        }
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+
     def _close_args(self) -> object:
         return gate.build_parser().parse_args([
             "close", "--phase", "run", "--change", "demo",
@@ -1518,9 +1551,10 @@ class ScenarioCoverageTests(unittest.TestCase):
         ])
 
     def test_close_fails_when_p0_scenario_missing(self) -> None:
+        # ownerPhase=run so the scenarios are due at the run close under test.
         self._write_manifest([
-            {"id": "C5-S1", "priority": "P0", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
-            {"id": "C5-S2", "priority": "P1", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
         ])
         # ledger only covers C5-S2, missing C5-S1 (P0)
         self._write_ledger(["C5-S2"])
@@ -1545,8 +1579,8 @@ class ScenarioCoverageTests(unittest.TestCase):
 
     def test_close_passes_when_all_p0_scenarios_covered(self) -> None:
         self._write_manifest([
-            {"id": "C5-S1", "priority": "P0", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
-            {"id": "C5-S2", "priority": "P1", "ownerPhase": "test", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
         ])
         # ledger covers both P0 and P1
         self._write_ledger(["C5-S1", "C5-S2"])
@@ -1574,6 +1608,109 @@ class ScenarioCoverageTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "SCENARIO_MANIFEST_EMPTY")
+
+    def test_run_close_defers_test_owned_scenarios(self) -> None:
+        """run close must not demand receipts for ownerPhase=test scenarios."""
+        self._write_manifest(
+            [
+                {
+                    "id": "UT-001",
+                    "priority": "P1",
+                    "ownerPhase": "run",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "unit::ut1",
+                    "testFile": "tests/unit.spec.ts",
+                    "testTitle": "ut1",
+                },
+                {
+                    "id": "API-001",
+                    "priority": "P1",
+                    "ownerPhase": "test",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "api::a1",
+                    "testFile": "tests/api.spec.ts",
+                    "testTitle": "a1",
+                },
+            ],
+            schema_version=2,
+        )
+        self._write_receipt_ledger(["UT-001"])
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_COVERAGE_OK")
+        self.assertEqual(result["deferred"], ["API-001"])
+        self.assertEqual(result["unexecuted"], [])
+
+    def test_test_close_still_requires_test_owned_scenarios(self) -> None:
+        """The same manifest must still block at test close."""
+        self._write_manifest(
+            [
+                {
+                    "id": "UT-001",
+                    "priority": "P1",
+                    "ownerPhase": "run",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "unit::ut1",
+                    "testFile": "tests/unit.spec.ts",
+                    "testTitle": "ut1",
+                },
+                {
+                    "id": "API-001",
+                    "priority": "P1",
+                    "ownerPhase": "test",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "api::a1",
+                    "testFile": "tests/api.spec.ts",
+                    "testTitle": "a1",
+                },
+            ],
+            schema_version=2,
+        )
+        self._write_receipt_ledger(["UT-001"])
+
+        result = gate._validate_scenario_coverage(self.change_dir, "test")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "REQUIRED_SCENARIO_NOT_EXECUTED")
+        self.assertEqual(result["unexecuted"], ["API-001"])
+        self.assertEqual(result["deferred"], [])
+
+    def test_run_close_ok_when_every_scenario_is_test_owned(self) -> None:
+        self._write_manifest(
+            [
+                {
+                    "id": "API-001",
+                    "priority": "P0",
+                    "ownerPhase": "test",
+                    "requiredEvidenceKind": "ledger",
+                    "executableTestId": "api::a1",
+                    "testFile": "tests/api.spec.ts",
+                    "testTitle": "a1",
+                }
+            ],
+            schema_version=2,
+        )
+        self._write_ledger([])
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_COVERAGE_DEFERRED")
+        self.assertEqual(result["deferred"], ["API-001"])
+
+    def test_scenario_without_owner_phase_stays_due(self) -> None:
+        """Legacy manifests without ownerPhase keep the pre-scoping behaviour."""
+        self._write_manifest([
+            {"id": "LEGACY-1", "priority": "P0", "requiredEvidenceKind": "ledger"},
+        ])
+        self._write_ledger([])
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["missing"], ["LEGACY-1"])
 
     def test_p1_ledger_scenario_must_be_covered(self) -> None:
         self._write_manifest([

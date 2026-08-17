@@ -1068,5 +1068,44 @@ class TestGuardTests(unittest.TestCase):
         self.assertEqual(result["recordedCount"], 0)
 
 
+class ProjectRootArgumentTests(unittest.TestCase):
+    """A project *name* in --project must not masquerade as a missing snapshot."""
+
+    def test_close_rejects_project_name_instead_of_path(self) -> None:
+        result = guard.close("definitely-not-a-real-dir", ".harness/changes/demo")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["code"], "PROJECT_ROOT_INVALID")
+        self.assertIn("resolvedProject", result)
+
+    def test_begin_stage_record_reject_project_name(self) -> None:
+        for action, call in (
+            ("begin", lambda: guard.begin("nope-dir", ".harness/changes/demo")),
+            ("stage", lambda: guard.stage("nope-dir", ".harness/changes/demo")),
+            (
+                "record",
+                lambda: guard.record(
+                    "nope-dir", ".harness/changes/demo", ["a.java"], "tdd-created"
+                ),
+            ),
+        ):
+            with self.subTest(action=action):
+                result = call()
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["code"], "PROJECT_ROOT_INVALID")
+
+    def test_missing_snapshot_names_the_expected_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            change = project / ".harness" / "changes" / "demo"
+            change.mkdir(parents=True, exist_ok=True)
+
+            result = guard.close(project, change)
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "SNAPSHOT_MISSING")
+            self.assertIn("test-guard-snapshot.json", result["expectedSnapshot"])
+
+
 if __name__ == "__main__":
     unittest.main()

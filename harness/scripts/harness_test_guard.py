@@ -178,6 +178,32 @@ def _state_project_root(project: Path) -> Path:
     return resolved.parent if resolved.name == ".git" else project
 
 
+def _invalid_project_root(
+    action: str, project: Path | str, resolved: Path
+) -> dict[str, Any] | None:
+    """Reject a --project that is not an existing directory.
+
+    Passing the *project name* (``--project udp``) instead of its path used to
+    resolve to ``<cwd>/udp`` and then surface as SNAPSHOT_MISSING — an error
+    that points at the wrong thing entirely. Fail here with the resolved path
+    so the real mistake is visible.
+    """
+    if resolved.is_dir():
+        return None
+    return _result(
+        False,
+        action,
+        "PROJECT_ROOT_INVALID",
+        [],
+        project=str(project),
+        resolvedProject=str(resolved),
+        hint=(
+            "--project takes a filesystem path to the project root "
+            "(use '.' when running from it), not the project name"
+        ),
+    )
+
+
 def _change_dir(project: Path, change_dir: Path | str) -> Path | None:
     state_project = _state_project_root(project)
     candidate = Path(change_dir)
@@ -556,6 +582,9 @@ def record(
 ) -> dict[str, Any]:
     action = "record"
     project_root = Path(project).resolve()
+    invalid_root = _invalid_project_root(action, project, project_root)
+    if invalid_root is not None:
+        return invalid_root
     if not files:
         return _result(False, action, "EMPTY_FILES", [])
     if reason not in REASONS:
@@ -1452,6 +1481,9 @@ def _reconcile_close_manifest(
 def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "begin"
     project_root = Path(project).resolve()
+    invalid_root = _invalid_project_root(action, project, project_root)
+    if invalid_root is not None:
+        return invalid_root
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
@@ -1545,12 +1577,24 @@ def begin(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
 def close(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "close"
     project_root = Path(project).resolve()
+    invalid_root = _invalid_project_root(action, project, project_root)
+    if invalid_root is not None:
+        return invalid_root
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])
     snapshot_path = _state_root(change_root) / SNAPSHOT_REL
     if not snapshot_path.is_file():
-        return _result(False, action, "SNAPSHOT_MISSING", [])
+        # Name the exact path: this snapshot is evidence/test-guard-snapshot.json,
+        # not meta/state-snapshot.json, and the two are easy to confuse.
+        return _result(
+            False,
+            action,
+            "SNAPSHOT_MISSING",
+            [],
+            expectedSnapshot=str(snapshot_path),
+            hint="run `harness_test_guard.py begin` for this change first",
+        )
     try:
         snapshot = _read_json(snapshot_path)
     except (OSError, json.JSONDecodeError) as exc:
@@ -1752,6 +1796,9 @@ def mark(
 def stage(project: Path | str, change_dir: Path | str) -> dict[str, Any]:
     action = "stage"
     project_root = Path(project).resolve()
+    invalid_root = _invalid_project_root(action, project, project_root)
+    if invalid_root is not None:
+        return invalid_root
     change_root = _change_dir(project_root, change_dir)
     if change_root is None:
         return _result(False, action, "CHANGE_DIR_OUTSIDE_PROJECT", [])

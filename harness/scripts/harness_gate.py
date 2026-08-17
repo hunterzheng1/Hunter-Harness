@@ -151,6 +151,11 @@ SOFT_GATE_SITES = frozenset({
 })
 GATE_WARNINGS_REL = Path("evidence") / "gate-warnings.ndjson"
 
+# Lifecycle order used to scope C9 scenario coverage by scenario ownerPhase.
+# A scenario owned by a later phase is deferred, not missing, at an earlier
+# phase close. Must stay a superset-ordering of hpf.VALID_OWNER_PHASES.
+SCENARIO_OWNER_PHASE_ORDER = ("plan", "run", "test", "review", "submit")
+
 
 def gate_severity_mode(project: Path, change_dir: Path | None = None) -> str:
     """Resolve gate severity mode: env > change gate-policy > project config.
@@ -367,7 +372,11 @@ def evaluate_projection_gate(
 def resolve_execution_root(main_project: Path, raw: str | None) -> Path:
     candidate = Path(raw).expanduser().resolve() if raw else main_project.resolve()
     if not candidate.is_dir():
-        raise ValueError(f"execution root not found: {candidate}")
+        raise ValueError(
+            f"execution root not found: {candidate} — --project takes a "
+            "filesystem path to the execution root (use '.' when running from "
+            "it), not the project name"
+        )
     top = _git_text(candidate, "rev-parse", "--show-toplevel")
     if not top:
         raise ValueError(f"execution root is not a git worktree: {candidate}")
@@ -1957,12 +1966,78 @@ def _sync_after_phase_close(project: Path, change_dir: Path) -> dict[str, Any]:
         }
 
 
-def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
+def _scenario_owner_phase_rank(owner_phase: str | None) -> int | None:
+    """Rank a scenario ownerPhase against the lifecycle order, None when unknown."""
+    if not owner_phase:
+        return None
+    normalized = str(owner_phase).strip().lower()
+    if normalized not in hpf.VALID_OWNER_PHASES:
+        return None
+    try:
+        return SCENARIO_OWNER_PHASE_ORDER.index(normalized)
+    except ValueError:
+        return None
+
+
+def _partition_scenarios_by_owner_phase(
+    scenarios: list[Any],
+    required_ids: set[str],
+    phase: str | None,
+) -> tuple[set[str], list[str]]:
+    """Split required scenarios into (due now, deferred to a later phase).
+
+    A scenario is deferred only when it declares an `ownerPhase` that ranks
+    strictly after the phase being closed. Scenarios without a usable
+    `ownerPhase` (legacy/v1 manifests) stay due, preserving old behaviour.
+    """
+    closing_rank = _scenario_owner_phase_rank(phase)
+    if closing_rank is None:
+        return set(required_ids), []
+    due: set[str] = set()
+    deferred: set[str] = set()
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(scenario.get("id") or "").strip()
+        if scenario_id not in required_ids:
+            continue
+        owner_rank = _scenario_owner_phase_rank(scenario.get("ownerPhase"))
+        if owner_rank is not None and owner_rank > closing_rank:
+            deferred.add(scenario_id)
+        else:
+            due.add(scenario_id)
+    # IDs present in required_ids but absent from the scan stay due (defensive).
+    due |= required_ids - due - deferred
+    # A duplicated ID declaring two ownerPhases must fail closed: if any
+    # occurrence is due now, the scenario is due now.
+    deferred -= due
+    return due, sorted(deferred)
+
+
+def _deferred_hint(deferred_ids: list[str], phase: str | None) -> str:
+    """Append a note so callers never mistake a deferred scenario for a blocker."""
+    if not deferred_ids:
+        return ""
+    return (
+        f"（另有 {len(deferred_ids)} 个场景按 ownerPhase 移交后续阶段，"
+        f"未计入 {phase or '本'} 阶段要求: " + ", ".join(deferred_ids) + "）"
+    )
+
+
+def _validate_scenario_coverage(
+    change_dir: Path, phase: str | None = None
+) -> dict[str, Any]:
     """C9: validate all ledger-required scenarios are covered by ledger entries.
 
     Reads meta/scenario-manifest.json and evidence/verification-ledger.json.
     Returns ok=True when a legacy manifest is missing or all required scenarios
     are covered. A present but empty manifest is always invalid.
+
+    Phase scoping: when `phase` is given, only scenarios whose `ownerPhase`
+    is due by that phase are required to carry passing receipts. Scenarios
+    owned by a later phase (e.g. `ownerPhase=test` at `run` close) are
+    reported under `deferred` instead of blocking the close — this matches the
+    documented hand-off rule in harness-run/SKILL.md ("ownerPhase=test 按计划移交").
     """
     manifest_path = change_dir / "meta" / "scenario-manifest.json"
     if not manifest_path.is_file():
@@ -2010,6 +2085,9 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
     }
     if not required_ids:
         return {"ok": True, "code": "NO_LEDGER_REQUIRED_SCENARIOS"}
+    due_ids, deferred_ids = _partition_scenarios_by_owner_phase(
+        scenarios, required_ids, phase
+    )
     raw_schema_version = (
         manifest.get("schemaVersion") if isinstance(manifest, dict) else None
     )
@@ -2043,6 +2121,18 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
                 "missingMappings": missing_mappings,
             }
 
+    if not due_ids:
+        # Every required scenario is owned by a later phase — nothing is due
+        # at this close. Report the hand-off instead of blocking.
+        return {
+            "ok": True,
+            "code": "SCENARIO_COVERAGE_DEFERRED",
+            "covered": [],
+            "deferred": deferred_ids,
+            "ownerPhaseScope": phase,
+            "schemaVersion": schema_version,
+        }
+
     try:
         ledger, ledger_path = hl.load_ledger(change_dir)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -2050,14 +2140,16 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
             "ok": False,
             "code": "SCENARIO_COVERAGE_FAILED",
             "message": f"ledger unreadable: {exc}",
-            "missing": sorted(required_ids),
+            "missing": sorted(due_ids),
+            "deferred": deferred_ids,
         }
     if ledger is None or ledger_path is None:
         return {
             "ok": False,
             "code": "SCENARIO_COVERAGE_FAILED",
             "message": "ledger missing; cannot verify required scenario coverage",
-            "missing": sorted(required_ids),
+            "missing": sorted(due_ids),
+            "deferred": deferred_ids,
         }
     if schema_version >= 2:
         coverage_sets: dict[str, set[str]] = {
@@ -2137,8 +2229,8 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
                         )
 
         passed = coverage_sets["passed"]
-        missing = sorted(required_ids - bound)
-        unexecuted = sorted(required_ids - passed)
+        missing = sorted(due_ids - bound)
+        unexecuted = sorted(due_ids - passed)
         detail = {
             key: sorted(values & required_ids)
             for key, values in coverage_sets.items()
@@ -2147,6 +2239,8 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
             {
                 "missing": missing,
                 "unexecuted": unexecuted,
+                "deferred": deferred_ids,
+                "ownerPhaseScope": phase,
                 "attempts": {
                     scenario_id: sorted(values)
                     for scenario_id, values in sorted(attempts.items())
@@ -2162,6 +2256,7 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
                 "message": (
                     "required scenarios without exact passed execution receipts: "
                     + ", ".join(unexecuted)
+                    + _deferred_hint(deferred_ids, phase)
                 ),
                 **detail,
             }
@@ -2180,7 +2275,7 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
                 ids = entry.get("scenarioIds")
                 if isinstance(ids, list):
                     covered.update(str(i) for i in ids)
-    missing = sorted(required_ids - covered)
+    missing = sorted(due_ids - covered)
     if missing:
         return {
             "ok": False,
@@ -2188,13 +2283,18 @@ def _validate_scenario_coverage(change_dir: Path) -> dict[str, Any]:
             "message": (
                 "ledger-required scenarios without ledger entry: "
                 + ", ".join(missing)
+                + _deferred_hint(deferred_ids, phase)
             ),
             "missing": missing,
+            "deferred": deferred_ids,
+            "ownerPhaseScope": phase,
         }
     return {
         "ok": True,
         "code": "SCENARIO_COVERAGE_OK",
         "covered": sorted(covered & required_ids),
+        "deferred": deferred_ids,
+        "ownerPhaseScope": phase,
     }
 
 
@@ -2888,9 +2988,11 @@ def cmd_close(args: argparse.Namespace) -> int:
                 },
             )
 
-    # C9: scenario coverage check — all P0 scenarios must have a ledger entry.
+    # C9: scenario coverage check — every P0/ledger scenario *due by this phase*
+    # must have a ledger entry. Scenarios with a later ownerPhase are deferred,
+    # not missing (see _validate_scenario_coverage).
     if args.phase in {"run", "test"}:
-        coverage = _validate_scenario_coverage(change_dir)
+        coverage = _validate_scenario_coverage(change_dir, args.phase)
         if not coverage.get("ok"):
             if gate_soft_allowed(severity_mode, args.phase, "scenario-coverage"):
                 gate_warnings.append(record_gate_warning(
@@ -3284,7 +3386,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_begin = sub.add_parser("begin", parents=[shared])
     p_begin.add_argument("--phase", required=True)
     p_begin.add_argument("--change", default=None)
-    p_begin.add_argument("--project", default=None)
+    p_begin.add_argument(
+        "--project",
+        default=None,
+        help=(
+            "execution root PATH (worktree) for this phase; defaults to the "
+            "change's main project. Takes a path, not a project name."
+        ),
+    )
     p_begin.add_argument("--skills-root", default=None)
     p_begin.add_argument("--run-id", default=None)
     p_begin.add_argument("--ttl-seconds", type=int, default=3600)
@@ -3298,7 +3407,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_close = sub.add_parser("close", parents=[shared])
     p_close.add_argument("--phase", required=True)
     p_close.add_argument("--change", default=None)
-    p_close.add_argument("--project", default=None)
+    p_close.add_argument(
+        "--project",
+        default=None,
+        help=(
+            "execution root PATH (worktree) for this phase; defaults to the "
+            "change's main project. Takes a path, not a project name."
+        ),
+    )
     p_close.add_argument("--status", required=True)
     p_close.add_argument("--run-id", default=None)
     p_close.add_argument("--task", type=int, default=None)

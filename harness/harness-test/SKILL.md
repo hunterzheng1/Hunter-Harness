@@ -180,6 +180,8 @@ python <skills-root>/scripts/harness_test_guard.py record --project . --change-d
 
 先读 `.harness/changes/<change-name>/runtime/credential-cache.json`（认证凭证缓存，按项目认证机制；token/SSO 为常见实现），本地轻量接口验证通过则复用，失败才走远程认证。接口测试执行器用 request context / 原生 HTTP 客户端直连本地 baseURL，**不得依赖浏览器当前页面 origin**。同一次流程内凭证刷新计数 > 1 → 🟡 WARN。**不得在报告/日志/对话总结中输出明文凭证**。详见 `reference.md`「认证凭证缓存与复用」。
 
+> ⛔ **验证码 = 硬停，不是待解的技术问题。** 登录响应出现 `验证码` / `captcha` / `blockPuzzle` / `slider` / `geetest` 等特征时，**禁止**编写或运行任何求解代码（图像匹配、OCR、打码平台、反编译服务端找容差均在禁止之列）。立即记 `apiTest=BLOCKED`，请用户手工把凭证写入 `runtime/credential-cache.json` 或临时关闭测试环境验证码，并提示 `.harness/config/harness-test-config.md` 的认证方式已过期。详见 `pitfalls.md` 规则 31。
+
 ### 九、测试报告状态规则
 
 整体 ✅OK / 🟡WARN / ❌FAIL 三态；API 维度使用 `OK` / `PARTIAL` / `BLOCKED` / `NOT_RUN` / `FAIL` 五态。**不得把「5 PASS + 9 BLOCKED + 1 FAIL」写成 `apiTest=NOT_RUN`**，正确为 `apiTest=PARTIAL`。P0 场景 BLOCKED 不得仍 OK。详见 `reference.md`「结果分级规则」。

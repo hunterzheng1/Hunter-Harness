@@ -1614,6 +1614,35 @@ def _scenario_receipt_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "error": message}
 
 
+def _resolve_receipt_path(
+    raw: str, change_dir: Path
+) -> tuple[Path | None, list[Path]]:
+    """Resolve --scenario-receipt-file against CWD *and* the change dir.
+
+    Skills write receipts under ``<change-dir>/runtime/``, so a bare
+    ``runtime/scenario-receipt-*.json`` is the natural thing to pass. Resolving
+    only against the CWD made that fail with a bare ENOENT. Return the first
+    existing candidate plus every path tried, so the error can name them.
+    """
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        resolved = candidate.resolve()
+        return (resolved if resolved.is_file() else None), [resolved]
+    candidates = [
+        (Path.cwd() / candidate).resolve(),
+        (change_dir / candidate).resolve(),
+    ]
+    # De-duplicate while preserving order (CWD == change_dir is common).
+    unique: list[Path] = []
+    for item in candidates:
+        if item not in unique:
+            unique.append(item)
+    for item in unique:
+        if item.is_file():
+            return item, unique
+    return None, unique
+
+
 def _canonical_string_list(
     receipt: dict[str, Any],
     field: str,
@@ -2786,17 +2815,37 @@ def cmd_record(args: argparse.Namespace) -> int:
                 if manifest_schema >= 2 and not _nonempty_str(receipt_file):
                     return emit_error(
                         "scenario-manifest schemaVersion 2 requires "
-                        "--scenario-receipt-file",
+                        "--scenario-receipt-file; generate a skeleton with: "
+                        "harness_ledger.py scenario-receipt-template "
+                        f"--change-dir {change_dir} --scenario-ids "
+                        f"{','.join(ids)} --runner <name> --out "
+                        "runtime/scenario-receipt-<verification>.json",
                         as_json=as_json,
                         error_code="SCENARIO_RECEIPT_REQUIRED",
+                        extra={"template": "scenario-receipt-template"},
                     )
                 if _nonempty_str(receipt_file):
+                    resolved_receipt, receipt_candidates = _resolve_receipt_path(
+                        str(receipt_file), change_dir
+                    )
+                    if resolved_receipt is None:
+                        return emit_error(
+                            "scenario receipt not found; tried: "
+                            + ", ".join(str(c) for c in receipt_candidates),
+                            as_json=as_json,
+                            error_code="SCENARIO_RECEIPT_NOT_FOUND",
+                            extra={
+                                "triedPaths": [str(c) for c in receipt_candidates],
+                                "hint": (
+                                    "--scenario-receipt-file accepts an absolute "
+                                    "path, a CWD-relative path, or a path relative "
+                                    "to --change-dir"
+                                ),
+                            },
+                        )
                     try:
                         receipt_payload = json.loads(
-                            Path(str(receipt_file))
-                            .expanduser()
-                            .resolve()
-                            .read_text(encoding="utf-8-sig")
+                            resolved_receipt.read_text(encoding="utf-8-sig")
                         )
                     except (OSError, json.JSONDecodeError) as exc:
                         return emit_error(
@@ -2950,6 +2999,160 @@ def cmd_record(args: argparse.Namespace) -> int:
         payload, as_json=as_json, verbose=verbose,
         compact_fn=_compact_record_payload,
     )
+    return 0
+
+
+def cmd_scenario_receipt_template(args: argparse.Namespace) -> int:
+    """Emit a schema-v2 receipt skeleton built from the scenario manifest.
+
+    Without this, agents had to read harness_ledger.py source to learn the
+    receipt shape. The skeleton is already valid for `record`; the caller only
+    has to correct `status` for any test that did not pass.
+    """
+    as_json = bool(args.json)
+    change_dir = resolve_path(args.change_dir)
+    ids = [s.strip() for s in str(args.scenario_ids).split(",") if s.strip()]
+    if not ids:
+        return emit_error(
+            "--scenario-ids must list at least one scenario ID",
+            as_json=as_json,
+            error_code="SCENARIO_IDS_REQUIRED",
+        )
+    if len(ids) != len(set(ids)):
+        return emit_error(
+            "scenario IDs must be unique",
+            as_json=as_json,
+            error_code="SCENARIO_ID_DUPLICATE",
+        )
+    manifest_path = change_dir / "meta" / "scenario-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return emit_error(
+            f"scenario manifest does not exist: {manifest_path}",
+            as_json=as_json,
+            error_code="SCENARIO_MANIFEST_MISSING",
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        return emit_error(
+            f"scenario manifest unreadable: {exc}",
+            as_json=as_json,
+            error_code="SCENARIO_MANIFEST_INVALID",
+        )
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list):
+        return emit_error(
+            "scenario-manifest.json must contain a scenarios array",
+            as_json=as_json,
+            error_code="SCENARIO_MANIFEST_INVALID",
+        )
+    by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in scenarios
+        if isinstance(item, dict) and _nonempty_str(item.get("id"))
+    }
+    unknown = sorted(set(ids) - set(by_id))
+    if unknown:
+        return emit_error(
+            "scenario IDs are not declared in scenario-manifest.json: "
+            + ", ".join(unknown),
+            as_json=as_json,
+            error_code="SCENARIO_ID_UNKNOWN",
+        )
+    status = str(args.status).strip().upper()
+    if status not in {"PASSED", "FAILED", "SKIPPED"}:
+        return emit_error(
+            "--status must be one of PASSED|FAILED|SKIPPED",
+            as_json=as_json,
+            error_code="SCENARIO_RECEIPT_INVALID",
+        )
+    attempt = int(args.attempt)
+    if attempt < 1:
+        return emit_error(
+            "--attempt must be a positive integer",
+            as_json=as_json,
+            error_code="SCENARIO_RECEIPT_INVALID",
+        )
+
+    identities: list[tuple[str, str, str]] = []
+    incomplete: list[str] = []
+    for scenario_id in ids:
+        scenario = by_id[scenario_id]
+        if any(
+            not _nonempty_str(scenario.get(field))
+            for field in ("executableTestId", "testFile", "testTitle")
+        ):
+            incomplete.append(scenario_id)
+            continue
+        identities.append(
+            (
+                str(scenario["executableTestId"]).strip(),
+                str(scenario["testFile"]).strip(),
+                str(scenario["testTitle"]).strip(),
+            )
+        )
+    if incomplete:
+        return emit_error(
+            "scenarios are missing executableTestId/testFile/testTitle in the "
+            "manifest: " + ", ".join(incomplete),
+            as_json=as_json,
+            error_code="SCENARIO_MANIFEST_INVALID",
+            extra={"incomplete": incomplete},
+        )
+
+    runner: dict[str, Any] = {"name": str(args.runner).strip()}
+    if _nonempty_str(getattr(args, "runner_version", None)):
+        runner["version"] = str(args.runner_version).strip()
+    receipt = {
+        "schemaVersion": 1,
+        "runner": runner,
+        "attempt": attempt,
+        "declared": [test_id for test_id, _, _ in identities],
+        "selected": [test_id for test_id, _, _ in identities],
+        "collected": [
+            {"testId": test_id, "file": file, "title": title}
+            for test_id, file, title in identities
+        ],
+        "executed": [
+            {
+                "testId": test_id,
+                "file": file,
+                "title": title,
+                "attempt": attempt,
+                "status": status,
+            }
+            for test_id, file, title in identities
+        ],
+    }
+    body = json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+
+    out_raw = getattr(args, "out", None)
+    if not _nonempty_str(out_raw):
+        sys.stdout.write(body)
+        return 0
+    out_path = Path(str(out_raw)).expanduser()
+    if not out_path.is_absolute():
+        out_path = change_dir / out_path
+    out_path = out_path.resolve()
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(body, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        return emit_error(
+            f"cannot write scenario receipt: {exc}",
+            as_json=as_json,
+            error_code="SCENARIO_RECEIPT_WRITE_FAILED",
+        )
+    payload = {
+        "ok": True,
+        "action": "scenario-receipt-template",
+        "path": str(out_path),
+        "scenarioIds": ids,
+    }
+    if as_json:
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(f"{out_path}\n")
     return 0
 
 
@@ -3233,6 +3436,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="change directory whose evidence/test-tracking.json contributes ignored tests",
     )
     p_diff.set_defaults(func=cmd_diff_hash)
+
+    p_receipt = sub.add_parser(
+        "scenario-receipt-template",
+        parents=[shared_json],
+        help=(
+            "emit a schema-v2 scenario execution receipt skeleton "
+            "pre-filled from meta/scenario-manifest.json"
+        ),
+    )
+    p_receipt.add_argument("--change-dir", required=True)
+    p_receipt.add_argument(
+        "--scenario-ids",
+        required=True,
+        help="comma-separated scenario IDs to include (must exist in the manifest)",
+    )
+    p_receipt.add_argument(
+        "--runner",
+        required=True,
+        help="test runner name recorded in the receipt (e.g. vitest / maven-surefire)",
+    )
+    p_receipt.add_argument("--runner-version", default=None)
+    p_receipt.add_argument("--attempt", type=int, default=1)
+    p_receipt.add_argument(
+        "--status",
+        default="PASSED",
+        help="per-test status written into executed[] (default: PASSED)",
+    )
+    p_receipt.add_argument(
+        "--out",
+        default=None,
+        help=(
+            "write the skeleton to this path instead of stdout; relative paths "
+            "resolve against --change-dir (same rule as --scenario-receipt-file)"
+        ),
+    )
+    p_receipt.set_defaults(func=cmd_scenario_receipt_template)
 
     return parser
 

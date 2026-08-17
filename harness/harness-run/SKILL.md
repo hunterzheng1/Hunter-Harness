@@ -61,6 +61,8 @@ disallowed-tools:
 
 **阶段归属规则**：只用 `ownerPhase=run` 的任务和场景判定编码阶段结果。`ownerPhase=test` 的任务或场景按计划留给测试阶段属于正常移交，必须记录为“待测试阶段执行”，不得将编码阶段降级为 WARN；只有 run 自身负责的工作未完成、验证降级或证据异常时才使用 WARN。
 
+> 关门脚本与本规则一致：`harness_gate.py close --phase run` 的 C9 场景覆盖只要求 `ownerPhase` 为 `plan`/`run` 的必需场景有通过 receipt，`ownerPhase=test` 的场景出现在返回值的 `deferred` 里，不阻断 run。若 run 关门报 `REQUIRED_SCENARIO_NOT_EXECUTED` 且缺的是接口/端到端场景，那是 `meta/scenario-manifest.json` 里 `ownerPhase` 标错了（或老清单没声明），应当修清单——**不要**为了过门在 run 阶段起服务补跑本属 test 的验证。
+
 **Fixback**：入口只用 `launch-review`，后续问题处理通过 `resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；`manual`、`workflow` 或未选用的建议不进入代码批次，使用中文记录处理结论。
 
 **执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。

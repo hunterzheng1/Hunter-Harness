@@ -799,6 +799,8 @@ powershell.exe -Command "git -C '<project-path>' diff --check"
 > 可直接复制；替换 `<skills-root>` / `<cn>` / `<dir>` / `<project>`。`--task` **仅在该 change 启用 checkpoint 时必需**（checkpoints 文件缺失或不含 pending foundation-gate 时不要传）。
 > `ledger record` 必需：`--duration-ms`、`--evidence`，以及 `--files`（逗号分隔源文件）或 `--profile-input <verificationKey> --project <project>`（从 build-profile 展开）。`status` 枚举: `ok|fail|not_run`（没有 PASS）。
 > `--skills-root` 仅用于 `begin`（及 `lint-skills`）：必须是 adapter 根（如 `.cursor/skills`），不是 `scripts/` 子目录。**`close` 不需要 `--skills-root`**（该子命令不接受此参数）。
+>
+> ⚠️ **`--project` 一律传路径，不传项目名。** 在项目根执行时就写 `--project .`。传项目名（`--project udp`）会被解析成 `<cwd>/udp`，然后以各不相同的下游错误暴露出来（`PROJECT_ROOT_INVALID` / `EXECUTION_ROOT_INVALID`）。
 
 ```powershell
 # gate begin/close（--task 仅在该 change 启用 checkpoint 时必需；close 不需要 --skills-root）
@@ -810,7 +812,20 @@ python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verif
 
 # 复用检查（--profile-input 取 verification key，不是文件路径；配合 --project）
 python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
+
+# scenario-manifest schemaVersion 2：record 绑定场景必须带 receipt，先生成骨架再记录
+python <skills-root>/scripts/harness_ledger.py scenario-receipt-template --change-dir <dir> --scenario-ids "UT-001,UT-002" --runner <runner 名> --out runtime/scenario-receipt-unit.json --json
+python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTest --status ok ... --scenario-ids "UT-001,UT-002" --scenario-receipt-file runtime/scenario-receipt-unit.json
 ```
+
+### run 阶段关门顺序
+
+```powershell
+python <skills-root>/scripts/harness_test_guard.py close --project . --change-dir ".harness/changes/<cn>" --json
+python <skills-root>/scripts/harness_gate.py close --change <cn> --phase run --status OK --to-phase <后继> --executor <tool>
+```
+
+C9 场景覆盖按 `ownerPhase` **分阶段判定**：run 关门只要求 `ownerPhase` 为 `plan`/`run` 的必需场景有通过 receipt；`ownerPhase=test` 的场景计入返回值的 `deferred`，属正常移交，不阻断 run。反过来，test 关门时这些场景仍然必须有 receipt。未声明 `ownerPhase` 的老清单沿用旧语义（全部即时要求）。
 
 ### 常见报错对照
 
@@ -823,6 +838,11 @@ python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --ve
 | `record requires --files or a non-empty --profile-input file set` | 缺少输入文件集 | 补 `--files` 或 `--profile-input <key> --project <project>` |
 | `--profile-input requires --project` | can-reuse/record 展开 profile 需要项目根 | 补 `--project <project>` |
 | `record` 缺 `--duration-ms` / `--evidence` | 参数为必填 | 按模板补齐 |
+| `PROJECT_ROOT_INVALID` | `--project` 传了项目名而不是路径 | 在项目根执行并传 `--project .`；报错的 `resolvedProject` 字段显示了实际解析到哪 |
+| `EXECUTION_ROOT_INVALID` | gate 的 `--project` 是**执行根路径**（worktree），同样不接受项目名 | 传 `.` 或 worktree 绝对路径 |
+| `SCENARIO_RECEIPT_REQUIRED` | manifest 是 schemaVersion 2，`--scenario-ids` 必须配 receipt | 用上面的 `scenario-receipt-template` 生成骨架，再传 `--scenario-receipt-file` |
+| `SCENARIO_RECEIPT_NOT_FOUND` | receipt 路径找不到 | 报错的 `triedPaths` 列出了尝试过的绝对路径；相对路径同时按 CWD 和 `--change-dir` 解析，二选一放对即可 |
+| `REQUIRED_SCENARIO_NOT_EXECUTED`（run 关门，缺的是接口场景） | 这些场景 `ownerPhase` 应为 `test` 却写成了 run，或清单未声明 `ownerPhase` | 修 `meta/scenario-manifest.json` 的 `ownerPhase`；**不要**为了过门去跑本该属于 test 阶段的验证 |
 
 ## 关键原则
 

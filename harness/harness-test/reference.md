@@ -736,6 +736,8 @@ TEST_<change-name>_<timestamp>_<short-random>
 
 > test 阶段常用子集。`--task` **仅在该 change 启用 checkpoint 时必需**。ledger status 枚举: ok|fail|not_run（没有 PASS）。`record` 还需 `--duration-ms`、`--evidence`，以及 `--files` 或 `--profile-input`+`--project`。
 > `--skills-root` 仅用于 `begin`（及 `lint-skills`）：必须是 adapter 根（如 `.cursor/skills`），不是 `scripts/` 子目录。**`close` 不需要 `--skills-root`**（该子命令不接受此参数）。
+>
+> ⚠️ **`--project` 一律传路径，不传项目名**（在项目根就写 `--project .`）。传项目名会解析成 `<cwd>/<名字>` 并报 `PROJECT_ROOT_INVALID` / `EXECUTION_ROOT_INVALID`。
 
 ```powershell
 # gate begin/close（phase=test；--task 仅 checkpoint 启用时必需；close 不需要 --skills-root）
@@ -746,6 +748,9 @@ python <skills-root>/scripts/harness_gate.py close --change <cn> --phase test --
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification unitTestFull --status ok --command "<完整命令>" --exit-code 0 --duration-ms 120000 --evidence "Tests run: N, Failures: 0" --coverage full --files "packages/core/src/index.ts"
 python <skills-root>/scripts/harness_ledger.py record --change-dir <dir> --verification browserTest --status ok --command "<真实栈 Playwright 命令>" --exit-code 0 --duration-ms 120000 --evidence "Browser E2E: N passed, 0 failed" --coverage module --files "<Playwright 配置与受测 spec>"
 python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --verification unitTestFull --profile-input unitTestFull --project <project>
+
+# scenario-manifest schemaVersion 2：绑定场景必须带 receipt，先生成骨架再 record
+python <skills-root>/scripts/harness_ledger.py scenario-receipt-template --change-dir <dir> --scenario-ids "API-001,API-002" --runner <runner 名> --out runtime/scenario-receipt-api.json --json
 ```
 
 > **Ledger v3（v2 契约 / split-v1 布局起）**：`record` 强制顶层身份（缺失非零退出、不写账本）；`--metrics-json` 必须过 typed schema（unit/apiTest/browserTest/apiContract/dbCompatibility 各有不同必填键）；`browserTest` 在报告中投影为 `browserE2E`；dbCompatibility 等不适用验证用 `--applicability NOT_APPLICABLE --applicability-reason "<scope 原因>"`（不计通过也不计失败）。legacy 契约行为不变。详见 `../protocols/ledger-protocol.md` 第十节。
@@ -761,6 +766,10 @@ python <skills-root>/scripts/harness_ledger.py can-reuse --change-dir <dir> --ve
 | `record requires --files or a non-empty --profile-input file set` | 缺少输入文件集 | 补 `--files` 或 `--profile-input <key> --project <project>` |
 | `--profile-input requires --project` | can-reuse/record 展开 profile 需要项目根 | 补 `--project <project>` |
 | `record` 缺 `--duration-ms` / `--evidence` | 参数为必填 | 按模板补齐 |
+| `PROJECT_ROOT_INVALID` | `--project` 传了项目名而不是路径 | 传 `.` 或绝对路径；报错的 `resolvedProject` 显示实际解析结果 |
+| `SCENARIO_RECEIPT_REQUIRED` | manifest 是 schemaVersion 2，`--scenario-ids` 必须配 receipt | 用 `scenario-receipt-template` 生成骨架 |
+| `SCENARIO_RECEIPT_NOT_FOUND` | receipt 路径找不到 | 看报错的 `triedPaths`；相对路径同时按 CWD 与 `--change-dir` 解析 |
+| `REQUIRED_SCENARIO_NOT_EXECUTED`（test 关门） | `ownerPhase=test` 的场景到 test 阶段仍无通过 receipt——这是真阻塞 | 补跑该场景；接口被验证码挡住时按 `pitfalls.md` 规则 31 记 BLOCKED，不得伪造 receipt |
 
 `can-reuse` 的主文案按 `executionNeed` 呈现，错误码仅放技术详情：`first-run` 表示首次执行，`rerun` 表示已有证据因输入或环境变化失效，`evidence-incomplete` 表示旧记录缺少当前契约字段，`reuse` 表示可直接复用。不得把 `VALIDATION_MISSING` 翻译成“强制重跑”。
 
