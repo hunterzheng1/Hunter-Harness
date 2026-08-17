@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -21,6 +21,8 @@ import {
   createPlanFinalizationQualityVerifier,
   createPlanFinalizationRenderer
 } from "../plan-finalization/production-ports.js";
+import { projectLegacyPlanLifecycle } from "../plan-finalization/legacy-lifecycle-projection.js";
+import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
 import type { CommandDependencies } from "./configure.js";
 
 export interface PlanFinalizeOptions {
@@ -69,6 +71,36 @@ export async function runPlanFinalize(
   const now = () => new Date().toISOString();
   try {
     const input = JSON.parse(await readFile(options.input, "utf8")) as PlanFinalizeInputFile;
+    // HP-10：--change-dir 真正参与路径解析——必须位于 <projectRoot>/.harness/changes/<change_key>
+    // 且 change_key 与输入一致；解析 realpath 拒绝 symlink/reparse 冒充
+    let projectRoot = dependencies.cwd;
+    let changeDir: string;
+    if (options.changeDir === undefined) {
+      changeDir = join(projectRoot, ".harness", "changes", input.context.change_key);
+    } else {
+      let resolved: string;
+      try {
+        resolved = await realpath(options.changeDir);
+      } catch {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_CHANGE_DIR_INVALID",
+          field_path: "changeDir",
+          message: "--change-dir 路径不存在或不可解析"
+        }));
+      }
+      const parts = resolved.split(/[\\/]/u).filter((part) => part.length > 0);
+      const keyIndex = parts.length - 1;
+      if (parts.length < 4 || parts[keyIndex] !== input.context.change_key ||
+          parts[keyIndex - 1] !== "changes" || parts[keyIndex - 2] !== ".harness") {
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
+          code: "PLAN_CHANGE_DIR_INVALID",
+          field_path: "changeDir",
+          message: "--change-dir 必须解析为 <projectRoot>/.harness/changes/<change_key> 且与输入 change_key 一致"
+        }));
+      }
+      projectRoot = parts.slice(0, keyIndex - 2).join("/");
+      changeDir = resolved;
+    }
     const context = {
       schema_version: 1 as const,
       project_id: input.context.project_id,
@@ -77,11 +109,9 @@ export async function runPlanFinalize(
       branch_name: input.context.branch_name,
       attempt: input.context.attempt,
       phase: (input.phase ?? "plan") as never,
-      root_authority: buildFsPublicationAuthority({ projectRoot: dependencies.cwd, projectId: input.context.project_id }, input.context.change_key)
+      root_authority: buildFsPublicationAuthority({ projectRoot, projectId: input.context.project_id }, input.context.change_key)
     };
-    const projectRoot = dependencies.cwd;
     const portOptions = { projectRoot, projectId: context.project_id, now };
-    const changeDir = options.changeDir ?? join(projectRoot, ".harness", "changes", context.change_key);
 
     const quality = createPlanQualityModule();
     const stageVerifier = createPlanStageVerifier({ now });
@@ -108,13 +138,10 @@ export async function runPlanFinalize(
       input.trusted.human.test_scenarios.content.scenarios.some((scenario) => scenario.risk_level === "high") ||
       layer2.findings.some((finding) => finding.severity === "blocking");
     if (reviewRequired && input.adversarial_review === undefined) {
-      dependencies.stdout(JSON.stringify({
-        ok: false,
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_REVIEW_REQUIRED",
-        reason_code: "PLAN_REVIEW_REQUIRED",
         message: "assurance/高风险计划需要对抗评审收据（adversarial_review 字段）；缺失时 fail closed"
-      }) + "\n");
-      return 1;
+      }));
     }
     const reviewerPort = input.adversarial_review === undefined
       ? undefined
@@ -129,13 +156,11 @@ export async function runPlanFinalize(
     });
     if (layer3.status === "blocked" &&
         layer3.review_execution.reviewer_identity === "review_unavailable") {
-      dependencies.stdout(JSON.stringify({
-        ok: false,
+      dependencies.stdout(JSON.stringify(planErrorEnvelope({
         code: "PLAN_REVIEW_BINDING_FAILED",
-        reason_code: "PLAN_REVIEW_BINDING_FAILED",
         message: "评审收据与当前产物/发现/透镜的 input_hash 或 findings_hash 绑定失败；请重跑评审",
-        review_execution: layer3.review_execution
-      }) + "\n");
+        extra: { review_execution: layer3.review_execution }
+      })) + "\n");
       return 1;
     }
     const finalized = quality.finalizeQuality({
@@ -190,6 +215,19 @@ export async function runPlanFinalize(
       recovery_token: `plan_recovery:${canonicalHash(`${operationId}${idempotencyKey}`)}` as `plan_recovery:${string}`
     });
 
+    // HP-09：发布已提交时，向 legacy events.ndjson 幂等投影 plan 终态
+    let lifecycleProjection: string | undefined;
+    if (result.ok) {
+      const projection = await projectLegacyPlanLifecycle({
+        changeDir,
+        runId: input.context.run_id,
+        attempt: input.context.attempt,
+        receiptId: result.publication_receipt?.receipt_id ?? result.operation_id,
+        now
+      });
+      lifecycleProjection = projection.reason;
+    }
+
     dependencies.stdout(JSON.stringify({
       ok: result.ok,
       code: result.ok ? "PLAN_FINALIZED" : (result.reason_code ?? "PLAN_FINALIZE_FAILED"),
@@ -197,16 +235,20 @@ export async function runPlanFinalize(
       status: result.status,
       publication_receipt: result.publication_receipt,
       event_outbox_id: result.event_outbox?.outbox_id ?? null,
+      ...(lifecycleProjection === undefined ? {} : { legacy_lifecycle_projection: lifecycleProjection }),
       change_dir: changeDir
     }) + "\n");
     return result.ok ? 0 : 1;
   } catch (error) {
-    dependencies.stdout(JSON.stringify({
-      ok: false,
+    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message
+    const coreMessage = error instanceof Error ? error.message : String(error);
+    const coreCode = /^PLAN[A-Z_]*$/u.test(coreMessage) ? coreMessage : undefined;
+    return emitPlanError(dependencies.stdout, planErrorEnvelope({
       code: "PLAN_FINALIZE_FAILED",
-      error: error instanceof Error ? error.message : String(error)
-    }) + "\n");
-    return 1;
+      reason_code: coreCode ?? "PLAN_FINALIZE_FAILED",
+      message: coreMessage,
+      extra: { error: coreMessage }
+    }));
   }
 }
 

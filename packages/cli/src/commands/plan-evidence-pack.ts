@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import { canonicalJson, isValidPlanRunId } from "@hunter-harness/contracts";
+
+import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
 import { readFile, writeFile } from "node:fs/promises";
 
 import {
@@ -119,26 +121,22 @@ export async function runPlanEvidencePack(
     // HP-07：run_id 必须在写入任何 legacy 事件前满足 v2 identity（小写字母开头）；
     // 裸 UUID 有 10/16 概率数字开头——边界拒绝并给出字段路径，不等到 finalization
     if (!isValidPlanRunId(input.context?.run_id)) {
-      dependencies.stdout(JSON.stringify({
-        ok: false,
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_RUN_ID_INVALID",
         field_path: "context.run_id",
         message: "run_id 必须满足 v2 identity（小写字母开头）；请使用 createPlanRunId() 生成 plan_<uuid>"
-      }) + "\n");
-      return 1;
+      }));
     }
     // HP-11：decided_at 边界规范化为 canonical UTC（Z 与 +08:00 等价）
     const rawDecidedAt = input.approval.decided_at;
     if (rawDecidedAt !== undefined) {
       const parsedTime = Date.parse(String(rawDecidedAt));
       if (!Number.isFinite(parsedTime)) {
-        dependencies.stdout(JSON.stringify({
-          ok: false,
+        return emitPlanError(dependencies.stdout, planErrorEnvelope({
           code: "PLAN_TIME_INVALID",
           field_path: "approval.decided_at",
           message: "decided_at 不是可解析的 ISO 8601 时间"
-        }) + "\n");
-        return 1;
+        }));
       }
       input.approval.decided_at = new Date(parsedTime).toISOString();
     }
@@ -157,14 +155,12 @@ export async function runPlanEvidencePack(
     const outDiff = scopeDiff(intentOut, approvalOut);
     if (inDiff.missing.length > 0 || inDiff.extra.length > 0 ||
         outDiff.missing.length > 0 || outDiff.extra.length > 0) {
-      dependencies.stdout(JSON.stringify({
-        ok: false,
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
         code: "PLAN_SCOPE_MISMATCH",
         field_path: "approval.content.in_scope",
         message: "Intent 与审批 scope 集合不等价（顺序无关）",
-        diff: { in_scope: inDiff, out_of_scope: outDiff }
-      }) + "\n");
-      return 1;
+        extra: { diff: { in_scope: inDiff, out_of_scope: outDiff } }
+      }));
     }
     const planning = createPlanningContextModule();
     const decision = createPlanDecisionModule();
@@ -355,11 +351,14 @@ export async function runPlanEvidencePack(
     }) + "\n");
     return 0;
   } catch (error) {
-    dependencies.stdout(JSON.stringify({
-      ok: false,
+    // HP-08：结构化信封——reason_code 取 core 稳定码，error 字段保留原 message
+    const coreMessage = error instanceof Error ? error.message : String(error);
+    const coreCode = /^PLAN[A-Z_]*$/u.test(coreMessage) ? coreMessage : undefined;
+    return emitPlanError(dependencies.stdout, planErrorEnvelope({
       code: "PLAN_EVIDENCE_PACK_FAILED",
-      error: error instanceof Error ? error.message : String(error)
-    }) + "\n");
-    return 1;
+      reason_code: coreCode ?? "PLAN_EVIDENCE_PACK_FAILED",
+      message: coreMessage,
+      extra: { error: coreMessage }
+    }));
   }
 }

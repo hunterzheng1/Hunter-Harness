@@ -176,9 +176,15 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
       cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
     });
     expect(exit).toBe(1);
-    const result = JSON.parse(out.join("")) as { code: string; field_path: string };
+    const result = JSON.parse(out.join("")) as {
+      code: string; field_path: string; stage: string; reason_code: string; retryable: boolean;
+    };
     expect(result.code).toBe("PLAN_RUN_ID_INVALID");
     expect(result.field_path).toBe("context.run_id");
+    // HP-08 信封定位字段
+    expect(result.stage).toBe("boundary");
+    expect(result.reason_code).toBe("PLAN_RUN_ID_INVALID");
+    expect(result.retryable).toBe(false);
   });
 
   it("HP-11：等价的 +08:00 与 Z 时间生成相同产物身份", async () => {
