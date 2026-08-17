@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -255,12 +256,30 @@ class MultiDayResilienceTests(unittest.TestCase):
         self.assertEqual(budget["code"], "ARTIFACT_BUDGET_EXCEEDED")
 
         archive_root = self.project / ".harness" / "archive"
-        code, payload = ha.cmd_finalize(
-            self.change,
-            archive_root,
-            archive_intent="record-only",
-            skip_ingest=True,
-        )
+        # cmd_finalize 的真实门顺序：check_status → sensitive_evidence_refresh →
+        # sensitive_evidence_gate → exact_byte → artifact_budget。本测试只关心
+        # budget 在 staging 之前触发，mock 掉前序门让流程走到 budget；
+        # 门顺序本身的正确性由 test_harness_archive.py 的集成测试覆盖。
+        with (
+            mock.patch.object(
+                ha, "check_status",
+                return_value={"archivable": True, "blockers": []},
+            ),
+            mock.patch.object(
+                ha.hruntime, "refresh_sensitive_evidence_scan_receipt",
+                return_value={"ok": True, "receipt": None},
+            ),
+            mock.patch.object(
+                ha, "validate_sensitive_evidence_publication_gate",
+                return_value={"ok": True},
+            ),
+        ):
+            code, payload = ha.cmd_finalize(
+                self.change,
+                archive_root,
+                archive_intent="record-only",
+                skip_ingest=True,
+            )
         self.assertEqual(code, 1, payload)
         self.assertEqual(payload["error"], "artifact budget exceeded before staging")
         self.assertFalse(Path(payload["operationTempDir"]).exists())
