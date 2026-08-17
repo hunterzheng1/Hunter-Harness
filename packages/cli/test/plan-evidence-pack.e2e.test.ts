@@ -203,4 +203,93 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     expect(withOffset.publication.publication_intent_id)
       .toBe(withZulu.publication.publication_intent_id);
   });
+
+  it("HP-04：scope 顺序差异不触发语义 finding；真实缺失给出 diff", async () => {
+    const inputPath = join(root, "scope-reordered.json");
+    const natural = naturalInput() as {
+      intent: { in_scope: string[]; out_of_scope: string[] };
+      approval: { content: { in_scope: string[] } };
+    };
+    // intent 与 approval 同集合、顺序不同 → 应通过
+    natural.intent.in_scope = ["plan_bridge", "zz_extra_order"];
+    natural.approval.content.in_scope = ["zz_extra_order", "plan_bridge"];
+    (natural as unknown as { structured_input: { approved_scopes: { text: string; scope_ref: string }[] } })
+      .structured_input.approved_scopes = [
+        { scope_ref: "scope:" + "a".repeat(64), text: "plan_bridge" },
+        { scope_ref: "scope:" + "c".repeat(64), text: "zz_extra_order" }
+      ];
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const out1: string[] = [];
+    const exit1 = await runPlanEvidencePack({ input: inputPath, output: join(root, "scope1.json") }, {
+      cwd: root, stdout: (chunk: string) => { out1.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit1).toBe(0);
+
+    // 真实缺失 → PLAN_SCOPE_MISMATCH 带 missing/extra 明细
+    const natural2 = naturalInput() as { approval: { content: { in_scope: string[] } } };
+    natural2.approval.content.in_scope = ["plan_bridge", "extra_not_in_intent"];
+    await fs.writeFile(inputPath, JSON.stringify(natural2));
+    const out2: string[] = [];
+    const exit2 = await runPlanEvidencePack({ input: inputPath, output: join(root, "scope2.json") }, {
+      cwd: root, stdout: (chunk: string) => { out2.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit2).toBe(1);
+    const result = JSON.parse(out2.join("")) as { code: string; diff: { in_scope: { missing: string[] } } };
+    expect(result.code).toBe("PLAN_SCOPE_MISMATCH");
+    expect(result.diff.in_scope.missing).toContain("extra_not_in_intent");
+  });
+
+  it("HP-05：文本顺序≠ref 哈希顺序的多 scope/多同 kind requirement/多 ownership 隐式路径全通", async () => {
+    const natural = naturalInput() as {
+      intent: { in_scope: string[] };
+      approval: { content: { in_scope: string[]; invariants: string[] } };
+      structured_input: {
+        approved_scopes: { text: string; scope_ref: string }[];
+        tasks: { affected_paths: string[] }[];
+      };
+    };
+    // 两个 scope：文本序与 ref 哈希序不同（测试内验证该前提）
+    natural.intent.in_scope = ["alpha_scope", "beta_scope"];
+    natural.approval.content.in_scope = ["beta_scope", "alpha_scope"];
+    natural.structured_input.approved_scopes = [
+      { scope_ref: "scope:" + "0".repeat(64), text: "alpha_scope" },
+      { scope_ref: "scope:" + "0".repeat(64), text: "beta_scope" }
+    ];
+    // 多个同 kind requirement（不变量两条）
+    natural.approval.content.invariants = ["结构失败绝不发布", "旧路径只读"];
+    // 多个 ownership path
+    natural.structured_input.tasks[0].affected_paths = ["a/x.ts", "b/y.ts", "c/z.ts"];
+    const inputPath = join(root, "hp05.json");
+    const packPath = join(root, "hp05-pack.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
+      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    if (exit !== 0) console.error("HP05-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as {
+      trusted: { human_input: { structured_input: {
+        requirements: { requirement_id: string; approved_scope_refs: string[] }[];
+        approved_scopes: { scope_ref: string; text: string }[];
+      } } };
+    };
+    const scopes = pack.trusted.human_input.structured_input.approved_scopes;
+    const textOrder = scopes.map((scope) => scope.text);
+    const refOrder = [...scopes].map((scope) => scope.scope_ref).sort();
+    const scopeRefByText = scopes.map((scope) => scope.scope_ref);
+    expect(textOrder).toEqual([...textOrder].sort());
+    // 前提成立：文本序 ≠ ref 序（否则换文本重跑本用例）
+    expect(scopeRefByText).not.toEqual(refOrder);
+    // 每条 requirement 的 scope refs 已按 ref canonical
+    for (const requirement of pack.trusted.human_input.structured_input.requirements) {
+      expect(requirement.approved_scope_refs).toEqual([...requirement.approved_scope_refs].sort());
+    }
+    const finalizeOut: string[] = [];
+    const finalizeExit = await runPlanFinalize({ input: packPath }, {
+      cwd: root, stdout: (chunk: string) => { finalizeOut.push(chunk); return true; }, stderr: () => true
+    });
+    if (finalizeExit !== 0) console.error("HP05-FIN:", finalizeOut.join(""));
+    expect(finalizeExit).toBe(0);
+  });
 });

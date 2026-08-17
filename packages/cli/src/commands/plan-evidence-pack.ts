@@ -143,6 +143,29 @@ export async function runPlanEvidencePack(
       input.approval.decided_at = new Date(parsedTime).toISOString();
     }
     const createdAt = input.approval.decided_at ?? now();
+    // HP-04：intent 与 approval scope 集合语义等价校验（missing/extra 明细）
+    const canonicalScope = (values: readonly string[]) => [...new Set(values)].sort();
+    const intentIn = canonicalScope(input.intent.in_scope ?? []);
+    const approvalIn = canonicalScope(input.approval.content?.in_scope ?? []);
+    const intentOut = canonicalScope(input.intent.out_of_scope ?? []);
+    const approvalOut = canonicalScope(input.approval.content?.out_of_scope ?? []);
+    const scopeDiff = (a: readonly string[], b: readonly string[]) => ({
+      missing: b.filter((item) => !a.includes(item)),
+      extra: a.filter((item) => !b.includes(item))
+    });
+    const inDiff = scopeDiff(intentIn, approvalIn);
+    const outDiff = scopeDiff(intentOut, approvalOut);
+    if (inDiff.missing.length > 0 || inDiff.extra.length > 0 ||
+        outDiff.missing.length > 0 || outDiff.extra.length > 0) {
+      dependencies.stdout(JSON.stringify({
+        ok: false,
+        code: "PLAN_SCOPE_MISMATCH",
+        field_path: "approval.content.in_scope",
+        message: "Intent 与审批 scope 集合不等价（顺序无关）",
+        diff: { in_scope: inDiff, out_of_scope: outDiff }
+      }) + "\n");
+      return 1;
+    }
     const planning = createPlanningContextModule();
     const decision = createPlanDecisionModule();
     const model = createPlanArtifactModel();
@@ -195,37 +218,56 @@ export async function runPlanEvidencePack(
         `source:${String(source.source_id)}`
       ]))
     ].sort();
-    const requirements = input.structured_input.requirements ??
-      requirementsFrom(input.approval.content, scopeRefs, evidenceRefs);
-    const requirementRefs = requirements.map((item) => String((item as { requirement_id: string }).requirement_id));
-    const ownership = input.structured_input.ownership ?? [
-      ...new Set(input.structured_input.tasks.flatMap((task) => task.affected_paths as string[] ?? []))
-    ].sort().map((path) => {
-      const body = { path, approved_scope_refs: scopeRefs, evidence_refs: evidenceRefs };
-      return { ownership_ref: stableId("ownership", body), ...body };
-    });
-    const ownershipRefs = ownership.map((item) => String((item as { ownership_ref: string }).ownership_ref));
+    // HP-05：validator 要求每条 requirement/ownership 的 ref 数组按 ref 排序去重，
+    // 且 requirements 按 kind 后按 requirement_id 排序——producer 与 validator 共享
+    // 同一 canonical comparator，隐式/显式路径经同一 normalize
+    const sortRefs = (refs: readonly string[]) => [...new Set(refs)].sort();
+    const scopeRefsCanonical = sortRefs(scopeRefs);
+    const KIND_ORDER = ["behavior", "invariant", "failure_behavior"] as const;
+    const normalizeRequirements = (items: readonly Record<string, unknown>[]) =>
+      items.map((item): Record<string, unknown> => ({
+        ...item,
+        evidence_refs: sortRefs(item.evidence_refs as string[] ?? []),
+        approved_scope_refs: sortRefs(item.approved_scope_refs as string[] ?? [])
+      })).sort((left, right) =>
+        KIND_ORDER.indexOf(left.kind as never) - KIND_ORDER.indexOf(right.kind as never) ||
+        (String(left.requirement_id) < String(right.requirement_id) ? -1 : 1));
+    const requirements = normalizeRequirements((input.structured_input.requirements ??
+      requirementsFrom(input.approval.content, scopeRefsCanonical, evidenceRefs)) as Record<string, unknown>[]);
+    const requirementRefs = sortRefs(requirements.map((item) => String(item.requirement_id)));
+    const ownership = (input.structured_input.ownership ??
+      [...new Set(input.structured_input.tasks.flatMap((task) => task.affected_paths as string[] ?? []))]
+        .sort().map((path) => {
+          const body = { path, approved_scope_refs: scopeRefsCanonical, evidence_refs: evidenceRefs };
+          return { ownership_ref: stableId("ownership", body), ...body };
+        }) as Record<string, unknown>[]).map((item): Record<string, unknown> => ({
+      ...item,
+      evidence_refs: sortRefs(item.evidence_refs as string[] ?? []),
+      approved_scope_refs: sortRefs(item.approved_scope_refs as string[] ?? [])
+    }));
+    const ownershipRefs = sortRefs(ownership.map((item) => String(item.ownership_ref)));
     const taskIds = input.structured_input.tasks.map((task) => String(task.task_id));
     const scenarioIds = input.structured_input.scenarios.map((scenario) => String(scenario.scenario_id));
     const structured_input = {
       change_key: input.change_key,
       tasks: input.structured_input.tasks.map((task) => ({
         ...task,
-        depends_on: task.depends_on ?? [],
-        decision_refs: task.decision_refs ?? [],
-        scenario_refs: task.scenario_refs ?? scenarioIds,
-        requirement_refs: (task.requirement_refs as string[] | undefined)?.length
-          ? task.requirement_refs : requirementRefs,
-        evidence_refs: (task.evidence_refs as string[] | undefined)?.length
-          ? task.evidence_refs : evidenceRefs,
-        ownership_refs: (task.ownership_refs as string[] | undefined)?.length
-          ? task.ownership_refs : ownershipRefs
+        depends_on: sortRefs((task.depends_on as string[] | undefined) ?? []),
+        decision_refs: sortRefs((task.decision_refs as string[] | undefined) ?? []),
+        scenario_refs: sortRefs((task.scenario_refs as string[] | undefined) ?? scenarioIds),
+        requirement_refs: sortRefs((task.requirement_refs as string[] | undefined)?.length
+          ? task.requirement_refs as string[] : requirementRefs),
+        evidence_refs: sortRefs((task.evidence_refs as string[] | undefined)?.length
+          ? task.evidence_refs as string[] : evidenceRefs),
+        ownership_refs: sortRefs((task.ownership_refs as string[] | undefined)?.length
+          ? task.ownership_refs as string[] : ownershipRefs)
       })),
       scenarios: input.structured_input.scenarios.map((scenario) => ({
         ...scenario,
-        task_refs: (scenario.task_refs as string[] | undefined)?.length ? scenario.task_refs : taskIds,
-        requirement_refs: (scenario.requirement_refs as string[] | undefined)?.length
-          ? scenario.requirement_refs : requirementRefs
+        task_refs: sortRefs((scenario.task_refs as string[] | undefined)?.length
+          ? scenario.task_refs as string[] : taskIds),
+        requirement_refs: sortRefs((scenario.requirement_refs as string[] | undefined)?.length
+          ? scenario.requirement_refs as string[] : requirementRefs)
       })),
       coverage: input.structured_input.coverage ?? coverageFrom(input.structured_input.scenarios),
       requirements,

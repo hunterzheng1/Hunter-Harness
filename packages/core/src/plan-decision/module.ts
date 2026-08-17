@@ -410,7 +410,8 @@ function canonicalApprovalPackage(input: ApprovalPackageInput): ApprovalPackage 
   const approval_input_hash = approvalInputHash(input);
   const sections = {
     goal_and_outcome: { goal: input.content.goal, user_visible_outcome: input.content.user_visible_outcome },
-    scope: { in_scope: [...input.content.in_scope], out_of_scope: [...input.content.out_of_scope] },
+    // HP-04：scope 是集合语义——构造即 canonical（顺序不参与身份/质量判定）
+    scope: { in_scope: sortedUnique(input.content.in_scope), out_of_scope: sortedUnique(input.content.out_of_scope) },
     design: { recommended_design: input.content.recommended_design, key_alternatives: [...input.content.key_alternatives] },
     boundaries: { invariants: [...input.content.invariants], failure_behaviors: [...input.content.failure_behaviors],
       compatibility_boundaries: [...input.content.compatibility_boundaries] },

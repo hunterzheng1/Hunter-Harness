@@ -7,23 +7,23 @@
     "java"
   ],
   "bundle_version": "0.2.57",
-  "content_sha256": "sha256:eb4b82cca0d9642f0df339e1a1851f50985567854cac6bc27dae29b54da90ac7",
+  "content_sha256": "sha256:7e5819f277a900dd2a1ead8433a4437bf3511af194f5bddee40a0e69e8d102db",
   "minimumCliVersion": "0.2.77",
   "workflowPackageVersion": "0.2.68",
   "capabilities": [
+    "sync@2",
+    "rules-sync@1",
+    "rules-review@1",
+    "knowledge-sync@3",
     "build-profile@3",
-    "codegraph-status@2",
-    "doctor-capability@1",
+    "verification-graph@1",
     "execution-session@1",
     "external-convergence@1",
-    "knowledge-sync@3",
+    "codegraph-status@2",
+    "doctor-capability@1",
     "registry-governance@1",
-    "remote-sync-pull@1",
     "remote-sync-push@1",
-    "rules-review@1",
-    "rules-sync@1",
-    "sync@2",
-    "verification-graph@1"
+    "remote-sync-pull@1"
   ],
   "requires": {
     "minimumCliVersion": "0.2.77",
@@ -38,7 +38,9 @@
       "external-convergence@1",
       "codegraph-status@2",
       "doctor-capability@1",
-      "registry-governance@1"
+      "registry-governance@1",
+      "remote-sync-push@1",
+      "remote-sync-pull@1"
     ]
   }
 }

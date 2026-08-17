@@ -42,7 +42,9 @@ const REQUIRED_CAPABILITIES = [
   "external-convergence@1",
   "codegraph-status@2",
   "doctor-capability@1",
-  "registry-governance@1"
+  "registry-governance@1",
+  "remote-sync-push@1",
+  "remote-sync-pull@1"
 ];
 
 async function syncInputHash() {

@@ -226,8 +226,9 @@ function semanticProjection(artifacts: TrustedArtifactSetInput): { readonly appr
   if (design.goal !== artifacts.human_input.intent.goal || design.user_visible_outcome !==
     artifacts.human_input.intent.user_visible_outcome) add("semantic.goal_coverage", "goal_coverage",
     "设计未覆盖批准的目标或用户可见结果", "design.md", ["design.md", "intent_contract"]);
-  if (!same(design.in_scope, artifacts.human_input.intent.in_scope) ||
-    !same(design.out_of_scope, artifacts.human_input.intent.out_of_scope)) add("semantic.scope_identity", "scope",
+  // HP-04：集合语义比较（顺序差异不再是语义差异）
+  if (!same([...design.in_scope].sort(), [...artifacts.human_input.intent.in_scope].sort()) ||
+    !same([...design.out_of_scope].sort(), [...artifacts.human_input.intent.out_of_scope].sort())) add("semantic.scope_identity", "scope",
     "设计范围与批准 Intent 不一致", "design.md", ["design.md", "intent_contract"]);
   const requirements = design.requirements; const ownership = design.ownership;
   const taskIds = tasks.map((task) => task.task_id); const scenarioIds = scenarios.map((scenario) => scenario.scenario_id);
