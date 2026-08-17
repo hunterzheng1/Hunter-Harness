@@ -28,7 +28,8 @@ const COMMAND_SCHEMA_VERSIONS: Readonly<Record<string, number>> = {
   knowledge: 1,
   instructions: 1,
   doctor: 1,
-  config: 1
+  config: 1,
+  plan: 1
 };
 
 export async function runCapabilities(

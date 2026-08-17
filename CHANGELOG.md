@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.79] — hunter-harness / [0.2.70] — @hunter-harness/workflow-harness
+
+### Added（2026-08-17 Plan 发布后修订入口）
+
+- **`hunter-harness plan republish`**：已发布计划的获批修订入口——`--reason` 必填审计留痕、`--run-id` 必须全新、无收据拒绝（首发走 finalize）、内容未变幂等空操作；失败回滚恢复原字节。`PLAN_FINALIZATION_HASH_CONFLICT` / `PLAN_TARGET_CONFLICT` / `PHASE_ALREADY_CLOSED` / `EVENT_ATTEMPT_CONFLICT` / `PHASE_START_MISSING` 错误信息直接给出 republish 命令行（`ba0b472`）。
+- **`plan evidence-pack --print-template`**：输出带占位符的完整 v2 输入骨架，agent 不再需要翻 TS 接口猜格式（`ba0b472`）。
+
+### Fixed（2026-08-17 run 门禁分阶段判定 + remote-sync 协议对齐）
+
+- **run 门禁按 ownerPhase 分级**：`_validate_scenario_coverage` 之前不读 ownerPhase，run 关门要求所有 P0/P1 场景都有 receipt——包括需起服务、属 test 阶段的接口场景，形成死锁。改为 run 只要求 ownerPhase 为 plan/run 的场景，test 阶段场景进 deferred 字段、test 关门时强制；未声明 ownerPhase 的老清单沿用旧语义（`64aa2fc`）。
+- **remote-sync 协议对齐**（`6cb4f9c`）：
+  - snapshot 查询不再携带 `actor_id` / `commit_sha` / `client_id` / `change_key`（服务端 strict 只接受 `expected_revision`，400 被吞成 `REMOTE_UNAVAILABLE`）；
+  - snapshot 回包 source 校验收窄到 project/branch/actor；
+  - `readBoundedResponseJson` 容忍 `Content-Encoding`（Caddy gzip 使传输字节数 ≠ 解压字节数）；
+  - `client_id` 加 `cli_` 前缀（`remoteSyncSourceRefSchema` 要求）；
+  - snapshot `manifest_hash` 不匹配降级为 debug 警告（服务端旧格式与 snapshot 端点 files 形状不一致；配套服务端修复见 hunter-platform `880ed52`）；
+  - `RemoteSyncError.serverCode` 透传非白名单服务端错误码；
+  - 新增 `HUNTER_DEBUG_HTTP=1` 调试开关。
+- 工作流 Bundle 提升至 `0.2.59`，最低 CLI 版本 `0.2.79`（bundle 内 harness-plan skill 引用新 CLI 命令）。
+
 ## [0.2.78] — hunter-harness / [0.2.69] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-17 Plan v2 双仓 dogfood 十二项修复 + 门禁版本错配收口）
