@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.75] — @hunter-harness/workflow-harness
+
+> 纯 Bundle 发版：CLI 源码零改动，`hunter-harness` 保持 `0.2.83` 不重发；最低 CLI 版本仍为 `0.2.83`。
+
+### Fixed（2026-08-18 归档阶段的三条死路与两处静默）
+
+- **敏感证据隔离在非系统盘项目上必然失败**（`ce56517`）：`SENSITIVE_EVIDENCE_UNQUARANTINED` 是归档硬阻断，唯一解法是隔离；而默认私有根 `~/.harness/private-evidence` 在 Windows 落 C 盘，项目在别的盘时 `os.replace` 直接 WinError 17 跨盘失败——整条归档路对所有非系统盘项目堵死。新增 `private_evidence_root_for()`：同盘沿用配置/默认值，跨盘退到源所在驱动器的 `.harness-private-evidence`。同时函数自身的校验原本只看 change_root、比归档密钥扫描门禁（按项目根判定）宽，导致"这里过了、门禁再拒"，现已对齐到同一条边界并在错误里点名项目根。
+- **隔离没有命令行入口**（`ce56517`）：该必经步骤此前只存在于 `harness_runtime.py` 的内部函数，调用方只能写 `python -c` + `sys.path` hack。新增 `harness_runtime.py quarantine-evidence`（`--file` 可重复，逐条报结果）。
+- **`ownership.productPaths` 没有任何写入方**（`ce56517`）：plan 的 `validate_product_ownership` 只校验、缺失时软放行（`PLAN_PRODUCT_PATHS_LEGACY_UNDECLARED`），而归档的 `compute_ownership_diff` 把全部改动判成 `foreignPaths`，`filesChanged=0` 触发 `DIFF_ZERO_WITH_NONEMPTY_COMMIT`。两端口径不一致、中间无工具可补，只能手改契约。新增 `harness_change.py declare-ownership`（规则与 plan 校验一致：只收精确文件或目录前缀，不支持通配）。
+- **上传成功后报告不改口**（`d89fcef`）：`summary-data.json` 在归档流程早期以 `ARCHIVED_LOCAL_ONLY` 落盘，ZIP 上传在其后；成功时只改内存 payload、从不回写文件，且把对象覆盖成裸字符串（读 `.status` 取到 undefined）。于是同一次归档"回执 durable / 报告 local-only"，平台与用户读的都是后者。新增 `remote_durable_archive_durability()` 与 `persist_archive_durability()`：保持对象形状、带 `archiveId`/`uploadStatus`/`knowledgeStatus`，并回写 summary（该文件本就排除在归档校验和覆盖外，回写不破坏对账）。
+- **受管快照推送失败无迹可查**（`ea00345`）：plan/spec、`.harness/codebase`、`.harness/rules` 全靠这条推送上平台（push 会 walk 每个归档目录的 `spec/` 与 `plans/`）。它是 best-effort，失败只记一句"未能同步到平台…稍后重试"并把 stdout/stderr 整个丢弃——现场就是它挂了（exitCode=1），用户在平台上只看到东西没上去却查不出原因。失败分支改为保留有界诊断（`detail` 取 stderr 末 2048 字符；CLI 输出 JSON 错误信封时提取 `cliCode`）。
+
+### Changed
+
+- `harness-archive/SKILL.md`：结束报告必须**分别**回显 `archive_push` 与 `managed_snapshot_push` 两条上传结果，并说明二者载荷不同、成败无关；硬门禁速查表补上隔离与 ownership 两条阻断的正规出路，明确禁止改 `candidateVerification.requiredValidations` 绕过。
+- `shared/read-protocol.md`：写明脚本在 `<skills-root>/scripts/` 共享，不在每个 skill 子目录下——plan、run/test、archive 三份执行日志里都先猜错再靠 Search 找回。
+
 ## [0.2.74] — @hunter-harness/workflow-harness
 
 > 纯 Bundle 发版：CLI 源码零改动，`hunter-harness` 保持 `0.2.83` 不重发；最低 CLI 版本仍为 `0.2.83`。CLI 按 `latest` 标签解析数据包，升级 Bundle 无需换 CLI。
