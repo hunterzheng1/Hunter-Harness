@@ -708,5 +708,76 @@ class ChangeRenameTests(unittest.TestCase):
         self.assertIn("change_uuid", rename_events[0])
 
 
+class DeclareOwnershipTests(unittest.TestCase):
+    """`ownership.productPaths` 此前没有任何写入方，归档因此必卡。
+
+    plan 的 validate_product_ownership 只校验、缺失时软放行
+    （PLAN_PRODUCT_PATHS_LEGACY_UNDECLARED）；到了归档，compute_ownership_diff
+    把全部改动判成 foreignPaths，filesChanged=0 触发
+    DIFF_ZERO_WITH_NONEMPTY_COMMIT——两端口径不一致，中间没有工具能补。
+    执行日志里的结果是执行者反复读源码，最后打算手改契约。
+    """
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-own-"))
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        (self.change_dir / "meta").mkdir(parents=True)
+        (self.change_dir / "meta" / "change-context.json").write_text(
+            json.dumps({"schemaVersion": 1, "changeId": "demo"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _context(self) -> dict:
+        return json.loads(
+            (self.change_dir / "meta" / "change-context.json").read_text(encoding="utf-8-sig")
+        )
+
+    def test_declare_writes_product_paths_into_the_contract(self) -> None:
+        result = change.declare_product_ownership(
+            self.project, "demo", product_paths=["kld-sdd/", "docs/api.md"]
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            self._context()["ownership"]["productPaths"], ["docs/api.md", "kld-sdd/"]
+        )
+
+    def test_declare_is_idempotent(self) -> None:
+        change.declare_product_ownership(self.project, "demo", product_paths=["kld-sdd/"])
+        second = change.declare_product_ownership(
+            self.project, "demo", product_paths=["kld-sdd/"]
+        )
+
+        self.assertTrue(second["ok"], second)
+        self.assertTrue(second.get("idempotent"))
+        self.assertEqual(self._context()["ownership"]["productPaths"], ["kld-sdd/"])
+
+    def test_glob_paths_are_rejected(self) -> None:
+        # 与 plan 的 validate_product_ownership 同一条规则：只收精确文件或目录前缀
+        result = change.declare_product_ownership(
+            self.project, "demo", product_paths=["kld-sdd/**"]
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "PLAN_PRODUCT_PATHS_GLOB_UNSUPPORTED")
+        self.assertNotIn("ownership", self._context())
+
+    def test_empty_declaration_is_rejected(self) -> None:
+        result = change.declare_product_ownership(self.project, "demo", product_paths=[])
+
+        self.assertFalse(result["ok"], result)
+        self.assertNotIn("ownership", self._context())
+
+    def test_cli_exposes_declare_ownership(self) -> None:
+        parser = change.build_parser()
+        args = parser.parse_args([
+            "declare-ownership", "--change", "demo", "--product-path", "kld-sdd/", "--json",
+        ])
+        self.assertEqual(args.product_path, ["kld-sdd/"])
+
+
 if __name__ == "__main__":
     unittest.main()

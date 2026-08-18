@@ -1081,6 +1081,90 @@ def cmd_resolve(args: argparse.Namespace) -> int:
     )
 
 
+def declare_product_ownership(
+    project_root: Path, change_id: str, *, product_paths: list[str]
+) -> dict[str, Any]:
+    """把 `ownership.productPaths` 写进 change 契约。
+
+    这个字段此前没有任何写入方：plan 的 validate_product_ownership 只校验、缺失时
+    软放行，而归档的 compute_ownership_diff 会把全部改动判成 foreignPaths，
+    filesChanged=0 直接触发 DIFF_ZERO_WITH_NONEMPTY_COMMIT。两端口径不一致，中间
+    没工具能补——只能手改契约。这里给出正规入口。
+
+    规则与 plan 校验一致：只收精确文件或目录前缀，不接受通配。
+    """
+    resolved = resolve_change(project_root, change_id)
+    if not resolved.get("ok"):
+        return resolved
+    change_dir = Path(resolved["changeDir"])
+    normalized = sorted({
+        str(item).strip().replace("\\", "/").removeprefix("./")
+        for item in product_paths
+        if isinstance(item, str) and item.strip()
+    })
+    if not normalized:
+        return {
+            "ok": False,
+            "code": "PLAN_PRODUCT_PATHS_REQUIRED",
+            "message": "至少声明一条 productPaths（精确文件或目录前缀）",
+        }
+    unsupported = sorted(p for p in normalized if any(ch in p for ch in "*?[]"))
+    if unsupported:
+        return {
+            "ok": False,
+            "code": "PLAN_PRODUCT_PATHS_GLOB_UNSUPPORTED",
+            "message": "productPaths 只接受精确文件或目录前缀，不支持通配：" + ", ".join(unsupported),
+            "unsupportedPaths": unsupported,
+        }
+
+    context_path = change_dir / CHANGE_CONTEXT_REL
+    try:
+        context = _read_json(context_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "code": "CHANGE_CONTEXT_INVALID", "message": str(exc)}
+    if not isinstance(context, dict):
+        return {"ok": False, "code": "CHANGE_CONTEXT_INVALID", "message": "change-context.json 不是对象"}
+
+    ownership = context.get("ownership")
+    ownership = dict(ownership) if isinstance(ownership, dict) else {}
+    if ownership.get("productPaths") == normalized:
+        return {
+            "ok": True,
+            "code": "PRODUCT_OWNERSHIP_DECLARED",
+            "idempotent": True,
+            "changeId": change_id,
+            "productPaths": normalized,
+            "path": str(context_path),
+        }
+    ownership["productPaths"] = normalized
+    context["ownership"] = ownership
+    _write_json(context_path, context)
+    return {
+        "ok": True,
+        "code": "PRODUCT_OWNERSHIP_DECLARED",
+        "idempotent": False,
+        "changeId": change_id,
+        "productPaths": normalized,
+        "path": str(context_path),
+    }
+
+
+def cmd_declare_ownership(args: argparse.Namespace) -> int:
+    project = resolve_main_project_root()
+    payload = declare_product_ownership(
+        project, args.change, product_paths=list(args.product_path)
+    )
+    if payload.get("ok"):
+        emit(payload, as_json=bool(args.json))
+        return 0
+    return emit_error(
+        str(payload.get("code", "PRODUCT_OWNERSHIP_FAILED")),
+        str(payload.get("message", "declare ownership failed")),
+        as_json=bool(args.json),
+        extra={k: v for k, v in payload.items() if k not in {"ok", "message"}},
+    )
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     project = resolve_main_project_root()
     if not args.change:
@@ -1450,6 +1534,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_migrate = sub.add_parser("migrate", parents=[shared])
     p_migrate.add_argument("--change", required=True)
     p_migrate.set_defaults(func=cmd_migrate)
+
+    p_ownership = sub.add_parser(
+        "declare-ownership", parents=[shared],
+        help="declare ownership.productPaths so archive can project the real diff",
+    )
+    p_ownership.add_argument("--change", required=True)
+    p_ownership.add_argument(
+        "--product-path", required=True, action="append",
+        help="exact file or directory prefix (no globs); repeatable",
+    )
+    p_ownership.set_defaults(func=cmd_declare_ownership)
 
     p_claim = sub.add_parser("claim", parents=[shared])
     p_claim.add_argument("--change", required=True)

@@ -157,6 +157,35 @@ def _private_evidence_root(explicit: Path | None = None) -> Path:
             Path.home() / ".harness" / "private-evidence").expanduser().resolve()
 
 
+def private_evidence_root_for(source: Path, explicit: Path | None = None) -> Path:
+    """私有隔离根：必须与源同一驱动器。
+
+    `os.replace` 跨驱动器会直接失败（Windows 上是 WinError 17）。默认根
+    `~/.harness/private-evidence` 在 Windows 落 C 盘，项目在别的盘时隔离必然失败
+    ——而隔离是归档的硬前置，等于整条归档路被堵死。同盘时沿用配置/默认值；不同盘
+    时退到源所在驱动器根下的 `.harness-private-evidence`（天然在任何项目根之外）。
+    POSIX 上 drive 恒为空串，行为不变。
+    """
+    source = source.expanduser().resolve()
+    preferred = _private_evidence_root(explicit)
+    if preferred.drive.lower() == source.drive.lower():
+        return preferred
+    return (Path(source.anchor) / ".harness-private-evidence").resolve()
+
+
+def _infer_project_root(change_root: Path) -> Path | None:
+    """change 目录形如 `<project>/.harness/changes/<name>`：取路径里 `.harness` 段的父目录。
+
+    不做"向上找存在 .harness 的目录"式搜索——用户 HOME 下通常也有 `.harness`，
+    那样会把 HOME 误判成项目根，把合法的临时隔离位置一并拒掉。
+    """
+    parts = change_root.parts
+    for index in range(len(parts) - 1, 0, -1):
+        if parts[index] == ".harness":
+            return Path(*parts[:index])
+    return None
+
+
 def _secure_private_path(path: Path, *, directory: bool) -> str:
     """Best-effort owner-only permissions, with an explicit ACL result on Windows."""
     mode = 0o700 if directory else 0o600
@@ -288,11 +317,12 @@ def quarantine_sensitive_evidence(
     change_root: Path,
     reason: str = "sensitive evidence",
     private_root: Path | None = None,
+    project_root: Path | None = None,
 ) -> dict[str, Any]:
     """Atomically move legacy plaintext evidence outside any publishable tree."""
     source = source.expanduser().resolve()
     change_root = change_root.expanduser().resolve()
-    private = _private_evidence_root(private_root)
+    private = private_evidence_root_for(source, private_root)
     if not source.is_file():
         return {"ok": False, "reasonCode": "SENSITIVE_EVIDENCE_SOURCE_MISSING", "sourcePath": str(source)}
     if private == change_root or private.is_relative_to(change_root):
@@ -300,6 +330,25 @@ def quarantine_sensitive_evidence(
             "ok": False,
             "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
             "error": "private quarantine root must be outside the publishable change root",
+        }
+    # 归档的密钥扫描门禁按**项目根**判定（SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT）。
+    # 这里此前只看 change_root，比门禁宽——于是隔离"成功"了，门禁再拒一次，调用方
+    # 得多试一轮才找到合法位置。对齐到同一条边界，错就错在当场。
+    resolved_project = (
+        project_root.expanduser().resolve()
+        if project_root is not None
+        else _infer_project_root(change_root)
+    )
+    if resolved_project is not None and (
+        private == resolved_project or private.is_relative_to(resolved_project)
+    ):
+        return {
+            "ok": False,
+            "reasonCode": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+            "error": (
+                "private quarantine root must be outside the project root "
+                f"({resolved_project}); archive's secret scan rejects paths inside it"
+            ),
         }
     try:
         raw_digest = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
@@ -1850,6 +1899,37 @@ def doctor(project: Path, change_dir: Path, *, agent: str) -> dict[str, Any]:
     return {"ok": True, "action": "doctor", **payload}
 
 
+def cmd_quarantine_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    """隔离命令：把明文敏感证据原子移出可发布树，逐条返回结果。
+
+    单条失败不吞掉其余条目——归档阻断项常常一次报多个文件，逐条报告才能一轮修完。
+    """
+    project = Path(args.project).expanduser().resolve()
+    change_root = Path(args.change_dir).expanduser().resolve()
+    private_root = Path(args.private_root) if args.private_root else None
+    entries: list[dict[str, Any]] = []
+    for raw in args.file:
+        candidate = Path(raw)
+        source = candidate if candidate.is_absolute() else change_root / candidate
+        outcome = quarantine_sensitive_evidence(
+            source,
+            change_root=change_root,
+            reason=args.reason,
+            private_root=private_root,
+            project_root=project,
+        )
+        entries.append({"file": raw, **outcome})
+    failed = [item for item in entries if not item.get("ok")]
+    return {
+        "ok": not failed,
+        "action": "quarantine-evidence",
+        "code": "SENSITIVE_EVIDENCE_QUARANTINED" if not failed else "SENSITIVE_EVIDENCE_QUARANTINE_FAILED",
+        "quarantined": len(entries) - len(failed),
+        "failed": len(failed),
+        "entries": entries,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="harness_runtime.py")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1858,6 +1938,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--change-dir", required=True)
     p_doctor.add_argument("--agent", choices=sorted(_ADAPTERS), required=True)
     p_doctor.add_argument("--json", action="store_true")
+    # 归档的 SENSITIVE_EVIDENCE_UNQUARANTINED 是硬阻断，此前却没有任何命令行入口
+    # ——调用方只能写 python -c + sys.path hack 去调内部函数。
+    p_quarantine = sub.add_parser(
+        "quarantine-evidence",
+        help="move plaintext sensitive evidence outside the publishable tree",
+    )
+    p_quarantine.add_argument("--project", required=True)
+    p_quarantine.add_argument("--change-dir", required=True)
+    p_quarantine.add_argument(
+        "--file", required=True, action="append",
+        help="path to quarantine, relative to --change-dir or absolute; repeatable",
+    )
+    p_quarantine.add_argument("--reason", default="sensitive evidence")
+    p_quarantine.add_argument(
+        "--private-root", default=None,
+        help="override the private root; must be outside the project root and on its drive",
+    )
+    p_quarantine.add_argument("--json", action="store_true")
     p_adapter = sub.add_parser("adapter")
     p_adapter.add_argument("--agent", choices=sorted(_ADAPTERS), required=True)
     p_adapter.add_argument("--change", required=True)
@@ -1899,6 +1997,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             result = doctor(Path(args.project), Path(args.change_dir), agent=args.agent)
+        elif args.command == "quarantine-evidence":
+            result = cmd_quarantine_evidence(args)
         elif args.command == "adapter":
             result = {"ok": True, "action": "adapter", **adapter_worktree(args.agent, args.change)}
         elif args.command == "_worker":

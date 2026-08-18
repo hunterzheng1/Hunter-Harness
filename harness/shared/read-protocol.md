@@ -1,5 +1,6 @@
 ## 统一读取协议
 
+0. **脚本在 `<skills-root>/scripts/` 共享，不在每个 skill 子目录下** — 实际形态是 `.codebuddy/skills/scripts/harness_*.py`（`.claude`/`.cursor`/`.codex` 同理），**没有** `.../skills/harness-<phase>/scripts/`。plan、run/test、archive 三份执行日志里都先猜成后者、报 `No such file` 再靠 Search 找回来；照第一种写法直接用
 1. **`.harness/changes/<change-name>/` 是唯一真相源** — 所有输入从该目录读取，产物写入对应子目录
 2. **change-name 优先从 frontmatter 读取** — `plans/*-design.md`、`spec/*-design.md`、`plans/*-plan.md` 的 YAML `change-name`
 3. **frontmatter 缺失时兼容旧格式** — 从路径推断，标记 `🟡 legacy-plan`，不失败

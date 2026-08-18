@@ -691,5 +691,73 @@ class ManagedRunSessionTests(unittest.TestCase):
             self.assertTrue(diagnostic["processIdentityVerified"])
 
 
+class QuarantineReachabilityTests(unittest.TestCase):
+    """隔离是归档的硬前置，但它此前既跨不了盘、也没有命令行入口。
+
+    执行日志里的实况：默认私有根在 `~/.harness/private-evidence`（C 盘），项目在
+    E 盘，`os.replace` 直接 WinError 17；换到项目内又被归档的密钥扫描门禁以
+    SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT 拒绝——函数自己的校验只看 change_root，
+    比门禁宽，于是"这里过了、门禁再拒"。第三次才试对。全程还得写
+    `python -c` + sys.path hack，因为这个必经步骤没有子命令。
+    """
+
+    def test_default_private_root_lands_on_the_source_drive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "proj" / ".harness" / "changes" / "demo" / "x.txt"
+            source.parent.mkdir(parents=True)
+            source.write_text("token=blocked", encoding="utf-8")
+
+            root = runtime.private_evidence_root_for(source)
+
+            # 跨盘 os.replace 会失败，默认根必须与源同盘
+            self.assertEqual(root.drive.lower(), Path(tmp).resolve().drive.lower())
+
+    @unittest.skipUnless(os.name == "nt", "跨盘概念仅 Windows 适用")
+    def test_other_drive_preference_falls_back_to_the_source_drive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "x.txt"
+            source.write_text("token=blocked", encoding="utf-8")
+            other_drive = "Z:" if Path(tmp).resolve().drive.upper() != "Z:" else "Y:"
+
+            root = runtime.private_evidence_root_for(
+                source, Path(f"{other_drive}/nowhere/private-evidence")
+            )
+
+            self.assertEqual(root.drive.lower(), Path(tmp).resolve().drive.lower())
+
+    def test_private_root_inside_project_root_is_rejected_up_front(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            change_root = project / ".harness" / "changes" / "demo"
+            source = change_root / "meta" / "journal.json"
+            source.parent.mkdir(parents=True)
+            (project / ".harness").mkdir(parents=True, exist_ok=True)
+            source.write_text("token=blocked", encoding="utf-8")
+
+            result = runtime.quarantine_sensitive_evidence(
+                source,
+                change_root=change_root,
+                # 在 change_root 之外、但仍在项目根内——归档门禁会拒，这里就该拒
+                private_root=project / ".harness" / "private-evidence",
+                project_root=project,
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertIn("project", str(result.get("error") or "").lower())
+            self.assertTrue(source.is_file())
+
+    def test_quarantine_has_a_cli_entry_point(self) -> None:
+        parser = runtime.build_parser()
+        args = parser.parse_args([
+            "quarantine-evidence",
+            "--project", ".",
+            "--change-dir", ".harness/changes/demo",
+            "--file", "meta/journal.json",
+            "--reason", "plan_finalize journal",
+            "--json",
+        ])
+        self.assertEqual(args.command, "quarantine-evidence")
+
+
 if __name__ == "__main__":
     unittest.main()

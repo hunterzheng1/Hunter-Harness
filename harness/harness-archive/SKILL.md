@@ -122,6 +122,13 @@ disallowed-tools:
 
 `execute` 内部运行自动门禁。实际计划最后阶段已终态、边界快照存在且 `status.archivable=true` 时直接执行；未满足时返回阻断且不移动原目录。用户取消后不得重跑。
 
+### 二·A、两个常见阻断的正规出路（不要自己拼 python -c）
+
+| 阻断 | 出路 |
+|------|------|
+| `SENSITIVE_EVIDENCE_UNQUARANTINED` | `python <skills-root>/scripts/harness_runtime.py quarantine-evidence --project . --change-dir ".harness/changes/<cn>" --file "<相对 change-dir 的路径>" --reason "<为什么是敏感证据>" --json`（`--file` 可重复）。私有根默认已与项目同盘、且在项目根之外——**不要**手工指定项目内的路径，归档的密钥扫描会以 `SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT` 拒绝 |
+| `DIFF_ZERO_WITH_NONEMPTY_COMMIT`（提交范围非空但 filesChanged=0） | 契约缺 `ownership.productPaths`，全部改动被判为 `foreignPaths`。用 `python <skills-root>/scripts/harness_change.py declare-ownership --change <cn> --product-path "<目录前缀或精确文件>" --json` 按计划的实际改动范围声明（可重复；只收精确路径，不支持通配）。**不要**手改 `change-context.json` |
+
 ### 三、文件移动只用内置工具或 PowerShell
 
 移动用 Read+Write+验证 或 PowerShell；**禁止 Bash mv/cp/rm**。移动失败时不删除原目录，报错退出让用户手动处理。
@@ -183,6 +190,17 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 su
 - `.harness/archive/YYYY-MM-DD-<change-name>/events.ndjson` — 结构化事件层（新流程推荐；旧 archive 可缺失）
 - `.harness/archive/YYYY-MM-DD-<change-name>/reports/final/summary-data.json` — 最终报告数据源
 - `.harness/archive/YYYY-MM-DD-<change-name>/evidence/archive-manifest-before.json` / `archive-manifest-after.json` — 归档前后 manifest/checksum
+- `.harness/state/local/archive-packages/<change-name>.remote.json` — 远端上传回执（`archiveId`/`archiveStatus`/`knowledgeStatus`/`uploadStatus`/`fileCount`）
+
+### 结束报告必须回显上传回执 ⚠️
+
+`execute` 的返回里已经带 `archiveId`/`archiveStatus`/`knowledgeStatus`/`uploadStatus`（同样落盘在上面的 `.remote.json`）。**结束报告必须把这四项原样列出**，例如：
+
+```
+远端归档：arc_3ff325bb…（archiveStatus=durable，uploadStatus=ready，knowledgeStatus=ready，8 文件）
+```
+
+不回显时用户无从判断"到底传上去没有、线上知识提取跑没跑"——数据一直都在，只是没说。凭据缺失或上传失败时同样如实列出 `reasonCode`（如 `ARCHIVE_UPLOAD_CREDENTIALS_MISSING`），不得省略或写成"已完成"。
 
 ## 渐进披露
 
