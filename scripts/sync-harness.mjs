@@ -29,8 +29,10 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.61";
-const MINIMUM_CLI_VERSION = "0.2.80";
+const BUNDLE_VERSION = "0.2.62";
+// skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
+// 且 --print-template 的可运行骨架自 0.2.83 起才正确
+const MINIMUM_CLI_VERSION = "0.2.83";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",

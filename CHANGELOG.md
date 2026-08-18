@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.83] — hunter-harness / [0.2.73] — @hunter-harness/workflow-harness
+
+### Fixed（2026-08-18 v2 规划链路的三处断点）
+
+- **`plan evidence-pack --print-template` 输出的骨架必定校验失败**（`9e47281`）：模板与冻结校验器漂移——`evidence_sources` 用 `{kind,ref,note}` 而契约要十键、`tasks` 多 `cluster`/`title` 且缺 `objective`/`affected_paths`、`scenarios` 少 4 个必需键、`worktree_policy` 写了不存在的 `none`；另有只有真跑才暴露的 `run_id`/`change_key` 命名约束、`content_hash` 反全零守卫、`scenarios` 至少 3 条下限。模板重写为可直接通过 evidence-pack 的骨架，并加回归测试冻结"模板不改一个字必须跑通"。skill 此前明令禁止翻 TS 接口与 npx 缓存，等于把调用方推进墙里又堵死唯一出路。
+- **evidence-pack 校验失败无定位信息**（`9e47281`）：冻结模块只抛 `PLANNING_EVIDENCE_INVALID` 这类稳定码，调用方唯一出路是反编译 `dist/bin.js` 逐个比对校验器。新增边界前置校验 `PLAN_EVIDENCE_INPUT_INVALID`，带 `field_path` 与 `problems[]`（缺失/多余键、枚举取值、场景数下限、全零哈希）。
+- **v2 计划发布后 run 阶段进不去**（`cba771c`）：`plan finalize` 只写 plan-events 与发布 journal，不碰 context 事务存储，于是 `prepare` 必报 `HANDOFF_REQUIRED`、`begin` 必报 `LEGACY_BOOTSTRAP_REQUIRED`，两个错误都不给恢复路径。改为检测到 committed 的 `meta/publication-journals/*.json` 时自动补录 `plan → <phase>` 交接凭证（带 `bootstrapSource`/`bootstrapEvidence` 留痕，可与人工 close 区分）；无该证据仍 fail-closed 且错误里说明该找什么。
+- **测试守卫拒绝嵌套包的 test 目录**（`cba771c`）：`_standard_test_path` 只认 `parts[0]` 为 `test`/`tests`，monorepo 与"仓库根 + 同名子包"布局全被 `TEST_PATH_NOT_ALLOWED` 拒，调用方被迫先补 build-profile 才能记一次 stale-test-repair。改为任意层级的 `test`/`tests` 目录段均可；`testing/`、`tests-helper/` 仍不算。
+- **`harness_gate.py classify/checkpoint` 不接受 `--project`**（`cba771c`）：其他脚本都把 `--project` 列为必填，只有 gate 例外，按惯例传过来会被 argparse 直接拒。补上并与 CWD 解析同语义（`begin`/`close` 的 `--project` 是执行根语义，未改动）。
+
+### Changed（2026-08-18 规划产物去重与阶段 0 引导合并）
+
+- **v2 路径停止手写 `plans/*.md`**（`9e47281`）：四份 Markdown 由 finalize 派生，手写的会被覆盖；唯一手写产物是 `meta/plan-evidence-input.json`。设计真相源统一为 `plans/<cn>-design.md`，下游回退 `spec/<cn>-design.md` 保 legacy——此前 v2 发布的设计文档没人读、被读的那份不受门禁保护。
+- **新增 `harness_context.py bootstrap-plan`**（`9e47281`）：一次完成 doctor + 建 change 骨架 + prepare + capture + classify + 铸 run-id + `phase.start`，重跑复用同一身份；阶段 0 的 5 次子进程降为 1 次。
+- **审批包强制展示 `out_of_scope`**（`9e47281`）：只展示"做什么"会让范围误判活到发布之后，代价是整份计划 republish。需求引用外部设计文档章节时，阶段 2 必须确认是否纳入。
+- 工作流 Bundle 提升至 `0.2.62`，最低 CLI 版本提升至 `0.2.83`（skills 要求消费 `PLAN_EVIDENCE_INPUT_INVALID` 的结构化诊断）。
+
+### Known Issue
+
+- **v2 派生的 `meta/scenario-manifest.json` 仍喂不了 run/test 门禁**：它是 artifact 包装体，场景只有 `scenario_id/coverage_dimension/execution_level/evidence_requirements/risk_level/task_refs/requirement_refs`，缺门禁判定所需的 `id/priority/requiredEvidenceKind/ownerPhase` 与可执行测试三元。本版**不做**"解包 + 改名"——那会让必需场景算成空集、C9 返回 `NO_LEDGER_REQUIRED_SCENARIOS`，等于对所有 v2 计划静默关掉证据门禁。改为明确返回 `SCENARIO_MANIFEST_V2_UNSUPPORTED` 并列出 `missingFields`。需要 ledger 证据闭环的变更，在 v2 场景契约补齐这些字段前请走 legacy 路径。
+
 ## [0.2.82] — hunter-harness
 
 ### Fixed（2026-08-18 幻影 durable 索引条目容错）
