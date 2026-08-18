@@ -9175,7 +9175,12 @@ def persist_archive_durability(summary_path: Path, durability: dict[str, Any]) -
 
 
 def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
-    """Best-effort upload of rules and Codebase Map through the normal push protocol."""
+    """Best-effort upload of rules, Codebase Map and archive deliverables via remote sync.
+
+    走 `harness-push`（remote-sync）而非 legacy `push`（proposal）。后者写的是
+    project_files_current，不产生分支快照，平台的「分支文件」与「项目资料」两个视图
+    都读不到；归档交付物在那条路上还会被 policy-never 全部跳过。
+    """
     project_root = project_root.resolve()
     credentials = _resolve_archive_remote_credentials(project_root, os.environ)
     if not credentials["configured"]:
@@ -9194,11 +9199,16 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
             "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_DEFERRED",
             "warning": f"项目规则与架构地图上传已延后：{exc}",
         }
+    # 显式列出五个 scope 而非 `all`：含义固定，不随 `all` 的展开定义漂移。
+    # branch_files 覆盖归档交付物（plans/spec/reports/docs），其余四个覆盖配置、
+    # 规则、架构地图与指令入口。
     command = [
         *launcher,
         "--yes",
         "hunter-harness",
-        "push",
+        "harness-push",
+        "--scope",
+        "config,rules,architecture,instructions,branch_files",
         "--yes",
         "--non-interactive",
         "--json",
@@ -9212,6 +9222,10 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
             command,
             cwd=str(project_root),
             text=True,
+            # 不指定 encoding 时中文 Windows 会按 cp936 解码 UTF-8，静默损坏 CLI
+            # 的中文输出，并可能让下面的 json.loads 失败。
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=180,
@@ -9240,22 +9254,26 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
             "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_FAILED",
             "detail": detail[-2_048:],
             "warning": (
-                "项目规则与架构地图未能同步到平台（plan/spec 也随这条推送上传）；"
-                "归档不受影响，稍后可运行 npx hunter-harness push --yes --non-interactive 重试。"
+                "项目规则与架构地图未能同步到平台（归档 plan/spec/report 也随这条推送上传）；"
+                "归档不受影响，稍后可运行 npx hunter-harness harness-push "
+                "--scope config,rules,architecture,instructions,branch_files "
+                "--yes --non-interactive 重试。"
             ),
         }
         cli_code = output.get("code") or output.get("reason_code") if isinstance(output, dict) else None
         if isinstance(cli_code, str) and cli_code:
             failure["cliCode"] = cli_code
         return failure
+    # harness-push 的回执用 summary.applied 计已落盘的操作数（legacy push 用 submitted）。
     summary = output.get("summary")
-    submitted = summary.get("submitted", 0) if isinstance(summary, dict) else 0
+    applied = summary.get("applied", 0) if isinstance(summary, dict) else 0
     return {
         "ok": bool(output.get("ok", True)),
         "skipped": False,
         "projectId": output.get("project_id"),
-        "submitted": submitted if isinstance(submitted, int) else 0,
-        "unchanged": "MANAGED_SNAPSHOT_UNCHANGED" in output.get("warnings", []),
+        "submitted": applied if isinstance(applied, int) else 0,
+        # 无变更时 harness-push 直接短路为 no_changes，不产生快照——即"仅在有更新时推送"。
+        "unchanged": output.get("outcome") == "no_changes",
     }
 
 

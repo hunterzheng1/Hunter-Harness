@@ -72,10 +72,15 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
                 0,
                 stdout=json.dumps(
                     {
+                        "schema_version": 1,
+                        "command": "push",
                         "ok": True,
+                        "exit_code": 0,
                         "project_id": "prj_one",
-                        "summary": {"planned": 3, "submitted": 3},
+                        "summary": {"planned": 3, "applied": 3, "conflicts": 0},
                         "warnings": [],
+                        "errors": [],
+                        "outcome": "ready",
                     }
                 ),
                 stderr="",
@@ -87,11 +92,36 @@ class ArchiveRemoteUploadStateTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             command = run.call_args.args[0]
-            self.assertIn("push", command)
+            # 必须走 remote-sync 的 harness-push：legacy `push` 走 proposal 管道，
+            # 归档交付物在那条路上会被 policy-never 全部跳过，平台永远收不到。
+            self.assertIn("harness-push", command)
+            self.assertNotIn("push", command)
             self.assertNotIn("archive", command)
+            self.assertEqual(
+                command[command.index("--scope") + 1],
+                "config,rules,architecture,instructions,branch_files",
+            )
             self.assertIn("--non-interactive", command)
             self.assertIn("--yes", command)
             self.assertEqual(result["submitted"], 3)
+
+    def test_managed_snapshot_push_decodes_utf8_output_on_legacy_codepage(self) -> None:
+        # subprocess 不指定 encoding 时，中文 Windows 会按 cp936 解码 UTF-8，
+        # 静默损坏 CLI 的中文输出并可能让 JSON 解析失败。
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_local_credentials(root)
+            completed = subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"ok": True, "outcome": "no_changes"}), stderr=""
+            )
+            with mock.patch.object(
+                ha.subprocess, "run", return_value=completed
+            ) as run:
+                result = ha.auto_push_managed_snapshot(root)
+
+            self.assertEqual(run.call_args.kwargs.get("encoding"), "utf-8")
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["unchanged"])
 
     def test_managed_snapshot_push_is_non_blocking_without_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

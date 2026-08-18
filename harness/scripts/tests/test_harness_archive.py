@@ -3740,13 +3740,20 @@ class ManagedSnapshotFailureDiagnosticsTests(unittest.TestCase):
         self.assertLessEqual(len(result["detail"]), 2_048)
 
     def test_success_path_stays_unchanged(self) -> None:
+        # harness-push 的回执用 summary.applied 计已落盘操作数（legacy push 用 submitted）。
         result = self._run(
             returncode=0,
-            stdout=json.dumps({"ok": True, "project_id": "prj_x", "summary": {"submitted": 12}}),
+            stdout=json.dumps({
+                "ok": True,
+                "project_id": "prj_x",
+                "summary": {"planned": 12, "applied": 12, "conflicts": 0},
+                "outcome": "ready",
+            }),
         )
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["submitted"], 12)
+        self.assertFalse(result["unchanged"])
         self.assertNotIn("detail", result)
 
 
