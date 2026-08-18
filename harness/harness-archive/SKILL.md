@@ -199,11 +199,13 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 su
 | 上传 | 载什么 | 结果在哪 |
 |------|--------|---------|
 | `steps.archive_push` | 归档 ZIP（核心产物） | `archiveId`/`archiveStatus`/`uploadStatus`/`knowledgeStatus`，同时落盘 `state/local/archive-packages/<cn>.remote.json` |
-| `steps.managed_snapshot_push` | **归档交付物（每个变更目录的 `plans/`、`spec/`、`reports/`、`docs/`）、`.harness/codebase` 架构地图、`.harness/rules`、`.harness/project.yaml`、指令入口** | `ok`/`reasonCode`/`exitCode`/`cliCode`/`detail` |
+| `steps.managed_snapshot_push` | **归档交付物（每个变更目录的 `plans/`、`spec/`、`docs/` 全部，`reports/` 只取 `final/` 定稿）、`.harness/codebase` 架构地图、`.harness/rules`、`.harness/project.yaml`、指令入口** | `ok`/`reasonCode`/`exitCode`/`cliCode`/`detail` |
 
 走 `harness-push`（remote-sync，产生分支快照）而非 legacy `push`（proposal 管道）。
 归档目录下的 `runtime/`、`meta/`、`evidence/`、`logs/`、`fixback/`、`.publication-staging/`
-等过程文件不上传；交付物目录里的 `*.log`、`*.tmp`、凭证与 `.env*` 也仍被安全规则拦下。
+等过程文件不上传；`reports/review/` 与 `reports/test/` 同样是过程产物，不上传——
+这条边界与归档 ZIP 的包内容边界一致。交付物目录里的 `*.log`、`*.tmp`、凭证与 `.env*`
+也仍被安全规则拦下。
 
 ```
 远端归档：arc_3ff325bb…（archiveStatus=durable，uploadStatus=ready，knowledgeStatus=ready，8 文件）

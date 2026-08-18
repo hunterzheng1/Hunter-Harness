@@ -486,14 +486,14 @@ describe("stage 01 content and sync contracts", () => {
       pull_policy: "explicit_source_only",
       content_scan_policy: "required"
     };
-    // 有实际意义的交付物：plan / spec / report / docs 四类，页面按此分组展示。
+    // 有实际意义的交付物：plans / spec / docs 全部，reports 只取 final/ 的定稿。
+    // 边界与归档 ZIP 一致——review/ 与 test/ 是过程产物，两条通道都不收。
     for (const path of [
       `${change}/plans/usage-stats-cli-reporting-plan.md`,
       `${change}/plans/usage-stats-cli-reporting-design.md`,
       `${change}/spec/spec.md`,
       `${change}/reports/final/summary-data.json`,
-      `${change}/reports/review/review-report-20260817-0950.md`,
-      `${change}/reports/test/test-report-20260817-0930.md`,
+      `${change}/reports/final/nested/attachment.md`,
       `${change}/docs/note.md`
     ]) {
       expect(classifyContentPath({ schema_version: 1, path }), path).toEqual(branchFile);
@@ -507,6 +507,12 @@ describe("stage 01 content and sync contracts", () => {
       [`${change}/evidence/fixback/evidence.txt`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
       [`${change}/fixback/batches/batch.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
       [`${change}/.publication-staging/pending/payload.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      // reports/ 下只有 final/ 是定稿；review/ 与 test/ 是过程产物，与归档 ZIP 边界一致
+      [`${change}/reports/review/review-report-20260817-0950.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/reports/review/review-findings.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/reports/test/test-report-20260817-0930.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      // 直接散落在 reports/ 下、不在 final/ 里的文件同样不算交付物
+      [`${change}/reports/loose.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
       // 目录名前缀相同但不是交付物目录，不得放行
       [`${change}/plans-scratch/draft.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
       [`${change}/plans`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
@@ -536,8 +542,10 @@ describe("stage 01 content and sync contracts", () => {
       change,
       `${change}/plans`,
       `${change}/spec`,
+      // reports/ 本身必须放行下钻，否则到不了 final/
       `${change}/reports`,
       `${change}/reports/final`,
+      `${change}/reports/final/nested`,
       `${change}/docs`
     ]) {
       expect(mayContainArchiveDeliverables(path), path).toBe(true);
@@ -552,6 +560,9 @@ describe("stage 01 content and sync contracts", () => {
       `${change}/fixback`,
       `${change}/.publication-staging`,
       `${change}/plans-scratch`,
+      // reports/ 下的过程子目录不下钻——省掉整棵子树的遍历开销
+      `${change}/reports/review`,
+      `${change}/reports/test`,
       ".harness/archives",
       ".harness/knowledge",
       ".harness/rules",

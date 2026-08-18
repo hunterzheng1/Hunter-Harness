@@ -1059,9 +1059,15 @@ const nonScannablePathPrefixes = [
   ".harness/project-content-candidates"
 ] as const;
 
-// 归档目录整体是 non-scannable（体积大、多为过程产物），但其中四类交付物是要在
+// 归档目录整体是 non-scannable（体积大、多为过程产物），但其中的交付物是要在
 // 「分支文件」视图里展示的正式文档，按目录段分组为 PLAN / SPEC / REPORT / DOCS。
-const archiveDeliverableGroups = ["plans", "spec", "reports", "docs"] as const;
+//
+// reports/ 只取 final/ 的定稿：review/ 与 test/ 是过程产物。这条边界与归档 ZIP
+// 的包内容边界一致（见 harness-knowledge-ingest/SKILL.md：测试报告、审查报告
+// 不得进入归档包），两条通道不各说各话。
+const archiveDeliverableGroups = ["plans", "spec", "docs"] as const;
+const archiveReportsGroup = "reports";
+const archiveReportsDeliverable = "final";
 const archiveRoot = ".harness/archive";
 
 function archiveRelativeSegments(path: string): readonly string[] | undefined {
@@ -1073,7 +1079,8 @@ function archiveRelativeSegments(path: string): readonly string[] | undefined {
 }
 
 /**
- * 交付物文档：`.harness/archive/<change-key>/{plans|spec|reports|docs}/**` 下的具体文件。
+ * 交付物文档：`.harness/archive/<change-key>/{plans|spec|docs}/**` 以及
+ * `.harness/archive/<change-key>/reports/final/**` 下的具体文件。
  * 变更目录名不得以 `.` 开头（排除 `.publication-staging` 之类的暂存目录）。
  */
 function isArchiveDeliverableDocument(path: string): boolean {
@@ -1083,13 +1090,19 @@ function isArchiveDeliverableDocument(path: string): boolean {
   const changeKey = segments[2] ?? "";
   const group = segments[3] ?? "";
   if (changeKey.startsWith(".")) return false;
-  return archiveDeliverableGroups.some((value) => value === group);
+  if (archiveDeliverableGroups.some((value) => value === group)) return true;
+  // reports/ 再深一层：只有 final/ 下的文件算定稿，散落在 reports/ 根下的不算。
+  return group === archiveReportsGroup && segments.length >= 6 &&
+    segments[4] === archiveReportsDeliverable;
 }
 
 /**
  * 目录是否可能包含交付物文档——工作区遍历据此决定是否下钻。
- * 归档根、变更目录、四个分组目录及其子目录都要放行，否则遍历在 `.harness/archive`
+ * 归档根、变更目录、分组目录及其子目录都要放行，否则遍历在 `.harness/archive`
  * 一层就被剪枝，交付物永远走不到分类这一步。
+ *
+ * `reports/` 本身必须放行（否则到不了 `final/`），但 `reports/review`、
+ * `reports/test` 这类过程子目录直接剪掉，省掉整棵子树的遍历开销。
  */
 export function mayContainArchiveDeliverables(path: string): boolean {
   const segments = archiveRelativeSegments(path);
@@ -1099,7 +1112,9 @@ export function mayContainArchiveDeliverables(path: string): boolean {
   if (changeKey.startsWith(".")) return false;
   if (segments.length === 3) return true;
   const group = segments[3] ?? "";
-  return archiveDeliverableGroups.some((value) => value === group);
+  if (archiveDeliverableGroups.some((value) => value === group)) return true;
+  if (group !== archiveReportsGroup) return false;
+  return segments.length === 4 || segments[4] === archiveReportsDeliverable;
 }
 
 function isAtOrBelow(path: string, prefix: string): boolean {
