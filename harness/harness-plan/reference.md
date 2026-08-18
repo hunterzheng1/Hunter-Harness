@@ -422,6 +422,14 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 | `context` | project_id/run_id/branch_name/attempt（复用 plan-run-id 与 attempt） | 0.5 |
 | `expected_baseline` | 首次发布 `{state:"absent", manifest_hash:null, generation:0}` | 8 |
 
+> ⚠️ **已知缺口：v2 派生的 `meta/scenario-manifest.json` 目前喂不了 run/test 门禁。**
+> 它是 artifact 包装体，每条场景只有 `scenario_id/coverage_dimension/execution_level/
+> evidence_requirements/risk_level/task_refs/requirement_refs`；而门禁按
+> `id/priority/requiredEvidenceKind/ownerPhase/executableTestId/testFile/testTitle`
+> 判定哪些场景需要 ledger 证据。缺 `priority` 与 `requiredEvidenceKind` 时"必需场景"会算成空集，
+> 所以门禁**明确报 `SCENARIO_MANIFEST_V2_UNSUPPORTED` 并列出 `missingFields`，绝不静默放行**。
+> 需要 ledger 证据闭环的变更，在 v2 场景契约补齐这些字段前请走 legacy 路径。
+
 - **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。
 - **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。
 - **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。

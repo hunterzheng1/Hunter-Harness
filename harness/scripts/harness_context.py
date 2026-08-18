@@ -732,6 +732,16 @@ def prepare_context(
         )
         if not reselection.get("ok"):
             return reselection
+    # v2 计划的交接凭证由此补录：finalize 不写 context 事务，缺它 run 阶段进不去
+    if phase != "plan":
+        _bootstrap_v2_plan_transition(
+            project,
+            change,
+            contract_root=contract_root,
+            state_root=state_root,
+            to_phase=phase,
+            executor=executor,
+        )
     claim = _claim_prepared_context(
         project,
         change,
@@ -952,6 +962,90 @@ def _invalidate_for_fixback(
     return record
 
 
+def _committed_publication_journal(contract_root: Path) -> Path | None:
+    """已 committed 的 v2 发布 journal —— plan 确实完成的机器证据。"""
+    journal_dir = contract_root / "meta" / "publication-journals"
+    if not journal_dir.is_dir():
+        return None
+    for path in sorted(journal_dir.glob("*.json")):
+        try:
+            payload = _read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("state") == "committed":
+            return path
+    return None
+
+
+def _published_plan_artifacts(project: Path, contract_root: Path, change: str) -> list[dict[str, Any]]:
+    """交接携带的 v2 发布产物（存在者入账，缺失者跳过）。"""
+    entries: list[dict[str, Any]] = []
+    for rel in (
+        f"plans/{change}-design.md",
+        f"plans/{change}-plan.md",
+        f"plans/{change}-implementation-detail.md",
+        f"plans/{change}-test-scenarios.md",
+        "meta/scenario-manifest.json",
+    ):
+        candidate = contract_root / rel
+        if candidate.is_file():
+            entries.append(
+                {
+                    "path": candidate.resolve().relative_to(project).as_posix(),
+                    "sha256": _sha256(candidate),
+                }
+            )
+    return entries
+
+
+def _bootstrap_v2_plan_transition(
+    project: Path,
+    change: str,
+    *,
+    contract_root: Path,
+    state_root: Path,
+    to_phase: str,
+    executor: str,
+) -> dict[str, Any] | None:
+    """v2 发布已 committed 却没有交接凭证时，补录 plan → to_phase 凭证。
+
+    v2 plan finalize 只写 plan-events.ndjson 与发布 journal，不碰 context 事务
+    存储，于是 run 阶段 prepare 必报 HANDOFF_REQUIRED、begin 必报
+    LEGACY_BOOTSTRAP_REQUIRED——两个错误都不给恢复路径，调用方只能读脚本源码
+    自己拼出 classify + configure-plan + close，参数全靠现编，可审计性更差。
+
+    committed 的发布 journal 是比人工 close 更强的完成证据：据此补录，并在凭证上
+    留 bootstrapSource/bootstrapEvidence，事后能与人工 close 区分。没有该证据时
+    返回 None，交接继续 fail-closed。
+    """
+    paths = _paths(state_root)
+    if _read_ndjson(paths["transitions"]):
+        return None
+    if to_phase not in _allowed_next_phases(contract_root, "plan"):
+        return None
+    journal = _committed_publication_journal(contract_root)
+    if journal is None:
+        return None
+    receipt: dict[str, Any] = {
+        "schemaVersion": 1,
+        "changeName": change,
+        "fromPhase": "plan",
+        "toPhase": to_phase,
+        "status": "OK",
+        "executor": executor,
+        "productCommit": _head(project),
+        "artifacts": _published_plan_artifacts(project, contract_root, change),
+        "attempt": 1,
+        "closedAt": _now().isoformat(),
+        "previousReceiptHash": None,
+        "bootstrapSource": "plan_publication_journal",
+        "bootstrapEvidence": journal.resolve().relative_to(project).as_posix(),
+    }
+    receipt["receiptHash"] = _payload_hash(receipt)
+    _append_ndjson(paths["transitions"], receipt)
+    return receipt
+
+
 def close_transition(
     project: Path,
     change: str,
@@ -1151,11 +1245,26 @@ def _begin_transition_unlocked(
                 "message": "本次修复准备凭证与当前上下文不一致，未启动新阶段。",
             }
     transitions = _read_ndjson(paths["transitions"])
+    if not transitions and phase != "plan":
+        # prepare 之外的入口（或跳过了 prepare）同样要能从发布证据恢复
+        _bootstrap_v2_plan_transition(
+            project,
+            change,
+            contract_root=contract_root,
+            state_root=state_root,
+            to_phase=phase,
+            executor=executor,
+        )
+        transitions = _read_ndjson(paths["transitions"])
     if not transitions:
         return {
             "ok": False,
             "code": "LEGACY_BOOTSTRAP_REQUIRED",
             "legacyBootstrap": True,
+            "message": (
+                "没有交接凭证。v2 计划应有 committed 的 meta/publication-journals/*.json "
+                "作为补录证据；legacy 计划需先完成 plan 阶段的 close"
+            ),
         }
     receipt = transitions[-1]
     if receipt.get("toPhase") != phase:

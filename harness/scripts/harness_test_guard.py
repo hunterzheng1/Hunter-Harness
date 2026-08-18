@@ -332,12 +332,15 @@ def _matches_pattern(rel: str, pattern: str) -> bool:
 
 
 def _standard_test_path(rel: str) -> bool:
+    """路径中出现 test/tests 目录段即视为标准测试路径。
+
+    此前只认 parts[0]，于是 monorepo（packages/cli/tests/…）与"仓库根 + 同名
+    子包"（kld-sdd/test/…）这类常见布局全被拒，调用方被迫先补 build-profile
+    才能记录一次 stale-test-repair。段级匹配不放宽语义：testing/ 与
+    tests-helper/ 仍然不算，目录本身（末段）也不算文件。
+    """
     parts = rel.split("/")
-    if len(parts) >= 2 and parts[0] in ("test", "tests"):
-        return True
-    if any(parts[index:index + 2] == ["src", "test"] for index in range(len(parts) - 1)):
-        return True
-    return False
+    return any(part in ("test", "tests") for part in parts[:-1])
 
 
 def _allowed_test_path(project: Path, rel: str) -> bool:

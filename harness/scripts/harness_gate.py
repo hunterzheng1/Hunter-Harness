@@ -2024,6 +2024,70 @@ def _deferred_hint(deferred_ids: list[str], phase: str | None) -> str:
     )
 
 
+_PROJECT_ROOT_HELP = (
+    "project root PATH (defaults to resolving from CWD). Takes a path, not a project name."
+)
+
+
+def _resolve_project(args: argparse.Namespace) -> Path:
+    """--project 优先，未给时按 CWD 解析主项目根。
+
+    其他 harness 脚本都把 --project 当项目根且列为必填，只有 gate 例外——调用方
+    按惯例传过来会被 argparse 拒掉。注意 begin/close 的 --project 是另一层语义
+    （本阶段执行根/worktree），本函数只服务 classify/checkpoint。
+    """
+    raw = getattr(args, "project", None)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return hc.resolve_main_project_root()
+
+
+# 门禁消费的场景字段。v2 plan finalize 派生的 scenario_manifest 一个都没有：
+# 它只带 scenario_id/coverage_dimension/execution_level/evidence_requirements/
+# risk_level/task_refs/requirement_refs。
+_V2_MANIFEST_REQUIRED_FIELDS = (
+    "id",
+    "priority",
+    "requiredEvidenceKind",
+    "ownerPhase",
+    "executableTestId",
+    "testFile",
+    "testTitle",
+)
+
+
+def _v2_artifact_manifest_gap(manifest: Any) -> dict[str, Any] | None:
+    """v2 plan artifact 包装的 scenario-manifest → 明确的不可消费错误。
+
+    不能"解包 + 字段改名"了事：包装体里既没有 priority 也没有
+    requiredEvidenceKind，`required_ids` 会算成空集，C9 随即返回
+    NO_LEDGER_REQUIRED_SCENARIOS——那是把证据门禁对所有 v2 计划静默关掉，
+    比直接失败危险得多。所以这里点名缺口，让调用方回规划阶段补齐后重新发布。
+
+    v2 场景契约补齐这些字段后，解包逻辑加在这里。
+    """
+    if not isinstance(manifest, dict) or manifest.get("artifact_type") != "scenario_manifest":
+        return None
+    content = manifest.get("content")
+    present: set[str] = set()
+    if isinstance(content, dict) and isinstance(content.get("scenarios"), list):
+        for scenario in content["scenarios"]:
+            if isinstance(scenario, dict):
+                present.update(scenario.keys())
+    return {
+        "ok": False,
+        "code": "SCENARIO_MANIFEST_V2_UNSUPPORTED",
+        "message": (
+            "meta/scenario-manifest.json 是 v2 plan artifact 包装体，缺少门禁消费的场景字段；"
+            "请在规划阶段补齐后重新发布，不要手改派生产物"
+        ),
+        "missingFields": [
+            field for field in _V2_MANIFEST_REQUIRED_FIELDS if field not in present
+        ],
+        "artifactType": "scenario_manifest",
+    }
+
+
 def _validate_scenario_coverage(
     change_dir: Path, phase: str | None = None
 ) -> dict[str, Any]:
@@ -2050,6 +2114,9 @@ def _validate_scenario_coverage(
             "code": "SCENARIO_MANIFEST_INVALID",
             "message": f"scenario-manifest.json unreadable: {exc}",
         }
+    v2_gap = _v2_artifact_manifest_gap(manifest)
+    if v2_gap is not None:
+        return v2_gap
     scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
     if not isinstance(scenarios, list):
         return {
@@ -3218,7 +3285,7 @@ def cmd_close(args: argparse.Namespace) -> int:
 
 def cmd_classify(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
-    project = hc.resolve_main_project_root()
+    project = _resolve_project(args)
     try:
         workflow = _load_workflow_policy(project=project)
     except (OSError, ValueError, hwp.PolicyValidationError) as exc:
@@ -3271,7 +3338,7 @@ def cmd_classify(args: argparse.Namespace) -> int:
 
 def cmd_checkpoint(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
-    project = hc.resolve_main_project_root()
+    project = _resolve_project(args)
     resolved = hc.resolve_change(project, args.change)
     if not resolved.get("ok"):
         return emit_error(
@@ -3425,6 +3492,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.set_defaults(func=cmd_close)
 
     p_classify = sub.add_parser("classify", parents=[shared])
+    p_classify.add_argument("--project", default=None, type=Path, help=_PROJECT_ROOT_HELP)
     p_classify.add_argument("--change", default=None)
     p_classify.add_argument("--stage", required=True, choices=["plan", "post-run"])
     p_classify.add_argument(
@@ -3436,6 +3504,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_classify.set_defaults(func=cmd_classify)
 
     p_checkpoint = sub.add_parser("checkpoint", parents=[shared])
+    p_checkpoint.add_argument("--project", default=None, type=Path, help=_PROJECT_ROOT_HELP)
     p_checkpoint.add_argument("checkpoint_action", choices=["status", "approve"])
     p_checkpoint.add_argument("--id", required=True)
     p_checkpoint.add_argument("--change", default=None)

@@ -1956,5 +1956,112 @@ class ScenarioCoverageTests(unittest.TestCase):
         self.assertEqual(emitted[0]["platformMonitor"]["code"], "EVENTS_SYNCED")
 
 
+class V2ArtifactManifestTests(unittest.TestCase):
+    """v2 plan finalize 写的 scenario-manifest 是 artifact 包装，字段集与门禁消费的不同。
+
+    包装体是 {artifact_type, content_hash, artifact_id, content:{scenarios, coverage}}，
+    每条场景只有 scenario_id/coverage_dimension/execution_level/evidence_requirements/
+    risk_level/task_refs/requirement_refs——没有 id、priority、requiredEvidenceKind、
+    ownerPhase，也没有 executableTestId/testFile/testTitle 三元。
+
+    这里冻结的行为：门禁必须**明确点名这个缺口**。既不能报含糊的
+    SCENARIO_MANIFEST_INVALID 把调用方推去读门禁源码，更不能因为 required_ids
+    算成空集而静默放行——那等于对所有 v2 计划关掉证据门禁。
+    """
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-gate-v2man-"))
+        self.change_dir = self.project / ".harness" / "changes" / "demo"
+        (self.change_dir / "meta").mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _write_v2_manifest(self) -> None:
+        (self.change_dir / "meta" / "scenario-manifest.json").write_text(
+            json.dumps({
+                "artifact_type": "scenario_manifest",
+                "content_hash": "sha256:" + "a" * 64,
+                "artifact_id": "plan_artifact:scenario_manifest:" + "a" * 64,
+                "content": {
+                    "scenarios": [
+                        {
+                            "scenario_id": "UT-001",
+                            "coverage_dimension": "normal_path",
+                            "execution_level": "unit",
+                            "evidence_requirements": ["focused_test"],
+                            "risk_level": "medium",
+                            "task_refs": ["T1"],
+                            "requirement_refs": ["requirement:x"],
+                        }
+                    ],
+                    "coverage": [],
+                },
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_v2_artifact_manifest_is_named_as_unconsumable(self) -> None:
+        self._write_v2_manifest()
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_V2_UNSUPPORTED")
+        # 报错必须点名缺的字段，调用方据此回规划阶段补，而不是去翻门禁源码
+        self.assertIn("missingFields", result)
+        for field in ("priority", "ownerPhase", "executableTestId"):
+            self.assertIn(field, result["missingFields"])
+
+    def test_v2_artifact_manifest_never_silently_passes(self) -> None:
+        self._write_v2_manifest()
+
+        for phase in (None, "run", "test"):
+            result = gate._validate_scenario_coverage(self.change_dir, phase)
+            self.assertFalse(result["ok"], f"phase={phase} 不得放行: {result}")
+            self.assertNotEqual(result.get("code"), "NO_LEDGER_REQUIRED_SCENARIOS")
+
+
+class GateProjectArgumentTests(unittest.TestCase):
+    """classify/checkpoint 此前只按 CWD 解析项目根，不接受 --project。
+
+    其他 harness 脚本（doctor/prepare/capture）都把 --project 列为必填，调用方
+    按惯例给 gate 传 --project 会被 argparse 直接拒掉——日志里连撞两次才试出来
+    要去掉它。begin/close 的 --project 是另一层语义（本阶段执行根/worktree），
+    这里不动它们。
+    """
+
+    def test_classify_accepts_project_argument(self) -> None:
+        parser = gate.build_parser()
+        args = parser.parse_args(
+            ["classify", "--project", ".", "--change", "demo", "--stage", "plan", "--json"]
+        )
+        self.assertEqual(args.stage, "plan")
+        self.assertEqual(str(args.project), ".")
+
+    def test_checkpoint_accepts_project_argument(self) -> None:
+        parser = gate.build_parser()
+        args = parser.parse_args(
+            ["checkpoint", "status", "--project", ".", "--id", "foundation-gate"]
+        )
+        self.assertEqual(str(args.project), ".")
+
+    def test_project_argument_stays_optional(self) -> None:
+        parser = gate.build_parser()
+        args = parser.parse_args(["classify", "--change", "demo", "--stage", "plan"])
+        self.assertIsNone(getattr(args, "project", None))
+
+    def test_classify_uses_the_given_project_root(self) -> None:
+        project = Path(tempfile.mkdtemp(prefix="harness-gate-proj-"))
+        try:
+            (project / ".harness" / "changes" / "demo").mkdir(parents=True)
+            args = gate.build_parser().parse_args(
+                ["classify", "--project", str(project), "--change", "demo", "--stage", "plan"]
+            )
+            self.assertEqual(gate._resolve_project(args), project.resolve())
+        finally:
+            shutil.rmtree(project, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

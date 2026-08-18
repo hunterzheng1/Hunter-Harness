@@ -1107,5 +1107,33 @@ class ProjectRootArgumentTests(unittest.TestCase):
             self.assertIn("test-guard-snapshot.json", result["expectedSnapshot"])
 
 
+class NestedPackageTestPathTests(unittest.TestCase):
+    """嵌套包布局：test/ 不在仓库根，而在子包下。
+
+    此前只认 parts[0] 为 test/tests，于是 monorepo 与"仓库根 + 同名子包"这类
+    极常见布局全被 TEST_PATH_NOT_ALLOWED 拒绝，调用方只能去补 build-profile
+    才能记录一次 stale-test-repair。
+    """
+
+    def test_nested_package_test_dir_is_standard(self) -> None:
+        self.assertTrue(guard._standard_test_path("kld-sdd/test/init-output.cjs"))
+        self.assertTrue(guard._standard_test_path("packages/cli/tests/foo.spec.ts"))
+        self.assertTrue(guard._standard_test_path("a/b/c/test/deep.py"))
+
+    def test_repo_root_test_dir_still_standard(self) -> None:
+        self.assertTrue(guard._standard_test_path("test/a.py"))
+        self.assertTrue(guard._standard_test_path("tests/a.py"))
+        self.assertTrue(guard._standard_test_path("src/test/java/A.java"))
+
+    def test_non_test_paths_stay_rejected(self) -> None:
+        # 产品源码不得借道测试守卫
+        self.assertFalse(guard._standard_test_path("kld-sdd/lib/init.js"))
+        # testing/ 不是 test/tests 段，不能靠前缀匹配混进来
+        self.assertFalse(guard._standard_test_path("testing/foo.js"))
+        self.assertFalse(guard._standard_test_path("src/tests-helper/foo.js"))
+        # 目录本身不是文件
+        self.assertFalse(guard._standard_test_path("kld-sdd/test"))
+
+
 if __name__ == "__main__":
     unittest.main()

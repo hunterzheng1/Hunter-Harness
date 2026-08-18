@@ -1024,5 +1024,115 @@ class HarnessContextBootstrapPlanTest(unittest.TestCase):
             self.assertNotEqual(second["head"], first["changeBase"])
 
 
+class V2PlanHandoffBootstrapTests(unittest.TestCase):
+    """v2 plan finalize 不写 context 交接凭证，run 阶段因此必然卡死。
+
+    执行日志里的实际后果：prepare 报 HANDOFF_REQUIRED、begin 报
+    LEGACY_BOOTSTRAP_REQUIRED，两个错误都不带恢复路径，调用方只能去读脚本源码，
+    最后自己拼出 classify + configure-plan + close 三步把凭证补出来——约 20 次
+    工具调用，且 close 的参数全是现编的，可审计性反而更差。
+
+    committed 的发布 journal 就是"plan 确实完成了"的机器证据，比手搓的 close
+    更强。这里冻结：有该证据时自动补录交接凭证；没有时仍然 fail-closed。
+    """
+
+    def _make_project(self) -> Path:
+        project = Path(tempfile.mkdtemp(prefix="harness-v2-handoff-"))
+        init_repo(project)
+        (project / ".harness/changes").mkdir(parents=True)
+        return project
+
+    @staticmethod
+    def _write_committed_journal(project: Path, change: str) -> Path:
+        journal_dir = project / ".harness/changes" / change / "meta" / "publication-journals"
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        path = journal_dir / "plan_finalize%3Ademo%3Aabc123.json"
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "operation_id": f"plan_finalize:{change}:abc123",
+                "change_key": change,
+                "state": "committed",
+                "readback": "verified",
+            }),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_prepare_run_bootstraps_transition_from_committed_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+            CONTEXT.bootstrap_plan(project, change="demo-change", executor="codebuddy")
+            self._write_committed_journal(project, "demo-change")
+
+            result = CONTEXT.prepare_context(
+                project, change="demo-change", phase="run", executor="codebuddy"
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "CONTEXT_PREPARED")
+
+    def test_bootstrapped_receipt_records_its_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+            CONTEXT.bootstrap_plan(project, change="demo-change", executor="codebuddy")
+            self._write_committed_journal(project, "demo-change")
+
+            CONTEXT.prepare_context(
+                project, change="demo-change", phase="run", executor="codebuddy"
+            )
+
+            view = CONTEXT.context_view(project, "demo-change")
+            transitions = view["transitions"]
+            self.assertEqual(len(transitions), 1, transitions)
+            receipt = transitions[-1]
+            self.assertEqual(receipt["fromPhase"], "plan")
+            self.assertEqual(receipt["toPhase"], "run")
+            self.assertEqual(receipt["status"], "OK")
+            # 自动补录必须留痕，否则事后无法把它与人工 close 区分开
+            self.assertEqual(receipt["bootstrapSource"], "plan_publication_journal")
+            self.assertIn("demo-change", receipt["bootstrapEvidence"])
+
+    def test_without_committed_publication_the_handoff_still_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+            CONTEXT.bootstrap_plan(project, change="demo-change", executor="codebuddy")
+
+            result = CONTEXT.prepare_context(
+                project, change="demo-change", phase="run", executor="codebuddy"
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "HANDOFF_REQUIRED")
+
+    def test_uncommitted_publication_is_not_accepted_as_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp) / "proj"
+            project.mkdir()
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+            CONTEXT.bootstrap_plan(project, change="demo-change", executor="codebuddy")
+            journal = self._write_committed_journal(project, "demo-change")
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            payload["state"] = "applying"
+            journal.write_text(json.dumps(payload), encoding="utf-8")
+
+            result = CONTEXT.prepare_context(
+                project, change="demo-change", phase="run", executor="codebuddy"
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "HANDOFF_REQUIRED")
+
+
 if __name__ == "__main__":
     unittest.main()
