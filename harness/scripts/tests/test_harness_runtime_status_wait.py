@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -47,13 +48,23 @@ def _receipt(status: str, **extra: object) -> dict:
     return base
 
 
-class RunStatusTerminalFlagTests(unittest.TestCase):
+class _IsolatedStateRoot(unittest.TestCase):
+    """状态根必须落在临时目录：心跳丢失分支会回写 session.json，
+    用 Path(".") 会把测试残留写进仓库工作树。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_root = self._tmp.name
+
+
+class RunStatusTerminalFlagTests(_IsolatedStateRoot):
     def test_terminal_statuses_are_reported_as_terminal(self) -> None:
         # INCOMPLETE 是终态。它读起来最像"未完成"，也正是日志里被误当成
         # "还在跑"而白等 80 秒的那一个。
         for status in ("OK", "FAIL", "INCOMPLETE", "CANCELLED"):
             with mock.patch.object(runtime, "_load_run_receipt", return_value=_receipt(status)):
-                result = runtime.run_session_status(Path("."), "run-demo")
+                result = runtime.run_session_status(Path(self.state_root), "run-demo")
             self.assertIs(result.get("terminal"), True, status)
 
     def test_launcher_failure_is_terminal_and_carries_actionable_reason(self) -> None:
@@ -63,7 +74,7 @@ class RunStatusTerminalFlagTests(unittest.TestCase):
             testProcessStarted=False,
         )
         with mock.patch.object(runtime, "_load_run_receipt", return_value=receipt):
-            result = runtime.run_session_status(Path("."), "run-demo")
+            result = runtime.run_session_status(Path(self.state_root), "run-demo")
 
         self.assertIs(result["terminal"], True)
         self.assertEqual(result["reasonCode"], "LAUNCHER_FAILED")
@@ -91,7 +102,7 @@ class RunStatusTerminalFlagTests(unittest.TestCase):
             mock.patch("harness_service.verify_process_identity", return_value=True),
             mock.patch("harness_service.is_pid_alive", return_value=True),
         ):
-            result = runtime.run_session_status(Path("."), "run-demo")
+            result = runtime.run_session_status(Path(self.state_root), "run-demo")
         self.assertEqual(result["status"], "RUNNING")
         self.assertIs(result.get("terminal"), False)
 
@@ -108,13 +119,13 @@ class RunStatusTerminalFlagTests(unittest.TestCase):
             mock.patch("harness_service.verify_process_identity", return_value=True),
             mock.patch("harness_service.is_pid_alive", return_value=True),
         ):
-            result = runtime.run_session_status(Path("."), "run-demo")
+            result = runtime.run_session_status(Path(self.state_root), "run-demo")
 
         self.assertEqual(result["status"], "FINALIZING")
         self.assertIs(result.get("terminal"), False)
 
 
-class RunStatusWaitTests(unittest.TestCase):
+class RunStatusWaitTests(_IsolatedStateRoot):
     def test_wait_returns_as_soon_as_the_session_reaches_a_terminal_status(self) -> None:
         # await 的职责只有"循环到终态"，状态判定由 run_session_status 负责，
         # 因此在标注层打桩，不掺入存活性分析。
@@ -136,7 +147,7 @@ class RunStatusWaitTests(unittest.TestCase):
             mock.patch.object(runtime.time, "sleep", return_value=None),
         ):
             result = runtime.await_run_session(
-                Path("."), "run-demo", timeout_seconds=30.0, poll_seconds=0.01
+                Path(self.state_root), "run-demo", timeout_seconds=30.0, poll_seconds=0.01
             )
 
         self.assertEqual(result["status"], "OK")
@@ -158,7 +169,7 @@ class RunStatusWaitTests(unittest.TestCase):
             mock.patch.object(runtime.time, "monotonic", side_effect=lambda: next(ticks)),
         ):
             result = runtime.await_run_session(
-                Path("."), "run-demo", timeout_seconds=5.0, poll_seconds=0.01
+                Path(self.state_root), "run-demo", timeout_seconds=5.0, poll_seconds=0.01
             )
 
         self.assertIs(result["terminal"], False)
