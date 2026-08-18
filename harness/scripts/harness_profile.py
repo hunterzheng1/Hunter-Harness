@@ -1101,6 +1101,43 @@ def _derive_verification_graph(profile: dict[str, Any]) -> None:
     }
 
 
+def manual_profile_template(
+    excluded: tuple[str, ...] | list[str], components: list[str]
+) -> dict[str, Any]:
+    """歧义时交给调用方的可填骨架。
+
+    骨架本身就是 `empty_profile_skeleton`——defaultsFingerprint、excludedRoots
+    默认集、commands/verificationInputs/verificationGraph 的键都已就位；这里只是
+    补上 commands 的条目形状与 requiredCoverage 取值，省掉调用方去源码里翻。
+    占位值用 `<...>` 包裹，便于替换后 grep 自检。
+    """
+    template = empty_profile_skeleton(excluded)
+    template["projectType"] = (
+        f"<从 detectedComponents 选定：{'|'.join(components)}>" if components else "<项目类型>"
+    )
+    template["commands"] = {
+        "unitTest": {
+            "command": "<在项目根可直接执行的增量测试命令>",
+            "scope": "incremental",
+            "inputs": ["<相对项目根的 glob，如 <component>/test/**>"],
+            "coverage": "unitTest",
+            "requiredCoverage": "incremental",
+            "dependsOn": [],
+            "source": "user",
+        },
+        "unitTestFull": {
+            "command": "<在项目根可直接执行的全量测试命令>",
+            "scope": "full",
+            "inputs": ["<相对项目根的 glob，如 <component>/**>"],
+            "coverage": "unitTestFull",
+            "requiredCoverage": "module",
+            "dependsOn": [],
+            "source": "user",
+        },
+    }
+    return template
+
+
 def detect(project: Path) -> dict[str, Any]:
     project = project.resolve()
     existing = load_profile(project)
@@ -1120,6 +1157,14 @@ def detect(project: Path) -> dict[str, Any]:
             "applied": False,
             "detectedComponents": components,
             "message": "multiple or nested project components require an explicit profile",
+            # 拒绝生成可以，但不能连结构都不给：调用方否则只能反读本文件源码去凑
+            # v3 形状。骨架不落盘——一份占位 profile 看起来"已配好"比没有更糟。
+            "profileTemplate": manual_profile_template(excluded, components),
+            "hint": (
+                "手工声明一份 profile：以 profileTemplate 为骨架，按 detectedComponents "
+                "选定产品包，commands 里的 inputs 用相对项目根的 glob（如 "
+                f"'<component>/test/**'），填好后写入 {project / PROFILE_REL}"
+            ),
         }
     if project_type == "unknown" and existing:
         return {

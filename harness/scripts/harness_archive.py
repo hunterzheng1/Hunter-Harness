@@ -991,6 +991,62 @@ def migrate_legacy_candidate_evidence(
     return receipt
 
 
+# 声明必须是具体的错误签名，不能是能匹配一切的短串。这个下限不是"安全边界"
+# ——审计线索才是——但它挡住最省事的滥用写法。
+_PREEXISTING_MIN_PATTERN = 8
+
+
+def _known_preexisting_patterns(
+    project_root: Path,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """build-profile 里声明的预存失败签名，按"是否足够具体"分成两组。
+
+    `knownPreexistingErrors` 由 `harness_preflight.py record-quirk --action
+    skip-not-block` 写入，此前没有任何消费方——于是预存失败在 certify-local 处
+    成为死结：要么去 gate-policy 降门禁，要么顺手改范围外的产品 bug。
+    """
+    path = project_root / ".harness" / "config" / "build-profile.json"
+    if not path.is_file():
+        return [], []
+    try:
+        profile = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return [], []
+    declared = profile.get("knownPreexistingErrors") if isinstance(profile, dict) else None
+    if not isinstance(declared, list):
+        return [], []
+    usable: list[dict[str, str]] = []
+    vague: list[dict[str, str]] = []
+    for item in declared:
+        if not isinstance(item, dict) or item.get("action") != "skip-not-block":
+            continue
+        pattern = str(item.get("pattern") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not pattern or not reason:
+            continue
+        record = {"pattern": pattern, "reason": reason}
+        (usable if len(pattern) >= _PREEXISTING_MIN_PATTERN else vague).append(record)
+    return usable, vague
+
+
+def _match_preexisting(
+    entry: dict[str, Any], patterns: list[dict[str, str]]
+) -> dict[str, str] | None:
+    """失败证据里是否确实出现了某个已声明签名。
+
+    只看"声明过"是不够的——那等于声明一次豁免一切。必须是这一条失败的证据里
+    真的带着该签名，声明与现场才对得上。
+    """
+    evidence = entry.get("evidence")
+    haystack = evidence if isinstance(evidence, str) else json.dumps(
+        evidence, ensure_ascii=False, sort_keys=True
+    )
+    for record in patterns:
+        if record["pattern"] in haystack:
+            return record
+    return None
+
+
 def certify_local_candidate(
     change_dir: Path,
     *,
@@ -1029,14 +1085,28 @@ def certify_local_candidate(
         required = ["unitTestFull"]
     required = [str(item).strip() for item in required if str(item).strip()]
 
+    usable_patterns, vague_patterns = _known_preexisting_patterns(project_root)
+
     selected: list[dict[str, Any]] = []
+    exemptions: list[dict[str, Any]] = []
     for name in required:
         entry = validations.get(name)
         if not isinstance(entry, dict):
             raise ValueError(f"required validation missing: {name}")
         missing: list[str] = []
+        exempted = None
         if str(entry.get("status") or "").upper() != "OK":
-            missing.append("status=OK")
+            exempted = _match_preexisting(entry, usable_patterns)
+            if exempted is None:
+                vague = _match_preexisting(entry, vague_patterns)
+                if vague is not None:
+                    raise ValueError(
+                        f"required validation {name} failed and the declared "
+                        f"knownPreexistingErrors pattern {vague['pattern']!r} is too "
+                        "generic to identify it; declare the specific error signature "
+                        f"(at least {_PREEXISTING_MIN_PATTERN} characters)"
+                    )
+                missing.append("status=OK")
         for field in (
             "command",
             "evidence",
@@ -1047,6 +1117,15 @@ def certify_local_candidate(
         if missing:
             raise ValueError(
                 f"required validation {name} is incomplete: {', '.join(missing)}"
+            )
+        if exempted is not None:
+            exemptions.append(
+                {
+                    "validation": name,
+                    "status": str(entry.get("status") or "").upper(),
+                    "pattern": exempted["pattern"],
+                    "reason": exempted["reason"],
+                }
             )
         selected.append(
             {
@@ -1160,6 +1239,8 @@ def certify_local_candidate(
                 {str(item["inputsHash"]) for item in selected}
             ),
             "logHashes": sorted({str(item["logHash"]) for item in selected}),
+            # 豁免必须随收据一起留痕，否则事后无法把它与干净通过区分开
+            "preexistingExemptions": exemptions,
         },
     }
     if rebound_from_commit is not None:

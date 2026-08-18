@@ -990,5 +990,60 @@ class StructuredServiceStartProfileTests(unittest.TestCase):
             self.assertEqual(profile_path.read_bytes(), before)
 
 
+class AmbiguousDetectionTemplateTests(unittest.TestCase):
+    """歧义时拒绝生成 profile 可以，但不能只丢一句"require an explicit profile"。
+
+    执行日志里连续两轮撞在这里：detect 报 DETECTION_AMBIGUOUS 后不给任何结构，
+    调用方只能反读 harness_profile.py 源码去凑 v3 形状——defaultsFingerprint、
+    excludedRoots 默认集、commands/verificationInputs/verificationGraph 的键、
+    requiredCoverage 的取值，全靠源码里翻，最后手写 145 行。这些骨架
+    empty_profile_skeleton 本来就有，拒绝时交出来即可。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-profile-ambig-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_ambiguous(self) -> None:
+        _write(self.tmp / "backend" / "pyproject.toml", "[project]\nname='backend'\n")
+        _write(
+            self.tmp / "frontend" / "package.json",
+            json.dumps({"scripts": {"test": "vitest run"}}),
+        )
+
+    def test_ambiguous_detection_hands_back_a_fillable_skeleton(self) -> None:
+        self._make_ambiguous()
+
+        result = hp.detect(self.tmp)
+
+        self.assertEqual(result["code"], "DETECTION_AMBIGUOUS")
+        template = result["profileTemplate"]
+        # 调用方此前要自己从源码里挖的三样，全部直接给出
+        self.assertEqual(template["schemaVersion"], hp.SCHEMA_VERSION)
+        self.assertEqual(template["defaultsFingerprint"], hp.profile_defaults_fingerprint())
+        for root in hp.DEFAULT_EXCLUDED_ROOTS:
+            self.assertIn(root, template["excludedRoots"])
+
+    def test_template_shows_the_command_entry_shape(self) -> None:
+        self._make_ambiguous()
+
+        template = hp.detect(self.tmp)["profileTemplate"]
+
+        self.assertTrue(template["commands"], template)
+        sample = next(iter(template["commands"].values()))
+        for key in ("command", "scope", "inputs", "coverage", "requiredCoverage", "source"):
+            self.assertIn(key, sample)
+
+    def test_template_is_not_written_to_disk(self) -> None:
+        self._make_ambiguous()
+
+        hp.detect(self.tmp)
+
+        # 占位骨架直接落盘会变成一份"看起来配好了"的假 profile
+        self.assertFalse((self.tmp / ".harness" / "config" / "build-profile.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

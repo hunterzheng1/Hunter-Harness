@@ -1311,5 +1311,121 @@ class EnvironmentManagerTests(unittest.TestCase):
         self.assertTrue((self.leases / "db-main.json").is_file())
 
 
+class KnownPreexistingExemptionTests(unittest.TestCase):
+    """预存失败必须有正规出路，而且这条出路必须留痕。
+
+    执行日志里的死结：certify-local 要求 unitTestFull=OK，而全量链在一个与本
+    变更零交集的预存失败上中断。执行者只剩两条路——去 gate-policy 里降门禁
+    （不诚实），或者顺手改一个范围外的产品 bug（越界）。`knownPreexistingErrors`
+    这个机制早就存在、preflight 也在写，却没有任何消费方。
+
+    这里冻结的语义：**声明过 + 证据确实匹配**才豁免，且豁免必须写进收据；
+    未声明的失败、声明了但证据对不上的失败，一律照旧阻断。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="ia-preexisting-"))
+        self.project = self.tmp / "proj"
+        self.change = self.project / ".harness" / "changes" / "demo-change"
+        self.change.mkdir(parents=True)
+        _seed_change_dir(self.change)
+        for args in (
+            ["git", "init"],
+            ["git", "config", "user.email", "tests@example.invalid"],
+            ["git", "config", "user.name", "Harness Tests"],
+        ):
+            subprocess.run(args, cwd=self.project, check=True, capture_output=True)
+        _write(self.project / "src" / "app.py", "print('candidate')\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.project, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "candidate"],
+            cwd=self.project, check=True, capture_output=True,
+        )
+        self.product_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.project, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        ci = self.change / "evidence" / "product-candidate-ci.json"
+        if ci.is_file():
+            ci.unlink()
+        _write_json(
+            self.change / "meta" / "gate-policy.json",
+            {
+                "schemaVersion": 1,
+                "tier": "standard",
+                "candidateVerification": {
+                    "minimumAssurance": "local-reproducible",
+                    "allowLocalRelease": True,
+                },
+            },
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_failing_ledger(self, evidence: str) -> None:
+        ledger_path = self.change / "evidence" / "verification-ledger.json"
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        ledger["productCommit"] = self.product_commit
+        ledger["validations"]["unitTestFull"] = {
+            "status": "FAIL",
+            "command": "npm test",
+            "evidence": evidence,
+            "inputsHash": "sha256:" + "e" * 64,
+            "inputsFiles": ["src/app.py"],
+            "toolchainHash": "sha256:" + "a" * 64,
+            "environmentHash": "sha256:" + "b" * 64,
+        }
+        _write_json(ledger_path, ledger)
+
+    def _declare(self, pattern: str) -> None:
+        _write_json(
+            self.project / ".harness" / "config" / "build-profile.json",
+            {
+                "schemaVersion": 3,
+                "knownPreexistingErrors": [
+                    {
+                        "pattern": pattern,
+                        "reason": "5043a14 引入，与本变更零文件交集",
+                        "action": "skip-not-block",
+                    }
+                ],
+            },
+        )
+
+    def test_undeclared_failure_still_blocks(self) -> None:
+        self._write_failing_ledger("段 18 报 E_ARTIFACT_INVENTORY_INCOMPLETE")
+
+        with self.assertRaises(ValueError):
+            ha.certify_local_candidate(self.change, project=self.project)
+
+    def test_declared_and_matching_failure_is_exempted_with_receipt_trail(self) -> None:
+        self._write_failing_ledger("段 18 报 E_ARTIFACT_INVENTORY_INCOMPLETE: markdown_report 缺少最终路径")
+        self._declare("E_ARTIFACT_INVENTORY_INCOMPLETE")
+
+        receipt = ha.certify_local_candidate(self.change, project=self.project)
+
+        exemptions = receipt["verification"]["preexistingExemptions"]
+        self.assertEqual(len(exemptions), 1, exemptions)
+        self.assertEqual(exemptions[0]["validation"], "unitTestFull")
+        self.assertEqual(exemptions[0]["pattern"], "E_ARTIFACT_INVENTORY_INCOMPLETE")
+        self.assertIn("5043a14", exemptions[0]["reason"])
+
+    def test_declared_but_unmatched_evidence_still_blocks(self) -> None:
+        # 声明一次就想豁免一切——不允许：证据里没有该签名就照旧阻断
+        self._write_failing_ledger("段 22 报 E_SOMETHING_ELSE_ENTIRELY")
+        self._declare("E_ARTIFACT_INVENTORY_INCOMPLETE")
+
+        with self.assertRaises(ValueError):
+            ha.certify_local_candidate(self.change, project=self.project)
+
+    def test_catch_all_pattern_is_refused(self) -> None:
+        self._write_failing_ledger("段 18 报 E_ARTIFACT_INVENTORY_INCOMPLETE")
+        self._declare("E")
+
+        with self.assertRaises(ValueError):
+            ha.certify_local_candidate(self.change, project=self.project)
+
+
 if __name__ == "__main__":
     unittest.main()
