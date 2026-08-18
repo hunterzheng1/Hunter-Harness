@@ -7,6 +7,7 @@ import {
   canonicalJson,
   classifyContentPath,
   contentKindSchema,
+  mayContainArchiveDeliverables,
   remoteSyncHttpMaxFileBytes,
   remoteSyncHttpMaxOperations,
   remoteSyncHttpMaxTotalBytes,
@@ -445,7 +446,10 @@ async function walkFiles(
     if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".harness-private-evidence") continue;
     const absolute = join(current, entry.name);
     const path = relative(root, absolute).replaceAll("\\", "/");
-    if (excludedWorkspacePath(path)) continue;
+    // 归档树整体是 non-scannable，若在目录层直接剪枝，其中的交付物文档永远走不到分类这一步。
+    // 仅对「可能含交付物」的归档目录放行下钻；文件本身仍由 classifyWorkspacePath 逐一判定。
+    if (excludedWorkspacePath(path) &&
+        !(entry.isDirectory() && mayContainArchiveDeliverables(path))) continue;
     if (entry.isSymbolicLink()) throw new RemoteSyncError("SYNC_PATH_NOT_ELIGIBLE");
     if (entry.isDirectory()) {
       output.push(...await walkFiles(root, io, absolute, state, depth + 1));

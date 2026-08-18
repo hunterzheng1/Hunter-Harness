@@ -1059,6 +1059,49 @@ const nonScannablePathPrefixes = [
   ".harness/project-content-candidates"
 ] as const;
 
+// 归档目录整体是 non-scannable（体积大、多为过程产物），但其中四类交付物是要在
+// 「分支文件」视图里展示的正式文档，按目录段分组为 PLAN / SPEC / REPORT / DOCS。
+const archiveDeliverableGroups = ["plans", "spec", "reports", "docs"] as const;
+const archiveRoot = ".harness/archive";
+
+function archiveRelativeSegments(path: string): readonly string[] | undefined {
+  const lower = path.toLowerCase();
+  if (!isAtOrBelow(lower, archiveRoot)) return undefined;
+  const segments = lower.split("/");
+  if (segments.some((segment) => segment.length === 0)) return undefined;
+  return segments;
+}
+
+/**
+ * 交付物文档：`.harness/archive/<change-key>/{plans|spec|reports|docs}/**` 下的具体文件。
+ * 变更目录名不得以 `.` 开头（排除 `.publication-staging` 之类的暂存目录）。
+ */
+function isArchiveDeliverableDocument(path: string): boolean {
+  const segments = archiveRelativeSegments(path);
+  // .harness / archive / <change-key> / <group> / <file...>
+  if (segments === undefined || segments.length < 5) return false;
+  const changeKey = segments[2] ?? "";
+  const group = segments[3] ?? "";
+  if (changeKey.startsWith(".")) return false;
+  return archiveDeliverableGroups.some((value) => value === group);
+}
+
+/**
+ * 目录是否可能包含交付物文档——工作区遍历据此决定是否下钻。
+ * 归档根、变更目录、四个分组目录及其子目录都要放行，否则遍历在 `.harness/archive`
+ * 一层就被剪枝，交付物永远走不到分类这一步。
+ */
+export function mayContainArchiveDeliverables(path: string): boolean {
+  const segments = archiveRelativeSegments(path);
+  if (segments === undefined) return false;
+  if (segments.length <= 2) return true;
+  const changeKey = segments[2] ?? "";
+  if (changeKey.startsWith(".")) return false;
+  if (segments.length === 3) return true;
+  const group = segments[3] ?? "";
+  return archiveDeliverableGroups.some((value) => value === group);
+}
+
 function isAtOrBelow(path: string, prefix: string): boolean {
   return path === prefix || path.startsWith(`${prefix}/`);
 }
@@ -1179,7 +1222,10 @@ function excludedPathReason(path: string): ContentPathReasonCode | undefined {
       /\.(?:log|tmp|temp)$/u.test(basename)) {
     return "CONTENT_PATH_RUNTIME_EXCLUDED";
   }
-  if (nonScannablePathPrefixes.some((prefix) => isAtOrBelow(lowerPath, prefix))) {
+  // 交付物文档在此放行；上面的 credentials / env / state / runtime / *.log 排除仍然生效，
+  // 所以 reports/ 下的日志与暂存物不会因为这道口子被带出去。
+  if (nonScannablePathPrefixes.some((prefix) => isAtOrBelow(lowerPath, prefix)) &&
+      !isArchiveDeliverableDocument(lowerPath)) {
     return "CONTENT_PATH_NON_SCANNABLE_KIND";
   }
   return undefined;
@@ -1291,6 +1337,10 @@ export function classifyContentPath(input: unknown): ContentPathClassificationRe
   if (parsedInput.data.path === "AGENTS.md" ||
       selectedEntrypoints.some((entrypoint) => entrypoint === parsedInput.data.path)) {
     return classificationSuccess("instruction", "instructions", "regular", "required");
+  }
+  // 归档交付物按 branch_file 入库，供「分支文件」视图展示；其余归档内容仍是未申报路径。
+  if (isArchiveDeliverableDocument(parsedInput.data.path)) {
+    return classificationSuccess("branch_file", "branch_files", "explicit_source_only", "required");
   }
   if (isAtOrBelow(parsedInput.data.path, ".harness")) {
     return classificationFailure("CONTENT_PATH_UNDECLARED");

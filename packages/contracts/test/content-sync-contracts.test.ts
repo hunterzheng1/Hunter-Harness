@@ -49,6 +49,7 @@ import {
   legacyArchivePackageReceiptSchema,
   managedSnapshotStatusSchema,
   managedSnapshotStatusValueSchema,
+  mayContainArchiveDeliverables,
   projectContentCandidateStatusSchema,
   projectContentCandidateTypeSchema,
   pullPolicySchema,
@@ -474,6 +475,91 @@ describe("stage 01 content and sync contracts", () => {
       schema_version: 1,
       reason_code: "CONTENT_PATH_UNCLASSIFIED"
     });
+  });
+
+  it("classifies archive deliverable documents as branch files and still rejects process files", () => {
+    const change = ".harness/archive/2026-08-17-usage-stats-cli-reporting";
+    const branchFile = {
+      schema_version: 1,
+      content_kind: "branch_file",
+      sync_scope: "branch_files",
+      pull_policy: "explicit_source_only",
+      content_scan_policy: "required"
+    };
+    // 有实际意义的交付物：plan / spec / report / docs 四类，页面按此分组展示。
+    for (const path of [
+      `${change}/plans/usage-stats-cli-reporting-plan.md`,
+      `${change}/plans/usage-stats-cli-reporting-design.md`,
+      `${change}/spec/spec.md`,
+      `${change}/reports/final/summary-data.json`,
+      `${change}/reports/review/review-report-20260817-0950.md`,
+      `${change}/reports/test/test-report-20260817-0930.md`,
+      `${change}/docs/note.md`
+    ]) {
+      expect(classifyContentPath({ schema_version: 1, path }), path).toEqual(branchFile);
+    }
+    // 过程文件：不上传，减少上传压力。归档树整体仍是 non-scannable，交付物只是其中开的口子；
+    // 且 *.log 一类先被 runtime 规则拦下——两层顺序不能因为这个口子而错位。
+    const excluded = [
+      [`${change}/runtime/phase-context/current.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/runtime/run-sessions/session.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/meta/publication-journals/journal.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/evidence/fixback/evidence.txt`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/fixback/batches/batch.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/.publication-staging/pending/payload.json`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      // 目录名前缀相同但不是交付物目录，不得放行
+      [`${change}/plans-scratch/draft.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [`${change}/plans`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      // 归档根下的散落文件不属于任何交付物分组
+      [`${change}/notes.md`, "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      [".harness/archive/loose.json", "CONTENT_PATH_NON_SCANNABLE_KIND"],
+      // 交付物目录下的日志/暂存物仍被更早的安全规则拦下
+      [`${change}/logs/execution.log`, "CONTENT_PATH_RUNTIME_EXCLUDED"],
+      [`${change}/reports/final/debug.log`, "CONTENT_PATH_RUNTIME_EXCLUDED"],
+      [`${change}/plans/scratch.tmp`, "CONTENT_PATH_RUNTIME_EXCLUDED"],
+      [`${change}/reports/credentials.local.yaml`, "CONTENT_PATH_CREDENTIALS_EXCLUDED"],
+      [`${change}/spec/.env.production`, "CONTENT_PATH_ENV_EXCLUDED"]
+    ] as const;
+    for (const [path, reasonCode] of excluded) {
+      expect(classifyContentPath({ schema_version: 1, path }), path).toEqual({
+        schema_version: 1,
+        reason_code: reasonCode
+      });
+    }
+  });
+
+  it("lets the workspace walk descend only the archive directories that can hold deliverables", () => {
+    const change = ".harness/archive/2026-08-17-usage-stats-cli-reporting";
+    // 遍历必须能下钻到分组目录，否则归档树在第一层就被剪枝，交付物走不到分类。
+    for (const path of [
+      ".harness/archive",
+      change,
+      `${change}/plans`,
+      `${change}/spec`,
+      `${change}/reports`,
+      `${change}/reports/final`,
+      `${change}/docs`
+    ]) {
+      expect(mayContainArchiveDeliverables(path), path).toBe(true);
+    }
+    // 过程目录与非归档路径一律不下钻。
+    for (const path of [
+      `${change}/runtime`,
+      `${change}/runtime/phase-context`,
+      `${change}/meta`,
+      `${change}/evidence`,
+      `${change}/logs`,
+      `${change}/fixback`,
+      `${change}/.publication-staging`,
+      `${change}/plans-scratch`,
+      ".harness/archives",
+      ".harness/knowledge",
+      ".harness/rules",
+      ".harness",
+      "src"
+    ]) {
+      expect(mayContainArchiveDeliverables(path), path).toBe(false);
+    }
   });
 
   it("does not satisfy result fields or classifier policy from the prototype chain", () => {
