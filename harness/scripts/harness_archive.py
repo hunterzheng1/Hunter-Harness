@@ -8552,8 +8552,17 @@ def cmd_finalize(
     payload["knowledgeMaintenance"] = _knowledge_maintenance_from_archive_push(
         push_result
     )
-    if push_result.get("archiveStatus") == "durable":
-        payload["archiveDurability"] = "ARCHIVED_REMOTE_DURABLE"
+    remote_durability = remote_durable_archive_durability(
+        payload.get("archiveDurability"), push_result
+    )
+    if remote_durability is not None:
+        payload["archiveDurability"] = remote_durability
+        # 报告必须跟着改口：上传发生在 summary 落盘之后，不回写就会出现
+        # "回执 durable / 报告 local-only" 的自相矛盾
+        if not persist_archive_durability(summary_path, remote_durability):
+            warnings.append(
+                "远端归档已持久化，但 summary-data.json 的 archiveDurability 回写失败"
+            )
     if push_result.get("warning"):
         warnings.append(str(push_result["warning"]))
 
@@ -9119,6 +9128,50 @@ def build_archive_package(
         "sizeBytes": len(package_raw),
         "paths": [entry["path"] for entry in entries],
     }
+
+
+def remote_durable_archive_durability(
+    current: Any, push_result: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """远端上传成功后的耐久性投影；未 durable 时返回 None。
+
+    summary-data.json 在归档流程早期就以 ARCHIVED_LOCAL_ONLY 写盘，而 ZIP 上传在
+    那之后才发生。此前上传成功只改内存里的 payload、还把对象覆盖成裸字符串，落盘
+    报告从没跟着改——于是同一次归档，回执说 durable、报告说 local-only，平台和用户
+    读到的是后者。这里保持对象形状并带上回执标识，供调用方同时更新 payload 与文件。
+    """
+    if str(push_result.get("archiveStatus") or "") != "durable":
+        return None
+    projected = dict(current) if isinstance(current, dict) else {}
+    projected.update({
+        "status": "ARCHIVED_REMOTE_DURABLE",
+        # 已远端持久化：不再声称"只存在于本地、可能随工作区丢失"
+        "risk": None,
+        "archiveId": push_result.get("archiveId"),
+        "uploadStatus": push_result.get("uploadStatus"),
+        "knowledgeStatus": push_result.get("knowledgeStatus"),
+    })
+    return projected
+
+
+def persist_archive_durability(summary_path: Path, durability: dict[str, Any]) -> bool:
+    """把耐久性结论回写到已落盘的 summary，其余字段原样保留。
+
+    summary-data.json 本就被排除在归档校验和覆盖之外（它在覆盖快照之后才写），
+    所以这次回写不会破坏 manifest 对账。
+    """
+    try:
+        summary = json.loads(Path(summary_path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(summary, dict):
+        return False
+    summary["archiveDurability"] = durability
+    try:
+        write_json(Path(summary_path), summary)
+    except OSError:
+        return False
+    return True
 
 
 def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:

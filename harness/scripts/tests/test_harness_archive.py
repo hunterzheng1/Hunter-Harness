@@ -3621,5 +3621,77 @@ class ArchiveCorePushTests(unittest.TestCase):
             self.assertIn("索引", str(result.get("warning")))
 
 
+class RemoteDurabilityReconciliationTests(unittest.TestCase):
+    """上传成功后，落盘的 summary 必须跟着改口，不能和回执各说各话。
+
+    实况：summary-data.json 在归档流程早期就以 ARCHIVED_LOCAL_ONLY 写盘，之后
+    远端上传成功只更新了内存里的 payload（而且把对象覆盖成裸字符串，形状都变了），
+    从没回写文件。于是同一次归档，回执说 durable、报告说 local-only——平台和用户
+    读到的是后者。
+    """
+
+    def _local_only(self) -> dict:
+        return {
+            "status": "ARCHIVED_LOCAL_ONLY",
+            "retentionPolicy": "project-local",
+            "readBackRequiredBeforeSourceDeletion": False,
+            "risk": "The archive exists only under the project-local .harness tree.",
+        }
+
+    def test_durable_push_projects_remote_status_and_keeps_object_shape(self) -> None:
+        result = ha.remote_durable_archive_durability(
+            self._local_only(),
+            {
+                "archiveStatus": "durable",
+                "archiveId": "arc_abc123",
+                "uploadStatus": "ready",
+                "knowledgeStatus": "ready",
+            },
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIsInstance(result, dict)  # 不得退化成裸字符串
+        self.assertEqual(result["status"], "ARCHIVED_REMOTE_DURABLE")
+        self.assertEqual(result["archiveId"], "arc_abc123")
+        self.assertEqual(result["uploadStatus"], "ready")
+        self.assertEqual(result["knowledgeStatus"], "ready")
+        # 已经远端持久化，就不该再声称"只存在于本地、可能随工作区丢失"
+        self.assertIsNone(result["risk"])
+
+    def test_non_durable_push_leaves_local_only_untouched(self) -> None:
+        for status in ("pending", "failed", None):
+            with self.subTest(status=status):
+                self.assertIsNone(
+                    ha.remote_durable_archive_durability(
+                        self._local_only(), {"archiveStatus": status}
+                    )
+                )
+
+    def test_summary_file_is_rewritten_so_report_matches_the_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            summary_path = Path(tmp) / "summary-data.json"
+            summary_path.write_text(
+                json.dumps(
+                    {"changeName": "demo", "archiveDurability": self._local_only()},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            durability = ha.remote_durable_archive_durability(
+                self._local_only(),
+                {"archiveStatus": "durable", "archiveId": "arc_abc123", "uploadStatus": "ready"},
+            )
+            assert durability is not None
+
+            ha.persist_archive_durability(summary_path, durability)
+
+            written = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+            self.assertEqual(
+                written["archiveDurability"]["status"], "ARCHIVED_REMOTE_DURABLE"
+            )
+            self.assertEqual(written["changeName"], "demo")  # 其余字段不动
+
+
 if __name__ == "__main__":
     unittest.main()
