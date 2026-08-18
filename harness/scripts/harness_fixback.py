@@ -587,6 +587,13 @@ def launch_review_fixback(
         "transition": begun,
         "gate": gate,
         "batch": batch,
+        # 证据要求随开批次一起交底：晚一步暴露，调用方就已经改完代码，
+        # 只能回退伪造 RED。
+        "evidenceContract": evidence_contract(
+            change_dir=str(change_dir),
+            batch_id=str(batch.get("batchId") or ""),
+            product_identity=str(batch.get("productIdentity") or ""),
+        ),
     }
 
 
@@ -802,10 +809,100 @@ def _resolve_evidence_path(change_dir: Path, raw_path: str) -> Path:
     )
     path = next((candidate for candidate in candidates if candidate.is_file()), None)
     if path is None:
-        raise ValueError(f"FIXBACK_EVIDENCE_MISSING: {raw_path}")
+        raise ValueError(evidence_error_message("FIXBACK_EVIDENCE_MISSING", raw_path))
     if not _is_within(path, [contract_root, state_root, project_root]):
-        raise ValueError(f"FIXBACK_EVIDENCE_OUTSIDE_PROJECT: {raw_path}")
+        raise ValueError(
+            evidence_error_message("FIXBACK_EVIDENCE_OUTSIDE_PROJECT", raw_path)
+        )
     return path
+
+
+def evidence_contract(
+    *,
+    change_dir: str | None = None,
+    batch_id: str | None = None,
+    product_identity: str | None = None,
+) -> dict[str, Any]:
+    """开批次时就交出证据契约，而不是等 resolve-issue 报错才逼调用方逆向。
+
+    契约本身没变过：每个 code 项需要一条修复前的 RED（会话 FAIL）与一条修复后的
+    GREEN（会话 OK），两者都必须是 run-start 产出的托管会话证据，且先注册后引用。
+    问题在于它此前只写在实现里——调用方通常已经改完代码才发现 RED 要"修复前"，
+    于是把改动回退、跑一次假 RED、再改回来，凭空多出一轮返工与一段脏工作树。
+    """
+    change = change_dir or "<change-dir>"
+    batch = batch_id or "<batch-id>"
+    product = product_identity or "<product-identity>"
+    return {
+        "why": "RED 证明问题真实存在，GREEN 证明修复真的生效；缺任一条都无法关批次。",
+        "order": [
+            "1. 修复前：先用 run-start 跑一次能复现该问题的命令，得到 status=FAIL 的会话（RED）",
+            "2. 实施修复",
+            "3. 修复后：用同一条命令再跑一次 run-start，得到 status=OK 的会话（GREEN）",
+            "4. 两条证据各写一个 JSON 文件，分别 register-evidence 注册",
+            "5. resolve-issue 引用这两个已注册的证据文件",
+        ],
+        "antiPattern": (
+            "不要先改完再把修改回退来凑 RED：那样 RED 证明的只是回退后的状态，"
+            "不是原始缺陷，中途还会留下脏工作树。"
+        ),
+        "commands": {
+            "collectSession": (
+                "python harness_runtime.py run-start --state-root "
+                f"{change} --verification <名称> --working-directory . "
+                f"--product-identity {product} --json -- <复现/验证命令>"
+            ),
+            "awaitSession": (
+                "python harness_runtime.py run-status --state-root "
+                f"{change} --session-id <sessionId> --wait --json"
+            ),
+            "register": (
+                "python harness_fixback.py register-evidence --change-dir "
+                f"{change} --evidence <证据 JSON 路径>"
+            ),
+            "resolve": (
+                "python harness_fixback.py resolve-issue --change-dir "
+                f"{change} --batch-id {batch} --issue-id <issueId> "
+                "--red-evidence <red.json> --green-evidence <green.json>"
+            ),
+        },
+        "evidenceFile": {
+            "schemaVersion": 2,
+            "kind": ["red", "green"],
+            "status": {"red": "FAIL", "green": "OK"},
+            "provenance": {
+                "type": "managed-run-session",
+                "note": "指向 run-start 产出的 runtime/run-sessions/<sessionId>/session.json",
+            },
+        },
+    }
+
+
+_EVIDENCE_ERROR_HINTS = {
+    "FIXBACK_EVIDENCE_MISSING": (
+        "路径未找到证据文件。它应当是 run-start 产出的托管会话证据 JSON"
+        "（schemaVersion=2，kind=red|green，provenance.type=managed-run-session）；"
+        "先用 run-start 采集会话，再据此写证据文件。"
+    ),
+    "FIXBACK_EVIDENCE_UNREGISTERED": (
+        "证据文件存在但未注册，或注册后内容已变。"
+        "先执行 register-evidence 注册（内容改动后需重新注册），再引用。"
+    ),
+    "FIXBACK_EVIDENCE_INVALID": (
+        "证据文件不是合法的 schemaVersion=2 托管会话证据。"
+        "检查 kind / status / provenance 三个字段。"
+    ),
+    "FIXBACK_EVIDENCE_OUTSIDE_PROJECT": (
+        "证据路径落在项目之外。证据必须放在变更目录或项目内，便于随归档留痕。"
+    ),
+}
+
+
+def evidence_error_message(code: str, raw_path: str) -> str:
+    """把只回显路径的错误码，补成能直接照做的一句话。"""
+    hint = _EVIDENCE_ERROR_HINTS.get(code)
+    base = f"{code}: {raw_path}"
+    return base if hint is None else f"{base} — {hint}"
 
 
 def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
@@ -968,7 +1065,9 @@ def _evidence_record(
         or ledger_record.get("productIdentity") != evidence_product
         or ledger_record.get("passedGates") != sorted(set(passed_gates))
     ):
-        raise ValueError(f"FIXBACK_EVIDENCE_UNREGISTERED: {raw_path}")
+        raise ValueError(
+            evidence_error_message("FIXBACK_EVIDENCE_UNREGISTERED", raw_path)
+        )
     if product_identity is not None and evidence_product != product_identity:
         raise ValueError(
             "FIXBACK_EVIDENCE_IDENTITY_MISMATCH: "

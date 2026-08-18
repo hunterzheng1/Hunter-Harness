@@ -444,6 +444,8 @@ def infer_execution_project_root(change_dir: Path) -> Path | None:
         process = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -461,6 +463,8 @@ def infer_execution_project_root(change_dir: Path) -> Path | None:
         process = subprocess.run(
             ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
             text=True,
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,

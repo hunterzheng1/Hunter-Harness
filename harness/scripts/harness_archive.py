@@ -8913,6 +8913,8 @@ def _archive_source_identity(project_root: Path) -> dict[str, str | None]:
                 ["git", *args],
                 cwd=str(project_root),
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
@@ -9449,6 +9451,10 @@ def auto_push_archive_core(
             command,
             cwd=str(project_root),
             text=True,
+            # 不指定 encoding 时中文 Windows 按 cp936 解码 UTF-8，
+            # CLI 的中文回执会被损坏，随后的 json.loads 也可能失败。
+            encoding="utf-8",
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=180,

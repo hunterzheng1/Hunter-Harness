@@ -196,6 +196,26 @@ Windows 默认常为 Windows PowerShell **5.1**。下列特性在 5.1 不可用�
 - 非 ASCII 路径（含中文）仓库：git/构建/文件操作一律 PowerShell；Bash 被 hook 拒绝（如 `Denied: non-ASCII path`）后**立即**改用 PowerShell 重发等价命令，禁止原样重试 Bash。
 - Maven `-D` 参数在 PowerShell 中加引号：`"-Dmaven.test.skip=true"`。
 
+### 捕获子进程中文输出：`$env:PYTHONUTF8=1` 不够
+
+`PYTHONUTF8=1` 只让 **Python 按 UTF-8 输出**，不改变 **PowerShell 按什么编码读**。
+控制台代码页是 GBK(936) 时，PowerShell 会用 GBK 解码 UTF-8 字节，得到形如
+`绫?javadoc 鏈�闅� 6 绾х簿绠€` 的乱码——内容已在捕获阶段损坏，落进报告、回执与
+JSON 字段后无法还原。
+
+调用任何会输出中文的子进程前，**必须同时设置输出编码**：
+
+```powershell
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$env:PYTHONUTF8 = 1
+python harness/scripts/harness_fixback.py <子命令> --json
+```
+
+- 两行缺一不可：只设 `PYTHONUTF8` 会乱码，只设 `OutputEncoding` 则 Python 可能仍按本地编码输出。
+- 写脚本时把这两行放在脚本开头，不要依赖调用方记得加。
+- 少用 `2>&1` 合并流：PowerShell 5.1 会把 stderr 包装成 `NativeCommandError`，
+  与编码问题叠加后更难判断真实失败原因；需要 stderr 时分开捕获。
+
 ## 13. PS5/PS7 原生参数合同
 
 复杂 JSON、Docker Go template、here-string 内容及多层引号不得作为 native process 的内联参数跨 `Bash → powershell -Command → native executable` 传递。统一写 UTF-8 JSON 参数文件：

@@ -1578,7 +1578,7 @@ def _run_session_worker_with_log(state_root: Path, session_id: str) -> int:
             return _run_session_worker(state_root, session_id)
 
 
-def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
+def _run_session_status_raw(state_root: Path, session_id: str) -> dict[str, Any]:
     from harness_service import is_pid_alive
 
     receipt = _load_run_receipt(state_root, session_id)
@@ -1649,6 +1649,65 @@ def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
         )
         _write_run_receipt(state_root, receipt)
     return receipt
+
+
+# 终态判定此前只活在脚本内部的 RUN_TERMINAL_STATUSES 里，从不出现在返回体中。
+# 调用方于是只能按状态名猜——而 "INCOMPLETE" 读起来最像"还没结束"，实际是终态。
+# 2026-08-18 的一次 fixback 执行里，一个启动即失败（LAUNCHER_FAILED）的会话
+# 被连等 20s、60s，纯属这个缺口造成的浪费。
+_TERMINAL_HINTS = {
+    "LAUNCHER_FAILED": (
+        "被测进程未能启动（testProcessStarted=false），不是超时；"
+        "先核对 argv 的可执行文件在该工作目录下能否直接运行，再重跑 run-start。"
+    ),
+    "HEARTBEAT_LOST": "worker 心跳丢失，会话已判定结束；日志可能不完整。",
+    "WORKER_IDENTITY_MISMATCH": "worker 身份校验不通过，会话已终止且未采信其结果。",
+    "WORKER_EXITED_WITHOUT_FINAL_RECEIPT": "worker 未写最终回执即退出。",
+}
+
+
+def _annotate_run_status(receipt: dict[str, Any]) -> dict[str, Any]:
+    """给回执补上可判定的终态标记与可行动线索。
+
+    FINALIZING 刻意判为非终态：结果虽已确定，但 worker 尚未退出，
+    调用方此时取读数会与清理竞争。
+    """
+    status = receipt.get("status")
+    terminal = status in RUN_TERMINAL_STATUSES and status != "FINALIZING"
+    annotated = dict(receipt)
+    annotated["terminal"] = bool(terminal)
+    hint = _TERMINAL_HINTS.get(str(receipt.get("reasonCode") or ""))
+    if terminal and hint is not None:
+        annotated["terminalHint"] = hint
+    return annotated
+
+
+def run_session_status(state_root: Path, session_id: str) -> dict[str, Any]:
+    return _annotate_run_status(_run_session_status_raw(state_root, session_id))
+
+
+def await_run_session(
+    state_root: Path,
+    session_id: str,
+    *,
+    timeout_seconds: float = 600.0,
+    poll_seconds: float = 2.0,
+) -> dict[str, Any]:
+    """阻塞到会话进入终态，或超时后带 waitTimedOut 标记返回。
+
+    没有这个入口时，调用方只能 `sleep <猜一个时长>` 再查一次；上述执行日志里
+    连猜了 5s / 20s / 60s / 100s 四轮。等待逻辑属于会话语义，应由这里承担。
+    """
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+    while True:
+        current = run_session_status(state_root, session_id)
+        if current.get("terminal") is True:
+            current["waitTimedOut"] = False
+            return current
+        if time.monotonic() >= deadline:
+            current["waitTimedOut"] = True
+            return current
+        time.sleep(max(float(poll_seconds), 0.01))
 
 
 def read_run_session_log(
@@ -1974,6 +2033,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("run-status", help="read a managed run receipt")
     p_status.add_argument("--state-root", required=True)
     p_status.add_argument("--session-id", required=True)
+    p_status.add_argument(
+        "--wait",
+        action="store_true",
+        help="阻塞到会话进入终态再返回，替代调用方自己 sleep 猜时长",
+    )
+    p_status.add_argument("--wait-timeout-seconds", type=float, default=600.0)
+    p_status.add_argument("--poll-seconds", type=float, default=2.0)
     p_status.add_argument("--json", action="store_true")
     p_log = sub.add_parser("run-log", help="read an incremental log page")
     p_log.add_argument("--state-root", required=True)
@@ -2022,7 +2088,15 @@ def main(argv: list[str] | None = None) -> int:
                 resource_locks=list(args.resource_lock),
             )
         elif args.command == "run-status":
-            result = run_session_status(Path(args.state_root), args.session_id)
+            if getattr(args, "wait", False):
+                result = await_run_session(
+                    Path(args.state_root),
+                    args.session_id,
+                    timeout_seconds=args.wait_timeout_seconds,
+                    poll_seconds=args.poll_seconds,
+                )
+            else:
+                result = run_session_status(Path(args.state_root), args.session_id)
         elif args.command == "run-log":
             result = read_run_session_log(
                 Path(args.state_root),

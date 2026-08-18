@@ -184,6 +184,8 @@ def _head(project: Path) -> str | None:
     process = subprocess.run(
         ["git", "-C", str(project), "rev-parse", "--verify", "HEAD"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -196,6 +198,8 @@ def _git_common_dir(project: Path) -> Path | None:
     process = subprocess.run(
         ["git", "-C", str(project), "rev-parse", "--git-common-dir"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
