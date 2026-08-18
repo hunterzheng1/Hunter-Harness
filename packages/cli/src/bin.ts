@@ -48,7 +48,7 @@ import {
 import { runCapabilities } from "./commands/capabilities.js";
 import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins.js";
 import { runDoctor, type DoctorCommandOptions } from "./commands/doctor.js";
-import { runSync, type SyncCommandOptions } from "./commands/sync.js";
+import { planSyncPush, runSync, type SyncCommandOptions } from "./commands/sync.js";
 import {
   runRunCancel,
   runRunLog,
@@ -594,11 +594,27 @@ export async function runCli(
     .option("--fix <remediation-id>", "执行指定 remediation")
     .option("--verbose", "在 JSON 中包含完整组件 receipts")
     .option("--include-components", "兼容别名：在 JSON 中包含完整组件 receipts")
+    .option(
+      "--push [scopes]",
+      "体检通过后顺带推送一次；省略值时推 config,rules,architecture,instructions"
+    )
     .action(async (options: SyncCommandOptions) => {
-      exitCode = await runSync(
-        { ...program.opts<SyncCommandOptions>(), ...options },
-        dependencies
-      );
+      const merged = { ...program.opts<SyncCommandOptions>(), ...options };
+      exitCode = await runSync(merged, dependencies);
+      // 体检与推送是两件事：sync 的退出码先定下来，推送只在状态可用时追加执行，
+      // 且推送失败不会把一次成功的体检改写成失败（反之亦然由 planSyncPush 拦住）。
+      const plan = planSyncPush(merged, exitCode);
+      if (plan.reasonCode !== undefined) {
+        dependencies.stderr(`${plan.reasonCode}\n`);
+      }
+      if (plan.push && plan.scopes !== undefined) {
+        const pushExitCode = await runPushPull(
+          "push",
+          { ...merged, scope: plan.scopes },
+          dependencies
+        );
+        if (pushExitCode !== 0) exitCode = pushExitCode;
+      }
     });
   program.command("doctor")
     .description("检查 Harness 运行时与受管文件结构；--fix 自动重建可再生状态")

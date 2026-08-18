@@ -41,6 +41,44 @@ export interface SyncCommandOptions {
   verbose?: boolean;
   includeComponents?: boolean;
   progress?: "jsonl" | "text" | "none";
+  /** `--push` 不带值时为 true（推配置类 scope）；带值时为显式 scope 列表。 */
+  push?: boolean | string;
+}
+
+/** `--push` 默认只推配置类内容——与 push 自身省略 --scope 时的默认范围一致。 */
+const SYNC_PUSH_DEFAULT_SCOPES = "config,rules,architecture,instructions";
+
+export interface SyncPushPlan {
+  readonly push: boolean;
+  readonly scopes?: string;
+  readonly reasonCode?: string;
+}
+
+/**
+ * 体检之后是否顺手推一次，以及推什么范围。
+ *
+ * WARN（退出码 5）仍然放行：最常见的 WARN 是架构地图略陈旧之类的提示，
+ * 卡在这里会让这个选项基本没法用。真正的安全线是 BLOCKED(7) 与 FAIL(1)——
+ * 那说明项目状态本身不可用，推上去只会把坏状态同步到平台。
+ */
+export function planSyncPush(
+  options: Pick<SyncCommandOptions, "push" | "check" | "dryRun">,
+  exitCode: number
+): SyncPushPlan {
+  if (options.push === undefined || options.push === false) return { push: false };
+  const scopes = options.push === true
+    ? SYNC_PUSH_DEFAULT_SCOPES
+    : options.push.trim();
+  if (scopes.length === 0 || scopes.split(",").every((value) => value.trim().length === 0)) {
+    return { push: false, reasonCode: "SYNC_PUSH_SCOPE_INVALID" };
+  }
+  if (options.check === true || options.dryRun === true) {
+    return { push: false, reasonCode: "SYNC_PUSH_SKIPPED_READ_ONLY" };
+  }
+  if (exitCode !== 0 && exitCode !== 5) {
+    return { push: false, reasonCode: "SYNC_PUSH_SKIPPED_BLOCKED" };
+  }
+  return { push: true, scopes };
 }
 
 export type SyncStatus =
