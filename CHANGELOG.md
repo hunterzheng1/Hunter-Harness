@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.2.84] — hunter-harness ＋ [0.2.76] — @hunter-harness/workflow-harness（Bundle 0.2.65）
+
+> **CLI ＋ Bundle 同发**：本次改动横跨两侧，单发任一侧都不生效。最低 CLI 版本随之提到
+> `0.2.84`——Bundle 里的 `harness_archive.py` 用 `harness-push --scope …,branch_files`
+> 上传归档交付物，而"交付物算 branch_file"这条分类规则在 CLI 侧，配旧 CLI 会静默上传 0 个文件。
+
+### Fixed（2026-08-18 平台三视图数据流：归档文档与项目资料都收不到内容）
+
+- **归档的 plan/spec/report 永远进不了平台「分支文件」**（`9930707`、`2dcd572`）：
+  归档收尾的 `auto_push_managed_snapshot` 一直调 legacy `hunter-harness push`——那是
+  proposal 管道，写 `project_files_current`、不产生分支快照，平台两个视图都读不到；
+  归档目录下的文档在那条路上还会被 policy-never 全部跳过。这正是 `change_records` 的
+  `document_refs` 长期为空的原因。改走 `harness-push`（remote-sync），scope 显式列
+  `config,rules,architecture,instructions,branch_files`（不用 `all`，避免含义随其展开定义漂移）。
+- **归档树被三道闸串行拦死**（`9930707`）：最先生效的是 `nonScannablePathPrefixes` 里的
+  `.harness/archive`——`excludedPathReason` 在任何分类规则之前就把整棵树判为
+  `CONTENT_PATH_NON_SCANNABLE_KIND`；其次是 `.harness` 兜底的 `CONTENT_PATH_UNDECLARED`；
+  再次是 `branch_file` 分支要求显式 `source_kind` 而工作区遍历没传。现新增
+  `isArchiveDeliverableDocument`，只为 `.harness/archive/<change-key>/{plans|spec|reports|docs}/**`
+  下的**具体文件**开口，且开口置于 credentials / env / state / runtime / `*.log` 等安全排除**之后**——
+  交付物目录里的日志与凭证依然被更早的规则拦下。
+- **遍历在归档第一层就被剪枝**（`9930707`）：即便分类放行，`walkFiles` 仍会因目录本身
+  non-scannable 而 `continue`，交付物根本走不到分类。新增导出 `mayContainArchiveDeliverables`，
+  仅对可能含交付物的归档目录放行下钻。
+- **`subprocess.run` 缺 `encoding=` 静默损坏中文输出**（`2dcd572`）：不指定时中文 Windows 按
+  cp936 解码 UTF-8，CLI 的中文输出被损坏，并可能让随后的 `json.loads` 失败。
+
+### Changed
+
+- `auto_push_managed_snapshot` 的回执解析改为 `summary.applied`（legacy `push` 用 `submitted`）；
+  `unchanged` 改判 `outcome == "no_changes"`——即"仅在有更新时才产生快照"。
+- `harness-archive/SKILL.md`：`managed_snapshot_push` 的载荷说明更新为"每个变更目录的
+  `plans/`、`spec/`、`reports/`、`docs/`"，并写明走 `harness-push` 而非 legacy `push`、
+  哪些过程文件不上传；失败重试命令同步更新。
+
+### 验证
+
+- kld-sdd 真实项目 dry-run：31 个交付物全部判为 `branch_file`，`runtime/`、`meta/`、
+  `evidence/`、`logs/`、`fixback/`、`.publication-staging/` 以及 `runtime/staging/plans/**`、
+  `.publication-staging/<…>/plans/**` 下的 16 个重复副本全部排除（改动前此处为 0 个文件）。
+- vitest 155 文件 / 2137 测试全过；harness Python safe profile 归档相关全过
+  （与 vitest 串行执行，避开并行资源争抢造成的假失败）。
+
 ## [0.2.75] — @hunter-harness/workflow-harness
 
 > 纯 Bundle 发版：CLI 源码零改动，`hunter-harness` 保持 `0.2.83` 不重发；最低 CLI 版本仍为 `0.2.83`。
