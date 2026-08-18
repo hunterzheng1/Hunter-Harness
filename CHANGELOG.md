@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.74] — @hunter-harness/workflow-harness
+
+> 纯 Bundle 发版：CLI 源码零改动，`hunter-harness` 保持 `0.2.83` 不重发；最低 CLI 版本仍为 `0.2.83`。CLI 按 `latest` 标签解析数据包，升级 Bundle 无需换 CLI。
+
+### Fixed（2026-08-18 test/submit 阶段两处逼人造假证据的约束）
+
+- **`ledger record` 对 NOT_APPLICABLE 仍强制 `--files`**（`dc002f4`）：门禁 close 要求 `requiredValidations` 每项都有 entry，与"必须有非空文件集"叠加，逼得调用方拿无关文件（执行日志里是两个单元测试文件）给 `apiTest` 凑数，ledger 从此声称该维度的输入是那些文件——工具逼出来的假证据。现在 `--applicability NOT_APPLICABLE` 免 `--files`，改为强制 `--applicability-reason`。
+- **`ledger can-reuse` 拒绝复用却不说原因**（`dc002f4`）：紧凑投影只留 `ok/reuse/code`，而原因在 `reason`/`detail` 里被裁掉；profile 未配好那条路径连 `code` 都是空的，调用方只能再跑一次 `--verbose`。现在拒绝复用时保留 `reason`/`executionNeed`/`detail`，允许复用时仍是三键。
+- **Java overlay 参考文档 735 处编码损坏**（`dc002f4`）：`harness/overlays/java/harness-run/reference.md` 自 `de4c8aa` 起三字节 UTF-8 序列的第 3 字节被替换成 `0x3f`，随 bundle 部署给 Java 项目的是乱码。按该规则与干净历史版本（`84074ab`）逐字节对齐还原 346 行，余 1 行按上下文人工补 2 字符；`de4c8aa`/`057d104` 的真实内容改动全部保留。
+
+### Added（2026-08-18 给 fail-closed 守卫配正规出路）
+
+- **预存失败豁免**（`8d18970`）：`certify-local` 要求 `unitTestFull=OK`，全量链却卡在与本变更零文件交集的预存失败上，执行者只剩"改 gate-policy 降门禁"或"顺手修范围外的产品 bug"两条路。`knownPreexistingErrors` 早就存在、`preflight record-quirk` 一直在写，却没有任何消费方。现在 `certify-local` 消费它，但只在**声明过且该失败的 ledger 证据里确实出现该签名**时豁免，并把 `{validation, status, pattern, reason}` 写进收据的 `verification.preexistingExemptions` 留痕；证据对不上、或签名短于 8 字符（能匹配一切）的一律照旧阻断，后者还会明确报"签名太宽泛"。
+- **`profile detect` 歧义时交出可填骨架**（`8d18970`）：嵌套/多组件仓库返回 `DETECTION_AMBIGUOUS` 时只有一句 "require an explicit profile"，调用方只能反读 `harness_profile.py` 源码去凑 v3 形状（defaultsFingerprint、excludedRoots 默认集、commands/verificationInputs/verificationGraph 的键、requiredCoverage 取值），执行日志里最终手写了 145 行。现在响应带 `profileTemplate` 与 `hint`；骨架**不落盘**——一份占位 profile 看起来"已配好"比没有更糟。
+- harness-run / harness-test / harness-submit 文档补全 `prepare`/`begin` 的 `--project`（该缺口在 plan/run/test 三份日志里各出现一次），写明上述两条出路，并明确禁止改 `candidateVerification.requiredValidations` 绕过门禁。
+
 ## [0.2.83] — hunter-harness / [0.2.73] — @hunter-harness/workflow-harness
 
 ### Fixed（2026-08-18 v2 规划链路的三处断点）
