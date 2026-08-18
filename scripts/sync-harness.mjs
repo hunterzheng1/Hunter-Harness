@@ -29,12 +29,14 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.65";
+const BUNDLE_VERSION = "0.2.66";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
 // 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py
-// 用 harness-push --scope …,branch_files 上传交付物，配旧 CLI 会静默上传 0 个文件
-const MINIMUM_CLI_VERSION = "0.2.84";
+// 用 harness-push --scope …,branch_files 上传交付物，配旧 CLI 会静默上传 0 个文件；
+// 0.2.85 起交付物边界收窄到 reports/final，本 Bundle 的 SKILL.md 按收窄后的边界描述，
+// 配 0.2.84 会多传 reports/review 与 reports/test，与文档不符
+const MINIMUM_CLI_VERSION = "0.2.85";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",

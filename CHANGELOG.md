@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.85] — hunter-harness ＋ [0.2.77] — @hunter-harness/workflow-harness（Bundle 0.2.66）
+
+> **CLI ＋ Bundle 同发**。最低 CLI 版本提到 `0.2.85`：本 Bundle 的 `harness-archive/SKILL.md`
+> 按收窄后的交付物边界描述，配 `0.2.84` 会多传 `reports/review` 与 `reports/test`，与文档不符。
+
+### Added
+
+- **`sync --push [scopes]`**：`sync` 此前是纯本地元数据体检，要把配置推上平台得另跑一条命令。
+  现在体检通过后可顺带推送一次；省略值时推 `config,rules,architecture,instructions`
+  （与 `push` 自身省略 `--scope` 时的默认范围一致）。判定抽成纯函数 `planSyncPush`：
+  WARN（退出码 5）仍放行——最常见的 WARN 是架构地图略陈旧，卡在这里会让这个选项没法用；
+  BLOCKED(7) 与 FAIL(1) 拒推，那说明项目状态本身不可用；`--check` / `--dry-run` 保持纯只读。
+  跳过时经 stderr 回显 reasonCode，不静默吞掉。
+
+### Fixed
+
+- **归档交付物边界与归档 ZIP 边界不一致**：`0.2.84` 把 `reports/` 整个目录都算交付物，
+  连带把 `review/` 与 `test/` 推上分支文件；而 `harness-knowledge-ingest/SKILL.md` 早已规定
+  归档 ZIP 只许含 `reports/final/summary-data.json`、`spec/**`、`plans/**`、`archive-meta.md`、
+  `change-context.json`，并明确"测试报告、审查报告……不得进入归档包"。两条通道各说各话。
+  现统一：`plans` / `spec` / `docs` 全部，`reports/` 只取 `final/` 的定稿；
+  散落在 `reports/` 根下、不在 `final/` 里的文件同样不算。遍历仍放行 `reports/` 本身
+  （否则到不了 `final/`），但 `reports/review`、`reports/test` 直接剪枝。
+
+### 验证
+
+- kld-sdd 真实项目 dry-run：**31 → 16 个文件**，正好去掉 review 10 ＋ test 5；
+  剩余 16 = plans 11 ＋ spec 2 ＋ reports/final 3，与归档 ZIP 边界严格一致。
+- vitest **156 文件 / 2144 测试全过**；两仓库 lint ＋ typecheck 全绿。
+
 ## [0.2.84] — hunter-harness ＋ [0.2.76] — @hunter-harness/workflow-harness（Bundle 0.2.65）
 
 > **CLI ＋ Bundle 同发**：本次改动横跨两侧，单发任一侧都不生效。最低 CLI 版本随之提到
