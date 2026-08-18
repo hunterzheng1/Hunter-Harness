@@ -1984,14 +1984,17 @@ class CompactOutputTests(unittest.TestCase):
 
             code, payload = self._can_reuse(change, src, [])
             self.assertEqual(code, 0, msg=payload)
-            # compact: only ok/reuse/code (no reason/verification/detail/ledger_path)
+            # compact 仍不倾倒完整 payload：不带 verification/ledger_path/inputsHash。
+            # 但拒绝复用时必须给出可行动的短原因——只回 ok/reuse/code 会逼调用方
+            # 再跑一次 --verbose 才知道该怎么办（profile 未配好时 code 甚至为空）。
             self.assertEqual(payload["ok"], True)
             self.assertIn("reuse", payload)
             self.assertIn("code", payload)
-            self.assertNotIn("reason", payload)
             self.assertNotIn("verification", payload)
             self.assertNotIn("ledger_path", payload)
             self.assertNotIn("inputsHash", payload)
+            if payload["reuse"] is not True:
+                self.assertIn("reason", payload)
 
     def test_can_reuse_verbose_returns_full_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

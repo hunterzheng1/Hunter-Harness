@@ -93,7 +93,7 @@ Runner 强制同项目单实例、低调度优先级、逐命令超时、正常�
 
 ### Phase 0：环境准备（主会话执行，需要交互确认）
 
-先 `harness_context.py prepare --phase test --executor <tool> [--change <id>] --json`，再 `harness_context.py begin --phase test --change <id> --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
+先 `harness_context.py prepare --project . --change <id> --phase test --executor <tool> --json`（`--project` 必填，漏了直接 argparse 报错），再 `harness_context.py begin --project . --change <id> --phase test --executor <tool> --json` 校验最新 run→test receipt 的 artifact/hash/HEAD；然后 **`harness_gate.py begin --phase test --change <id>`**（禁止手工 phase.start / 手写 ledger）。执行各项强制环境检查 + **命令执行模式 preflight (0.1)**；只有首选执行器不可用时，才执行 fallback 执行器探测。
 
 验证写入**仅**允许 `harness_ledger.py record` / `can-reuse`；禁止 Write/Edit `verification-ledger.json`。测试跟踪：gate begin → 执行（可选 `harness_test_guard.py mark stale-test-repair`）→ 单次 `harness_gate.py close`。`--to-phase` 取实际阶段计划的后继；Fixback 返回 run，普通流程可直接进入 Review、Submit 或 Archive。Fixback 只失效与改动文件相交的验证目标。
 

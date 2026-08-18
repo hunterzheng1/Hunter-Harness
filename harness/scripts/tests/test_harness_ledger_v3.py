@@ -975,5 +975,119 @@ class OwnershipDiffTests(LedgerV3Fixture):
         self.assertFalse(ledger._matches_ownership_path("scripts/main.py", "src/**"))
 
 
+class CanReuseReasonVisibilityTests(unittest.TestCase):
+    """紧凑输出必须说明为什么不能复用。
+
+    此前 compact 只留 ok/reuse/code，而 profile 未配好时原因在 reason/detail 里，
+    于是调用方拿到裸 {"reuse": false} 什么也判断不了，只能再跑一次 --verbose——
+    执行日志里就是这么白花一轮。
+    """
+
+    def test_compact_keeps_reason_when_reuse_is_denied(self) -> None:
+        payload = {
+            "ok": True,
+            "reuse": False,
+            "reason": "insufficient-evidence",
+            "verification": "unitTest",
+            "detail": "verificationInputs.unitTest missing in build-profile.json",
+        }
+
+        compact = ledger._compact_can_reuse_payload(payload)
+
+        self.assertIs(compact["reuse"], False)
+        self.assertEqual(compact["reason"], "insufficient-evidence")
+        self.assertIn("build-profile.json", compact["detail"])
+
+    def test_compact_keeps_execution_need_when_present(self) -> None:
+        payload = {
+            "ok": True,
+            "reuse": False,
+            "code": "LEDGER_EVIDENCE_INCOMPLETE",
+            "executionNeed": "evidence-incomplete",
+        }
+
+        compact = ledger._compact_can_reuse_payload(payload)
+
+        self.assertEqual(compact["executionNeed"], "evidence-incomplete")
+        self.assertEqual(compact["code"], "LEDGER_EVIDENCE_INCOMPLETE")
+
+    def test_compact_stays_terse_when_reuse_is_granted(self) -> None:
+        payload = {
+            "ok": True,
+            "reuse": True,
+            "code": "LEDGER_REUSABLE",
+            "detail": "irrelevant when reusable",
+        }
+
+        compact = ledger._compact_can_reuse_payload(payload)
+
+        self.assertEqual(set(compact), {"ok", "reuse", "code"})
+
+
+class NotApplicableRecordTests(LedgerV3Fixture):
+    """NOT_APPLICABLE 的 validation 不该被逼着编一套输入文件。
+
+    门禁 close 要求 requiredValidations 每项都有 ledger entry，而 record 又要求
+    非空文件集——执行日志里的结果是拿两个单元测试文件给 apiTest 凑数，ledger 从此
+    声称 apiTest 的输入是那两个文件，是假证据。
+    """
+
+    def test_not_applicable_records_without_a_file_set(self) -> None:
+        code, out, err = self.run_cli([
+            "record",
+            "--change-dir", str(self.change_dir),
+            "--verification", "apiTest",
+            "--status", "NOT_RUN",
+            "--command", "n/a",
+            "--exit-code", "0",
+            "--duration-ms", "0",
+            "--evidence", "场景表无接口场景",
+            "--applicability", "NOT_APPLICABLE",
+            "--applicability-reason", "场景表 coverage 标注 integration_impact=not_applicable",
+            "--json",
+        ])
+
+        self.assertEqual(code, 0, f"out={out} err={err}")
+        payload = json.loads(out)
+        self.assertTrue(payload["ok"], payload)
+
+    def test_not_applicable_entry_carries_empty_inputs_and_reason(self) -> None:
+        self.run_cli([
+            "record",
+            "--change-dir", str(self.change_dir),
+            "--verification", "apiTest",
+            "--status", "NOT_RUN",
+            "--command", "n/a",
+            "--exit-code", "0",
+            "--duration-ms", "0",
+            "--evidence", "场景表无接口场景",
+            "--applicability", "NOT_APPLICABLE",
+            "--applicability-reason", "无 API 场景",
+            "--json",
+        ])
+
+        ledger_doc, _ = ledger.load_ledger(self.change_dir)
+        entry = ledger_doc["validations"]["apiTest"]
+        self.assertEqual(entry["applicability"]["applicability"], "NOT_APPLICABLE")
+        self.assertEqual(entry["applicability"]["reason"], "无 API 场景")
+        # 不得借无关文件充当输入——那会让证据说谎
+        self.assertEqual(entry.get("inputsFiles"), [])
+
+    def test_applicable_record_still_requires_files(self) -> None:
+        code, out, _ = self.run_cli([
+            "record",
+            "--change-dir", str(self.change_dir),
+            "--verification", "apiTest",
+            "--status", "OK",
+            "--command", "npm run test:api",
+            "--exit-code", "0",
+            "--duration-ms", "12",
+            "--evidence", "passed",
+            "--json",
+        ])
+
+        self.assertNotEqual(code, 0, out)
+
+
 if __name__ == "__main__":
     unittest.main()

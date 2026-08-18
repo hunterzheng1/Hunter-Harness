@@ -273,6 +273,8 @@ powershell.exe -NoProfile -Command "try { (Invoke-WebRequest -Uri 'http://127.0.
 - [ ] 复用 → 跳过重跑，标记"✅ 复用 harness-run 单元测试结果"
 - [ ] 不复用 → 按 profile key resolve 重跑测试命令（`harness_profile.py resolve --key unitTest`，不复制示例 `-pl` 命令），结果写回 ledger 的 `unitTest` 项
 - [ ] HTTP/API 契约结果写入 `apiTest`；真实浏览器/真实栈 Playwright 结果写入 `browserTest`，两者不得互相覆盖
+- [ ] **本变更没有该维度场景时**（如全部为单元场景 → 无 API 场景）：用 `harness_ledger.py record --verification apiTest --status NOT_RUN --applicability NOT_APPLICABLE --applicability-reason "<为什么不适用>"` 登记，**不传 `--files`**。门禁 close 要求 requiredValidations 每项都有 entry，但**绝不能拿无关文件（比如单元测试文件）凑 `--files`**——那会让 ledger 声称该维度的输入是那些文件，是假证据
+- [ ] `can-reuse` 返回 `reuse:false` 时直接读默认输出里的 `reason`/`executionNeed`/`detail` 定位原因，不必再补跑 `--verbose`
 - [ ] 复用判断前以 `harness_ledger.py diff-hash --repo . --base <baseCommit> --change-dir ".harness/changes/<change-name>" --json` 重算指纹；test-tracking manifest 无效或 hash 漂移即停止
 - [ ] 测试失败若明确为陈旧测试，仅在当前代码/批准计划/可验证历史唯一确定新契约且只改测试时自动修复；否则记录 `BLOCKED_PREEXISTING`
 - [ ] 自动修复后立即重跑该测试与目标测试，并以 `harness_test_guard.py record ... --reason stale-test-repair` 记录精确路径

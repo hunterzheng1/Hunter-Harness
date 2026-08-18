@@ -304,12 +304,23 @@ def _compact_record_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _compact_can_reuse_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """C5: can-reuse compact — ok/reuse/code only."""
-    return {
+    """C5: can-reuse compact — ok/reuse/code；拒绝复用时附带可执行的原因。
+
+    只回 ok/reuse/code 时，调用方拿到裸 `{"reuse": false}` 无从判断该怎么办，
+    只能再跑一次 `--verbose`——原因（profile 缺 verificationInputs、证据不完整等）
+    是单行短文本，值得留在默认输出里。允许复用时保持原样精简。
+    """
+    compact = {
         "ok": payload.get("ok", True),
         "reuse": payload.get("reuse"),
         "code": payload.get("code"),
     }
+    if payload.get("reuse") is not True:
+        for key in ("reason", "executionNeed", "detail"):
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                compact[key] = value
+    return compact
 
 
 def emit_compact_or_verbose(
@@ -2581,9 +2592,19 @@ def cmd_record(args: argparse.Namespace) -> int:
                     error_code="PROFILE_INPUT_FILES_CONFLICT",
                 )
         files = profile_files
-    if not files:
+    # NOT_APPLICABLE 的 validation 没有输入文件可言。门禁 close 又要求
+    # requiredValidations 每项都有 entry——两条规则叠加会逼调用方拿无关文件凑数，
+    # ledger 从此声称该 validation 的输入是那些文件，是假证据。
+    not_applicable = str(getattr(args, "applicability", "") or "") == "NOT_APPLICABLE"
+    if not files and not not_applicable:
         return emit_error(
-            "record requires --files or a non-empty --profile-input file set",
+            "record requires --files or a non-empty --profile-input file set; "
+            "unless --applicability NOT_APPLICABLE (then --applicability-reason is required)",
+            as_json=as_json,
+        )
+    if not_applicable and not _nonempty_str(getattr(args, "applicability_reason", None)):
+        return emit_error(
+            "NOT_APPLICABLE requires --applicability-reason",
             as_json=as_json,
         )
 
