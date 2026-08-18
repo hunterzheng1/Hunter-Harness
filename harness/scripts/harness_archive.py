@@ -9229,16 +9229,25 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError):
         output = None
     if completed.returncode != 0 or not isinstance(output, dict):
-        return {
+        # 失败时丢掉 stdout/stderr 等于把线索一起丢了：plan/spec 与规则、架构地图
+        # 全靠这条推送上平台，用户在平台上只会看到"东西没上去"，却无从查为什么。
+        # 保留有界的诊断片段（push 本身拒绝上传 secret，这里再截断兜底）。
+        detail = (completed.stderr or completed.stdout or "").strip()
+        failure: dict[str, Any] = {
             "ok": False,
             "skipped": False,
             "exitCode": completed.returncode,
             "reasonCode": "MANAGED_SNAPSHOT_UPLOAD_FAILED",
+            "detail": detail[-2_048:],
             "warning": (
-                "项目规则与架构地图未能同步到平台；归档不受影响，"
-                "稍后可运行 npx hunter-harness push --yes --non-interactive 重试。"
+                "项目规则与架构地图未能同步到平台（plan/spec 也随这条推送上传）；"
+                "归档不受影响，稍后可运行 npx hunter-harness push --yes --non-interactive 重试。"
             ),
         }
+        cli_code = output.get("code") or output.get("reason_code") if isinstance(output, dict) else None
+        if isinstance(cli_code, str) and cli_code:
+            failure["cliCode"] = cli_code
+        return failure
     summary = output.get("summary")
     submitted = summary.get("submitted", 0) if isinstance(summary, dict) else 0
     return {

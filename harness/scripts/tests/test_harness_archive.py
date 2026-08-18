@@ -3693,5 +3693,62 @@ class RemoteDurabilityReconciliationTests(unittest.TestCase):
             self.assertEqual(written["changeName"], "demo")  # 其余字段不动
 
 
+class ManagedSnapshotFailureDiagnosticsTests(unittest.TestCase):
+    """受管快照推送失败时必须留下可行动的原因。
+
+    plan/spec、.harness/codebase、.harness/rules 全靠这条推送上平台（push 会 walk
+    每个归档目录的 spec/ 与 plans/）。它在归档里是 best-effort：失败只记一句
+    "未能同步到平台…稍后重试"，把 stdout/stderr 整个丢掉。实况就是这条挂了
+    （exitCode=1），用户在平台上只看到更早一次推送留下的 3 个配置文件，而没有
+    任何线索能查为什么。
+    """
+
+    def _run(self, *, returncode: int, stdout: str = "", stderr: str = ""):
+        completed = subprocess.CompletedProcess(
+            args=["npx"], returncode=returncode, stdout=stdout, stderr=stderr
+        )
+        with mock.patch.object(
+            ha, "_resolve_archive_remote_credentials",
+            return_value={"configured": True, "serverUrl": "https://example.invalid",
+                          "tokenEnv": None, "missing": []},
+        ), mock.patch.object(ha, "resolve_npx_launcher", return_value=["npx"]), \
+                mock.patch.object(ha.subprocess, "run", return_value=completed):
+            return ha.auto_push_managed_snapshot(Path("."))
+
+    def test_failure_keeps_a_bounded_stderr_tail(self) -> None:
+        result = self._run(
+            returncode=1,
+            stderr="PUSH_CREDENTIALS_INVALID: token rejected by server\n",
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reasonCode"], "MANAGED_SNAPSHOT_UPLOAD_FAILED")
+        self.assertIn("PUSH_CREDENTIALS_INVALID", result["detail"])
+
+    def test_failure_surfaces_the_cli_error_code_when_json_is_emitted(self) -> None:
+        result = self._run(
+            returncode=1,
+            stdout=json.dumps({"ok": False, "code": "PUSH_SECRET_SCAN_BLOCKED"}),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["cliCode"], "PUSH_SECRET_SCAN_BLOCKED")
+
+    def test_detail_is_length_bounded(self) -> None:
+        result = self._run(returncode=1, stderr="x" * 10_000)
+
+        self.assertLessEqual(len(result["detail"]), 2_048)
+
+    def test_success_path_stays_unchanged(self) -> None:
+        result = self._run(
+            returncode=0,
+            stdout=json.dumps({"ok": True, "project_id": "prj_x", "summary": {"submitted": 12}}),
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["submitted"], 12)
+        self.assertNotIn("detail", result)
+
+
 if __name__ == "__main__":
     unittest.main()

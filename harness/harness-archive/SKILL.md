@@ -192,15 +192,21 @@ git 命令通过 `powershell.exe -Command "..."` 执行；archive-meta.md 和 su
 - `.harness/archive/YYYY-MM-DD-<change-name>/evidence/archive-manifest-before.json` / `archive-manifest-after.json` — 归档前后 manifest/checksum
 - `.harness/state/local/archive-packages/<change-name>.remote.json` — 远端上传回执（`archiveId`/`archiveStatus`/`knowledgeStatus`/`uploadStatus`/`fileCount`）
 
-### 结束报告必须回显上传回执 ⚠️
+### 结束报告必须回显两条上传结果 ⚠️
 
-`execute` 的返回里已经带 `archiveId`/`archiveStatus`/`knowledgeStatus`/`uploadStatus`（同样落盘在上面的 `.remote.json`）。**结束报告必须把这四项原样列出**，例如：
+归档会做**两次**独立上传，二者成败无关，必须分别如实回显：
+
+| 上传 | 载什么 | 结果在哪 |
+|------|--------|---------|
+| `steps.archive_push` | 归档 ZIP（核心产物） | `archiveId`/`archiveStatus`/`uploadStatus`/`knowledgeStatus`，同时落盘 `state/local/archive-packages/<cn>.remote.json` |
+| `steps.managed_snapshot_push` | **plan/spec 文档、`.harness/codebase` 架构地图、`.harness/rules`**（push 会 walk 每个归档目录的 `spec/` 与 `plans/`） | `ok`/`reasonCode`/`exitCode`/`cliCode`/`detail` |
 
 ```
 远端归档：arc_3ff325bb…（archiveStatus=durable，uploadStatus=ready，knowledgeStatus=ready，8 文件）
+受管快照：❌ MANAGED_SNAPSHOT_UPLOAD_FAILED（exitCode=1，detail=…）→ plan/spec 与规则/架构地图未上平台，需 npx hunter-harness push --yes --non-interactive 重试
 ```
 
-不回显时用户无从判断"到底传上去没有、线上知识提取跑没跑"——数据一直都在，只是没说。凭据缺失或上传失败时同样如实列出 `reasonCode`（如 `ARCHIVE_UPLOAD_CREDENTIALS_MISSING`），不得省略或写成"已完成"。
+**第二条尤其不能省**：它是 best-effort，失败不阻断归档，于是最容易被淹没成一句警告——而平台上"分支文件里没有 plan/spec"正是它失败的后果。成功时也要写明 `submitted` 数量；`ok=false` 时必须带上 `reasonCode` 与 `detail`，不得省略或写成"已完成"。
 
 ## 渐进披露
 
