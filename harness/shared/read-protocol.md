@@ -1,9 +1,9 @@
 ## 统一读取协议
 
 1. **`.harness/changes/<change-name>/` 是唯一真相源** — 所有输入从该目录读取，产物写入对应子目录
-2. **change-name 优先从 frontmatter 读取** — `spec/*-design.md`、`plans/*-plan.md` 的 YAML `change-name`
+2. **change-name 优先从 frontmatter 读取** — `plans/*-design.md`、`spec/*-design.md`、`plans/*-plan.md` 的 YAML `change-name`
 3. **frontmatter 缺失时兼容旧格式** — 从路径推断，标记 `🟡 legacy-plan`，不失败
-4. **spec** — 设计真相源：`spec/<change>-design.md`
+4. **design** — 设计真相源按序取第一个存在的：`plans/<change>-design.md`（v2 发布产物，哈希绑定）→ `spec/<change>-design.md`（legacy 手写）。两份**同时存在**时以 `plans/` 为准，并记 `🟡 WARN 设计文档双份`——v2 发布的那份才受完整性门禁保护，读手写的那份等于绕过校验
 5. **plan** — 任务真相源：`plans/<change>-plan.md`
 6. **implementation-detail** — 自适应执行参考；legacy 缺失 🟡WARN，不阻断
 7. **test-scenarios** — 测试真相源：`plans/<change>-test-scenarios.md`

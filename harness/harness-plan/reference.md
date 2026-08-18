@@ -104,11 +104,16 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 
 > **本阶段是强制检查点。** 先展示设计审批包，收到确认并追加 decision 事件后，才能落盘 `status: approved` 的设计文档并进入阶段 6（任务拆分）。设计方向正确后再细化任务，避免基于错误理解拆分无效任务。
 
-**用户确认后必须立即写入** `.harness/changes/<change-name>/spec/<change-name>-design.md`。如果此文件不存在，harness-plan 不得进入阶段 6。
+**用户确认后必须立即追加 decision 事件**，然后按路径分流落盘：
 
-**设计文档路径规则**：设计文档必须保存到 `.harness/changes/<change-name>/spec/<change-name>-design.md`。禁止保存到 `docs/superpowers/specs/` 作为正式产物；`/harness-plan` 不运行时调用 Superpowers。
+| 路径 | 审批内容去哪 | 设计文档 |
+|------|------------|---------|
+| **v2**（默认） | `meta/plan-evidence-input.json` 的 `approval.content` + `approver_id` | `plans/<change-name>-design.md`，由 finalize 从审批内容派生——**不要手写**，手写的会被派生渲染覆盖 |
+| **legacy** | 直接写文档 | `.harness/changes/<change-name>/spec/<change-name>-design.md`（不存在则不得进入阶段 6） |
 
-### 设计文档模板
+**设计文档路径规则**：禁止保存到 `docs/superpowers/specs/` 作为正式产物；`/harness-plan` 不运行时调用 Superpowers。同一 change 不得同时存在 `plans/` 与 `spec/` 两份设计——v2 发布的那份才受完整性门禁保护。
+
+### 设计文档模板（legacy 路径手写时使用；v2 由 finalize 派生，此模板仅作内容清单参考）
 
 ```markdown
 ---
@@ -181,14 +186,18 @@ source: harness-plan
 
 ### 产物结构
 
-推荐结构：
-
 ```
 .harness/changes/<change-name>/plans/
+├── <change-name>-design.md                  # 设计（v2 由 finalize 派生）
 ├── <change-name>-plan.md                    # harness 简洁任务表，run 默认读取
 ├── <change-name>-implementation-detail.md   # 原生自适应详细执行参考，run 补充读取
 └── <change-name>-test-scenarios.md          # 测试场景表
 ```
+
+> **v2 路径下这四份都是派生产物**：唯一手写的是 `meta/plan-evidence-input.json`。
+> 阶段 6 的任务拆分结果直接填进它的 `structured_input.tasks`，阶段 7 的场景填 `structured_input.scenarios`——
+> 同一份内容不要先写成 Markdown 再誊进 JSON，finalize 会用派生渲染覆盖手写的 Markdown。
+> 下面的 Markdown 格式说明用于**理解字段语义**与 legacy 路径手写。
 
 ### 计划文件 frontmatter（必须）
 
@@ -284,10 +293,12 @@ status: approved
    .harness/changes/<change-name>/backups/
    ```
 
-3. **保存设计文档**：将阶段 4 已确认的设计文档保存到：
-   - `.harness/changes/<change-name>/spec/<change-name>-design.md`
+3. **保存设计文档**：
+   - **v2**：不手写文档；把审批内容填进 `meta/plan-evidence-input.json` 的 `approval.content`，
+     `plans/<change-name>-design.md` 由 finalize 派生（frontmatter 也由渲染器写）
+   - **legacy**：保存到 `.harness/changes/<change-name>/spec/<change-name>-design.md`
 
-   设计文档 frontmatter 格式：
+   legacy 设计文档 frontmatter 格式：
    ```yaml
    ---
    change-name: <change-name>
@@ -299,14 +310,17 @@ status: approved
 
    > 如果 frontmatter 缺失，后续 run/test/review/submit/archive 不得依赖模型猜测 change-name。
 
-4. **初始化结构化事件**：确定 change-name 后，立即生成稳定的 `<plan-run-id>`（必须小写字母开头：v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒——统一用 `plan_<uuid>` 形状，contracts `createPlanRunId()`；同一次 plan 尝试内不得改变；首次 `<attempt>` 为 `1`），运行 `harness_events.py append --change-dir ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>`。finalizer 必须复用完全相同的 `--run-id` / `--attempt`，否则 verify 会按生命周期身份 fail-closed。脚本负责建立父目录和 `events.ndjson`；执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
+4. **初始化结构化事件**：由阶段 0.5 的 `harness_context.py bootstrap-plan` 一次完成——它生成合规的 `<plan-run-id>`（`plan_<uuid>` 形状，必须小写字母开头：v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒）、`<attempt>`（首次为 `1`）并追加 `phase.start`，重跑复用同一身份不重复写事件。finalizer 必须复用引导返回的 `runId`/`attempt`，否则 verify 会按生命周期身份 fail-closed。同一次 plan 尝试内不得改变身份。执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
-5. **保存计划文件**：计划文件包含 YAML frontmatter（含 change-name），保存到：
-   - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
-   - `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（自适应详细执行参考）
-   - `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md`（测试场景表）
+5. **保存计划文件**：
+   - **v2**：不手写；任务填 `structured_input.tasks`、场景填 `structured_input.scenarios`，
+     `plans/` 下四份 Markdown 全部由 finalize 派生
+   - **legacy**：手写并保存到（含 YAML frontmatter，含 change-name）
+     - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
+     - `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（自适应详细执行参考）
+     - `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md`（测试场景表）
 
-   计划文件 frontmatter 格式：
+   legacy 计划文件 frontmatter 格式：
    ```yaml
    ---
    change-name: <change-name>
@@ -327,23 +341,27 @@ status: approved
 
 ## 阶段 8：结束前产物完整性检查 ⚠️ 强制
 
-> **缺任一文件 → ❌FAIL，不得宣称 plan 完成。**
+> **缺任一文件 → ❌FAIL，不得宣称 plan 完成。先认清走的是 v2 还是 legacy——两条路径的必需文件集不同，拿 legacy 的表去查 v2 会得出假失败。**
 
-| 文件 | 必须存在 |
-|------|:---:|
-| `.harness/changes/<change>/spec/<change>-design.md` | ✅ |
-| `.harness/changes/<change>/plans/<change>-plan.md` | ✅ |
-| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ |
-| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ |
-| `.harness/changes/<change>/meta/gate-policy.json` | ✅ |
-| `.harness/changes/<change>/meta/worktree.json` | ✅ |
-| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ |
-| `.harness/changes/<change>/meta/scenario-manifest.json` | ✅ |
-| `.harness/changes/<change>/meta/plan-finalization.json` | ✅ |
-| `.harness/changes/<change>/logs/execution-log.md` | ✅ |
-| `.harness/changes/<change>/events.ndjson` | ✅ |
+| 文件 | v2 | legacy |
+|------|:---:|:---:|
+| `.harness/changes/<change>/meta/plan-evidence-input.json` | ✅ | — |
+| `.harness/changes/<change>/plans/<change>-design.md` | ✅（派生） | — |
+| `.harness/changes/<change>/spec/<change>-design.md` | — | ✅ |
+| `.harness/changes/<change>/plans/<change>-plan.md` | ✅（派生） | ✅ |
+| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅（派生） | ✅ |
+| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅（派生） | ✅ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | ✅ |
+| `.harness/changes/<change>/meta/worktree.json` | ✅ | ✅ |
+| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | ✅ |
+| `.harness/changes/<change>/meta/scenario-manifest.json` | ✅ | ✅ |
+| `.harness/changes/<change>/meta/publication-journals/<op>.json`（committed） | ✅ | — |
+| `.harness/changes/<change>/meta/plan-events.ndjson` | ✅ | — |
+| `.harness/changes/<change>/meta/plan-finalization.json` | — | ✅ |
+| `.harness/changes/<change>/logs/execution-log.md` | — | ✅ |
+| `.harness/changes/<change>/events.ndjson` | ✅ | ✅ |
 
-`plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
+legacy 的 `plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
 
 ### 阶段 8 v2 路径（结构化证据包流程，新 change 优先）
 
@@ -363,8 +381,32 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 > ```bash
 > npx hunter-harness plan evidence-pack --print-template > .harness/changes/<cn>/meta/plan-evidence-input.json
 > ```
-> 输出是带 `<...>` 占位符的完整骨架，逐项替换即可；替换完 grep 一次 `<` 自检有无遗漏。
-> `--print-template` 不读写任何文件，只打到 stdout。
+> **骨架一个字不改就能通过 `evidence-pack`**（回归测试冻结这条不变量），所以可以先跑一次确认链路通，再逐项替换。
+> 注意这只保证结构合法：`finalize` 还要求 `change_key` 与 `run_id` 是本次真实身份，占位值过不了发布。
+> 自由文本字段用 `<...>` 占位，替换完 grep 一次 `<` 自检有无遗漏。`--print-template` 不读写任何文件，只打到 stdout。
+
+**带不了 `<>` 的占位字段**（受枚举/哈希/命名约束，grep `<` 查不出来，必须逐个确认）：
+
+| 字段 | 模板占位值 | 换成什么 |
+|------|-----------|---------|
+| `change_key` | `replace-with-change-name` | 真实 change-name（kebab-case：`^[a-z0-9]+(-[a-z0-9]+)*$`） |
+| `context.run_id` | `plan_replace-with-your-plan-run-id` | 阶段 0.5 生成、`phase.start` 已用的**同一个** plan-run-id |
+| `evidence_sources[].content_hash` | `sha256:deadbeef…` | 证据源内容的真实 sha256（校验器显式拒绝全 0） |
+| `risk_signals` | `["production_code"]` | classify 实际返回的信号 |
+
+**容易踩的硬约束**（违反时命令会给 `field_path`，不必再猜）：
+
+- `structured_input.scenarios` **至少 3 条**——八维度缺项由命令补 `not_applicable`，但场景总数不能少于 3
+- `intent.acceptance_examples` 2~5 条，`approval.content.acceptance_examples` 3~7 条 → 取 3 条同时满足
+- `key_alternatives` / `invariants` / `failure_behaviors` / `compatibility_boundaries` 各至少 1 条
+- `intent.in_scope`/`out_of_scope` 与 `approval.content` 同名字段必须**集合相等**
+- tasks 只写 `task_id/objective/affected_paths/owner_phase`，六个 refs 数组由命令接线；多写 `cluster`/`title` 这类键会因精确键集被拒
+- scenarios 只写 `scenario_id/title/acceptance/coverage_dimension/execution_level/evidence_requirements/risk_level`（+可选 `verification_command`）；`priority`/`test_file` 这类计划表列不属于本输入
+- `machine.worktree_policy` ∈ `project_default | required | forbidden`（没有 `none`）
+
+> **结构错了怎么读报错**：命令在边界返回 `code:"PLAN_EVIDENCE_INPUT_INVALID"`（`stage:"boundary"`），
+> `field_path` 指向第一处问题，`problems[]` 逐条给 `missing_keys`/`unexpected_keys`/`message`。
+> 按 `problems` 改完重跑即可——**不需要**去反编译 `dist/bin.js` 或翻 npx 缓存找校验器。
 
 | 字段 | 内容 | 定稿阶段 |
 |------|------|:---:|

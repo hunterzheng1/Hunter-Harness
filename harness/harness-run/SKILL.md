@@ -37,7 +37,7 @@ disallowed-tools:
 
 ## 前置条件
 
-- `spec/*-design.md`、`plans/*-plan.md`（含 frontmatter）存在且已审批
+- 设计文档（`plans/*-design.md` 优先，回退 `spec/*-design.md`）与 `plans/*-plan.md`（含 frontmatter）存在且已审批
 - 读 `meta/worktree.json`：`requested=true` 时 worktree 须存在或 run 负责创建
 
 <!-- @include shared/worktree-gate.md -->

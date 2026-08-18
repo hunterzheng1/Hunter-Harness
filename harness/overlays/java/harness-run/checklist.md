@@ -24,7 +24,7 @@
 - [ ] 读取并执行 `worktree.json`：如果 `requested=true` 必须创建/切换 worktree，创建失败则停止或询问用户改为主目录；禁止静默降级
 - [ ] **读取计划文件（主任务源）**：`.harness/changes/<change>/plans/<change>-plan.md` — 获取任务列表和依赖关系
 - [ ] **读取详细计划（补充参考）**：`.harness/changes/<change>/plans/<change>-implementation-detail.md`（如存在）
-- [ ] **读取设计文档**：`.harness/changes/<change>/spec/<change>-design.md` — 获取核心设计决策和不变项
+- [ ] **读取设计文档**：`.harness/changes/<change>/plans/<change>-design.md`（v2）；不存在时回退 `spec/<change>-design.md`（legacy）— 获取核心设计决策和不变项
 - [ ] **读取测试场景表**：`.harness/changes/<change>/plans/<change>-test-scenarios.md` — 获取与当前任务相关的测试场景
 - [ ] **读取验证账本**：通过共享状态目录解析器定位 change，再读取 `evidence/verification-ledger.json`（兼容旧路径）— 复用已有 compile/unitTest 结果
 - [ ] **读取任务状态**：`.harness/changes/<change>/run-task-status.md`（如存在）— 恢复上次运行状态

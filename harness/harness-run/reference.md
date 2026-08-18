@@ -19,7 +19,7 @@ description: harness-run 的编译失败策略表、TDD循环详细步骤和编�
 
 ## 前置条件
 
-- `.harness/changes/<change-name>/spec/<change-name>-design.md` 存在（含完整 frontmatter）
+- 设计文档存在：`plans/<change-name>-design.md`（v2）或 `spec/<change-name>-design.md`（legacy，含完整 frontmatter），按 `shared/read-protocol.md` 的顺序取第一个
 - `.harness/changes/<change-name>/plans/<change-name>-plan.md` 存在（含完整 frontmatter）
 - `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` 存在
 - `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（新版必需，legacy 缺失时 🟡WARN）
@@ -90,7 +90,7 @@ requested=true + path missing
 2. **读取并执行 worktree 决策**：读取 `.harness/changes/<change-name>/meta/worktree.json`。如果 `requested=false`，在主目录执行；如果 `requested=true` 且 worktree 存在，必须 cd 到该 worktree；如果 `requested=true` 且 worktree 不存在，必须创建 worktree，创建失败则停止或询问用户是否改为主目录执行。禁止静默降级。
 3. **读取计划文件（主任务源）**：`.harness/changes/<change-name>/plans/<change-name>-plan.md` → 获取任务列表和依赖关系
 4. **读取详细计划（补充参考）**：`.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（新版必需，legacy 缺失时 🟡WARN）→ 获取自适应执行参考
-5. **读取设计文档**：`.harness/changes/<change-name>/spec/<change-name>-design.md` → 获取核心设计决策和不变项
+5. **读取设计文档**：`.harness/changes/<change-name>/plans/<change-name>-design.md`（v2 发布产物）→ 不存在时回退 `spec/<change-name>-design.md`（legacy）→ 获取核心设计决策和不变项
 6. **读取测试场景表**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` → 获取测试真相源
 7. **读取验证账本**：通过 state layout resolver 定位 `evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状态**：`.harness/changes/<change-name>/evidence/run-task-status.md`（如存在）→ 恢复上次运行状态
@@ -113,7 +113,7 @@ requested=true + path missing
 
 ```
 检查逻辑：
-1. 读取 .harness/changes/<change-name>/spec/<change-name>-design.md
+1. 读取 .harness/changes/<change-name>/plans/<change-name>-design.md（不存在则回退 spec/<change-name>-design.md）
 2. 读取 .harness/changes/<change-name>/plans/<change-name>-plan.md
 3. 读取 .harness/changes/<change-name>/plans/<change-name>-implementation-detail.md（legacy 缺失时 🟡WARN）
 4. 读取 .harness/changes/<change-name>/plans/<change-name>-test-scenarios.md

@@ -779,6 +779,150 @@ def prepare_context(
     }
 
 
+def _plan_run_identity(change_dir: Path) -> tuple[str, int] | None:
+    """已存在的 plan `phase.start` 身份（run-id, attempt）。
+
+    finalize 按生命周期身份 fail-closed：重跑引导时换一个 run-id，整条链路就对不上。
+    因此引导必须复用已有身份，而不是每次新生成。
+    """
+    for item in reversed(_read_ndjson(change_dir / "events.ndjson")):
+        if item.get("phase") != "plan" or item.get("type") != "phase.start":
+            continue
+        run_id = item.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            attempt = item.get("attempt")
+            return run_id, attempt if isinstance(attempt, int) and attempt > 0 else 1
+    return None
+
+
+def bootstrap_plan(
+    project: Path,
+    *,
+    change: str,
+    executor: str,
+    display_title: str | None = None,
+    stage: str = "plan",
+    ttl_seconds: int = 3600,
+) -> dict[str, Any]:
+    """阶段 0 一次性引导：doctor + prepare + capture + classify + phase.start。
+
+    拆成五条子进程调用时，每条的完整 argv 都要调用方记住（少 `--project` 或
+    `--change-dir` 就白跑一轮），run-id 还要调用方自己保证小写字母开头。这些都是
+    确定性工作，交给脚本做；调用方只需要一次调用和一份紧凑摘要。
+
+    重跑安全：已有 plan `phase.start` 时复用同一 run-id / attempt，不追加第二条。
+    """
+    import uuid
+
+    import harness_change as hchg
+    import harness_events as he
+    import harness_gate as hg
+    import harness_runtime as hr
+    import harness_state as hs
+
+    project = Path(project).resolve()
+    changes_root = project / ".harness" / "changes"
+    if not changes_root.is_dir():
+        return {
+            "ok": False,
+            "code": "PROJECT_ROOT_INVALID",
+            "error": f"{changes_root} 不存在——先在该项目运行 hunter-harness init",
+        }
+
+    # 新 change 的目录此前没有任何脚本负责创建，靠的是后续 Write 的副作用；
+    # 引导阶段显式建立骨架，prepare 才有 contract 可读
+    change_dir = changes_root / change
+    created_change = not change_dir.is_dir()
+    if created_change:
+        (change_dir / "meta").mkdir(parents=True, exist_ok=True)
+    hchg.migrate_change(project, change)
+
+    prepared = prepare_context(
+        project,
+        phase="plan",
+        executor=executor,
+        change=change,
+        display_title=display_title,
+        ttl_seconds=ttl_seconds,
+    )
+    if not prepared.get("ok"):
+        return prepared
+
+    change_name = str(prepared["changeName"])
+    # executionRoot 是代码执行根（无 worktree 时等于项目根），change_dir 才是状态目录。
+    # 计划产物一律落 change_dir，混用会把 gate-policy/events 写到项目根去。
+    change_dir = (changes_root / change_name).resolve()
+    execution_root = Path(prepared["executionRoot"])
+
+    # doctor 失败不阻断引导：它是环境体检，结论随摘要返回给调用方判断
+    try:
+        health = hr.doctor(project, change_dir, agent=executor)
+    except Exception as exc:  # noqa: BLE001 - 体检失败要报告而不是中断引导
+        health = {"ok": False, "code": "DOCTOR_FAILED", "error": str(exc)}
+
+    # 首次 capture 把当时的 HEAD 固定为不可变 changeBase（design §3.6）
+    snapshot, changed_segments = hs.capture_current_state(
+        project=project,
+        change_dir=change_dir,
+        change_name=change_name,
+        worktree_root=project,
+    )
+    git_state = snapshot.get("git") or {}
+
+    workflow = hg._load_workflow_policy(project=project)
+    classification = hg.classify_risk(change_dir, stage, workflow=workflow)
+    classification.setdefault("tierOverride", None)
+    classification["classifiedAt"] = _now().isoformat().replace("+00:00", "Z")
+    policy_path = change_dir / "meta" / "gate-policy.json"
+    hg._write_json(policy_path, hg.gate_policy_document(classification))
+
+    identity = _plan_run_identity(change_dir)
+    reused = identity is not None
+    if identity is None:
+        # v2 identity：必须小写字母开头，裸 UUID 有 10/16 概率数字开头被拒
+        run_id = f"plan_{uuid.uuid4()}"
+        attempt = 1
+        appended = he.append_event(
+            change_dir,
+            phase="plan",
+            type_="phase.start",
+            run_id=run_id,
+            attempt=attempt,
+            executor_tool=executor,
+            note=f"/harness-plan 引导：{change_name}",
+        )
+        if not appended.get("ok", True):
+            return appended
+    else:
+        run_id, attempt = identity
+
+    return {
+        "ok": True,
+        "code": "PLAN_BOOTSTRAPPED",
+        "changeName": change_name,
+        "displayTitle": prepared.get("displayTitle"),
+        "changeCreated": created_change,
+        "changeDir": str(change_dir),
+        "executionRoot": str(execution_root),
+        "runId": run_id,
+        "attempt": attempt,
+        "reused": reused,
+        "tier": classification.get("tier"),
+        "tierSource": classification.get("source"),
+        "defaultPhases": list(classification.get("defaultPhases") or []),
+        "conditionalPhases": list(classification.get("conditionalPhases") or []),
+        "requiredValidations": list(classification.get("requiredValidations") or []),
+        "gatePolicyPath": str(policy_path),
+        "plannedPhases": prepared.get("plannedPhases"),
+        "changeBase": git_state.get("base"),
+        "head": git_state.get("head"),
+        "changedSegments": sorted(changed_segments),
+        "legacyBootstrap": prepared.get("legacyBootstrap"),
+        "doctorOk": bool(health.get("ok", True)),
+        "doctor": health,
+    }
+
+
 def _invalidate_for_fixback(
     state_root: Path,
     *,
@@ -1256,6 +1400,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--title")
     prepare.add_argument("--ttl-seconds", type=int, default=3600)
     prepare.add_argument("--trigger", choices=["review-fixback"])
+    bootstrap = sub.add_parser("bootstrap-plan")
+    bootstrap.add_argument("--json", action="store_true")
+    bootstrap.add_argument("--project", required=True, type=Path)
+    bootstrap.add_argument("--change", required=True)
+    bootstrap.add_argument("--executor", required=True)
+    bootstrap.add_argument("--title")
+    bootstrap.add_argument("--stage", default="plan", choices=["plan", "post-run"])
+    bootstrap.add_argument("--ttl-seconds", type=int, default=3600)
     close = sub.add_parser("close")
     close.add_argument("--json", action="store_true")
     close.add_argument("--project", required=True, type=Path)
@@ -1296,6 +1448,15 @@ def main(argv: list[str] | None = None) -> int:
             display_title=args.title,
             ttl_seconds=args.ttl_seconds,
             trigger=args.trigger,
+        )
+    elif args.command == "bootstrap-plan":
+        result = bootstrap_plan(
+            args.project,
+            change=args.change,
+            executor=args.executor,
+            display_title=args.title,
+            stage=args.stage,
+            ttl_seconds=args.ttl_seconds,
         )
     elif args.command == "close":
         result = close_transition(

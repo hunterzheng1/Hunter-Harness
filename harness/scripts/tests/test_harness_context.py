@@ -938,5 +938,91 @@ class HarnessContextTest(unittest.TestCase):
             self.assertIn("attemptHistory", view)
 
 
+class HarnessContextBootstrapPlanTest(unittest.TestCase):
+    """阶段 0 一次性引导：doctor + prepare + capture + classify + phase.start。
+
+    拆成 5 条子进程调用时，每条都要 agent 记住完整 argv，日志里已经出现过两次
+    因为参数残缺而白跑一轮；run-id 还必须由 agent 自己生成并保证小写字母开头。
+    这些都是脚本该负责的确定性工作。
+    """
+
+    @staticmethod
+    def _events(change_dir: Path) -> list[dict]:
+        path = change_dir / "events.ndjson"
+        if not path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_bootstrap_plan_returns_run_identity_and_writes_phase_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+
+            result = CONTEXT.bootstrap_plan(
+                project,
+                change="demo-change",
+                executor="codex",
+                display_title="演示变更",
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "PLAN_BOOTSTRAPPED")
+            self.assertEqual(result["changeName"], "demo-change")
+            self.assertEqual(result["attempt"], 1)
+            # v2 identity：必须小写字母开头，裸 UUID 有 10/16 概率被拒
+            self.assertRegex(result["runId"], r"^plan_[a-z0-9][a-z0-9_.:-]*$")
+            self.assertTrue(result["tier"])
+            self.assertIn("plan", result["defaultPhases"])
+            self.assertTrue(result["changeBase"])
+
+            # 产物必须落在 change 目录，不是执行根——两者在无 worktree 时不相等
+            change_dir = project / ".harness/changes/demo-change"
+            self.assertEqual(result["changeDir"], str(change_dir.resolve()))
+            self.assertTrue((change_dir / "meta/gate-policy.json").is_file())
+            self.assertTrue((change_dir / "meta/state-snapshot.json").is_file())
+
+            starts = [e for e in self._events(change_dir) if e.get("type") == "phase.start"]
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(starts[0].get("runId") or starts[0].get("run_id"), result["runId"])
+
+    def test_bootstrap_plan_rerun_reuses_run_id_without_second_phase_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+
+            first = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+            second = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+
+            # 换 run-id 会让 finalize 的生命周期身份校验 fail-closed，重跑必须复用
+            self.assertEqual(second["runId"], first["runId"])
+            self.assertEqual(second["attempt"], first["attempt"])
+            self.assertTrue(second["reused"])
+            change_dir = project / ".harness/changes/demo-change"
+            starts = [e for e in self._events(change_dir) if e.get("type") == "phase.start"]
+            self.assertEqual(len(starts), 1)
+
+    def test_bootstrap_plan_keeps_change_base_immutable_across_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            init_repo(project)
+            (project / ".harness/changes").mkdir(parents=True)
+            first = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+
+            (project / "tracked.txt").write_text("moved\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "next"], cwd=project, check=True)
+            second = CONTEXT.bootstrap_plan(project, change="demo-change", executor="codex")
+
+            # changeBase 是计划起点，HEAD 前进不得把它冲掉（design §3.6）
+            self.assertEqual(second["changeBase"], first["changeBase"])
+            self.assertNotEqual(second["head"], first["changeBase"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,10 +125,13 @@ describe("embedded Harness Bundles", () => {
     const runProtocols = await readFile(join(harnessSource, "harness-run", "protocols.md"), "utf8");
 
     expect(planSkill).toContain("effort: medium");
+    // 阶段 0 引导是一条命令：run-id 由脚本铸造并绑定 phase.start，重跑复用同一身份
     expect(planSkill).toContain(
-      "以其唯一 change/executionRoot 初始化 plan-run-id 与 attempt（首次为 1）",
+      "harness_context.py bootstrap-plan --project . --change <cn> --executor <tool>",
     );
-    expect(planSkill).toContain("用同一身份追加 `phase.start`");
+    expect(planSkill).toContain("追加 `phase.start`");
+    expect(planSkill).toContain("重跑复用同一 run-id、不重复写 `phase.start`");
+    expect(planSkill).toContain("finalizer 必须复用该 `runId`/`attempt`");
     expect(planSkill).toContain("歧义优先检查");
     expect(planSkill).toContain("简单修复探索预算");
     expect(planSkill).toContain("阶段 3 探索默认 inline");
@@ -140,9 +143,9 @@ describe("embedded Harness Bundles", () => {
     );
     expect(planSkill).toContain("这是唯一执行入口，不扫描技能目录、不查找其他脚本");
     expect(planSkill).not.toContain("harness_knowledge.py");
-    expect(planSkill.indexOf("harness_context.py prepare --phase plan")).toBeLessThan(
-      planSkill.indexOf("npx hunter-harness knowledge query")
-    );
+    const bootstrapAt = planSkill.indexOf("harness_context.py bootstrap-plan");
+    expect(bootstrapAt).toBeGreaterThan(-1);
+    expect(bootstrapAt).toBeLessThan(planSkill.indexOf("npx hunter-harness knowledge query"));
 
     for (const text of [planProtocols, planChecklist, planReference, runProtocols]) {
       expect(text).not.toMatch(/(?:写入|更新|创建)[^\n]{0,80}logs\/execution-log\.md/);

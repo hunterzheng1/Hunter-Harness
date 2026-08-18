@@ -32,68 +32,119 @@ export interface PlanEvidencePackOptions {
  * TypeScript 接口，agent 在 npx 缓存、全局 node_modules、归档里翻遍也找不到样例，
  * 最后只能退回 legacy 路径。`--print-template` 让 CLI 自己交出结构。
  *
- * 占位值用 `<...>` 包裹，便于逐项替换与 grep 自检；数组给出一条示例元素。
+ * **不变量：模板一个字不改必须能通过本命令**（`plan-evidence-pack-template.test.ts`
+ * 冻结）。骨架若与校验器漂移，调用方拿到的就是"必定失败的样例"——只能去反编译
+ * dist bundle 找契约，这正是本模板存在要消除的成本。因此：
+ * - 受枚举/哈希/路径约束的字段一律给**真实合法值**，不用 `<...>`
+ * - 自由文本字段才用 `<...>`，便于逐项替换后 grep `<` 自检
+ * - 必须换成真值但无法带 `<` 的字段（run_id/content_hash）用自解释占位量
  */
 const EVIDENCE_PACK_TEMPLATE = {
-  change_key: "<change-name>",
-  risk_signals: ["<如 db-migration / public-api / permission>"],
+  // 必须换成真实 change-name；受 kebab-case 约束（^[a-z0-9]+(-[a-z0-9]+)*$），带不了 <>
+  change_key: "replace-with-change-name",
+  // 枚举见 PLAN_RISK_SIGNALS：api_change/artifact_protocol/auth/breaking_contract/
+  // concurrency/cross_file/delete/docs_only/irreversible_operation/migration/
+  // narrow_fix/payment/permission/production_code/security/shared_state/user_visible_behavior
+  risk_signals: ["production_code"],
   mode: "standard",
   intent: {
     source_input: "<用户原话需求>",
     goal: "<一句话目标>",
     user_visible_outcome: "<用户能观察到的结果>",
+    // in_scope / out_of_scope 必须与 approval.content 的同名字段集合相等（顺序无关）
     in_scope: ["<纳入范围条目>"],
     out_of_scope: ["<明确排除条目>"],
-    constraints: ["<约束，可省略>"],
-    acceptance_examples: ["<可验收的具体例子>"],
-    uncertainties: ["<待澄清项，可省略>"]
+    constraints: [],
+    // intent 要 2~5 条、approval 要 3~7 条，取 3 条同时满足
+    acceptance_examples: ["<验收例子 1>", "<验收例子 2>", "<验收例子 3>"],
+    uncertainties: []
   },
   approval: {
-    // 必须来自阶段 4 blocking confirmation 的真实结果，本命令不伪造审批
+    // 必须来自阶段 4 blocking confirmation 的真实结果，本命令不伪造审批。
+    // decided_at 可选：省略取当前时间；有真实审批时刻时补 ISO 8601 字符串。
     content: {
-      goal: "<同 intent.goal>",
-      user_visible_outcome: "<同 intent.user_visible_outcome>",
-      in_scope: ["<必须与 intent.in_scope 集合相等>"],
-      out_of_scope: ["<必须与 intent.out_of_scope 集合相等>"],
+      goal: "<一句话目标>",
+      user_visible_outcome: "<用户能观察到的结果>",
+      in_scope: ["<纳入范围条目>"],
+      out_of_scope: ["<明确排除条目>"],
       recommended_design: "<采纳的设计方案>",
       key_alternatives: ["<被否决的方案及原因>"],
       invariants: ["<必须始终成立的性质>"],
       failure_behaviors: ["<失败时的预期行为>"],
       compatibility_boundaries: ["<兼容性边界>"],
       risks: [{ risk: "<风险>", mitigation: "<缓解措施>" }],
-      acceptance_examples: ["<同 intent.acceptance_examples>"]
+      acceptance_examples: ["<验收例子 1>", "<验收例子 2>", "<验收例子 3>"]
     },
-    approver_id: "<真实审批人标识>",
-    decided_at: "<ISO 8601，如 2026-08-17T10:00:00Z；可省略则取当前时间>"
+    approver_id: "<真实审批人标识>"
   },
   evidence_sources: [
-    { kind: "<如 code / db / doc>", ref: "<文件路径或查询>", note: "<结论>" }
+    {
+      source_kind: "file",
+      source_id: "<证据来源标识，如文件路径或 codegraph 查询>",
+      source_version: "<版本标识，如 git 短哈希>",
+      // 必须换成证据源内容的真实 sha256（校验器显式拒绝全 0，防的就是占位当证据）
+      content_hash: `sha256:${"deadbeef".repeat(8)}`,
+      module_refs: [],
+      symbol_refs: [],
+      consumer_refs: [],
+      test_refs: [],
+      constraint_refs: [],
+      unknown_refs: []
+    }
   ],
   structured_input: {
+    // 六个 refs 数组由命令接线，写了会被覆盖；这里只给自然字段
     tasks: [
-      { task_id: "<T1>", cluster: "<簇名>", title: "<任务>", owner_phase: "run" }
+      {
+        task_id: "<T1>",
+        objective: "<这个任务要达成什么>",
+        affected_paths: ["<相对路径，如 src/module/file.ts>"],
+        owner_phase: "run"
+      }
     ],
+    // 至少 3 条（冻结校验器下限）。八维度缺项由命令补 not_applicable，
+    // 不必为凑维度编场景；coverage_dimension 枚举见 COVERAGE_DIMENSIONS。
     scenarios: [
       {
         scenario_id: "<UT-001>",
-        priority: "P0",
+        title: "<正常路径场景描述>",
+        acceptance: "<可判定的通过标准>",
         coverage_dimension: "normal_path",
-        owner_phase: "test",
-        title: "<场景描述>",
-        executable_test_id: "<unit::xxx>",
-        test_file: "<tests/xxx.spec.ts>",
-        test_title: "<测试标题>"
+        execution_level: "unit",
+        evidence_requirements: ["<证据要求，如 focused_test>"],
+        risk_level: "medium",
+        verification_command: "<验证命令，可整条删除>"
+      },
+      {
+        scenario_id: "<UT-002>",
+        title: "<参数校验场景描述>",
+        acceptance: "<可判定的通过标准>",
+        coverage_dimension: "parameter_validation",
+        execution_level: "unit",
+        evidence_requirements: ["<证据要求，如 focused_test>"],
+        risk_level: "low"
+      },
+      {
+        scenario_id: "<UT-003>",
+        title: "<错误码场景描述>",
+        acceptance: "<可判定的通过标准>",
+        coverage_dimension: "error_codes",
+        execution_level: "unit",
+        evidence_requirements: ["<证据要求，如 focused_test>"],
+        risk_level: "medium"
       }
     ],
-    approved_scopes: [{ text: "<获批范围条目，与 in_scope 对应>" }]
+    approved_scopes: [{ text: "<纳入范围条目>" }]
   },
   machine: {
-    capabilities: ["<如 db-migration / api-contract>"],
-    worktree_policy: "<none | required>"
+    // 枚举：api/concurrency/database/filesystem/migration/network/permissions/security/ui
+    capabilities: [],
+    worktree_policy: "project_default"
   },
   context: {
     project_id: "<project.yaml 的 project_id>",
-    run_id: "<plan_<uuid>，必须小写字母开头>",
+    // 必须换成阶段 0.5 生成、phase.start 已用的同一个 plan-run-id
+    run_id: "plan_replace-with-your-plan-run-id",
     branch_name: "<当前分支>",
     attempt: 1
   },
@@ -156,6 +207,152 @@ interface EvidencePackInputFile {
 const COVERAGE_DIMENSIONS = ["business_rules", "concurrency_idempotency", "data_compatibility", "error_codes",
   "integration_impact", "normal_path", "parameter_validation", "permission_boundaries"] as const;
 
+// 自然输入的键集与枚举（与冻结校验器同源；命令派生的字段列在 *_DERIVED/_OPTIONAL）
+const EVIDENCE_SOURCE_KEYS = ["source_kind", "source_id", "source_version", "content_hash",
+  "module_refs", "symbol_refs", "consumer_refs", "test_refs", "constraint_refs", "unknown_refs"] as const;
+const SOURCE_KINDS = ["map", "codegraph", "file", "config"] as const;
+const TASK_KEYS = ["task_id", "objective", "affected_paths", "owner_phase"] as const;
+const TASK_DERIVED_KEYS = ["depends_on", "decision_refs", "scenario_refs", "requirement_refs",
+  "evidence_refs", "ownership_refs"] as const;
+const SCENARIO_KEYS = ["scenario_id", "title", "acceptance", "coverage_dimension", "execution_level",
+  "evidence_requirements", "risk_level"] as const;
+const SCENARIO_OPTIONAL_KEYS = ["verification_command", "task_refs", "requirement_refs"] as const;
+const EXECUTION_LEVELS = ["unit", "api", "data_compatibility", "integration", "system"] as const;
+const RISK_LEVELS = ["low", "medium", "high"] as const;
+const WORKTREE_POLICIES = ["project_default", "required", "forbidden"] as const;
+
+interface InputProblem {
+  readonly field_path: string;
+  readonly missing_keys?: readonly string[];
+  readonly unexpected_keys?: readonly string[];
+  readonly message?: string;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** 键集差异 → 一条带 missing/unexpected 的问题；键集相符返回 undefined。 */
+function keySetProblem(value: Record<string, unknown>, fieldPath: string,
+  required: readonly string[], allowed: readonly string[]): InputProblem | undefined {
+  const present = Object.keys(value);
+  const missing = required.filter((key) => !present.includes(key));
+  const unexpected = present.filter((key) => !allowed.includes(key));
+  if (missing.length === 0 && unexpected.length === 0) return undefined;
+  return {
+    field_path: fieldPath,
+    ...(missing.length > 0 ? { missing_keys: missing } : {}),
+    ...(unexpected.length > 0 ? { unexpected_keys: unexpected } : {}),
+    message: `键集不符合契约；必需 ${required.join("/")}` +
+      (allowed.length > required.length
+        ? `，可选 ${allowed.filter((key) => !required.includes(key)).join("/")}`
+        : "")
+  };
+}
+
+/** 已存在的字段才查枚举——缺键由 keySetProblem 报告，避免同一处重复报错。 */
+function enumProblem(value: Record<string, unknown>, key: string, fieldPath: string,
+  allowed: readonly string[]): InputProblem | undefined {
+  if (!(key in value)) return undefined;
+  if (typeof value[key] === "string" && allowed.includes(value[key] as string)) return undefined;
+  return { field_path: `${fieldPath}.${key}`, message: `取值必须是 ${allowed.join(" | ")}` };
+}
+
+/**
+ * HP-13：自然输入的结构问题在边界一次报清，带 field_path 与缺失/多余键。
+ *
+ * 冻结模块只抛 `PLANNING_EVIDENCE_INVALID` / `PLAN_ARTIFACT_INPUT_INVALID` 这类
+ * 无定位信息的稳定码，调用方唯一的出路是反编译 bundle 逐个校验器比对。本层把
+ * 键集与枚举这两类高频错误挡在前面，让第一次失败就说清改哪里。
+ */
+function collectInputProblems(input: EvidencePackInputFile): readonly InputProblem[] {
+  const problems: InputProblem[] = [];
+  const sources: unknown = input.evidence_sources;
+  if (!Array.isArray(sources) || sources.length === 0) {
+    problems.push({ field_path: "evidence_sources", message: "必须是非空数组" });
+  } else {
+    sources.forEach((source, index) => {
+      const path = `evidence_sources[${index}]`;
+      if (!isRecord(source)) {
+        problems.push({ field_path: path, message: "必须是对象" });
+        return;
+      }
+      const keyProblem = keySetProblem(source, path, EVIDENCE_SOURCE_KEYS, EVIDENCE_SOURCE_KEYS);
+      if (keyProblem !== undefined) problems.push(keyProblem);
+      const kindProblem = enumProblem(source, "source_kind", path, SOURCE_KINDS);
+      if (kindProblem !== undefined) problems.push(kindProblem);
+      // 与 core shaPattern 同源：全 0 被显式拒绝，防的是"占位当证据"
+      if ("content_hash" in source &&
+        !/^sha256:(?!0{64}$)[a-f0-9]{64}$/u.test(String(source.content_hash))) {
+        problems.push({
+          field_path: `${path}.content_hash`,
+          message: "必须是证据源内容的真实 sha256:<64 位小写十六进制>（全 0 占位会被拒绝）"
+        });
+      }
+    });
+  }
+
+  const structured: unknown = input.structured_input;
+  if (!isRecord(structured)) {
+    problems.push({ field_path: "structured_input", message: "必须是对象" });
+    return problems;
+  }
+
+  const tasks: unknown = structured.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    problems.push({ field_path: "structured_input.tasks", message: "必须是非空数组" });
+  } else {
+    tasks.forEach((task, index) => {
+      const path = `structured_input.tasks[${index}]`;
+      if (!isRecord(task)) {
+        problems.push({ field_path: path, message: "必须是对象" });
+        return;
+      }
+      const keyProblem = keySetProblem(task, path, TASK_KEYS, [...TASK_KEYS, ...TASK_DERIVED_KEYS]);
+      if (keyProblem !== undefined) problems.push(keyProblem);
+      const phaseProblem = enumProblem(task, "owner_phase", path, PLAN_PHASES);
+      if (phaseProblem !== undefined) problems.push(phaseProblem);
+      if ("affected_paths" in task && (!Array.isArray(task.affected_paths) ||
+        task.affected_paths.length === 0)) {
+        problems.push({ field_path: `${path}.affected_paths`, message: "必须是至少一条相对路径的数组" });
+      }
+    });
+  }
+
+  const scenarios: unknown = structured.scenarios;
+  if (!Array.isArray(scenarios) || scenarios.length < 3) {
+    problems.push({
+      field_path: "structured_input.scenarios",
+      message: "必须是至少 3 条场景的数组（冻结校验器下限；八维度缺项由命令补 not_applicable）"
+    });
+  }
+  if (Array.isArray(scenarios)) {
+    scenarios.forEach((scenario, index) => {
+      const path = `structured_input.scenarios[${index}]`;
+      if (!isRecord(scenario)) {
+        problems.push({ field_path: path, message: "必须是对象" });
+        return;
+      }
+      const keyProblem = keySetProblem(scenario, path, SCENARIO_KEYS,
+        [...SCENARIO_KEYS, ...SCENARIO_OPTIONAL_KEYS]);
+      if (keyProblem !== undefined) problems.push(keyProblem);
+      for (const [key, allowed] of [["coverage_dimension", COVERAGE_DIMENSIONS],
+        ["execution_level", EXECUTION_LEVELS], ["risk_level", RISK_LEVELS]] as const) {
+        const problem = enumProblem(scenario, key, path, allowed);
+        if (problem !== undefined) problems.push(problem);
+      }
+    });
+  }
+
+  const machine: unknown = input.machine;
+  if (!isRecord(machine)) {
+    problems.push({ field_path: "machine", message: "必须是对象" });
+  } else {
+    const policyProblem = enumProblem(machine, "worktree_policy", "machine", WORKTREE_POLICIES);
+    if (policyProblem !== undefined) problems.push(policyProblem);
+  }
+  return problems;
+}
+
 const stableId = (prefix: string, body: unknown): string =>
   `${prefix}:${createHash("sha256").update(canonicalJson(body)).digest("hex")}`;
 
@@ -206,6 +403,18 @@ export async function runPlanEvidencePack(
         code: "PLAN_RUN_ID_INVALID",
         field_path: "context.run_id",
         message: "run_id 必须满足 v2 identity（小写字母开头）；请使用 createPlanRunId() 生成 plan_<uuid>"
+      }));
+    }
+    // HP-13：结构问题优先于时间/范围检查——键集错了，后面的语义校验都没有意义
+    const problems = collectInputProblems(input);
+    const firstProblem = problems[0];
+    if (firstProblem !== undefined) {
+      return emitPlanError(dependencies.stdout, planErrorEnvelope({
+        code: "PLAN_EVIDENCE_INPUT_INVALID",
+        stage: "boundary",
+        field_path: firstProblem.field_path,
+        message: "自然输入结构不符合契约；逐条修正 problems 后重跑",
+        extra: { problems }
       }));
     }
     // HP-11：decided_at 边界规范化为 canonical UTC（Z 与 +08:00 等价）

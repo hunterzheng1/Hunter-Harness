@@ -12,9 +12,12 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 **判定**：stdout 为空 → ✅ 继续；stdout 非空 → baseline 隔离 + `decision`（note 含变更文件列表）；Bash 被拒 → PowerShell 重试。
 
-## 阶段 0.5：事件初始化与知识查询
+## 阶段 0.5：一次性引导与知识查询
 
-- [ ] 先确定 change-name、稳定的 plan-run-id 与 attempt（首次为 1），立即用 `harness_events.py append ... --phase plan --type phase.start --run-id <plan-run-id> --attempt <attempt>` 追加开始事件
+- [ ] 定好 change-name（kebab-case）与中文展示标题后，运行一次 `harness_context.py bootstrap-plan --project . --change <cn> --executor <tool> --title "<中文标题>" --json`
+- [ ] 引导返回 `code:"PLAN_BOOTSTRAPPED"`，记下 `runId`/`attempt`/`tier`/`defaultPhases`/`changeBase`；后续 finalize 必须复用同一 `runId`/`attempt`
+- [ ] 不再手工生成 run-id、不再单独跑 doctor/prepare/capture/classify/append；需要单步排查时才用 SKILL.md 阶段 0.5b 的等价分解
+- [ ] 引导失败时按返回的 `code` 处理（`PROJECT_ROOT_INVALID` → 该项目未 init），**不得**跳过引导直接写产物
 - [ ] 项目已绑定平台时执行一次远端 knowledge `query`；不另跑前置 sync，不创建本地索引
 - [ ] 查询失败追加 `issue`，不得回退本地 archive/SQLite、重跑“sync + query”循环或假装已读取历史
 
@@ -22,6 +25,7 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 - [ ] 否定、对比、动作对象、范围或保留/删除关系不存在未确认的多义解释
 - [ ] 若存在歧义，仅完成最小取证后一次一问，并给出推荐理解
+- [ ] **需求里引用了外部设计文档/章节（贴了段落、给了 `xxx.md` 的 `### Bn` 小节、说"之前设计的时候如…"）时，必须确认该章节本次是否纳入**——引用不等于纳入，也不等于排除。把它列进 `in_scope` 或 `out_of_scope` 后再进入阶段 4；漏判会导致计划发布后整体作废重来（republish），是本流程最贵的返工
 - [ ] 简单修复探索预算：最多 1 次合并 CodeGraph 查询 + 1 次定向补查、1 个澄清问题
 - [ ] 无关发现只记非阻断 `issue`，未扩展当前方案或问题列表
 
@@ -65,16 +69,21 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 **展示内容**：
 
 1. 设计摘要 + 关键证据 + 风险 + 变更清单
-2. 测试场景表摘要 + 8 维度覆盖检查
-3. worktree 选项（是/否，含推荐理由）
-4. change-name（自动生成，可修改）
-5. 确认进入任务拆分
+2. **本次做什么（in_scope）/ 本次不做什么（out_of_scope）** — 两个列表都必须显式列出，不得只展示"做什么"。用户看到"不做"清单才有机会当场纠正范围误判；`out_of_scope` 为空时写"无"，不得省略该行。这两个列表随后原样进入 `plan-evidence-input.json` 的 `intent` 与 `approval.content`（两处必须集合相等）
+3. 测试场景表摘要 + 8 维度覆盖检查
+4. worktree 选项（是/否，含推荐理由）
+5. change-name（自动生成，可修改）
+6. 确认进入任务拆分
 
-确认后写入 `spec/<change>-design.md`（含 frontmatter）和 `meta/worktree.json`。
+确认后立即追加 decision 事件，并写入 `meta/worktree.json`。设计文档按路径分流：
+
+- **v2**：审批内容写进 `meta/plan-evidence-input.json` 的 `approval.content`（含 `approver_id`），
+  `plans/<change>-design.md` 由 finalize 从审批内容派生——**不要**手写它，手写的会被覆盖
+- **legacy**：写 `spec/<change>-design.md`（含下方 frontmatter）
 
 - [ ] 确认事件早于 approved 设计文档；未获确认时不得先落盘 `status: approved`
 
-设计文档必须包含 frontmatter：
+legacy 设计文档必须包含 frontmatter：
 ```yaml
 ---
 change-name: <change-name>
@@ -209,6 +218,37 @@ source: harness-plan
 
 > **缺任一文件 → ❌FAIL，不得宣称 plan 完成。**
 
+> **先认路径再对表**：v2 与 legacy 的完整性口径不同，混用会得出错误结论。
+
+### v2 路径（新 change 默认）
+
+- [ ] 只手写 `meta/plan-evidence-input.json`；`plans/*.md` 由 finalize 派生，**不得**手写后再被覆盖
+- [ ] `evidence-pack` 返回 `code:"PLAN_EVIDENCE_PACK_BUILT"`；结构报错按 `field_path`/`problems[]` 修正后重跑
+- [ ] `finalize` exit 0 且 `code:"PLAN_FINALIZED"`
+- [ ] 八 target 齐全：`plans/` ×4（design / implementation-detail / plan / test-scenarios）+ `meta/` ×4（gate-policy / implementation-checkpoints / scenario-manifest / worktree）
+- [ ] `meta/publication-journals/<op>.json` 的 `state === "committed"`
+- [ ] `meta/plan-events.ndjson` 含 `artifact_published` 与 `phase_ended` 两类终态事件
+- [ ] 以上任一缺失都不得手工补写；回到对应阶段改自然输入后重跑
+
+| 文件（v2） | 必须存在 | 检查结果 |
+|------|:---:|:---:|
+| `.harness/changes/<change>/meta/plan-evidence-input.json` | ✅ | □ |
+| `.harness/changes/<change>/plans/<change>-design.md` | ✅ | □ |
+| `.harness/changes/<change>/plans/<change>-plan.md` | ✅ | □ |
+| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ | □ |
+| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ | □ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | □ |
+| `.harness/changes/<change>/meta/worktree.json` | ✅ | □ |
+| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | □ |
+| `.harness/changes/<change>/meta/scenario-manifest.json`（非空且计数一致） | ✅ | □ |
+| `.harness/changes/<change>/meta/publication-journals/<op>.json`（committed） | ✅ | □ |
+| `.harness/changes/<change>/meta/plan-events.ndjson` | ✅ | □ |
+| `.harness/changes/<change>/events.ndjson` | ✅ | □ |
+
+> v2 过渡期**不写** `meta/plan-finalization.json` 与 `logs/execution-log.md`；缺这两项不算失败，不得为凑表手工补。
+
+### legacy 路径（自然输入不完整时的回退）
+
 - [ ] 所有待发布产物先写入 staging，不直接覆盖正式 change 目录
 - [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id <plan-run-id> --attempt <attempt> --json`；身份必须与本次 `phase.start` 完全相同
 - [ ] finalizer 返回 `ok=true`、`artifactsHash`、绝对 `receiptPath` 与稳定 `artifactRef=meta/plan-finalization.json`；重复执行返回 `idempotent=true`
@@ -220,7 +260,7 @@ source: harness-plan
 - [ ] 禁止在 finalizer 之前手工追加成功 `phase.end`
 - [ ] context close 的 `--artifact` 只传 finalizer 原样返回的 `receiptPath` 或 `artifactRef`，不得猜测、拼接或使用 `<plan-finalization>` 占位文本
 
-| 文件 | 必须存在 | 检查结果 |
+| 文件（legacy） | 必须存在 | 检查结果 |
 |------|:---:|:---:|
 | `.harness/changes/<change>/spec/<change>-design.md` | ✅ | □ |
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅ | □ |
