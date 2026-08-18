@@ -38,7 +38,9 @@ import {
   contentScanPolicySchema,
   contentSyncStatusesSchema,
   contentSyncValidationReasonCodeSchema,
+  knowledgeCandidateEntryTypeSchema,
   knowledgeCandidateSchema,
+  knowledgeIngestEntryTypeSchema,
   knowledgeCandidateStatusSchema,
   knowledgeExtractionStatusSchema,
   knowledgeExtractionStatusValueSchema,
@@ -1733,6 +1735,87 @@ describe("stage 01 content and sync contracts", () => {
         producerVersion: knowledgeCandidate.provenance.producer_version
       }
     }).success).toBe(false);
+  });
+
+  it("carries the optional knowledge entry projection fields", async () => {
+    const fixture = await readCurrentFixture();
+    const candidates = fixture.candidates as Record<string, unknown>;
+    const base = knowledgeCandidateSchema.parse(candidates.knowledge_candidate);
+
+    // 老归档缺这三个字段时必须继续解析成功（降级路径）。
+    expect(base.entry_type).toBeUndefined();
+    expect(base.body).toBeUndefined();
+    expect(base.keywords).toBeUndefined();
+
+    const enriched = knowledgeCandidateSchema.parse({
+      ...base,
+      entry_type: "pitfall",
+      body: "content-sync.ts:1051 nonScannablePathPrefixes rejects the archive tree.",
+      keywords: ["content-sync.ts", "contracts", "RED", "FIXED"]
+    });
+    expect(enriched.entry_type).toBe("pitfall");
+    expect(enriched.keywords).toEqual(["content-sync.ts", "contracts", "RED", "FIXED"]);
+
+    // entry_type 必须与 knowledgeIngestEntrySchema 的 7 值枚举一致，
+    // 否则桥在投影时会被 safeParse 静默丢弃。
+    expect(knowledgeCandidateEntryTypeSchema.options).toEqual([
+      "requirement", "decision", "implementation", "risk",
+      "test-evidence", "pitfall", "api-contract"
+    ]);
+    expect(knowledgeIngestEntryTypeSchema.options).toEqual(
+      knowledgeCandidateEntryTypeSchema.options
+    );
+
+    for (const invalid of [
+      { entry_type: "lesson" },
+      { entry_type: "" },
+      { body: "" },
+      { keywords: "content-sync.ts" },
+      { keywords: [""] },
+      { entryType: "pitfall" },
+      { keywords: Array.from({ length: 33 }, (_, index) => `k${index}`) }
+    ]) {
+      expect(knowledgeCandidateSchema.safeParse({ ...base, ...invalid }).success).toBe(false);
+    }
+  });
+
+  it("accepts the archive candidate generator's real output", async () => {
+    // 该 fixture 由 harness/scripts/harness_knowledge_candidates.py 真实产出
+    // （test_harness_knowledge_candidates.py 锁住 Python 侧字节）。这条测试是
+    // 跨语言契约锁：生成器与 schema 任何一侧漂移都会在这里断。
+    const generated = JSON.parse(await readFile(
+      fileURLToPath(new URL("./fixtures/knowledge-candidates-v1-archive.json", import.meta.url)),
+      "utf8"
+    )) as unknown[];
+
+    const parsed = generated.map((candidate) => knowledgeCandidateSchema.parse(candidate));
+    expect(parsed).toHaveLength(4);
+
+    const byType = parsed.reduce<Record<string, number>>((counts, candidate) => {
+      const key = candidate.entry_type ?? "(none)";
+      return { ...counts, [key]: (counts[key] ?? 0) + 1 };
+    }, {});
+    expect(byType).toEqual({ pitfall: 1, risk: 3 });
+
+    for (const candidate of parsed) {
+      // extractor.ts 的自动放行阈值是 0.82；生成器的质量由 OK/NOT_APPLICABLE
+      // 过滤保证，不靠阈值卡，所以每条都必须高于它。
+      expect(candidate.confidence).toBeGreaterThanOrEqual(0.82);
+      expect(candidate.entry_type).toBeDefined();
+      expect(candidate.body).toBeTruthy();
+      expect(candidate.keywords?.length ?? 0).toBeGreaterThan(0);
+    }
+
+    // 候选文件是知识管道的输入，不是给人读的分支文件：它只能经归档 ZIP 进入
+    // 服务端，绝不能被工作区遍历当成交付物上传。放宽交付物白名单时这条会断。
+    const candidatesPath = ".harness/archive/usage-stats-cli-reporting/candidates/knowledge.json";
+    expect(classifyContentPath({ schema_version: 1, path: candidatesPath })).toEqual({
+      schema_version: 1,
+      reason_code: "CONTENT_PATH_NON_SCANNABLE_KIND"
+    });
+    expect(mayContainArchiveDeliverables(
+      ".harness/archive/usage-stats-cli-reporting/candidates"
+    )).toBe(false);
   });
 
   it("classifies repository-relative content paths without IO", async () => {

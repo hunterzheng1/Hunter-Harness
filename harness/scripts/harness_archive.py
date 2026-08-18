@@ -91,6 +91,7 @@ import harness_events as he  # noqa: E402
 import harness_events_sync as hes  # noqa: E402
 import harness_efficiency as heff  # noqa: E402
 import harness_gate as hgate  # noqa: E402
+import harness_knowledge_candidates as hkc  # noqa: E402
 import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_phase as hphase  # noqa: E402
@@ -4170,6 +4171,33 @@ def write_archive_meta(work_dir: Path, summary: dict[str, Any]) -> Path:
     out = work_dir / "meta" / "archive-meta.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+    return out
+
+
+def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
+    """Generate candidates/knowledge.json from summary-data (single ownership).
+
+    Mirrors write_archive_meta: derived from the same summary, written before the
+    after-manifest so its bytes are covered. The archive directory name is the
+    archive id, matching write_archive_meta's `archive-id` field.
+    """
+    archive_id = work_dir.name
+    candidates = hkc.build_knowledge_candidates(
+        summary,
+        change_key=str(summary.get("changeName") or archive_id),
+        archive_id=archive_id,
+        # The archive schema version identifies the producing format; there is
+        # no separate harness version constant to borrow here.
+        producer_version=SCHEMA_VERSION,
+        created_at=now_iso(),
+    )
+    out = work_dir / "candidates" / "knowledge.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        hkc.render_knowledge_candidates_json(candidates),
+        encoding="utf-8",
+        newline="\n",
+    )
     return out
 
 
@@ -8269,6 +8297,21 @@ def cmd_finalize(
         warnings.append(f"archive-meta write failed: {exc}")
         payload["steps"]["archive_meta"] = {"ok": False, "error": str(exc)}
 
+    # --- 8b. knowledge candidates (also before the after-manifest) ---
+    # Soft-fail like archive-meta: an archive must never be rolled back because
+    # knowledge extraction found nothing. An empty array is a valid outcome.
+    try:
+        summary = read_json(summary_path)
+        candidates_path = write_knowledge_candidates(work_dir, summary)
+        payload["steps"]["knowledge_candidates"] = {
+            "ok": True,
+            "path": str(candidates_path),
+            "count": len(read_json(candidates_path)),
+        }
+    except Exception as exc:  # noqa: BLE001 — candidates soft-fail
+        warnings.append(f"knowledge candidates write failed: {exc}")
+        payload["steps"]["knowledge_candidates"] = {"ok": False, "error": str(exc)}
+
     # --- 9/10. final summary stats, then LAST manifest (IA-7) ---
     # Post-manifest rewrites of covered bytes are forbidden. We update the
     # summary first, regenerate after-manifest last, then verify on-disk hashes.
@@ -8885,6 +8928,12 @@ def _archive_core_file_specs(
                     file_specs.append(
                         (source, f"{folder}/{relative}", role, "text/markdown")
                     )
+    add_if_file(
+        archive / "candidates" / "knowledge.json",
+        "candidates/knowledge.json",
+        "knowledge_candidates",
+        "application/json",
+    )
     add_if_file(
         archive / "meta" / "archive-meta.md",
         "archive-meta.md",

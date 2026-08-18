@@ -1,0 +1,112 @@
+[
+  {
+    "body": "nonScannablePathPrefixes 把整棵归档树判为不可扫描\n位置：packages/contracts/src/content-sync.ts:1051\n严重度：RED\n裁决：FIXED",
+    "candidate_id": "kc_3f66a23f5838a9fcd2f39f17152298e6",
+    "confidence": 0.95,
+    "content_hash": "sha256:ac69cdb862059e882204a9574f5ac0fe226ae883ba37215758a0901e69d4255e",
+    "entry_type": "pitfall",
+    "keywords": [
+      "content-sync.ts",
+      "src",
+      "RED",
+      "FIXED"
+    ],
+    "provenance": {
+      "created_at": "2026-08-18T12:00:00.000Z",
+      "producer": "harness-archive",
+      "producer_version": "0.2.85",
+      "source_kind": "review",
+      "source_ref": "archive:usage-stats-cli-reporting#F-001"
+    },
+    "reusability_scope": "packages",
+    "schema_version": 1,
+    "source_change_key": "usage-stats-cli-reporting",
+    "source_refs": [
+      "packages/contracts/src/content-sync.ts#L1051"
+    ],
+    "status": "pending",
+    "summary": "nonScannablePathPrefixes 把整棵归档树判为不可扫描"
+  },
+  {
+    "body": "current() 锚点依赖 latest_project_version\n位置：apps/server/src/project-materials/pg-source.ts:316\n严重度：YELLOW\n裁决：ACCEPTED_RISK",
+    "candidate_id": "kc_609484d4ee43e78e5439ef8ccda8f903",
+    "confidence": 0.85,
+    "content_hash": "sha256:df2b79f65190e41daaaa09bda95ca366d532b8e518f2575a64d017289198225c",
+    "entry_type": "risk",
+    "keywords": [
+      "pg-source.ts",
+      "project-materials",
+      "YELLOW",
+      "ACCEPTED_RISK"
+    ],
+    "provenance": {
+      "created_at": "2026-08-18T12:00:00.000Z",
+      "producer": "harness-archive",
+      "producer_version": "0.2.85",
+      "source_kind": "review",
+      "source_ref": "archive:usage-stats-cli-reporting#F-002"
+    },
+    "reusability_scope": "apps",
+    "schema_version": 1,
+    "source_change_key": "usage-stats-cli-reporting",
+    "source_refs": [
+      "apps/server/src/project-materials/pg-source.ts#L316"
+    ],
+    "status": "pending",
+    "summary": "current() 锚点依赖 latest_project_version"
+  },
+  {
+    "body": "planSyncPush 放行 WARN\n位置：packages/cli/src/commands/sync.ts:42\n严重度：YELLOW\n裁决：DEFERRED",
+    "candidate_id": "kc_c3d8ab91333941fc2e1db37d88d6ea85",
+    "confidence": 0.85,
+    "content_hash": "sha256:1a9807d0b6f87e8b6a03071efb3f9d2c6c05fe9e406d29615f8268849944f511",
+    "entry_type": "risk",
+    "keywords": [
+      "sync.ts",
+      "commands",
+      "YELLOW",
+      "DEFERRED"
+    ],
+    "provenance": {
+      "created_at": "2026-08-18T12:00:00.000Z",
+      "producer": "harness-archive",
+      "producer_version": "0.2.85",
+      "source_kind": "review",
+      "source_ref": "archive:usage-stats-cli-reporting#F-003"
+    },
+    "reusability_scope": "packages",
+    "schema_version": 1,
+    "source_change_key": "usage-stats-cli-reporting",
+    "source_refs": [
+      "packages/cli/src/commands/sync.ts#L42"
+    ],
+    "status": "pending",
+    "summary": "planSyncPush 放行 WARN"
+  },
+  {
+    "body": "归档包缺少候选文件\n阶段：archive\n严重度：warning",
+    "candidate_id": "kc_9152f971f74a41f5158a0c1d01875b26",
+    "confidence": 0.85,
+    "content_hash": "sha256:1efb6aaf2fef93d98269c2889e606f1cba9a38f445faf743e8850fc47cd0a127",
+    "entry_type": "risk",
+    "keywords": [
+      "archive",
+      "warning"
+    ],
+    "provenance": {
+      "created_at": "2026-08-18T12:00:00.000Z",
+      "producer": "harness-archive",
+      "producer_version": "0.2.85",
+      "source_kind": "archive",
+      "source_ref": "archive:usage-stats-cli-reporting"
+    },
+    "reusability_scope": "archive",
+    "schema_version": 1,
+    "source_change_key": "usage-stats-cli-reporting",
+    "source_refs": [
+      "archive:usage-stats-cli-reporting"
+    ],
+    "status": "pending",
+    "summary": "归档包缺少候选文件"
+  }
+]

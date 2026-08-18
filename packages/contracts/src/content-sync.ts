@@ -138,6 +138,22 @@ export const knowledgeCandidateStatusSchema: FrozenStringEnumSchema<
   typeof knowledgeCandidateStatusValues
 > = frozenStringEnumSchema(knowledgeCandidateStatusValues);
 
+// 与 knowledge.ts 的 knowledgeIngestEntryTypeSchema 逐值对齐：候选携带的
+// entry_type 最终原样落到知识条目的 type 上，两处漂移会让桥在投影时
+// safeParse 失败并静默丢条目（见 semantic/knowledge-projection.ts）。
+const knowledgeCandidateEntryTypeValues = [
+  "requirement",
+  "decision",
+  "implementation",
+  "risk",
+  "test-evidence",
+  "pitfall",
+  "api-contract"
+] as const;
+export const knowledgeCandidateEntryTypeSchema: FrozenStringEnumSchema<
+  typeof knowledgeCandidateEntryTypeValues
+> = frozenStringEnumSchema(knowledgeCandidateEntryTypeValues);
+
 const candidateProvenanceSourceKindValues = [
   "archive",
   "plan",
@@ -670,7 +686,12 @@ export const knowledgeCandidateSchema = z.object({
   source_refs: z.array(z.string().min(1)),
   summary: z.string().min(1),
   reusability_scope: z.string().min(1),
-  status: knowledgeCandidateStatusSchema
+  status: knowledgeCandidateStatusSchema,
+  // 入库投影所需、reusability_scope 无法映射的三个字段。可选：老归档不带
+  // 它们时整条候选仍然有效，由消费端走降级路径。
+  entry_type: knowledgeCandidateEntryTypeSchema.optional(),
+  body: z.string().min(1).max(20_000).optional(),
+  keywords: z.array(z.string().min(1).max(80)).max(32).optional()
 }).strict();
 
 export const contentSyncValidationReasonCodeSchema = frozenStringEnumSchema([
@@ -1467,6 +1488,9 @@ export type ConflictResolution = z.infer<typeof conflictResolutionSchema>;
 export type ProjectContentCandidateType = z.infer<typeof projectContentCandidateTypeSchema>;
 export type ProjectContentCandidateStatus = z.infer<typeof projectContentCandidateStatusSchema>;
 export type KnowledgeCandidateStatus = z.infer<typeof knowledgeCandidateStatusSchema>;
+export type KnowledgeCandidateEntryType = z.infer<
+  typeof knowledgeCandidateEntryTypeSchema
+>;
 export type CandidateProvenanceSourceKind = z.infer<
   typeof candidateProvenanceSourceKindSchema
 >;
