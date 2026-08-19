@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.2.83] — @hunter-harness/workflow-harness（Bundle 0.2.72）
+
+> **Bundle 单发**：本次只改 harness 脚本与 skill 文档，CLI 代码未动，仍是 `0.2.89`，
+> `minimumCliVersion` 保持 `0.2.89`。
+
+### Fixed（一次 5 小时 run 里，约 2 小时耗在 harness 自己身上）
+
+一次真实的 `/harness-run`（rule-model-consolidation，14:19→19:28，453 次工具调用）。
+三处摩擦的解法 harness 内部其实都已经有，只是没有接到调用方。
+
+- **构建裸跑导致 43 个并发 Maven 互相摧毁**：`harness-run/SKILL.md` 从未提过
+  `harness_test_runner.py exec`，模型只能用 `powershell.exe` 直接跑 `mvn`；宿主 120 秒超时把
+  命令推入后台，50 次 mvn 里 **43 次成了后台任务**，多个 Maven JVM 同时写同一个 `target/`。
+  代价：21 次文件占用冲突、7 次 `target/classes` 被清空、63 处"增量编译抖动"、7 次与测试
+  无关的 `BUILD FAILURE`，**同一个全量单测被重跑 9 次**（`fulltest` / `full-test` /
+  `fulltest2` … `fulltest5`，命名混乱到分不清哪份日志是最终态，收尾时又反复纠结证据取哪个）。
+  而 `exec` 早就带项目级互斥锁并托管进程树，且已随全部 8 个 Bundle 部署到该项目——实测嵌套
+  调用返回 `TEST_RUN_ALREADY_ACTIVE`、退出码 3，43 个并发里本该有 42 个在第一时间被挡回。
+  SKILL.md 现增「构建/测试执行入口」一节强制走 `exec`（含为什么裸跑会导致并发摧毁），
+  硬门禁速查表加一行，`PowerShell` 那行收窄为只管 git。
+
+- **`LEASE_ABSENT` 是个裸错误**：`gate begin` 默认 `--ttl-seconds 3600`，而 run 阶段跑了
+  3 小时 45 分。租约 15:41 就过期，全程无提示，直到 18:26 关门才报出来——且没有 `retryable`、
+  没有 `recoveryAction`、不回显原 run-id。模型花了约 650 行日志才自己摸出唯一解
+  （`harness_change.py claim --run-id <原 id>`）。同一代码库里 `test_runner` 的锁有
+  `heartbeat()` 续期，阶段租约却没有任何续期触发点，两套锁设计不对称。现在该错误带
+  `retryable`、`resumeRunId`（新增 `_latest_open_run_id()`：取有 `phase.start` 而无
+  `phase.end` 的最新 run_id）与完整续租命令，并明确警告**不要重跑 `gate begin`**
+  ——那会新开 attempt 并丢失本轮 capsule。SKILL.md 同步增「长阶段租约续期」一节。
+
+- **`LEASE_CONFLICT` 不说持有者是否已关门**：plan 阶段 14:19:36 已写 `phase.end OK`，租约仍在
+  （`cmd_close` 有 18 处 early-return 而 `release_lease` 在函数末尾，任何 begin-without-close
+  都会留下最长一小时的租约）。冲突方只被告知"被别人持有"，只能翻 `events.ndjson` 再逆向
+  `_claim_lease_locked`，才敢判断释放是否安全——又是 20 分钟。现在补 `holderPhaseClosed`：
+  持有者已写 `phase.end` 就直接给出释放命令；未关门则明确**不**建议释放，避免误杀仍在执行
+  的阶段。
+
+`cmd_close` 失败时不释放租约这一点刻意保留：close 失败本就需要原样重试，此时持有租约是正确
+行为；真正的缺陷是冲突方无法判断，已由 `holderPhaseClosed` 覆盖。
+
 ## [0.2.89] — hunter-harness ＋ [0.2.82] — @hunter-harness/workflow-harness（Bundle 0.2.71）
 
 ### Fixed（0.2.88 的补传在真实项目上仍未闭环）
