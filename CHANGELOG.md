@@ -1,5 +1,61 @@
 # Changelog
 
+## [0.2.86] — hunter-harness ＋ [0.2.78] — @hunter-harness/workflow-harness（Bundle 0.2.67）
+
+> **CLI ＋ Bundle 同发，且最低 CLI 版本提到 `0.2.86`**：本 Bundle 的
+> `harness_knowledge_candidates.py` 产出带 `entry_type` / `body` / `keywords` 的候选，
+> 而 `knowledgeCandidateSchema` 是 `.strict()`——旧 CLI 的 schema 不认识这三个字段，
+> 会在 `archive-package-builder` 的候选校验处直接判整个归档包无效。**这是硬失败，不是降级。**
+
+### Added
+
+- **知识候选生成器**（`harness_knowledge_candidates.py`）：补上知识管道一直缺失的入口。
+  此前 `knowledge_pipeline_*` 是一套建好但没有输入的子系统——extractor 读
+  `archive.knowledge_candidates`，而两个仓库里没有任何代码产出候选（全量搜索 `kc_` 零命中），
+  于是提取作业跑完总是 0 候选、`project_knowledge` 恒空。
+
+  只从 `summary-data.json` 的 `reviewFindings` 与 `knownRisks` 生成，映射固定：
+
+  | 来源 | `entry_type` | `confidence` |
+  |---|---|---|
+  | `disposition = FIXED` | `pitfall` | RED 0.95 / YELLOW 0.85 |
+  | `disposition = ACCEPTED_RISK` 或 `DEFERRED` | `risk` | RED 0.95 / YELLOW 0.85 |
+  | `knownRisks[]` | `risk` | 0.85 |
+  | `severity = OK` 或 `disposition = NOT_APPLICABLE` | 丢弃 | — |
+
+  未裁决的 disposition（`OPEN` / `UNKNOWN`）同样丢弃——没裁决过的发现还不算知识。
+  `maintenanceNotes` / `finalStatusReasons` / `manualActions` 经实测评估后排除：
+  前者约 1/5 是真决策其余是流程流水，后两者无知识价值或恒空。
+  **不涉及 LLM**：每个字段都从真实字段复制或推导，可复现、无发明。
+
+- **`sync --push [scopes]`** 与 **`run-status --wait`**（见 0.2.85 与本次的 Fixed 段）。
+
+### Fixed（修一行 javadoc 耗掉 570 行对话的那次执行）
+
+- **Fixback 证据契约不前置，逼出假 TDD**：`launch-review` 只返回 batch，不说明每个 code 项
+  需要"修复前 RED ＋ 修复后 GREEN"的托管会话证据、且需先 `register-evidence`。调用方于是
+  先把代码改完，才在 `resolve-issue` 撞上 `FIXBACK_EVIDENCE_MISSING`，再靠 grep 错误码、
+  连读三遍实现、打四次 `--help` 拼出契约——而那时代码已改完，只能把修改回退、跑一次假 RED、
+  再改回来跑 GREEN。新增 `evidence_contract()` 随 `FIXBACK_STARTED` 一起返回五步顺序、
+  四条可直接照抄的命令与证据文件形状，并显式写明"不要先改完再回退来凑 RED"。
+- **证据错误码只回显路径**：四个 `FIXBACK_EVIDENCE_*` 统一补上"它要什么、下一步跑什么"。
+- **`run-status` 无法判定终态、也无法阻塞等待**：`INCOMPLETE` 是终态却读起来像"还没结束"，
+  一个启动即失败（`LAUNCHER_FAILED`、`testProcessStarted=false`）的会话被连等 20s、60s；
+  且只能 `Start-Sleep` 猜时长（实测连猜 5s/20s/60s/100s 四轮）。现输出补 `terminal` 布尔值、
+  终态附 `terminalHint`，并新增 `--wait` / `--wait-timeout-seconds` / `--poll-seconds`。
+  `FINALIZING` 刻意判为非终态——结果已定但 worker 未退出，此时取读数会与清理竞争。
+- **8 处 `subprocess` 缺 `encoding`**：`harness_archive`(2) / `check_gate`(1) / `context`(2) /
+  `ledger`(2) 及归档核心上传路径。中文 Windows 按 cp936 解码 UTF-8，git 输出与 CLI 回执被
+  静默损坏（实测回执里出现 `绫?javadoc 鏈�闅�`）。
+- **`powershell-protocol`** 补输出编码一节：`PYTHONUTF8=1` 只管 Python 输出端，
+  必须同时设 `[Console]::OutputEncoding`，并说明为何少用 `2>&1`。
+
+### 验证
+
+- 新增 25 个测试（6 run-status ＋ 7 证据契约 ＋ 12 候选生成器）
+- `release:preflight` 与 `smoke:pack` 通过；vitest 全过；
+  harness Python safe profile 全模块通过（与 vitest 串行执行）
+
 ## [0.2.85] — hunter-harness ＋ [0.2.77] — @hunter-harness/workflow-harness（Bundle 0.2.66）
 
 > **CLI ＋ Bundle 同发**。最低 CLI 版本提到 `0.2.85`：本 Bundle 的 `harness-archive/SKILL.md`
