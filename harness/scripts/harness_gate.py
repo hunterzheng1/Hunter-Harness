@@ -1906,6 +1906,31 @@ def _latest_phase_end(
     return None
 
 
+def _latest_open_run_id(change_dir: Path, phase: str) -> str | None:
+    """Return the newest ``phase.start`` run_id that has no matching ``phase.end``.
+
+    A long phase can outlive its lease TTL; close then reports ``LEASE_ABSENT``
+    with no way back.  Resuming needs the *original* run_id, so surface it here
+    instead of making the caller reconstruct it from ``events.ndjson``.
+    """
+    started: list[str] = []
+    ended: set[str] = set()
+    for event in he.load_events(he.events_path(change_dir)):
+        if event.get("phase") != phase:
+            continue
+        run_id = str(event.get("run_id") or "")
+        if not run_id:
+            continue
+        if event.get("type") == "phase.start":
+            started.append(run_id)
+        elif event.get("type") == "phase.end":
+            ended.add(run_id)
+    for run_id in reversed(started):
+        if run_id not in ended:
+            return run_id
+    return None
+
+
 def _terminal_matches_context_session(
     project: Path,
     change_id: str,
@@ -2631,11 +2656,42 @@ def cmd_begin(args: argparse.Namespace) -> int:
         ttl_seconds=int(args.ttl_seconds),
     )
     if not claim.get("ok"):
+        claim_code = str(claim.get("code", "LEASE_CONFLICT"))
+        claim_extra = {
+            k: v for k, v in claim.items() if k not in {"ok", "message", "code"}
+        }
+        holder = claim.get("holder")
+        if claim_code == "LEASE_CONFLICT" and isinstance(holder, dict):
+            holder_phase = str(holder.get("phase") or "")
+            holder_run_id = str(holder.get("runId") or "")
+            # A lease whose own phase already recorded phase.end is leftover state:
+            # only close releases the lease, so any begin-without-close strands it
+            # for the full TTL and blocks the next phase.
+            holder_closed = (
+                bool(holder_phase)
+                and bool(holder_run_id)
+                and _latest_phase_end(change_dir, holder_phase, holder_run_id) is not None
+            )
+            claim_extra["holderPhaseClosed"] = holder_closed
+            if holder_closed:
+                claim_extra["recoveryAction"] = (
+                    f"持有租约的 {holder_phase} 阶段（run-id {holder_run_id}）已写入 phase.end，"
+                    "这是残留租约，释放后重试 begin 是安全的："
+                    "python <skills-root>/scripts/harness_change.py release "
+                    f"--change {resolved['changeId']} --phase {holder_phase} "
+                    f"--run-id {holder_run_id} --json"
+                )
+            else:
+                claim_extra["recoveryAction"] = (
+                    f"{holder_phase or '另一个'} 阶段（run-id {holder_run_id or '未知'}）"
+                    "仍在进行中且尚未写入 phase.end。先让该阶段正常关门；"
+                    "确认其执行进程已不存在时才可释放租约，不要直接 --steal。"
+                )
         return emit_error(
-            str(claim.get("code", "LEASE_CONFLICT")),
+            claim_code,
             str(claim.get("message", "lease claim failed")),
             as_json=as_json,
-            extra={k: v for k, v in claim.items() if k not in {"ok", "message", "code"}},
+            extra=claim_extra,
         )
 
     guard_result: dict[str, Any] | None = None
@@ -2843,7 +2899,26 @@ def cmd_close(args: argparse.Namespace) -> int:
                 as_json=as_json,
             )
             return 0
-        return emit_error("LEASE_ABSENT", "no active lease for phase close", as_json=as_json)
+        resume_run_id = explicit_run_id or _latest_open_run_id(change_dir, args.phase)
+        return emit_error(
+            "LEASE_ABSENT",
+            "no active lease for phase close",
+            as_json=as_json,
+            extra={
+                "retryable": True,
+                "phase": args.phase,
+                "changeId": resolved["changeId"],
+                "resumeRunId": resume_run_id,
+                "recoveryAction": (
+                    "阶段租约已过期（TTL 由 begin 的 --ttl-seconds 决定，默认 3600 秒）或已被释放。"
+                    "用本阶段原 run-id 重新取得租约后原样重试 close："
+                    "python <skills-root>/scripts/harness_change.py claim "
+                    f"--change {resolved['changeId']} --phase {args.phase} "
+                    f"--run-id {resume_run_id or '<原 run-id>'} --ttl-seconds 3600 --json"
+                    "。不要重跑 gate begin——那会新开一次 attempt 并丢失本轮 capsule。"
+                ),
+            },
+        )
     run_id = explicit_run_id or str(current_lease.get("runId") or "")
     if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
         return emit_error(

@@ -65,6 +65,24 @@ disallowed-tools:
 
 **Fixback**：入口只用 `launch-review`，后续问题处理通过 `resolve-issue/close` 驱动，不得把修复说明当成新的普通 Run。只读取返回的受影响问题和文件；验证仅失效与 `changedFiles` 相交的目标，其他 Test/Review 证据继续复用。RED 优先；`manual`、`workflow` 或未选用的建议不进入代码批次，使用中文记录处理结论。
 
+**构建/测试执行入口**：所有构建与测试命令（mvn / gradle / npm test / pytest 等）必须经 `harness_test_runner.py exec` 发起，**禁止**用 `powershell.exe -Command` 直接裸跑：
+
+```text
+python <skills-root>/scripts/harness_test_runner.py exec --project . --timeout-seconds <预估上限> -- <构建命令及参数>
+```
+
+该入口持有项目级互斥锁并托管进程树。裸跑构建在宿主工具超时后会被推入后台，多个后台构建同时写同一个 `target/`、`build/` 或 `node_modules/.cache`，表现为编译产物被清空、日志文件被占用、"增量编译抖动"——这些都不是代码缺陷，是并发自相残杀，排查成本极高。`--timeout-seconds` 按最慢的一次全量构建估（默认 300 秒偏短），宁可给足也不要让命令被中途掐断。
+
+返回 `TEST_RUN_ALREADY_ACTIVE`（退出码 3）说明**已有构建在跑**：等它结束或用 `lock-status` 查明持有者，**不得**改用裸跑绕开锁，也不得另起一个并行构建。确认持有进程已消失时才用 `lock-reap` 回收。
+
+**长阶段租约续期**：`gate begin` 的租约默认 TTL 3600 秒，而 run 阶段常常跑得更久。租约过期不会中断执行，只会让最后的 `gate close` 报 `LEASE_ABSENT`。凡预计超过 1 小时的阶段，每完成一个变更簇就用本阶段**原 run-id** 续租一次（同 run-id 重复 claim 即刷新，不会新开 attempt）：
+
+```text
+python <skills-root>/scripts/harness_change.py claim --change <id> --phase run --run-id <本阶段 run-id> --ttl-seconds 3600 --json
+```
+
+已经报了 `LEASE_ABSENT` 也按同一条命令恢复——错误响应的 `resumeRunId` 就是要用的 run-id；**不要**重跑 `gate begin`，那会新开 attempt 并丢失本轮 capsule。
+
 **执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。
 
 **Foundation Gate**：若 `meta/implementation-checkpoints.json` 中 `foundation-gate` 为 pending，不得开始 plan 中任务 6+；由 `harness_gate.py` 硬阻断。
@@ -87,7 +105,9 @@ disallowed-tools:
 | **预存变更** | 保留 → baseline 隔离；存在则最终 ≥ 🟡WARN |
 | **关门/状态** | 10 项关门检查；持久化 run-task-status；仅 run-owned P0 静态-only 导致 WARN；test-owned 待办正常移交 |
 | **Worktree** | `requested=true` 时代码只写 worktree |
-| **PowerShell** | 所有 git/构建经 `powershell.exe -NoProfile -Command` |
+| **构建/测试** | 一律经 `harness_test_runner.py exec`；禁止裸跑 mvn/gradle/npm test；`TEST_RUN_ALREADY_ACTIVE` 表示已有构建在跑，等待而非另起 |
+| **租约** | 阶段超 1 小时按变更簇用原 run-id 续租；`LEASE_ABSENT` 用 `harness_change.py claim` 恢复，不重跑 begin |
+| **PowerShell** | 所有 git 经 `powershell.exe -NoProfile -Command` |
 
 ### 陈旧测试安全修复与精确跟踪
 

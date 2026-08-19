@@ -1111,6 +1111,129 @@ class HarnessGateTests(unittest.TestCase):
         self.assertTrue(updated["closeTransaction"]["phaseEndRecorded"])
         self.assertTrue(updated["closeTransaction"]["retryable"])
 
+    def _write_events(self, *events: dict) -> None:
+        self.change_dir.joinpath("events.ndjson").write_text(
+            "".join(json.dumps(event) + "\n" for event in events),
+            encoding="utf-8",
+        )
+
+    def test_close_without_lease_reports_resume_run_id(self) -> None:
+        """An expired lease must tell the caller how to resume, not just fail."""
+        self._write_checkpoints("approved")
+        self._write_events(
+            {
+                "schema_version": 3,
+                "id": "evt-start",
+                "timestamp": "2026-08-19T14:41:00+08:00",
+                "phase": "run",
+                "type": "phase.start",
+                "run_id": "run-long",
+                "attempt": 1,
+            },
+        )
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo", "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        errors: list[str] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            self.assertEqual(gate.cmd_close(args), 1)
+
+        payload = json.loads(errors[-1])
+        self.assertEqual(payload["code"], "LEASE_ABSENT")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(payload["resumeRunId"], "run-long")
+        self.assertIn("harness_change.py claim", payload["recoveryAction"])
+        self.assertIn("run-long", payload["recoveryAction"])
+
+    def test_close_without_lease_ignores_already_closed_run_id(self) -> None:
+        """A run that already recorded phase.end is not a resumable candidate."""
+        self._write_checkpoints("approved")
+        self._write_events(
+            {
+                "schema_version": 3, "id": "evt-s1",
+                "timestamp": "2026-08-19T10:00:00+08:00",
+                "phase": "run", "type": "phase.start",
+                "run_id": "run-done", "attempt": 1,
+            },
+            {
+                "schema_version": 3, "id": "evt-e1",
+                "timestamp": "2026-08-19T11:00:00+08:00",
+                "phase": "run", "type": "phase.end",
+                "run_id": "run-done", "attempt": 1,
+            },
+        )
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo", "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        errors: list[str] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            self.assertEqual(gate.cmd_close(args), 1)
+
+        payload = json.loads(errors[-1])
+        self.assertEqual(payload["code"], "LEASE_ABSENT")
+        self.assertIsNone(payload["resumeRunId"])
+
+    def test_begin_conflict_flags_a_lease_left_by_a_closed_phase(self) -> None:
+        """A lease held by a phase that already ended is leftover, and safe to release."""
+        self._write_events(
+            {
+                "schema_version": 3, "id": "evt-plan-end",
+                "timestamp": "2026-08-19T14:19:36+08:00",
+                "phase": "plan", "type": "phase.end",
+                "run_id": "plan-stale", "attempt": 1,
+            },
+        )
+        holder = {"phase": "plan", "runId": "plan-stale", "expiresAt": "2026-08-19T15:21:00+08:00"}
+        payload = self._begin_conflict_payload(holder)
+        self.assertEqual(payload["code"], "LEASE_CONFLICT")
+        self.assertTrue(payload["holderPhaseClosed"])
+        self.assertIn("harness_change.py release", payload["recoveryAction"])
+        self.assertIn("plan-stale", payload["recoveryAction"])
+
+    def test_begin_conflict_withholds_release_advice_for_a_live_phase(self) -> None:
+        """Without a phase.end the holder may still be running — never advise release."""
+        self._write_events()
+        holder = {"phase": "run", "runId": "run-live", "expiresAt": "2026-08-19T15:21:00+08:00"}
+        payload = self._begin_conflict_payload(holder)
+        self.assertEqual(payload["code"], "LEASE_CONFLICT")
+        self.assertFalse(payload["holderPhaseClosed"])
+        self.assertNotIn("harness_change.py release", payload["recoveryAction"])
+        self.assertIn("phase.end", payload["recoveryAction"])
+
+    def _begin_conflict_payload(self, holder: dict) -> dict:
+        self._write_checkpoints("approved")
+        scripts_dir = self.project / ".codebuddy" / "skills" / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir.parent / ".harness-build.json").write_text("{}\n", encoding="utf-8")
+        args = gate.build_parser().parse_args([
+            "begin", "--phase", "run", "--change", "demo",
+            "--run-id", "run-new", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        identity = {"adapter": "codebuddy", "bundleHash": "sha256:" + "a" * 64}
+        errors: list[str] = []
+        with mock.patch.object(gate, "SCRIPTS_DIR", scripts_dir), \
+             mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate, "validate_identity", return_value=identity), \
+             mock.patch.object(gate.hc, "claim_lease", return_value={
+                 "ok": False, "code": "LEASE_CONFLICT",
+                 "message": "change lease held by another run",
+                 "holder": holder,
+             }), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append):
+            self.assertEqual(gate.cmd_begin(args), 1)
+        return json.loads(errors[-1])
+
     def test_close_root_mismatch_persists_retryable_failure_capsule(self) -> None:
         self._write_checkpoints("approved")
         alternate_root = self.project / "alternate-worktree"
