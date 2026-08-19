@@ -1,4 +1,5 @@
 import {
+  ApiError,
   ArchiveUploadError,
   uploadArchivePackage
 } from "@hunter-harness/core";
@@ -59,10 +60,22 @@ export async function runArchiveUpload(
       : `归档 ${receipt.change_key} 已保存到服务端，知识状态：${receipt.knowledge_status}。\n`);
     return 0;
   } catch (error) {
-    const code = error instanceof ArchiveUploadError ? error.code : "ARCHIVE_UPLOAD_FAILED";
+    // The server's own code is the only thing that says *why* an upload was
+    // refused (ARCHIVE_PACKAGE_CONFLICT vs a transport failure). Flattening it
+    // to ARCHIVE_UPLOAD_FAILED left callers guessing from prose.
+    const serverCode = error instanceof ApiError && /^[A-Z][A-Z0-9_]{0,79}$/u.test(error.code)
+      ? error.code
+      : undefined;
+    const code = error instanceof ArchiveUploadError
+      ? error.code
+      : serverCode ?? "ARCHIVE_UPLOAD_FAILED";
     const exitCode = error instanceof ArchiveUploadError ? error.exitCode : 1;
     const message = error instanceof Error ? error.message : String(error);
-    dependencies.stderr(message + "\n");
+    const hint = serverCode === "ARCHIVE_PACKAGE_CONFLICT"
+      ? "\n该 change key 在服务端已存有一个不可变归档包，不接受不同字节的替换；" +
+        "补传只适用于从未成功上传、或字节完全一致的重试。\n"
+      : "";
+    dependencies.stderr(message + "\n" + hint);
     if (options.json === true) {
       dependencies.stdout(JSON.stringify({
         schema_version: 1,
@@ -70,7 +83,11 @@ export async function runArchiveUpload(
         ok: false,
         exit_code: exitCode,
         project_id: null,
-        errors: [{ code, message }],
+        errors: [{
+          code,
+          message,
+          ...(error instanceof ApiError ? { server_status: error.status } : {})
+        }],
         warnings: []
       }) + "\n");
     }

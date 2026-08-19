@@ -3924,6 +3924,136 @@ class ArchiveRepublishTests(unittest.TestCase):
         self.assertEqual(code, 0, payload)
         self.assertFalse(payload["knowledgeCandidatesInjected"])
 
+    def test_resolves_the_project_root_when_cwd_is_the_project_root(self) -> None:
+        # find_project_root walks p.parents, which excludes p itself; handing it
+        # the cwd skipped the very directory the operator stood in and climbed to
+        # an ancestor, so republish looked for archives that were never there.
+        previous = os.getcwd()
+        os.chdir(self.project)
+        try:
+            code, payload = ha.cmd_republish(
+                change_key="demo-change",
+                archive_dir=None,
+                project_root=None,
+                dry_run=True,
+            )
+        finally:
+            os.chdir(previous)
+
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(Path(payload["projectRoot"]), self.project.resolve())
+
+    def test_rebuilds_byte_identical_packages_across_runs(self) -> None:
+        # Injected candidates used to carry now_iso(), so no two rebuilds matched
+        # and the package could never be compared against a stored one.
+        first = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )[1]
+        second = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )[1]
+
+        self.assertTrue(first["knowledgeCandidatesInjected"])
+        self.assertEqual(first["packageSha256"], second["packageSha256"])
+
+    def _write_durable_receipt(self, package_sha: str) -> None:
+        receipt = (
+            self.project / ".harness" / "state" / "local" / "archive-packages"
+            / "demo-change.remote.json"
+        )
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(receipt, {
+            "schemaVersion": 1,
+            "recordedAt": "2026-08-17T10:00:00+08:00",
+            "changeKey": "demo-change",
+            "archiveId": "arc_demo",
+            "archiveStatus": "durable",
+            "knowledgeStatus": "ready",
+            "uploadStatus": "ready",
+            "packageSha256": package_sha,
+            "manifestSha256": "sha256:" + "aa" * 32,
+            "fileCount": 8,
+        })
+
+    def test_refuses_to_upload_over_a_durable_archive_with_different_bytes(self) -> None:
+        # The platform keeps one immutable package per change key. Spending an
+        # upload to learn that is pure waste, and the server's rejection reads as
+        # a transport failure rather than "this archive is already published".
+        self._write_durable_receipt("sha256:" + "6e" * 32)
+
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=False,
+        )
+
+        self.assertEqual(code, 1, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_REMOTE_IMMUTABLE_CONFLICT")
+        self.assertNotIn("push", payload, "must decide locally, without uploading")
+        self.assertIn("知识候选", payload["nextAction"])
+        packages = self.project / ".harness" / "state" / "local" / "archive-packages"
+        self.assertEqual(
+            sorted(item.name for item in packages.iterdir()),
+            ["demo-change.remote.json"],
+            "a refused republish must not leave a package behind",
+        )
+
+    def test_reports_already_published_when_the_rebuild_matches(self) -> None:
+        rebuilt = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )[1]
+        self._write_durable_receipt(rebuilt["packageSha256"])
+
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=False,
+        )
+
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_ALREADY_PUBLISHED")
+        self.assertNotIn("push", payload)
+
+    def test_still_uploads_when_no_durable_receipt_exists(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in [key for key in os.environ if key.startswith("HUNTER_")]:
+                os.environ.pop(name)
+            code, payload = ha.cmd_republish(
+                change_key="demo-change", archive_dir=None,
+                project_root=self.project, dry_run=False,
+            )
+
+        self.assertEqual(code, 1, payload)
+        self.assertIn("push", payload, "a never-published archive must reach the upload path")
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_UPLOAD_CREDENTIALS_MISSING")
+
+    def test_no_knowledge_injection_reproduces_the_sealed_archive_bytes(self) -> None:
+        # Retrying an upload whose knowledge index failed needs the bytes the
+        # server already stored; injection guarantees a different package.
+        injected = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )[1]
+        plain = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True, inject_knowledge=False,
+        )[1]
+
+        self.assertTrue(injected["knowledgeCandidatesInjected"])
+        self.assertFalse(plain["knowledgeCandidatesInjected"])
+        self.assertNotIn("candidates/knowledge.json", plain["files"])
+        self.assertNotEqual(injected["packageSha256"], plain["packageSha256"])
+
+        # And that exact-rebuild path clears the immutable-archive conflict.
+        self._write_durable_receipt(plain["packageSha256"])
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=False, inject_knowledge=False,
+        )
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_ALREADY_PUBLISHED")
+
     def test_unknown_change_key_reports_the_directory_it_searched(self) -> None:
         code, payload = ha.cmd_republish(
             change_key="not-a-change",

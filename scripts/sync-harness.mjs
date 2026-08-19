@@ -29,7 +29,7 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.68";
+const BUNDLE_VERSION = "0.2.69";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
 // 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py
@@ -41,8 +41,10 @@ const BUNDLE_VERSION = "0.2.68";
 // 配旧 CLI 会在 archive-package-builder 的候选校验处直接判包无效（不是降级，是硬失败）；
 // 0.2.87 起敏感扫描默认 warn、且 harness-push 才有 PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM
 // 与 --allow-sensitive——本 Bundle 的两份 SKILL.md 按这套行为写，配 0.2.86 会得到
-// 旧的 PUSH_PULL_SENSITIVE_HARD_BLOCKED / PUSH_PULL_ARCHIVE_UNAVAILABLE，文档对不上
-const MINIMUM_CLI_VERSION = "0.2.87";
+// 旧的 PUSH_PULL_SENSITIVE_HARD_BLOCKED / PUSH_PULL_ARCHIVE_UNAVAILABLE，文档对不上；
+// 0.2.88 起 archive upload 才保留服务端错误码——本 Bundle 的 republish 在冲突时引导
+// 用户看 ARCHIVE_PACKAGE_CONFLICT，配旧 CLI 只会看到笼统的 ARCHIVE_UPLOAD_FAILED
+const MINIMUM_CLI_VERSION = "0.2.88";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",

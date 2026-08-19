@@ -10232,6 +10232,42 @@ def cmd_repair_cli(args: argparse.Namespace) -> int:
     return code
 
 
+def resolve_republish_project_root(explicit: Path | None, archive_dir: Path | None) -> Path:
+    """Locate the project root for a republish without requiring --project.
+
+    ``find_project_root`` walks ``p.parents``, which excludes ``p`` itself; it is
+    built for a change/archive subdirectory. Handing it the cwd therefore skips
+    the very directory the operator is standing in and keeps climbing — in a real
+    run that resolved ``E:/WorkProject/kb-sdd`` to its parent and made the command
+    look for archives that were never there.
+
+    Order: explicit flag, then the archive's own location, then cwd and its
+    parents (cwd included), then the deployed script's location — the script
+    lives at ``<project>/.claude|.codebuddy/skills/scripts/`` after install.
+    """
+    if explicit is not None:
+        return explicit.resolve()
+    if archive_dir is not None:
+        return find_project_root(archive_dir)
+
+    def first_with_archive(start: Path) -> Path | None:
+        start = start.resolve()
+        for candidate in (start, *start.parents):
+            if (candidate / ".harness" / "archive").is_dir():
+                return candidate
+        return None
+
+    found = first_with_archive(Path.cwd())
+    if found is not None:
+        return found
+    found = first_with_archive(Path(__file__).resolve().parent)
+    if found is not None:
+        return found
+    # Nothing carries an archive directory; report against cwd so the error names
+    # a path the operator recognises instead of some ancestor.
+    return Path.cwd().resolve()
+
+
 def resolve_archive_dir_for_change(
     project_root: Path,
     change_key: str,
@@ -10272,7 +10308,10 @@ def _republish_knowledge_entry(archive_dir: Path) -> dict[str, tuple[str, str, b
         change_key=str(summary.get("changeName") or archive_dir.name),
         archive_id=archive_dir.name,
         producer_version=SCHEMA_VERSION,
-        created_at=now_iso(),
+        # Derived from the archive, never wall-clock: `now_iso()` here made every
+        # rebuild produce different bytes, so a package could never be compared
+        # against a stored one and the "deterministic package" claim was false.
+        created_at=_archive_created_at(summary_path),
     )
     if not candidates:
         return {}
@@ -10285,12 +10324,28 @@ def _republish_knowledge_entry(archive_dir: Path) -> dict[str, tuple[str, str, b
     }
 
 
+def read_durable_archive_receipt(project_root: Path, change_key: str) -> dict[str, Any] | None:
+    """The `<key>.remote.json` written after a confirmed durable upload, if any."""
+    receipt_path = (
+        project_root / ".harness" / "state" / "local" / "archive-packages"
+        / f"{change_key}.remote.json"
+    )
+    if not receipt_path.is_file():
+        return None
+    try:
+        receipt = read_json(receipt_path)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return receipt if isinstance(receipt, dict) else None
+
+
 def cmd_republish(
     *,
     change_key: str,
     archive_dir: Path | None,
     project_root: Path | None,
     dry_run: bool,
+    inject_knowledge: bool = True,
 ) -> tuple[int, dict[str, Any]]:
     """Rebuild and re-upload the core ZIP for an already sealed archive.
 
@@ -10311,7 +10366,7 @@ def cmd_republish(
         payload["reasonCode"] = "ARCHIVE_CHANGE_KEY_INVALID"
         return 2, payload
 
-    root = (project_root or find_project_root(archive_dir or Path.cwd())).resolve()
+    root = resolve_republish_project_root(project_root, archive_dir)
     payload["projectRoot"] = str(root)
     matches: list[str] = []
     if archive_dir is None:
@@ -10338,53 +10393,103 @@ def cmd_republish(
         payload["reasonCode"] = "ARCHIVE_SUMMARY_MISSING"
         return 1, payload
 
-    try:
-        extra_entries = _republish_knowledge_entry(archive_dir)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        # Knowledge is additive: never fail a re-delivery over it.
-        payload.setdefault("warnings", []).append(
-            f"knowledge candidate regeneration skipped: {exc}"
-        )
-        extra_entries = {}
+    extra_entries: dict[str, tuple[str, str, bytes]] = {}
+    if inject_knowledge:
+        try:
+            extra_entries = _republish_knowledge_entry(archive_dir)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            # Knowledge is additive: never fail a re-delivery over it.
+            payload.setdefault("warnings", []).append(
+                f"knowledge candidate regeneration skipped: {exc}"
+            )
+            extra_entries = {}
     payload["knowledgeCandidatesInjected"] = "candidates/knowledge.json" in extra_entries
 
-    if dry_run:
-        # The package builder refuses to write outside the project, so the
-        # preview lands beside the real packages under a distinct name and is
-        # removed again; it must never be mistaken for a pending upload.
-        preview_path = (
-            root / ".harness" / "state" / "local" / "archive-packages"
-            / f"{change_key}.preview.zip"
+    # Build once, into a preview path, so the bytes can be compared against any
+    # durable receipt before an upload is attempted. The builder refuses to write
+    # outside the project, so the preview lands beside the real packages under a
+    # distinct name; it must never be mistaken for a pending upload.
+    preview_path = (
+        root / ".harness" / "state" / "local" / "archive-packages"
+        / f"{change_key}.preview.zip"
+    )
+    try:
+        package = build_archive_package(
+            root,
+            archive_dir,
+            change_key,
+            output_path=preview_path,
+            extra_entries=extra_entries,
         )
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        payload["error"] = f"archive package build failed: {exc}"
+        payload["reasonCode"] = "ARCHIVE_PACKAGE_BUILD_FAILED"
+        return 1, payload
+    finally:
         try:
-            package = build_archive_package(
-                root,
-                archive_dir,
-                change_key,
-                output_path=preview_path,
-                extra_entries=extra_entries,
-            )
-        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            payload["error"] = f"archive package build failed: {exc}"
-            payload["reasonCode"] = "ARCHIVE_PACKAGE_BUILD_FAILED"
-            return 1, payload
-        finally:
-            try:
-                preview_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-        payload.update(
-            {
+            preview_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    payload.update(
+        {
+            "fileCount": package["fileCount"],
+            "sizeBytes": package["sizeBytes"],
+            "knowledgeCandidateCount": package["knowledgeCandidateCount"],
+            "packageSha256": package["packageSha256"],
+            "manifestSha256": package["manifestSha256"],
+            "files": package["paths"],
+        }
+    )
+
+    # The platform stores exactly one immutable package per change key. A rebuild
+    # that differs by even one byte is refused server-side, so decide here rather
+    # than spending an upload to learn it.
+    durable = read_durable_archive_receipt(root, change_key)
+    stored_sha = str((durable or {}).get("packageSha256") or "")
+    if durable is not None and str(durable.get("archiveStatus") or "") == "durable":
+        payload["remoteReceipt"] = {
+            "archiveId": durable.get("archiveId"),
+            "archiveStatus": durable.get("archiveStatus"),
+            "knowledgeStatus": durable.get("knowledgeStatus"),
+            "packageSha256": stored_sha,
+            "recordedAt": durable.get("recordedAt"),
+        }
+        if stored_sha and stored_sha == package["packageSha256"]:
+            payload.update({
                 "ok": True,
-                "reasonCode": "ARCHIVE_REPUBLISH_PREVIEW",
-                "fileCount": package["fileCount"],
-                "sizeBytes": package["sizeBytes"],
-                "knowledgeCandidateCount": package["knowledgeCandidateCount"],
-                "packageSha256": package["packageSha256"],
-                "manifestSha256": package["manifestSha256"],
-                "files": package["paths"],
-            }
-        )
+                "reasonCode": "ARCHIVE_ALREADY_PUBLISHED",
+                "message": (
+                    "远端已存有字节一致的同一个包，无需重传"
+                    f"（archiveId={durable.get('archiveId')}）。"
+                ),
+            })
+            return 0, payload
+        payload.update({
+            "ok": False,
+            "reasonCode": "ARCHIVE_REMOTE_IMMUTABLE_CONFLICT",
+            "error": (
+                "该 change 在远端已是 durable 归档，服务端对同一 change key 只保存一个"
+                "不可变包，不接受不同字节的替换。"
+            ),
+            "nextAction": (
+                "补传只适用于『从未成功上传』或『字节完全一致的重试』。"
+                + (
+                    "本次重建注入了 "
+                    f"{package['knowledgeCandidateCount']} 条知识候选"
+                    "（原包上传时还没有 candidates/knowledge.json），因此字节必然不同——"
+                    "已发布归档无法从客户端追加知识条目，需要平台侧提供重新索引或归档版本化能力。"
+                    "若只是想重试同一个包（例如知识索引失败），加 --no-knowledge-injection "
+                    "可重建与封存目录完全一致的字节。"
+                    if payload.get("knowledgeCandidatesInjected")
+                    else "本地归档内容与已上传的包不一致，请先确认哪一份才是应保留的事实。"
+                )
+            ),
+        })
+        return 1, payload
+
+    if dry_run:
+        payload.update({"ok": True, "reasonCode": "ARCHIVE_REPUBLISH_PREVIEW"})
         return 0, payload
 
     result = auto_push_archive_core(
@@ -10407,6 +10512,7 @@ def cmd_republish_cli(args: argparse.Namespace) -> int:
         archive_dir=resolve_path(args.archive_dir) if args.archive_dir else None,
         project_root=resolve_path(args.project) if args.project else None,
         dry_run=bool(args.dry_run),
+        inject_knowledge=not bool(args.no_knowledge_injection),
     )
     emit_json(payload)
     return code
@@ -10589,6 +10695,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="build the package and report its contents without uploading",
+    )
+    p_republish.add_argument(
+        "--no-knowledge-injection",
+        action="store_true",
+        help=(
+            "rebuild exactly what the sealed archive holds; needed to retry the "
+            "same bytes the server already stored"
+        ),
     )
     p_republish.add_argument("--json", action="store_true", default=True)
     p_republish.set_defaults(func=cmd_republish_cli)

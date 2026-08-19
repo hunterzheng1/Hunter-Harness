@@ -140,9 +140,20 @@ python <skills-root>/scripts/harness_archive.py republish --change <change-key> 
 python <skills-root>/scripts/harness_archive.py republish --change <change-key> --json             # 重建并上传
 ```
 
+脚本在 `<skills-root>/scripts/` 共享，**不在 `harness-archive/scripts/`**（见 read-protocol 第 0 条）。
+
+在项目根内任意目录直接跑即可，**不需要** `--project`。
+
 归档目录是封存的（after-manifest 覆盖其每个字节），因此 `republish` **不写回**归档目录：
 缺失的 `candidates/knowledge.json` 只在内存中按已归档 summary 生成并放进包里。平台的知识
 条目只来自这个包；`--scope all` 走的是 branch_file 通道，不进知识管道。
+
+**服务端一个 change key 只存一个不可变包**，所以补传只适用于「从未成功上传」与「字节完全一致的
+重试」。已 durable 的 change 会在本地就判出结果：字节一致 → `ARCHIVE_ALREADY_PUBLISHED`
+（exit 0，不重传）；字节不同 → `ARCHIVE_REMOTE_IMMUTABLE_CONFLICT`（exit 1，**不发起上传**）。
+**已发布归档无法从客户端补知识条目**——注入候选必然改变字节，服务端拒绝替换；要补需要平台侧
+提供重新索引或归档版本化能力。
+只想重试**同一个包**（例如知识索引失败）时加 `--no-knowledge-injection`，它按封存目录原样重建，字节与已存包一致。
 
 ### 三、文件移动只用内置工具或 PowerShell
 

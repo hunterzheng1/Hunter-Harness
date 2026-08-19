@@ -57,8 +57,22 @@ npx hunter-harness harness-push --scope archive --change <change-key> --json
 python <skills-root>/scripts/harness_archive.py republish --change <change-key> --json
 ```
 
+`<skills-root>` 是已部署 skills 的根目录，实际形态是 `.codebuddy/skills/`（`.claude`、`.cursor`、
+`.codex` 同理）。**脚本在它下面的 `scripts/` 里共享，不在 `harness-push/scripts/`** —— 已有四份
+执行日志先猜成后者、报 `No such file` 再回头找。
+
 `--scope archive` 没有待发布 claim 时返回 `PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM`（exit 5），
 stderr 里直接给出上面的 republish 命令；`--dry-run` 会列出本地可补传的归档目录，不取租约。
+`republish` 在项目根内任意目录直接跑即可，**不需要** `--project`。
+
+**补传能做什么、不能做什么**：服务端对同一 change key 只保存**一个不可变包**。所以补传只适用于
+「从未成功上传」与「字节完全一致的重试」两种情况。若该 change 已是 durable，`republish` 会读
+`.harness/state/local/archive-packages/<key>.remote.json` 在**本地就判定**并返回：
+字节一致 → `ARCHIVE_ALREADY_PUBLISHED`（exit 0，不重传）；字节不同 →
+`ARCHIVE_REMOTE_IMMUTABLE_CONFLICT`（exit 1，**不发起上传**）。
+**已发布的归档无法从客户端补上知识条目**——注入 `candidates/knowledge.json` 必然改变字节，
+服务端拒绝替换。要让旧归档产生知识条目，需要平台侧提供重新索引或归档版本化能力。
+只想重试**同一个包**（例如知识索引失败）时加 `--no-knowledge-injection`，它按封存目录原样重建，字节与已存包一致。
 
 ## 关键规则
 

@@ -175,4 +175,53 @@ describe("hunter-harness archive upload", () => {
       errors: [{ code: "ARCHIVE_RECEIPT_SCOPE_MISMATCH" }]
     });
   });
+  it("keeps the server's refusal code instead of a generic upload failure", async () => {
+    const packagePath = join(
+      root, ".harness", "state", "local", "archive-packages", "change-conflict.zip"
+    );
+    await writeFile(packagePath, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v1/projects:resolve") {
+        return json({
+          schema_version: 1,
+          project_id: "prj_archive",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {},
+          request_id: "resolve-request"
+        });
+      }
+      if (url.pathname.endsWith("/archive-package")) {
+        // One immutable package per change key: a rebuild with different bytes
+        // is refused, and that reason must survive to the caller.
+        return json({
+          error: {
+            code: "ARCHIVE_PACKAGE_CONFLICT",
+            message: "a different package is already stored for this change"
+          }
+        }, 409);
+      }
+      return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    const code = await runCli([
+      "archive", "upload", "--file", packagePath,
+      "--change-key", "change-conflict", "--non-interactive", "--yes", "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: {},
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "ARCHIVE_PACKAGE_CONFLICT", server_status: 409 }]
+    });
+    expect(stderr.join("")).toContain("不可变归档包");
+  });
 });

@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.2.88] — hunter-harness ＋ [0.2.80] — @hunter-harness/workflow-harness（Bundle 0.2.69）
+
+> `0.2.87` 已提交并推送 GitHub，但**从未发布到 npm**，因此 registry 上会看到 0.2.86 → 0.2.88
+> 的版本跳跃。0.2.87 的全部内容都包含在本版中。
+
+### Fixed（0.2.87 的归档补传在真实项目里仍然失败，本版修根因）
+
+一次 kb-sdd 的真实补传把 0.2.87 的三个缺口一次性暴露出来：
+
+- **项目根被解析成父目录**：`find_project_root` 遍历的是 `p.parents`，**不含目录自身**——它本是给
+  change/archive 子目录用的。`republish` 把 cwd 交给它，于是站在项目根里反而跳过项目根一路上爬，
+  实测把 `E:/WorkProject/kb-sdd` 解析成 `E:/WorkProject`，命令去找从不存在的归档，用户被迫手加
+  `--project`。改用 `resolve_republish_project_root`：显式参数 → 归档自身位置 → cwd 及其祖先
+  （**含 cwd**）→ 已部署脚本所在位置。**现在项目根内任意目录直接跑即可。**
+- **重建包每次字节都不同**：注入的知识候选带 `created_at=now_iso()`，两次重建必然不同。这既让
+  「确定性包」的说法名不副实，也让任何与已存包的比对永远失败。改为从归档自身派生
+  （`_archive_created_at`）。
+- **明知会被拒绝还要付一次上传**：服务端对同一 change key 只保存**一个不可变包**。0.2.87 直到上传
+  完才从服务端拿回拒绝，而 CLI 又把服务端错误码压成笼统的 `ARCHIVE_UPLOAD_FAILED`，真正原因只
+  侥幸留在文案里。现在 `republish` 先读 `<key>.remote.json` 在**本地**判定：字节一致 →
+  `ARCHIVE_ALREADY_PUBLISHED`（exit 0，不重传）；字节不同 → `ARCHIVE_REMOTE_IMMUTABLE_CONFLICT`
+  （exit 1，**不发起上传**），并说明冲突通常来自知识候选注入。
+- **`archive upload` 保留服务端错误码**：`ApiError` 的 code 与 HTTP status 进 JSON 输出，
+  `ARCHIVE_PACKAGE_CONFLICT` 另附一句中文说明。
+
+### Added
+
+- **`republish --no-knowledge-injection`**：按封存目录原样重建，字节与已存包一致。这是「知识索引
+  失败、需要重传同一个包」唯一可走的路——注入候选必然改变字节，此前该场景无解。
+
+### Changed
+
+- 两份 SKILL.md 的命令块**不再用 `<skills-root>` 占位符**，直接写
+  `.codebuddy/skills/scripts/harness_archive.py`。`shared/read-protocol.md` 早就记着「三份执行日志
+  都猜成 `skills/harness-<phase>/scripts/` 然后报 No such file」，这次是**第四次**——占位符治不好，
+  写死路径才治得好。同时写明补传的适用边界与「已发布归档无法从客户端补知识条目」。
+
+### 已知边界（需要平台侧支持）
+
+**已经上传成功的归档拿不到知识条目。** `candidates/knowledge.json` 是 0.2.86 才有的，更早上传的
+归档包里没有；而服务端一个 change key 只存一个不可变包，注入候选必然改变字节被拒。客户端至此已
+无路可走，需要平台提供**重新索引**或**归档版本化**能力。本版能做的是把这个事实在本地立刻讲清楚，
+不再让人多付一次上传和一轮猜测。
+
 ## [0.2.87] — hunter-harness ＋ [0.2.79] — @hunter-harness/workflow-harness（Bundle 0.2.68）
 
 > **CLI ＋ Bundle 同发，最低 CLI 版本提到 `0.2.87`**：本 Bundle 的 `harness-push` 与
