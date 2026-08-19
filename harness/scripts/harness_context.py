@@ -1165,9 +1165,11 @@ def close_transition(
             "holder": lease.get("owner"),
             "leasePhase": lease.get("phase"),
         }
+    # Owner and phase already matched above, so nobody took this lease over: a
+    # takeover rewrites the file and would have produced CONTEXT_LEASE_MISMATCH.
+    # A lapsed deadline therefore proves only that the phase outlived the TTL.
     expiry = _parse_time(lease.get("expiresAt"))
-    if expiry is None or _now() >= expiry:
-        return {"ok": False, "code": "CONTEXT_LEASE_EXPIRED"}
+    lease_lapsed = expiry is None or _now() >= expiry
 
     previous_hash = transitions[-1].get("receiptHash") if transitions else None
     attempt = (
@@ -1192,6 +1194,12 @@ def close_transition(
         "closedAt": _now().isoformat(),
         "previousReceiptHash": previous_hash,
     }
+    if lease_lapsed:
+        # Recorded, not hidden: the phase ran past its lease without a renewal.
+        receipt["leaseLapsed"] = {
+            "expiresAt": lease.get("expiresAt"),
+            "acquiredAt": lease.get("acquiredAt"),
+        }
     receipt["receiptHash"] = _payload_hash(receipt)
     _append_ndjson(paths["transitions"], receipt)
     paths["lease"].unlink(missing_ok=True)
@@ -1267,7 +1275,11 @@ def _begin_transition_unlocked(
             "legacyBootstrap": True,
             "message": (
                 "没有交接凭证。v2 计划应有 committed 的 meta/publication-journals/*.json "
-                "作为补录证据；legacy 计划需先完成 plan 阶段的 close"
+                "作为补录证据；legacy 计划需先完成 plan 阶段的 close。"
+                "首次进入某阶段（还没有任何 transition 凭证）时不要用 context begin——"
+                "改跑 `harness_gate.py begin --change-dir .harness/changes/<change> "
+                "--phase <phase> --run-id <phase>_<uuid4hex> --note \"<触发指令>\"`，"
+                "它会领取租约并写好 phase.start。"
             ),
         }
     receipt = transitions[-1]
@@ -1458,6 +1470,53 @@ def cancel_prepared_context(
     }
 
 
+def renew_lease(
+    project: Path,
+    change: str,
+    *,
+    executor: str,
+    ttl_seconds: int = 3600,
+) -> dict[str, Any]:
+    """Extend the current phase lease in place.
+
+    Only the recorded owner may renew, and only while no other executor has
+    taken the lease over. Renewal touches nothing but ``expiresAt``, so it is
+    safe to call on a heartbeat during a long phase.
+    """
+    project = project.resolve()
+    try:
+        _, _, state_root = _contract(project, change)
+    except ValueError as exc:
+        return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
+    paths = _paths(state_root)
+    if not paths["lease"].is_file():
+        return {"ok": False, "code": "CONTEXT_LEASE_REQUIRED"}
+    with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
+        try:
+            lease = _read_json(paths["lease"])
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {"ok": False, "code": "CONTEXT_LEASE_INVALID"}
+        if lease.get("owner") != executor:
+            return {
+                "ok": False,
+                "code": "CONTEXT_LEASE_MISMATCH",
+                "holder": lease.get("owner"),
+            }
+        expiry = _parse_time(lease.get("expiresAt"))
+        lapsed = expiry is None or _now() >= expiry
+        lease["expiresAt"] = (
+            _now() + dt.timedelta(seconds=max(1, int(ttl_seconds)))
+        ).isoformat()
+        lease["renewedAt"] = _now().isoformat()
+        _write_json_atomic(paths["lease"], lease)
+    return {
+        "ok": True,
+        "code": "CONTEXT_LEASE_RENEWED",
+        "lease": lease,
+        "wasLapsed": lapsed,
+    }
+
+
 def context_view(project: Path, change: str) -> dict[str, Any]:
     project = Path(project).resolve()
     try:
@@ -1536,6 +1595,14 @@ def build_parser() -> argparse.ArgumentParser:
     begin.add_argument("--change", required=True)
     begin.add_argument("--phase", required=True)
     begin.add_argument("--executor", required=True)
+    renew = sub.add_parser(
+        "renew", help="extend the current phase lease without touching context"
+    )
+    renew.add_argument("--json", action="store_true")
+    renew.add_argument("--project", required=True, type=Path)
+    renew.add_argument("--change", required=True)
+    renew.add_argument("--executor", required=True)
+    renew.add_argument("--ttl-seconds", type=int, default=3600)
     configure = sub.add_parser("configure-plan")
     configure.add_argument("--json", action="store_true")
     configure.add_argument("--project", required=True, type=Path)
@@ -1587,6 +1654,13 @@ def main(argv: list[str] | None = None) -> int:
             args.change,
             phase=args.phase,
             executor=args.executor,
+        )
+    elif args.command == "renew":
+        result = renew_lease(
+            args.project,
+            args.change,
+            executor=args.executor,
+            ttl_seconds=args.ttl_seconds,
         )
     elif args.command == "configure-plan":
         result = configure_phase_plan(

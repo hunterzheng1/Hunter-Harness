@@ -1147,6 +1147,61 @@ class ChangeRenameEventTests(unittest.TestCase):
         self.assertIn("EVENT_FIELD_NOT_ALLOWED", proc.stderr)
 
 
+class RepeatedPhaseStartTests(unittest.TestCase):
+    """`gate begin` writes phase.start; the logging protocol used to ask for a
+    second one with the same run id. Two identical phase.start events wedge
+    `plan finalize` on PHASE_START_DUPLICATE, and the auto-seal fired first,
+    sealing the very attempt being started."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-events-restart-"))
+        self.change_dir = self.tmp / "change"
+        self.change_dir.mkdir()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _append(self, run_id: str, note: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable, str(MODULE_PATH), "append",
+                "--change-dir", str(self.change_dir),
+                "--phase", "plan", "--type", "phase.start",
+                "--run-id", run_id, "--attempt", "1", "--note", note, "--json",
+            ],
+            capture_output=True, text=True, encoding="utf-8", check=False,
+        )
+
+    def test_same_run_id_is_a_no_op_not_a_duplicate(self) -> None:
+        run_id = "plan_" + "a" * 32
+        self.assertEqual(self._append(run_id, "").returncode, 0)
+        second = self._append(run_id, "/harness-plan trigger")
+
+        self.assertEqual(second.returncode, 0, second.stderr)
+        payload = json.loads(second.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["skipped"])
+        self.assertEqual(payload["reason"], "phase-start-already-recorded")
+
+        events = he.load_events(self.change_dir / "events.ndjson")
+        self.assertEqual(
+            [item["type"] for item in events], ["phase.start"],
+            "a restated phase.start must not duplicate or auto-seal",
+        )
+
+    def test_a_fresh_run_id_still_opens_a_new_attempt(self) -> None:
+        self.assertEqual(self._append("plan_" + "a" * 32, "first").returncode, 0)
+        self.assertEqual(self._append("plan_" + "b" * 32, "retry").returncode, 0)
+
+        events = he.load_events(self.change_dir / "events.ndjson")
+        types = [item["type"] for item in events]
+        self.assertEqual(types.count("phase.start"), 2)
+        self.assertEqual(
+            types.count("phase.auto_sealed"), 1,
+            "the dangling first attempt is still sealed",
+        )
+
+
 class PhasePreparationEventTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-events-prepare-"))

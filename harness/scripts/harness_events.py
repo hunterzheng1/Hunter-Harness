@@ -1904,6 +1904,7 @@ def cmd_append(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
     phase_closed = False
+    phase_start_duplicate = False
     projection_error: str | None = None
     attempt_error: str | None = None
     auto_sealed_events: list[dict[str, Any]] = []
@@ -1951,10 +1952,25 @@ def cmd_append(args: argparse.Namespace) -> int:
                 except ValueError as exc:
                     projection_error = str(exc)
             elif args.type == "phase.start":
+                # Re-appending the same (phase, run_id) is the caller restating a
+                # start that already exists — `gate begin` writes one, and the
+                # logging protocol used to ask for a second. Treat it as a no-op
+                # rather than a duplicate; two identical phase.start events make
+                # `plan finalize` unrecoverable via PHASE_START_DUPLICATE.
+                if run_id is not None and any(
+                    item.get("phase") == args.phase
+                    and item.get("type") == "phase.start"
+                    and item.get("run_id") == run_id
+                    for item in existing_events
+                ):
+                    phase_start_duplicate = True
                 # HH-WF-20260730-001: a new phase.start must not be appended
                 # while a prior attempt for the same phase is still open —
                 # auto-seal it first so timing never has two open attempts.
-                open_attempts = open_attempts_for_phase(existing_events, args.phase)
+                open_attempts = (
+                    [] if phase_start_duplicate
+                    else open_attempts_for_phase(existing_events, args.phase)
+                )
                 if open_attempts:
                     inferred_reason = infer_auto_seal_reason(
                         open_attempts[-1].get("events") or []
@@ -1964,7 +1980,12 @@ def cmd_append(args: argparse.Namespace) -> int:
                         phase=args.phase,
                         seal_reason=inferred_reason,
                     )
-            if not phase_closed and projection_error is None and attempt_error is None:
+            if (
+                not phase_closed
+                and not phase_start_duplicate
+                and projection_error is None
+                and attempt_error is None
+            ):
                 for seal_event in auto_sealed_events:
                     atomic_append_line(
                         path,
@@ -1976,6 +1997,18 @@ def cmd_append(args: argparse.Namespace) -> int:
                 )
     except (OSError, TimeoutError, ValueError) as exc:
         return emit_error(f"append failed: {exc}", as_json=as_json)
+    if phase_start_duplicate:
+        if as_json:
+            print(json.dumps({
+                "ok": True,
+                "skipped": True,
+                "reason": "phase-start-already-recorded",
+                "phase": args.phase,
+                "run_id": event.get("run_id"),
+            }, ensure_ascii=False))
+        else:
+            print("ok (phase.start already recorded for this run id)")
+        return 0
     if phase_closed:
         return emit_error(
             "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same "

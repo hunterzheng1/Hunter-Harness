@@ -735,7 +735,12 @@ def _validate_plan_start(
     if len(matching) > 1:
         return _result_error(
             "PHASE_START_DUPLICATE",
-            f"found {len(matching)} matching plan phase.start events",
+            f"found {len(matching)} matching plan phase.start events for run id "
+            f"{run_id}. `harness_gate.py begin` already appends phase.start; a "
+            "second manual append of the same run id creates this state. Recover "
+            "with a fresh run id and the next attempt number (attempts are global "
+            "per phase, not per run id): append phase.start with both, then "
+            "finalize with the same pair.",
         )
     return {"ok": True, "phaseStartCount": 1}
 

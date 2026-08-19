@@ -938,6 +938,99 @@ class HarnessContextTest(unittest.TestCase):
             self.assertIn("attemptHistory", view)
 
 
+class ContextLeaseLifetimeTests(unittest.TestCase):
+    """A lease that outlived its TTL is not evidence of a conflict.
+
+    `_claim_lease` only refuses a *live* lease held by someone else, and a
+    takeover rewrites the owner. So at close time a real conflict always shows
+    up as CONTEXT_LEASE_MISMATCH; an expired lease with the same owner means
+    only that the phase ran longer than the TTL, which plan and run phases do.
+    """
+
+    def _prepared(self, project: Path) -> None:
+        make_change(project, "demo")
+        init_repo(project)
+        result = CONTEXT.prepare_context(
+            project, phase="plan", executor="codex", ttl_seconds=3600
+        )
+        self.assertTrue(result["ok"], result)
+
+    def _expire_lease(self, project: Path) -> dict:
+        state = project / ".harness/state/changes/demo/runtime/context-lease.json"
+        lease = json.loads(state.read_text(encoding="utf-8"))
+        lease["expiresAt"] = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=2)
+        ).isoformat()
+        state.write_text(json.dumps(lease), encoding="utf-8")
+        return lease
+
+    def test_close_succeeds_after_the_lease_lapsed_and_records_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._prepared(project)
+            self._expire_lease(project)
+
+            result = CONTEXT.close_transition(
+                project, "demo", from_phase="plan", to_phase="run",
+                executor="codex", artifacts=[], status="OK",
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertIn("leaseLapsed", result["receipt"])
+
+    def test_close_still_refuses_a_lease_owned_by_someone_else(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._prepared(project)
+            state = project / ".harness/state/changes/demo/runtime/context-lease.json"
+            lease = json.loads(state.read_text(encoding="utf-8"))
+            lease["owner"] = "another-agent"
+            state.write_text(json.dumps(lease), encoding="utf-8")
+
+            result = CONTEXT.close_transition(
+                project, "demo", from_phase="plan", to_phase="run",
+                executor="codex", artifacts=[], status="OK",
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "CONTEXT_LEASE_MISMATCH")
+
+    def test_renew_extends_only_the_deadline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._prepared(project)
+            stale = self._expire_lease(project)
+            current_before = (
+                project / ".harness/state/changes/demo/runtime/current-context.json"
+            ).read_text(encoding="utf-8")
+
+            result = CONTEXT.renew_lease(
+                project, "demo", executor="codex", ttl_seconds=3600
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["code"], "CONTEXT_LEASE_RENEWED")
+            self.assertTrue(result["wasLapsed"])
+            self.assertGreater(result["lease"]["expiresAt"], stale["expiresAt"])
+            self.assertEqual(result["lease"]["owner"], "codex")
+            self.assertEqual(
+                (project / ".harness/state/changes/demo/runtime/current-context.json")
+                .read_text(encoding="utf-8"),
+                current_before,
+                "renew must not rewrite the current context",
+            )
+
+    def test_renew_refuses_a_lease_owned_by_someone_else(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            self._prepared(project)
+
+            result = CONTEXT.renew_lease(project, "demo", executor="intruder")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["code"], "CONTEXT_LEASE_MISMATCH")
+
+
 class HarnessContextBootstrapPlanTest(unittest.TestCase):
     """阶段 0 一次性引导：doctor + prepare + capture + classify + phase.start。
 

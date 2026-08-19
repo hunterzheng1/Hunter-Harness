@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.2.81] — @hunter-harness/workflow-harness（Bundle 0.2.70）
+
+> **Bundle 单发**：本次只改 harness 脚本与协议文档，CLI 代码未动，仍是 `0.2.88`，
+> `minimumCliVersion` 保持 `0.2.88`。0.2.88 与本包都尚未发布到 npm，需一并发布。
+
+### Fixed（plan 阶段卡死的三个根因）
+
+一次真实 plan 执行日志里，收尾阶段用掉约 700 行才把 finalize 做成功。根因不在调用方：
+
+- **协议要求的写法本身会把 finalize 弄死**：`harness_gate.py begin` 已经追加
+  `phase.start`（且用 `_phase_event_exists` 自我幂等），而 `shared/logging.md` 紧接着让调用方
+  再用 `harness_events.py append --type phase.start` 写一次同 run-id 的——`append` 没有那层守卫。
+  结果一是两条 `phase.start` 让 `plan finalize` 死在 `PHASE_START_DUPLICATE`；二是手工那次会先
+  触发 auto-seal，把**正在开始的 attempt** 封成 `RECOVERED`，事件日志留下一条假记录。
+  现在 `append --type phase.start` 按 `(phase, run-id)` 幂等：重复追加是 no-op 并回
+  `skipped: phase-start-already-recorded`；换新 run-id 仍照常开新 attempt、照常 auto-seal 悬空的那次。
+  `shared/logging.md` 同步改为「phase.start 归 gate begin，note 在那里给」，并写明
+  attempt 是按 phase 全局递增、重试必须新 run-id ＋ 下一个 attempt 两者同换。
+- **`PHASE_START_DUPLICATE` 不给出路**：只报"found N matching events"，而它上面几行的
+  `PHASE_START_MISSING` 反而给了完整补救步骤。现在补上成因与恢复组合。
+- **`LEGACY_BOOTSTRAP_REQUIRED` 不说该跑什么**：`harness_context.py` 的注释里早就自己记过
+  「两个错误都不给恢复路径，调用方只能读脚本源码自己拼」，其中一个至今还没给。现在直接给出
+  `harness_gate.py begin` 的完整命令。
+
+### Changed（租约：保留互斥，去掉误报）
+
+`close` 不再因租约过期而失败。拆开判定链看：别人抢走租约 → owner 变了 → `CONTEXT_LEASE_MISMATCH`；
+抢走并已关闭 → 租约文件没了 → `CONTEXT_LEASE_REQUIRED`。**过期 ＋ owner 未变 = 没有任何人抢过**
+（抢占会重写 owner），所以 `CONTEXT_LEASE_EXPIRED` 唯一证明的是"这阶段跑得比 TTL 久"——而 plan/run
+跑过 1 小时是常态。那次拦截拦不住任何冲突，只是在活全干完、产物都已落盘之后不让记账。
+
+租约真正的价值在 `_claim_lease`：**未过期**且被他人持有时拒绝（`CONTEXT_LEASE_HELD`），这条一字未动。
+过期而 owner 相符时 close 照常写收据，并记 `leaseLapsed`（事实保留，不掩盖）。
+
+### Added
+
+- **`harness_context.py renew`**：只延长 `expiresAt`，不重写 current-context，长阶段可以心跳续租。
+  此前 TTL 3600s 在 prepare 时一次性发放、全程无法刷新，唯一能刷上的是 `context prepare` 的副作用——
+  那不是设计出来的路径。仅 owner 本人可续租，他人续租返回 `CONTEXT_LEASE_MISMATCH`。
+
+### 已知未处理
+
+同一份日志里有 5 段盲等 Spring 启动的 `sleep`（合计约 10 分钟）。`harness_service.py ensure` 本该
+接管，但被 PowerShell 策略挡下（`WinError 5`），fallback 到 `bash + nohup` 后只能猜时长。
+改成轮询健康端点是对的方向，但改动面超出本次，单独处理。
+
 ## [0.2.88] — hunter-harness ＋ [0.2.80] — @hunter-harness/workflow-harness（Bundle 0.2.69）
 
 > `0.2.87` 已提交并推送 GitHub，但**从未发布到 npm**，因此 registry 上会看到 0.2.86 → 0.2.88
