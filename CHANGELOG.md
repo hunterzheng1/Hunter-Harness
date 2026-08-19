@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.2.87] — hunter-harness ＋ [0.2.79] — @hunter-harness/workflow-harness（Bundle 0.2.68）
+
+> **CLI ＋ Bundle 同发，最低 CLI 版本提到 `0.2.87`**：本 Bundle 的 `harness-push` 与
+> `harness-archive` 两份 SKILL.md 按新的敏感扫描策略（默认 `warn`）、新的
+> `PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM` 与 `--allow-sensitive` 描述行为。配 0.2.86 会拿到
+> 旧的 `PUSH_PULL_SENSITIVE_HARD_BLOCKED` / `PUSH_PULL_ARCHIVE_UNAVAILABLE`，文档与实际
+> 对不上。这是降级不是硬失败，但会把人引向错误的排查方向——上一次就是这么丢掉一整批上传的。
+
+### Changed（默认行为变更，升级前请读）
+
+- **敏感内容扫描从"阻断"改为"告警"**：push/pull 与归档两处发布门禁默认 `warn`——命中项照常
+  以 `路径:行 规则(严重度)` 打印，但不再拦下上传。用 `HUNTER_HARNESS_SENSITIVE_SCAN` 切换：
+  `block` 恢复旧的阻断行为，`off` 完全不扫描（归档侧连整棵变更树的字节读取都一并省掉）。
+  归档门禁在非 `block` 模式下把 `SENSITIVE_EVIDENCE_UNQUARANTINED` 等降级为
+  `SENSITIVE_EVIDENCE_ADVISORY`，**原始事实原样保留在 `advisory` 字段里**，报告仍然点名每个
+  明文文件。改这个默认值的直接原因见下面 `HH_DATABASE_URL` 那条：一个没有出路的 fail-closed
+  门禁，最后不是被遵守而是被绕过。
+
+### Fixed
+
+- **不含凭据的连接串被判成 high、且永远无法放行**：`HH_DATABASE_URL` 用
+  `\b(?:...|mysql|...)://` 匹配，文档里一句 `jdbc:mysql://host:3312/db` 就命中 high；而
+  `overridable = severity !== "high"` 让 high 不可逐条覆盖，CLI 又在任何交互之前就抛
+  `PUSH_PULL_SENSITIVE_HARD_BLOCKED`——**完全没有出路**。实测后果：一次归档的 plan/spec/report
+  连同项目规则、架构地图整批没能上平台。现按 URL 里有没有 userinfo 判严重度：
+  `postgres://user:pass@host/db` 仍是 high，无凭据的连接串降为 low（可覆盖）。
+- **敏感阻断只报错误码，不说是哪个文件**：`cliOutput()` 构造 JSON 时把 `security_scan` 整个
+  丢掉，`--dry-run --json` 只回一个 `sensitive_confirmation_required`。调用方只能在全仓 grep
+  猜文件（实测猜错了：命中的是 `AGENTS.md` 的 JDBC 文档串，不是它以为的明文口令）。现在
+  stderr 逐条打印命中位置，JSON 输出也带上 `security_scan.findings`。
+- **归档补传无路可走**：上传成功后 ZIP 与回执按设计被删除，旧版本产生的归档从未入 outbox，
+  于是 `harness-push --scope archive` 恒定返回 `PUSH_PULL_ARCHIVE_UNAVAILABLE`——读起来像故障，
+  实际是"没东西可复用"这个正常状态。新增 `harness_archive.py republish --change <key>`：从已封存的
+  `.harness/archive/<key>/` 重建确定性包并上传，`--dry-run` 只列包内容。归档目录是封存的
+  （after-manifest 覆盖其每个字节），因此 **不写回归档目录**——缺失的
+  `candidates/knowledge.json` 只在内存中按已归档 summary 生成后放进包里，这也是 0.2.86 之前
+  归档拿到知识条目的唯一途径。
+- **`--scope archive` 的报错换成可执行的出路**：无待发布 claim 时返回
+  `PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM`（exit 5）并在 stderr 直接给出 republish 命令；
+  `--dry-run` 不再硬失败，改为列出本地可补传的归档目录（仍然不取租约）。
+  harness-push SKILL.md 此前只写"outbox"不给路径，调用方去找并不存在的 `.harness/outbox`；
+  现在写明 claim 在 `.harness/state/local/archive-outbox/`、ZIP 在 `.../archive-packages/`。
+- **知识条目为空无法自证**：`knowledge_status=ready` 只说明服务端处理完了，不代表有条目。
+  包里现在带 `knowledgeCandidateCount`，一路进上传回执与归档 operation record，
+  "服务端没索引"与"本来就没东西可索引"从此可以分开看。SKILL.md 同时写明
+  `--scope all` 把归档文档当 branch_file 上传，**不进**知识管道。
+
+### Performance（归档）
+
+- **少一次全树哈希**：finalize 里 `verify_manifest_byte_coverage` 连着跑两遍，第一遍的结果
+  在 20 行内就被第二遍（排除 summary-data.json 的那次）覆盖，只贡献了一次整棵树的重复哈希。
+- **`generate_manifest` 与敏感候选扫描不再逐文件 `resolve()`**：两处都在全树循环里对每个文件
+  调 `Path.resolve()`（Windows 上每次一个 realpath 系统调用），改为比较相对路径。
+- **不再用 `npx` 拉起 CLI**：归档一次要起两个子进程（`archive upload` 与受管快照 push），
+  每个都付一次完整 npm 解析。改为先从项目向上找已安装的 `node_modules/hunter-harness/dist/bin.js`
+  直接用 node 执行，找不到才回退 npx。
+- **`HUNTER_HARNESS_SENSITIVE_SCAN=off`** 顺带省掉归档前对整棵变更树的字节读取。
+
 ## [0.2.86] — hunter-harness ＋ [0.2.78] — @hunter-harness/workflow-harness（Bundle 0.2.67）
 
 > **CLI ＋ Bundle 同发，且最低 CLI 版本提到 `0.2.86`**：本 Bundle 的

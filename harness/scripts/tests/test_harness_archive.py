@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -1242,6 +1244,7 @@ class ArchiveCliBoundaryTests(unittest.TestCase):
                 "restore-durable",
                 "replay",
                 "repair",
+                "republish",
             },
             f"archive CLI commands changed unexpectedly: {choices}",
         )
@@ -3199,9 +3202,49 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
         self.project = self.tmp / "proj"
         self.change = self.project / ".harness" / "changes" / "secret-demo"
         self.change.mkdir(parents=True)
+        # The gate is advisory by default; these cases assert the enforcing mode.
+        self._policy = mock.patch.dict(
+            os.environ, {ha.SENSITIVE_SCAN_POLICY_ENV: "block"}
+        )
+        self._policy.start()
+        self.addCleanup(self._policy.stop)
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_default_policy_reports_plaintext_without_blocking(self) -> None:
+        self._policy.stop()
+        self.addCleanup(self._policy.start)
+        source = self.change / "runtime" / "legacy.txt"
+        source.parent.mkdir(parents=True)
+        source.write_text("password=never-publish", encoding="utf-8")
+
+        result = ha.validate_sensitive_evidence_publication_gate(self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["reasonCode"], "SENSITIVE_EVIDENCE_ADVISORY")
+        # The facts survive so the archive report still names the file.
+        advisory = result["advisory"]
+        self.assertEqual(advisory["reasonCode"], "SENSITIVE_EVIDENCE_UNQUARANTINED")
+        self.assertEqual(
+            [item["path"] for item in advisory["unresolvedFailures"]],
+            ["runtime/legacy.txt"],
+        )
+        self.assertTrue(source.is_file())
+
+    def test_off_policy_skips_the_scan_entirely(self) -> None:
+        self._policy.stop()
+        self.addCleanup(self._policy.start)
+        source = self.change / "runtime" / "legacy.txt"
+        source.parent.mkdir(parents=True)
+        source.write_text("password=never-publish", encoding="utf-8")
+
+        with mock.patch.dict(os.environ, {ha.SENSITIVE_SCAN_POLICY_ENV: "off"}):
+            result = ha.validate_sensitive_evidence_publication_gate(self.change)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["reasonCode"], "SECRET_SCAN_DISABLED")
+        self.assertNotIn("advisory", result)
 
     def test_gate_rejects_plaintext_sensitive_evidence_before_copy(self) -> None:
         source = self.change / "runtime" / "legacy.txt"
@@ -3755,6 +3798,143 @@ class ManagedSnapshotFailureDiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["submitted"], 12)
         self.assertFalse(result["unchanged"])
         self.assertNotIn("detail", result)
+
+
+class ArchiveRepublishTests(unittest.TestCase):
+    """Re-delivering a sealed archive.
+
+    The publish path deletes the ZIP and its receipt once the server reports
+    durable+ready, and archives sealed before the outbox existed never had one,
+    so rebuilding from the archive directory is the only route left.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="harness-archive-republish-"))
+        self.project = self.tmp / "proj"
+        self.archive = self.project / ".harness" / "archive" / "2026-08-19-demo-change"
+        (self.archive / "reports" / "final").mkdir(parents=True)
+        (self.archive / "plans").mkdir(parents=True)
+        _write_json(
+            self.archive / "reports" / "final" / "summary-data.json",
+            {
+                "schemaVersion": 1,
+                "changeName": "demo-change",
+                "reviewFindings": [
+                    {
+                        "id": "F-001",
+                        "severity": "YELLOW",
+                        "disposition": "FIXED",
+                        "title": "path check missed the UNC prefix",
+                        "path": "src/a.ts",
+                        "line": 42,
+                    }
+                ],
+                "knownRisks": [
+                    {"phase": "test", "severity": "WARN", "message": "apiTest skipped"}
+                ],
+            },
+        )
+        (self.archive / "plans" / "demo-plan.md").write_text("# plan\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_dry_run_resolves_the_dated_directory_and_leaves_no_package(self) -> None:
+        code, payload = ha.cmd_republish(
+            change_key="demo-change",
+            archive_dir=None,
+            project_root=self.project,
+            dry_run=True,
+        )
+
+        self.assertEqual(code, 0, payload)
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload["matchedArchives"], ["2026-08-19-demo-change"])
+        self.assertIn("candidates/knowledge.json", payload["files"])
+        packages = self.project / ".harness" / "state" / "local" / "archive-packages"
+        self.assertEqual(
+            sorted(item.name for item in packages.iterdir()) if packages.is_dir() else [],
+            [],
+            "a preview must not leave a package behind that looks pending",
+        )
+
+    def test_regenerates_knowledge_candidates_without_touching_the_sealed_archive(self) -> None:
+        before = sorted(
+            item.relative_to(self.archive).as_posix()
+            for item in self.archive.rglob("*")
+            if item.is_file()
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in [key for key in os.environ if key.startswith("HUNTER_")]:
+                os.environ.pop(name)
+            code, payload = ha.cmd_republish(
+                change_key="demo-change",
+                archive_dir=None,
+                project_root=self.project,
+                dry_run=False,
+            )
+
+        # No credentials: the ZIP is built and kept for retry, nothing uploads.
+        self.assertEqual(code, 1, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_UPLOAD_CREDENTIALS_MISSING")
+        self.assertTrue(payload["knowledgeCandidatesInjected"])
+
+        after = sorted(
+            item.relative_to(self.archive).as_posix()
+            for item in self.archive.rglob("*")
+            if item.is_file()
+        )
+        self.assertEqual(before, after, "the sealed archive must not gain files")
+
+        package = Path(payload["push"]["packagePath"])
+        self.assertTrue(package.is_file())
+        with zipfile.ZipFile(package) as bundle:
+            names = sorted(bundle.namelist())
+            self.assertIn("candidates/knowledge.json", names)
+            manifest = json.loads(bundle.read("archive-manifest.json"))
+            self.assertEqual(
+                [entry["path"] for entry in manifest["files"]],
+                sorted(entry["path"] for entry in manifest["files"]),
+                "manifest entries must stay sorted once injected ones are mixed in",
+            )
+            for entry in manifest["files"]:
+                self.assertEqual(
+                    "sha256:" + hashlib.sha256(bundle.read(entry["path"])).hexdigest(),
+                    entry["content_sha256"],
+                )
+            candidates = json.loads(bundle.read("candidates/knowledge.json"))
+        self.assertEqual(
+            sorted(item["entry_type"] for item in candidates), ["pitfall", "risk"]
+        )
+
+    def test_existing_candidates_file_is_not_overwritten_by_a_regenerated_one(self) -> None:
+        (self.archive / "candidates").mkdir()
+        (self.archive / "candidates" / "knowledge.json").write_text(
+            "[]\n", encoding="utf-8"
+        )
+
+        code, payload = ha.cmd_republish(
+            change_key="demo-change",
+            archive_dir=None,
+            project_root=self.project,
+            dry_run=True,
+        )
+
+        self.assertEqual(code, 0, payload)
+        self.assertFalse(payload["knowledgeCandidatesInjected"])
+
+    def test_unknown_change_key_reports_the_directory_it_searched(self) -> None:
+        code, payload = ha.cmd_republish(
+            change_key="not-a-change",
+            archive_dir=None,
+            project_root=self.project,
+            dry_run=True,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_DIR_NOT_FOUND")
+        self.assertIn(".harness", payload["error"])
 
 
 if __name__ == "__main__":

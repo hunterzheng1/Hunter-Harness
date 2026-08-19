@@ -259,9 +259,13 @@ def append_event(
 def generate_manifest(root: Path, output_path: Path) -> dict[str, Any]:
     """Build path/size/sha256 manifest; exclude the output file itself."""
     root = root.resolve()
-    exclude: Path | None = None
-    if output_path.exists():
-        exclude = output_path.resolve()
+    # Compare by relative path, not by resolve() per file: on Windows every
+    # resolve() is a realpath syscall, and this loop runs over the whole tree.
+    exclude_rel: str | None = None
+    try:
+        exclude_rel = output_path.resolve().relative_to(root).as_posix()
+    except (OSError, ValueError):
+        exclude_rel = None
 
     files: list[dict[str, Any]] = []
     total_bytes = 0
@@ -270,9 +274,9 @@ def generate_manifest(root: Path, output_path: Path) -> dict[str, Any]:
             continue
         if path.name.endswith(".lock"):
             continue
-        if exclude is not None and path.resolve() == exclude:
-            continue
         rel = path.relative_to(root).as_posix()
+        if exclude_rel is not None and rel == exclude_rel:
+            continue
         size = path.stat().st_size
         total_bytes += size
         files.append(
@@ -2113,6 +2117,56 @@ def check_archive_exact_byte_policy(project_root: Path) -> dict[str, Any]:
     }
 
 
+SENSITIVE_SCAN_POLICY_ENV = "HUNTER_HARNESS_SENSITIVE_SCAN"
+DEFAULT_SENSITIVE_SCAN_POLICY = "warn"
+
+
+def resolve_sensitive_scan_policy(env: dict[str, str] | None = None) -> str:
+    """Publication-gate policy: ``off`` | ``warn`` | ``block`` (default warn).
+
+    Mirrors resolveSensitiveScanPolicy() in packages/core so the archive gate
+    and the push gate answer to the same switch.
+    """
+    source = os.environ if env is None else env
+    raw = str(source.get(SENSITIVE_SCAN_POLICY_ENV) or "").strip().lower()
+    if raw in {"off", "false", "0", "disabled"}:
+        return "off"
+    if raw in {"warn", "advisory"}:
+        return "warn"
+    if raw in {"block", "true", "1", "enforce"}:
+        return "block"
+    return DEFAULT_SENSITIVE_SCAN_POLICY
+
+
+def _advisory_sensitive_gate(result: dict[str, Any], policy: str) -> dict[str, Any]:
+    """Downgrade a failed gate to advisory under a non-blocking policy.
+
+    The facts survive verbatim under ``advisory`` so the archive report still
+    names every plaintext file; only the veto is dropped. A fail-closed gate
+    with no proportionate setting gets worked around rather than respected.
+    """
+    if result.get("ok") or policy == "block":
+        return result
+    return {
+        "ok": True,
+        "reasonCode": "SENSITIVE_EVIDENCE_ADVISORY",
+        "policy": policy,
+        "receiptPath": result.get("receiptPath"),
+        "unresolvedFailures": [],
+        "advisory": {
+            key: value
+            for key, value in result.items()
+            if key not in {"ok", "policy"}
+        },
+        "nextAction": (
+            "Findings are advisory under "
+            f"{SENSITIVE_SCAN_POLICY_ENV}={policy}; set it to `block` to veto "
+            "publication, or quarantine with `harness_runtime.py "
+            "quarantine-evidence`."
+        ),
+    }
+
+
 def validate_sensitive_evidence_publication_gate(
     change_dir: Path,
     *,
@@ -2129,24 +2183,42 @@ def validate_sensitive_evidence_publication_gate(
     """
     change_dir = change_dir.expanduser().resolve()
     copy_root = (copy_root or change_dir).expanduser().resolve()
+    policy = resolve_sensitive_scan_policy()
     receipt_path = hruntime.sensitive_evidence_receipt_path(change_dir)
+    if policy == "off":
+        # Skipping the scan also skips a full-tree byte read of the change dir.
+        return {
+            "ok": True,
+            "reasonCode": "SECRET_SCAN_DISABLED",
+            "policy": policy,
+            "receiptPath": str(receipt_path),
+            "unresolvedFailures": [],
+        }
     candidates = hruntime.sensitive_evidence_candidates(change_dir)
     if candidates:
-        return {
-            "ok": False,
-            "reasonCode": "SENSITIVE_EVIDENCE_UNQUARANTINED",
-            "receiptPath": str(receipt_path),
-            "unresolvedFailures": candidates,
-            "nextAction": "Quarantine the original bytes before archive publication.",
-        }
+        return _advisory_sensitive_gate(
+            {
+                "ok": False,
+                "reasonCode": "SENSITIVE_EVIDENCE_UNQUARANTINED",
+                "receiptPath": str(receipt_path),
+                "unresolvedFailures": candidates,
+                "nextAction": (
+                    "Quarantine the original bytes before archive publication."
+                ),
+            },
+            policy,
+        )
     if receipt_override is None and not receipt_path.is_file():
         if require_receipt:
-            return {
-                "ok": False,
-                "reasonCode": "SECRET_SCAN_RECEIPT_MISSING",
-                "receiptPath": str(receipt_path),
-                "unresolvedFailures": [],
-            }
+            return _advisory_sensitive_gate(
+                {
+                    "ok": False,
+                    "reasonCode": "SECRET_SCAN_RECEIPT_MISSING",
+                    "receiptPath": str(receipt_path),
+                    "unresolvedFailures": [],
+                },
+                policy,
+            )
         return {
             "ok": True,
             "reasonCode": "SECRET_SCAN_NOT_APPLICABLE",
@@ -2158,21 +2230,27 @@ def validate_sensitive_evidence_publication_gate(
         try:
             receipt = read_json(receipt_path)
         except (OSError, json.JSONDecodeError, TypeError) as exc:
-            return {
-                "ok": False,
-                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
-                "receiptPath": str(receipt_path),
-                "error": str(exc),
-            }
+            return _advisory_sensitive_gate(
+                {
+                    "ok": False,
+                    "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                    "receiptPath": str(receipt_path),
+                    "error": str(exc),
+                },
+                policy,
+            )
     else:
         receipt = receipt_override
     if not isinstance(receipt, dict):
-        return {
-            "ok": False,
-            "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
-            "receiptPath": str(receipt_path),
-            "error": "receipt must be an object",
-        }
+        return _advisory_sensitive_gate(
+            {
+                "ok": False,
+                "reasonCode": "SECRET_SCAN_RECEIPT_INVALID",
+                "receiptPath": str(receipt_path),
+                "error": "receipt must be an object",
+            },
+            policy,
+        )
     issues: list[dict[str, Any]] = []
     if receipt.get("schemaVersion") != 1:
         issues.append({"code": "SECRET_SCAN_SCHEMA_INVALID"})
@@ -2232,14 +2310,19 @@ def validate_sensitive_evidence_publication_gate(
                     "code": "SENSITIVE_EVIDENCE_SOURCE_REMAINS",
                     "sourcePath": source_raw,
                 })
-    return {
-        "ok": not issues,
-        "reasonCode": "SECRET_SCAN_GATE_SATISFIED" if not issues else "SECRET_SCAN_GATE_BLOCKED",
-        "receiptPath": str(receipt_path),
-        "receipt": receipt,
-        "issues": issues,
-        "treeDigest": actual_digest,
-    }
+    return _advisory_sensitive_gate(
+        {
+            "ok": not issues,
+            "reasonCode": (
+                "SECRET_SCAN_GATE_SATISFIED" if not issues else "SECRET_SCAN_GATE_BLOCKED"
+            ),
+            "receiptPath": str(receipt_path),
+            "receipt": receipt,
+            "issues": issues,
+            "treeDigest": actual_digest,
+        },
+        policy,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8339,14 +8422,16 @@ def cmd_finalize(
         if before_in_archive.is_file():
             before_manifest = read_json(before_in_archive)
         compare_result = compare_manifests(before_manifest, after_manifest)
-        coverage = verify_manifest_byte_coverage(work_dir, after_manifest)
         # Embed compare stats into summary AFTER manifest → must exclude those paths.
+        # Only one coverage pass runs: an earlier build verified here as well,
+        # but that result was overwritten a few lines below by the pass that
+        # excludes summary-data.json, so it only cost a full extra tree hash.
         summary = read_json(summary_path)
         summary["archiveManifest"] = {
             "movedFiles": compare_result.get("movedFiles", 0),
             "generatedFiles": compare_result.get("generatedFiles", 0),
             "totalArchiveFiles": compare_result.get("totalArchiveFiles", 0),
-            "checksumStatus": coverage.get("checksumStatus", "FAIL"),
+            "checksumStatus": "PENDING",
             "exclusionReasons": {
                 "reports/final/summary-data.json": (
                     "archiveManifest stats written after coverage snapshot"
@@ -8620,6 +8705,7 @@ def cmd_finalize(
             "archiveId",
             "archiveStatus",
             "knowledgeStatus",
+            "knowledgeCandidateCount",
             "uploadStatus",
             "packageSha256",
             "manifestSha256",
@@ -9053,14 +9139,50 @@ def resolve_npx_launcher() -> list[str]:
     return [node, str(npx_cli)]
 
 
+def _installed_cli_entry(project_root: Path) -> Path | None:
+    """Find an installed hunter-harness entry script, walking up from the project.
+
+    npx costs a full npm resolution (and a registry round-trip when the package
+    is not a local dependency) on every call, and archive publishes it twice.
+    Running the entry script under node directly skips all of that.
+    """
+    seen: set[Path] = set()
+    for base in (project_root, *project_root.parents):
+        if base in seen:
+            continue
+        seen.add(base)
+        candidate = base / "node_modules" / "hunter-harness" / "dist" / "bin.js"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_hunter_cli_command(project_root: Path) -> list[str]:
+    """Command prefix that runs the hunter-harness CLI, cheapest route first."""
+    node = shutil.which("node")
+    if node:
+        entry = _installed_cli_entry(project_root)
+        if entry is not None:
+            return [node, str(entry)]
+    return [*resolve_npx_launcher(), "--yes", "hunter-harness"]
+
+
 def build_archive_package(
     project_root: Path,
     archive_dir: Path,
     change_key: str,
     *,
     output_path: Path | None = None,
+    extra_entries: dict[str, tuple[str, str, bytes]] | None = None,
 ) -> dict[str, Any]:
-    """Build the deterministic core-v1 ZIP uploaded to hunter-platform."""
+    """Build the deterministic core-v1 ZIP uploaded to hunter-platform.
+
+    ``extra_entries`` maps a package path to ``(role, media_type, bytes)`` for
+    content that is *not* on disk in the archive. Republishing an older archive
+    uses it to supply knowledge candidates that predate the candidates step,
+    without writing into a sealed archive directory whose manifest already
+    covers every byte in it.
+    """
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", change_key) is None:
         raise ValueError("change_key must be a portable path segment")
     project_root, archive_dir, file_specs = _archive_core_file_specs(
@@ -9070,8 +9192,29 @@ def build_archive_package(
     if not any(spec[1] == "reports/final/summary-data.json" for spec in file_specs):
         raise ValueError("archive final summary-data.json is required")
 
+    on_disk_paths = {spec[1] for spec in file_specs}
+    injected = {
+        package_path: value
+        for package_path, value in (extra_entries or {}).items()
+        if package_path not in on_disk_paths
+    }
+
     entries: list[dict[str, Any]] = []
     content_by_path: dict[str, bytes] = {}
+    for package_path, (role, media_type, raw) in sorted(injected.items()):
+        raw.decode("utf-8")
+        if media_type == "application/json":
+            raw = _archive_remote_json_bytes(raw)
+        content_by_path[package_path] = raw
+        entries.append(
+            {
+                "path": package_path,
+                "role": role,
+                "media_type": media_type,
+                "content_sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                "size_bytes": len(raw),
+            }
+        )
     for source, package_path, role, media_type in sorted(file_specs, key=lambda item: item[1]):
         source = _require_archive_project_path(
             project_root,
@@ -9095,6 +9238,7 @@ def build_archive_package(
             }
         )
 
+    entries.sort(key=lambda item: str(item["path"]))
     manifest = {
         "schema_version": 1,
         "profile": "core-v1",
@@ -9168,6 +9312,17 @@ def build_archive_package(
         temporary.unlink(missing_ok=True)
 
     package_raw = output_path.read_bytes()
+    # An upload can report knowledge_status=ready and still add nothing to the
+    # platform when the package carries zero candidates. Counting them here is
+    # what separates "server did not index" from "there was nothing to index".
+    candidate_count = 0
+    candidate_bytes = content_by_path.get("candidates/knowledge.json")
+    if candidate_bytes is not None:
+        try:
+            parsed = json.loads(candidate_bytes)
+            candidate_count = len(parsed) if isinstance(parsed, list) else 0
+        except (json.JSONDecodeError, TypeError, ValueError):
+            candidate_count = 0
     return {
         "schemaVersion": 1,
         "profile": "core-v1",
@@ -9178,6 +9333,7 @@ def build_archive_package(
         "fileCount": len(entries),
         "sizeBytes": len(package_raw),
         "paths": [entry["path"] for entry in entries],
+        "knowledgeCandidateCount": candidate_count,
     }
 
 
@@ -9242,7 +9398,7 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
             "missingCredentials": credentials["missing"],
         }
     try:
-        launcher = resolve_npx_launcher()
+        launcher = resolve_hunter_cli_command(project_root)
     except OSError as exc:
         return {
             "ok": False,
@@ -9255,8 +9411,6 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
     # 规则、架构地图与指令入口。
     command = [
         *launcher,
-        "--yes",
-        "hunter-harness",
         "harness-push",
         "--scope",
         "config,rules,architecture,instructions,branch_files",
@@ -9333,6 +9487,7 @@ def auto_push_archive_core(
     archive_dir: Path,
     *,
     change_key: str | None = None,
+    extra_entries: dict[str, tuple[str, str, bytes]] | None = None,
 ) -> dict[str, Any]:
     """Build and upload one deterministic core ZIP after finalize.
 
@@ -9347,6 +9502,7 @@ def auto_push_archive_core(
             project_root,
             archive_dir,
             effective_change_key,
+            extra_entries=extra_entries,
         )
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {
@@ -9396,6 +9552,7 @@ def auto_push_archive_core(
         "packageSha256": package["packageSha256"],
         "manifestSha256": package["manifestSha256"],
         "fileCount": package["fileCount"],
+        "knowledgeCandidateCount": package["knowledgeCandidateCount"],
         "paths": core_paths,
         "uploadStatus": "pending",
         "reasonCode": initial_reason_code,
@@ -9450,6 +9607,7 @@ def auto_push_archive_core(
         "manifestSha256": package["manifestSha256"],
         "fileCount": package["fileCount"],
         "sizeBytes": package["sizeBytes"],
+        "knowledgeCandidateCount": package["knowledgeCandidateCount"],
         "pending": str(pending_path),
     }
 
@@ -9466,7 +9624,7 @@ def auto_push_archive_core(
     # The published CLI owns credentials, project binding, durable receipt checks,
     # and retries. Generic `push` is intentionally not used for archive bytes.
     try:
-        launcher = resolve_npx_launcher()
+        launcher = resolve_hunter_cli_command(project_root)
     except OSError as exc:
         reason_code = "ARCHIVE_UPLOAD_DEFERRED"
         try:
@@ -9480,8 +9638,6 @@ def auto_push_archive_core(
         }
     command = [
         *launcher,
-        "--yes",
-        "hunter-harness",
         "archive",
         "upload",
         "--file",
@@ -10076,6 +10232,186 @@ def cmd_repair_cli(args: argparse.Namespace) -> int:
     return code
 
 
+def resolve_archive_dir_for_change(
+    project_root: Path,
+    change_key: str,
+) -> tuple[Path | None, list[str]]:
+    """Locate the sealed archive directory for a change key.
+
+    Directories are named ``<YYYY-MM-DD>-<change-key>``; older layouts use the
+    bare key. Returns the newest match plus every candidate name so an ambiguous
+    key is reported rather than silently resolved.
+    """
+    archive_root = project_root / ".harness" / "archive"
+    if not archive_root.is_dir():
+        return None, []
+    matches = sorted(
+        entry.name
+        for entry in archive_root.iterdir()
+        if entry.is_dir()
+        and (entry.name == change_key or entry.name.endswith(f"-{change_key}"))
+    )
+    if not matches:
+        return None, []
+    return archive_root / matches[-1], matches
+
+
+def _republish_knowledge_entry(archive_dir: Path) -> dict[str, tuple[str, str, bytes]]:
+    """Knowledge candidates for archives sealed before the candidates step.
+
+    Generated in memory only. The archive directory is sealed: its after-manifest
+    covers every byte in it, so writing a new file there would break byte
+    coverage for every later reader.
+    """
+    if (archive_dir / "candidates" / "knowledge.json").is_file():
+        return {}
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    summary = read_json(summary_path)
+    candidates = hkc.build_knowledge_candidates(
+        summary,
+        change_key=str(summary.get("changeName") or archive_dir.name),
+        archive_id=archive_dir.name,
+        producer_version=SCHEMA_VERSION,
+        created_at=now_iso(),
+    )
+    if not candidates:
+        return {}
+    return {
+        "candidates/knowledge.json": (
+            "knowledge_candidates",
+            "application/json",
+            hkc.render_knowledge_candidates_json(candidates).encode("utf-8"),
+        )
+    }
+
+
+def cmd_republish(
+    *,
+    change_key: str,
+    archive_dir: Path | None,
+    project_root: Path | None,
+    dry_run: bool,
+) -> tuple[int, dict[str, Any]]:
+    """Rebuild and re-upload the core ZIP for an already sealed archive.
+
+    The normal publish path deletes the ZIP and its receipt once the server
+    reports durable+ready, and archives produced before the outbox existed never
+    had one, so nothing is left to retry from. Rebuilding from the sealed
+    directory is the only route that can re-deliver an archive, and it is also
+    how archives sealed before knowledge candidates existed get them.
+    """
+    payload: dict[str, Any] = {
+        "ok": False,
+        "action": "republish",
+        "changeKey": change_key,
+        "dryRun": dry_run,
+    }
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", change_key) is None:
+        payload["error"] = "change key must be a portable path segment"
+        payload["reasonCode"] = "ARCHIVE_CHANGE_KEY_INVALID"
+        return 2, payload
+
+    root = (project_root or find_project_root(archive_dir or Path.cwd())).resolve()
+    payload["projectRoot"] = str(root)
+    matches: list[str] = []
+    if archive_dir is None:
+        archive_dir, matches = resolve_archive_dir_for_change(root, change_key)
+        payload["matchedArchives"] = matches
+    if archive_dir is None or not archive_dir.is_dir():
+        payload["error"] = (
+            f"no archive directory for change key {change_key} under "
+            f"{root / '.harness' / 'archive'}"
+        )
+        payload["reasonCode"] = "ARCHIVE_DIR_NOT_FOUND"
+        return 1, payload
+    archive_dir = archive_dir.resolve()
+    payload["archiveDir"] = str(archive_dir)
+    if len(matches) > 1:
+        payload["warning"] = (
+            "多个归档目录匹配该 change key，已选用最新的一个："
+            + ", ".join(matches)
+        )
+
+    summary_path = archive_dir / "reports" / "final" / "summary-data.json"
+    if not summary_path.is_file():
+        payload["error"] = f"archive final summary-data.json missing: {summary_path}"
+        payload["reasonCode"] = "ARCHIVE_SUMMARY_MISSING"
+        return 1, payload
+
+    try:
+        extra_entries = _republish_knowledge_entry(archive_dir)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # Knowledge is additive: never fail a re-delivery over it.
+        payload.setdefault("warnings", []).append(
+            f"knowledge candidate regeneration skipped: {exc}"
+        )
+        extra_entries = {}
+    payload["knowledgeCandidatesInjected"] = "candidates/knowledge.json" in extra_entries
+
+    if dry_run:
+        # The package builder refuses to write outside the project, so the
+        # preview lands beside the real packages under a distinct name and is
+        # removed again; it must never be mistaken for a pending upload.
+        preview_path = (
+            root / ".harness" / "state" / "local" / "archive-packages"
+            / f"{change_key}.preview.zip"
+        )
+        try:
+            package = build_archive_package(
+                root,
+                archive_dir,
+                change_key,
+                output_path=preview_path,
+                extra_entries=extra_entries,
+            )
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            payload["error"] = f"archive package build failed: {exc}"
+            payload["reasonCode"] = "ARCHIVE_PACKAGE_BUILD_FAILED"
+            return 1, payload
+        finally:
+            try:
+                preview_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        payload.update(
+            {
+                "ok": True,
+                "reasonCode": "ARCHIVE_REPUBLISH_PREVIEW",
+                "fileCount": package["fileCount"],
+                "sizeBytes": package["sizeBytes"],
+                "knowledgeCandidateCount": package["knowledgeCandidateCount"],
+                "packageSha256": package["packageSha256"],
+                "manifestSha256": package["manifestSha256"],
+                "files": package["paths"],
+            }
+        )
+        return 0, payload
+
+    result = auto_push_archive_core(
+        root,
+        archive_dir,
+        change_key=change_key,
+        extra_entries=extra_entries,
+    )
+    payload["push"] = result
+    payload["ok"] = bool(result.get("ok"))
+    payload["reasonCode"] = result.get("reasonCode")
+    if result.get("warning"):
+        payload.setdefault("warnings", []).append(str(result["warning"]))
+    return 0 if payload["ok"] else 1, payload
+
+
+def cmd_republish_cli(args: argparse.Namespace) -> int:
+    code, payload = cmd_republish(
+        change_key=str(args.change).strip(),
+        archive_dir=resolve_path(args.archive_dir) if args.archive_dir else None,
+        project_root=resolve_path(args.project) if args.project else None,
+        dry_run=bool(args.dry_run),
+    )
+    emit_json(payload)
+    return code
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="harness_archive.py",
@@ -10234,6 +10570,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_repair.add_argument("--archive-dir", required=True)
     p_repair.add_argument("--json", action="store_true", default=True)
     p_repair.set_defaults(func=cmd_repair_cli)
+
+    p_republish = sub.add_parser(
+        "republish",
+        help=(
+            "rebuild and re-upload the core ZIP for an already sealed archive "
+            "(the normal path deletes the ZIP once the server confirms it)"
+        ),
+    )
+    p_republish.add_argument("--change", required=True, help="change key")
+    p_republish.add_argument(
+        "--archive-dir",
+        default=None,
+        help="explicit archive directory; resolved from --change when omitted",
+    )
+    p_republish.add_argument("--project", default=None)
+    p_republish.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="build the package and report its contents without uploading",
+    )
+    p_republish.add_argument("--json", action="store_true", default=True)
+    p_republish.set_defaults(func=cmd_republish_cli)
 
     return parser
 

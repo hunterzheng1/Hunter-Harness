@@ -51,14 +51,20 @@ def _write_local_credentials(root: Path) -> None:
 
 
 def _npx_upload_calls(run: mock.Mock) -> list[object]:
+    """CLI invocations, whichever launcher resolved.
+
+    The launcher is an implementation detail: an installed CLI runs as
+    ``node .../dist/bin.js`` and only the npx fallback carries the
+    ``--yes hunter-harness`` prefix. Match on the subcommand instead.
+    """
     return [
         call
         for call in run.call_args_list
         if call.args
         and isinstance(call.args[0], list)
-        and "hunter-harness" in call.args[0]
-        and "--yes" in call.args[0]
-        and call.args[0].index("--yes") + 1 == call.args[0].index("hunter-harness")
+        and "archive" in call.args[0]
+        and "upload" in call.args[0]
+        and call.args[0].index("archive") + 1 == call.args[0].index("upload")
     ]
 
 

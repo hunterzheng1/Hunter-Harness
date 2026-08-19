@@ -7,7 +7,11 @@ import {
 } from "@hunter-harness/contracts";
 
 import { sha256Bytes } from "../fs/hash.js";
-import { scanSensitiveFiles } from "../security/scanner.js";
+import {
+  resolveSensitiveScanPolicy,
+  scanSensitiveFilesForPublication,
+  type SensitiveScanPolicy
+} from "../security/scanner.js";
 import type {
   ArchivePackageRef,
   ArchiveSyncReceipt,
@@ -358,13 +362,14 @@ function buildPreview(
   direction: Direction,
   scopes: readonly SyncScope[],
   source_ref: SourceRef,
-  view: SyncView
+  view: SyncView,
+  policy: SensitiveScanPolicy
 ): SyncPreview {
   verifyFileSet(view.baseline_files);
   verifyFileSet(view.local_files);
   verifyFileSet(view.remote_files);
   const planned = planOperations(direction, scopes, view);
-  const security_scan = buildSecurityScan(direction, view, planned);
+  const security_scan = buildSecurityScan(direction, view, planned, policy);
   const payload = {
     schema_version: 1,
     direction,
@@ -413,11 +418,14 @@ function scanInput(
 function buildSecurityScan(
   direction: Direction,
   view: SyncView,
-  planned: { operations: readonly SyncOperation[]; conflicts: readonly SyncConflict[] }
+  planned: { operations: readonly SyncOperation[]; conflicts: readonly SyncConflict[] },
+  policy: SensitiveScanPolicy
 ): SyncPreview["security_scan"] {
-  const result = scanSensitiveFiles(scanInput(direction, view, planned), {
-    now: new Date(0)
-  });
+  const result = scanSensitiveFilesForPublication(
+    scanInput(direction, view, planned),
+    policy,
+    { now: new Date(0) }
+  );
   return {
     scanner_version: result.scanner_version,
     blocked: result.blocked,
@@ -432,7 +440,8 @@ function validateSecurityConfirmation(
   view: SyncView,
   preview: SyncPreview,
   confirmation: SyncConfirmation,
-  applied: readonly SyncOperation[]
+  applied: readonly SyncOperation[],
+  policy: SensitiveScanPolicy
 ): void {
   const scanConfirmation = confirmation.scan_confirmation;
   if (scanConfirmation !== undefined &&
@@ -443,13 +452,18 @@ function validateSecurityConfirmation(
     operations: applied,
     conflicts: []
   });
-  const applicableScan = scanSensitiveFiles(applicableInput, { now: new Date(0) });
+  const applicableScan = scanSensitiveFilesForPublication(
+    applicableInput,
+    policy,
+    { now: new Date(0) }
+  );
   if (!applicableScan.blocked) return;
   if (scanConfirmation === undefined) {
     throw new RemoteSyncError("SYNC_SENSITIVE_CONTENT_BLOCKED");
   }
-  const rescanned = scanSensitiveFiles(
+  const rescanned = scanSensitiveFilesForPublication(
     applicableInput,
+    policy,
     { overrides: scanConfirmation.overrides, now: new Date(0) }
   );
   if (rescanned.blocked) {
@@ -631,20 +645,40 @@ function validateArchiveReceipt(
   }
 }
 
+export interface RemoteSyncModuleOptions {
+  /**
+   * Publication-gate policy for the sensitive-content scan. Defaults to the
+   * environment-resolved policy (`warn`), which reports findings without
+   * blocking. `preview_hash` never covers the scan, so switching the policy
+   * cannot invalidate an outstanding confirmation.
+   */
+  readonly sensitiveScanPolicy?: SensitiveScanPolicy;
+}
+
 export class RemoteSyncModule {
   readonly #port: RemoteSyncPort;
   readonly #idempotency = new Map<string, IdempotencyRecord>();
+  readonly #sensitiveScanPolicy: SensitiveScanPolicy;
 
-  constructor(port: RemoteSyncPort) {
+  constructor(port: RemoteSyncPort, options: RemoteSyncModuleOptions = {}) {
     this.#port = port;
+    this.#sensitiveScanPolicy = options.sensitiveScanPolicy ?? resolveSensitiveScanPolicy(
+      typeof process === "undefined" ? {} : process.env
+    );
   }
 
   async previewPush(scopes: readonly SyncScope[], source_ref: SourceRef): Promise<SyncPreview> {
-    return buildPreview("push", scopes, source_ref, await this.#port.readSyncView(source_ref));
+    return buildPreview(
+      "push", scopes, source_ref, await this.#port.readSyncView(source_ref),
+      this.#sensitiveScanPolicy
+    );
   }
 
   async previewPull(scopes: readonly SyncScope[], source_ref: SourceRef): Promise<SyncPreview> {
-    return buildPreview("pull", scopes, source_ref, await this.#port.readSyncView(source_ref));
+    return buildPreview(
+      "pull", scopes, source_ref, await this.#port.readSyncView(source_ref),
+      this.#sensitiveScanPolicy
+    );
   }
 
   async push(
@@ -707,7 +741,8 @@ export class RemoteSyncModule {
       direction,
       normalizedScopes,
       source_ref,
-      await this.#port.readSyncView(source_ref)
+      await this.#port.readSyncView(source_ref),
+      this.#sensitiveScanPolicy
     );
     if (preLockPreview.preview_hash !== confirmation.preview_hash) {
       throw new RemoteSyncError("SYNC_PREVIEW_STALE");
@@ -723,7 +758,9 @@ export class RemoteSyncModule {
       );
       if (lockedPrior !== null) return cloneSyncReceipt(lockedPrior);
       const view = await this.#port.readSyncView(source_ref);
-      const preview = buildPreview(direction, normalizedScopes, source_ref, view);
+      const preview = buildPreview(
+        direction, normalizedScopes, source_ref, view, this.#sensitiveScanPolicy
+      );
       if (preview.preview_hash !== confirmation.preview_hash) {
         throw new RemoteSyncError("SYNC_PREVIEW_STALE");
       }
@@ -786,7 +823,8 @@ export class RemoteSyncModule {
         view,
         preview,
         confirmation,
-        applied
+        applied,
+        this.#sensitiveScanPolicy
       );
       if (applied.length === 0) {
         const receipt: SyncReceipt = {

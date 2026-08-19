@@ -217,10 +217,14 @@ def _secure_private_path(path: Path, *, directory: bool) -> str:
 
 def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
     """Find high-confidence plaintext assignments without treating prose as a secret."""
-    receipt = _sensitive_evidence_receipt_path(root)
+    # Compare by relative path, not by resolve() per file: this loop covers the
+    # whole change tree, and on Windows each resolve() is a realpath syscall.
+    receipt_rel = SECRET_SCAN_RECEIPT_REL.as_posix()
     candidates: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.resolve() == receipt.resolve():
+        if not path.is_file():
+            continue
+        if path.relative_to(root).as_posix() == receipt_rel:
             continue
         try:
             raw = path.read_bytes()

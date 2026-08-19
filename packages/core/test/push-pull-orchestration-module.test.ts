@@ -44,12 +44,18 @@ function input(
   return { schema_version: 1, source_ref, source_mode, ...(scopes === undefined ? {} : { scopes }) };
 }
 
-function engine(seed: Parameters<InMemoryRemoteSyncPort["seed"]>[1] = {}) {
+function engine(
+  seed: Parameters<InMemoryRemoteSyncPort["seed"]>[1] = {},
+  // The publication gate is advisory by default; cases about blocking opt in.
+  sensitiveScanPolicy: "off" | "warn" | "block" = "warn"
+) {
   const port = new InMemoryRemoteSyncPort();
   port.seed(source_ref, seed);
   return {
     port,
-    interaction: createPushPullOrchestration(new RemoteSyncModule(port))
+    interaction: createPushPullOrchestration(
+      new RemoteSyncModule(port, { sensitiveScanPolicy })
+    )
   };
 }
 
@@ -216,7 +222,7 @@ describe("PushPullOrchestration v1", () => {
 
   it("binds overridable sensitive confirmation to the trusted preview hash", async () => {
     const sensitive = file(".harness/rules/review.md", "rule", "password=supersecret\n");
-    const { interaction, port } = engine({ local_files: [sensitive], remote_files: [] });
+    const { interaction, port } = engine({ local_files: [sensitive], remote_files: [] }, "block");
     const preview = await interaction.buildPushPreview(input(["rules"]));
     expect(preview.security_scan).toMatchObject({ blocked: true, review_required: true });
     const finding = preview.security_scan.findings[0];
@@ -254,13 +260,36 @@ describe("PushPullOrchestration v1", () => {
     expect(port.versionCount(source_ref)).toBe(1);
   });
 
-  it("delegates hard-block applicability to RemoteSync and preserves zero writes on rejection", async () => {
+  it("needs no scan confirmation under the default warn policy", async () => {
     const secret = file(
       ".harness/rules/secret.md",
       "rule",
       "Authorization: Bearer secret-token-value-1234567890"
     );
     const { interaction, port } = engine({ local_files: [secret], remote_files: [] });
+    const preview = await interaction.buildPushPreview(input(["rules"]));
+    // The finding is still reported; it just no longer gates the upload.
+    expect(preview.security_scan.findings.length).toBeGreaterThan(0);
+    expect(preview.security_scan.blocked).toBe(false);
+
+    const confirmed = interaction.confirmPush(preview.preview_hash, {
+      action: "continue",
+      idempotency_key: "warn-policy-no-scan-confirmation",
+      conflict_decisions: []
+    });
+    if (confirmed.status !== "confirmed") throw new Error("push should be confirmed");
+    const receipt = await interaction.executePush(confirmed.confirmation_id);
+    expect(receipt.status).toBe("completed");
+    expect(port.versionCount(source_ref)).toBe(1);
+  });
+
+  it("delegates hard-block applicability to RemoteSync and preserves zero writes on rejection", async () => {
+    const secret = file(
+      ".harness/rules/secret.md",
+      "rule",
+      "Authorization: Bearer secret-token-value-1234567890"
+    );
+    const { interaction, port } = engine({ local_files: [secret], remote_files: [] }, "block");
     const preview = await interaction.buildPushPreview(input(["rules"]));
     expect(preview.security_scan).toMatchObject({ blocked: true, hard_blocked: true });
 

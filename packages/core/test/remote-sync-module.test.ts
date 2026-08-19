@@ -649,7 +649,7 @@ describe("RemoteSyncModule v1", () => {
       local_files: [config(".harness/project.yaml", secret)],
       remote_files: []
     });
-    const configModule = new RemoteSyncModule(configPort);
+    const configModule = new RemoteSyncModule(configPort, { sensitiveScanPolicy: "block" });
     const configPreview = await configModule.previewPush(["config"], source_ref);
     expect(configPreview.security_scan).toMatchObject({
       blocked: false,
@@ -661,7 +661,7 @@ describe("RemoteSyncModule v1", () => {
       local_files: [rule(".harness/rules/secret.md", secret)],
       remote_files: []
     });
-    const ruleModule = new RemoteSyncModule(rulePort);
+    const ruleModule = new RemoteSyncModule(rulePort, { sensitiveScanPolicy: "block" });
     const preview = await ruleModule.previewPush(["rules"], source_ref);
     expect(preview.security_scan).toMatchObject({ blocked: true, hard_blocked: true });
     const finding = preview.security_scan.findings[0];
@@ -686,7 +686,7 @@ describe("RemoteSyncModule v1", () => {
       local_files: [rule(".harness/rules/review.md", "password=supersecret\n")],
       remote_files: []
     });
-    const module = new RemoteSyncModule(port);
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
     expect(preview.security_scan).toMatchObject({
       blocked: true,
@@ -734,7 +734,7 @@ describe("RemoteSyncModule v1", () => {
       )],
       remote_files: [rule(path, "safe remote change\n")]
     });
-    const module = new RemoteSyncModule(port);
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
     expect(preview.security_scan.hard_blocked).toBe(true);
     const receipt = await module.push(["rules"], source_ref, {
@@ -750,6 +750,88 @@ describe("RemoteSyncModule v1", () => {
       expect.objectContaining({ path, action: "modify" })
     ]);
     expect(port.versionCount(source_ref)).toBe(0);
+  });
+
+  it("reports but never blocks under the default warn policy", async () => {
+    const port = new InMemoryRemoteSyncPort();
+    port.seed(source_ref, {
+      local_files: [rule(
+        ".harness/rules/secret.md",
+        "Authorization: Bearer secret-token-value-1234567890"
+      )],
+      remote_files: []
+    });
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "warn" });
+    const preview = await module.previewPush(["rules"], source_ref);
+    // The operator still learns exactly what tripped; only the veto is gone.
+    expect(preview.security_scan.findings.length).toBeGreaterThan(0);
+    expect(preview.security_scan).toMatchObject({
+      blocked: false, hard_blocked: false, review_required: false
+    });
+    const receipt = await module.push(
+      ["rules"], source_ref, confirmation(preview.preview_hash, "warn-policy")
+    );
+    expect(receipt.applied).toEqual(preview.operations);
+    expect(port.versionCount(source_ref)).toBe(1);
+  });
+
+  it("produces no findings at all when the scan is switched off", async () => {
+    const port = new InMemoryRemoteSyncPort();
+    port.seed(source_ref, {
+      local_files: [rule(
+        ".harness/rules/secret.md",
+        "Authorization: Bearer secret-token-value-1234567890"
+      )],
+      remote_files: []
+    });
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "off" });
+    const preview = await module.previewPush(["rules"], source_ref);
+    expect(preview.security_scan).toMatchObject({ blocked: false, findings: [] });
+    const receipt = await module.push(
+      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-off")
+    );
+    expect(receipt.applied).toEqual(preview.operations);
+  });
+
+  it("scores a credential-free connection string below the hard block", async () => {
+    const port = new InMemoryRemoteSyncPort();
+    port.seed(source_ref, {
+      local_files: [rule(
+        ".harness/rules/db.md",
+        "微服务模式使用 MySQL：`jdbc:mysql://10.1.2.3:3312/app_db`。\n"
+      )],
+      remote_files: []
+    });
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
+    const preview = await module.previewPush(["rules"], source_ref);
+    const dbFinding = preview.security_scan.findings.find(
+      (finding) => finding.rule_id === "HH_DATABASE_URL"
+    );
+    if (dbFinding === undefined) throw new Error("expected a database URL finding");
+    // A documentation URL with no userinfo carries no credential, so it must
+    // stay waivable rather than permanently blocking every push.
+    expect(dbFinding.severity).toBe("low");
+    expect(dbFinding.overridable).toBe(true);
+    expect(preview.security_scan.hard_blocked).toBe(false);
+  });
+
+  it("keeps a credential-bearing connection string a hard block", async () => {
+    const port = new InMemoryRemoteSyncPort();
+    port.seed(source_ref, {
+      local_files: [rule(
+        ".harness/rules/db.md",
+        "postgres://app_user:hunter2secret@db.internal:5432/app\n"
+      )],
+      remote_files: []
+    });
+    const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
+    const preview = await module.previewPush(["rules"], source_ref);
+    const dbFinding = preview.security_scan.findings.find(
+      (finding) => finding.rule_id === "HH_DATABASE_URL"
+    );
+    if (dbFinding === undefined) throw new Error("expected a database URL finding");
+    expect(dbFinding.severity).toBe("high");
+    expect(preview.security_scan.hard_blocked).toBe(true);
   });
 
   it("paginates snapshots, versions and immutable files in stable order", async () => {

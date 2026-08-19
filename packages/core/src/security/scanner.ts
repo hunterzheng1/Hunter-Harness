@@ -36,6 +36,32 @@ export interface OverrideEvidence {
   recorded_at: string;
 }
 
+/**
+ * How a *publication gate* reacts to findings. This only governs gates that
+ * decide "may these bytes leave the machine" (push/pull, archive upload); the
+ * evidence-filtering callers that use `blocked` to keep secrets out of an
+ * uploaded proposal always scan at full strength and ignore the policy.
+ *
+ * - `block` — historical behaviour: any blocked finding stops the operation.
+ * - `warn`  — findings are still computed and reported, but never stop it.
+ * - `off`   — no scan at all; no findings are produced.
+ */
+export type SensitiveScanPolicy = "off" | "warn" | "block";
+
+export const SENSITIVE_SCAN_POLICY_ENV = "HUNTER_HARNESS_SENSITIVE_SCAN";
+export const DEFAULT_SENSITIVE_SCAN_POLICY: SensitiveScanPolicy = "warn";
+
+/** Resolve the publication-gate policy from the environment (default `warn`). */
+export function resolveSensitiveScanPolicy(
+  env: Readonly<Record<string, string | undefined>> = {}
+): SensitiveScanPolicy {
+  const raw = (env[SENSITIVE_SCAN_POLICY_ENV] ?? "").trim().toLowerCase();
+  if (raw === "off" || raw === "false" || raw === "0" || raw === "disabled") return "off";
+  if (raw === "warn" || raw === "advisory") return "warn";
+  if (raw === "block" || raw === "true" || raw === "1" || raw === "enforce") return "block";
+  return DEFAULT_SENSITIVE_SCAN_POLICY;
+}
+
 export interface ScanOptions {
   overrides?: readonly FindingOverride[];
   now?: Date;
@@ -52,11 +78,23 @@ function compareCodepoint(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/**
+ * A connection string only leaks a credential when it carries one. Bare
+ * `jdbc:mysql://host:3306/db` lines are ordinary documentation and used to be
+ * scored `high`, which made them permanently unpushable.
+ */
+function databaseUrlSeverity(value: string): FindingSeverity {
+  const authority = /:\/\/([^/?#]*)/.exec(value)?.[1] ?? "";
+  const userinfo = authority.includes("@") ? authority.slice(0, authority.lastIndexOf("@")) : "";
+  return userinfo.includes(":") ? "high" : "low";
+}
+
 const RULES: ReadonlyArray<{
   id: string;
   severity: FindingSeverity;
   pattern: RegExp;
   valueGroup?: number;
+  severityFor?: (value: string) => FindingSeverity;
 }> = [
   {
     id: "HH_PRIVATE_KEY",
@@ -82,7 +120,8 @@ const RULES: ReadonlyArray<{
   {
     id: "HH_DATABASE_URL",
     severity: "high",
-    pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"']+/gi
+    pattern: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\s"']+/gi,
+    severityFor: databaseUrlSeverity
   },
   {
     id: "HH_PASSWORD_VALUE",
@@ -119,7 +158,7 @@ function rawFindings(content: string): RawFinding[] {
       const relative = match[0].indexOf(value);
       findings.push({
         ruleId: rule.id,
-        severity: rule.severity,
+        severity: rule.severityFor?.(match[0]) ?? rule.severity,
         offset: match.index + Math.max(0, relative),
         value
       });
@@ -194,6 +233,10 @@ export function scanSensitiveFiles(
         String(position.column),
         sha256Bytes(raw.value)
       ].join("\0"));
+      // A `high` finding stays non-overridable per finding. The sanctioned exit
+      // for a gate that is wrong about a whole project is the scan policy
+      // (`HUNTER_HARNESS_SENSITIVE_SCAN`), not a per-finding waiver on leaked
+      // key material.
       const overridable = raw.severity !== "high";
       const explicit = options.overrides?.find(
         (item) => item.finding_fingerprint === fingerprint
@@ -240,5 +283,46 @@ export function scanSensitiveFiles(
     ),
     findings,
     override_evidence: Object.freeze(evidence)
+  };
+}
+
+export interface SensitiveScanResult {
+  scanner_version: string;
+  blocked: boolean;
+  hard_blocked: boolean;
+  review_required: boolean;
+  findings: SensitiveFinding[];
+  override_evidence: ReadonlyArray<Readonly<OverrideEvidence>>;
+}
+
+/**
+ * Scan for a publication gate under the given policy.
+ *
+ * `warn` keeps the findings, so the operator still sees exactly which path,
+ * line and rule tripped, but clears every blocking flag: the gate reports and
+ * proceeds. `off` skips the scan entirely. `block` is the historical behaviour.
+ */
+export function scanSensitiveFilesForPublication(
+  files: Readonly<Record<string, string>>,
+  policy: SensitiveScanPolicy,
+  options: ScanOptions = {}
+): SensitiveScanResult {
+  if (policy === "off") {
+    return {
+      scanner_version: SENSITIVE_SCANNER_VERSION,
+      blocked: false,
+      hard_blocked: false,
+      review_required: false,
+      findings: [],
+      override_evidence: Object.freeze([])
+    };
+  }
+  const result = scanSensitiveFiles(files, options);
+  if (policy === "block") return result;
+  return {
+    ...result,
+    blocked: false,
+    hard_blocked: false,
+    review_required: false
   };
 }

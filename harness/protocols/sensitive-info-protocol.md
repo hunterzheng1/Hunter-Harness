@@ -93,6 +93,11 @@ spring:
 
 ## 6. profile / 规则 / Markdown 凭据扫描
 
+> 本节讲的是**写入时**的内容卫生，与上传门禁是两回事。CLI 的发布扫描
+> （`harness-push` / 归档）默认策略是 `warn`：命中项打印后照常上传，用
+> `HUNTER_HARNESS_SENSITIVE_SCAN=block` 才恢复阻断、`=off` 完全关闭。
+> 门禁放行不等于内容可以带明文凭据——本节的要求始终成立。
+
 profile `build-profile.json`、规则文档、Skill Markdown **不得包含凭据明文值**（spec §3.4 凭据边界：配置只含 env key、cache path、角色，不含值）。发布前用 `harness-test/scripts/runtime-helpers.mjs` 的 `findCredentialValues(text)` 扫描：
 
 - 命中 `password/token/secret/accessKey/Authorization: Bearer/jdbc password=` 等明文值 → ❌FAIL，必须改为占位符 `<*_REDACTED>` 或 env 引用 `${ENV}` / `$ENV`。

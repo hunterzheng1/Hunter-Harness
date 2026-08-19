@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import type { Dirent } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { isProxy } from "node:util/types";
 
@@ -31,6 +34,10 @@ export interface PushPullCommandOptions {
   yes?: boolean;
   json?: boolean;
   nonInteractive?: boolean;
+  /** Confirm every blocked sensitive finding without prompting (needs --yes). */
+  allowSensitive?: boolean;
+  /** Reason recorded on the override evidence when --allow-sensitive is used. */
+  sensitiveReason?: string;
 }
 
 export interface ArchivePublishInput {
@@ -161,7 +168,25 @@ function cliOutput(
         ...response.result.conflicts.map((item) => ({ ...item, status: "conflict" }))
       ],
       warnings: [], errors: [], preview_hash: response.result.preview_hash,
-      outcome: response.result.outcome
+      outcome: response.result.outcome,
+      // Without this the caller only learns that *something* was sensitive.
+      // Machine consumers need the offending path/line to act on it.
+      security_scan: {
+        scanner_version: response.result.security_scan.scanner_version,
+        blocked: response.result.security_scan.blocked,
+        hard_blocked: response.result.security_scan.hard_blocked,
+        review_required: response.result.security_scan.review_required,
+        findings: response.result.security_scan.findings
+          .filter((finding) => finding.disposition === "blocked")
+          .map((finding) => ({
+            path: finding.path,
+            line: finding.line,
+            column: finding.column,
+            rule_id: finding.rule_id,
+            severity: finding.severity,
+            overridable: finding.overridable
+          }))
+      }
     };
   }
   if (response.operation === "confirm") {
@@ -196,6 +221,41 @@ function cliOutput(
     };
   }
   throw new Error("PUSH_PULL_CLI_OUTPUT_INVALID");
+}
+
+type SecurityFinding = Readonly<{
+  path: string; line: number; rule_id: string; severity: string;
+  overridable: boolean; fingerprint: string;
+}>;
+
+/** One line per finding: path:line, rule and whether it can be waived. */
+function formatSecurityFindings(
+  findings: readonly SecurityFinding[],
+  scannerVersion: string,
+  blocking: boolean
+): string {
+  const lines = [
+    blocking
+      ? `敏感扫描命中 ${findings.length} 项，已阻断（scanner ${scannerVersion}）：`
+      : `敏感扫描命中 ${findings.length} 项，仅提示、不阻断（scanner ${scannerVersion}）：`
+  ];
+  for (const finding of findings) {
+    lines.push(
+      `  - ${finding.path}:${finding.line} ${finding.rule_id} ` +
+      `(${finding.severity}${finding.overridable ? ", 可覆盖" : ", 不可覆盖"})`
+    );
+  }
+  if (!blocking) {
+    lines.push("当前策略 HUNTER_HARNESS_SENSITIVE_SCAN=warn（默认）；" +
+      "设为 block 可恢复阻断，设为 off 完全不扫描。");
+  } else if (findings.some((finding) => !finding.overridable)) {
+    lines.push("含不可逐条覆盖的 high 命中：先移除该内容，" +
+      "或把 HUNTER_HARNESS_SENSITIVE_SCAN 设为 warn/off。");
+  } else {
+    lines.push("确认后继续可加 --allow-sensitive（非交互需同时带 --yes，" +
+      "原因用 --sensitive-reason）。");
+  }
+  return lines.join("\n") + "\n";
 }
 
 function renderDisplay(response: PushPullCliResult): string {
@@ -273,21 +333,37 @@ async function confirmed(
     if (!eligible.includes(path)) throw new Error("PUSH_PULL_RESOLUTION_INVALID");
   }
 
-  if (preview.result.security_scan.hard_blocked) throw new Error("PUSH_PULL_SENSITIVE_HARD_BLOCKED");
+  // Findings are always shown before any decision. The previous build reported
+  // only an error code, which left the operator grepping the repo to guess
+  // which file tripped the gate.
+  const blockedFindings = preview.result.security_scan.findings
+    .filter((finding) => finding.disposition === "blocked");
+  if (blockedFindings.length > 0) dependencies.stderr(formatSecurityFindings(
+    blockedFindings,
+    preview.result.security_scan.scanner_version,
+    preview.result.security_scan.blocked
+  ));
   let scan_overrides: Array<{ finding_fingerprint: string; actor: string; reason: string }> | undefined;
-  if (preview.result.outcome === "sensitive_confirmation_required") {
-    if (options.nonInteractive === true) throw new Error("PUSH_PULL_SENSITIVE_CONFIRMATION_REQUIRED");
-    const answer = (await dependencies.prompt("检测到可覆盖的敏感项，确认上传？[y/N]：")).trim();
-    if (!/^(?:y|yes)$/i.test(answer)) {
-      return dependencies.pushPull.dispatch({
-        schema_version: 1, operation: "confirm", direction,
-        preview_hash: preview.result.preview_hash,
-        decision: { action: "stop", idempotency_key: uuidV7(), conflict_decisions: choices }
-      }) as Promise<Extract<PushPullCliResult, { operation: "confirm" }>>;
+  if (preview.result.security_scan.blocked) {
+    let reason: string;
+    if (options.allowSensitive === true) {
+      if (options.yes !== true) throw new Error("PUSH_PULL_SENSITIVE_CONFIRMATION_REQUIRED");
+      reason = (options.sensitiveReason ?? "").trim() || "--allow-sensitive";
+    } else if (options.nonInteractive === true) {
+      throw new Error("PUSH_PULL_SENSITIVE_CONFIRMATION_REQUIRED");
+    } else {
+      const answer = (await dependencies.prompt("确认上传上述敏感项？[y/N]：")).trim();
+      if (!/^(?:y|yes)$/i.test(answer)) {
+        return dependencies.pushPull.dispatch({
+          schema_version: 1, operation: "confirm", direction,
+          preview_hash: preview.result.preview_hash,
+          decision: { action: "stop", idempotency_key: uuidV7(), conflict_decisions: choices }
+        }) as Promise<Extract<PushPullCliResult, { operation: "confirm" }>>;
+      }
+      reason = (await dependencies.prompt("确认原因（必填）：")).trim();
+      if (reason === "") throw new Error("PUSH_PULL_SENSITIVE_REASON_REQUIRED");
     }
-    const reason = (await dependencies.prompt("确认原因（必填）：")).trim();
-    if (reason === "") throw new Error("PUSH_PULL_SENSITIVE_REASON_REQUIRED");
-    scan_overrides = preview.result.security_scan.findings
+    scan_overrides = blockedFindings
       .filter((finding) => finding.overridable)
       .map((finding) => ({
         finding_fingerprint: finding.fingerprint,
@@ -316,6 +392,37 @@ async function confirmed(
   }) as Promise<Extract<PushPullCliResult, { operation: "confirm" }>>;
 }
 
+/**
+ * Archive directories are named `<YYYY-MM-DD>-<change-key>` (or bare
+ * `<change-key>` for older layouts). Locating them lets the command explain
+ * what *is* re-publishable instead of failing with a bare code.
+ */
+async function localArchiveDirs(root: string, change: string): Promise<string[]> {
+  const archiveRoot = join(root, ".harness", "archive");
+  let entries: Dirent[];
+  try {
+    entries = await readdir(archiveRoot, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => name === change || name.endsWith(`-${change}`))
+    .sort();
+}
+
+function archiveRepublishHint(change: string, matches: readonly string[]): string {
+  const found = matches.length === 0
+    ? "本地 .harness/archive/ 下没有同名归档目录。"
+    : `本地归档目录：${matches.join("、")}。`;
+  return "没有待发布的 outbox 归档包（上传成功后 ZIP 与回执会被清理，" +
+    "旧版本产生的归档则从未入 outbox）。" + found + "\n" +
+    "补传请用归档脚本从已封存目录重建并上传：\n" +
+    `  python harness/scripts/harness_archive.py republish --change ${change} --json\n` +
+    "（加 --dry-run 只预览包内容，不上传。）\n";
+}
+
 async function runArchive(
   options: PushPullCommandOptions,
   dependencies: PushPullCommandDependencies
@@ -323,15 +430,44 @@ async function runArchive(
   if (options.change === undefined || options.change.trim() === "") {
     throw new Error("PUSH_PULL_ARCHIVE_CHANGE_REQUIRED");
   }
-  // The frozen Archive seam requires a live outbox claim. Until a separate
-  // read-only inspection Interface exists, dry-run must not acquire a lease.
-  if (options.dryRun === true) throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
+  const change = options.change.trim();
+  // The frozen Archive seam requires a live outbox claim, so a dry run must not
+  // acquire a lease. It can still report what a real run would find.
+  if (options.dryRun === true) {
+    const matches = await localArchiveDirs(dependencies.cwd, change);
+    dependencies.stdout(options.json === true
+      ? serializeCliResult({
+        schema_version: 1, command: "push", request_id: uuidV7(), dry_run: true,
+        ok: true, exit_code: 0, project_id: null,
+        summary: { planned: matches.length, applied: 0 },
+        items: matches.map((name) => ({
+          path: `.harness/archive/${name}`, content_kind: "archive_package",
+          action: "republish", status: "planned"
+        })),
+        warnings: [], errors: [], outcome: matches.length === 0 ? "no_changes" : "preview"
+      })
+      : archiveRepublishHint(change, matches));
+    return 0;
+  }
   if (dependencies.pushPullArchive === undefined) throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
-  const input = await dependencies.pushPullArchive(options.change.trim());
+  let input: ArchivePublishInput;
+  try {
+    input = await dependencies.pushPullArchive(change);
+  } catch (error) {
+    // An absent claim is the normal state for anything already published; it is
+    // not an outage, and telling the operator "unavailable" hides the real route.
+    if (error instanceof Error && error.message === "PUSH_PULL_ARCHIVE_UNAVAILABLE") {
+      dependencies.stderr(archiveRepublishHint(
+        change, await localArchiveDirs(dependencies.cwd, change)
+      ));
+      throw new Error("PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM", { cause: error });
+    }
+    throw error;
+  }
   if (options.yes !== true) {
     if (options.nonInteractive === true) throw new Error("PUSH_PULL_CONFIRMATION_REQUIRED");
     if (!/^(?:y|yes)$/i.test((await dependencies.prompt(
-      `确认上传既有归档包 ${options.change}？[y/N]：`
+      `确认上传既有归档包 ${change}？[y/N]：`
     )).trim())) return 2;
   }
   const response = await dependencies.pushPull.dispatch({
@@ -444,7 +580,8 @@ export async function runPushPull(
       code === "REMOTE_UNAVAILABLE" || code === "SYNC_LOCK_UNAVAILABLE" ||
       code === "SYNC_LEASE_BUSY" || code === "SYNC_COMMIT_AMBIGUOUS" ||
       code === "SYNC_STREAM_ABORTED";
-    const exitCode = retryable || code.includes("UNAVAILABLE") ? 4
+    const exitCode = code === "PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM" ? 5
+      : retryable || code.includes("UNAVAILABLE") ? 4
       : code.includes("CONFIRMATION_REQUIRED") ? 2
         : code.includes("DECISION_REQUIRED") ? 5
           : code.includes("SENSITIVE") ? 6 : 3;

@@ -25,6 +25,21 @@ export interface CliResult {
   /** Stage 03 Push/Pull receipt binding. */
   preview_hash?: string;
   outcome?: string;
+  /** Blocked sensitive findings with their locations, so a caller can act. */
+  security_scan?: {
+    scanner_version: string;
+    blocked: boolean;
+    hard_blocked: boolean;
+    review_required: boolean;
+    findings: ReadonlyArray<{
+      path: string;
+      line: number;
+      column: number;
+      rule_id: string;
+      severity: string;
+      overridable: boolean;
+    }>;
+  };
   /** Guarded local mutation contract. */
   plan_hash?: string;
   recovery_id?: string | null;

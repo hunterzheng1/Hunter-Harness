@@ -425,9 +425,11 @@ export async function runCli(
     });
   addCommonOptions(program.command("harness-push"))
     .description("RemoteSync 未配置时安全失败；优先读 HUNTER_REMOTE_SYNC_URL/TOKEN/ACTOR_ID，缺失时回退 connect 写入的 credentials.local.yaml")
-    .option("--scope <scopes>", "config,rules,architecture,instructions,branch_files 或 all")
+    .option("--scope <scopes>", "config,rules,architecture,instructions,branch_files,archive 或 all")
     .option("--branch <branch>", "显式来源分支")
     .option("--change <change-key>", "仅配合 --scope archive 使用")
+    .option("--allow-sensitive", "确认所有敏感命中并继续（非交互需配合 --yes）")
+    .option("--sensitive-reason <reason>", "记入覆盖证据的原因，配合 --allow-sensitive")
     .option(
       "--resolve <path=resolution>",
       "逐路径选择 keep-local|accept-remote|skip（可重复）",

@@ -464,7 +464,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
   });
 
-  it("keeps Archive dry-run unavailable without acquiring a claim or dispatching transport", async () => {
+  it("previews Archive locally without acquiring a claim or dispatching transport", async () => {
     const dispatch = vi.fn();
     const resolveArchive = vi.fn();
     const deps = {
@@ -472,10 +472,12 @@ describe("Stage 03 Push/Pull CLI commands", () => {
       pushPullArchive: resolveArchive
     } as unknown as CliDependencies;
 
+    // A dry run still must not take a lease, but it can report what a real run
+    // would find instead of failing with a bare code.
     expect(await runCli([
       "harness-push", "--scope", "archive", "--change", "change-7",
       "--dry-run", "--json", "--non-interactive"
-    ], deps)).toBe(4);
+    ], deps)).toBe(0);
 
     expect(resolveArchive).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
@@ -483,8 +485,32 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       command: "push",
       dry_run: true,
+      ok: true,
+      outcome: "no_changes"
+    });
+  });
+
+  it("names the republish route when no outbox claim is pending", async () => {
+    const dispatch = vi.fn();
+    const resolveArchive = vi.fn(async () => {
+      throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
+    });
+    const deps = {
+      ...dependencies(dispatch),
+      pushPullArchive: resolveArchive
+    } as unknown as CliDependencies;
+
+    expect(await runCli([
+      "harness-push", "--scope", "archive", "--change", "change-7",
+      "--yes", "--json", "--non-interactive"
+    ], deps)).toBe(5);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    const stderr = vi.mocked(deps.stderr).mock.calls.join("");
+    expect(stderr).toContain("harness_archive.py republish");
+    expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
       ok: false,
-      errors: [{ code: "PUSH_PULL_ARCHIVE_UNAVAILABLE" }]
+      errors: [{ code: "PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM" }]
     });
   });
 
