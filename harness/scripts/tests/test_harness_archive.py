@@ -4054,6 +4054,115 @@ class ArchiveRepublishTests(unittest.TestCase):
         self.assertEqual(code, 0, payload)
         self.assertEqual(payload["reasonCode"], "ARCHIVE_ALREADY_PUBLISHED")
 
+    def _write_retained_package(self, payload: bytes, sha: str | None = None) -> Path:
+        packages = (
+            self.project / ".harness" / "state" / "local" / "archive-packages"
+        )
+        packages.mkdir(parents=True, exist_ok=True)
+        zip_path = packages / "demo-change.zip"
+        zip_path.write_bytes(payload)
+        _write_json(packages / "demo-change.upload.json", {
+            "schemaVersion": 1,
+            "changeKey": "demo-change",
+            "packageSha256": sha or ("sha256:" + hashlib.sha256(payload).hexdigest()),
+            "manifestSha256": "sha256:" + "cc" * 32,
+            "fileCount": 7,
+            "paths": ["reports/final/summary-data.json"],
+            "uploadStatus": "pending",
+        })
+        return zip_path
+
+    def test_retry_retained_uploads_the_stored_bytes_not_a_rebuild(self) -> None:
+        # Six messages promise "可重试同一个 ZIP", but every retry used to rebuild
+        # and produce a different package. A rebuild cannot match in general: the
+        # manifest binds the archive's commit and the sealed tree moves on.
+        zip_path = self._write_retained_package(b"PK\x03\x04retained-bytes")
+        rebuilt = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )[1]
+
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True, retry_retained=True,
+        )
+
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_RETAINED_PACKAGE_PREVIEW")
+        self.assertEqual(
+            payload["retainedPackage"]["packageSha256"],
+            "sha256:" + hashlib.sha256(zip_path.read_bytes()).hexdigest(),
+        )
+        self.assertNotEqual(
+            payload["retainedPackage"]["packageSha256"], rebuilt["packageSha256"],
+            "the point of the flag is that a rebuild is a different package",
+        )
+
+    def test_retry_retained_reports_when_nothing_is_retained(self) -> None:
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=True, retry_retained=True,
+        )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_RETAINED_PACKAGE_UNAVAILABLE")
+
+    def test_retry_retained_ignores_a_receipt_that_no_longer_matches_its_zip(self) -> None:
+        self._write_retained_package(b"PK\x03\x04drifted", sha="sha256:" + "11" * 32)
+
+        self.assertIsNone(ha.load_retained_package(self.project, "demo-change"))
+
+    def test_retry_retained_refuses_bytes_that_differ_from_the_published_package(self) -> None:
+        self._write_retained_package(b"PK\x03\x04failed-attempt")
+        self._write_durable_receipt("sha256:" + "6e" * 32)
+
+        code, payload = ha.cmd_republish(
+            change_key="demo-change", archive_dir=None,
+            project_root=self.project, dry_run=False, retry_retained=True,
+        )
+
+        self.assertEqual(code, 1, payload)
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_REMOTE_IMMUTABLE_CONFLICT")
+        self.assertNotIn("push", payload)
+
+    def test_retry_retained_allows_identical_bytes_so_a_failed_index_can_rerun(self) -> None:
+        # archiveStatus durable + knowledgeStatus failed keeps the ZIP precisely
+        # so the same package can be sent again; refusing here would block the
+        # one case the flag exists for.
+        payload_bytes = b"PK\x03\x04published"
+        self._write_retained_package(payload_bytes)
+        sha = "sha256:" + hashlib.sha256(payload_bytes).hexdigest()
+        self._write_durable_receipt(sha)
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in [key for key in os.environ if key.startswith("HUNTER_")]:
+                os.environ.pop(name)
+            code, payload = ha.cmd_republish(
+                change_key="demo-change", archive_dir=None,
+                project_root=self.project, dry_run=False, retry_retained=True,
+            )
+
+        self.assertIn("push", payload, "identical bytes must reach the upload path")
+        self.assertEqual(payload["reasonCode"], "ARCHIVE_UPLOAD_CREDENTIALS_MISSING")
+
+    def test_package_source_binds_the_archive_commit_not_live_head(self) -> None:
+        # Measured on a real archive: manifest.source.commit was the current HEAD
+        # while the archive's own finalCommit was a different, earlier commit — so
+        # the "deterministic package" claim broke on the next commit to the repo.
+        summary_path = self.archive / "reports" / "final" / "summary-data.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["finalCommit"] = "a" * 40
+        _write_json(summary_path, summary)
+
+        identity = ha._archive_source_identity(self.project, self.archive)
+
+        self.assertEqual(identity["commit"], "a" * 40)
+
+    def test_package_source_falls_back_to_head_without_a_recorded_commit(self) -> None:
+        identity = ha._archive_source_identity(self.project, self.archive)
+
+        self.assertIsNone(identity["commit"], "no git repo and no recorded commit")
+
     def test_unknown_change_key_reports_the_directory_it_searched(self) -> None:
         code, payload = ha.cmd_republish(
             change_key="not-a-change",

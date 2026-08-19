@@ -9041,7 +9041,27 @@ def collect_archive_core_paths(project_root: Path, archive_dir: Path) -> list[st
     return [source.relative_to(root).as_posix() for source, *_ in file_specs]
 
 
-def _archive_source_identity(project_root: Path) -> dict[str, str | None]:
+def _archive_recorded_commit(archive_dir: Path | None) -> str | None:
+    """The commit the archive itself recorded as its endpoint, if any."""
+    if archive_dir is None:
+        return None
+    try:
+        summary = read_json(archive_dir / "reports" / "final" / "summary-data.json")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(summary, dict):
+        return None
+    for key in ("finalCommit", "final_commit", "currentHead", "headCommit"):
+        value = summary.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value.strip()):
+            return value.strip()
+    return None
+
+
+def _archive_source_identity(
+    project_root: Path,
+    archive_dir: Path | None = None,
+) -> dict[str, str | None]:
     def git_value(*args: str) -> str | None:
         try:
             completed = subprocess.run(
@@ -9060,6 +9080,15 @@ def _archive_source_identity(project_root: Path) -> dict[str, str | None]:
         value = completed.stdout.strip()
         return value if completed.returncode == 0 and value else None
 
+    # Prefer the archive's own endpoint over live HEAD so the package stays a
+    # pure function of the sealed directory. Falling back to HEAD keeps older
+    # archives that never recorded a commit working exactly as before.
+    recorded = _archive_recorded_commit(archive_dir)
+    if recorded is not None:
+        return {
+            "commit": recorded,
+            "tree": git_value("rev-parse", f"{recorded}^{{tree}}"),
+        }
     return {
         "commit": git_value("rev-parse", "HEAD"),
         "tree": git_value("rev-parse", "HEAD^{tree}"),
@@ -9244,7 +9273,7 @@ def build_archive_package(
         "profile": "core-v1",
         "change_key": change_key,
         "created_at": _archive_created_at(summary_path),
-        "source": _archive_source_identity(project_root),
+        "source": _archive_source_identity(project_root, archive_dir),
         "files": entries,
     }
     manifest_bytes = (
@@ -9482,35 +9511,83 @@ def auto_push_managed_snapshot(project_root: Path) -> dict[str, Any]:
     }
 
 
+def load_retained_package(project_root: Path, change_key: str) -> dict[str, Any] | None:
+    """A package kept on disk for retry, described by its own pending receipt.
+
+    Retrying is only meaningful against the bytes the server already saw. A
+    rebuild is a different package: the archive directory and the harness both
+    move on, so "retry the same ZIP" has to mean exactly that.
+    """
+    packages = project_root / ".harness" / "state" / "local" / "archive-packages"
+    zip_path = packages / f"{change_key}.zip"
+    receipt_path = packages / f"{change_key}.upload.json"
+    if not zip_path.is_file() or not receipt_path.is_file():
+        return None
+    try:
+        receipt = read_json(receipt_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    recorded = str(receipt.get("packageSha256") or "")
+    actual = "sha256:" + hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    if recorded and recorded != actual:
+        # The receipt no longer describes the file beside it; refuse to guess.
+        return None
+    return {
+        "schemaVersion": 1,
+        "profile": "core-v1",
+        "changeKey": change_key,
+        "packagePath": str(zip_path),
+        "packageSha256": actual,
+        "manifestSha256": receipt.get("manifestSha256"),
+        "fileCount": receipt.get("fileCount"),
+        "sizeBytes": zip_path.stat().st_size,
+        "paths": list(receipt.get("paths") or []),
+        "knowledgeCandidateCount": receipt.get("knowledgeCandidateCount"),
+        "reused": True,
+    }
+
+
 def auto_push_archive_core(
     project_root: Path,
     archive_dir: Path,
     *,
     change_key: str | None = None,
     extra_entries: dict[str, tuple[str, str, bytes]] | None = None,
+    reuse_retained_package: bool = False,
 ) -> dict[str, Any]:
     """Build and upload one deterministic core ZIP after finalize.
 
     The ZIP and its per-change receipt are always created before auth is
     evaluated. Failures become warnings so archive success is never rolled
     back by missing credentials or a remote outage.
+
+    With ``reuse_retained_package`` a package already kept for retry is uploaded
+    as-is instead of being rebuilt, which is what the retry messages promise.
     """
     project_root = project_root.resolve()
     effective_change_key = change_key or archive_dir.name
-    try:
-        package = build_archive_package(
-            project_root,
-            archive_dir,
-            effective_change_key,
-            extra_entries=extra_entries,
-        )
-    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return {
-            "skipped": False,
-            "ok": False,
-            "reasonCode": "ARCHIVE_PACKAGE_BUILD_FAILED",
-            "warning": f"核心归档 ZIP 生成失败：{exc}",
-        }
+    package = (
+        load_retained_package(project_root, effective_change_key)
+        if reuse_retained_package
+        else None
+    )
+    if package is None:
+        try:
+            package = build_archive_package(
+                project_root,
+                archive_dir,
+                effective_change_key,
+                extra_entries=extra_entries,
+            )
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return {
+                "skipped": False,
+                "ok": False,
+                "reasonCode": "ARCHIVE_PACKAGE_BUILD_FAILED",
+                "warning": f"核心归档 ZIP 生成失败：{exc}",
+            }
     core_paths = list(package["paths"])
     package_path = Path(str(package["packagePath"]))
     try:
@@ -10346,6 +10423,7 @@ def cmd_republish(
     project_root: Path | None,
     dry_run: bool,
     inject_knowledge: bool = True,
+    retry_retained: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """Rebuild and re-upload the core ZIP for an already sealed archive.
 
@@ -10404,6 +10482,70 @@ def cmd_republish(
             )
             extra_entries = {}
     payload["knowledgeCandidatesInjected"] = "candidates/knowledge.json" in extra_entries
+
+    if retry_retained:
+        retained = load_retained_package(root, change_key)
+        if retained is None:
+            payload.update({
+                "ok": False,
+                "reasonCode": "ARCHIVE_RETAINED_PACKAGE_UNAVAILABLE",
+                "error": (
+                    "没有可重试的留存包：需要 "
+                    f".harness/state/local/archive-packages/{change_key}.zip 与同名 "
+                    ".upload.json 同时存在，且回执记录的 packageSha256 与 ZIP 字节一致。"
+                ),
+                "nextAction": "去掉 --retry-retained 可按封存目录重建一个新包。",
+            })
+            return 1, payload
+        payload["retainedPackage"] = {
+            "packagePath": retained["packagePath"],
+            "packageSha256": retained["packageSha256"],
+            "fileCount": retained["fileCount"],
+            "sizeBytes": retained["sizeBytes"],
+        }
+        durable = read_durable_archive_receipt(root, change_key)
+        stored_sha = str((durable or {}).get("packageSha256") or "")
+        if (
+            durable is not None
+            and str(durable.get("archiveStatus") or "") == "durable"
+            and stored_sha
+            and stored_sha != retained["packageSha256"]
+        ):
+            # Identical bytes stay allowed below — re-uploading the same package
+            # is the documented way to retry a failed knowledge index. Different
+            # bytes are refused by the server, so do not spend the upload.
+            payload.update({
+                "ok": False,
+                "reasonCode": "ARCHIVE_REMOTE_IMMUTABLE_CONFLICT",
+                "remoteReceipt": {
+                    "archiveId": durable.get("archiveId"),
+                    "packageSha256": stored_sha,
+                },
+                "error": (
+                    "留存包与远端已发布的包字节不同，服务端对同一 change key 只保存一个"
+                    "不可变包，不接受替换。"
+                ),
+                "nextAction": (
+                    "该留存包是一次失败尝试的残留，不是已发布的那一份；"
+                    "确认无用后可删除 .zip 与 .upload.json。"
+                ),
+            })
+            return 1, payload
+        if dry_run:
+            payload.update({"ok": True, "reasonCode": "ARCHIVE_RETAINED_PACKAGE_PREVIEW"})
+            return 0, payload
+        result = auto_push_archive_core(
+            root,
+            archive_dir,
+            change_key=change_key,
+            reuse_retained_package=True,
+        )
+        payload["push"] = result
+        payload["ok"] = bool(result.get("ok"))
+        payload["reasonCode"] = result.get("reasonCode")
+        if result.get("warning"):
+            payload.setdefault("warnings", []).append(str(result["warning"]))
+        return 0 if payload["ok"] else 1, payload
 
     # Build once, into a preview path, so the bytes can be compared against any
     # durable receipt before an upload is attempted. The builder refuses to write
@@ -10479,8 +10621,8 @@ def cmd_republish(
                     f"{package['knowledgeCandidateCount']} 条知识候选"
                     "（原包上传时还没有 candidates/knowledge.json），因此字节必然不同——"
                     "已发布归档无法从客户端追加知识条目，需要平台侧提供重新索引或归档版本化能力。"
-                    "若只是想重试同一个包（例如知识索引失败），加 --no-knowledge-injection "
-                    "可重建与封存目录完全一致的字节。"
+                    "若只是想重试同一个包（例如知识索引失败），用 --retry-retained "
+                    "上传盘上留存的原包字节；重建得不到已发布的字节。"
                     if payload.get("knowledgeCandidatesInjected")
                     else "本地归档内容与已上传的包不一致，请先确认哪一份才是应保留的事实。"
                 )
@@ -10513,6 +10655,7 @@ def cmd_republish_cli(args: argparse.Namespace) -> int:
         project_root=resolve_path(args.project) if args.project else None,
         dry_run=bool(args.dry_run),
         inject_knowledge=not bool(args.no_knowledge_injection),
+        retry_retained=bool(args.retry_retained),
     )
     emit_json(payload)
     return code
@@ -10697,11 +10840,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="build the package and report its contents without uploading",
     )
     p_republish.add_argument(
+        "--retry-retained",
+        action="store_true",
+        help=(
+            "upload the package already kept on disk for retry, byte for byte, "
+            "instead of rebuilding it"
+        ),
+    )
+    p_republish.add_argument(
         "--no-knowledge-injection",
         action="store_true",
         help=(
-            "rebuild exactly what the sealed archive holds; needed to retry the "
-            "same bytes the server already stored"
+            "rebuild without injecting knowledge candidates. Note this does NOT "
+            "reproduce an already-published package: the manifest also binds the "
+            "archive's own commit and the sealed directory may have moved on. To "
+            "retry the exact bytes the server saw, use --retry-retained"
         ),
     )
     p_republish.add_argument("--json", action="store_true", default=True)

@@ -71,9 +71,12 @@ export async function runArchiveUpload(
       : serverCode ?? "ARCHIVE_UPLOAD_FAILED";
     const exitCode = error instanceof ArchiveUploadError ? error.exitCode : 1;
     const message = error instanceof Error ? error.message : String(error);
-    const hint = serverCode === "ARCHIVE_PACKAGE_CONFLICT"
+    // The archive endpoint answers 409 ARCHIVE_ALREADY_EXISTS; ARCHIVE_PACKAGE_CONFLICT
+    // is the remote-sync contract's spelling. Accept both so the guidance fires.
+    const hint = serverCode === "ARCHIVE_ALREADY_EXISTS" ||
+      serverCode === "ARCHIVE_PACKAGE_CONFLICT"
       ? "\n该 change key 在服务端已存有一个不可变归档包，不接受不同字节的替换；" +
-        "补传只适用于从未成功上传、或字节完全一致的重试。\n"
+        "补传只适用于从未成功上传、或重试盘上留存的原包（republish --retry-retained）。\n"
       : "";
     dependencies.stderr(message + "\n" + hint);
     if (options.json === true) {

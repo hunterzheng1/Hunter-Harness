@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.2.89] — hunter-harness ＋ [0.2.82] — @hunter-harness/workflow-harness（Bundle 0.2.71）
+
+### Fixed（0.2.88 的补传在真实项目上仍未闭环）
+
+kb-sdd 的一次真实补传证明 0.2.88 的三个修复都生效了（无需 `--project`、本地判定不上传、
+`--no-knowledge-injection` 可用），但也暴露出 0.2.88 建立在两个错误前提上：
+
+- **包 manifest 绑的是 live HEAD，不是归档自己的提交**：`_archive_source_identity` 直接读
+  `git rev-parse HEAD`。包描述的是一个**封存**归档，绑 HEAD 意味着仓库每提交一次包 sha 就变，
+  "确定性 core-v1 ZIP"在第一次提交后就不成立。实测：manifest.source.commit 是当前 HEAD
+  `851fafe6`，而归档自己记的 `finalCommit` 是 `ece2be34`。现改为优先取归档记录的提交，
+  归档没记时才回退 HEAD（旧归档行为不变）。
+- **`--no-knowledge-injection` 的前提是错的**：它被描述成"重建与已发布包一致的字节"，但重建
+  永远做不到——manifest 绑提交、封存目录与 harness 本身都会前进。真正的重试对象是**盘上留存的
+  那个包**，而 `auto_push_archive_core` 从来都是重建、从不上传留存的 ZIP —— 代码里 6 处
+  "已保留 ZIP 与上传回执，可重试同一个 ZIP"的承诺一直是假的。
+
+### Added
+
+- **`republish --retry-retained`**：上传 `.harness/state/local/archive-packages/<key>.zip`
+  的原始字节，不重建；先校验同名 `.upload.json` 记录的 sha 与 ZIP 实际字节一致，不一致就拒绝猜。
+  留存包与远端已发布包字节不同时（即那是失败尝试的残留）本地判出
+  `ARCHIVE_REMOTE_IMMUTABLE_CONFLICT` 并拒绝上传；**字节相同时放行**——那正是
+  `knowledgeStatus: failed` 保留 ZIP 想支持的重试场景，拦掉就把唯一用途拦没了。
+
+### Fixed（CLI）
+
+- **提示语挂在了错误的错误码上**：服务端 `package-ingest.ts` 抛的是
+  `ARCHIVE_ALREADY_EXISTS`（409），而 0.2.88 的中文说明只在 `ARCHIVE_PACKAGE_CONFLICT` 时触发
+  ——后者是 remote-sync 契约里的拼法，这个端点从不返回。于是那句为该失败写的提示从没出现过。
+  现在两个码都认。
+
+### 平台侧（本仓库无法解决）
+
+**已发布归档补不上知识条目，需要平台改。** 服务端对同一 change key 只存一个不可变包
+（`ARCHIVE_ALREADY_EXISTS`），而知识条目只从包里的 `candidates/knowledge.json` 产生；
+0.2.86 之前上传的包根本没有这个文件。平台已有 `retryKnowledgeExtraction(job_id)`，但它是对
+**已存包**重跑提取——包里没有候选，重跑仍然是 0 条。要闭环需要下列之一：
+补充候选的增量上传入口、归档版本化（同 change key 接受新版本）、或服务端从 summary-data
+自行派生候选。
+
 ## [0.2.81] — @hunter-harness/workflow-harness（Bundle 0.2.70）
 
 > **Bundle 单发**：本次只改 harness 脚本与协议文档，CLI 代码未动，仍是 `0.2.88`，

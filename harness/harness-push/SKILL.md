@@ -72,7 +72,11 @@ stderr 里直接给出上面的 republish 命令；`--dry-run` 会列出本地�
 `ARCHIVE_REMOTE_IMMUTABLE_CONFLICT`（exit 1，**不发起上传**）。
 **已发布的归档无法从客户端补上知识条目**——注入 `candidates/knowledge.json` 必然改变字节，
 服务端拒绝替换。要让旧归档产生知识条目，需要平台侧提供重新索引或归档版本化能力。
-只想重试**同一个包**（例如知识索引失败）时加 `--no-knowledge-injection`，它按封存目录原样重建，字节与已存包一致。
+只想重试**同一个包**（例如知识索引失败）时用 `--retry-retained`：它上传盘上留存的原包字节，
+不重建。**重建得不到已发布的字节**——包 manifest 绑定归档自己的提交，封存目录与 harness 本身
+也都会前进；`--no-knowledge-injection` 只是不注入候选，不等于能复现旧包。
+留存包与远端字节不同（即那是一次失败尝试的残留）时，`--retry-retained` 同样在本地判出
+`ARCHIVE_REMOTE_IMMUTABLE_CONFLICT` 并拒绝上传。
 
 ## 关键规则
 

@@ -195,9 +195,10 @@ describe("hunter-harness archive upload", () => {
       if (url.pathname.endsWith("/archive-package")) {
         // One immutable package per change key: a rebuild with different bytes
         // is refused, and that reason must survive to the caller.
+        // Verbatim from hunter-platform apps/server/src/archive/package-ingest.ts.
         return json({
           error: {
-            code: "ARCHIVE_PACKAGE_CONFLICT",
+            code: "ARCHIVE_ALREADY_EXISTS",
             message: "a different package is already stored for this change"
           }
         }, 409);
@@ -220,7 +221,7 @@ describe("hunter-harness archive upload", () => {
     expect(code).toBe(1);
     expect(JSON.parse(stdout.join(""))).toMatchObject({
       ok: false,
-      errors: [{ code: "ARCHIVE_PACKAGE_CONFLICT", server_status: 409 }]
+      errors: [{ code: "ARCHIVE_ALREADY_EXISTS", server_status: 409 }]
     });
     expect(stderr.join("")).toContain("不可变归档包");
   });
