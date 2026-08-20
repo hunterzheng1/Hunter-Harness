@@ -405,6 +405,10 @@ def _default_gate_begin(**kwargs: Any) -> dict[str, Any]:
         str(kwargs["run_id"]),
         "--note",
         "开始处理评审中确认需要修改的代码问题。",
+        # 显式标记这一轮是 review fixback。以前靠 gate 嗅探 note 里有没有
+        # "fixback" 字样——而上面这条 note 一个都没有，于是 fixback 的 run 事件
+        # 从来没被打上 trigger/from_phase。
+        "--fixback",
     ]
     for option, key in (
         ("--executor-tool", "executor_tool"),

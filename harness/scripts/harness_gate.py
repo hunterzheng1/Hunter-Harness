@@ -157,6 +157,47 @@ GATE_WARNINGS_REL = Path("evidence") / "gate-warnings.ndjson"
 # phase close. Must stay a superset-ordering of hpf.VALID_OWNER_PHASES.
 SCENARIO_OWNER_PHASE_ORDER = ("plan", "run", "test", "review", "submit")
 
+# ---------------------------------------------------------------------------
+# 阶段能力表：每个阶段在 begin/close 里额外做什么，集中在这里声明。
+#
+# 这些开关以前是 cmd_begin / cmd_close 里散落的 `if args.phase == ...` —— 两个
+# 五百行的函数，想知道"test 阶段关门时到底跑哪几项"要通读全文。更要紧的是
+# run/test/review 的差异被摊平在控制流里，看不出它们其实共用同一套生命周期。
+#
+# 键的含义：
+#   plan_handoff      begin 时校验 plan 已 finalize（只有进入实现的第一个阶段需要）
+#   test_guard        begin 建测试基线快照、close 比对（改测试的阶段才需要）
+#   scenario_coverage close 时跑 C9 场景覆盖
+#   ledger_blocking   close 时 ledger 校验失败是否阻断（否则只进 payload）
+#   review_outputs    close 时校验 review sidecar 与 runId 绑定
+#   head_may_advance  capsule 校验允许 HEAD 前移（会产生 commit 的阶段）
+#   projection_drift  close 时 projection receipt 变化即硬失败（外发边界）
+PHASE_GATE_RULES: dict[str, frozenset[str]] = {
+    "plan": frozenset(),
+    "run": frozenset({
+        "plan_handoff", "test_guard", "scenario_coverage",
+        "ledger_blocking", "head_may_advance",
+    }),
+    "test": frozenset({"test_guard", "scenario_coverage", "ledger_blocking"}),
+    "review": frozenset({"review_outputs"}),
+    "package": frozenset({"ledger_blocking"}),
+    "apidoc": frozenset(),
+    "submit": frozenset({"head_may_advance", "projection_drift"}),
+    "merge": frozenset({"head_may_advance"}),
+    "archive": frozenset({"projection_drift"}),
+}
+# 不在 WORKFLOW_PHASES 里、但 projection 门禁按发布阶段对待的名字。
+_EXTRA_PROJECTION_DRIFT_PHASES = frozenset({"release", "deploy"})
+
+
+def phase_gate_rule(phase: str | None, rule: str) -> bool:
+    """这个阶段是否启用某项门禁能力。未知阶段一律不启用（fail-safe）。"""
+    name = str(phase or "")
+    if rule == "projection_drift" and name in _EXTRA_PROJECTION_DRIFT_PHASES:
+        return True
+    resolved = hp.resolve_phase_name(name) or name
+    return rule in PHASE_GATE_RULES.get(resolved, frozenset())
+
 
 def gate_severity_mode(project: Path, change_dir: Path | None = None) -> str:
     """Resolve gate severity mode: env > change gate-policy > project config.
@@ -1681,6 +1722,7 @@ def append_phase_event(
     executor_agent: str | None = None,
     executor_model: str | None = None,
     code: str | None = None,
+    fixback: bool = False,
 ) -> dict[str, Any]:
     """Skill-facing phase lifecycle append (begin/close use this directly).
 
@@ -1733,8 +1775,17 @@ def append_phase_event(
             execution_mode=None,
             decision_reason_code=None,
             fallback_reason_code=None,
-            trigger=("fixback" if "fixback" in note.lower() else None),
-            from_phase=("review" if phase == "run" and "fixback" in note.lower() else None),
+            # 显式信号优先。以前只嗅探 note 文本，而真正的 fixback 启动路径
+            # （harness_fixback._default_gate_begin）写的 note 是
+            # "开始处理评审中确认需要修改的代码问题。"，一个 "fixback" 字都没有
+            # ——于是 fixback 的 run 事件从来没被打上 trigger/from_phase。
+            # note 嗅探保留为兼容回退：手工传 --note 带 fixback 的老用法仍然有效。
+            trigger=("fixback" if fixback or "fixback" in note.lower() else None),
+            from_phase=(
+                "review"
+                if phase == "run" and (fixback or "fixback" in note.lower())
+                else None
+            ),
             result_status=None,
         )
         event = he.build_event(args, existing)
@@ -2484,7 +2535,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
     severity_mode = gate_severity_mode(project, change_dir)
     gate_warnings: list[dict[str, Any]] = []
     plan_verification: dict[str, Any] | None = None
-    if args.phase == "run":
+    if phase_gate_rule(args.phase, "plan_handoff"):
         plan_verification = validate_plan_handoff(change_dir)
         if not plan_verification.get("ok"):
             code = str(
@@ -2670,7 +2721,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
         if capsule is not None:
             guard_result = {"ok": True, "code": "SNAPSHOT_REUSED"}
         else:
-            if args.phase in {"run", "test"}:
+            if phase_gate_rule(args.phase, "test_guard"):
                 guard_result = htg.begin(execution_root, change_dir)
                 if not guard_result.get("ok"):
                     if gate_soft_allowed(severity_mode, args.phase, "test-guard"):
@@ -2737,6 +2788,7 @@ def cmd_begin(args: argparse.Namespace) -> int:
                 phase=args.phase,
                 type_="phase.start",
                 note=args.note or "",
+                fixback=bool(getattr(args, "fixback", False)),
                 identity=identity,
                 run_id=run_id,
                 executor_tool=executor_tool,
@@ -3043,7 +3095,7 @@ def cmd_close(args: argparse.Namespace) -> int:
                 run_id=run_id,
                 project=project,
                 execution_root=execution_root,
-                allow_head_advance=args.phase in {"run", "submit", "merge"},
+                allow_head_advance=phase_gate_rule(args.phase, "head_may_advance"),
             )
         except ValueError as exc:
             if gate_soft_allowed(severity_mode, args.phase, "capsule"):
@@ -3098,7 +3150,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         and captured_projection.get("receiptHash")
         and captured_projection.get("receiptHash")
         != projection.get("receiptHash")
-        and args.phase in {"submit", "archive", "release", "deploy"}
+        and phase_gate_rule(args.phase, "projection_drift")
     ):
         mismatch = {
             "code": "PROJECTION_CHANGED_DURING_PHASE",
@@ -3125,7 +3177,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         change_dir, args.phase, policy, execution_root=execution_root,
         phase_status=args.status,
     )
-    if not ledger_result.get("ok") and args.phase in {"run", "test", "package"}:
+    if not ledger_result.get("ok") and phase_gate_rule(args.phase, "ledger_blocking"):
         persist_close_failure(
             change_dir,
             args.phase,
@@ -3151,7 +3203,7 @@ def cmd_close(args: argparse.Namespace) -> int:
             extra={k: v for k, v in ledger_result.items() if k not in {"ok", "message", "code"}},
         )
 
-    if args.phase == "review":
+    if phase_gate_rule(args.phase, "review_outputs"):
         review_outputs = validate_review_outputs_for_close(change_dir, run_id)
         if not review_outputs.get("ok"):
             persist_close_failure(
@@ -3183,7 +3235,7 @@ def cmd_close(args: argparse.Namespace) -> int:
     # C9: scenario coverage check — every P0/ledger scenario *due by this phase*
     # must have a ledger entry. Scenarios with a later ownerPhase are deferred,
     # not missing (see _validate_scenario_coverage).
-    if args.phase in {"run", "test"}:
+    if phase_gate_rule(args.phase, "scenario_coverage"):
         coverage = _validate_scenario_coverage(change_dir, args.phase)
         if not coverage.get("ok"):
             if gate_soft_allowed(severity_mode, args.phase, "scenario-coverage"):
@@ -3241,7 +3293,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         write_phase_capsule(change_dir, args.phase, run_id, capsule)
 
     guard_result = None
-    if args.phase in {"run", "test"}:
+    if phase_gate_rule(args.phase, "test_guard"):
         if close_transaction.get("guardClosed"):
             guard_result = {"ok": True, "code": "ALREADY_CLOSED", "reused": True}
         else:
@@ -3296,6 +3348,7 @@ def cmd_close(args: argparse.Namespace) -> int:
                 type_="phase.end",
                 status=close_status,
                 note=args.note or "",
+                fixback=bool(getattr(args, "fixback", False)),
                 run_id=run_id,
             )
         except BaseException as exc:
@@ -3604,6 +3657,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_begin.add_argument("--ttl-seconds", type=int, default=3600)
     p_begin.add_argument("--task", type=int, default=None)
     p_begin.add_argument("--note", default="")
+    p_begin.add_argument(
+        "--fixback",
+        action="store_true",
+        help="This phase is a review fixback round (tags the lifecycle event).",
+    )
     p_begin.add_argument("--executor-tool", default=None)
     p_begin.add_argument("--executor-agent", default=None)
     p_begin.add_argument("--executor-model", default=None)
@@ -3624,6 +3682,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_close.add_argument("--run-id", default=None)
     p_close.add_argument("--task", type=int, default=None)
     p_close.add_argument("--note", default="")
+    p_close.add_argument(
+        "--fixback",
+        action="store_true",
+        help="This phase is a review fixback round (tags the lifecycle event).",
+    )
     p_close.add_argument("--to-phase", default=None)
     p_close.add_argument("--executor", default=None)
     p_close.add_argument("--artifact", action="append", default=[])

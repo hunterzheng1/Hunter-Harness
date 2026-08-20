@@ -2420,6 +2420,100 @@ class V2ArtifactManifestTests(unittest.TestCase):
         ))
 
 
+class PhaseGateRuleTableTests(unittest.TestCase):
+    """每阶段在 begin/close 里额外做什么，集中声明在一张表里。
+
+    以前这些是 cmd_begin / cmd_close 里散落的 `if args.phase == ...`——两个五百行
+    的函数，想知道"test 关门时到底跑哪几项"要通读全文。
+    """
+
+    def test_the_table_covers_every_workflow_phase(self) -> None:
+        """漏一个阶段就等于悄悄关掉它的门禁，而不是报错。"""
+        self.assertEqual(
+            set(gate.PHASE_GATE_RULES), set(gate.hp.WORKFLOW_PHASES)
+        )
+
+    def test_every_declared_rule_is_one_the_code_reads(self) -> None:
+        """表里写了但没人读的开关是死规则，比缺规则更难发现。"""
+        known = {
+            "plan_handoff", "test_guard", "scenario_coverage", "ledger_blocking",
+            "review_outputs", "head_may_advance", "projection_drift",
+        }
+        declared = set().union(*gate.PHASE_GATE_RULES.values())
+        self.assertEqual(declared, known)
+
+    def test_rules_match_the_behaviour_they_replaced(self) -> None:
+        """逐条对齐重构前的内联条件，确认这是行为保持的改写。"""
+        expected = {
+            "plan_handoff": {"run"},
+            "test_guard": {"run", "test"},
+            "scenario_coverage": {"run", "test"},
+            "ledger_blocking": {"run", "test", "package"},
+            "review_outputs": {"review"},
+            "head_may_advance": {"run", "submit", "merge"},
+            "projection_drift": {"submit", "archive"},
+        }
+        for rule, phases in expected.items():
+            actual = {
+                phase for phase in gate.hp.WORKFLOW_PHASES
+                if gate.phase_gate_rule(phase, rule)
+            }
+            self.assertEqual(actual, phases, rule)
+
+    def test_release_and_deploy_still_count_as_projection_boundaries(self) -> None:
+        """release/deploy 不在 WORKFLOW_PHASES 里，但 projection 门禁按发布阶段对待。"""
+        for phase in ("release", "deploy"):
+            self.assertTrue(gate.phase_gate_rule(phase, "projection_drift"), phase)
+
+    def test_an_unknown_phase_enables_nothing(self) -> None:
+        """未知阶段 fail-safe：不启用任何能力，而不是意外命中某一项。"""
+        for rule in ("plan_handoff", "test_guard", "ledger_blocking", "review_outputs"):
+            self.assertFalse(gate.phase_gate_rule("teleport", rule), rule)
+            self.assertFalse(gate.phase_gate_rule(None, rule), rule)
+
+
+class FixbackSignalTests(unittest.TestCase):
+    """fixback 曾经靠嗅探 note 文本判定，而真正的启动路径根本不写那个词。
+
+    harness_fixback._default_gate_begin 传的 note 是
+    "开始处理评审中确认需要修改的代码问题。"——一个 "fixback" 字都没有，于是
+    fixback 的 run 事件从来没被打上 trigger/from_phase。
+    """
+
+    def test_the_real_launcher_passes_an_explicit_flag(self) -> None:
+        import harness_fixback  # noqa: PLC0415
+
+        source = Path(harness_fixback.__file__).read_text(encoding="utf-8")
+        launcher = source.split("def _default_gate_begin")[1].split("def ")[0]
+        self.assertIn('"--fixback"', launcher)
+
+    def test_the_launcher_note_would_not_survive_text_sniffing(self) -> None:
+        """锁住这条 note 里没有 "fixback" ——这正是嗅探判定失效的原因。"""
+        import harness_fixback  # noqa: PLC0415
+
+        source = Path(harness_fixback.__file__).read_text(encoding="utf-8")
+        launcher = source.split("def _default_gate_begin")[1].split("def ")[0]
+        note_line = next(
+            line for line in launcher.splitlines()
+            if "开始处理评审中确认需要修改的代码问题" in line
+        )
+        self.assertNotIn("fixback", note_line.lower())
+
+    def test_both_lifecycle_commands_accept_the_flag(self) -> None:
+        for phase, extra in (("run", ["--status", "OK"]), ("run", [])):
+            command = "close" if extra else "begin"
+            args = gate.build_parser().parse_args(
+                [command, "--phase", phase, "--change", "demo", "--fixback", *extra]
+            )
+            self.assertTrue(args.fixback)
+
+    def test_the_flag_is_off_by_default(self) -> None:
+        args = gate.build_parser().parse_args(
+            ["begin", "--phase", "run", "--change", "demo"]
+        )
+        self.assertFalse(args.fixback)
+
+
 class GateProjectArgumentTests(unittest.TestCase):
     """classify/checkpoint 此前只按 CWD 解析项目根，不接受 --project。
 
