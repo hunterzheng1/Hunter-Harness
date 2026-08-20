@@ -1181,6 +1181,214 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(payload["code"], "LEASE_ABSENT")
         self.assertIsNone(payload["resumeRunId"])
 
+    def _expired_lease_close(
+        self,
+        *,
+        lease: dict,
+        run_id: str = "run-long",
+        claim_result: dict | None = None,
+    ):
+        """Drive cmd_close with no active lease but an expired one on disk."""
+        self._write_checkpoints("approved")
+        args = gate.build_parser().parse_args([
+            "close", "--phase", "run", "--change", "demo",
+            "--run-id", run_id, "--status", "OK", "--json",
+        ])
+        resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
+        claimed = claim_result if claim_result is not None else {
+            "ok": True,
+            "code": "LEASE_REFRESHED",
+            "lease": {
+                "runId": run_id,
+                "phase": "run",
+                "refreshedAt": "2026-08-20T09:00:00.000+08:00",
+            },
+        }
+        errors: list[str] = []
+        with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
+             mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value=None), \
+             mock.patch.object(gate.hc, "inspect_lease_state", return_value=lease), \
+             mock.patch.object(gate.hc, "claim_lease", return_value=claimed) as claim, \
+             mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
+             mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
+                 "ok": True, "code": "LEDGER_OK"
+             }), \
+             mock.patch.object(gate, "load_phase_capsule", return_value=None), \
+             mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
+             mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
+             mock.patch.object(gate, "_phase_event_exists", return_value=False), \
+             mock.patch.object(gate, "append_phase_event", return_value={"ok": True}), \
+             mock.patch.object(gate.sys.stderr, "write", side_effect=errors.append), \
+             mock.patch("sys.stdout") as stdout:
+            code = gate.cmd_close(args)
+        written = "".join(
+            call.args[0] for call in stdout.write.call_args_list if call.args
+        )
+        return code, written, errors, claim
+
+    def test_close_reacquires_an_expired_lease_from_the_same_run(self) -> None:
+        """一个跑过 TTL 的阶段必须还能收尾，不该要求人先手工 claim 一遍。
+
+        租约过期而 runId 还是本轮的，恰好证明没有第三方抢占过——抢占会重写
+        租约文件把 runId 换掉。harness_context.close_transition 早就是这么
+        推理的（只记 leaseLapsed 照常收尾），Gate 侧此前却把过期当成租约不存在。
+        """
+        code, written, _, claim = self._expired_lease_close(lease={
+            "state": "expired",
+            "lease": {
+                "runId": "run-long",
+                "phase": "run",
+                "acquiredAt": "2026-08-20T07:00:00.000+08:00",
+                "expiresAt": "2026-08-20T08:00:00.000+08:00",
+            },
+        })
+
+        self.assertEqual(code, 0)
+        # 用原 run-id 重取，不是新开一次 attempt。
+        self.assertEqual(claim.call_args.kwargs["run_id"], "run-long")
+        payload = json.loads(written)
+        self.assertEqual(payload["leaseLapsed"]["runId"], "run-long")
+        # 超时的事实要记下来，不能悄悄抹掉。
+        self.assertEqual(
+            payload["leaseLapsed"]["expiresAt"], "2026-08-20T08:00:00.000+08:00"
+        )
+
+    def test_close_refuses_an_expired_lease_left_by_another_run(self) -> None:
+        """自动重取只在能证明所有权时成立，换了 runId 就证明不了。"""
+        code, _, errors, claim = self._expired_lease_close(
+            run_id="run-mine",
+            lease={
+                "state": "expired",
+                "lease": {"runId": "run-someone-else", "phase": "run"},
+            },
+        )
+
+        self.assertEqual(code, 1)
+        claim.assert_not_called()
+        self.assertEqual(json.loads(errors[-1])["code"], "LEASE_OWNER_MISMATCH")
+
+    def test_close_refuses_an_expired_lease_for_another_phase(self) -> None:
+        code, _, errors, claim = self._expired_lease_close(lease={
+            "state": "expired",
+            "lease": {"runId": "run-long", "phase": "test"},
+        })
+
+        self.assertEqual(code, 1)
+        claim.assert_not_called()
+        self.assertEqual(json.loads(errors[-1])["code"], "LEASE_OWNER_MISMATCH")
+
+    def test_close_does_not_auto_recover_a_corrupt_lease(self) -> None:
+        """损坏的租约什么都证明不了，包括"没人抢占过"——这正是自动重取的前提。"""
+        code, _, errors, claim = self._expired_lease_close(lease={
+            "state": "corrupt",
+            "lease": None,
+        })
+
+        self.assertEqual(code, 1)
+        claim.assert_not_called()
+        payload = json.loads(errors[-1])
+        self.assertEqual(payload["code"], "LEASE_INVALID")
+        self.assertIn("harness_change.py claim", payload["recoveryAction"])
+
+    def _seed_bundle_identity(self, agent: str = "codex") -> Path:
+        """Lay down a self-consistent bundle: marker, context-index, installed state."""
+        skills_root = self.project / ".agents" / "skills"
+        skills_root.mkdir(parents=True, exist_ok=True)
+        (skills_root / ".harness-build.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "agent": agent,
+                "overlay": "none",
+                "coreHash": "a" * 16,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        context = {
+            "schema_version": 2,
+            "project": {"adapters": {agent: {"skills_root": ".agents/skills"}}},
+            "skill_bundles": {
+                agent: {"registry_version": "0.2.6", "bundle_hash": "sha256:" + "b" * 64}
+            },
+        }
+        (self.project / ".harness" / "context-index.json").write_text(
+            json.dumps(context) + "\n", encoding="utf-8"
+        )
+        installed = {
+            "schema_version": 4,
+            "profiles": {agent: "general"},
+            "manifests": [{
+                "adapter": agent, "profile": "general", "bundle_version": "0.2.6",
+                "bundle_manifest_hash": "sha256:" + "b" * 64,
+            }],
+            "files": [{
+                "owner": agent,
+                "target_path": ".agents/skills/.harness-build.json",
+                "sha256": gate._sha256_file(skills_root / ".harness-build.json"),
+            }],
+        }
+        state = self.project / ".harness" / "state" / "local" / "installed-harness-bundle.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps(installed) + "\n", encoding="utf-8")
+        return skills_root
+
+    def test_identity_accepts_a_tool_that_differs_from_the_bundle_agent(self) -> None:
+        """换工具接手不是 bundle 身份问题。
+
+        "这个 bundle 可不可信"和"现在哪个工具在跑"是两件事。以前
+        executor_tool != agent 直接 BUNDLE_IDENTITY_MISMATCH，于是 Codex 换
+        CodeBuddy 接手同一个 change 会被当成供应链漂移挡下来。
+        """
+        skills_root = self._seed_bundle_identity(agent="codex")
+
+        identity = gate.validate_identity(self.project, skills_root, "codebuddy")
+
+        self.assertEqual(identity["adapter"], "codex")
+        # 工具名降级为审计字段，随 phase.start 事件留痕，不再阻断。
+        self.assertEqual(identity["executorTool"], "codebuddy")
+        self.assertFalse(identity["executorMatchesBundle"])
+
+    def test_identity_marks_a_matching_tool_as_such(self) -> None:
+        skills_root = self._seed_bundle_identity(agent="codex")
+
+        identity = gate.validate_identity(self.project, skills_root, "codex")
+
+        self.assertTrue(identity["executorMatchesBundle"])
+
+    def test_identity_still_blocks_a_drifted_build_marker(self) -> None:
+        """解耦工具身份不能顺手放松 bundle 内容完整性。"""
+        skills_root = self._seed_bundle_identity(agent="codex")
+        # 装好之后被人改过：实盘哈希与 installed manifest 记录的不再一致。
+        (skills_root / ".harness-build.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "agent": "codex",
+                "overlay": "tampered",
+                "coreHash": "a" * 16,
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            gate.validate_identity(self.project, skills_root, "codex")
+
+        self.assertIn("BUNDLE_IDENTITY_MISMATCH", str(raised.exception))
+
+    def test_identity_still_blocks_an_unconfigured_adapter(self) -> None:
+        skills_root = self._seed_bundle_identity(agent="codex")
+        context = json.loads(
+            (self.project / ".harness" / "context-index.json").read_text(encoding="utf-8")
+        )
+        context["project"]["adapters"] = {"cursor": {"skills_root": ".cursor/skills"}}
+        (self.project / ".harness" / "context-index.json").write_text(
+            json.dumps(context) + "\n", encoding="utf-8"
+        )
+
+        with self.assertRaises(ValueError) as raised:
+            gate.validate_identity(self.project, skills_root, "codex")
+
+        self.assertIn("BUNDLE_IDENTITY_MISMATCH", str(raised.exception))
+
     def test_begin_conflict_flags_a_lease_left_by_a_closed_phase(self) -> None:
         """A lease held by a phase that already ended is leftover, and safe to release."""
         self._write_events(

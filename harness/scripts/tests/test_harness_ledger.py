@@ -2367,5 +2367,116 @@ class ScenarioReceiptTemplateTests(unittest.TestCase):
         self.assertIn("SCENARIO_ID_UNKNOWN", err)
 
 
+class V2ScenarioManifestFailsClosedTests(unittest.TestCase):
+    """v2 包装体过去在 ledger 侧被静默放行，而门禁侧是 fail-closed。
+
+    cmd_record 的版本探测初值是 0，而 v2 artifact 包装体没有顶层
+    schemaVersion，于是探测停在 0，`manifest_schema >= 2` 判假，
+    --scenario-receipt-file 的强制要求就被跳过了——同一份 manifest，门禁
+    拒绝、ledger 放行，姿态互相矛盾，而且没有任何测试覆盖。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.change_dir = Path(self._tmp.name) / ".harness" / "changes" / "demo"
+        (self.change_dir / "meta").mkdir(parents=True, exist_ok=True)
+        (self.change_dir / "meta" / "scenario-manifest.json").write_text(
+            json.dumps({
+                "schema_version": 2,
+                "artifact_id": "plan_artifact:scenario_manifest:abc123",
+                "artifact_type": "scenario_manifest",
+                "generator_version": "0.2.0",
+                "content_hash": "sha256:" + "c" * 64,
+                "content": {
+                    "scenarios": [
+                        {
+                            "scenario_id": "UT-001",
+                            "coverage_dimension": "happy_path",
+                            "execution_level": "unit",
+                            "evidence_requirements": ["focused_test"],
+                            "risk_level": "low",
+                            "task_refs": [],
+                            "requirement_refs": [],
+                        }
+                    ],
+                    "coverage": [],
+                },
+            }),
+            encoding="utf-8",
+        )
+
+    def _run(self, *argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = harness_ledger.main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_predicate_matches_the_wrapper(self) -> None:
+        manifest = json.loads(
+            (self.change_dir / "meta" / "scenario-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertTrue(harness_ledger.is_v2_scenario_manifest(manifest))
+
+    def test_predicate_leaves_legacy_manifests_alone(self) -> None:
+        self.assertFalse(
+            harness_ledger.is_v2_scenario_manifest(
+                {"schemaVersion": 2, "changeName": "demo", "scenarios": []}
+            )
+        )
+
+    def test_receipt_template_names_the_v2_gap(self) -> None:
+        code, _, err = self._run(
+            "scenario-receipt-template",
+            "--change-dir", str(self.change_dir),
+            "--scenario-ids", "UT-001",
+            "--runner", "vitest",
+            "--json",
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("SCENARIO_MANIFEST_V2_UNSUPPORTED", err)
+
+    def test_record_refuses_to_bind_scenarios_against_a_v2_manifest(self) -> None:
+        """这条是漏洞本身：v2 包装体下 record 曾经不再要求 receipt 就放行。"""
+        src = self.change_dir / "Svc.java"
+        src.write_text("class Svc {}", encoding="utf-8")
+
+        code, _, err = self._run(
+            "--json",
+            "record",
+            "--change-dir", str(self.change_dir),
+            "--verification", "unitTest",
+            "--status", "ok",
+            "--command", "pytest",
+            "--exit-code", "0",
+            "--duration-ms", "100",
+            "--files", str(src),
+            "--evidence", "pass",
+            "--scope", "module",
+            # 注意：没有给 --scenario-receipt-file，以前这里会被静默放行。
+            "--scenario-ids", "UT-001",
+        )
+
+        self.assertEqual(code, 1)
+        self.assertIn("SCENARIO_MANIFEST_V2_UNSUPPORTED", err)
+        # 证据没有被写进 ledger。
+        self.assertFalse(
+            (self.change_dir / "evidence" / "verification-ledger.json").is_file()
+        )
+
+    def test_receipt_validation_names_the_v2_gap(self) -> None:
+        result = harness_ledger.validate_scenario_execution_receipt(
+            change_dir=self.change_dir,
+            scenario_ids=["UT-001"],
+            receipt={"schemaVersion": 1},
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_V2_UNSUPPORTED")
+
+
 if __name__ == "__main__":
     unittest.main()

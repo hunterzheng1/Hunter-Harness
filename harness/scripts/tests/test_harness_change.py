@@ -779,5 +779,83 @@ class DeclareOwnershipTests(unittest.TestCase):
         self.assertEqual(args.product_path, ["kld-sdd/"])
 
 
+class InspectLeaseStateTests(unittest.TestCase):
+    """inspect_lease 把三种失败压成 None，调用方就没法分别应对。
+
+    「租约从没建立」「阶段跑过了 TTL」「租约文件坏了」需要三种不同的答案：
+    过期租约还带着能证明所有权的 runId，损坏的什么都证明不了，而不存在的
+    可能只是阶段已经正常关过门了。
+    """
+
+    def setUp(self) -> None:
+        self.project = Path(tempfile.mkdtemp(prefix="harness-lease-state-"))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.project, ignore_errors=True)
+
+    def _expire(self, change_id: str = "demo") -> None:
+        path = change._lease_path(self.project, change_id)
+        lease = json.loads(path.read_text(encoding="utf-8"))
+        lease["expiresAt"] = "2000-01-01T00:00:00.000+00:00"
+        path.write_text(json.dumps(lease), encoding="utf-8")
+
+    def _claim(self, run_id: str) -> None:
+        claimed = change.claim_lease(
+            self.project,
+            change_id="demo",
+            phase="run",
+            run_id=run_id,
+            ttl_seconds=3600,
+        )
+        self.assertTrue(claimed["ok"], claimed)
+
+    def test_absent_when_no_lease_file_exists(self) -> None:
+        state = change.inspect_lease_state(self.project, "demo")
+
+        self.assertEqual(state["state"], "absent")
+        self.assertIsNone(state["lease"])
+
+    def test_active_lease_is_returned(self) -> None:
+        self._claim("run-active")
+
+        state = change.inspect_lease_state(self.project, "demo")
+
+        self.assertEqual(state["state"], "active")
+        self.assertEqual(state["lease"]["runId"], "run-active")
+
+    def test_expired_lease_still_carries_its_run_id(self) -> None:
+        self._claim("run-expired")
+        self._expire()
+
+        state = change.inspect_lease_state(self.project, "demo")
+
+        # 过期不等于消失：runId 还在，close 正是靠它证明没人抢占过。
+        self.assertEqual(state["state"], "expired")
+        self.assertEqual(state["lease"]["runId"], "run-expired")
+
+    def test_corrupt_lease_is_not_reported_as_absent(self) -> None:
+        path = change._lease_path(self.project, "demo")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+
+        state = change.inspect_lease_state(self.project, "demo")
+
+        self.assertEqual(state["state"], "corrupt")
+        self.assertIsNone(state["lease"])
+        # 关键区分：损坏必须与不存在可分辨，否则调用方会把它当成本来就没租约。
+        self.assertNotEqual(
+            state["state"],
+            change.inspect_lease_state(self.project, "never-claimed")["state"],
+        )
+
+    def test_inspect_lease_still_returns_only_active_leases(self) -> None:
+        self._claim("run-compat")
+        self.assertIsNotNone(change.inspect_lease(self.project, "demo"))
+
+        self._expire()
+
+        self.assertIsNone(change.inspect_lease(self.project, "demo"))
+
+
 if __name__ == "__main__":
     unittest.main()

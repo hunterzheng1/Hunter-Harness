@@ -1227,5 +1227,151 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             self.assertEqual(result["code"], "HANDOFF_REQUIRED")
 
 
+class SamePhaseAdoptionTests(unittest.TestCase):
+    """上一个工具崩了没能正常 close，接手的工具也得能把这个阶段干完。
+
+    以前只要 executor 变了就要求一张 transition receipt，可 receipt 正是
+    上一阶段 close 才会写的——崩溃场景里它根本不存在，于是任务卡死。跨阶段
+    推进仍然必须有证据，同阶段接管不需要。
+
+    并发保护不受影响：租约未过期而 owner 不同，CONTEXT_LEASE_HELD 已经在更早
+    的地方拦下了，能走到接管这一步只剩「租约过期」和「租约已被 close 删除」。
+    """
+
+    def _adoptions(self, project: Path, change: str) -> list[dict]:
+        path = (
+            project
+            / ".harness/state/changes"
+            / change
+            / "runtime/context-adoptions.ndjson"
+        )
+        if not path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_same_phase_executor_change_is_adopted_without_a_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            first = CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="codex",
+                ttl_seconds=60,
+            )
+            self.assertTrue(first["ok"], first)
+            # 上一个工具没能正常收尾，只留下一个被清掉的租约。
+            state = project / ".harness/state/changes/change/runtime"
+            (state / "context-lease.json").unlink()
+
+            second = CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="codebuddy"
+            )
+
+            self.assertTrue(second["ok"], second)
+
+    def test_adoption_is_recorded_not_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="codex",
+                ttl_seconds=60,
+            )
+            state = project / ".harness/state/changes/change/runtime"
+            (state / "context-lease.json").unlink()
+
+            CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="codebuddy"
+            )
+
+            # 接管必须落盘。以前过期租约允许任何执行者顶替，但只在返回体里挂一个
+            # recovery，退出进程就没了，事后查"谁接手的"无据可依。
+            adoptions = self._adoptions(project, "change")
+            self.assertEqual(len(adoptions), 1, adoptions)
+            self.assertEqual(adoptions[0]["previousExecutor"], "codex")
+            self.assertEqual(adoptions[0]["newExecutor"], "codebuddy")
+            self.assertEqual(adoptions[0]["phase"], "run")
+            self.assertEqual(adoptions[0]["reason"], "same_phase_handoff")
+
+    def test_expired_lease_recovery_is_recorded_as_such(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="codex",
+                ttl_seconds=1,
+            )
+            state = project / ".harness/state/changes/change/runtime"
+            lease_path = state / "context-lease.json"
+            lease = json.loads(lease_path.read_text(encoding="utf-8"))
+            lease["expiresAt"] = "2000-01-01T00:00:00+00:00"
+            lease_path.write_text(json.dumps(lease), encoding="utf-8")
+
+            second = CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="codebuddy"
+            )
+
+            self.assertTrue(second["ok"], second)
+            adoptions = self._adoptions(project, "change")
+            self.assertEqual(len(adoptions), 1, adoptions)
+            self.assertEqual(adoptions[0]["reason"], "lease_expired")
+            self.assertEqual(adoptions[0]["previousOwner"], "codex")
+
+    def test_cross_phase_jump_without_a_receipt_is_still_blocked(self) -> None:
+        """收窄的是同阶段接管，跨阶段推进照旧要证据。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="plan",
+                executor="codex",
+                ttl_seconds=60,
+            )
+            state = project / ".harness/state/changes/change/runtime"
+            (state / "context-lease.json").unlink()
+
+            second = CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="codex"
+            )
+
+            self.assertFalse(second["ok"], second)
+            self.assertEqual(second["code"], "HANDOFF_REQUIRED")
+
+    def test_a_live_lease_held_by_another_executor_still_blocks(self) -> None:
+        """接管只在旧持有者已失活时成立，不能拿它绕过并发保护。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            make_change(project, "change")
+            CONTEXT.prepare_context(
+                project,
+                change="change",
+                phase="run",
+                executor="codex",
+                ttl_seconds=3600,
+            )
+
+            second = CONTEXT.prepare_context(
+                project, change="change", phase="run", executor="codebuddy"
+            )
+
+            self.assertFalse(second["ok"], second)
+            self.assertEqual(second["code"], "CONTEXT_LEASE_HELD")
+            self.assertEqual(self._adoptions(project, "change"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

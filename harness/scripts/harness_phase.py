@@ -33,7 +33,20 @@ import harness_paths as hpaths  # noqa: E402
 
 SCHEMA_VERSION = 1
 CI_METRICS_SCHEMA_VERSION = 1
-PHASE_ORDER = ("plan", "run", "test", "review", "package", "apidoc", "submit", "archive")
+# 必须与 harness_context.WORKFLOW_PHASES 同序同元素。少一个 merge 会让
+# configure-plan 在 worktree 场景自动插入的 merge 阶段在这里直接 raise
+# "unsupported reconcile target phase"。
+PHASE_ORDER = (
+    "plan",
+    "run",
+    "test",
+    "review",
+    "package",
+    "apidoc",
+    "submit",
+    "merge",
+    "archive",
+)
 VALIDATION_PHASES = {
     "compile": "run",
     "unitTest": "run",

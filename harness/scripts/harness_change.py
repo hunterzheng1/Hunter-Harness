@@ -564,18 +564,36 @@ def _lease_expired(lease: dict[str, Any]) -> bool:
     return dt.datetime.now().astimezone() >= exp_dt
 
 
-def inspect_lease(project_root: Path, change_id: str) -> dict[str, Any] | None:
-    """Return the current non-expired lease without mutating it."""
+def inspect_lease_state(project_root: Path, change_id: str) -> dict[str, Any]:
+    """Read the lease without mutating it, keeping the three failure modes apart.
+
+    ``inspect_lease`` collapses absent / expired / corrupt into ``None``, so a
+    caller cannot tell "nobody ever held this" from "the phase outlived its
+    TTL". Those need different answers: an expired lease still carries the
+    runId that proves who owns the phase, a corrupt one proves nothing, and an
+    absent one may just mean the phase already closed.
+
+    state is one of ``active`` | ``expired`` | ``absent`` | ``corrupt``. The
+    lease dict is returned for ``active`` and ``expired``; ``None`` otherwise.
+    """
     path = _lease_path(project_root, change_id)
     if not path.is_file():
-        return None
+        return {"state": "absent", "lease": None}
     try:
         lease = _read_json(path)
     except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(lease, dict) or _lease_expired(lease):
-        return None
-    return lease
+        return {"state": "corrupt", "lease": None}
+    if not isinstance(lease, dict):
+        return {"state": "corrupt", "lease": None}
+    if _lease_expired(lease):
+        return {"state": "expired", "lease": lease}
+    return {"state": "active", "lease": lease}
+
+
+def inspect_lease(project_root: Path, change_id: str) -> dict[str, Any] | None:
+    """Return the current non-expired lease without mutating it."""
+    state = inspect_lease_state(project_root, change_id)
+    return state["lease"] if state["state"] == "active" else None
 
 
 def _claim_lease_locked(

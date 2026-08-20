@@ -901,8 +901,13 @@ def validate_identity(
     core_hash = str(build.get("coreHash") or "").strip()
     if not agent or not core_hash:
         raise ValueError("BUNDLE_IDENTITY_INVALID: agent/coreHash is required")
-    if executor_tool and executor_tool != agent:
-        raise ValueError(f"BUNDLE_IDENTITY_MISMATCH: executor {executor_tool} uses {agent} bundle")
+
+    # 「这个 bundle 是否可信」和「现在是哪个工具在跑」是两件事。以前
+    # executor_tool != agent 直接 BUNDLE_IDENTITY_MISMATCH，于是 Codex 换
+    # CodeBuddy 接手同一个 change 会被当成 bundle 身份不符挡下来。下面每一项
+    # 校验用的都是 bundle 自称的 agent，与当前工具无关；工具名降级为审计字段，
+    # 随 phase.start 事件留痕。
+    executor_matches_bundle = not executor_tool or executor_tool == agent
 
     context = _read_json(project / ".harness" / "context-index.json")
     installed = _read_json(
@@ -953,6 +958,8 @@ def validate_identity(
         "adapter": agent,
         "buildMarkerHash": actual_hash,
         "contextIndexPresent": True,
+        "executorTool": executor_tool or None,
+        "executorMatchesBundle": executor_matches_bundle,
     }
 
 
@@ -1295,8 +1302,13 @@ def classify_risk(
     stage: str,
     workflow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    tier = "full"
-    source = "default-full"
+    # 无风险信号时的起步档。曾经是 full，于是每个普通变更都默认背上
+    # plan→run→test→review→submit→archive 六阶段和 apiTest；风险信号推断只在
+    # --stage post-run 下跑，而生产流程没有任何地方调用它，起步值实际就是终值。
+    # standard 保留 compile/unitTest/unitTestFull 的证据闭环，只去掉默认的
+    # review 阶段与 apiTest。下面的单调升级逻辑不变，有信号照样升到 full。
+    tier = "standard"
+    source = "default-standard"
     capabilities = _design_capabilities(change_dir)
     plan_path = change_dir / "plans"
     for candidate in sorted(plan_path.glob("*.md")) if plan_path.is_dir() else []:
@@ -1551,8 +1563,9 @@ def classify_defaults(
     change_id: str,
     stage: str,
 ) -> dict[str, Any]:
-    tier = "full"
-    source = "default-full"
+    # change 目录不存在时的兜底，与 classify_risk 的起步档保持一致。
+    tier = "standard"
+    source = "default-standard"
     tier_policy = workflow["riskTiers"][tier]
     payload = {
         "ok": True,
@@ -2857,6 +2870,83 @@ def cmd_close(args: argparse.Namespace) -> int:
 
     explicit_run_id = args.run_id or os.environ.get("HUNTER_HARNESS_RUN_ID")
     current_lease = hc.inspect_lease(project, resolved["changeId"])
+    lease_lapsed: dict[str, Any] | None = None
+    # 只有在"没有活跃租约"时才需要区分不存在/已过期/已损坏——三者要给的答案
+    # 完全不同，而 inspect_lease 把它们一律压成 None。
+    lease_state = (
+        {"state": "active", "lease": current_lease}
+        if current_lease is not None
+        else hc.inspect_lease_state(project, resolved["changeId"])
+    )
+
+    if lease_state["state"] == "corrupt":
+        # 损坏的租约证明不了"没人抢占过"，所以不自动恢复——那正是自动重取唯一
+        # 的安全前提。
+        return emit_error(
+            "LEASE_INVALID",
+            "phase lease file is unreadable; it cannot prove the phase was not taken over",
+            as_json=as_json,
+            extra={
+                "phase": args.phase,
+                "changeId": resolved["changeId"],
+                "recoveryAction": (
+                    "租约文件已损坏，无法自动恢复。确认没有其他进程在跑同一个 change 后，"
+                    "用本阶段原 run-id 重新取得租约再重试 close："
+                    "python <skills-root>/scripts/harness_change.py claim "
+                    f"--change {resolved['changeId']} --phase {args.phase} "
+                    "--run-id <原 run-id> --ttl-seconds 3600 --json"
+                ),
+            },
+        )
+
+    if lease_state["state"] == "expired":
+        expired_lease = lease_state["lease"] or {}
+        expired_run_id = str(expired_lease.get("runId") or "")
+        expected_run_id = explicit_run_id or expired_run_id
+        # 租约过期、runId 还是本轮的，恰好证明没有第三方抢占过：抢占会重写
+        # 租约文件把 runId 换掉。所以过期只说明这个阶段跑得比 TTL 久，不说明
+        # 所有权变了——harness_context.close_transition 早就是这么推理的
+        # （只记 leaseLapsed 照常收尾），这里把 Gate 侧对齐过去，不再要求
+        # 用户手工 claim 一遍再原样重试。
+        if (
+            expired_run_id
+            and expired_run_id == expected_run_id
+            and str(expired_lease.get("phase") or "") == args.phase
+        ):
+            reacquired = hc.claim_lease(
+                project,
+                change_id=str(resolved["changeId"]),
+                phase=args.phase,
+                run_id=expired_run_id,
+                ttl_seconds=int(getattr(args, "ttl_seconds", 0) or 3600),
+            )
+            if not reacquired.get("ok"):
+                return emit_error(
+                    str(reacquired.get("code") or "LEASE_CONFLICT"),
+                    "expired phase lease could not be reacquired for close",
+                    as_json=as_json,
+                    extra={
+                        "phase": args.phase,
+                        "changeId": resolved["changeId"],
+                        "holder": reacquired.get("holder"),
+                    },
+                )
+            current_lease = reacquired.get("lease")
+            lease_lapsed = {
+                "acquiredAt": expired_lease.get("acquiredAt"),
+                "expiresAt": expired_lease.get("expiresAt"),
+                "reacquiredAt": (current_lease or {}).get("refreshedAt")
+                or (current_lease or {}).get("acquiredAt"),
+                "runId": expired_run_id,
+            }
+        else:
+            return emit_error(
+                "LEASE_OWNER_MISMATCH",
+                "expired lease belongs to a different run or phase",
+                as_json=as_json,
+                extra={"holder": expired_lease},
+            )
+
     if current_lease is None:
         terminal = _latest_phase_end(change_dir, args.phase, explicit_run_id)
         if (
@@ -2911,8 +3001,10 @@ def cmd_close(args: argparse.Namespace) -> int:
                 "changeId": resolved["changeId"],
                 "resumeRunId": resume_run_id,
                 "recoveryAction": (
-                    "阶段租约已过期（TTL 由 begin 的 --ttl-seconds 决定，默认 3600 秒）或已被释放。"
-                    "用本阶段原 run-id 重新取得租约后原样重试 close："
+                    "本阶段没有任何租约记录——过期租约现在由 close 自动重取，所以这里说明的是"
+                    "租约从未建立或已被释放。先确认 gate begin 是否真的跑过（events.ndjson 里"
+                    f"应有 phase={args.phase} 的 phase.start）。确有本轮 run-id 时用它重新取得"
+                    "租约再原样重试 close："
                     "python <skills-root>/scripts/harness_change.py claim "
                     f"--change {resolved['changeId']} --phase {args.phase} "
                     f"--run-id {resume_run_id or '<原 run-id>'} --ttl-seconds 3600 --json"
@@ -3364,6 +3456,10 @@ def cmd_close(args: argparse.Namespace) -> int:
         "gateRecovery": recovery_result,
         "scratchSwept": scratch_swept,
     }
+    if lease_lapsed is not None:
+        # 与 context transition receipt 的 leaseLapsed 同名同义：记录这个阶段
+        # 跑过了 TTL 且租约是自动重取的，不隐藏。
+        payload["leaseLapsed"] = lease_lapsed
     emit(payload, as_json=as_json)
     return 0
 

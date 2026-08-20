@@ -112,14 +112,42 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         classified = hg.classify_defaults(
             self.workflow, change_id=f"{tier}-change", stage="pre-run"
         )
-        if tier != "full":
-            classified = hg.apply_tier_override(
-                classified,
-                self.workflow,
-                tier=tier,
-                override_by="test",
-            )
+        # 每一档都显式 override。以前只在 tier != "full" 时 override，因为
+        # classify_defaults 的默认恰好是 full——那个巧合让这个 helper 悄悄
+        # 依赖了默认档位，默认改成 standard 后 full 用例就拿到了 standard 的策略。
+        classified = hg.apply_tier_override(
+            classified,
+            self.workflow,
+            tier=tier,
+            override_by="test",
+        )
         return hg.gate_policy_document(classified)
+
+    def test_merge_is_a_reconcilable_phase(self) -> None:
+        """configure-plan 在 worktree 场景会自动插入 merge，这里必须认得它。
+
+        PHASE_ORDER 曾经少一个 merge，而 harness_context.WORKFLOW_PHASES 有，
+        于是 worktree 变更走到 merge 阶段时直接 raise
+        "unsupported reconcile target phase"。
+        """
+        self.assertIn("merge", hp.PHASE_ORDER)
+
+        target = hp.target_required_dag(self._policy("standard"), "merge")
+
+        self.assertNotIn("stage:merge", {node["id"] for node in target["nodes"]})
+
+    def test_phase_order_matches_the_workflow_phase_contract(self) -> None:
+        """两处阶段清单必须同源同序，不然阶段推进会在其中一处凭空失败。"""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "harness_context_for_phase_order", SCRIPTS_DIR / "harness_context.py"
+        )
+        assert spec is not None and spec.loader is not None
+        context_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(context_mod)
+
+        self.assertEqual(hp.PHASE_ORDER, context_mod.WORKFLOW_PHASES)
 
     def test_real_classifier_policies_only_require_target_predecessors(self) -> None:
         cases = {

@@ -75,13 +75,15 @@ python <skills-root>/scripts/harness_test_runner.py exec --project . --timeout-s
 
 返回 `TEST_RUN_ALREADY_ACTIVE`（退出码 3）说明**已有构建在跑**：等它结束或用 `lock-status` 查明持有者，**不得**改用裸跑绕开锁，也不得另起一个并行构建。确认持有进程已消失时才用 `lock-reap` 回收。
 
-**长阶段租约续期**：`gate begin` 的租约默认 TTL 3600 秒，而 run 阶段常常跑得更久。租约过期不会中断执行，只会让最后的 `gate close` 报 `LEASE_ABSENT`。凡预计超过 1 小时的阶段，每完成一个变更簇就用本阶段**原 run-id** 续租一次（同 run-id 重复 claim 即刷新，不会新开 attempt）：
+**长阶段租约**：`gate begin` 的租约默认 TTL 3600 秒，而 run 阶段常常跑得更久。租约过期不会中断执行，**也不再阻断收尾**：`gate close` 发现租约过期而 run-id 仍是本阶段的，会自动用原 run-id 重取并照常关门，只在返回体的 `leaseLapsed` 里记下这个阶段跑过了 TTL。过期本身不说明所有权变了——抢占会重写租约文件把 run-id 换掉，那时报的是 `LEASE_OWNER_MISMATCH`。
+
+因此**不需要**为了长阶段定期续租。确实想让租约始终有效时，用本阶段原 run-id 刷新即可（同 run-id 重复 claim 即刷新，不会新开 attempt）：
 
 ```text
 python <skills-root>/scripts/harness_change.py claim --change <id> --phase run --run-id <本阶段 run-id> --ttl-seconds 3600 --json
 ```
 
-已经报了 `LEASE_ABSENT` 也按同一条命令恢复——错误响应的 `resumeRunId` 就是要用的 run-id；**不要**重跑 `gate begin`，那会新开 attempt 并丢失本轮 capsule。
+仍然报 `LEASE_ABSENT` 说明这个阶段**根本没有租约记录**（从未 begin，或已被释放），不是超时；先确认 `gate begin` 真的跑过。报 `LEASE_INVALID` 说明租约文件损坏，无法证明没被抢占，需人工确认无并发后再用上面的命令重取。两种情况都**不要**重跑 `gate begin`——那会新开 attempt 并丢失本轮 capsule。
 
 **执行器边界**：优先使用项目 build profile 和已有测试入口。禁止为了绕过 ESM、路径或参数问题临时生成 `.js`、`require` 脚本；需要文件式 runner 时使用项目已有入口，确需新增时遵循项目模块类型（例如 ESM 使用 `.mjs`）。runner 包装说明写入 `runnerCommand` 元数据，不得拼进账本的规范 `command`。
 
@@ -106,7 +108,7 @@ python <skills-root>/scripts/harness_change.py claim --change <id> --phase run -
 | **关门/状态** | 10 项关门检查；持久化 run-task-status；仅 run-owned P0 静态-only 导致 WARN；test-owned 待办正常移交 |
 | **Worktree** | `requested=true` 时代码只写 worktree |
 | **构建/测试** | 一律经 `harness_test_runner.py exec`；禁止裸跑 mvn/gradle/npm test；`TEST_RUN_ALREADY_ACTIVE` 表示已有构建在跑，等待而非另起 |
-| **租约** | 阶段超 1 小时按变更簇用原 run-id 续租；`LEASE_ABSENT` 用 `harness_change.py claim` 恢复，不重跑 begin |
+| **租约** | 阶段超 TTL 由 close 自动用原 run-id 重取，无需续租；`LEASE_ABSENT`（无记录）/`LEASE_INVALID`（文件损坏）才需人工 `harness_change.py claim`，一律不重跑 begin |
 | **PowerShell** | 所有 git 经 `powershell.exe -NoProfile -Command` |
 
 ### 陈旧测试安全修复与精确跟踪

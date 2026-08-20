@@ -1,5 +1,68 @@
 # Changelog
 
+## Unreleased — @hunter-harness/workflow-harness
+
+流程治理收敛第一批：生命周期与默认档位。起因是一份外部诊断——新旧两代状态机、两套
+租约、两类身份叠加，让普通任务承担了接近发布系统的复杂度。本轮只动编排层与默认值，
+不碰原子写入、并发 fencing、哈希/readback 这些底层边界。
+
+阶段编排合并（Run/Test/Review → Execute）与 v2 Plan 契约打通不在本批，单独立项。
+
+### Fixed — ledger 对 v2 场景清单静默降级（安全）
+
+`harness_ledger.py record --scenario-ids` 探测 `schemaVersion` 时初值是 `0`，而 v2
+plan artifact 包装体没有顶层 `schemaVersion`，探测就停在 `0`，`>= 2` 判假，
+`--scenario-receipt-file` 的强制要求被整个跳过——证据照常入账，没有执行收据。同一份
+manifest，门禁侧 `harness_gate.py` 是 fail-closed 的（`SCENARIO_MANIFEST_V2_UNSUPPORTED`），
+ledger 侧却放行，两种姿态互相矛盾，且此前无任何测试覆盖。现在 `record`、
+`scenario-receipt-template`、`validate_scenario_execution_receipt` 三处都按同一个码
+fail-closed。
+
+### Fixed — 阶段跑过 TTL 就再也关不上门
+
+Context 与 Gate 的租约语义相反：`harness_context.close_transition` 认为过期只说明阶段
+超时，照常收尾并记 `leaseLapsed`；而 `harness_change.inspect_lease` 把过期直接当成
+租约不存在，`gate close` 随即报 `LEASE_ABSENT`，要求人工 `claim` 一遍再原样重跑。长
+阶段因此必然在收尾时卡住。
+
+租约过期而 run-id 仍是本阶段的，恰好**证明**没有第三方抢占过——抢占会重写租约文件把
+run-id 换掉。现在 `close` 依此自动用原 run-id 重取并照常关门，在返回体记
+`leaseLapsed`。换了 run-id 或阶段仍报 `LEASE_OWNER_MISMATCH`；租约文件损坏时报新的
+`LEASE_INVALID` 且**不**自动恢复——损坏的租约证明不了任何事，而"能证明没被抢占"正是
+自动重取唯一的安全前提。
+
+新增 `harness_change.inspect_lease_state()`，把「不存在 / 已过期 / 已损坏」三态分开；
+`inspect_lease()` 语义不变，继续只返回活跃租约。
+
+### Fixed — 换工具接手被当成 bundle 身份漂移
+
+`validate_identity()` 把 `executor_tool != build.agent` 判为 `BUNDLE_IDENTITY_MISMATCH`，
+于是 Codex 换 CodeBuddy 接手同一个 change 会被当成供应链漂移挡下来。可"这个 bundle
+可不可信"和"现在哪个工具在跑"是两件事：其余 10 项校验用的全是 bundle 自称的 `agent`，
+与当前工具无关。现在工具名降级为审计字段（`executorTool` / `executorMatchesBundle`），
+随 `phase.start` 事件留痕；bundle hash、installed manifest、skills-root、build marker
+实盘哈希等完整性校验**一项不减**。
+
+Context 侧同步收窄：同一阶段换执行者不再要求 transition receipt（receipt 正是上一阶段
+close 才会写的，崩溃场景里根本不存在），跨阶段推进仍必须有证据。接管一律写
+`runtime/context-adoptions.ndjson` 留痕——过期租约本来就允许顶替，但此前只在返回体挂一个
+`recovery`，退出进程就没了。未过期租约被他人抢占仍报 `CONTEXT_LEASE_HELD`，并发保护不变。
+
+### Fixed — `merge` 不是一个合法阶段
+
+`harness_phase.PHASE_ORDER` 少一个 `merge`，而 `harness_context.WORKFLOW_PHASES` 有，
+且 worktree 场景会自动插入它——于是 worktree 变更走到 merge 阶段时直接
+`unsupported reconcile target phase`。两处清单现已同源同序，并有测试锁定。
+
+### Changed — 无风险信号默认 `standard`，不再默认 `full`
+
+`classify_risk` 与 `classify_defaults` 都以 `full` 起步，而风险信号推断只在
+`--stage post-run` 下跑、生产流程无一处调用它，起步值实际就是终值：每个普通变更都默认
+背上 `plan→run→test→review→submit→archive` 六阶段和 apiTest。默认改为 `standard`
+（`plan,run,test,submit,archive` + compile/unitTest/unitTestFull），保留测试证据闭环，
+去掉默认的 review 阶段与 apiTest。单调升级不变——有风险信号照样升到 `full`，也可用
+计划文档的「风险等级: full」或 `classify --tier-override full` 显式升档。
+
 ## [0.2.91] — hunter-harness ＋ [0.2.85] @hunter-harness/workflow-harness
 
 - 统一封存归档补传，支持 `--change latest`、dry-run、幂等重试与单次构建。

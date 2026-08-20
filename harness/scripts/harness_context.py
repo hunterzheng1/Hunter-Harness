@@ -405,6 +405,7 @@ def _paths(state_root: Path) -> dict[str, Path]:
         "begins": runtime / "transition-begins.ndjson",
         "current": runtime / "current-context.json",
         "lease": runtime / "context-lease.json",
+        "adoptions": runtime / "context-adoptions.ndjson",
     }
 
 
@@ -604,8 +605,14 @@ def _claim_prepared_context(
             )
         except (OSError, ValueError, json.JSONDecodeError):
             return {"ok": False, "code": "CONTEXT_CURRENT_INVALID"}
+        # 跨阶段推进必须有 receipt 证明它合法；同一个阶段换执行者不需要。
+        # 以前两者都要 receipt，于是上一阶段崩溃没能正常 close 时，接手的工具
+        # 连"继续把这个阶段干完"都做不到。并发保护不受影响：租约未过期而
+        # owner 不同，上面 CONTEXT_LEASE_HELD 已经拦下了，能走到这里只剩
+        # 「租约已过期」和「租约已被上一阶段 close 删除」两种情况。
+        adoption: dict[str, Any] | None = None
         if recovery is None and isinstance(current, dict) and (
-            current.get("executor") != executor or current.get("phase") != phase
+            current.get("phase") != phase
         ):
             valid_receipt = (
                 isinstance(latest, dict)
@@ -621,6 +628,19 @@ def _claim_prepared_context(
                     "toExecutor": executor,
                     "toPhase": phase,
                 }
+        executor_changed = (
+            isinstance(current, dict) and current.get("executor") != executor
+        )
+        if recovery is not None or executor_changed:
+            adoption = {
+                "previousExecutor": (
+                    current.get("executor") if isinstance(current, dict) else None
+                ),
+                "newExecutor": executor,
+                "reason": (
+                    "lease_expired" if recovery is not None else "same_phase_handoff"
+                ),
+            }
 
         try:
             execution_root = _execution_root(project, contract_root, state_root)
@@ -657,6 +677,20 @@ def _claim_prepared_context(
             current_context["preparationId"] = preparation_id
         _write_json_atomic(paths["lease"], lease)
         _write_json_atomic(paths["current"], current_context)
+        if adoption is not None:
+            # 接管必须留痕。过期租约本来就允许任何执行者顶替，但以前只在返回体
+            # 里挂一个 recovery，退出进程就没了——事后查"这个阶段是谁接手的"
+            # 无据可依。收据形状照 harness_archive.adopt_existing_range。
+            adoption = {
+                "schemaVersion": 1,
+                "changeName": change,
+                "phase": phase,
+                **adoption,
+                "previousOwner": recovery.get("previousOwner") if recovery else None,
+                "expiredAt": recovery.get("expiredAt") if recovery else None,
+                "adoptedAt": now.isoformat(),
+            }
+            _append_ndjson(paths["adoptions"], adoption)
         return {
             "ok": True,
             "lease": lease,
@@ -664,6 +698,7 @@ def _claim_prepared_context(
             "transitions": transitions,
             "latestTransition": latest,
             "recovery": recovery,
+            "adoption": adoption,
             "executionRoot": str(execution_root),
         }
 
