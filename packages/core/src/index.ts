@@ -123,9 +123,11 @@ export * from "./plan-artifacts/index.js";
 export * from "./plan-classification/index.js";
 export * from "./plan-quality/index.js";
 export {
+  explainPushPullPreviewOutput,
   readPushPullDecisionOutput,
   readPushPullExecutionOutput,
-  readPushPullPreviewOutput
+  readPushPullPreviewOutput,
+  type PushPullOutputViolation
 } from "./push-pull-orchestration/output-validation.js";
 export * from "./security/allowlist.js";
 export * from "./security/entropy.js";

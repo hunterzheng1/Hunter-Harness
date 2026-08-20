@@ -759,5 +759,175 @@ class QuarantineReachabilityTests(unittest.TestCase):
         self.assertEqual(args.command, "quarantine-evidence")
 
 
+class PublicationScopedScanTests(unittest.TestCase):
+    """发布门禁扫的字节，必须就是会被发布出去的字节。
+
+    2026-08-19 kld-sdd 归档记录：review 阶段自己生成的 runtime/review-diff.patch
+    （`git diff HEAD >`，5068 行，内含被删除的旧 token 代码）触发
+    SENSITIVE_EVIDENCE_UNQUARANTINED，把归档整个挡住。但 runtime/ 从来不进归档
+    ZIP —— 包成员只有 summary-data.json / spec/**.md / plans/**.md / knowledge.json
+    / archive-meta.md / change-context.json / manifest 七类。
+
+    于是本地门禁在"永远不会发布的文件"上过严，却对"真正会发布的文件"一个字没查，
+    最后由服务端判 422。范围完全倒置。
+    """
+
+    @staticmethod
+    def _change_with_runtime_scratch(root: Path) -> Path:
+        change = root / "change"
+        (change / "plans").mkdir(parents=True)
+        (change / "plans" / "design.md").write_text(
+            "# 设计\n默认服务地址 http://10.29.213.80:8080\n", encoding="utf-8"
+        )
+        (change / "runtime").mkdir(parents=True)
+        # review 阶段的临时 diff：内含旧代码里的 token 赋值，但从不入包。
+        (change / "runtime" / "review-diff.patch").write_text(
+            "-  const headers = { token: 'sk_cli_live_value' };\n", encoding="utf-8"
+        )
+        return change
+
+    def test_runtime_scratch_is_out_of_publication_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_with_runtime_scratch(Path(tmp))
+
+            full = runtime.sensitive_evidence_candidates(change)
+            scoped = runtime.sensitive_evidence_candidates(
+                change, exclude_dirs=runtime.PUBLICATION_EXCLUDED_DIRS
+            )
+
+            # 全树扫描仍然看得见它——quarantine 流程依赖这个能力，不能回退。
+            self.assertEqual(
+                [item["path"] for item in full], ["runtime/review-diff.patch"]
+            )
+            # 但发布门禁不该被一个永远不发布的草稿挡住。
+            self.assertEqual(scoped, [])
+
+    def test_publishable_digest_ignores_runtime_churn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_with_runtime_scratch(Path(tmp))
+            excluded = runtime.PUBLICATION_EXCLUDED_DIRS
+
+            before = runtime.publishable_tree_digest(change, exclude_dirs=excluded)
+            (change / "runtime" / "scratch-2.json").write_text("{}", encoding="utf-8")
+            after = runtime.publishable_tree_digest(change, exclude_dirs=excluded)
+
+            # 每写一个草稿就让收据失效，等于强迫全量重扫。
+            self.assertEqual(before, after)
+
+    def test_receipt_records_its_own_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_with_runtime_scratch(Path(tmp))
+
+            result = runtime.refresh_sensitive_evidence_scan_receipt(
+                change, exclude_dirs=runtime.PUBLICATION_EXCLUDED_DIRS
+            )
+
+            self.assertTrue(result["ok"], result)
+            receipt = result["receipt"]
+            # 收据必须自述扫描范围，否则复算摘要的一方无从得知该排除什么。
+            self.assertEqual(
+                list(receipt["publicationExcludedDirs"]),
+                list(runtime.PUBLICATION_EXCLUDED_DIRS),
+            )
+            self.assertEqual(
+                receipt["publishableTreeDigest"],
+                runtime.publishable_tree_digest(
+                    change, exclude_dirs=runtime.PUBLICATION_EXCLUDED_DIRS
+                ),
+            )
+
+
+class SweepScratchTests(unittest.TestCase):
+    """runtime/ 会一路堆积草稿，没人清，还会被别的门禁读到。
+
+    2026-08-19 kld-sdd 一轮下来 runtime/ 里躺着：review-diff.patch(5068 行)、
+    review-diff-postfix.patch(5071 行)、findings-input.json、dispositions-input.json、
+    findings-rereview.json、dispositions-input2.json、fixback-y1-check.cjs、
+    archive-out{,2,3}.json ——其中两个 patch 直接把归档挡住了。
+
+    这些是过程草稿，不是证据。证据在 evidence/、reports/、meta/ 里，一个都不能碰。
+    """
+
+    @staticmethod
+    def _seed(change: Path) -> None:
+        (change / "runtime").mkdir(parents=True)
+        for name in (
+            "review-diff.patch",
+            "review-diff-postfix.patch",
+            "findings-input.json",
+            "dispositions-input2.json",
+            "archive-out3.json",
+            "fixback-y1-check.cjs",
+        ):
+            (change / "runtime" / name).write_text("scratch", encoding="utf-8")
+        # 必须留下的：门禁与恢复要读的运行态
+        (change / "runtime" / "context-lease.json").write_text("{}", encoding="utf-8")
+        (change / "runtime" / "fixback-session.json").write_text("{}", encoding="utf-8")
+        (change / "runtime" / "preflight.json").write_text("{}", encoding="utf-8")
+        (change / "runtime" / "scenario-receipt-test.json").write_text("{}", encoding="utf-8")
+        sessions = change / "runtime" / "run-sessions" / "run-1"
+        sessions.mkdir(parents=True)
+        (sessions / "session.json").write_text("{}", encoding="utf-8")
+        # 证据与报告：绝对不能碰
+        (change / "evidence").mkdir()
+        (change / "evidence" / "verification-ledger.json").write_text("{}", encoding="utf-8")
+        (change / "reports" / "review").mkdir(parents=True)
+        (change / "reports" / "review" / "review-findings.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    def test_sweep_removes_scratch_and_keeps_everything_else(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            self._seed(change)
+
+            result = runtime.sweep_scratch(change)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(
+                sorted(result["removed"]),
+                [
+                    "runtime/archive-out3.json",
+                    "runtime/dispositions-input2.json",
+                    "runtime/findings-input.json",
+                    "runtime/fixback-y1-check.cjs",
+                    "runtime/review-diff-postfix.patch",
+                    "runtime/review-diff.patch",
+                ],
+            )
+            for kept in (
+                "runtime/context-lease.json",
+                "runtime/fixback-session.json",
+                "runtime/preflight.json",
+                "runtime/scenario-receipt-test.json",
+                "runtime/run-sessions/run-1/session.json",
+                "evidence/verification-ledger.json",
+                "reports/review/review-findings.json",
+            ):
+                self.assertTrue((change / kept).is_file(), kept)
+
+    def test_dry_run_reports_without_deleting(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            self._seed(change)
+
+            result = runtime.sweep_scratch(change, dry_run=True)
+
+            self.assertTrue(result["ok"], result)
+            self.assertIn("runtime/review-diff.patch", result["removed"])
+            # 只报不删：调用方要能先看一眼再决定。
+            self.assertTrue((change / "runtime" / "review-diff.patch").is_file())
+
+    def test_missing_runtime_dir_is_not_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            change.mkdir()
+
+            result = runtime.sweep_scratch(change)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["removed"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

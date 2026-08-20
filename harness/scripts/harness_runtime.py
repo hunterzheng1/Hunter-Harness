@@ -18,6 +18,8 @@ import threading
 import time
 import uuid
 from pathlib import Path
+import fnmatch
+from collections.abc import Sequence
 from typing import Any, Callable
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -35,6 +37,11 @@ RUN_TERMINAL_STATUSES = {"OK", "FAIL", "INCOMPLETE", "CANCELLED"}
 _CHANGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SECRET_SCAN_RULES_VERSION = "secret-scan-v2"
 SECRET_SCAN_RECEIPT_REL = Path("meta") / "secret-scan-receipt.json"
+# 变更目录里只有一部分内容会被发布：归档包成员是 reports/final/summary-data.json、
+# spec/**.md、plans/**.md、candidates/knowledge.json、meta/archive-meta.md、
+# meta/change-context.json。runtime/ 是各阶段的草稿（review 的 diff、临时校验
+# 脚本、命令输出重定向），从不入包——拿它挡发布，挡的是永远不会离开本机的字节。
+PUBLICATION_EXCLUDED_DIRS: tuple[str, ...] = ("runtime",)
 _SENSITIVE_ASSIGNMENT = re.compile(
     rb"(?i)[\"']?(?:password|passwd|token|secret|cookie|database[_-]?url)"
     rb"[\"']?\s*[:=]\s*[\"']?(?P<value>[^\s\"']{4,})"
@@ -126,7 +133,15 @@ def _sha256_json(value: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _publishable_tree_digest(root: Path) -> str:
+def _is_excluded(relative: str, exclude_dirs: Sequence[str]) -> bool:
+    """Path is inside one of the excluded top-level directories."""
+    head = relative.split("/", 1)[0]
+    return head in exclude_dirs
+
+
+def _publishable_tree_digest(
+    root: Path, *, exclude_dirs: Sequence[str] = ()
+) -> str:
     """Hash publishable bytes while excluding the self-referential scan receipt."""
     root = root.expanduser().resolve()
     digest = hashlib.sha256()
@@ -135,6 +150,10 @@ def _publishable_tree_digest(root: Path) -> str:
         raise OSError(f"publishable evidence root not found: {root}")
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.resolve() == receipt:
+            continue
+        if exclude_dirs and _is_excluded(
+            path.relative_to(root).as_posix(), exclude_dirs
+        ):
             continue
         relative = path.relative_to(root).as_posix()
         data = path.read_bytes()
@@ -215,8 +234,73 @@ def _secure_private_path(path: Path, *, directory: bool) -> str:
         return "WINDOWS_ACL_UNVERIFIED"
 
 
-def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
-    """Find high-confidence plaintext assignments without treating prose as a secret."""
+# runtime/ 下哪些是**过程草稿**。白名单式判断：只删明确列举的形态，
+# 其余一律保留——门禁、租约、恢复和证据都住在这棵树里，宁可留垃圾也不能误删。
+SCRATCH_PATTERNS: tuple[str, ...] = (
+    "*.patch",
+    "*.diff",
+    "*-input.json",
+    "*-input[0-9].json",
+    "findings-rereview.json",
+    "archive-out*.json",
+    "fixback-*-check.*",
+)
+# 即便命中上面的形态也必须留下的名字：它们是运行态，不是草稿。
+SCRATCH_KEEP: frozenset[str] = frozenset({
+    "context-lease.json",
+    "fixback-session.json",
+    "preflight.json",
+})
+
+
+def sweep_scratch(change_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """清掉 runtime/ 顶层的过程草稿，保留运行态、会话、证据与报告。
+
+    一轮流程下来 runtime/ 会堆满 diff、临时校验脚本和命令输出重定向。没人清，
+    而且它们会被其他门禁读到——2026-08-19 那次，review 自己生成的两个 diff
+    直接把归档挡住了。
+
+    只扫 runtime/ 顶层文件：run-sessions/ 等子目录是托管会话证据，不进扫描。
+    """
+    change_root = change_root.expanduser().resolve()
+    runtime_dir = change_root / "runtime"
+    removed: list[str] = []
+    if not runtime_dir.is_dir():
+        return {"ok": True, "code": "SCRATCH_SWEPT", "removed": [], "dryRun": dry_run}
+    errors: list[dict[str, str]] = []
+    for path in sorted(runtime_dir.iterdir()):
+        if not path.is_file() or path.name in SCRATCH_KEEP:
+            continue
+        if not any(fnmatch.fnmatch(path.name, pattern) for pattern in SCRATCH_PATTERNS):
+            continue
+        relative = path.relative_to(change_root).as_posix()
+        if dry_run:
+            removed.append(relative)
+            continue
+        try:
+            path.unlink()
+        except OSError as exc:
+            errors.append({"path": relative, "error": str(exc)})
+            continue
+        removed.append(relative)
+    return {
+        "ok": not errors,
+        "code": "SCRATCH_SWEPT" if not errors else "SCRATCH_SWEEP_PARTIAL",
+        "removed": removed,
+        "errors": errors,
+        "dryRun": dry_run,
+    }
+
+
+def _sensitive_candidates(
+    root: Path, *, exclude_dirs: Sequence[str] = ()
+) -> list[dict[str, Any]]:
+    """Find high-confidence plaintext assignments without treating prose as a secret.
+
+    ``exclude_dirs`` scopes the scan to what a caller actually publishes. The
+    default stays whole-tree: the quarantine flow depends on seeing legacy
+    plaintext anywhere under the change, including scratch directories.
+    """
     # Compare by relative path, not by resolve() per file: this loop covers the
     # whole change tree, and on Windows each resolve() is a realpath syscall.
     receipt_rel = SECRET_SCAN_RECEIPT_REL.as_posix()
@@ -224,7 +308,10 @@ def _sensitive_candidates(root: Path) -> list[dict[str, Any]]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if path.relative_to(root).as_posix() == receipt_rel:
+        relative = path.relative_to(root).as_posix()
+        if relative == receipt_rel:
+            continue
+        if exclude_dirs and _is_excluded(relative, exclude_dirs):
             continue
         try:
             raw = path.read_bytes()
@@ -263,17 +350,21 @@ def _is_sensitive_placeholder(value: bytes) -> bool:
     )
 
 
-def publishable_tree_digest(root: Path) -> str:
+def publishable_tree_digest(
+    root: Path, *, exclude_dirs: Sequence[str] = ()
+) -> str:
     """Public digest helper shared by the archive publication gate."""
-    return _publishable_tree_digest(root)
+    return _publishable_tree_digest(root, exclude_dirs=exclude_dirs)
 
 
 def sensitive_evidence_receipt_path(change_root: Path) -> Path:
     return _sensitive_evidence_receipt_path(change_root)
 
 
-def sensitive_evidence_candidates(root: Path) -> list[dict[str, Any]]:
-    return _sensitive_candidates(root)
+def sensitive_evidence_candidates(
+    root: Path, *, exclude_dirs: Sequence[str] = ()
+) -> list[dict[str, Any]]:
+    return _sensitive_candidates(root, exclude_dirs=exclude_dirs)
 
 
 def _build_sensitive_scan_receipt(
@@ -282,6 +373,7 @@ def _build_sensitive_scan_receipt(
     entries: list[dict[str, Any]],
     unresolved: list[dict[str, Any]],
     status: str,
+    exclude_dirs: Sequence[str] = (),
 ) -> dict[str, Any]:
     change_root = change_root.expanduser().resolve()
     return {
@@ -291,7 +383,12 @@ def _build_sensitive_scan_receipt(
         "status": status,
         "unresolvedFailures": unresolved,
         "entries": entries,
-        "publishableTreeDigest": _publishable_tree_digest(change_root),
+        "publishableTreeDigest": _publishable_tree_digest(
+            change_root, exclude_dirs=exclude_dirs
+        ),
+        # 收据自述扫描范围：复算摘要的一方据此排除同样的目录，
+        # 否则两侧口径不同会误报 digest 漂移。
+        "publicationExcludedDirs": list(exclude_dirs),
         "publicationExcluded": True,
         "recordedAt": now_iso(),
     }
@@ -303,6 +400,7 @@ def _write_sensitive_scan_receipt(
     entries: list[dict[str, Any]],
     unresolved: list[dict[str, Any]],
     status: str,
+    exclude_dirs: Sequence[str] = (),
 ) -> dict[str, Any]:
     change_root = change_root.expanduser().resolve()
     receipt = _build_sensitive_scan_receipt(
@@ -310,6 +408,7 @@ def _write_sensitive_scan_receipt(
         entries=entries,
         unresolved=unresolved,
         status=status,
+        exclude_dirs=exclude_dirs,
     )
     atomic_write_json(_sensitive_evidence_receipt_path(change_root), receipt)
     return receipt
@@ -463,6 +562,7 @@ def refresh_sensitive_evidence_scan_receipt(
     change_root: Path,
     *,
     persist: bool = True,
+    exclude_dirs: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Rescan current bytes while preserving valid quarantine audit entries."""
     change_root = change_root.expanduser().resolve()
@@ -508,7 +608,7 @@ def refresh_sensitive_evidence_scan_receipt(
             }
         entries = list(prior_entries)
 
-    unresolved = _sensitive_candidates(change_root)
+    unresolved = _sensitive_candidates(change_root, exclude_dirs=exclude_dirs)
     status = "FAIL" if unresolved else "QUARANTINED" if entries else "OK"
     if persist:
         try:
@@ -517,6 +617,7 @@ def refresh_sensitive_evidence_scan_receipt(
                 entries=entries,
                 unresolved=unresolved,
                 status=status,
+                exclude_dirs=exclude_dirs,
             )
         except OSError as exc:
             return {
@@ -531,6 +632,7 @@ def refresh_sensitive_evidence_scan_receipt(
             entries=entries,
             unresolved=unresolved,
             status=status,
+            exclude_dirs=exclude_dirs,
         )
     return {
         "ok": not unresolved,
@@ -2019,6 +2121,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the private root; must be outside the project root and on its drive",
     )
     p_quarantine.add_argument("--json", action="store_true")
+    p_sweep = sub.add_parser(
+        "sweep-scratch",
+        help="删除 runtime/ 顶层的过程草稿（diff、临时输入、命令输出）",
+    )
+    p_sweep.add_argument("--change-dir", required=True)
+    p_sweep.add_argument(
+        "--dry-run", action="store_true", help="只列出会删什么，不真删"
+    )
+    p_sweep.add_argument("--json", action="store_true")
     p_adapter = sub.add_parser("adapter")
     p_adapter.add_argument("--agent", choices=sorted(_ADAPTERS), required=True)
     p_adapter.add_argument("--change", required=True)
@@ -2069,6 +2180,10 @@ def main(argv: list[str] | None = None) -> int:
             result = doctor(Path(args.project), Path(args.change_dir), agent=args.agent)
         elif args.command == "quarantine-evidence":
             result = cmd_quarantine_evidence(args)
+        elif args.command == "sweep-scratch":
+            result = sweep_scratch(
+                Path(args.change_dir), dry_run=bool(args.dry_run)
+            )
         elif args.command == "adapter":
             result = {"ok": True, "action": "adapter", **adapter_worktree(args.agent, args.change)}
         elif args.command == "_worker":

@@ -79,3 +79,63 @@ REFACTOR 只允许不改变行为的整理。若重构改变行为，必须回�
 ```
 
 RED 问题必须在当前 run 中处理或明确记录为未处理风险；YELLOW 问题可交给后续 `/harness-review`。
+
+## fixback 证据契约
+
+> `launch-review` 的返回体里带 `evidenceContract` 字段，内容与本节一致。这里写一份是因为
+> 光靠运行时返回，调用方往往已经动手改代码了才看到。
+
+### 命令链
+
+```text
+run-start（修复前，采 RED）→ 改代码 → run-start（修复后，采 GREEN）
+  → evidence-template ×2 → register-evidence ×2 → resolve-issue
+  → run-start（受影响链）→ evidence-template --kind verification
+  → evidence-template --kind review → close
+```
+
+### 别手写证据 JSON
+
+证据文件的 `provenance` 需要 `sessionId` / `commandHash` / `resultDigest` / `runReceiptPath`
+四个字段，全部能从 `session.json` 直接读出来。用模板生成，不要手抄：
+
+```text
+python <skills-root>/scripts/harness_fixback.py evidence-template \
+  --change-dir <change-dir> --kind red|green|verification|review \
+  --session <sessionId> --out <证据 JSON 路径> --json
+```
+
+输出即可直接喂给 `register-evidence`。撞 `FIXBACK_RUN_PROVENANCE_INVALID` 时，错误体会点名
+**哪个字段、期望什么、实际什么**——按它改，不要去读实现反推。
+
+### `--product-identity`
+
+产品身份指纹，把 RED/GREEN 绑定到同一产品状态。规范取值是**当前 git HEAD**。省略即自动推导，
+`launch-review` 会在返回体的 `resolvedProductIdentity` 里回显；`close --final-product-identity`
+**原样引用那个值**，不要另行推导——推导方式不同就会撞 `FIXBACK_GREEN_IDENTITY_MISMATCH`。
+
+### RED 必须在修复之前
+
+RED 证明问题真实存在，GREEN 证明修复真的生效。先改完再把改动回退来凑 RED，证明的只是回退后的
+状态，不是原始缺陷，中途还会留下脏工作树。
+
+### close 的两张收据与 review-findings.json
+
+`close` 要 `--affected-receipt`（`kind=verification`，受影响链的托管会话）和 `--review-receipt`
+（`kind=review`，指向 `reports/review/review-findings.json`）。
+
+review 收据的放行规则按 **disposition**，不按 severity：
+
+| disposition | 是否阻塞 | 说明 |
+|---|---|---|
+| `OPEN` / 未登记 | ❌ 阻塞 | 还没人处置，必须先给结论 |
+| `FIXED` / `NOT_APPLICABLE` | ✅ 放行 | 已闭环 |
+| `ACCEPTED_RISK` / `DEFERRED` | ✅ 放行 | 记入收据 `residualRisks` 留痕 |
+
+> ⚠️ **不要为了让 close 通过而清空或删改 `review-findings.json`。** 它是发现的真相源，写空等于
+> 抹掉整轮审查的审计轨迹。处置结论属于另一个 sidecar：
+>
+> ```text
+> python <skills-root>/scripts/harness_review.py write-dispositions \
+>   --change-dir <change-dir> --input <dispositions.json>
+> ```

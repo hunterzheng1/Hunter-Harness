@@ -94,7 +94,7 @@ requested=true + path missing
 6. **读取测试场景表**：`.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md` → 获取测试真相源
 7. **读取验证账本**：通过 state layout resolver 定位 `evidence/verification-ledger.json`（如存在）→ 复用已有 compile/unitTest 结果
 8. **读取任务状态**：`.harness/changes/<change-name>/evidence/run-task-status.md`（如存在）→ 恢复上次运行状态
-9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并用 `harness_fixback.py` 将相关 RED/YELLOW 条目合并为一个批次；每条问题保留 RED/GREEN 证据，批次关闭后只触发一次 affected verification 与一次 review
+9. **读取 review fixback**：用户传入 `--fixback` 或要求修复 review 问题时，读取最新 `.harness/changes/<change-name>/reports/review/fixback-*.md`，并用 `harness_fixback.py` 将相关 RED/YELLOW 条目合并为一个批次；每条问题保留 RED/GREEN 证据，批次关闭后只触发一次 affected verification 与一次 review。证据契约见下方[fixback 证据契约](#fixback-证据契约)——**动手前先读**，它决定了 RED 必须在修复之前采集
 10. 确认 `项目规则（见 .harness/context-index.json）/` 规则已加载
 11. **执行测试基础设施探测**（见下方"步骤 0.5"）
 12. 确认构建环境正常（构建命令按技术栈，见项目 CLAUDE.md 或 `.harness/config/harness-build-config.md`；如 Java 的 `powershell.exe -Command "mvn compile -pl <module> -o -q"`）

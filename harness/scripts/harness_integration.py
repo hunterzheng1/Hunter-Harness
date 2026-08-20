@@ -378,6 +378,121 @@ def _normalize_verify_command(
     return result
 
 
+# 合并态验证的兜底优先级：先跑覆盖面最广的，再退到窄的。profile 里这些命令
+# 本来就是 ledger 一直在用的规范命令，没有理由让调用方在合并时另行手敲一遍。
+MERGE_VERIFICATION_FALLBACK_ORDER = ("unitTestFull", "unitTest", "apiTest", "compile")
+
+
+def verify_plan_recovery_action() -> str:
+    """把 VERIFY_PLAN_MISSING 补成一句能照做的话。
+
+    此前它只说 "requires at least one executable command"。于是调用方要么去读
+    实现，要么随手塞一条命令让门过去——两条路都走过，后者更糟：它让"验证通过"
+    这句话失去含义。
+    """
+    return (
+        "合并态验证没有可执行计划。两条正规出路："
+        "(1) 在 .harness/config/build-profile.json 增加 mergeVerification.requiredOnMerge "
+        "声明合并时必跑的命令（推荐，一次配置长期生效）；"
+        "(2) 本次用 --command 传入。注意 --command 可重复，每次只接**一条**命令，"
+        "且按 argv 直接执行（不经过 shell）——`&&`、`|`、`cd x && y` 都不成立，"
+        "需要拆成多个 --command。"
+        "示例：--command \"npm test\" --command \"npm run lint\"。"
+    )
+
+
+def _fallback_merge_commands(profile: Any) -> list[dict[str, Any]]:
+    """从 profile 已有的验证目标推导合并态计划。"""
+    commands = profile.get("commands") if isinstance(profile, dict) else None
+    if not isinstance(commands, dict):
+        return []
+    for name in MERGE_VERIFICATION_FALLBACK_ORDER:
+        entry = commands.get(name)
+        if not isinstance(entry, dict):
+            continue
+        argv = entry.get("argvTemplate")
+        if isinstance(argv, list) and argv and all(
+            isinstance(item, str) and item for item in argv
+        ):
+            return [{
+                "command": [str(item) for item in argv],
+                "kind": "heavyweight",
+                "verification": name,
+                "source": "profile-fallback",
+                "reuseContext": {},
+            }]
+        raw = entry.get("command")
+        if isinstance(raw, str) and raw.strip():
+            return [{
+                "command": _split_verify_command(raw.strip()),
+                "kind": "heavyweight",
+                "verification": name,
+                "source": "profile-fallback",
+                "reuseContext": {},
+            }]
+    return []
+
+
+def merge_verification_plan(profile: Any) -> list[dict[str, Any]]:
+    """声明优先，推导兜底；两者都没有才返回空计划。"""
+    merge = profile.get("mergeVerification") if isinstance(profile, dict) else None
+    required = merge.get("requiredOnMerge") if isinstance(merge, dict) else None
+    if isinstance(required, list) and required:
+        plan: list[dict[str, Any]] = []
+        for index, item in enumerate(required):
+            if isinstance(item, str) and item.strip():
+                plan.append({
+                    "command": _split_verify_command(item.strip()),
+                    "kind": "smoke",
+                    "verification": None,
+                    "source": "profile",
+                    "reuseContext": {},
+                })
+                continue
+            if not isinstance(item, dict):
+                raise ValueError(f"requiredOnMerge[{index}] must be string or object")
+            raw = item.get("command")
+            if isinstance(raw, list) and raw and all(
+                isinstance(value, str) and value for value in raw
+            ):
+                command = [str(value) for value in raw]
+            elif isinstance(raw, str) and raw.strip():
+                command = _split_verify_command(raw.strip())
+            else:
+                raise ValueError(f"requiredOnMerge[{index}].command missing")
+            kind = str(item.get("kind") or "smoke")
+            plan.append({
+                "command": command,
+                "kind": kind,
+                "verification": item.get("verification"),
+                "source": "profile",
+                "reuseContext": {
+                    field: str(item.get(field)).strip()
+                    for field in (
+                        "environmentHash",
+                        "toolchainHash",
+                        "lockHash",
+                        "dbSchemaHash",
+                    )
+                    if str(item.get(field) or "").strip()
+                },
+            })
+        return plan
+    return _fallback_merge_commands(profile)
+
+
+def verification_depth(plan: Sequence[dict[str, Any]]) -> str:
+    """一条临时探测命令通过，不该和跑完整条链读起来一样。
+
+    2026-08-19 那次合并，verify 只跑了一个测试文件就 DONE，报告里看不出任何差别。
+    真正的全链验证是人工在事务外补跑的——账面与事实脱节，正是这种静默造成的。
+    """
+    entries = [item for item in plan if isinstance(item, dict)]
+    if len(entries) == 1 and entries[0].get("source") not in {"profile", "profile-fallback"}:
+        return "thin"
+    return "declared"
+
+
 class IntegrationError(Exception):
     code = "INTEGRATION_ERROR"
 
@@ -1330,47 +1445,16 @@ class IntegrationTransaction:
         return commands
 
     def _required_on_merge_plan(self) -> list[dict[str, Any]]:
-        """Classify profile commands without breaking the legacy command API."""
+        """合并态验证计划：profile 声明优先，缺声明时从既有验证目标推导。
+
+        此前只读 mergeVerification.requiredOnMerge，没配就是空计划 → VERIFY_PLAN_MISSING。
+        但 profile 里本来就有 ledger 一直在用的规范命令；让调用方在合并时另行手敲一遍，
+        换来的通常是一条随手写的探测命令。
+        """
         import harness_profile
 
         profile = harness_profile.load_profile(self.project_root)
-        merge = profile.get("mergeVerification") if isinstance(profile, dict) else None
-        required = merge.get("requiredOnMerge") if isinstance(merge, dict) else []
-        if not isinstance(required, list):
-            return []
-        plan: list[dict[str, Any]] = []
-        for index, item in enumerate(required):
-            if isinstance(item, str) and item.strip():
-                plan.append({"command": _split_verify_command(item.strip()), "kind": "smoke"})
-                continue
-            if not isinstance(item, dict):
-                raise ValueError(f"requiredOnMerge[{index}] must be string or object")
-            raw = item.get("command")
-            if isinstance(raw, list) and raw and all(isinstance(value, str) and value for value in raw):
-                command = [str(value) for value in raw]
-            elif isinstance(raw, str) and raw.strip():
-                command = _split_verify_command(raw.strip())
-            else:
-                raise ValueError(f"requiredOnMerge[{index}].command missing")
-            kind, verification = _merge_command_kind(item)
-            plan.append(
-                {
-                    "command": command,
-                    "kind": kind,
-                    "verification": verification,
-                    "reuseContext": {
-                        field: str(item.get(field)).strip()
-                        for field in (
-                            "environmentHash",
-                            "toolchainHash",
-                            "lockHash",
-                            "dbSchemaHash",
-                        )
-                        if str(item.get(field) or "").strip()
-                    },
-                }
-            )
-        return plan
+        return merge_verification_plan(profile)
 
     def verify(
         self,
@@ -1384,7 +1468,12 @@ class IntegrationTransaction:
         except Exception as exc:  # noqa: BLE001 — surface as verify plan error
             raise VerifyPlanMissingError(f"mergeVerification load failed: {exc}") from exc
         plan = [
-            {"command": list(command), "kind": "smoke", "verification": None}
+            {
+                "command": list(command),
+                "kind": "smoke",
+                "verification": None,
+                "source": "cli",
+            }
             for command in commands
         ]
         plan.extend(profile_plan)
@@ -1399,7 +1488,21 @@ class IntegrationTransaction:
             ):
                 raise VerifyPlanMissingError(
                     "integration verification requires at least one executable command"
+                    " — " + verify_plan_recovery_action()
                 )
+            # 计划先落盘：verify 失败时也要看得见"打算跑什么"，
+            # 而不是只剩一个 FAILED 状态。
+            journal["verifyPlan"] = [
+                {
+                    "command": list(item["command"]),
+                    "kind": item.get("kind"),
+                    "verification": item.get("verification"),
+                    "source": item.get("source"),
+                }
+                for item in plan
+            ]
+            journal["verificationDepth"] = verification_depth(plan)
+            self._save(journal)
             evidence_change = self._bound_evidence_change(journal)
             intg_root = Path(journal["integrationRoot"]).resolve()
             results: list[dict[str, Any]] = []
@@ -2253,6 +2356,20 @@ class IntegrationTransaction:
             "steps": journal["steps"],
             "mergeCommit": journal.get("mergeCommit"),
             "pushedHead": journal.get("pushedHead"),
+            # "verify = DONE" 单独一句什么也没说明。把计划、来源和退出码一起回显，
+            # 调用方才看得出这次合并到底验证了什么。
+            "verifyPlan": journal.get("verifyPlan") or [],
+            "verificationDepth": journal.get("verificationDepth"),
+            "verifyResults": [
+                {
+                    "command": item.get("command"),
+                    "exitCode": item.get("exitCode"),
+                    "reused": bool(item.get("reused")),
+                    "durationMs": item.get("durationMs"),
+                }
+                for item in (journal.get("verifyResults") or [])
+                if isinstance(item, dict)
+            ],
         }
 
 

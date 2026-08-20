@@ -29,7 +29,7 @@ function pythonRuntime() {
 
 const PROFILES = ["general", "java"];
 const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
-const BUNDLE_VERSION = "0.2.72";
+const BUNDLE_VERSION = "0.2.73";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
 // 0.2.84 起归档交付物才会被分类成 branch_file——本 Bundle 的 harness_archive.py
@@ -45,7 +45,7 @@ const BUNDLE_VERSION = "0.2.72";
 // 0.2.88 起 archive upload 才保留服务端错误码；0.2.89 起认的才是服务端真正返回的
 // ARCHIVE_ALREADY_EXISTS（0.2.88 挂在 ARCHIVE_PACKAGE_CONFLICT 上，那句提示从没触发过），
 // 本 Bundle 的 republish 在冲突时引导用户看该码并给出 --retry-retained
-const MINIMUM_CLI_VERSION = "0.2.89";
+const MINIMUM_CLI_VERSION = "0.2.90";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",

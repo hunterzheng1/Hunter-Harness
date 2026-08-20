@@ -582,6 +582,9 @@ def launch_review_fixback(
         "message": f"修复编码已启动，共 {len(batch.get('issues') or [])} 个代码修复项。",
         "runId": effective_run_id,
         "attempt": effective_attempt,
+        # close 的 --final-product-identity 必须与 GREEN 证据一致。回显这个值，
+        # 调用方就不用自己再推导一遍（推导方式不同就会撞身份不匹配）。
+        "resolvedProductIdentity": product_identity,
         "preparationDurationMs": duration,
         "context": prepared,
         "transition": begun,
@@ -839,8 +842,12 @@ def evidence_contract(
             "1. 修复前：先用 run-start 跑一次能复现该问题的命令，得到 status=FAIL 的会话（RED）",
             "2. 实施修复",
             "3. 修复后：用同一条命令再跑一次 run-start，得到 status=OK 的会话（GREEN）",
-            "4. 两条证据各写一个 JSON 文件，分别 register-evidence 注册",
+            "4. 两条证据用 evidence-template 生成，再分别 register-evidence 注册",
             "5. resolve-issue 引用这两个已注册的证据文件",
+            "6. 关批次前还需两张收据：affected（kind=verification，受影响链的托管会话）"
+            "与 review（kind=review，指向 review-findings.json）",
+            "7. close 引用这两张收据，--final-product-identity 取 launch-review 回显的 "
+            "resolvedProductIdentity",
         ],
         "antiPattern": (
             "不要先改完再把修改回退来凑 RED：那样 RED 证明的只是回退后的状态，"
@@ -865,6 +872,16 @@ def evidence_contract(
                 f"{change} --batch-id {batch} --issue-id <issueId> "
                 "--red-evidence <red.json> --green-evidence <green.json>"
             ),
+            "template": (
+                "python harness_fixback.py evidence-template --change-dir "
+                f"{change} --kind red|green|verification|review "
+                "--session <sessionId> --out <证据 JSON 路径>"
+            ),
+            "close": (
+                "python harness_fixback.py close --change-dir "
+                f"{change} --batch-id {batch} --final-product-identity {product} "
+                "--affected-receipt <verification.json> --review-receipt <review.json>"
+            ),
         },
         "evidenceFile": {
             "schemaVersion": 2,
@@ -873,7 +890,32 @@ def evidence_contract(
             "provenance": {
                 "type": "managed-run-session",
                 "note": "指向 run-start 产出的 runtime/run-sessions/<sessionId>/session.json",
+                "requiredFields": [
+                    "sessionId",
+                    "commandHash",
+                    "resultDigest",
+                    "runReceiptPath",
+                ],
+                "hint": "这四个字段都从 session.json 直接读；用 evidence-template 生成即可，不必手抄。",
             },
+        },
+        "reviewReceipt": {
+            "kind": "review",
+            "provenance": {
+                "type": "harness-review",
+                "reviewReportPath": "reports/review/review-findings.json",
+                "engine": "harness-review-6d",
+            },
+            "blocks": (
+                "只有 disposition 为 OPEN/未登记 的 RED/YELLOW 会挡住收据。"
+                "已判定 FIXED / NOT_APPLICABLE 的放行；ACCEPTED_RISK / DEFERRED 放行"
+                "并记入收据的 residualRisks。"
+            ),
+            "antiPattern": (
+                "不要为了让 close 通过而清空或删改 review-findings.json——那是发现的真相源，"
+                "写空等于抹掉整轮审查的审计轨迹。处置结论写进 fixback-dispositions.json："
+                "python harness_review.py write-dispositions --change-dir <dir> --input <json>"
+            ),
         },
     }
 
@@ -905,6 +947,272 @@ def evidence_error_message(code: str, raw_path: str) -> str:
     return base if hint is None else f"{base} — {hint}"
 
 
+# 一条发现"还没被处置"才该挡住收据。OPEN 是显式待办，UNKNOWN 是根本没登记；
+# 其余（FIXED / NOT_APPLICABLE / ACCEPTED_RISK / DEFERRED）都已有人做过判断。
+_UNPROCESSED_DISPOSITIONS = {"OPEN", "UNKNOWN"}
+
+
+def _load_dispositions(change_dir: Path) -> dict[str, str]:
+    """读 fixback-dispositions.json；缺失或损坏都按"无处置"处理，不抛。"""
+    path = hr.dispositions_path(change_dir)
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    mapping: dict[str, str] = {}
+    for item in doc.get("dispositions") or []:
+        if isinstance(item, dict):
+            finding_id = item.get("findingId")
+            if isinstance(finding_id, str) and finding_id.strip():
+                mapping[finding_id] = str(item.get("disposition") or "")
+    return mapping
+
+
+def classify_review_findings(
+    change_dir: Path, findings: Any
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """按 disposition 把 RED/YELLOW 分成"未处置（阻塞）"与"已接受的残留风险"。
+
+    此前这里只看 severity：只要 findings 里还有一条 RED/YELLOW，收据就永远注册
+    不了。唯一能过关的做法是把 review-findings.json 清空——2026-08-19 的执行记录
+    里就是这么干的，3 条原始发现加 2 条复审发现的审计轨迹被一次写空抹掉。
+
+    findings sidecar 是发现的真相源，dispositions sidecar 才是处置的真相源。
+    门禁该问的是"还有没有没人处理的问题"，不是"还有没有问题"。
+    """
+    dispositions = _load_dispositions(change_dir)
+    blocking: list[dict[str, Any]] = []
+    residual: list[dict[str, Any]] = []
+    for item in findings or []:
+        if not isinstance(item, dict) or item.get("severity") not in {"RED", "YELLOW"}:
+            continue
+        finding_id = str(item.get("id") or "")
+        disposition = dispositions.get(finding_id) or "UNKNOWN"
+        if disposition not in hr.DISPOSITIONS:
+            disposition = "UNKNOWN"
+        entry = {
+            "findingId": finding_id,
+            "severity": item.get("severity"),
+            "title": item.get("title"),
+            "disposition": disposition,
+        }
+        if disposition in _UNPROCESSED_DISPOSITIONS:
+            blocking.append(entry)
+        elif disposition in hr.CURRENT_RISK_DISPOSITIONS:
+            residual.append(entry)
+    return residual, blocking
+
+
+def _provenance_error(code: str, problems: list[dict[str, Any]], recovery: str) -> ValueError:
+    """把只有错误码的失败，补成"哪个字段、期望什么、实际什么、怎么修"。"""
+    detail = "; ".join(
+        f"{item['field']}: expected={item['expected']!r} actual={item['actual']!r}"
+        for item in problems
+    )
+    return ValueError(f"{code}: {detail} — {recovery}")
+
+
+def resolve_product_identity(change_dir: Path) -> str:
+    """推导当前产品身份。
+
+    `--product-identity` 在 5 个子命令里必填，却在全仓文档里零命中；调用方只能去
+    读源码猜，猜完还要在 close 时原样复述一遍。规范取值就是当前 HEAD——把它做成
+    可推导的默认值，猜的环节就没有了。
+    """
+    project_root = _project_root(change_dir)
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        result = None
+    if result is not None and result.returncode == 0:
+        head = (result.stdout or "").strip()
+        if head:
+            return head
+    # 非 git 工作区（或 git 不可用）仍需一个稳定值，否则两次推导不一致会让
+    # close 的身份比对无故失败。
+    digest = hashlib.sha256(str(project_root).encode("utf-8")).hexdigest()
+    return f"unversioned:{digest}"
+
+
+_EVIDENCE_KINDS = ("red", "green", "verification", "review")
+_KIND_EXPECTED_SESSION_STATUS = {"red": "FAIL", "green": "OK", "verification": "OK"}
+_KIND_EVIDENCE_STATUS = {"red": "FAIL", "green": "OK", "verification": "OK", "review": "OK"}
+_KIND_DEFAULT_GATES = {"verification": ["affected"], "review": ["review"]}
+
+
+def evidence_template(
+    change_dir: Path,
+    *,
+    kind: str,
+    session_id: str | None = None,
+    out: str | None = None,
+    evidence_id: str | None = None,
+    product_identity: str | None = None,
+    passed_gates: list[str] | None = None,
+) -> dict[str, Any]:
+    """从托管会话/审查 sidecar 直接生成可注册的证据文件。
+
+    ledger 早就有 scenario-receipt-template，一次就能给对骨架；fixback 没有同类
+    入口，于是每条证据都得手写 JSON，再靠 FIXBACK_*_PROVENANCE_INVALID 反推缺了
+    哪个字段。sessionId / commandHash / resultDigest 三个字段全都能从 session.json
+    直接读出来——让人手抄它们没有任何意义。
+    """
+    if kind not in _EVIDENCE_KINDS:
+        return {
+            "ok": False,
+            "code": "FIXBACK_EVIDENCE_KIND_INVALID",
+            "kind": kind,
+            "recoveryAction": f"--kind 必须是 {'/'.join(_EVIDENCE_KINDS)} 之一。",
+        }
+    state_root = _state_root(change_dir)
+    identity = (product_identity or "").strip()
+    gates = list(passed_gates) if passed_gates else list(_KIND_DEFAULT_GATES.get(kind, []))
+
+    if kind == "review":
+        review_path = (state_root / "reports" / "review" / "review-findings.json").resolve()
+        if not review_path.is_file():
+            return {
+                "ok": False,
+                "code": "FIXBACK_REVIEW_FINDINGS_MISSING",
+                "expectedPath": str(review_path),
+                "recoveryAction": (
+                    "先用 harness_review.py write-findings 写入本轮审查发现，"
+                    "再生成 review 证据。"
+                ),
+            }
+        review = json.loads(review_path.read_text(encoding="utf-8-sig"))
+        residual, blocking = classify_review_findings(change_dir, review.get("findings"))
+        if blocking:
+            return {
+                "ok": False,
+                "code": "FIXBACK_REVIEW_FINDINGS_UNDISPOSITIONED",
+                "blocking": blocking,
+                "recoveryAction": (
+                    "以下发现尚未处置："
+                    + ", ".join(str(item["findingId"]) for item in blocking)
+                    + "。用 harness_review.py write-dispositions 标注 FIXED / "
+                    "ACCEPTED_RISK / DEFERRED / NOT_APPLICABLE 后重试；"
+                    "不要删改 review-findings.json——它是发现的真相源。"
+                ),
+            }
+        provenance = {
+            "type": "harness-review",
+            "reviewReportPath": str(review_path),
+            "reviewRunId": review.get("runId"),
+            "engine": "harness-review-6d",
+            "sourceDigest": "sha256:" + hashlib.sha256(review_path.read_bytes()).hexdigest(),
+        }
+        resolved_id = evidence_id or f"review-{review.get('runId') or uuid.uuid4().hex}"
+        if not identity:
+            identity = resolve_product_identity(change_dir)
+        extra: dict[str, Any] = {"residualRisks": residual}
+    else:
+        if not (session_id or "").strip():
+            return {
+                "ok": False,
+                "code": "FIXBACK_SESSION_REQUIRED",
+                "recoveryAction": (
+                    f"--kind {kind} 需要 --session <sessionId>；先用 "
+                    "harness_runtime.py run-start 采集托管会话，再用它的 sessionId。"
+                ),
+            }
+        run_path = (
+            state_root / "runtime" / "run-sessions" / str(session_id) / "session.json"
+        ).resolve()
+        if not run_path.is_file():
+            return {
+                "ok": False,
+                "code": "FIXBACK_SESSION_MISSING",
+                "expectedPath": str(run_path),
+                "recoveryAction": (
+                    "该 sessionId 下没有 session.json。确认 run-start 的 "
+                    f"--state-root 指向 {state_root}，并用 run-status --wait 等到终态。"
+                ),
+            }
+        run = json.loads(run_path.read_text(encoding="utf-8-sig"))
+        expected_status = _KIND_EXPECTED_SESSION_STATUS[kind]
+        actual_status = str(run.get("status") or "")
+        if actual_status != expected_status:
+            return {
+                "ok": False,
+                "code": "FIXBACK_SESSION_STATUS_MISMATCH",
+                "kind": kind,
+                "expectedStatus": expected_status,
+                "actualStatus": actual_status,
+                "recoveryAction": (
+                    f"kind={kind} 需要 status={expected_status} 的会话，实际是 "
+                    f"{actual_status or '(空)'}。RED 必须来自**修复前**能复现问题的失败"
+                    "会话（FAIL）；不要先改完再回退代码去凑 RED——那证明的是回退后的"
+                    "状态，不是原始缺陷。"
+                ),
+            }
+        provenance = {
+            "type": "managed-run-session",
+            "runReceiptPath": str(run_path),
+            "sessionId": run.get("sessionId"),
+            "commandHash": run.get("commandHash"),
+            "resultDigest": run.get("resultDigest"),
+        }
+        resolved_id = evidence_id or f"{kind}-{session_id}"
+        if not identity:
+            identity = str(run.get("productIdentity") or "").strip() or resolve_product_identity(
+                change_dir
+            )
+        extra = {}
+
+    evidence = {
+        "schemaVersion": 2,
+        "kind": kind,
+        "status": _KIND_EVIDENCE_STATUS[kind],
+        "evidenceId": resolved_id,
+        "productIdentity": identity,
+        "passedGates": gates,
+        "provenance": provenance,
+    }
+    target = Path(out) if out else Path("runtime") / f"fixback-{resolved_id}.json"
+    path = target if target.is_absolute() else (change_dir / target)
+    path = path.resolve()
+    if not _is_within(path, [change_dir.resolve(), state_root, _project_root(change_dir)]):
+        return {
+            "ok": False,
+            "code": "FIXBACK_EVIDENCE_OUTSIDE_PROJECT",
+            "path": str(path),
+            "recoveryAction": "--out 必须落在变更目录或项目内，证据才能随归档留痕。",
+        }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return {
+        "ok": True,
+        "code": "FIXBACK_EVIDENCE_TEMPLATE_WRITTEN",
+        "path": str(path),
+        "kind": kind,
+        "evidenceId": resolved_id,
+        "productIdentity": identity,
+        "evidence": evidence,
+        "nextAction": (
+            "python harness_fixback.py register-evidence --change-dir "
+            f"{change_dir} --evidence {path}"
+        ),
+        **extra,
+    }
+
+
 def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
     """Register evidence only after validating its authoritative provenance."""
     path = _resolve_evidence_path(change_dir, raw_path)
@@ -931,6 +1239,7 @@ def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
     ):
         raise ValueError(f"FIXBACK_EVIDENCE_INVALID: {raw_path}")
     state_root = _state_root(change_dir)
+    residual_risks: list[dict[str, Any]] = []
     if kind in {"red", "green", "verification"}:
         if provenance.get("type") != "managed-run-session":
             raise ValueError("FIXBACK_RUN_PROVENANCE_REQUIRED")
@@ -945,19 +1254,43 @@ def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("FIXBACK_RUN_PROVENANCE_INVALID") from exc
         expected_status = "FAIL" if kind == "red" else "OK"
-        if (
-            not isinstance(run, dict)
-            or run.get("status") != expected_status
-            or run.get("testProcessStarted") is not True
-            or run.get("productIdentity") != product_identity
-            or provenance.get("sessionId") != run.get("sessionId")
-            or provenance.get("commandHash") != run.get("commandHash")
-            or provenance.get("resultDigest") != run.get("resultDigest")
-            or not str(run.get("commandHash") or "").startswith("sha256:")
-            or not str(run.get("resultDigest") or "").startswith("sha256:")
-            or not str(run.get("endedAt") or "").strip()
-        ):
-            raise ValueError("FIXBACK_RUN_PROVENANCE_INVALID")
+        if not isinstance(run, dict):
+            raise _provenance_error(
+                "FIXBACK_RUN_PROVENANCE_INVALID",
+                [{"field": "session.json", "expected": "object", "actual": type(run).__name__}],
+                "run-start 产出的 session.json 应当是一个 JSON 对象。",
+            )
+        # 逐字段比对而不是一个大 or：只回显错误码时，调用方唯一的出路是去读源码
+        # 反推是哪一项不匹配（2026-08-19 的执行记录里就读了三遍）。
+        checks = [
+            ("status", expected_status, run.get("status")),
+            ("testProcessStarted", True, run.get("testProcessStarted")),
+            ("session.productIdentity", product_identity, run.get("productIdentity")),
+            ("provenance.sessionId", run.get("sessionId"), provenance.get("sessionId")),
+            ("provenance.commandHash", run.get("commandHash"), provenance.get("commandHash")),
+            ("provenance.resultDigest", run.get("resultDigest"), provenance.get("resultDigest")),
+        ]
+        problems = [
+            {"field": field, "expected": expected, "actual": actual}
+            for field, expected, actual in checks
+            if expected != actual
+        ]
+        for field in ("commandHash", "resultDigest"):
+            value = str(run.get(field) or "")
+            if not value.startswith("sha256:"):
+                problems.append(
+                    {"field": f"session.{field}", "expected": "sha256:...", "actual": value}
+                )
+        if not str(run.get("endedAt") or "").strip():
+            problems.append({"field": "session.endedAt", "expected": "非空时间戳", "actual": ""})
+        if problems:
+            raise _provenance_error(
+                "FIXBACK_RUN_PROVENANCE_INVALID",
+                problems,
+                "不要手改证据文件去对齐；用 `harness_fixback.py evidence-template "
+                f"--change-dir {change_dir} --kind {kind} --session <sessionId>` "
+                "重新生成，它直接从 session.json 取这些字段。",
+            )
     else:
         if provenance.get("type") != "harness-review":
             raise ValueError("FIXBACK_REVIEW_PROVENANCE_REQUIRED")
@@ -975,21 +1308,55 @@ def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
             raise ValueError("FIXBACK_REVIEW_PROVENANCE_INVALID") from exc
         source_digest = "sha256:" + hashlib.sha256(review_path.read_bytes()).hexdigest()
         findings = review.get("findings") if isinstance(review, dict) else None
-        unresolved = [
-            item
-            for item in findings or []
-            if isinstance(item, dict) and item.get("severity") in {"RED", "YELLOW"}
-        ]
-        if (
-            not isinstance(review, dict)
-            or review.get("schemaVersion") != 1
-            or not isinstance(findings, list)
-            or review.get("runId") != provenance.get("reviewRunId")
-            or provenance.get("engine") != "harness-review-6d"
-            or provenance.get("sourceDigest") != source_digest
-            or unresolved
+        problems: list[dict[str, Any]] = []
+        if not isinstance(review, dict) or review.get("schemaVersion") != 1:
+            problems.append({
+                "field": "review-findings.schemaVersion",
+                "expected": 1,
+                "actual": review.get("schemaVersion") if isinstance(review, dict) else None,
+            })
+        if not isinstance(findings, list):
+            problems.append({
+                "field": "review-findings.findings",
+                "expected": "list",
+                "actual": type(findings).__name__,
+            })
+        for field, expected, actual in (
+            (
+                "provenance.reviewRunId",
+                review.get("runId") if isinstance(review, dict) else None,
+                provenance.get("reviewRunId"),
+            ),
+            ("provenance.engine", "harness-review-6d", provenance.get("engine")),
+            ("provenance.sourceDigest", source_digest, provenance.get("sourceDigest")),
         ):
-            raise ValueError("FIXBACK_REVIEW_PROVENANCE_INVALID")
+            if expected != actual:
+                problems.append({"field": field, "expected": expected, "actual": actual})
+        if problems:
+            raise _provenance_error(
+                "FIXBACK_REVIEW_PROVENANCE_INVALID",
+                problems,
+                "用 `harness_fixback.py evidence-template --change-dir "
+                f"{change_dir} --kind review` 重新生成 review 证据。",
+            )
+        # 只有"没人处置过"的 RED/YELLOW 才该挡住收据；已判定 FIXED / ACCEPTED_RISK /
+        # DEFERRED / NOT_APPLICABLE 的照常放行，findings sidecar 原样保留。
+        residual_risks, blocking = classify_review_findings(change_dir, findings)
+        if blocking:
+            raise _provenance_error(
+                "FIXBACK_REVIEW_PROVENANCE_INVALID",
+                [
+                    {
+                        "field": f"finding[{item['findingId']}]",
+                        "expected": "已处置（FIXED / ACCEPTED_RISK / DEFERRED / NOT_APPLICABLE）",
+                        "actual": item["disposition"],
+                    }
+                    for item in blocking
+                ],
+                "用 `harness_review.py write-dispositions` 为这些发现登记处置结论后重试。"
+                "**不要**清空或删改 review-findings.json——它是发现的真相源，"
+                "处置结论属于 fixback-dispositions.json。",
+            )
     record = {
         "path": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -999,20 +1366,25 @@ def register_evidence(change_dir: Path, raw_path: str) -> dict[str, Any]:
         "productIdentity": product_identity,
         "passedGates": sorted(set(passed_gates)),
         "provenance": provenance,
+        # 已接受/已推迟的风险必须随收据留痕，否则"放行"会读成"没有问题"。
+        "residualRisks": residual_risks,
         "registeredAt": now_iso(),
     }
     ledger = _load_evidence_ledger(change_dir)
     existing = ledger["evidence"].get(evidence_id)
     if existing is not None:
+        # residualRisks 是从 dispositions 派生的上下文，不属于证据自身的身份；
+        # 把它算进比对会让"处置结论更新后重新注册"误报 ID 复用。
+        derived = {"registeredAt", "residualRisks"}
         comparable = {
             key: value
             for key, value in record.items()
-            if key != "registeredAt"
+            if key not in derived
         }
         existing_comparable = {
             key: value
             for key, value in existing.items()
-            if key != "registeredAt"
+            if key not in derived
         } if isinstance(existing, dict) else {}
         if existing_comparable != comparable:
             raise ValueError(f"FIXBACK_EVIDENCE_ID_REUSED: {evidence_id}")
@@ -1402,14 +1774,14 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--json", action="store_true")
     resume.add_argument("--change-dir", required=True)
     resume.add_argument("--batch-id")
-    resume.add_argument("--product-identity")
+    resume.add_argument("--product-identity", help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
     resume.add_argument("--root-cause")
     resume.add_argument("--run-id")
     resume.add_argument("--attempt", type=int)
     opened = sub.add_parser("open")
     opened.add_argument("--change-dir", required=True)
     opened.add_argument("--batch-id", required=True)
-    opened.add_argument("--product-identity", required=True)
+    opened.add_argument("--product-identity", required=True, help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
     opened.add_argument("--root-cause", required=True)
     issue = sub.add_parser("add-issue")
     issue.add_argument("--change-dir", required=True)
@@ -1427,7 +1799,14 @@ def build_parser() -> argparse.ArgumentParser:
     close = sub.add_parser("close")
     close.add_argument("--change-dir", required=True)
     close.add_argument("--batch-id", required=True)
-    close.add_argument("--final-product-identity", required=True)
+    close.add_argument(
+        "--final-product-identity",
+        required=True,
+        help=(
+            "关批次时的产品身份，必须与每条 GREEN 证据的 productIdentity 相同。"
+            "取 launch-review 回显的 resolvedProductIdentity，不要另行推导。"
+        ),
+    )
     close.add_argument("--affected-receipt", required=True)
     close.add_argument("--review-receipt", required=True)
     status = sub.add_parser("status")
@@ -1435,17 +1814,37 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--batch-id", required=True)
     freeze = sub.add_parser("freeze-readiness")
     freeze.add_argument("--change-dir", required=True)
-    freeze.add_argument("--product-identity", required=True)
+    freeze.add_argument("--product-identity", required=True, help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
     register = sub.add_parser("register-evidence")
     register.add_argument("--change-dir", required=True)
     register.add_argument("--evidence", required=True)
+    template = sub.add_parser(
+        "evidence-template",
+        help="从托管会话/审查 sidecar 生成可直接注册的证据 JSON",
+    )
+    template.add_argument("--change-dir", required=True)
+    template.add_argument(
+        "--kind",
+        required=True,
+        choices=list(_EVIDENCE_KINDS),
+        help="red=修复前失败会话；green=修复后成功会话；verification=受影响链；review=审查收据",
+    )
+    template.add_argument(
+        "--session",
+        help="run-start 产出的 sessionId（kind=red/green/verification 必填）",
+    )
+    template.add_argument("--out", help="输出路径，默认 runtime/fixback-<evidenceId>.json")
+    template.add_argument("--evidence-id")
+    template.add_argument("--product-identity", help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
+    template.add_argument("--passed-gate", action="append", default=[])
+    template.add_argument("--json", action="store_true")
     review_plan = sub.add_parser("review-plan")
     review_plan.add_argument("--change-dir", required=True)
     review_plan.add_argument("--json", action="store_true")
     review_start = sub.add_parser("start-review")
     review_start.add_argument("--change-dir", required=True)
     review_start.add_argument("--batch-id", required=True)
-    review_start.add_argument("--product-identity", required=True)
+    review_start.add_argument("--product-identity", required=True, help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
     review_start.add_argument("--run-id", required=True)
     review_start.add_argument("--attempt", type=int, required=True)
     review_start.add_argument("--json", action="store_true")
@@ -1455,7 +1854,7 @@ def build_parser() -> argparse.ArgumentParser:
     launch_review.add_argument("--change-dir", required=True)
     launch_review.add_argument("--executor", required=True)
     launch_review.add_argument("--skills-root", required=True)
-    launch_review.add_argument("--product-identity", required=True)
+    launch_review.add_argument("--product-identity", help="产品身份指纹，用于把 RED/GREEN 证据绑定到同一产品状态。规范取值是当前 git HEAD；省略则自动推导并在返回体的 resolvedProductIdentity 里回显，close 时原样引用即可。")
     launch_review.add_argument("--run-id")
     launch_review.add_argument("--attempt", type=int, default=2)
     launch_review.add_argument("--batch-id")
@@ -1489,7 +1888,12 @@ def main(argv: list[str] | None = None) -> int:
                 change_dir=change_dir,
                 executor=args.executor,
                 skills_root=Path(args.skills_root),
-                product_identity=args.product_identity,
+                # 省略时推导当前 HEAD：这个值全仓文档零命中，硬性必填只会
+                # 逼调用方去 grep 源码猜（2026-08-19 那轮猜了 8 次）。
+                product_identity=(
+                    args.product_identity
+                    or resolve_product_identity(change_dir)
+                ),
                 run_id=args.run_id,
                 attempt=args.attempt,
                 batch_id=args.batch_id,
@@ -1543,6 +1947,16 @@ def main(argv: list[str] | None = None) -> int:
             value = batch_status(change_dir, args.batch_id)
         elif args.command == "register-evidence":
             value = register_evidence(change_dir, args.evidence)
+        elif args.command == "evidence-template":
+            value = evidence_template(
+                change_dir,
+                kind=args.kind,
+                session_id=args.session,
+                out=args.out,
+                evidence_id=args.evidence_id,
+                product_identity=args.product_identity,
+                passed_gates=args.passed_gate or None,
+            )
         else:
             value = freeze_readiness(
                 change_dir,

@@ -1,6 +1,6 @@
 import { isProxy } from "node:util/types";
 
-import { remoteVersionIdentitySchema } from "@hunter-harness/contracts";
+import { classifyContentPath, remoteVersionIdentitySchema } from "@hunter-harness/contracts";
 
 import { validateSyncOperation, type SourceRef, type SyncOperation } from "../remote-sync/index.js";
 import type {
@@ -177,4 +177,81 @@ PushPullExecutionReceipt | undefined {
       (receipt.artifact_id !== undefined && !text(receipt.artifact_id))) return undefined;
   if (copy.status !== pushPullReceiptStatus(receipt)) return undefined;
   return copy as unknown as PushPullExecutionReceipt;
+}
+
+export interface PushPullOutputViolation {
+  readonly violated: string;
+  readonly detail: string;
+}
+
+/**
+ * Explain *why* a preview output was rejected.
+ *
+ * The validator itself stays a fast boolean gate on the hot path; this walks the
+ * same invariants once, only when something already failed, so a caller gets a
+ * field name instead of an opaque code. Diagnosing this class of failure used to
+ * be impossible from the outside: every check funnelled into one `undefined`.
+ */
+export function explainPushPullPreviewOutput(
+  value: unknown,
+  direction: PushPullDirection,
+  input: PushPullInteractionInput
+): PushPullOutputViolation | undefined {
+  if (readPushPullPreviewOutput(value, direction, input) !== undefined) return undefined;
+  let copy: unknown;
+  try { copy = snapshot(value); } catch {
+    return { violated: "output.shape", detail: "输出无法安全快照（可能带有访问器或代理）" };
+  }
+  if (!record(copy)) return { violated: "output.type", detail: "输出不是对象" };
+  if (copy.schema_version !== 1) {
+    return { violated: "schema_version", detail: `期望 1，实际 ${String(copy.schema_version)}` };
+  }
+  if (copy.direction !== direction) {
+    return { violated: "direction", detail: `期望 ${direction}，实际 ${String(copy.direction)}` };
+  }
+  const expectedScopes = ordinaryRequestInvariant(direction, input.source_mode, input.scopes);
+  if (!expectedScopes.ok) {
+    return { violated: "request.scopes", detail: `请求范围不合法：${expectedScopes.reason_code}` };
+  }
+  if (!Array.isArray(copy.scopes) ||
+      copy.scopes.length !== expectedScopes.scopes.length ||
+      copy.scopes.some((scope, index) => scope !== expectedScopes.scopes[index])) {
+    return {
+      violated: "scopes",
+      detail: `期望 [${expectedScopes.scopes.join(", ")}]，实际 [${
+        Array.isArray(copy.scopes) ? copy.scopes.map(String).join(", ") : String(copy.scopes)
+      }]`
+    };
+  }
+  if (source(copy.source_ref) === undefined) {
+    return { violated: "source_ref", detail: "source_ref 字段缺失或非法" };
+  }
+  for (const [field, conflict] of [["operations", false], ["conflicts", true]] as const) {
+    const list = copy[field];
+    if (!Array.isArray(list)) {
+      return { violated: field, detail: `${field} 不是数组` };
+    }
+    const index = list.findIndex((item) => !operation(item, conflict));
+    if (index >= 0) {
+      const item = list[index] as Record<string, unknown> | undefined;
+      const path = typeof item?.path === "string" ? item.path : "(未知路径)";
+      const kind = typeof item?.content_kind === "string" ? item.content_kind : "(未知)";
+      const classified = classifyContentPath({ schema_version: 1, path });
+      const classifiedKind = "content_kind" in classified
+        ? classified.content_kind
+        : classified.reason_code;
+      return {
+        violated: `${field}[${index}]`,
+        detail: `path=${path} content_kind=${kind}，但该路径归类为 ${classifiedKind}` +
+          (kind === "branch_file" && "content_kind" in classified
+            ? `。branch_file 只接受无法归类的路径；${path} 属于 ${classified.sync_scope} 范围，` +
+              `应由该范围推送，不要放进 branch_files。`
+            : "")
+      };
+    }
+  }
+  if (!record(copy.security_scan)) {
+    return { violated: "security_scan", detail: "security_scan 字段缺失或非法" };
+  }
+  return { violated: "output.unknown", detail: "输出未通过校验，但未定位到具体字段" };
 }

@@ -129,6 +129,37 @@ disallowed-tools:
 | `SENSITIVE_EVIDENCE_UNQUARANTINED`（默认只告警，`HUNTER_HARNESS_SENSITIVE_SCAN=block` 时才阻断） | `python <skills-root>/scripts/harness_runtime.py quarantine-evidence --project . --change-dir ".harness/changes/<cn>" --file "<相对 change-dir 的路径>" --reason "<为什么是敏感证据>" --json`（`--file` 可重复）。私有根默认已与项目同盘、且在项目根之外——**不要**手工指定项目内的路径，归档的密钥扫描会以 `SECRET_SCAN_PRIVATE_PATH_IN_COPY_ROOT` 拒绝 |
 | `DIFF_ZERO_WITH_NONEMPTY_COMMIT`（提交范围非空但 filesChanged=0） | 契约缺 `ownership.productPaths`，全部改动被判为 `foreignPaths`。用 `python <skills-root>/scripts/harness_change.py declare-ownership --change <cn> --product-path "<目录前缀或精确文件>" --json` 按计划的实际改动范围声明（可重复；只收精确路径，不支持通配）。**不要**手改 `change-context.json` |
 
+### 二·A·1、发布内容预检与服务端 422
+
+`status`（`execute` 的预检）会用**与服务端同源的规则**（`packages/core` 的
+`scanSensitiveFiles`）扫描**真正会进 ZIP 的那批文件**——`reports/final/summary-data.json`、
+`spec/**.md`、`plans/**.md`、`candidates/knowledge.json`、`meta/archive-meta.md`、
+`meta/change-context.json`。`runtime/` 是过程草稿，从不入包，也不进这道扫描。
+
+结果在 `checks.publication_content_scan`：
+
+- `blocked=false` → 上传不会因内容被拒
+- `blocked=true` → **服务端会以 HTTP 422 `archive contains sensitive content` 拒收**。
+  归档不阻断（服务端策略不归本地裁决），但必须在此时处理，别等跑完全流程才发现
+- `reasonCode=PUBLICATION_CONTENT_SCAN_UNAVAILABLE` → CLI 不可用，预检没跑；归档继续，
+  上传仍可能 422
+
+每条 finding 都带 `rule_id / path / line / column / overridable / recovery_action`。
+
+**处置：**
+
+| 命中类型 | 出路 |
+|---|---|
+| `overridable=true`（medium/low，如 `HH_INTERNAL_ADDRESS` 内网地址、`HH_WINDOWS_ABSOLUTE_PATH`） | 若确属设计固有内容，在源文件该行附近加行内标注：`<!-- hunter-harness-ignore: <RULE_ID> reason=<简短理由> -->`，然后 `republish` 重建重传 |
+| `overridable=false`（high，如私钥、真实 token） | **不提供豁免。** 必须真正脱敏后重新打包 |
+
+> ⚠️ 行内标注是**申报**，不是绕过：它把"这是设计决策"写进文档本身，可审计、可追溯。
+> **不要**为了过扫描去删改设计文档的事实内容——那是篡改证据。
+>
+> ⚠️ 已知限制：`hunter-harness-ignore` 在本地扫描器上确认生效；**服务端是否认这条标注尚未验证**
+> （归档上传端点只收裸 ZIP，没有独立的豁免申报通道）。若加了标注仍被 422 拒收，
+> 剩余动作是在平台侧对该规则/内容加白，本地无法自解。
+
 ### 二·B、归档补传（上传失败或历史归档缺条目）
 
 归档上传成功后 ZIP 与回执会被清理，旧版本产生的归档从未入 outbox——所以

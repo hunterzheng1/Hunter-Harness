@@ -46,6 +46,7 @@ import {
   type RulesReviewCommandOptions
 } from "./commands/rules-review.js";
 import { runCapabilities } from "./commands/capabilities.js";
+import { runScanSensitive } from "./commands/scan-sensitive.js";
 import { runConfigShow, type ConfigShowOptions } from "./commands/config-origins.js";
 import { runDoctor, type DoctorCommandOptions } from "./commands/doctor.js";
 import { planSyncPush, runSync, type SyncCommandOptions } from "./commands/sync.js";
@@ -734,6 +735,17 @@ export async function runCli(
     .option("--json")
     .action(async () => {
       exitCode = await runCapabilities(program, dependencies);
+    });
+  program.command("scan-sensitive")
+    .description("用发布同款规则扫描指定文件（归档上传前预检）")
+    .option("--file <path...>", "相对 --root 的文件路径，可重复")
+    .option("--root <path>", "路径基准目录，默认当前工作目录")
+    .option("--json")
+    .action(async (options: { file?: string[]; root?: string; json?: boolean }) => {
+      exitCode = await runScanSensitive(
+        { files: options.file, root: options.root, json: options.json },
+        dependencies
+      );
     });
   program.command("status")
     .description("只读查看 Hunter Harness 恢复状态")

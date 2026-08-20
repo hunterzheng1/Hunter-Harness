@@ -3215,7 +3215,8 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
     def test_default_policy_reports_plaintext_without_blocking(self) -> None:
         self._policy.stop()
         self.addCleanup(self._policy.start)
-        source = self.change / "runtime" / "legacy.txt"
+        # 放在会被打进归档包的位置：发布门禁只对会发布的字节负责。
+        source = self.change / "plans" / "legacy.md"
         source.parent.mkdir(parents=True)
         source.write_text("password=never-publish", encoding="utf-8")
 
@@ -3228,14 +3229,14 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
         self.assertEqual(advisory["reasonCode"], "SENSITIVE_EVIDENCE_UNQUARANTINED")
         self.assertEqual(
             [item["path"] for item in advisory["unresolvedFailures"]],
-            ["runtime/legacy.txt"],
+            ["plans/legacy.md"],
         )
         self.assertTrue(source.is_file())
 
     def test_off_policy_skips_the_scan_entirely(self) -> None:
         self._policy.stop()
         self.addCleanup(self._policy.start)
-        source = self.change / "runtime" / "legacy.txt"
+        source = self.change / "plans" / "legacy.md"
         source.parent.mkdir(parents=True)
         source.write_text("password=never-publish", encoding="utf-8")
 
@@ -3247,7 +3248,7 @@ class SensitiveEvidencePublicationGateTests(unittest.TestCase):
         self.assertNotIn("advisory", result)
 
     def test_gate_rejects_plaintext_sensitive_evidence_before_copy(self) -> None:
-        source = self.change / "runtime" / "legacy.txt"
+        source = self.change / "plans" / "legacy.md"
         source.parent.mkdir(parents=True)
         source.write_text("password=never-publish", encoding="utf-8")
 
@@ -4174,6 +4175,258 @@ class ArchiveRepublishTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(payload["reasonCode"], "ARCHIVE_DIR_NOT_FOUND")
         self.assertIn(".harness", payload["error"])
+
+
+class PublicationGateScopeTests(unittest.TestCase):
+    """归档发布门禁不得被 runtime/ 草稿挡住（2026-08-19 kld-sdd 归档卡点）。
+
+    卡住那一轮的硬门禁是 refresh_sensitive_evidence_scan_receipt——它没有
+    advisory 降级，unresolved 非空即 ok=False，直接把 execute 打回。
+    """
+
+    @staticmethod
+    def _change(tmp: str, *, publishable: str, scratch: str | None) -> Path:
+        change = Path(tmp) / "change"
+        (change / "plans").mkdir(parents=True)
+        (change / "plans" / "design.md").write_text(publishable, encoding="utf-8")
+        if scratch is not None:
+            (change / "runtime").mkdir(parents=True)
+            (change / "runtime" / "review-diff.patch").write_text(
+                scratch, encoding="utf-8"
+            )
+        return change
+
+    def test_runtime_scratch_does_not_block_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(
+                tmp,
+                publishable="# 设计\n",
+                scratch="-  const h = { token: 'sk_cli_live_value' };\n",
+            )
+
+            refreshed = ha.hruntime.refresh_sensitive_evidence_scan_receipt(
+                change,
+                persist=False,
+                exclude_dirs=ha.hruntime.PUBLICATION_EXCLUDED_DIRS,
+            )
+            gate = ha.validate_sensitive_evidence_publication_gate(change)
+
+            self.assertTrue(refreshed["ok"], refreshed)
+            self.assertEqual(refreshed["unresolvedFailures"], [])
+            self.assertTrue(gate["ok"], gate)
+            self.assertNotIn("advisory", gate)
+
+    def test_publishable_plaintext_is_still_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # 会被打进 ZIP 的文件里带明文赋值——这才是门禁该盯的。
+            change = self._change(
+                tmp, publishable="password: hunter2-real-value\n", scratch=None
+            )
+
+            refreshed = ha.hruntime.refresh_sensitive_evidence_scan_receipt(
+                change,
+                persist=False,
+                exclude_dirs=ha.hruntime.PUBLICATION_EXCLUDED_DIRS,
+            )
+            gate = ha.validate_sensitive_evidence_publication_gate(change)
+
+            self.assertFalse(refreshed["ok"], refreshed)
+            self.assertEqual(
+                [item["path"] for item in refreshed["unresolvedFailures"]],
+                ["plans/design.md"],
+            )
+            # 默认策略是 warn：门禁放行但必须把发现如实回显。
+            self.assertEqual(gate["reasonCode"], "SENSITIVE_EVIDENCE_ADVISORY")
+            self.assertEqual(
+                [item["path"] for item in gate["advisory"]["unresolvedFailures"]],
+                ["plans/design.md"],
+            )
+
+    def test_block_policy_vetoes_publishable_plaintext(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(
+                tmp, publishable="password: hunter2-real-value\n", scratch=None
+            )
+
+            with mock.patch.dict(
+                os.environ, {ha.SENSITIVE_SCAN_POLICY_ENV: "block"}, clear=False
+            ):
+                gate = ha.validate_sensitive_evidence_publication_gate(change)
+
+            self.assertFalse(gate["ok"], gate)
+            self.assertEqual(gate["reasonCode"], "SENSITIVE_EVIDENCE_UNQUARANTINED")
+
+
+class PublicationContentPrecheckTests(unittest.TestCase):
+    """422 必须在归档开始时就说清楚，而不是跑完整条流程才由服务端告诉你。
+
+    2026-08-19 kld-sdd：change 合并进 master、推送、清理分支、归档全部做完，
+    最后 `archive upload` 才收到服务端 422 "archive contains sensitive content"。
+    本地扫描器用的是另一套规则、扫的是另一批文件（整棵 change 树，含从不发布的
+    runtime/），所以既没预测到、也给不出出路——agent 只能判定"不可篡改绕过"后放弃。
+
+    触发源是 plans/*-design.md 里的内网默认地址，命中 packages/core 的
+    HH_INTERNAL_ADDRESS（medium，overridable），本来有行内标注这条正规豁免通道。
+    """
+
+    # 用本仓构建出的 CLI，而不是让解析器回退到 npx——npx 拉的是已发布版本，
+    # 里面还没有 scan-sensitive，测出来的只会是"降级路径"。
+    _CLI_ENTRY = (
+        Path(__file__).resolve().parents[3] / "packages" / "cli" / "dist" / "bin.js"
+    )
+
+    def _local_cli(self):
+        if not self._CLI_ENTRY.is_file():
+            self.skipTest(
+                f"CLI bundle not built: {self._CLI_ENTRY}（先跑 npm run bundle -w packages/cli）"
+            )
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node not on PATH")
+        return mock.patch.object(
+            ha, "resolve_hunter_cli_command", return_value=[node, str(self._CLI_ENTRY)]
+        )
+
+    @staticmethod
+    def _change(tmp: str, design: str) -> Path:
+        change = Path(tmp) / "proj" / ".harness" / "changes" / "demo"
+        (change / "plans").mkdir(parents=True)
+        (change / "plans" / "demo-design.md").write_text(design, encoding="utf-8")
+        return change
+
+    def test_member_set_matches_what_actually_gets_packaged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(tmp, "# design\n")
+            (change / "spec").mkdir()
+            (change / "spec" / "s.md").write_text("# spec\n", encoding="utf-8")
+            # runtime/ 是草稿，永远不进包
+            (change / "runtime").mkdir()
+            (change / "runtime" / "review-diff.patch").write_text("x\n", encoding="utf-8")
+
+            members = ha.publication_member_paths(change)
+
+            self.assertEqual(
+                sorted(members), ["plans/demo-design.md", "spec/s.md"]
+            )
+
+    def test_precheck_names_rule_path_line_and_the_way_out(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(
+                tmp,
+                "# design\n\nDEFAULT_SERVER_URL = http://10.29.213.80:8080\n",
+            )
+
+            with self._local_cli():
+                result = ha.precheck_publication_content(change)
+
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(result["blocked"], result)
+            finding = result["findings"][0]
+            self.assertEqual(finding["rule_id"], "HH_INTERNAL_ADDRESS")
+            self.assertEqual(finding["path"], "plans/demo-design.md")
+            self.assertEqual(finding["line"], 3)
+            self.assertTrue(finding["overridable"])
+            # 只报"有敏感内容"等于把人堵死；必须给出可粘贴的豁免写法。
+            self.assertIn("hunter-harness-ignore", finding["recovery_action"])
+
+    def test_inline_waiver_clears_the_precheck(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(
+                tmp,
+                "# design\n\n"
+                "<!-- hunter-harness-ignore: HH_INTERNAL_ADDRESS reason=designed-endpoint -->\n"
+                "DEFAULT_SERVER_URL = http://10.29.213.80:8080\n",
+            )
+
+            with self._local_cli():
+                result = ha.precheck_publication_content(change)
+
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(result["blocked"], result)
+
+    def test_precheck_degrades_to_warning_when_the_cli_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(tmp, "# design\n")
+
+            with mock.patch.object(
+                ha, "resolve_hunter_cli_command", side_effect=FileNotFoundError("no npx")
+            ):
+                result = ha.precheck_publication_content(change)
+
+            # 预检本身不能变成新的卡点。
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["reasonCode"], "PUBLICATION_CONTENT_SCAN_UNAVAILABLE")
+            self.assertIn("422", result["message"])
+
+    def test_status_surfaces_the_precheck_as_a_warning_not_a_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change(
+                tmp,
+                "# design\n\nDEFAULT_SERVER_URL = http://10.29.213.80:8080\n",
+            )
+
+            with self._local_cli():
+                status = ha.check_status(change)
+
+            check = status["checks"]["publication_content_scan"]
+            self.assertTrue(check["blocked"], check)
+            codes = {str(item.get("code")) for item in status["warnings"]}
+            # 服务端策略不归本地裁决：如实预警，不替平台拦下归档。
+            self.assertIn("PUBLICATION_CONTENT_SCAN_FLAGGED", codes)
+            blocker_codes = {str(item.get("code")) for item in status["blockers"]}
+            self.assertNotIn("PUBLICATION_CONTENT_SCAN_FLAGGED", blocker_codes)
+
+
+class ExecuteResultPersistenceTests(unittest.TestCase):
+    """execute 的结果只走 stdout，而它自己会把 change 目录整个移走。
+
+    2026-08-19 kld-sdd：agent 三次尝试把 stdout 重定向到文件——/tmp、/e/tmp 都
+    FileNotFoundError，改写进 change-dir 后，execute 中途把该目录移进
+    .harness/archive/，重定向目标随之蒸发，archive-out3.json 变成空/损坏文件。
+    steps 结果永久丢失，随后 8 次调用都在考古 managed_snapshot_push 跑没跑。
+    """
+
+    def test_result_path_inside_the_change_dir_is_refused_up_front(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "proj" / ".harness" / "changes" / "demo"
+            change.mkdir(parents=True)
+
+            resolved = ha.resolve_execute_result_path(
+                change, str(change / "runtime" / "archive-out.json")
+            )
+
+            self.assertFalse(resolved["ok"], resolved)
+            self.assertEqual(resolved["reasonCode"], "ARCHIVE_RESULT_PATH_VOLATILE")
+            # 就地报错，并给出一个不会被移走的位置。
+            self.assertIn("--output", resolved["recoveryAction"])
+
+    def test_result_path_outside_the_change_dir_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "proj" / ".harness" / "changes" / "demo"
+            change.mkdir(parents=True)
+            target = Path(tmp) / "proj" / "archive-out.json"
+
+            resolved = ha.resolve_execute_result_path(change, str(target))
+
+            self.assertTrue(resolved["ok"], resolved)
+            self.assertEqual(Path(resolved["path"]), target.resolve())
+
+    def test_result_is_written_into_the_archive_after_the_move(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_dir = Path(tmp) / "archive" / "2026-08-19-demo"
+            (archive_dir / "meta").mkdir(parents=True)
+            payload = {"ok": True, "finalStatus": "OK", "steps": {"move": {"ok": True}}}
+
+            written = ha.persist_execute_result(archive_dir, payload)
+
+            self.assertTrue(written["ok"], written)
+            path = Path(written["path"])
+            self.assertTrue(path.is_file())
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["finalStatus"], "OK"
+            )
+            # 调用方不必自己猜落在哪：路径回显在 payload 里。
+            self.assertEqual(payload["resultPath"], str(path))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import {
   readPushPullDecisionOutput,
   readPushPullExecutionOutput,
   readPushPullPreviewOutput,
+  explainPushPullPreviewOutput,
   snapshotArchiveRemotePublishResult
 } from "@hunter-harness/core";
 
@@ -274,7 +275,14 @@ export function createPushPullCliPort(dependencies: PushPullCliDependencies): Pu
         if (target === undefined) throw new PushPullCliAdapterError("PUSH_PULL_CLI_UNAVAILABLE", true);
         const rawResult = await target.call(orchestration, input);
         const result = readPushPullPreviewOutput(rawResult, direction as PushPullDirection, input);
-        if (result === undefined) throw new PushPullCliAdapterError("PUSH_PULL_CLI_OUTPUT_INVALID");
+        if (result === undefined) {
+          // 一个不带字段信息的错误码，等于把调用方堵死在门外。
+          throw new PushPullCliAdapterError(
+            "PUSH_PULL_CLI_OUTPUT_INVALID",
+            false,
+            explainPushPullPreviewOutput(rawResult, direction as PushPullDirection, input)
+          );
+        }
         return Object.freeze({ schema_version: 1, operation, direction: direction as PushPullDirection,
           retry: noRetry, result });
       }

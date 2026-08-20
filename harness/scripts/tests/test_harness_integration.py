@@ -1570,5 +1570,103 @@ class JournalCompactOutputTests(TransactionFixture):
                 ])
 
 
+class MergeVerificationPlanTests(unittest.TestCase):
+    """合并到 master 的 verify 曾是一道空门。
+
+    2026-08-19 kld-sdd：build-profile 没有 mergeVerification，verify 直接抛
+    VERIFY_PLAN_MISSING，错误只说"requires at least one executable command"——
+    不说 --command 是 append 型、按 argv 直跑（无 shell，&& 不可用）。agent 读了
+    六处源码，最后随手传一条 `node <单个测试文件>` 就 verify=DONE，journal 里连
+    跑了什么都没记。真正的 87/87 是 agent 自己在 worktree 里手工补跑的，
+    完全在事务之外。
+    """
+
+    @staticmethod
+    def _profile(commands: dict) -> dict:
+        return {"schemaVersion": 3, "commands": commands}
+
+    def test_plan_falls_back_to_the_profile_verification_commands(self) -> None:
+        module = integration
+        profile = self._profile({
+            "unitTest": {
+                "command": "npm test",
+                "argvTemplate": ["npm", "test"],
+                "scope": "changed",
+                "inputs": ["src/**"],
+                "coverage": "affected",
+                "source": "detected",
+            }
+        })
+
+        plan = module.merge_verification_plan(profile)
+
+        self.assertEqual([item["command"] for item in plan], [["npm", "test"]])
+        # 来源必须可辨认：报告要能说清这是 profile 推导还是手敲的。
+        self.assertEqual(plan[0]["source"], "profile-fallback")
+        self.assertEqual(plan[0]["verification"], "unitTest")
+
+    def test_explicit_merge_verification_wins_over_the_fallback(self) -> None:
+        module = integration
+        profile = self._profile({
+            "unitTest": {
+                "command": "npm test",
+                "argvTemplate": ["npm", "test"],
+                "scope": "changed",
+                "inputs": [],
+                "coverage": "affected",
+                "source": "detected",
+            }
+        })
+        profile["mergeVerification"] = {
+            "requiredOnMerge": [{"command": ["npm", "run", "check"], "kind": "smoke"}]
+        }
+
+        plan = module.merge_verification_plan(profile)
+
+        self.assertEqual([item["command"] for item in plan], [["npm", "run", "check"]])
+        self.assertEqual(plan[0]["source"], "profile")
+
+    def test_plan_is_empty_when_the_profile_has_nothing_runnable(self) -> None:
+        module = integration
+        self.assertEqual(module.merge_verification_plan(None), [])
+        self.assertEqual(module.merge_verification_plan(self._profile({})), [])
+
+    def test_missing_plan_error_explains_how_command_is_parsed(self) -> None:
+        module = integration
+        message = module.verify_plan_recovery_action()
+
+        # 这三件事是当年逼人读六处源码才搞明白的。
+        self.assertIn("--command", message)
+        self.assertIn("argv", message)
+        self.assertIn("&&", message)
+        self.assertIn("mergeVerification", message)
+
+
+class VerificationDepthTests(unittest.TestCase):
+    """一条手敲的探测命令通过，不该和跑完整条链读起来一样。"""
+
+    def test_single_ad_hoc_command_is_marked_thin(self) -> None:
+        module = integration
+        depth = module.verification_depth(
+            [{"command": ["node", "one-file.js"], "source": "cli"}]
+        )
+        self.assertEqual(depth, "thin")
+
+    def test_profile_sourced_plan_is_not_thin(self) -> None:
+        module = integration
+        depth = module.verification_depth(
+            [{"command": ["npm", "test"], "source": "profile-fallback"}]
+        )
+        self.assertEqual(depth, "declared")
+
+    def test_multiple_ad_hoc_commands_are_not_thin(self) -> None:
+        module = integration
+        depth = module.verification_depth([
+            {"command": ["node", "a.js"], "source": "cli"},
+            {"command": ["node", "b.js"], "source": "cli"},
+        ])
+        self.assertEqual(depth, "declared")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,7 @@ import harness_ledger as hl  # noqa: E402
 import harness_paths as hp  # noqa: E402
 import harness_plan_finalize as hpf  # noqa: E402
 import harness_review as hr  # noqa: E402
+import harness_runtime as hruntime  # noqa: E402
 import harness_workflow_policy as hwp  # noqa: E402
 import harness_test_guard as htg  # noqa: E402
 
@@ -3335,6 +3336,14 @@ def cmd_close(args: argparse.Namespace) -> int:
         phase=args.phase,
         run_id=run_id,
     )
+    # 关门时清掉本阶段的过程草稿（diff、临时输入、命令输出重定向）。没人清它们，
+    # 而且它们会被别的门禁读到——2026-08-19 那次，review 自己生成的两个 diff
+    # 直接把归档挡住了。白名单式删除，证据/报告/运行态一律不碰；失败只记不阻断。
+    try:
+        scratch_swept = hruntime.sweep_scratch(change_dir)
+    except OSError as exc:
+        scratch_swept = {"ok": False, "code": "SCRATCH_SWEEP_FAILED", "error": str(exc)}
+
     payload = {
         "ok": True,
         "code": close_code,
@@ -3353,6 +3362,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         "contextHandoff": context_handoff,
         "platformMonitor": platform_monitor,
         "gateRecovery": recovery_result,
+        "scratchSwept": scratch_swept,
     }
     emit(payload, as_json=as_json)
     return 0

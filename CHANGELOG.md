@@ -1,5 +1,107 @@
 # Changelog
 
+## [0.2.90] — hunter-harness ＋ [0.2.84] @hunter-harness/workflow-harness（Bundle 0.2.73）
+
+> **双发**：本次同时改了 CLI（新增 `scan-sensitive`、Push/Pull 输出诊断）与 harness 脚本，
+> 因此 `minimumCliVersion` 提到 `0.2.90`——Bundle 的归档发布内容预检要调用
+> `hunter-harness scan-sensitive`，0.2.89 上没有这个命令，预检会降级成警告。
+
+依据是 kld-sdd `usage-stats-git-identity` 的一次完整执行记录（5690 行，plan→run→test→
+review→fixback→test→submit→merge→archive）。变更本身成功合入 master，但流程代价失衡：
+
+| 阶段 | 工具调用 | 其中 Bash | 错误行 |
+|---|---|---|---|
+| run（实现整个功能） | 101 | 50 | 11 |
+| **run --fixback（改 3 行）** | **121** | **84** | **14** |
+| submit + merge | 89 | 66 | 14 |
+| archive | 45 | 32 | **29** |
+
+改 3 行 deprecation 分支比写整个功能还贵；归档 45 次调用里 29 行是错误，ZIP 上传最终
+422 失败后判定"不可篡改绕过"放弃。根因不是步骤多，是四类工程缺陷。
+
+### Fixed — 门禁没有正规出路时，绕道就是唯一出路
+
+- **fixback 的 review 收据逼调用方销毁审计轨迹**。`register_evidence` 的校验只看
+  severity，完全不读 `fixback-dispositions.json`：findings 里只要还有一条 RED/YELLOW，
+  收据就永远注册不了。当时唯一能让 `close` 通过的办法是把 `review-findings.json` 写成
+  空列表——3 条原始发现 + 2 条复审发现的全部审计轨迹被一次写空抹掉，agent 自己在日志里
+  意识到了这点却没有别的路。而 `harness_review.py` 里 `CURRENT_RISK_DISPOSITIONS` 早就
+  是正确模型，fixback 没用上。现改为只有 `OPEN`/未登记 的 RED/YELLOW 才阻塞；
+  `FIXED`/`NOT_APPLICABLE` 放行；`ACCEPTED_RISK`/`DEFERRED` 放行并记入收据
+  `residualRisks` 留痕。findings sidecar 是发现的真相源，处置结论属于另一个 sidecar。
+
+- **本地发布门禁与服务端扫的不是同一批字节，范围完全倒置**。本地跑
+  `harness_runtime` 自建的赋值式正则、扫**整棵 change 树**（含从不入包的 `runtime/`）；
+  服务端跑 `packages/core` 的 `scanSensitiveFiles`、扫 ZIP 里那 7 个文件。于是 review
+  阶段自己 `git diff HEAD >` 生成的 `review-diff.patch`（5068 行，内含被删的旧 token
+  代码）把归档整个挡住，而真正会被拒的 `plans/*-design.md` 一个字没查——直到 upload
+  收到 422。触发源已复现确认：内网默认地址 `10.29.213.80` 命中 `HH_INTERNAL_ADDRESS`
+  （medium，`overridable=true`）。现在发布门禁只扫会被打包的成员，且 `archive status`
+  用**同源规则**预检，命中即给出 `rule_id / path / line / column / overridable` 与可粘贴
+  的行内标注写法。
+
+- **`archive execute` 把自己的输出写进它即将移走的目录**。结果只走 stdout，而 execute
+  会 `shutil.move` 整个 change 目录再删原目录。当时 agent 三次重定向（`/tmp`、`/e/tmp`
+  均 FileNotFoundError）后写进 change-dir，文件随目录蒸发，`archive-out3.json` 变成损坏
+  文件，`steps` 永久丢失，随后 8 次调用都在考古 `managed_snapshot_push` 跑没跑。现在结果
+  自动落在 `<archiveDir>/meta/archive-execute-result.json`；新增 `--output`，指向
+  change-dir 内部时**当场拒绝**并给出可用位置。
+
+- **合并到 master 的 verify 是一道空门**。profile 没有 `mergeVerification` 就是空计划 →
+  `VERIFY_PLAN_MISSING`，错误不说 `--command` 是 append 型、按 argv 直跑（无 shell，
+  `&&` 不成立）。agent 读了六处源码，最后随手传一条 `node <单个测试文件>` 就
+  `verify=DONE`——即合并到 master 的"验证"实际只跑了 1 个测试文件，journal 里连跑了
+  什么都没记录。真正的 87/87 是 agent 自己在 worktree 里手工补跑的，完全在事务之外。
+  现在缺声明时从 profile 既有验证目标推导计划；journal 记录 plan/来源/退出码/耗时；
+  单条非 profile 命令标 `verificationDepth: "thin"`；错误带完整 `recoveryAction`。
+
+- **`PUSH_PULL_CLI_OUTPUT_INVALID` 把约 20 个不变量压成一个无字段信息的码**，
+  `project_id: null`，dry-run 同败——`--scope branch_files` 因此完全无法定位，归档的
+  plan/spec/report 没能上平台。根因已找到并写成回归测试：`.harness/rules/*.md` 这类
+  路径**已归属别的 sync scope**，用 `content_kind=branch_file` 提交时 schema 判否，
+  整个 preview 被丢弃。新增 `explainPushPullPreviewOutput`，直接点名
+  `operations[1] path=… content_kind=branch_file，但该路径归类为 rule`。
+
+### Added
+
+- `harness_fixback.py evidence-template`：从托管会话/审查 sidecar 直接生成**可直接注册**
+  的证据 JSON。此前 schema 只存在于 Python 源码里，每条证据都得手写，再靠
+  `FIXBACK_*_PROVENANCE_INVALID` 反推缺哪个字段（`sessionId`/`commandHash`/`resultDigest`
+  三个字段本来就能从 `session.json` 直接读出来）。对照组是 ledger 的
+  `scenario-receipt-template`——它一次就能给对。
+- `hunter-harness scan-sensitive`：用发布同款规则扫指定文件，供归档预检与人工复查。
+- `harness_runtime.py sweep-scratch`：白名单清理 `runtime/` 顶层过程草稿（diff、临时输入、
+  命令输出重定向），证据/报告/运行态一律不碰；`gate close` 自动调用并在 `scratchSwept` 回显。
+- `harness_review.py write-findings/write-dispositions --stdin`：免落临时输入文件。
+- `--product-identity` 现在可省略（自动推导当前 HEAD 并在 `resolvedProductIdentity` 回显）。
+  此前它在 5 个子命令里必填却在全仓 `.md` 中**零命中**，只能 grep 源码猜。
+
+### Docs
+
+- `harness-run/protocols.md` 新增「fixback 证据契约」：命令链、别手写证据 JSON、
+  `--product-identity` 取值、RED 必须在修复之前、close 两张收据与
+  **不要清空 review-findings.json**。
+- `harness-archive/SKILL.md` 新增「发布内容预检与服务端 422」：预检读法、
+  `overridable` 与 high 的不同出路、行内标注写法。
+
+### 平台侧（本仓库无法验证）
+
+行内标注 `hunter-harness-ignore: <RULE_ID> reason=<...>` 在**本地**扫描器上确认生效
+（finding 转 `overridden`，`blocked=false`）。但归档上传端点只收裸 ZIP，没有独立的豁免
+申报通道（对比 skills draft 端点有 `SensitiveReviewSubmission`），**服务端是否认这条标注
+尚未验证**。若加标注后仍 422，剩余动作是平台侧加白。该限制已写进 SKILL.md。
+
+`branch_files` 只做到「可诊断」：正确修法是让 branch-file 收集器跳过已属其他 scope 的
+路径（`.harness/rules/*` 本来就由 `--scope rules` 推送，放进 branch_files 是重复计数），
+属 sync 路径的行为变更，未在本次改动。
+
+### 验证
+
+lint 干净；`tsc -b` 干净；vitest 157 文件 / 2157 用例全过；Python safe profile 61/61 模块、
+system profile 2/2 模块全过。归档预检经真实 CLI 端到端验证：命中时报
+`PUBLICATION_CONTENT_SCAN_FLAGGED` 并定位到 `plans/demo-design.md:3:29 HH_INTERNAL_ADDRESS`，
+加行内标注后转 `PUBLICATION_CONTENT_SCAN_CLEAN`。
+
 ## [0.2.83] — @hunter-harness/workflow-harness（Bundle 0.2.72）
 
 > **Bundle 单发**：本次只改 harness 脚本与 skill 文档，CLI 代码未动，仍是 `0.2.89`，

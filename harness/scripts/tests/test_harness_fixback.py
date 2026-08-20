@@ -612,5 +612,277 @@ class FixbackBatchTests(unittest.TestCase):
                 )
 
 
+def _write_findings_with_disposition(
+    change_dir: Path,
+    *,
+    severity: str,
+    disposition: str | None,
+    finding_id: str = "f-one",
+) -> Path:
+    """审查 sidecar：findings 保留全部发现，dispositions 记录处置结论。"""
+    review_dir = change_dir / "reports" / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    findings_path = review_dir / "review-findings.json"
+    findings_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "runId": "review-run-1",
+                "changeName": change_dir.name,
+                "findings": [
+                    {
+                        "id": finding_id,
+                        "dimension": "compatibility",
+                        "severity": severity,
+                        "path": "bin/cli.js",
+                        "line": 13,
+                        "title": "auth 静默落入 init",
+                        "fixbackAction": "code",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if disposition is not None:
+        (review_dir / "fixback-dispositions.json").write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "runId": "review-run-1",
+                    "dispositions": [
+                        {"findingId": finding_id, "disposition": disposition}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    return findings_path
+
+
+def _review_evidence_for(change_dir: Path, findings_path: Path, relative: str) -> str:
+    """按 review-findings.json 当前字节构造一份 review 证据文件。"""
+    digest = "sha256:" + hashlib.sha256(findings_path.read_bytes()).hexdigest()
+    path = change_dir / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 2,
+                "kind": "review",
+                "status": "OK",
+                "productIdentity": "sha256:after",
+                "evidenceId": "review-1",
+                "passedGates": ["review"],
+                "provenance": {
+                    "type": "harness-review",
+                    "reviewReportPath": str(findings_path),
+                    "reviewRunId": "review-run-1",
+                    "engine": "harness-review-6d",
+                    "sourceDigest": digest,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return relative
+
+
+class ReviewReceiptRespectsDispositionsTests(unittest.TestCase):
+    """close 的 review 收据此前只看 severity，逼调用方清空 findings 才能过关。
+
+    2026-08-19 kld-sdd 执行记录：agent 为了让 close 通过，把 review-findings.json
+    写成空列表，抹掉了 3 条原始发现 + 2 条复审发现的全部审计轨迹。门禁没有正规
+    出路时，绕道就是唯一出路——这些测试把出路钉死在 dispositions 上。
+    """
+
+    def test_fixed_finding_no_longer_blocks_and_findings_survive(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="YELLOW", disposition="FIXED"
+            )
+            before = findings_path.read_bytes()
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            record = module.register_evidence(change_dir, relative)
+
+            self.assertEqual(record["kind"], "review")
+            # 关键回归：注册成功且发现记录一字未动。
+            self.assertEqual(findings_path.read_bytes(), before)
+            self.assertEqual(
+                len(json.loads(findings_path.read_text(encoding="utf-8"))["findings"]),
+                1,
+            )
+
+    def test_accepted_risk_passes_and_is_recorded_as_residual_risk(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="YELLOW", disposition="ACCEPTED_RISK"
+            )
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            record = module.register_evidence(change_dir, relative)
+
+            # 放行但必须留痕，不能让已接受的风险悄悄消失。
+            self.assertEqual(
+                [item["findingId"] for item in record["residualRisks"]], ["f-one"]
+            )
+            self.assertEqual(record["residualRisks"][0]["disposition"], "ACCEPTED_RISK")
+
+    def test_open_finding_still_blocks_and_names_the_finding(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="RED", disposition="OPEN"
+            )
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            with self.assertRaises(ValueError) as caught:
+                module.register_evidence(change_dir, relative)
+
+            message = str(caught.exception)
+            self.assertIn("FIXBACK_REVIEW_PROVENANCE_INVALID", message)
+            # 只回显错误码等于没说——必须点名是哪条发现还没处置。
+            self.assertIn("f-one", message)
+
+    def test_undispositioned_finding_still_blocks(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            findings_path = _write_findings_with_disposition(
+                change_dir, severity="YELLOW", disposition=None
+            )
+            relative = _review_evidence_for(
+                change_dir, findings_path, "runtime/review-evidence.json"
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "FIXBACK_REVIEW_PROVENANCE_INVALID"
+            ):
+                module.register_evidence(change_dir, relative)
+
+
+class EvidenceTemplateTests(unittest.TestCase):
+    """手写证据 JSON 是 fixback 最贵的一段：schema 只存在于 Python 源码里。
+
+    ledger 的 scenario-receipt-template 已经证明模板生成器能一次给对；fixback
+    缺同类入口，于是 2026-08-19 那轮里 agent 反复 grep 源码、撞
+    FIXBACK_RUN_PROVENANCE_INVALID、再补 sessionId/commandHash/resultDigest。
+    """
+
+    @staticmethod
+    def _write_session(change_dir: Path, session_id: str, status: str) -> None:
+        run_path = (
+            change_dir / "runtime" / "run-sessions" / session_id / "session.json"
+        )
+        run_path.parent.mkdir(parents=True, exist_ok=True)
+        run_path.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "sessionId": session_id,
+                    "verification": "unitTest",
+                    "status": status,
+                    "testProcessStarted": True,
+                    "productIdentity": "sha256:after",
+                    "commandHash": "sha256:" + "a" * 64,
+                    "resultDigest": "sha256:" + "b" * 64,
+                    "endedAt": "2026-08-19T21:00:00+08:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_template_output_registers_without_hand_editing(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._write_session(change_dir, "run-red-1", "FAIL")
+
+            result = module.evidence_template(
+                change_dir,
+                kind="red",
+                session_id="run-red-1",
+                out="runtime/fixback-red.json",
+            )
+
+            self.assertTrue(result["ok"], result)
+            # 模板必须直接可注册——需要再手改一个字段就等于没解决问题。
+            record = module.register_evidence(change_dir, result["path"])
+            self.assertEqual(record["kind"], "red")
+            self.assertEqual(record["status"], "FAIL")
+
+    def test_template_rejects_a_session_whose_status_contradicts_the_kind(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            self._write_session(change_dir, "run-ok-1", "OK")
+
+            result = module.evidence_template(
+                change_dir,
+                kind="red",
+                session_id="run-ok-1",
+                out="runtime/fixback-red.json",
+            )
+
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["code"], "FIXBACK_SESSION_STATUS_MISMATCH")
+            # 要说清楚 RED 必须来自修复前的失败会话，而不是让人回退代码去凑。
+            self.assertIn("FAIL", result["recoveryAction"])
+
+
+class RunProvenanceDiagnosticsTests(unittest.TestCase):
+    """FIXBACK_RUN_PROVENANCE_INVALID 此前只有码，调用方只能去读源码 debug。"""
+
+    def test_field_mismatch_is_named_with_expected_and_actual(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            EvidenceTemplateTests._write_session(change_dir, "run-red-2", "FAIL")
+            template = module.evidence_template(
+                change_dir,
+                kind="red",
+                session_id="run-red-2",
+                out="runtime/fixback-red.json",
+            )
+            path = change_dir / "runtime" / "fixback-red.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["provenance"]["commandHash"] = "sha256:" + "c" * 64
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(ValueError) as caught:
+                module.register_evidence(change_dir, template["path"])
+
+            message = str(caught.exception)
+            self.assertIn("FIXBACK_RUN_PROVENANCE_INVALID", message)
+            self.assertIn("commandHash", message)
+
+
+class ProductIdentityDefaultTests(unittest.TestCase):
+    """--product-identity 必填却零文档，2026-08-19 那轮靠 8 次 grep 源码猜出来。"""
+
+    def test_resolved_identity_is_derivable_and_stable(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            change_dir = Path(tmp)
+            first = module.resolve_product_identity(change_dir)
+            second = module.resolve_product_identity(change_dir)
+
+            self.assertTrue(first.strip())
+            # 同一产品状态两次推导必须一致，否则 close 的身份比对会无故失败。
+            self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()

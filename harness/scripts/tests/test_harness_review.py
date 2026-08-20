@@ -456,5 +456,43 @@ class CodeGraphIdentityTests(ReviewFixture):
         self.assertEqual(result["code"], "IDENTITY_MISMATCH")
 
 
+class StdinInputTests(unittest.TestCase):
+    """为了把一段 JSON 交给命令，先在 runtime/ 落一个临时文件——这一步没有必要。"""
+
+    def test_write_findings_accepts_stdin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp)
+            doc = {
+                "runId": "run-1",
+                "changeName": "demo",
+                "findings": [
+                    {
+                        "dimension": "correctness",
+                        "severity": "YELLOW",
+                        "path": "a.ts",
+                        "line": 1,
+                        "title": "t",
+                        "fixbackAction": "code",
+                    }
+                ],
+            }
+            code = review.main([
+                "write-findings", "--change-dir", str(change), "--stdin"
+            ], stdin_text=json.dumps(doc))
+
+            self.assertEqual(code, 0)
+            self.assertTrue(review.findings_path(change).is_file())
+
+    def test_input_and_stdin_together_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code = review.main([
+                "write-findings",
+                "--change-dir", tmp,
+                "--input", "x.json",
+                "--stdin",
+            ], stdin_text="{}")
+            self.assertNotEqual(code, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

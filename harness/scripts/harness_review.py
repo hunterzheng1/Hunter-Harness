@@ -515,13 +515,42 @@ def cmd_validate_codegraph_identity(args: argparse.Namespace) -> int:
     return _emit(payload, as_json=True)
 
 
+def _input_document(args: argparse.Namespace) -> Any:
+    """--input <file> 或 --stdin，二选一。
+
+    为了把一段 JSON 交给命令而先在 runtime/ 落一个临时文件，既多一次往返，
+    也给 runtime/ 又添一件没人清的草稿。
+    """
+    use_stdin = bool(getattr(args, "stdin", False))
+    raw_input_path = getattr(args, "input", None)
+    if use_stdin and raw_input_path:
+        raise ValueError("--input 与 --stdin 只能二选一")
+    if use_stdin:
+        text = getattr(args, "_stdin_text", None)
+        if text is None:
+            text = sys.stdin.read()
+        return json.loads(text)
+    if not raw_input_path:
+        raise ValueError("需要 --input <file> 或 --stdin")
+    return _read_json(Path(raw_input_path))
+
+
 def cmd_write_findings(args: argparse.Namespace) -> int:
-    doc = _read_json(Path(args.input))
+    try:
+        doc = _input_document(args)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _emit({"ok": False, "code": "FINDINGS_INPUT_INVALID", "error": str(exc)}, as_json=True)
     return _emit(write_findings(Path(args.change_dir), doc), as_json=True)
 
 
 def cmd_write_dispositions(args: argparse.Namespace) -> int:
-    doc = _read_json(Path(args.input))
+    try:
+        doc = _input_document(args)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return _emit(
+            {"ok": False, "code": "DISPOSITIONS_INPUT_INVALID", "error": str(exc)},
+            as_json=True,
+        )
     return _emit(write_dispositions(Path(args.change_dir), doc), as_json=True)
 
 
@@ -547,12 +576,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_findings = sub.add_parser("write-findings")
     p_findings.add_argument("--change-dir", required=True)
-    p_findings.add_argument("--input", required=True)
+    p_findings.add_argument("--input", help="findings JSON 文件路径")
+    p_findings.add_argument(
+        "--stdin", action="store_true", help="从标准输入读 JSON，免落临时文件"
+    )
     p_findings.set_defaults(func=cmd_write_findings)
 
     p_dispositions = sub.add_parser("write-dispositions")
     p_dispositions.add_argument("--change-dir", required=True)
-    p_dispositions.add_argument("--input", required=True)
+    p_dispositions.add_argument("--input", help="dispositions JSON 文件路径")
+    p_dispositions.add_argument(
+        "--stdin", action="store_true", help="从标准输入读 JSON，免落临时文件"
+    )
     p_dispositions.set_defaults(func=cmd_write_dispositions)
 
     p_status = sub.add_parser("status")
@@ -562,9 +597,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, stdin_text: str | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if stdin_text is not None:
+        # 测试注入用；正式路径仍然读真正的 stdin。
+        args._stdin_text = stdin_text
     return int(args.func(args))
 
 

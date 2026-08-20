@@ -2167,6 +2167,185 @@ def _advisory_sensitive_gate(result: dict[str, Any], policy: str) -> dict[str, A
     }
 
 
+ARCHIVE_EXECUTE_RESULT_REL = Path("meta") / "archive-execute-result.json"
+
+
+def resolve_execute_result_path(change_dir: Path, raw_path: str) -> dict[str, Any]:
+    """校验 `--output`：execute 会移走 change 目录，写进去的结果必然丢失。
+
+    这个错误只能在**动手前**报。等 execute 跑完再发现输出文件不见了，steps 结果
+    已经随目录被移走且无法重建——调用方只剩考古一条路。
+    """
+    change_dir = change_dir.expanduser().resolve()
+    target = Path(raw_path).expanduser()
+    target = target if target.is_absolute() else (Path.cwd() / target)
+    target = target.resolve()
+    try:
+        target.relative_to(change_dir)
+    except ValueError:
+        return {"ok": True, "path": str(target)}
+    suggestion = change_dir.parent / f"{change_dir.name}-archive-result.json"
+    return {
+        "ok": False,
+        "reasonCode": "ARCHIVE_RESULT_PATH_VOLATILE",
+        "path": str(target),
+        "changeDir": str(change_dir),
+        "recoveryAction": (
+            f"归档会把 {change_dir} 整个移进 .harness/archive/，写在它内部的输出文件"
+            f"会随之消失。把 --output 指到目录之外，例如 {suggestion}；"
+            "归档成功后结果也会自动落在 <archiveDir>/meta/archive-execute-result.json。"
+        ),
+    }
+
+
+def persist_execute_result(archive_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """把 execute 的完整结果写进归档目录——移动之后的位置，不会再被搬走。
+
+    调用方此前只能靠 shell 重定向抓 stdout，而唯一"顺手"的落点（change 目录）正是
+    要被移走的那个。结果落盘在归档里，并把路径回显进 payload，重定向就不再必要。
+    """
+    archive_dir = archive_dir.expanduser().resolve()
+    path = archive_dir / ARCHIVE_EXECUTE_RESULT_REL
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return {"ok": False, "reasonCode": "ARCHIVE_RESULT_WRITE_FAILED", "error": str(exc)}
+    payload["resultPath"] = str(path)
+    return {"ok": True, "path": str(path)}
+
+
+def publication_member_paths(source_dir: Path) -> list[str]:
+    """归档包会包含哪些文件——由 `_archive_core_file_specs` 单一定义，不另起一套。
+
+    包成员在 execute 之前就已确定：`reports/final/summary-data.json`、`spec/**.md`、
+    `plans/**.md`、`candidates/knowledge.json`、`meta/archive-meta.md`、
+    `meta/change-context.json`。其中 summary-data.json / archive-meta.md 由 execute
+    生成，预检时尚不存在，会被自动跳过——它们是机器产物，承载不了人写的敏感串。
+    """
+    project_root = find_project_root(source_dir)
+    try:
+        _, _, specs = _archive_core_file_specs(project_root, source_dir)
+    except (OSError, ValueError):
+        return []
+    return sorted(package_path for _, package_path, _, _ in specs)
+
+
+def precheck_publication_content(
+    source_dir: Path,
+    *,
+    timeout_seconds: int = 60,
+) -> dict[str, Any]:
+    """用**发布同款规则**扫描**会被发布的那批文件**，在归档开始时就给出结论。
+
+    此前这两件事都不成立：本地跑的是 harness_runtime 自建的赋值式正则，扫的是整棵
+    change 树（含从不入包的 runtime/）；服务端跑的是 packages/core 的
+    `scanSensitiveFiles`，扫的是 ZIP 里那几个文件。范围与规则双双错位，于是本地在
+    草稿上误报阻塞，真正会被拒的设计文档一个字没查——直到 upload 收到 422。
+
+    这里改为调用 CLI 的 `scan-sensitive`（直接复用 core 的导出），保证与服务端同源。
+    CLI 不可用时降级为警告：预检本身不该变成新的卡点。
+    """
+    members = publication_member_paths(source_dir)
+    if not members:
+        return {
+            "ok": True,
+            "reasonCode": "PUBLICATION_CONTENT_SCAN_EMPTY",
+            "blocked": False,
+            "findings": [],
+            "members": [],
+        }
+    project_root = find_project_root(source_dir)
+    try:
+        prefix = resolve_hunter_cli_command(project_root)
+    except (FileNotFoundError, OSError) as exc:
+        return _publication_scan_unavailable(members, str(exc))
+    command = [*prefix, "scan-sensitive", "--root", str(source_dir), "--json"]
+    for member in members:
+        command.extend(["--file", member])
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _publication_scan_unavailable(members, str(exc))
+    try:
+        report = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return _publication_scan_unavailable(
+            members, f"scan-sensitive output was not JSON: {exc}"
+        )
+    if not isinstance(report, dict) or "findings" not in report:
+        return _publication_scan_unavailable(
+            members, "scan-sensitive output missing findings"
+        )
+    findings = [item for item in report.get("findings") or [] if isinstance(item, dict)]
+    blocked = [item for item in findings if item.get("disposition") == "blocked"]
+    hard = [item for item in blocked if item.get("overridable") is False]
+    return {
+        "ok": True,
+        "reasonCode": (
+            "PUBLICATION_CONTENT_SCAN_FLAGGED" if blocked
+            else "PUBLICATION_CONTENT_SCAN_CLEAN"
+        ),
+        "scannerVersion": report.get("scanner_version"),
+        "members": members,
+        "blocked": bool(blocked),
+        "hardBlocked": bool(hard),
+        "findings": findings,
+        "nextAction": _publication_scan_next_action(blocked, hard),
+    }
+
+
+def _publication_scan_unavailable(members: list[str], error: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "reasonCode": "PUBLICATION_CONTENT_SCAN_UNAVAILABLE",
+        "blocked": False,
+        "findings": [],
+        "members": members,
+        "error": error,
+        "message": (
+            "无法运行发布内容预检（hunter-harness CLI 不可用）。归档继续，但上传时"
+            "仍可能被服务端以 422 拒收；装好 CLI 后可用 "
+            "`hunter-harness scan-sensitive` 单独复查。"
+        ),
+    }
+
+
+def _publication_scan_next_action(
+    blocked: list[dict[str, Any]], hard: list[dict[str, Any]]
+) -> str:
+    if not blocked:
+        return "发布内容预检通过。"
+    if hard:
+        names = ", ".join(
+            f"{item.get('path')}:{item.get('line')} {item.get('rule_id')}"
+            for item in hard
+        )
+        return (
+            f"以下命中不可豁免（high）：{names}。必须真正脱敏后重新打包，"
+            "不要用行内标注绕过。"
+        )
+    lines = "; ".join(
+        str(item.get("recovery_action") or "") for item in blocked
+    )
+    return (
+        "服务端会以同款规则拒收这些内容（HTTP 422）。若确属设计固有内容，"
+        f"按下列写法加行内标注后重新打包：{lines}"
+    )
+
+
 def validate_sensitive_evidence_publication_gate(
     change_dir: Path,
     *,
@@ -2194,7 +2373,11 @@ def validate_sensitive_evidence_publication_gate(
             "receiptPath": str(receipt_path),
             "unresolvedFailures": [],
         }
-    candidates = hruntime.sensitive_evidence_candidates(change_dir)
+    # 只扫会被发布出去的字节。runtime/ 是各阶段草稿（review 的 diff、临时校验脚本、
+    # 命令输出），从不进归档包——拿它挡发布，挡的是永远不会离开本机的内容。
+    candidates = hruntime.sensitive_evidence_candidates(
+        change_dir, exclude_dirs=hruntime.PUBLICATION_EXCLUDED_DIRS
+    )
     if candidates:
         return _advisory_sensitive_gate(
             {
@@ -2265,8 +2448,17 @@ def validate_sensitive_evidence_publication_gate(
         issues.append({"code": "SENSITIVE_EVIDENCE_QUARANTINE_FAILED", "count": len(unresolved)})
     elif unresolved not in (None, []):
         issues.append({"code": "SECRET_SCAN_UNRESOLVED_INVALID"})
+    # 用收据自己声明的排除项复算，两侧口径才一致；写死一套常量会让旧收据
+    # 在升级后集体报 digest 漂移。
+    receipt_excluded = receipt.get("publicationExcludedDirs")
+    if not isinstance(receipt_excluded, list) or any(
+        not isinstance(item, str) for item in receipt_excluded
+    ):
+        receipt_excluded = []
     try:
-        actual_digest = hruntime.publishable_tree_digest(change_dir)
+        actual_digest = hruntime.publishable_tree_digest(
+            change_dir, exclude_dirs=tuple(receipt_excluded)
+        )
     except OSError as exc:
         actual_digest = None
         issues.append({"code": "SECRET_SCAN_TREE_UNREADABLE", "error": str(exc)})
@@ -2406,6 +2598,24 @@ def check_status(
                 "message": str(exact_byte["remediation"]),
             }
         )
+
+    # 发布内容预检：与服务端同源的规则，扫的是真正会进 ZIP 的那批文件。
+    # 服务端策略不归本地裁决，所以只预警不阻断——但必须在归档开始时就说出来，
+    # 而不是等跑完全流程由 upload 返回 422。
+    content_scan = precheck_publication_content(change_dir)
+    checks["publication_content_scan"] = content_scan
+    if content_scan.get("blocked"):
+        warnings.append({
+            "code": "PUBLICATION_CONTENT_SCAN_FLAGGED",
+            "message": str(content_scan.get("nextAction") or ""),
+        })
+    elif not content_scan.get("ok"):
+        warnings.append({
+            "code": str(
+                content_scan.get("reasonCode") or "PUBLICATION_CONTENT_SCAN_UNAVAILABLE"
+            ),
+            "message": str(content_scan.get("message") or ""),
+        })
 
     sensitive_gate = validate_sensitive_evidence_publication_gate(
         change_dir,
@@ -7842,6 +8052,7 @@ def cmd_finalize(
     source_sensitive_refresh = hruntime.refresh_sensitive_evidence_scan_receipt(
         original_change_dir,
         persist=False,
+        exclude_dirs=hruntime.PUBLICATION_EXCLUDED_DIRS,
     )
     payload["steps"]["sensitive_evidence_source_refresh"] = source_sensitive_refresh
     if not source_sensitive_refresh.get("ok"):
@@ -7981,7 +8192,8 @@ def cmd_finalize(
                 "stateDir": str(split_state_dir),
             }
         staged_sensitive_refresh = hruntime.refresh_sensitive_evidence_scan_receipt(
-            work_dir
+            work_dir,
+            exclude_dirs=hruntime.PUBLICATION_EXCLUDED_DIRS,
         )
         payload["steps"][
             "sensitive_evidence_staging_refresh"
@@ -8742,6 +8954,12 @@ def cmd_finalize(
     payload["finalStatus"] = "OK"
     payload["warnings"] = warnings
     payload["summary_data"] = str(summary_path)
+    # 结果落在归档里（移动之后的位置），调用方不必再靠 shell 重定向去接 stdout。
+    persisted = persist_execute_result(archive_dir, payload)
+    if not persisted.get("ok"):
+        warnings.append(
+            f"could not persist archive execute result: {persisted.get('error')}"
+        )
     return 0, payload
 
 
@@ -10120,9 +10338,45 @@ def cmd_certify_local_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_with_optional_output(args: argparse.Namespace, payload: dict[str, Any]) -> int | None:
+    """Write the result to --output, refusing a path the archive will delete."""
+    raw = getattr(args, "output", None)
+    if not raw:
+        return None
+    resolved = resolve_execute_result_path(resolve_path(args.change_dir), str(raw))
+    if not resolved.get("ok"):
+        emit_json(resolved)
+        return 2
+    try:
+        target = Path(resolved["path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        emit_json({
+            "ok": False,
+            "reasonCode": "ARCHIVE_RESULT_WRITE_FAILED",
+            "path": resolved["path"],
+            "error": str(exc),
+        })
+        return 2
+    payload["resultPath"] = resolved["path"]
+    return None
+
+
 def cmd_finalize_cli(args: argparse.Namespace) -> int:
     change_dir = resolve_path(args.change_dir)
     archive_root = resolve_path(args.archive_root)
+    # 先验路径再干活：跑完才发现输出落点会被移走，结果已经无法重建。
+    raw_output = getattr(args, "output", None)
+    if raw_output:
+        resolved = resolve_execute_result_path(change_dir, str(raw_output))
+        if not resolved.get("ok"):
+            emit_json(resolved)
+            return 2
     durable_root = (
         resolve_path(args.durable_root)
         if getattr(args, "durable_root", None)
@@ -10141,6 +10395,9 @@ def cmd_finalize_cli(args: argparse.Namespace) -> int:
         closure_disposition=str(getattr(args, "closure", "completed")),
         closure_reason=str(getattr(args, "closure_reason", "")),
     )
+    failure = _emit_with_optional_output(args, payload)
+    if failure is not None:
+        return failure
     emit_json(payload)
     return code
 
@@ -10151,6 +10408,14 @@ def cmd_execute_cli(args: argparse.Namespace) -> int:
         if getattr(args, "durable_root", None)
         else None
     )
+    raw_output = getattr(args, "output", None)
+    if raw_output:
+        resolved = resolve_execute_result_path(
+            resolve_path(args.change_dir), str(raw_output)
+        )
+        if not resolved.get("ok"):
+            emit_json(resolved)
+            return 2
     code, payload = execute_archive(
         resolve_path(args.change_dir),
         resolve_path(args.archive_root),
@@ -10164,6 +10429,9 @@ def cmd_execute_cli(args: argparse.Namespace) -> int:
         closure_disposition=str(getattr(args, "closure", "completed")),
         closure_reason=str(getattr(args, "closure_reason", "")),
     )
+    failure = _emit_with_optional_output(args, payload)
+    if failure is not None:
+        return failure
     emit_json(payload)
     return code
 
@@ -10771,6 +11039,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="release-candidate",
         help="release-candidate enforces candidate evidence; record-only archives facts without release eligibility",
     )
+    p_fin.add_argument("--output", default=None, help="把完整结果另存到该路径。**不得**指向 --change-dir 内部：归档会把该目录整个移走，写在里面的文件必然丢失。归档成功后结果也会自动落在 <archiveDir>/meta/archive-execute-result.json。")
     p_fin.add_argument("--json", action="store_true", default=True)
     p_fin.set_defaults(func=cmd_finalize_cli)
 
@@ -10795,6 +11064,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("release-candidate", "record-only"),
         default="release-candidate",
     )
+    p_execute.add_argument("--output", default=None, help="把完整结果另存到该路径。**不得**指向 --change-dir 内部：归档会把该目录整个移走，写在里面的文件必然丢失。归档成功后结果也会自动落在 <archiveDir>/meta/archive-execute-result.json。")
     p_execute.add_argument("--json", action="store_true", default=True)
     p_execute.set_defaults(func=cmd_execute_cli)
 
