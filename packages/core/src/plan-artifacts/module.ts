@@ -40,8 +40,14 @@ const coverageDimensions: readonly CoverageDimension[] = [
 ];
 const capabilities = ["api", "concurrency", "database", "filesystem", "migration", "network",
   "permissions", "security", "ui"] as const;
-export const MODULE_GENERATOR_VERSION = "hunter-harness-plan-artifacts/2" as const;
+export const MODULE_GENERATOR_VERSION = "hunter-harness-plan-artifacts/3" as const;
 const LEGACY_GENERATOR_VERSION = "hunter-harness-plan-artifacts/1" as const;
+const SCENARIO_PRIORITIES = ["P0", "P1", "P2"] as const;
+// 与 harness_plan_finalize.PRIORITY_EVIDENCE_KIND 同表。派生进 manifest 而不是留给
+// Python 端算：让 artifact 自描述，消费侧只做纯改名，两边不会各推一套映射。
+const PRIORITY_EVIDENCE_KIND: Readonly<Record<string, "ledger" | "advisory">> = {
+  P0: "ledger", P1: "ledger", P2: "advisory"
+};
 
 function fail(code: ConstructorParameters<typeof PlanArtifactError>[0]): never {
   throw new PlanArtifactError(code);
@@ -80,14 +86,20 @@ function validTask(value: unknown): value is PlanTaskInput {
 
 function validScenario(value: unknown): value is TestScenarioInput {
   return plainRecord(value) && exact(value, ["scenario_id", "title", "acceptance", "coverage_dimension",
-    "execution_level", "evidence_requirements", "risk_level", "task_refs", "requirement_refs"],
-    ["verification_command"]) &&
+    "execution_level", "evidence_requirements", "risk_level", "priority", "owner_phase",
+    "task_refs", "requirement_refs"],
+    ["verification_command", "executable_test_id", "test_file", "test_title"]) &&
     bounded(value.scenario_id, 128) && bounded(value.title, 512) && bounded(value.acceptance, 2_048) &&
     typeof value.coverage_dimension === "string" && coverageDimensions.includes(value.coverage_dimension as never) &&
     typeof value.execution_level === "string" && ["unit", "api", "data_compatibility", "integration", "system"]
       .includes(value.execution_level) && stringArray(value.evidence_requirements, 1, 16, 1_024) &&
     (value.verification_command === undefined || bounded(value.verification_command, 1_024)) &&
     typeof value.risk_level === "string" && ["low", "medium", "high"].includes(value.risk_level) &&
+    typeof value.priority === "string" && SCENARIO_PRIORITIES.includes(value.priority as never) &&
+    typeof value.owner_phase === "string" && PLAN_PHASES.includes(value.owner_phase as never) &&
+    (value.executable_test_id === undefined || bounded(value.executable_test_id, 512)) &&
+    (value.test_file === undefined || bounded(value.test_file, 512)) &&
+    (value.test_title === undefined || bounded(value.test_title, 512)) &&
     stringArray(value.task_refs, 1, 128, 160) && stringArray(value.requirement_refs, 1, 128, 160);
 }
 
@@ -502,11 +514,21 @@ function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput):
       owner_phase: task.owner_phase, decision_refs: task.decision_refs,
       scenario_refs: task.scenario_refs, requirement_refs: task.requirement_refs,
       evidence_refs: task.evidence_refs, ownership_refs: task.ownership_refs })), foundation_gate: "approved" });
+  // 白名单式投影：新增的场景字段不写进这里就到不了 meta/scenario-manifest.json，
+  // run/test 门禁也就消费不了它。priority/owner_phase/required_evidence_kind 与
+  // 可执行三元正是门禁判定 "哪些场景必须带 ledger 证据、在哪个阶段到期" 的依据。
   const scenario_manifest = machineArtifact("scenario_manifest", human,
     { scenarios: human.test_scenarios.content.scenarios.map((scenario) => ({
       scenario_id: scenario.scenario_id, coverage_dimension: scenario.coverage_dimension,
       execution_level: scenario.execution_level, evidence_requirements: scenario.evidence_requirements,
-      risk_level: scenario.risk_level, task_refs: scenario.task_refs,
+      risk_level: scenario.risk_level, priority: scenario.priority,
+      owner_phase: scenario.owner_phase,
+      required_evidence_kind: PRIORITY_EVIDENCE_KIND[scenario.priority] ?? "advisory",
+      ...(scenario.executable_test_id === undefined
+        ? {} : { executable_test_id: scenario.executable_test_id }),
+      ...(scenario.test_file === undefined ? {} : { test_file: scenario.test_file }),
+      ...(scenario.test_title === undefined ? {} : { test_title: scenario.test_title }),
+      task_refs: scenario.task_refs,
       requirement_refs: scenario.requirement_refs
     })), coverage: human.test_scenarios.content.coverage });
   const body = { schema_version: 2 as const, gate_policy, worktree, implementation_checkpoints,

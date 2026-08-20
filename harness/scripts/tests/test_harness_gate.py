@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -30,6 +31,8 @@ def load_module(name: str, filename: str):
 gate = load_module("harness_gate", "harness_gate.py")
 change = load_module("harness_change_for_gate", "harness_change.py")
 policy = load_module("harness_workflow_policy", "harness_workflow_policy.py")
+# 解包器住在 finalizer（它定义了 legacy manifest 的 schema），gate 与 ledger 共用。
+hpf = gate.hpf
 
 
 class HarnessGateTests(unittest.TestCase):
@@ -2288,16 +2291,15 @@ class ScenarioCoverageTests(unittest.TestCase):
 
 
 class V2ArtifactManifestTests(unittest.TestCase):
-    """v2 plan finalize 写的 scenario-manifest 是 artifact 包装，字段集与门禁消费的不同。
+    """v2 plan finalize 写的 scenario-manifest 是 artifact 包装，键名与门禁消费的不同。
 
-    包装体是 {artifact_type, content_hash, artifact_id, content:{scenarios, coverage}}，
-    每条场景只有 scenario_id/coverage_dimension/execution_level/evidence_requirements/
-    risk_level/task_refs/requirement_refs——没有 id、priority、requiredEvidenceKind、
-    ownerPhase，也没有 executableTestId/testFile/testTitle 三元。
+    包装体是 {artifact_type, content_hash, artifact_id, content:{scenarios, coverage}}。
+    v2 场景契约补齐 priority/owner_phase/required_evidence_kind 之后，门禁改为
+    **解包**成 legacy 形状再判定；字段不齐仍然 fail-closed。
 
-    这里冻结的行为：门禁必须**明确点名这个缺口**。既不能报含糊的
-    SCENARIO_MANIFEST_INVALID 把调用方推去读门禁源码，更不能因为 required_ids
-    算成空集而静默放行——那等于对所有 v2 计划关掉证据门禁。
+    两个方向都要冻结：能消费的必须真能消费（否则 v2 计划永远走不完证据闭环），
+    不能消费的必须点名缺口——既不能报含糊的 SCENARIO_MANIFEST_INVALID 把调用方
+    推去读门禁源码，更不能因为 required_ids 算成空集而静默放行。
     """
 
     def setUp(self) -> None:
@@ -2308,49 +2310,114 @@ class V2ArtifactManifestTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.project, ignore_errors=True)
 
-    def _write_v2_manifest(self) -> None:
+    @staticmethod
+    def _scenario(scenario_id: str, **overrides: Any) -> dict:
+        base = {
+            "scenario_id": scenario_id,
+            "coverage_dimension": "normal_path",
+            "execution_level": "unit",
+            "evidence_requirements": ["focused_test"],
+            "risk_level": "medium",
+            "priority": "P0",
+            "owner_phase": "run",
+            "required_evidence_kind": "ledger",
+            "executable_test_id": f"unit::{scenario_id}",
+            "test_file": "tests/unit.spec.ts",
+            "test_title": scenario_id,
+            "task_refs": ["T1"],
+            "requirement_refs": ["requirement:x"],
+        }
+        base.update(overrides)
+        return {k: v for k, v in base.items() if v is not None}
+
+    def _write_v2_manifest(self, *scenarios: dict) -> None:
         (self.change_dir / "meta" / "scenario-manifest.json").write_text(
             json.dumps({
                 "artifact_type": "scenario_manifest",
                 "content_hash": "sha256:" + "a" * 64,
                 "artifact_id": "plan_artifact:scenario_manifest:" + "a" * 64,
-                "content": {
-                    "scenarios": [
-                        {
-                            "scenario_id": "UT-001",
-                            "coverage_dimension": "normal_path",
-                            "execution_level": "unit",
-                            "evidence_requirements": ["focused_test"],
-                            "risk_level": "medium",
-                            "task_refs": ["T1"],
-                            "requirement_refs": ["requirement:x"],
-                        }
-                    ],
-                    "coverage": [],
-                },
+                "content": {"scenarios": list(scenarios), "coverage": []},
             }) + "\n",
             encoding="utf-8",
         )
 
-    def test_v2_artifact_manifest_is_named_as_unconsumable(self) -> None:
-        self._write_v2_manifest()
+    def test_complete_v2_manifest_is_unpacked_and_consumed(self) -> None:
+        """字段齐全的 v2 manifest 必须真能喂进门禁，而不是继续被拒。"""
+        self._write_v2_manifest(self._scenario("UT-001"))
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        # ledger 场景无收据 → 覆盖不足，但**不是**"格式不可消费"。
+        self.assertNotEqual(result.get("code"), "SCENARIO_MANIFEST_V2_UNSUPPORTED")
+        # 更要紧的是它没有被算成空集静默放行。
+        self.assertNotEqual(result.get("code"), "NO_LEDGER_REQUIRED_SCENARIOS")
+        self.assertFalse(result["ok"], result)
+
+    def test_legacy_shaped_v2_manifest_defers_test_owned_scenarios(self) -> None:
+        """解包后 ownerPhase 分区照常工作——这是 v2 契约真的接上了的证据。"""
+        self._write_v2_manifest(self._scenario("UT-001", owner_phase="test"))
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_COVERAGE_DEFERRED")
+
+    def test_v2_manifest_without_the_new_fields_still_fails_closed(self) -> None:
+        """旧 v2 产物（补字段之前发布的）必须继续点名缺口。"""
+        self._write_v2_manifest(self._scenario(
+            "UT-001", priority=None, owner_phase=None, required_evidence_kind=None,
+        ))
 
         result = gate._validate_scenario_coverage(self.change_dir, "run")
 
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["code"], "SCENARIO_MANIFEST_V2_UNSUPPORTED")
-        # 报错必须点名缺的字段，调用方据此回规划阶段补，而不是去翻门禁源码
-        self.assertIn("missingFields", result)
-        for field in ("priority", "ownerPhase", "executableTestId"):
+        for field in ("priority", "ownerPhase", "requiredEvidenceKind"):
             self.assertIn(field, result["missingFields"])
 
-    def test_v2_artifact_manifest_never_silently_passes(self) -> None:
-        self._write_v2_manifest()
+    def test_one_incomplete_scenario_fails_the_whole_manifest(self) -> None:
+        """逐场景校验，不是取键的并集。
 
-        for phase in (None, "run", "test"):
-            result = gate._validate_scenario_coverage(self.change_dir, phase)
-            self.assertFalse(result["ok"], f"phase={phase} 不得放行: {result}")
-            self.assertNotEqual(result.get("code"), "NO_LEDGER_REQUIRED_SCENARIOS")
+        并集只要有一条场景带了 priority 就算 present，其余缺 priority 的场景会
+        静默落进非必需集，required_ids 随之缩水——那正是把证据门禁悄悄关掉。
+        """
+        self._write_v2_manifest(
+            self._scenario("UT-001"),
+            self._scenario("UT-002", priority=None),
+        )
+
+        result = gate._validate_scenario_coverage(self.change_dir, "run")
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "SCENARIO_MANIFEST_V2_UNSUPPORTED")
+        self.assertIn("priority", result["missingFields"])
+
+    def test_missing_executable_triple_downgrades_instead_of_failing(self) -> None:
+        """可执行三元是可选的：缺了只降到 schemaVersion 1，不是缺口。"""
+        unpacked = hpf.unpack_v2_scenario_manifest({
+            "artifact_type": "scenario_manifest",
+            "content": {"scenarios": [self._scenario(
+                "UT-001", executable_test_id=None, test_file=None, test_title=None,
+            )], "coverage": []},
+        })
+
+        self.assertTrue(unpacked["ok"], unpacked)
+        self.assertEqual(unpacked["manifest"]["schemaVersion"], 1)
+
+    def test_complete_executable_triple_yields_schema_v2(self) -> None:
+        unpacked = hpf.unpack_v2_scenario_manifest({
+            "artifact_type": "scenario_manifest",
+            "content": {"scenarios": [self._scenario("UT-001")], "coverage": []},
+        })
+
+        self.assertTrue(unpacked["ok"], unpacked)
+        self.assertEqual(unpacked["manifest"]["schemaVersion"], 2)
+        self.assertEqual(unpacked["manifest"]["scenarios"][0]["id"], "UT-001")
+
+    def test_legacy_manifest_is_left_alone(self) -> None:
+        self.assertIsNone(hpf.unpack_v2_scenario_manifest(
+            {"schemaVersion": 2, "changeName": "demo", "scenarios": []}
+        ))
 
 
 class GateProjectArgumentTests(unittest.TestCase):

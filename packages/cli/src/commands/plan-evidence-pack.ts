@@ -113,6 +113,15 @@ const EVIDENCE_PACK_TEMPLATE = {
         execution_level: "unit",
         evidence_requirements: ["<证据要求，如 focused_test>"],
         risk_level: "medium",
+        // P0/P1 = 必须带 ledger 证据；P2 = advisory。门禁按它判定哪些场景必须闭环。
+        priority: "P0",
+        // 这条场景在哪个阶段到期。run 关门时 owner_phase=test 的场景按计划顺延。
+        owner_phase: "run",
+        // P0/P1 场景要么三元给全、要么整组省略；省略时 manifest 降为 schemaVersion 1，
+        // 关门无法绑定结构化执行收据。
+        executable_test_id: "<可执行测试 ID，如 unit::ut1>",
+        test_file: "<测试文件相对路径>",
+        test_title: "<测试用例标题>",
         verification_command: "<验证命令，可整条删除>"
       },
       {
@@ -122,7 +131,9 @@ const EVIDENCE_PACK_TEMPLATE = {
         coverage_dimension: "parameter_validation",
         execution_level: "unit",
         evidence_requirements: ["<证据要求，如 focused_test>"],
-        risk_level: "low"
+        risk_level: "low",
+        priority: "P2",
+        owner_phase: "run"
       },
       {
         scenario_id: "<UT-003>",
@@ -131,7 +142,9 @@ const EVIDENCE_PACK_TEMPLATE = {
         coverage_dimension: "error_codes",
         execution_level: "unit",
         evidence_requirements: ["<证据要求，如 focused_test>"],
-        risk_level: "medium"
+        risk_level: "medium",
+        priority: "P2",
+        owner_phase: "test"
       }
     ],
     approved_scopes: [{ text: "<纳入范围条目>" }]
@@ -215,10 +228,12 @@ const TASK_KEYS = ["task_id", "objective", "affected_paths", "owner_phase"] as c
 const TASK_DERIVED_KEYS = ["depends_on", "decision_refs", "scenario_refs", "requirement_refs",
   "evidence_refs", "ownership_refs"] as const;
 const SCENARIO_KEYS = ["scenario_id", "title", "acceptance", "coverage_dimension", "execution_level",
-  "evidence_requirements", "risk_level"] as const;
-const SCENARIO_OPTIONAL_KEYS = ["verification_command", "task_refs", "requirement_refs"] as const;
+  "evidence_requirements", "risk_level", "priority", "owner_phase"] as const;
+const SCENARIO_OPTIONAL_KEYS = ["verification_command", "task_refs", "requirement_refs",
+  "executable_test_id", "test_file", "test_title"] as const;
 const EXECUTION_LEVELS = ["unit", "api", "data_compatibility", "integration", "system"] as const;
 const RISK_LEVELS = ["low", "medium", "high"] as const;
+const SCENARIO_PRIORITIES = ["P0", "P1", "P2"] as const;
 const WORKTREE_POLICIES = ["project_default", "required", "forbidden"] as const;
 
 interface InputProblem {
@@ -336,9 +351,23 @@ function collectInputProblems(input: EvidencePackInputFile): readonly InputProbl
         [...SCENARIO_KEYS, ...SCENARIO_OPTIONAL_KEYS]);
       if (keyProblem !== undefined) problems.push(keyProblem);
       for (const [key, allowed] of [["coverage_dimension", COVERAGE_DIMENSIONS],
-        ["execution_level", EXECUTION_LEVELS], ["risk_level", RISK_LEVELS]] as const) {
+        ["execution_level", EXECUTION_LEVELS], ["risk_level", RISK_LEVELS],
+        ["priority", SCENARIO_PRIORITIES], ["owner_phase", PLAN_PHASES]] as const) {
         const problem = enumProblem(scenario, key, path, allowed);
         if (problem !== undefined) problems.push(problem);
+      }
+      // P0/P1 是 ledger 场景：缺可执行三元时派生的 manifest 只能声明 schemaVersion 1，
+      // run/test 关门时绑不上结构化执行收据。在边界上说清楚，不要等到关门才发现。
+      if (scenario.priority === "P0" || scenario.priority === "P1") {
+        const missing = (["executable_test_id", "test_file", "test_title"] as const)
+          .filter((key) => typeof scenario[key] !== "string" || scenario[key].trim() === "");
+        if (missing.length > 0 && missing.length < 3) {
+          problems.push({
+            field_path: path,
+            missing_keys: missing,
+            message: "P0/P1 场景的可执行测试三元要么整组给全，要么整组省略"
+          });
+        }
       }
     });
   }

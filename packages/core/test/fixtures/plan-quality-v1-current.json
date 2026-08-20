@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_schema_version": 2,
-  "artifact_generator_version": "hunter-harness-plan-artifacts/2",
+  "artifact_generator_version": "hunter-harness-plan-artifacts/3",
   "stage_id": "stage:quality",
   "publication_intent_id": "publication:quality",
   "files": [],

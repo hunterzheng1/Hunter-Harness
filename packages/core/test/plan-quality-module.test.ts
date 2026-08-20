@@ -103,17 +103,22 @@ function humanInput(mode: "quick" | "standard" | "assurance", rejectedReuse = fa
     approved_scope_refs: [scope_ref] }; return { requirement_id: `requirement:${testHash(body).slice(7)}`, ...body }; });
   const requirement_refs = requirements.map((item) => item.requirement_id);
   const task_refs = ["task:quality"];
+  const executable = (id: string) => ({
+    priority: "P1" as const, owner_phase: "run" as const,
+    executable_test_id: `unit::${id}`, test_file: "tests/unit.spec.ts", test_title: id
+  });
   const scenarios = [{ scenario_id: "scenario:normal", title: "正常发布", acceptance: "完整验证后发布",
     coverage_dimension: "normal_path" as const, execution_level: "unit" as const,
-    evidence_requirements: ["focused_test"], risk_level: "medium" as const, task_refs, requirement_refs },
+    evidence_requirements: ["focused_test"], risk_level: "medium" as const,
+    ...executable("scenario:normal"), task_refs, requirement_refs },
   { scenario_id: "scenario:failure", title: "失败阻塞", acceptance: "结构失败不发布",
     coverage_dimension: "error_codes" as const, execution_level: "unit" as const,
     evidence_requirements: ["focused_test"], risk_level: mode === "assurance" ? "high" as const : "medium" as const,
-    task_refs, requirement_refs },
+    ...executable("scenario:failure"), task_refs, requirement_refs },
   { scenario_id: "scenario:integration", title: "集成发布", acceptance: "发布证据闭合",
     coverage_dimension: "integration_impact" as const, execution_level: "integration" as const,
     evidence_requirements: ["affected_test"], risk_level: mode === "assurance" ? "high" as const : "medium" as const,
-    task_refs, requirement_refs }];
+    ...executable("scenario:integration"), task_refs, requirement_refs }];
   const coverage = dimensions.map((coverage_dimension) => {
     const refs = scenarios.filter((item) => item.coverage_dimension === coverage_dimension).map((item) => item.scenario_id);
     return refs.length > 0 ? { coverage_dimension, applicability: "applicable" as const, scenario_refs: refs } :
@@ -587,7 +592,7 @@ describe("PlanQualityGate finalization and compatibility", () => {
       new URL("./fixtures/plan-quality-v0-legacy.json", import.meta.url), "utf8"));
     const currentFixture = JSON.parse(await readFile(new URL("./fixtures/plan-quality-v1-current.json", import.meta.url), "utf8"));
     expect(currentFixture).toMatchObject({ artifact_schema_version: 2,
-      artifact_generator_version: "hunter-harness-plan-artifacts/2", semantic_contract: {
+      artifact_generator_version: "hunter-harness-plan-artifacts/3", semantic_contract: {
         requirement_kinds: ["behavior", "invariant", "failure_behavior"], task_refs_required: true,
         scenario_refs_required: true, ownership_refs_required: true, evidence_refs_required: true
       } });

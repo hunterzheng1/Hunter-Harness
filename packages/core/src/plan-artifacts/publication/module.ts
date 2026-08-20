@@ -197,9 +197,14 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
       `- Coverage dimension: ${scenario.coverage_dimension}`,
       `- Execution level: ${scenario.execution_level}`,
       `- Risk level: ${scenario.risk_level}`,
+      `- Priority: ${scenario.priority}`,
+      `- Owner phase: ${scenario.owner_phase}`,
       `- Evidence requirements: ${scenario.evidence_requirements.join(", ") || "None"}`,
       `- Task refs: ${scenario.task_refs.join(", ") || "None"}`,
       `- Requirement refs: ${scenario.requirement_refs.join(", ") || "None"}`,
+      ...(scenario.executable_test_id === undefined ? [] : [`- Executable test ID: ${scenario.executable_test_id}`]),
+      ...(scenario.test_file === undefined ? [] : [`- Test file: ${scenario.test_file}`]),
+      ...(scenario.test_title === undefined ? [] : [`- Test title: ${scenario.test_title}`]),
       ...(scenario.verification_command === undefined ? [] : [`- Verification command: ${scenario.verification_command}`])
     ].join("\n")).join("\n\n") +
     `\n\n## Coverage\n\n${artifact.content.coverage.map((item) =>

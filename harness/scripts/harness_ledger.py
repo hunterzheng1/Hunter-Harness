@@ -28,6 +28,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_paths  # noqa: E402
+import harness_plan_finalize as hpf  # noqa: E402
 import harness_profile  # noqa: E402
 
 
@@ -1629,29 +1630,22 @@ def _scenario_receipt_error(code: str, message: str) -> dict[str, Any]:
     return {"ok": False, "code": code, "error": message}
 
 
-# 判定条件必须与 harness_gate._v2_artifact_manifest_gap 一致（那边按同一个
-# artifact_type 报 SCENARIO_MANIFEST_V2_UNSUPPORTED）。这里不 import
-# harness_gate：为一个谓词建立 ledger→gate 的依赖方向不划算，一致性由
-# tests/test_harness_ledger.py 的跨模块断言锁定。
-def is_v2_scenario_manifest(manifest: Any) -> bool:
-    """v2 plan finalize 派生的 scenario_manifest artifact 包装体。
+def resolve_scenario_manifest(manifest: Any) -> dict[str, Any]:
+    """把 v2 artifact 包装体解成 legacy 形状；legacy 输入原样返回。
 
-    这个包装体没有顶层 schemaVersion，场景字段也全在 content.scenarios 下且
-    改了名。此前 cmd_record 的探测初值是 0，包装体探测不出版本就停在 0，
-    `manifest_schema >= 2` 判假，--scenario-receipt-file 的强制要求被静默跳过
-    ——门禁那边 fail-closed，这边静默放行，同一份 manifest 两种姿态。
+    解包规则住在 harness_plan_finalize（它定义了 legacy manifest 的 schema），
+    门禁与本模块共用同一份，两边不会各推一套。
+
+    此前这里只判包装体、一律 fail-closed；更早的时候连判都不判——cmd_record
+    的版本探测初值是 0，包装体探测不出 schemaVersion 就停在 0，
+    `manifest_schema >= 2` 判假，--scenario-receipt-file 的强制要求被静默跳过。
+
+    返回 ``{"ok": True, "manifest": ...}`` 或 ``{"ok": False, "code": ...}``。
     """
-    return (
-        isinstance(manifest, dict)
-        and manifest.get("artifact_type") == "scenario_manifest"
-    )
-
-
-_V2_MANIFEST_MESSAGE = (
-    "meta/scenario-manifest.json 是 v2 plan artifact 包装体，缺少证据绑定消费的"
-    "场景字段（priority/requiredEvidenceKind/ownerPhase/executableTestId 等）；"
-    "需要 ledger 证据闭环的变更请走 legacy Plan 路径重新发布，不要手改派生产物"
-)
+    unpacked = hpf.unpack_v2_scenario_manifest(manifest)
+    if unpacked is None:
+        return {"ok": True, "manifest": manifest}
+    return unpacked
 
 
 def _resolve_receipt_path(
@@ -1719,10 +1713,12 @@ def validate_scenario_execution_receipt(
         )
     except (OSError, json.JSONDecodeError) as exc:
         return _scenario_receipt_error("SCENARIO_MANIFEST_INVALID", str(exc))
-    if is_v2_scenario_manifest(manifest):
+    resolved = resolve_scenario_manifest(manifest)
+    if not resolved["ok"]:
         return _scenario_receipt_error(
-            "SCENARIO_MANIFEST_V2_UNSUPPORTED", _V2_MANIFEST_MESSAGE
+            str(resolved["code"]), str(resolved.get("message") or "")
         )
+    manifest = resolved["manifest"]
     if not isinstance(manifest, dict) or not isinstance(manifest.get("scenarios"), list):
         return _scenario_receipt_error(
             "SCENARIO_MANIFEST_INVALID",
@@ -2856,13 +2852,15 @@ def cmd_record(args: argparse.Namespace) -> int:
                             as_json=as_json,
                             error_code="SCENARIO_MANIFEST_INVALID",
                         )
-                    if is_v2_scenario_manifest(manifest_probe):
+                    resolved_probe = resolve_scenario_manifest(manifest_probe)
+                    if not resolved_probe["ok"]:
                         return emit_error(
-                            _V2_MANIFEST_MESSAGE,
+                            str(resolved_probe.get("message") or ""),
                             as_json=as_json,
-                            error_code="SCENARIO_MANIFEST_V2_UNSUPPORTED",
+                            error_code=str(resolved_probe["code"]),
                             extra={"artifactType": "scenario_manifest"},
                         )
+                    manifest_probe = resolved_probe["manifest"]
                     raw_schema = (
                         manifest_probe.get("schemaVersion")
                         if isinstance(manifest_probe, dict)
@@ -3100,13 +3098,15 @@ def cmd_scenario_receipt_template(args: argparse.Namespace) -> int:
             as_json=as_json,
             error_code="SCENARIO_MANIFEST_INVALID",
         )
-    if is_v2_scenario_manifest(manifest):
+    resolved = resolve_scenario_manifest(manifest)
+    if not resolved["ok"]:
         return emit_error(
-            _V2_MANIFEST_MESSAGE,
+            str(resolved.get("message") or ""),
             as_json=as_json,
-            error_code="SCENARIO_MANIFEST_V2_UNSUPPORTED",
+            error_code=str(resolved["code"]),
             extra={"artifactType": "scenario_manifest"},
         )
+    manifest = resolved["manifest"]
     scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
     if not isinstance(scenarios, list):
         return emit_error(

@@ -261,6 +261,100 @@ def scenario_manifest_schema_version(scenarios: list[dict[str, Any]]) -> int:
     return 1
 
 
+# v2 场景键 → 门禁与 ledger 消费的 legacy 键。可执行三元是可选的：缺了只是把
+# manifest 降到 schemaVersion 1（绑不上结构化执行收据），不算缺口。
+_V2_SCENARIO_FIELD_MAP = (
+    ("scenario_id", "id"),
+    ("priority", "priority"),
+    ("required_evidence_kind", "requiredEvidenceKind"),
+    ("owner_phase", "ownerPhase"),
+)
+_V2_SCENARIO_OPTIONAL_FIELD_MAP = (
+    ("executable_test_id", "executableTestId"),
+    ("test_file", "testFile"),
+    ("test_title", "testTitle"),
+)
+V2_MANIFEST_UNSUPPORTED = "SCENARIO_MANIFEST_V2_UNSUPPORTED"
+
+
+def is_v2_scenario_manifest(manifest: Any) -> bool:
+    """v2 plan finalize 派生的 scenario_manifest artifact 包装体。
+
+    它没有顶层 schemaVersion，场景字段全在 content.scenarios 下且改了名。
+    """
+    return (
+        isinstance(manifest, dict)
+        and manifest.get("artifact_type") == "scenario_manifest"
+    )
+
+
+def unpack_v2_scenario_manifest(manifest: Any) -> dict[str, Any] | None:
+    """v2 artifact 包装体 → 消费端的 legacy 形状；字段不齐时 fail-closed。
+
+    返回 None 表示"这不是 v2 包装体"，调用方按 legacy 原样处理。否则返回
+    ``{"ok": True, "manifest": {...}}``（已是 legacy 形状，后续判定逻辑对
+    v2 与 legacy 完全一致）或 ``{"ok": False, "code": V2_MANIFEST_UNSUPPORTED}``。
+
+    这个函数住在 finalizer 里，是因为 legacy manifest 的 schema 本来就由本模块
+    定义（``scenario_manifest_schema_version`` / ``PRIORITY_EVIDENCE_KIND``）。
+    门禁与 ledger 都 import 它，两边不会各推一套解包规则。
+
+    为什么必须逐场景校验、不能取键的并集：并集只要有**一条**场景带了
+    priority 就算"present"，其余缺 priority 的场景会静默落进非必需集，
+    ``required_ids`` 随之缩水——那正是把证据门禁悄悄关掉的老路子。
+    """
+    if not is_v2_scenario_manifest(manifest):
+        return None
+    content = manifest.get("content")
+    raw = content.get("scenarios") if isinstance(content, dict) else None
+    if not isinstance(raw, list):
+        return {
+            "ok": False,
+            "code": V2_MANIFEST_UNSUPPORTED,
+            "message": "v2 scenario-manifest 的 content.scenarios 必须是数组",
+            "missingFields": [legacy for _, legacy in _V2_SCENARIO_FIELD_MAP],
+            "artifactType": "scenario_manifest",
+        }
+    scenarios: list[dict[str, Any]] = []
+    missing: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            missing.update(legacy for _, legacy in _V2_SCENARIO_FIELD_MAP)
+            continue
+        mapped: dict[str, Any] = {}
+        for source, legacy in _V2_SCENARIO_FIELD_MAP:
+            value = item.get(source)
+            if not str(value or "").strip():
+                missing.add(legacy)
+                continue
+            mapped[legacy] = value
+        for source, legacy in _V2_SCENARIO_OPTIONAL_FIELD_MAP:
+            value = item.get(source)
+            if str(value or "").strip():
+                mapped[legacy] = value
+        scenarios.append(mapped)
+    if missing:
+        return {
+            "ok": False,
+            "code": V2_MANIFEST_UNSUPPORTED,
+            "message": (
+                "meta/scenario-manifest.json 是 v2 plan artifact 包装体，"
+                "部分场景缺少消费端需要的字段；请在规划阶段补齐后重新发布，"
+                "不要手改派生产物"
+            ),
+            "missingFields": sorted(missing),
+            "artifactType": "scenario_manifest",
+        }
+    return {
+        "ok": True,
+        "manifest": {
+            # 与 legacy 同一条规则判版本，不另立一套。
+            "schemaVersion": scenario_manifest_schema_version(scenarios),
+            "scenarios": scenarios,
+        },
+    }
+
+
 def parse_plan_tasks(plan_path: Path) -> list[dict[str, str]]:
     """C8: parse plan.md task table rows, extracting optional ownerPhase/implementationDoneWhen/verificationPhase columns.
 

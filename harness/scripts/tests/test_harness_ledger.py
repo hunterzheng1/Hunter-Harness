@@ -2368,12 +2368,14 @@ class ScenarioReceiptTemplateTests(unittest.TestCase):
 
 
 class V2ScenarioManifestFailsClosedTests(unittest.TestCase):
-    """v2 包装体过去在 ledger 侧被静默放行，而门禁侧是 fail-closed。
+    """字段不齐的 v2 包装体在 ledger 侧必须与门禁侧同样 fail-closed。
 
-    cmd_record 的版本探测初值是 0，而 v2 artifact 包装体没有顶层
-    schemaVersion，于是探测停在 0，`manifest_schema >= 2` 判假，
-    --scenario-receipt-file 的强制要求就被跳过了——同一份 manifest，门禁
-    拒绝、ledger 放行，姿态互相矛盾，而且没有任何测试覆盖。
+    这里用的是**补字段之前**发布的 v2 产物形状（没有 priority/owner_phase）。
+    它经历过两个 bug：cmd_record 的版本探测初值是 0，而包装体没有顶层
+    schemaVersion，探测停在 0 → `manifest_schema >= 2` 判假 →
+    --scenario-receipt-file 的强制要求被跳过，同一份 manifest 门禁拒绝、
+    ledger 放行；补上判定后又一度一律拒绝。现在是解包：能解就消费，
+    解不动才报 SCENARIO_MANIFEST_V2_UNSUPPORTED。
     """
 
     def setUp(self) -> None:
@@ -2412,19 +2414,59 @@ class V2ScenarioManifestFailsClosedTests(unittest.TestCase):
             code = harness_ledger.main(list(argv))
         return code, out.getvalue(), err.getvalue()
 
-    def test_predicate_matches_the_wrapper(self) -> None:
+    def test_incomplete_wrapper_is_refused(self) -> None:
         manifest = json.loads(
             (self.change_dir / "meta" / "scenario-manifest.json").read_text(
                 encoding="utf-8"
             )
         )
-        self.assertTrue(harness_ledger.is_v2_scenario_manifest(manifest))
 
-    def test_predicate_leaves_legacy_manifests_alone(self) -> None:
-        self.assertFalse(
-            harness_ledger.is_v2_scenario_manifest(
-                {"schemaVersion": 2, "changeName": "demo", "scenarios": []}
-            )
+        resolved = harness_ledger.resolve_scenario_manifest(manifest)
+
+        self.assertFalse(resolved["ok"], resolved)
+        self.assertEqual(resolved["code"], "SCENARIO_MANIFEST_V2_UNSUPPORTED")
+
+    def test_legacy_manifests_pass_through_untouched(self) -> None:
+        legacy = {"schemaVersion": 2, "changeName": "demo", "scenarios": []}
+
+        resolved = harness_ledger.resolve_scenario_manifest(legacy)
+
+        self.assertTrue(resolved["ok"], resolved)
+        self.assertIs(resolved["manifest"], legacy)
+
+    def test_complete_wrapper_is_unpacked_to_the_legacy_shape(self) -> None:
+        """ledger 与门禁必须解出同一份东西，否则两边对"必需场景"的认定会分叉。"""
+        wrapper = {
+            "artifact_type": "scenario_manifest",
+            "content": {"scenarios": [{
+                "scenario_id": "UT-001",
+                "coverage_dimension": "normal_path",
+                "execution_level": "unit",
+                "evidence_requirements": ["focused_test"],
+                "risk_level": "medium",
+                "priority": "P0",
+                "owner_phase": "run",
+                "required_evidence_kind": "ledger",
+                "executable_test_id": "unit::ut1",
+                "test_file": "tests/unit.spec.ts",
+                "test_title": "ut1",
+                "task_refs": ["T1"],
+                "requirement_refs": ["requirement:x"],
+            }], "coverage": []},
+        }
+
+        resolved = harness_ledger.resolve_scenario_manifest(wrapper)
+
+        self.assertTrue(resolved["ok"], resolved)
+        self.assertEqual(resolved["manifest"]["schemaVersion"], 2)
+        entry = resolved["manifest"]["scenarios"][0]
+        self.assertEqual(entry["id"], "UT-001")
+        self.assertEqual(entry["requiredEvidenceKind"], "ledger")
+        self.assertEqual(entry["ownerPhase"], "run")
+        # 与门禁走的是同一个解包器，不是两份各自实现。
+        self.assertEqual(
+            resolved["manifest"],
+            harness_ledger.hpf.unpack_v2_scenario_manifest(wrapper)["manifest"],
         )
 
     def test_receipt_template_names_the_v2_gap(self) -> None:

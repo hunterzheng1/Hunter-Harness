@@ -2081,52 +2081,6 @@ def _resolve_project(args: argparse.Namespace) -> Path:
     return hc.resolve_main_project_root()
 
 
-# 门禁消费的场景字段。v2 plan finalize 派生的 scenario_manifest 一个都没有：
-# 它只带 scenario_id/coverage_dimension/execution_level/evidence_requirements/
-# risk_level/task_refs/requirement_refs。
-_V2_MANIFEST_REQUIRED_FIELDS = (
-    "id",
-    "priority",
-    "requiredEvidenceKind",
-    "ownerPhase",
-    "executableTestId",
-    "testFile",
-    "testTitle",
-)
-
-
-def _v2_artifact_manifest_gap(manifest: Any) -> dict[str, Any] | None:
-    """v2 plan artifact 包装的 scenario-manifest → 明确的不可消费错误。
-
-    不能"解包 + 字段改名"了事：包装体里既没有 priority 也没有
-    requiredEvidenceKind，`required_ids` 会算成空集，C9 随即返回
-    NO_LEDGER_REQUIRED_SCENARIOS——那是把证据门禁对所有 v2 计划静默关掉，
-    比直接失败危险得多。所以这里点名缺口，让调用方回规划阶段补齐后重新发布。
-
-    v2 场景契约补齐这些字段后，解包逻辑加在这里。
-    """
-    if not isinstance(manifest, dict) or manifest.get("artifact_type") != "scenario_manifest":
-        return None
-    content = manifest.get("content")
-    present: set[str] = set()
-    if isinstance(content, dict) and isinstance(content.get("scenarios"), list):
-        for scenario in content["scenarios"]:
-            if isinstance(scenario, dict):
-                present.update(scenario.keys())
-    return {
-        "ok": False,
-        "code": "SCENARIO_MANIFEST_V2_UNSUPPORTED",
-        "message": (
-            "meta/scenario-manifest.json 是 v2 plan artifact 包装体，缺少门禁消费的场景字段；"
-            "请在规划阶段补齐后重新发布，不要手改派生产物"
-        ),
-        "missingFields": [
-            field for field in _V2_MANIFEST_REQUIRED_FIELDS if field not in present
-        ],
-        "artifactType": "scenario_manifest",
-    }
-
-
 def _validate_scenario_coverage(
     change_dir: Path, phase: str | None = None
 ) -> dict[str, Any]:
@@ -2153,9 +2107,12 @@ def _validate_scenario_coverage(
             "code": "SCENARIO_MANIFEST_INVALID",
             "message": f"scenario-manifest.json unreadable: {exc}",
         }
-    v2_gap = _v2_artifact_manifest_gap(manifest)
-    if v2_gap is not None:
-        return v2_gap
+    unpacked = hpf.unpack_v2_scenario_manifest(manifest)
+    if unpacked is not None:
+        if not unpacked.get("ok"):
+            return unpacked
+        # 解包成 legacy 形状后，下面的判定逻辑对 v2 与 legacy 完全一致。
+        manifest = unpacked["manifest"]
     scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
     if not isinstance(scenarios, list):
         return {

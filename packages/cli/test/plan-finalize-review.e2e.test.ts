@@ -41,6 +41,11 @@ function naturalInput() {
     execution_level: (index === 0 ? "unit" : "integration"),
     evidence_requirements: ["focused_test"],
     risk_level: dimension === "error_codes" ? "high" : "medium",
+    priority: "P1",
+    owner_phase: "run",
+    executable_test_id: `unit::${dimension}`,
+    test_file: "tests/unit.spec.ts",
+    test_title: `${dimension}`,
     task_refs: ["task:bridge"],
     requirement_refs: [] as string[]
   }));

@@ -31,6 +31,8 @@ function scenario(id: string, dimension: TestScenarioInput["coverage_dimension"]
   return { scenario_id: id, title: `验证 ${dimension}`, acceptance: `${dimension} 行为符合批准设计`,
     coverage_dimension: dimension, execution_level: dimension === "integration_impact" ? "integration" : "unit",
     evidence_requirements: ["focused_test"], verification_command: `npm test -- ${id}`, risk_level: "medium",
+    priority: "P1", owner_phase: "run",
+    executable_test_id: `unit::${id}`, test_file: "tests/unit.spec.ts", test_title: id,
     task_refs: ["task:module"], requirement_refs: [] };
 }
 
@@ -123,8 +125,11 @@ function legacyV1(value: ReturnType<typeof trusted>) {
       tasks: value.human.plan.content.tasks.map((item) => without(item,
         ["requirement_refs", "evidence_refs", "ownership_refs"])) }),
     test_scenarios: artifact("test_scenarios", {
+      // v1 是冻结的只读形状：priority/owner_phase 与可执行三元都是 v2 才有的。
       scenarios: value.human.test_scenarios.content.scenarios.map((item) => without(item,
-        ["task_refs", "requirement_refs"])), coverage: value.human.test_scenarios.content.coverage }) };
+        ["task_refs", "requirement_refs", "priority", "owner_phase",
+          "executable_test_id", "test_file", "test_title"])),
+      coverage: value.human.test_scenarios.content.coverage }) };
   const artifact_set_hash = stableHash(body);
   return { ...body, artifact_set_hash,
     artifact_set_id: `plan_artifact_set:${artifact_set_hash.slice(7)}` };

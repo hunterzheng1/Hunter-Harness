@@ -101,6 +101,11 @@ function humanInput(): HumanArtifactBuildInput {
     execution_level: (index === 0 ? "unit" : "integration") as "unit" | "integration",
     evidence_requirements: ["focused_test"],
     risk_level: "medium" as const,
+    priority: "P1" as const,
+    owner_phase: "run" as const,
+    executable_test_id: `unit::${dimension}`,
+    test_file: "tests/unit.spec.ts",
+    test_title: `${dimension}`,
     task_refs,
     requirement_refs
   }));
@@ -258,6 +263,52 @@ describe("hunter-harness plan finalize (e2e)", () => {
     const eventTypes = ndjson.trim().split("\n").map((line) => (JSON.parse(line) as { type: string }).type);
     expect(eventTypes).toContain("artifact_published");
     expect(eventTypes).toContain("phase_ended");
+  });
+
+  it("发布的 scenario-manifest 能被 Python 门禁解包消费", async () => {
+    // 这条补的是双语言之间的缺口：Python 侧的 v2 夹具是手写 JSON，生产端字段一变
+    // 它不会失效。这里拿**真实 finalize 产出的**那份 manifest 去喂真实的解包器，
+    // 任一边改了键名都会在这里立刻red。
+    const outputs: string[] = [];
+    const exitCode = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+    expect(exitCode).toBe(0);
+
+    const manifestPath = join(root, ".harness", "changes", CHANGE_KEY,
+      "meta", "scenario-manifest.json");
+    // 从测试文件本身定位，不依赖 cwd（vitest 从仓库根跑，不是 packages/cli）。
+    const { fileURLToPath } = await import("node:url");
+    const finalizerPath = fileURLToPath(
+      new URL("../../../harness/scripts/harness_plan_finalize.py", import.meta.url));
+    const probe = [
+      "import importlib.util, json, sys",
+      `spec = importlib.util.spec_from_file_location('hpf', ${JSON.stringify(finalizerPath)})`,
+      "m = importlib.util.module_from_spec(spec); sys.modules['hpf'] = m; spec.loader.exec_module(m)",
+      `manifest = json.load(open(${JSON.stringify(manifestPath)}, encoding='utf-8-sig'))`,
+      "print(json.dumps(m.unpack_v2_scenario_manifest(manifest)))"
+    ].join("\n");
+
+    const { spawnSync } = await import("node:child_process");
+    const run = spawnSync("python", ["-c", probe], { encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+
+    const unpacked = JSON.parse(run.stdout) as {
+      ok: boolean;
+      manifest?: { schemaVersion: number; scenarios: Record<string, unknown>[] };
+      missingFields?: string[];
+    };
+    expect(unpacked.missingFields ?? [], "门禁仍认为字段有缺口").toEqual([]);
+    expect(unpacked.ok).toBe(true);
+    // 可执行三元齐全 → schemaVersion 2，关门时才能绑结构化执行收据。
+    expect(unpacked.manifest?.schemaVersion).toBe(2);
+    const first = unpacked.manifest?.scenarios[0] ?? {};
+    for (const key of ["id", "priority", "requiredEvidenceKind", "ownerPhase",
+      "executableTestId", "testFile", "testTitle"]) {
+      expect(first, `解包结果缺 ${key}`).toHaveProperty(key);
+    }
   });
 
   it("HP-10：--change-dir 真实参与路径解析", async () => {

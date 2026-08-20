@@ -44,6 +44,8 @@ export interface PlanTaskInput {
   readonly ownership_refs: readonly string[];
 }
 
+export type ScenarioPriority = "P0" | "P1" | "P2";
+
 export interface TestScenarioInput {
   readonly scenario_id: string;
   readonly title: string;
@@ -53,6 +55,16 @@ export interface TestScenarioInput {
   readonly evidence_requirements: readonly string[];
   readonly verification_command?: string | undefined;
   readonly risk_level: "low" | "medium" | "high";
+  // priority 与 owner_phase 是门禁判定 "哪些场景必须带 ledger 证据、在哪个阶段到期"
+  // 的依据，risk_level 与 task_refs 都替代不了：risk 是影响面，priority 是取证要求；
+  // 一条场景可以引用跨阶段的多个 task，反查没有仲裁规则。
+  readonly priority: ScenarioPriority;
+  readonly owner_phase: PlanPhase;
+  // 可执行测试身份三元。ledger 场景（P0/P1）必须齐全，否则派生的 manifest
+  // 只能声明 schemaVersion 1，run/test 关门时无法绑定结构化执行收据。
+  readonly executable_test_id?: string | undefined;
+  readonly test_file?: string | undefined;
+  readonly test_title?: string | undefined;
   readonly task_refs: readonly string[];
   readonly requirement_refs: readonly string[];
 }

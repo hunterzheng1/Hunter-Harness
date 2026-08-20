@@ -101,7 +101,8 @@ describe("hunter-harness plan evidence-pack 自然输入边界", () => {
     const input = await template();
     const structured = input.structured_input as { scenarios: Record<string, unknown>[] };
     structured.scenarios[0] = {
-      scenario_id: "UT-001", title: "场景", coverage_dimension: "normal_path", priority: "P0"
+      scenario_id: "UT-001", title: "场景", coverage_dimension: "normal_path",
+      priority: "P0", severity: "blocker"
     };
 
     const { exit, body } = await pack(input);
@@ -109,9 +110,12 @@ describe("hunter-harness plan evidence-pack 自然输入边界", () => {
     expect(exit).toBe(1);
     expect(body.code).toBe("PLAN_EVIDENCE_INPUT_INVALID");
     expect(body.field_path).toBe("structured_input.scenarios[0]");
-    expect(body.problems?.[0]?.missing_keys).toEqual(
-      expect.arrayContaining(["acceptance", "execution_level", "evidence_requirements", "risk_level"]));
-    expect(body.problems?.[0]?.unexpected_keys).toContain("priority");
+    expect(body.problems?.[0]?.missing_keys).toEqual(expect.arrayContaining(
+      ["acceptance", "execution_level", "evidence_requirements", "risk_level", "owner_phase"]));
+    // priority 现在是门禁消费的合法字段（P0/P1 决定哪些场景必须带 ledger 证据），
+    // 不再是多余键；severity 才是。
+    expect(body.problems?.[0]?.unexpected_keys).toContain("severity");
+    expect(body.problems?.[0]?.unexpected_keys).not.toContain("priority");
   });
 
   it("worktree_policy 取非枚举值时报出字段路径与合法取值", async () => {

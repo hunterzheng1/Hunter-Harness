@@ -51,6 +51,8 @@ function scenario(scenario_id: string, coverage_dimension: TestScenarioInput["co
   return { scenario_id, title: `验证 ${coverage_dimension}`, acceptance: `${coverage_dimension} 行为符合批准设计`,
     coverage_dimension, execution_level: coverage_dimension === "integration_impact" ? "integration" : "unit",
     evidence_requirements: ["focused_test"], verification_command: `npm test -- ${scenario_id}`, risk_level,
+    priority: "P1", owner_phase: "run",
+    executable_test_id: `unit::${scenario_id}`, test_file: "tests/unit.spec.ts", test_title: scenario_id,
     task_refs, requirement_refs };
 }
 
@@ -409,8 +411,11 @@ describe("PlanArtifactModel compatibility and hostile records", () => {
     const human = model.buildHumanArtifacts(input);
     const stripTask = (task: typeof human.plan.content.tasks[number]) => withoutKeys(task,
       ["requirement_refs", "evidence_refs", "ownership_refs"]);
+    // v1 是冻结的只读形状：门禁消费的 priority/owner_phase 与可执行三元都是
+    // v2 才有的，legacy 记录里出现它们反而应该被拒。
     const stripScenario = (scenarioValue: typeof human.test_scenarios.content.scenarios[number]) =>
-      withoutKeys(scenarioValue, ["task_refs", "requirement_refs"]);
+      withoutKeys(scenarioValue, ["task_refs", "requirement_refs", "priority", "owner_phase",
+        "executable_test_id", "test_file", "test_title"]);
     const legacyContents = {
       design: withoutKeys(human.design.content, ["requirements", "approved_scopes", "ownership"]),
       plan: { change_key: fixture.structured_input.change_key,
