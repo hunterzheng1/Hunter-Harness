@@ -87,9 +87,16 @@ review→fixback→test→submit→merge→archive）。变更本身成功合入
 ### 平台侧（本仓库无法验证）
 
 行内标注 `hunter-harness-ignore: <RULE_ID> reason=<...>` 在**本地**扫描器上确认生效
-（finding 转 `overridden`，`blocked=false`）。但归档上传端点只收裸 ZIP，没有独立的豁免
-申报通道（对比 skills draft 端点有 `SensitiveReviewSubmission`），**服务端是否认这条标注
-尚未验证**。若加标注后仍 422，剩余动作是平台侧加白。该限制已写进 SKILL.md。
+（finding 转 `overridden`，`blocked=false`）。归档上传端点只收裸 ZIP，没有独立的豁免申报
+通道（对比 skills draft 端点有 `SensitiveReviewSubmission`），因此发版时把"服务端是否认
+这条标注"标为待验证。
+
+> **发版后已验证**：平台归档入口跑的是同一个 `scanSensitiveFiles`，直接从文件内容解析
+> `hunter-harness-ignore`——标注**服务端确实生效**。同时发现两侧扫描器已漂移、却都自称
+> `scanner_version 1.1.0`：不带凭据的连接串本地判 `low`/可豁免、平台判 `high`/不可豁免，
+> 本次新增的预检在这一条上会主动误导。平台侧修复已提交（hunter-platform
+> `fix(archive): 归档 422 给出可执行出路，并收回与客户端漂移的扫描判定`），部署后两侧一致。
+> SKILL.md 已按此更正。
 
 `branch_files` 只做到「可诊断」：正确修法是让 branch-file 收集器跳过已属其他 scope 的
 路径（`.harness/rules/*` 本来就由 `--scope rules` 推送，放进 branch_files 是重复计数），
