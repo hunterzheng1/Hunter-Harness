@@ -45,7 +45,7 @@ const BUNDLE_VERSION = "0.2.73";
 // 0.2.88 起 archive upload 才保留服务端错误码；0.2.89 起认的才是服务端真正返回的
 // ARCHIVE_ALREADY_EXISTS（0.2.88 挂在 ARCHIVE_PACKAGE_CONFLICT 上，那句提示从没触发过），
 // 本 Bundle 的 republish 在冲突时引导用户看该码并给出 --retry-retained
-const MINIMUM_CLI_VERSION = "0.2.90";
+const MINIMUM_CLI_VERSION = "0.2.91";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",

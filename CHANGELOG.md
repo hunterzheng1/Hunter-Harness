@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.91] — hunter-harness ＋ [0.2.85] @hunter-harness/workflow-harness
+
+- 统一封存归档补传，支持 `--change latest`、dry-run、幂等重试与单次构建。
+- 上传和发布链路移除内容敏感扫描阻断，保留路径、凭据、ZIP、schema 与哈希校验。
+- 兼容旧敏感扫描参数并提示弃用；独立 `scan-sensitive` 命令继续保留。
+
 ## [0.2.90] — hunter-harness ＋ [0.2.84] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > **双发**：本次同时改了 CLI（新增 `scan-sensitive`、Push/Pull 输出诊断）与 harness 脚本，

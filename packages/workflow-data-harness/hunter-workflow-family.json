@@ -7,9 +7,9 @@
     "java"
   ],
   "bundle_version": "0.2.73",
-  "content_sha256": "sha256:418c502b01249d522c7c6e50ba989155803061b16d0e831d2196a43b6bb46089",
-  "minimumCliVersion": "0.2.90",
-  "workflowPackageVersion": "0.2.84",
+  "content_sha256": "sha256:2e859d70a6ebc83d9d439187e4943de908f18628a4977f964d081ceb3f1eddae",
+  "minimumCliVersion": "0.2.91",
+  "workflowPackageVersion": "0.2.85",
   "capabilities": [
     "sync@2",
     "rules-sync@1",
@@ -26,7 +26,7 @@
     "remote-sync-pull@1"
   ],
   "requires": {
-    "minimumCliVersion": "0.2.90",
+    "minimumCliVersion": "0.2.91",
     "capabilities": [
       "sync@2",
       "rules-sync@1",
