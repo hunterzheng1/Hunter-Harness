@@ -34,6 +34,66 @@ if hasattr(sys.stderr, "reconfigure"):
 LIFECYCLE_STATUSES = {"draft", "active", "superseded", "archived", "cancelled"}
 CHANGE_CONTEXT_REL = Path("meta") / "change-context.json"
 
+# 工作流阶段的唯一权威清单。这里是叶子模块（不 import 任何 harness_*），所以
+# harness_context 与 harness_phase 都能引它而不成环。
+#
+# 此前这份清单在两个模块各写一遍，靠约定保持同步——直到 harness_phase 少了一个
+# merge，worktree 变更走到 merge 阶段就在 target_required_dag 里直接 raise
+# "unsupported reconcile target phase"。同一份事实不该有两个副本。
+WORKFLOW_PHASES = (
+    "plan",
+    "run",
+    "test",
+    "review",
+    "package",
+    "apidoc",
+    "submit",
+    "merge",
+    "archive",
+)
+
+# 出现在阶段位置、但不是工作流阶段的名字。它们是真实存在的：
+# workflow-policy.json 的 skills.*.phase 用 sync/codebase-map/knowledge-query 标注
+# 技能归属，harness_gate.GATE_RELEASE_PHASES 含 release/deploy。把它们与"拼错的
+# 阶段名"区分开，调用方才能既不误判也不硬崩。
+KNOWN_NON_WORKFLOW_PHASES = frozenset({
+    "release",
+    "deploy",
+    "sync",
+    "codebase-map",
+    "knowledge-query",
+    "knowledge-ingest",
+    "push",
+    "pull",
+})
+
+# 旧阶段名 → 现阶段名。阶段合并/改名时在这里登记，读时映射即可让历史
+# gate-policy.json 与 plannedPhases 继续可读，不必迁移已落盘的 change。
+# 目前为空：还没有发生过阶段改名。
+LEGACY_PHASE_ALIASES: dict[str, str] = {}
+
+
+def resolve_phase_name(phase: Any) -> str | None:
+    """把可能是旧名的阶段解析成当前的工作流阶段名；不是工作流阶段则返回 None。"""
+    name = str(phase or "").strip()
+    if name in WORKFLOW_PHASES:
+        return name
+    mapped = LEGACY_PHASE_ALIASES.get(name)
+    return mapped if mapped in WORKFLOW_PHASES else None
+
+
+def classify_phase_name(phase: Any) -> str:
+    """三态判定：``workflow`` | ``non_workflow`` | ``unknown``。
+
+    调用方需要区分这三者：``workflow`` 照常处理；``non_workflow`` 是别的子系统
+    的标注，跳过而不是报错；只有 ``unknown`` 才是真的有问题，值得让人看见。
+    """
+    if resolve_phase_name(phase) is not None:
+        return "workflow"
+    if str(phase or "").strip() in KNOWN_NON_WORKFLOW_PHASES:
+        return "non_workflow"
+    return "unknown"
+
 
 def _git_text(cwd: Path, *args: str) -> str | None:
     proc = subprocess.run(

@@ -14,6 +14,8 @@ SPEC = importlib.util.spec_from_file_location("harness_context_test", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 CONTEXT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CONTEXT)
+# 权威阶段清单与别名表都住在 harness_paths（叶子模块），context 引的是同一个对象。
+hpaths = CONTEXT.hpaths
 
 
 def make_change(project: Path, name: str, status: str = "active") -> Path:
@@ -1225,6 +1227,72 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
 
             self.assertFalse(result["ok"], result)
             self.assertEqual(result["code"], "HANDOFF_REQUIRED")
+
+
+class PhasePlanDegradationTests(unittest.TestCase):
+    """阶段计划读不动时必须说明原因，不能悄悄退成 legacy。
+
+    以前遇到未知阶段名一律返回 (None, "legacy")：整个阶段计划失效，
+    _allowed_next_phases 退回硬编码的 PHASE_GRAPH，而调用方看不出发生过这件事。
+    这不是假想问题——阶段清单少一个 merge 时，worktree 变更的 plannedPhases
+    就带着 merge 走到这里。
+    """
+
+    def _policy(self, tmp: Path, phases: list[str]) -> Path:
+        change = tmp / "change"
+        (change / "meta").mkdir(parents=True)
+        (change / "meta" / "gate-policy.json").write_text(
+            json.dumps({"schemaVersion": 1, "plannedPhases": phases}),
+            encoding="utf-8",
+        )
+        return change
+
+    def test_a_valid_plan_is_read_as_planned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._policy(Path(tmp), ["plan", "run", "archive"])
+
+            planned, source = CONTEXT._phase_plan(change)
+
+            self.assertEqual(planned, ["plan", "run", "archive"])
+            self.assertEqual(source, "change")
+
+    def test_an_unknown_phase_names_itself_in_the_degradation_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._policy(Path(tmp), ["plan", "run", "teleport", "archive"])
+
+            planned, source = CONTEXT._phase_plan(change)
+
+            self.assertIsNone(planned)
+            # 降级仍然发生（fail-safe），但原因和具体阶段名要带出来。
+            self.assertIn("unknown-phases", source)
+            self.assertIn("teleport", source)
+
+    def test_a_renamed_phase_is_read_through_the_alias_table(self) -> None:
+        """阶段改名后历史 change 仍要能读——本仓库没有 change 级 schema 迁移。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._policy(Path(tmp), ["plan", "verification", "archive"])
+            aliases = dict(hpaths.LEGACY_PHASE_ALIASES)
+            hpaths.LEGACY_PHASE_ALIASES["verification"] = "test"
+            try:
+                planned, source = CONTEXT._phase_plan(change)
+            finally:
+                hpaths.LEGACY_PHASE_ALIASES.clear()
+                hpaths.LEGACY_PHASE_ALIASES.update(aliases)
+
+            self.assertEqual(planned, ["plan", "test", "archive"])
+            self.assertEqual(source, "change")
+
+    def test_unreadable_policy_is_distinguished_from_a_missing_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / "change"
+            (change / "meta").mkdir(parents=True)
+            (change / "meta" / "gate-policy.json").write_text("{not json", encoding="utf-8")
+
+            _planned, source = CONTEXT._phase_plan(change)
+
+            self.assertEqual(source, "legacy:policy-unreadable")
+            # 文件不存在是另一回事，不该与"读坏了"混为一谈。
+            self.assertEqual(CONTEXT._phase_plan(Path(tmp) / "absent")[1], "legacy")
 
 
 class SamePhaseAdoptionTests(unittest.TestCase):

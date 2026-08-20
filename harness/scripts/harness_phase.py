@@ -33,20 +33,9 @@ import harness_paths as hpaths  # noqa: E402
 
 SCHEMA_VERSION = 1
 CI_METRICS_SCHEMA_VERSION = 1
-# 必须与 harness_context.WORKFLOW_PHASES 同序同元素。少一个 merge 会让
-# configure-plan 在 worktree 场景自动插入的 merge 阶段在这里直接 raise
-# "unsupported reconcile target phase"。
-PHASE_ORDER = (
-    "plan",
-    "run",
-    "test",
-    "review",
-    "package",
-    "apidoc",
-    "submit",
-    "merge",
-    "archive",
-)
+# 唯一权威清单在 harness_paths，harness_context 引的是同一个对象。此前这里另有
+# 一份拷贝，少了 merge，worktree 变更走到 merge 就在 target_required_dag 里硬 raise。
+PHASE_ORDER = hpaths.WORKFLOW_PHASES
 VALIDATION_PHASES = {
     "compile": "run",
     "unitTest": "run",
@@ -713,8 +702,18 @@ def target_required_dag(policy: dict[str, Any], target_phase: str) -> dict[str, 
     stage nodes for the target itself are deliberately excluded because their
     ``phase.end`` is the result of close, not evidence required before close.
     """
-    if target_phase not in PHASE_ORDER:
-        raise ValueError(f"unsupported reconcile target phase: {target_phase}")
+    # 未知阶段名先过读时映射：阶段改名后，历史 change 的 gate-policy.json 与
+    # plannedPhases 里仍然是旧名，靠 LEGACY_PHASE_ALIASES 继续可读，不必迁移已落盘
+    # 的 change（本仓库没有 change 级 schema 迁移机制，硬 raise 等于让在途变更报废）。
+    resolved_target = hpaths.resolve_phase_name(target_phase)
+    if resolved_target is None:
+        raise ValueError(
+            f"unsupported reconcile target phase: {target_phase}; "
+            f"已知阶段 {', '.join(PHASE_ORDER)}。"
+            "若这是改名前的旧阶段，在 harness_paths.LEGACY_PHASE_ALIASES 登记映射；"
+            "若这份 gate-policy.json 本身过期，重跑 harness_gate.py classify 重建"
+        )
+    target_phase = resolved_target
     dag = policy.get("requiredGateDag")
     if not isinstance(dag, dict) or not isinstance(dag.get("nodes"), list):
         raise ValueError("gate policy missing requiredGateDag; run harness_gate.py classify")
@@ -731,9 +730,15 @@ def target_required_dag(policy: dict[str, Any], target_phase: str) -> dict[str, 
             if node_kind == "validation"
             else node_name
         )
-        node_phase = str(node.get("phase") or inferred_phase or "")
-        if node_phase not in PHASE_ORDER:
-            raise ValueError(f"requiredGateDag node has unsupported phase: {node_id}")
+        raw_phase = str(node.get("phase") or inferred_phase or "")
+        node_phase = hpaths.resolve_phase_name(raw_phase)
+        if node_phase is None:
+            raise ValueError(
+                f"requiredGateDag node has unsupported phase: {node_id} (phase={raw_phase!r})；"
+                "旧阶段名在 harness_paths.LEGACY_PHASE_ALIASES 登记映射，"
+                "或重跑 harness_gate.py classify 重建这份 gate-policy.json"
+            )
+        node["phase"] = node_phase
         node_rank = PHASE_ORDER.index(node_phase)
         is_validation = node.get("kind") == "validation" or node_id.startswith(
             "validation:"

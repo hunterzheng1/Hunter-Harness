@@ -21,6 +21,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_ledger as hl  # noqa: E402
+import harness_paths as hpaths  # noqa: E402
 
 
 PHASE_GRAPH = {
@@ -31,17 +32,8 @@ PHASE_GRAPH = {
     "submit": (),
 }
 
-WORKFLOW_PHASES = (
-    "plan",
-    "run",
-    "test",
-    "review",
-    "package",
-    "apidoc",
-    "submit",
-    "merge",
-    "archive",
-)
+# 唯一权威清单在 harness_paths（叶子模块，harness_phase 引的是同一个对象）。
+WORKFLOW_PHASES = hpaths.WORKFLOW_PHASES
 
 DISPLAY_TITLE_MAX_LENGTH = 80
 
@@ -270,13 +262,24 @@ def _contract(project: Path, change: str) -> tuple[Path, dict[str, Any], Path]:
 
 
 def _phase_plan(contract_root: Path) -> tuple[list[str] | None, str]:
+    """读出阶段计划；无法采信时说明原因，而不是悄悄退成 legacy。
+
+    以前这里遇到未知阶段名一律返回 (None, "legacy")：阶段计划整个失效，
+    `_allowed_next_phases` 退回硬编码的 PHASE_GRAPH，而调用方看不出发生过这件事。
+    未知阶段名不是假想问题——阶段清单少一个 merge 时，worktree 变更的
+    plannedPhases 就会带着 merge 走到这里。
+
+    未知名先过 LEGACY_PHASE_ALIASES 读时映射（阶段改名后历史 change 靠它继续可读），
+    仍然解析不了才降级，并把原因与具体阶段名带在 source 里。
+    """
     policy_path = contract_root / "meta" / "gate-policy.json"
     if not policy_path.is_file():
         return None, "legacy"
     try:
         policy = _read_json(policy_path)
     except (OSError, ValueError, json.JSONDecodeError):
-        return None, "legacy"
+        return None, "legacy:policy-unreadable"
+    unknown: list[str] = []
     for field, source in (
         ("plannedPhases", "change"),
         ("defaultPhases", "policy-default"),
@@ -285,12 +288,17 @@ def _phase_plan(contract_root: Path) -> tuple[list[str] | None, str]:
         if not isinstance(raw, list):
             continue
         phases = [str(item).strip() for item in raw if str(item).strip()]
-        if (
-            phases
-            and len(phases) == len(set(phases))
-            and all(item in WORKFLOW_PHASES for item in phases)
-        ):
-            return phases, source
+        if not phases or len(phases) != len(set(phases)):
+            continue
+        resolved = [hpaths.resolve_phase_name(item) for item in phases]
+        missing = [item for item, hit in zip(phases, resolved) if hit is None]
+        if missing:
+            unknown.extend(missing)
+            continue
+        # 映射后可能出现重复（两个旧名合并成同一个新阶段），保序去重。
+        return list(dict.fromkeys(str(item) for item in resolved)), source
+    if unknown:
+        return None, "legacy:unknown-phases=" + ",".join(dict.fromkeys(unknown))
     return None, "legacy"
 
 

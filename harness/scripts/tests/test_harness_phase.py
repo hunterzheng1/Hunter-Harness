@@ -22,6 +22,7 @@ import harness_phase as hp  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_archive as ha  # noqa: E402
 import harness_gate as hg  # noqa: E402
+import harness_paths as hpaths  # noqa: E402
 
 
 class ReconcileDagTests(unittest.TestCase):
@@ -148,6 +149,57 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         spec.loader.exec_module(context_mod)
 
         self.assertEqual(hp.PHASE_ORDER, context_mod.WORKFLOW_PHASES)
+        # 不只是相等，而是同一个对象：权威清单只有 harness_paths 那一份，
+        # 复制粘贴出的第二份迟早会漂（merge 缺失就是这么来的）。
+        self.assertIs(hp.PHASE_ORDER, context_mod.WORKFLOW_PHASES)
+
+    def test_validation_phases_match_the_workflow_policy_contract(self) -> None:
+        """验证项 → 阶段的映射在 Python 与契约里各存一份，必须逐条一致。"""
+        contract = self.workflow["validationPhases"]
+
+        self.assertEqual(dict(hp.VALIDATION_PHASES), dict(contract))
+
+    def test_unknown_target_phase_error_points_at_a_way_out(self) -> None:
+        """硬 raise 而不给出路，调用方只能去读源码。"""
+        with self.assertRaises(ValueError) as raised:
+            hp.target_required_dag(self._policy("standard"), "not-a-phase")
+
+        message = str(raised.exception)
+        self.assertIn("LEGACY_PHASE_ALIASES", message)
+        self.assertIn("classify", message)
+
+    def test_a_renamed_phase_is_read_through_the_alias_table(self) -> None:
+        """阶段改名后，历史 change 的 gate-policy.json 仍要能读。
+
+        本仓库没有 change 级 schema 迁移机制，硬 raise 等于让所有在途变更报废。
+        """
+        policy = self._policy("standard")
+        # 把 DAG 里的 test 节点改成一个"旧名"，模拟改名后的历史产物。
+        for node in policy["requiredGateDag"]["nodes"]:
+            if node.get("phase") == "test":
+                node["phase"] = "verification"
+        aliases = dict(hpaths.LEGACY_PHASE_ALIASES)
+        hpaths.LEGACY_PHASE_ALIASES["verification"] = "test"
+        try:
+            target = hp.target_required_dag(policy, "test")
+        finally:
+            hpaths.LEGACY_PHASE_ALIASES.clear()
+            hpaths.LEGACY_PHASE_ALIASES.update(aliases)
+
+        # 解析回当前阶段名，节点照常参与裁剪。
+        self.assertIn("validation:unitTestFull", {n["id"] for n in target["nodes"]})
+
+    def test_phase_name_classification_is_three_state(self) -> None:
+        """workflow / non_workflow / unknown 要分得开。
+
+        release、deploy、sync 这些名字真实出现在阶段位置（GATE_RELEASE_PHASES、
+        workflow-policy 的 skills.*.phase），它们不是拼错的阶段名。
+        """
+        self.assertEqual(hpaths.classify_phase_name("run"), "workflow")
+        self.assertEqual(hpaths.classify_phase_name("release"), "non_workflow")
+        self.assertEqual(hpaths.classify_phase_name("sync"), "non_workflow")
+        self.assertEqual(hpaths.classify_phase_name("nonsense"), "unknown")
+        self.assertEqual(hpaths.classify_phase_name(""), "unknown")
 
     def test_real_classifier_policies_only_require_target_predecessors(self) -> None:
         cases = {
