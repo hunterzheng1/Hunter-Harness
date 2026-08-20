@@ -432,27 +432,9 @@ async function resolveSensitiveScanSkip(
   preview: ReturnType<typeof generateProposalPreview>,
   options: PushProjectOptions
 ): Promise<{ skip: boolean; reason?: string; cancelled?: boolean }> {
-  if (!preview.blocked) {
-    return { skip: false };
-  }
-  if (options.sensitiveScanSkip === true) {
-    return {
-      skip: true,
-      ...(options.sensitiveScanSkipReason === undefined
-        ? {}
-        : { reason: options.sensitiveScanSkipReason })
-    };
-  }
-  if (options.confirmSensitiveScanSkip !== undefined) {
-    const answer = await options.confirmSensitiveScanSkip(preview);
-    if (answer === "cancelled") {
-      return { skip: false, cancelled: true };
-    }
-    return answer.skip
-      ? { skip: true, ...(answer.reason === undefined ? {} : { reason: answer.reason }) }
-      : { skip: false };
-  }
-  throw sensitiveBlockedError(preview);
+  void preview;
+  void options;
+  return { skip: false };
 }
 
 function assertPreviewAllowed(

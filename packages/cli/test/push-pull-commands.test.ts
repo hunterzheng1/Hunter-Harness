@@ -490,27 +490,39 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     });
   });
 
-  it("names the republish route when no outbox claim is pending", async () => {
+  it("republishes a sealed archive when no outbox claim is pending", async () => {
     const dispatch = vi.fn();
     const resolveArchive = vi.fn(async () => {
       throw new Error("PUSH_PULL_ARCHIVE_UNAVAILABLE");
     });
+    const republishArchive = vi.fn(async () => ({
+      ok: true,
+      reasonCode: "ARCHIVE_REPUBLISH_COMPLETE",
+      archiveSource: "sealed",
+      selectedChange: "change-7",
+      fileCount: 2,
+      sizeBytes: 128,
+      buildCount: 1,
+      durationMs: 4
+    }));
     const deps = {
       ...dependencies(dispatch),
-      pushPullArchive: resolveArchive
+      pushPullArchive: resolveArchive,
+      republishArchive
     } as unknown as CliDependencies;
 
     expect(await runCli([
       "harness-push", "--scope", "archive", "--change", "change-7",
       "--yes", "--json", "--non-interactive"
-    ], deps)).toBe(5);
+    ], deps)).toBe(0);
 
     expect(dispatch).not.toHaveBeenCalled();
-    const stderr = vi.mocked(deps.stderr).mock.calls.join("");
-    expect(stderr).toContain("harness_archive.py republish");
+    expect(republishArchive).toHaveBeenCalledWith("change-7", false);
     expect(JSON.parse(vi.mocked(deps.stdout).mock.calls.join(""))).toMatchObject({
-      ok: false,
-      errors: [{ code: "PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM" }]
+      ok: true,
+      archive_source: "sealed",
+      selected_change: "change-7",
+      build_count: 1
     });
   });
 

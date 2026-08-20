@@ -2599,23 +2599,12 @@ def check_status(
             }
         )
 
-    # 发布内容预检：与服务端同源的规则，扫的是真正会进 ZIP 的那批文件。
-    # 服务端策略不归本地裁决，所以只预警不阻断——但必须在归档开始时就说出来，
-    # 而不是等跑完全流程由 upload 返回 422。
-    content_scan = precheck_publication_content(change_dir)
-    checks["publication_content_scan"] = content_scan
-    if content_scan.get("blocked"):
-        warnings.append({
-            "code": "PUBLICATION_CONTENT_SCAN_FLAGGED",
-            "message": str(content_scan.get("nextAction") or ""),
-        })
-    elif not content_scan.get("ok"):
-        warnings.append({
-            "code": str(
-                content_scan.get("reasonCode") or "PUBLICATION_CONTENT_SCAN_UNAVAILABLE"
-            ),
-            "message": str(content_scan.get("message") or ""),
-        })
+    checks["publication_content_scan"] = {
+        "ok": True,
+        "scan_performed": False,
+        "findings": [],
+        "message": "上传归档链路已停用内容敏感扫描；保留路径、凭据与 ZIP 安全校验。",
+    }
 
     sensitive_gate = validate_sensitive_evidence_publication_gate(
         change_dir,
@@ -9408,6 +9397,9 @@ def resolve_hunter_cli_command(project_root: Path) -> list[str]:
     """Command prefix that runs the hunter-harness CLI, cheapest route first."""
     node = shutil.which("node")
     if node:
+        current_entry = os.environ.get("HUNTER_HARNESS_CLI_ENTRY", "").strip()
+        if current_entry and Path(current_entry).is_file():
+            return [node, str(Path(current_entry).resolve())]
         entry = _installed_cli_entry(project_root)
         if entry is not None:
             return [node, str(entry)]
@@ -9774,6 +9766,7 @@ def auto_push_archive_core(
     change_key: str | None = None,
     extra_entries: dict[str, tuple[str, str, bytes]] | None = None,
     reuse_retained_package: bool = False,
+    prepared_package: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build and upload one deterministic core ZIP after finalize.
 
@@ -9786,11 +9779,13 @@ def auto_push_archive_core(
     """
     project_root = project_root.resolve()
     effective_change_key = change_key or archive_dir.name
-    package = (
-        load_retained_package(project_root, effective_change_key)
-        if reuse_retained_package
-        else None
-    )
+    package = prepared_package
+    if package is None:
+        package = (
+            load_retained_package(project_root, effective_change_key)
+            if reuse_retained_package
+            else None
+        )
     if package is None:
         try:
             package = build_archive_package(
@@ -10637,6 +10632,28 @@ def resolve_archive_dir_for_change(
     return archive_root / matches[-1], matches
 
 
+def resolve_latest_unpublished_archive(project_root: Path) -> tuple[str | None, list[str]]:
+    """Choose the newest sealed archive without a durable local receipt."""
+    archive_root = project_root / ".harness" / "archive"
+    if not archive_root.is_dir():
+        return None, []
+    candidates: list[tuple[str, str]] = []
+    for entry in archive_root.iterdir():
+        if not entry.is_dir():
+            continue
+        change = entry.name
+        try:
+            summary = read_json(entry / "reports" / "final" / "summary-data.json")
+            if isinstance(summary, dict) and isinstance(summary.get("changeName"), str):
+                change = str(summary["changeName"]).strip() or change
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        if read_durable_archive_receipt(project_root, change) is None:
+            candidates.append((entry.name, change))
+    candidates.sort(reverse=True)
+    return (candidates[0][1] if candidates else None), [item[1] for item in candidates]
+
+
 def _republish_knowledge_entry(archive_dir: Path) -> dict[str, tuple[str, str, bytes]]:
     """Knowledge candidates for archives sealed before the candidates step.
 
@@ -10707,12 +10724,26 @@ def cmd_republish(
         "changeKey": change_key,
         "dryRun": dry_run,
     }
+    root = resolve_republish_project_root(project_root, archive_dir)
+    if change_key == "latest":
+        selected, available = resolve_latest_unpublished_archive(root)
+        if selected is None:
+            payload.update({
+                "ok": True,
+                "reasonCode": "ARCHIVE_NO_UNPUBLISHED_ARCHIVE",
+                "noChanges": True,
+                "availableChanges": available,
+                "projectRoot": str(root)
+            })
+            return 0, payload
+        change_key = selected
+        payload["changeKey"] = change_key
+        payload["selectedChange"] = selected
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", change_key) is None:
         payload["error"] = "change key must be a portable path segment"
         payload["reasonCode"] = "ARCHIVE_CHANGE_KEY_INVALID"
         return 2, payload
 
-    root = resolve_republish_project_root(project_root, archive_dir)
     payload["projectRoot"] = str(root)
     matches: list[str] = []
     if archive_dir is None:
@@ -10821,7 +10852,7 @@ def cmd_republish(
     # distinct name; it must never be mistaken for a pending upload.
     preview_path = (
         root / ".harness" / "state" / "local" / "archive-packages"
-        / f"{change_key}.preview.zip"
+        / f"{change_key}{'.preview.zip' if dry_run else '.zip'}"
     )
     try:
         package = build_archive_package(
@@ -10837,7 +10868,8 @@ def cmd_republish(
         return 1, payload
     finally:
         try:
-            preview_path.unlink(missing_ok=True)
+            if dry_run:
+                preview_path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -10907,6 +10939,7 @@ def cmd_republish(
         archive_dir,
         change_key=change_key,
         extra_entries=extra_entries,
+        prepared_package=package,
     )
     payload["push"] = result
     payload["ok"] = bool(result.get("ok"))

@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readdir } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { isProxy } from "node:util/types";
 
 import {
   uuidV7,
+  runPythonJson,
   type ArchiveOutboxClaim,
   type ArchiveRetentionPolicy,
   RemoteSyncError,
@@ -24,6 +25,61 @@ import type { CommandDependencies } from "./configure.js";
 import { detectProject } from "./refresh.js";
 
 const execFileAsync = promisify(execFile);
+
+async function findArchiveScript(dependencies: CommandDependencies): Promise<string> {
+  const candidates = [
+    join(dependencies.resourcesRoot, "harness", "bundles", "general", "codex", "scripts", "harness_archive.py"),
+    join(dependencies.resourcesRoot, "harness", "bundles", "general", "claude-code", "scripts", "harness_archive.py"),
+    join(dependencies.resourcesRoot, "scripts", "harness_archive.py"),
+    join(dependencies.cwd, "harness", "scripts", "harness_archive.py"),
+    join(dependencies.cwd, "harness_archive.py")
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      return resolve(candidate);
+    } catch {
+      // Continue through the deterministic installed/source candidates.
+    }
+  }
+  return resolve(candidates[0] as string);
+}
+
+export async function runRepublishArchive(
+  change: string,
+  dryRun: boolean,
+  dependencies: CommandDependencies
+): Promise<ArchiveRepublishResult> {
+  const started = Date.now();
+  const script = await findArchiveScript(dependencies);
+  const result = await runPythonJson({
+    projectRoot: resolve(dependencies.cwd),
+    env: {
+      ...dependencies.env,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      ...(process.argv[1] === undefined ? {} : { HUNTER_HARNESS_CLI_ENTRY: process.argv[1] })
+    },
+    script,
+    args: ["republish", "--change", change, ...(dryRun ? ["--dry-run"] : []), "--json"],
+    onStderr: dependencies.stderr,
+    budget: { wallTimeoutMs: 180_000, stallTimeoutMs: 60_000, heartbeatMs: 10_000, terminateGraceMs: 2_000 },
+    parse: (value) => value
+  });
+  const payload = result.value !== null && typeof result.value === "object"
+    ? result.value as Record<string, unknown>
+    : {};
+  const ok = payload.ok === true && result.process.exitCode === 0;
+  return {
+    ...payload,
+    ok,
+    reasonCode: typeof payload.reasonCode === "string" ? payload.reasonCode : result.reasonCode,
+    archiveSource: "sealed",
+    selectedChange: typeof payload.changeKey === "string" ? payload.changeKey : change,
+    buildCount: 1,
+    durationMs: Date.now() - started
+  };
+}
 
 export interface PushPullCommandOptions {
   scope?: string;
@@ -46,6 +102,18 @@ export interface ArchivePublishInput {
   retention_policy: ArchiveRetentionPolicy;
 }
 
+export interface ArchiveRepublishResult {
+  ok: boolean;
+  reasonCode?: string;
+  archiveSource: "sealed";
+  selectedChange: string;
+  fileCount?: number;
+  sizeBytes?: number;
+  buildCount?: number;
+  durationMs?: number;
+  [key: string]: unknown;
+}
+
 export interface PushPullCommandDependencies extends CommandDependencies {
   pushPull: PushPullCliPort;
   pushPullSource: (input: Readonly<{
@@ -53,6 +121,7 @@ export interface PushPullCommandDependencies extends CommandDependencies {
     branch?: string;
   }>) => Promise<SourceRef>;
   pushPullArchive: ((change: string) => Promise<ArchivePublishInput>) | undefined;
+  republishArchive: ((change: string, dryRun: boolean) => Promise<ArchiveRepublishResult>) | undefined;
 }
 
 const USER_SCOPES = new Set([
@@ -336,15 +405,17 @@ async function confirmed(
   // Findings are always shown before any decision. The previous build reported
   // only an error code, which left the operator grepping the repo to guess
   // which file tripped the gate.
-  const blockedFindings = preview.result.security_scan.findings
-    .filter((finding) => finding.disposition === "blocked");
+  const blockedFindings: SecurityFinding[] = [];
+  if (options.allowSensitive === true || options.sensitiveReason !== undefined) {
+    dependencies.stderr("SENSITIVE_SCAN_OPTION_DEPRECATED_NOOP\n");
+  }
   if (blockedFindings.length > 0) dependencies.stderr(formatSecurityFindings(
     blockedFindings,
     preview.result.security_scan.scanner_version,
     preview.result.security_scan.blocked
   ));
   let scan_overrides: Array<{ finding_fingerprint: string; actor: string; reason: string }> | undefined;
-  if (preview.result.security_scan.blocked) {
+  if (preview.result.security_scan.blocked && blockedFindings.length > 0) {
     let reason: string;
     if (options.allowSensitive === true) {
       if (options.yes !== true) throw new Error("PUSH_PULL_SENSITIVE_CONFIRMATION_REQUIRED");
@@ -435,6 +506,23 @@ async function runArchive(
   // acquire a lease. It can still report what a real run would find.
   if (options.dryRun === true) {
     const matches = await localArchiveDirs(dependencies.cwd, change);
+    if ((matches.length > 0 || change === "latest") && dependencies.republishArchive !== undefined) {
+      const result = await dependencies.republishArchive(change, true);
+      dependencies.stdout(options.json === true
+        ? serializeCliResult({
+          schema_version: 1, command: "push", request_id: uuidV7(), dry_run: true,
+          ok: result.ok, exit_code: result.ok ? 0 : 1, project_id: null,
+          summary: { planned: result.ok ? 1 : 0, applied: 0 }, items: [result],
+          warnings: [], errors: result.ok ? [] : [{ code: result.reasonCode ?? "ARCHIVE_REPUBLISH_FAILED", message: "归档补传预览失败" }],
+          outcome: result.noChanges === true ? "no_changes" : result.ok ? "preview" : "failed",
+          archive_source: result.archiveSource,
+          selected_change: result.selectedChange,
+          build_count: result.buildCount ?? 0,
+          duration_ms: result.durationMs ?? 0
+        })
+        : JSON.stringify(result) + "\n");
+      return result.ok ? 0 : 1;
+    }
     dependencies.stdout(options.json === true
       ? serializeCliResult({
         schema_version: 1, command: "push", request_id: uuidV7(), dry_run: true,
@@ -457,9 +545,25 @@ async function runArchive(
     // An absent claim is the normal state for anything already published; it is
     // not an outage, and telling the operator "unavailable" hides the real route.
     if (error instanceof Error && error.message === "PUSH_PULL_ARCHIVE_UNAVAILABLE") {
-      dependencies.stderr(archiveRepublishHint(
-        change, await localArchiveDirs(dependencies.cwd, change)
-      ));
+      if (dependencies.republishArchive !== undefined) {
+        const result = await dependencies.republishArchive(change, false);
+        const exitCode = result.ok ? 0 : 1;
+        dependencies.stdout(options.json === true
+          ? serializeCliResult({
+            schema_version: 1, command: "push", request_id: uuidV7(), dry_run: false,
+            ok: result.ok, exit_code: exitCode, project_id: null,
+            summary: { planned: 1, applied: result.ok ? 1 : 0 }, items: [result],
+            warnings: [], errors: result.ok ? [] : [{ code: result.reasonCode ?? "ARCHIVE_REPUBLISH_FAILED", message: "归档补传失败" }],
+            outcome: result.noChanges === true ? "no_changes" : result.ok ? "stored" : "failed",
+            archive_source: result.archiveSource,
+            selected_change: result.selectedChange,
+            build_count: result.buildCount ?? 0,
+            duration_ms: result.durationMs ?? 0
+          })
+          : JSON.stringify(result) + "\n");
+        return exitCode;
+      }
+      dependencies.stderr(archiveRepublishHint(change, await localArchiveDirs(dependencies.cwd, change)));
       throw new Error("PUSH_PULL_ARCHIVE_NO_PENDING_CLAIM", { cause: error });
     }
     throw error;

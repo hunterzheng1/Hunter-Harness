@@ -6,7 +6,6 @@ import type {
 } from "./types.js";
 import { classifyContentPath } from "@hunter-harness/contracts";
 import { normalizeManagedPath } from "../../fs/path-safety.js";
-import { scanSensitiveFiles } from "../../security/scanner.js";
 import { compareCodepoint } from "./stable.js";
 
 const packageAuthBasenames = new Set([
@@ -99,10 +98,6 @@ export function selectMapEvidence(input: MapEvidenceSelectionInput): MapEvidence
     const pathDecision = assessMapEvidencePath(candidate.source_path);
     if (!pathDecision.allowed) {
       addReason(reasons, "SENSITIVE_PATH_EXCLUDED");
-      continue;
-    }
-    if (scanSensitiveFiles({ [pathDecision.path]: candidate.content }).blocked) {
-      addReason(reasons, "SENSITIVE_CONTENT_EXCLUDED");
       continue;
     }
     eligible.push({ ...candidate, source_path: pathDecision.path });

@@ -91,7 +91,9 @@ import { createRemoteSyncHttpPort } from "./push-pull-adapter/remote-http.js";
 import {
   resolvePushPullSource,
   runPushPull,
+  runRepublishArchive,
   type ArchivePublishInput,
+  type ArchiveRepublishResult,
   type PushPullCommandOptions
 } from "./commands/push-pull.js";
 import {
@@ -114,12 +116,14 @@ export interface CliDependencies extends Partial<CommandDependencies> {
     branch?: string;
   }>) => Promise<SourceRef>;
   pushPullArchive?: (change: string) => Promise<ArchivePublishInput>;
+  republishArchive?: (change: string, dryRun: boolean) => Promise<ArchiveRepublishResult>;
 }
 
 interface ResolvedCliDependencies extends CommandDependencies {
   pushPull: PushPullCliPort;
   pushPullSource: NonNullable<CliDependencies["pushPullSource"]>;
   pushPullArchive: CliDependencies["pushPullArchive"] | undefined;
+  republishArchive: NonNullable<CliDependencies["republishArchive"]>;
 }
 
 interface SecretInputStream extends NodeJS.ReadableStream {
@@ -274,6 +278,16 @@ async function defaultDependencies(
             pushPullSource: overrides.pushPullSource ?? ((input) =>
               resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
             pushPullArchive: archiveComposition.pushPullArchive
+            ,republishArchive: overrides.republishArchive ?? ((change, dryRun) =>
+              runRepublishArchive(change, dryRun, {
+                cwd: overrides.cwd ?? process.cwd(),
+                resourcesRoot: overrides.resourcesRoot ?? process.cwd(),
+                stdout: () => undefined,
+                stderr: (value) => process.stderr.write(value),
+                prompt: async () => "",
+                fetch: globalThis.fetch,
+                env
+              }))
           };
         })()
       : {
@@ -283,6 +297,16 @@ async function defaultDependencies(
           pushPullSource: overrides.pushPullSource ?? ((input) =>
             resolvePushPullSource(overrides.cwd ?? process.cwd(), input)),
           pushPullArchive: overrides.pushPullArchive
+          ,republishArchive: overrides.republishArchive ?? ((change, dryRun) =>
+            runRepublishArchive(change, dryRun, {
+              cwd: overrides.cwd ?? process.cwd(),
+              resourcesRoot: overrides.resourcesRoot ?? process.cwd(),
+              stdout: () => undefined,
+              stderr: (value) => process.stderr.write(value),
+              prompt: async () => "",
+              fetch: globalThis.fetch,
+              env
+            }))
         }),
     ...(overrides.terminalColumns !== undefined
       ? { terminalColumns: overrides.terminalColumns }

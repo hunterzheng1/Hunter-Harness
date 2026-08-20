@@ -169,37 +169,6 @@ export async function runPush(
             const answer = await dependencies.prompt("Create this proposal? [y/N]: ");
             return /^(?:y|yes)$/i.test(answer.trim());
           } }),
-        ...(options.yes === true || options.nonInteractive === true ||
-            options.skipSensitiveScan === true
-          ? {}
-          : { confirmSensitiveScanSkip: async (preview) => {
-            dependencies.stderr(formatFindings({
-              findings: preview.security.findings
-                .filter((finding) => finding.disposition === "blocked")
-                .map((finding) => ({
-                  path: finding.path,
-                  rule_id: finding.rule_id,
-                  severity: finding.severity,
-                  overridable: finding.overridable,
-                  fingerprint: finding.fingerprint,
-                  line: finding.line,
-                  column: finding.column
-                })),
-              finding_count: preview.security.findings.filter(
-                (finding) => finding.disposition === "blocked"
-              ).length,
-              scanner_version: preview.security.scanner_version
-            }));
-            const answer = await dependencies.prompt(
-              "敏感扫描已阻断推送。是否显式跳过并继续？[y/N]: "
-            );
-            if (!/^(?:y|yes)$/i.test(answer.trim())) {
-              return "cancelled";
-            }
-            const reasonAnswer = await dependencies.prompt("跳过原因（可选，回车跳过）: ");
-            const reason = reasonAnswer.trim();
-            return reason === "" ? { skip: true } : { skip: true, reason };
-          } }),
         ...(options.nonInteractive === true
           ? {}
           : { confirmConflictStrategy: async (conflicts) =>

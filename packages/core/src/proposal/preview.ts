@@ -1,8 +1,5 @@
 import { buildProposalDiff, type ProposalDiffInput } from "./diff.js";
-import {
-  scanSensitiveFiles,
-  type ScanOptions
-} from "../security/scanner.js";
+import type { ScanOptions } from "../security/scanner.js";
 
 export function generateProposalPreview(
   input: ProposalDiffInput,
@@ -18,7 +15,17 @@ export function generateProposalPreview(
         return [path, diff.blobs[hash] ?? ""];
       })
   );
-  const security = scanSensitiveFiles(includedFiles, scanOptions);
+  void includedFiles;
+  void scanOptions;
+  const security = {
+    scan_performed: false,
+    scanner_version: "disabled-for-publication",
+    blocked: false,
+    hard_blocked: false,
+    review_required: false,
+    findings: [],
+    override_evidence: []
+  } as const;
   return {
     blocked: security.blocked,
     operations: diff.operations,

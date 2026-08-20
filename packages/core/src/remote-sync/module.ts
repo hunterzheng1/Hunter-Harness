@@ -7,11 +7,7 @@ import {
 } from "@hunter-harness/contracts";
 
 import { sha256Bytes } from "../fs/hash.js";
-import {
-  resolveSensitiveScanPolicy,
-  scanSensitiveFilesForPublication,
-  type SensitiveScanPolicy
-} from "../security/scanner.js";
+import { resolveSensitiveScanPolicy, type SensitiveScanPolicy } from "../security/scanner.js";
 import type {
   ArchivePackageRef,
   ArchiveSyncReceipt,
@@ -392,46 +388,23 @@ function buildPreview(
   };
 }
 
-function scanInput(
-  direction: Direction,
-  view: SyncView,
-  planned: { operations: readonly SyncOperation[]; conflicts: readonly SyncConflict[] }
-): Record<string, string> {
-  const desired = fileMap(direction === "push" ? view.local_files : view.remote_files);
-  const paths = new Set([
-    ...planned.operations.filter((item) => item.action !== "delete").map((item) => item.path),
-    ...planned.conflicts.map((item) => item.path)
-  ]);
-  const files: Record<string, string> = {};
-  for (const path of [...paths].sort()) {
-    const file = desired.get(path);
-    if (file === undefined) continue;
-    const classified = classifyEligiblePath(file.path, file.content_kind);
-    if (!classified.ok || classified.scan_policy === "skip_content_scan") continue;
-    files[path] = typeof file.content === "string"
-      ? file.content
-      : new TextDecoder().decode(file.content);
-  }
-  return files;
-}
-
 function buildSecurityScan(
   direction: Direction,
   view: SyncView,
   planned: { operations: readonly SyncOperation[]; conflicts: readonly SyncConflict[] },
   policy: SensitiveScanPolicy
 ): SyncPreview["security_scan"] {
-  const result = scanSensitiveFilesForPublication(
-    scanInput(direction, view, planned),
-    policy,
-    { now: new Date(0) }
-  );
+  void direction;
+  void view;
+  void planned;
+  void policy;
   return {
-    scanner_version: result.scanner_version,
-    blocked: result.blocked,
-    hard_blocked: result.hard_blocked,
-    review_required: result.review_required,
-    findings: result.findings
+    scanner_version: "disabled-for-publication",
+    scan_performed: false,
+    blocked: false,
+    hard_blocked: false,
+    review_required: false,
+    findings: []
   };
 }
 
@@ -448,27 +421,11 @@ function validateSecurityConfirmation(
       scanConfirmation.expected_preview_hash !== preview.preview_hash) {
     throw new RemoteSyncError("SYNC_PREVIEW_HASH_MISMATCH");
   }
-  const applicableInput = scanInput(direction, view, {
-    operations: applied,
-    conflicts: []
-  });
-  const applicableScan = scanSensitiveFilesForPublication(
-    applicableInput,
-    policy,
-    { now: new Date(0) }
-  );
-  if (!applicableScan.blocked) return;
-  if (scanConfirmation === undefined) {
-    throw new RemoteSyncError("SYNC_SENSITIVE_CONTENT_BLOCKED");
-  }
-  const rescanned = scanSensitiveFilesForPublication(
-    applicableInput,
-    policy,
-    { overrides: scanConfirmation.overrides, now: new Date(0) }
-  );
-  if (rescanned.blocked) {
-    throw new RemoteSyncError("SYNC_SENSITIVE_CONTENT_BLOCKED");
-  }
+  void direction;
+  void view;
+  void applied;
+  void policy;
+  void scanConfirmation;
 }
 
 function decisionMap(

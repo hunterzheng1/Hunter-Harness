@@ -25,6 +25,10 @@ export interface CliResult {
   /** Stage 03 Push/Pull receipt binding. */
   preview_hash?: string;
   outcome?: string;
+  archive_source?: "outbox" | "sealed";
+  selected_change?: string;
+  build_count?: number;
+  duration_ms?: number;
   /** Blocked sensitive findings with their locations, so a caller can act. */
   security_scan?: {
     scanner_version: string;

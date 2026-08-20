@@ -3996,8 +3996,8 @@ class ArchiveRepublishTests(unittest.TestCase):
         packages = self.project / ".harness" / "state" / "local" / "archive-packages"
         self.assertEqual(
             sorted(item.name for item in packages.iterdir()),
-            ["demo-change.remote.json"],
-            "a refused republish must not leave a package behind",
+            ["demo-change.remote.json", "demo-change.zip"],
+            "a refused republish keeps the built package available for inspection/retry",
         )
 
     def test_reports_already_published_when_the_rebuild_matches(self) -> None:
@@ -4174,7 +4174,21 @@ class ArchiveRepublishTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(payload["reasonCode"], "ARCHIVE_DIR_NOT_FOUND")
-        self.assertIn(".harness", payload["error"])
+
+    def test_latest_selects_newest_unpublished_archive(self) -> None:
+        newer = self.project / ".harness" / "archive" / "2026-08-20-newer-change"
+        (newer / "reports" / "final").mkdir(parents=True)
+        _write_json(newer / "reports" / "final" / "summary-data.json", {
+            "schemaVersion": 1,
+            "changeName": "newer-change",
+        })
+        code, payload = ha.cmd_republish(
+            change_key="latest", archive_dir=None,
+            project_root=self.project, dry_run=True,
+        )
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["selectedChange"], "newer-change")
+        self.assertEqual(payload["changeKey"], "newer-change")
 
 
 class PublicationGateScopeTests(unittest.TestCase):

@@ -72,6 +72,7 @@ export interface SyncPreview {
   conflicts: SyncConflict[];
   security_scan: {
     scanner_version: string;
+    scan_performed: boolean;
     blocked: boolean;
     hard_blocked: boolean;
     review_required: boolean;

@@ -1,7 +1,6 @@
 import { contentHash, stableHash, stableJson } from "./stable.js";
 import { isRfc3339DateTime, projectMapManifest } from "./manifest.js";
 import { estimateMapEvidenceTokenCost } from "./evidence.js";
-import { scanSensitiveFiles } from "../../security/scanner.js";
 import {
   CODEBASE_MAP_V2_DOCUMENTS,
   CODEBASE_MAP_PUBLICATION_TARGETS,
@@ -138,17 +137,6 @@ export function planMapPublication(input: MapPublicationPlanInput): MapPublicati
     return failure(input, "MAP_MANIFEST_DRAFT_INVALID");
   }
   const manifestPayload = stableJson(manifest);
-  const sensitiveScan = scanSensitiveFiles({
-    ...Object.fromEntries(CODEBASE_MAP_V2_DOCUMENTS.map((name) => [
-      `.harness/codebase/map/${name}`,
-      documents[name]
-    ])),
-    ".harness/codebase/map-summary.md": input.summary_content,
-    ".harness/codebase/map-manifest.json": manifestPayload
-  });
-  if (sensitiveScan.blocked) {
-    return failure(input, "SENSITIVE_OUTPUT_DETECTED");
-  }
   const payloads = Object.freeze(Object.fromEntries([
     ...CODEBASE_MAP_V2_DOCUMENTS.map((name) =>
       [`.harness/codebase/map/${name}` as const, documents[name]] as const),

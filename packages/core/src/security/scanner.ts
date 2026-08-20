@@ -287,6 +287,7 @@ export function scanSensitiveFiles(
 }
 
 export interface SensitiveScanResult {
+  scan_performed?: boolean;
   scanner_version: string;
   blocked: boolean;
   hard_blocked: boolean;
@@ -309,6 +310,7 @@ export function scanSensitiveFilesForPublication(
 ): SensitiveScanResult {
   if (policy === "off") {
     return {
+      scan_performed: false,
       scanner_version: SENSITIVE_SCANNER_VERSION,
       blocked: false,
       hard_blocked: false,
@@ -320,6 +322,7 @@ export function scanSensitiveFilesForPublication(
   const result = scanSensitiveFiles(files, options);
   if (policy === "block") return result;
   return {
+    scan_performed: true,
     ...result,
     blocked: false,
     hard_blocked: false,

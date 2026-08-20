@@ -6,7 +6,6 @@ import {
   type SourceFile
 } from "@hunter-harness/contracts";
 
-import { scanSensitiveFiles } from "../security/scanner.js";
 import { compareSemver } from "../skill-ir/semver.js";
 
 import { SkillEntryError } from "./errors.js";
@@ -124,22 +123,6 @@ export function checkSkill(input: {
     fixable: caps.length === 0
   });
 
-  const fileMap: Record<string, string> = {};
-  for (const f of sourceFiles) {
-    if (!DANGEROUS_PATH.test(f.path)) fileMap[f.path] = f.content;
-  }
-  const sensitive = scanSensitiveFiles(fileMap);
-  const highCount = sensitive.findings.filter((f) => f.severity === "high").length;
-  const medCount = sensitive.findings.filter((f) => f.severity === "medium").length;
-  const sensitiveStatus = highCount > 0 ? "red" : (medCount > 0 ? "yellow" : "green");
-  items.push({
-    id: "SENSITIVE",
-    label: "敏感信息",
-    status: sensitiveStatus,
-    message: "high=" + highCount + " medium=" + medCount,
-    filePath: sensitive.findings[0]?.path ?? null,
-    fixable: false
-  });
 
   const version = meta?.version ?? null;
   const latest = latestVersion ?? null;

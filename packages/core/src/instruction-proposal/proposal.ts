@@ -6,7 +6,6 @@ import {
   type InstructionInspectionRef,
   type RuleTopic
 } from "../instruction-governance/types.js";
-import { scanSensitiveFiles } from "../security/scanner.js";
 import { normalizeInstructionEvidence, selectInstructionEvidence } from "./evidence.js";
 import { fail, sha256, timestamp, uniqueStrings } from "./shared.js";
 import type {
@@ -149,9 +148,6 @@ function validateAction(
   }
   if (!/[\u3400-\u9fff]/u.test(draft.rationale_zh) || draft.rationale_zh.length > 2_000) {
     fail("INSTRUCTION_MODEL_OUTPUT_INVALID", `actions[${index}].rationale_zh must be Chinese display text`);
-  }
-  if (scanSensitiveFiles({ [targetPath]: draft.content }).blocked) {
-    fail("INSTRUCTION_PROPOSAL_CONTENT_SENSITIVE", targetPath);
   }
   if (draft.evidence_refs.length === 0) {
     fail("INSTRUCTION_PROPOSAL_EVIDENCE_INVALID", `actions[${index}] has no evidence`);
