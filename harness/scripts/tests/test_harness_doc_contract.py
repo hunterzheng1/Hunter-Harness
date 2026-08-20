@@ -186,5 +186,48 @@ class DocCliContractTests(unittest.TestCase):
             self.assertTrue(referenced[core], f"{core}.py has no documented subcommand")
 
 
+PLAN_DOCS = ROOT / "harness" / "harness-plan"
+
+
+class PlanDocSingleSourceTests(unittest.TestCase):
+    """同一条规则只在一份人类产物里维护（roadmap 11「Agent 指导文档收敛」）。
+
+    四份文档曾经把同一批规则各写一遍：问题预算的数值、Plan 结束行为、阶段 8 的
+    产物清单。规则改了就得同时改四处，漏一处就出现互相矛盾的权威。
+    """
+
+    def _text(self, name: str) -> str:
+        return (PLAN_DOCS / name).read_text(encoding="utf-8")
+
+    def test_question_budget_numbers_live_only_in_protocols(self) -> None:
+        """预算数值的权威在 protocols.md 的 decision-grilling-protocol。"""
+        budget = "5-7"
+        self.assertIn(budget, self._text("protocols.md"))
+        for name in ("checklist.md", "SKILL.md"):
+            self.assertNotIn(budget, self._text(name),
+                             f"{name} 又复述了一遍问题预算数值")
+
+    def test_plan_ending_behaviour_is_not_restated_in_the_checklist(self) -> None:
+        """结束行为属路由，权威在 SKILL.md 关键规则表 + reference.md 详述。"""
+        marker = "Subagent-Driven"
+        self.assertIn(marker, self._text("reference.md"))
+        self.assertNotIn(marker, self._text("checklist.md"),
+                         "checklist 又复述了一遍 Plan 结束行为")
+
+    def test_the_checklist_does_not_re_enumerate_published_artifacts(self) -> None:
+        """产物是否齐全由 finalizer fail-closed 判定，逐条勾选零决策价值。"""
+        checklist = self._text("checklist.md")
+        for path in ("meta/publication-journals/", "meta/plan-events.ndjson"):
+            self.assertNotIn(
+                path, checklist,
+                f"checklist 又列了一遍 {path}；文件清单的权威在 reference.md")
+
+    def test_the_self_check_no_longer_demands_a_pass_event(self) -> None:
+        """「协议自检通过」不改变任何结论，只增加监控噪声（roadmap 12 事件规则）。"""
+        protocols = self._text("protocols.md")
+        self.assertIn("不要", protocols)
+        self.assertNotIn("该自检作为 `verification` 事件", protocols)
+
+
 if __name__ == "__main__":
     unittest.main()

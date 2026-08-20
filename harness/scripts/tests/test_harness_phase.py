@@ -22,7 +22,6 @@ import harness_phase as hp  # noqa: E402
 import harness_events as he  # noqa: E402
 import harness_archive as ha  # noqa: E402
 import harness_gate as hg  # noqa: E402
-import harness_paths as hpaths  # noqa: E402
 
 
 class ReconcileDagTests(unittest.TestCase):
@@ -149,9 +148,13 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         spec.loader.exec_module(context_mod)
 
         self.assertEqual(hp.PHASE_ORDER, context_mod.WORKFLOW_PHASES)
-        # 不只是相等，而是同一个对象：权威清单只有 harness_paths 那一份，
-        # 复制粘贴出的第二份迟早会漂（merge 缺失就是这么来的）。
-        self.assertIs(hp.PHASE_ORDER, context_mod.WORKFLOW_PHASES)
+        # 不只是相等，还要证明两边都是**转引** harness_paths，而不是各存一份拷贝
+        # ——复制粘贴出的第二份迟早会漂（merge 缺失就是这么来的）。
+        # 不能直接比较两个模块的对象：测试套件会用 spec_from_file_location 加载
+        # 同一文件的多份实例，跨实例的 is 必然为假。所以各自与自己看到的
+        # harness_paths 比。
+        self.assertIs(hp.PHASE_ORDER, hp.hpaths.WORKFLOW_PHASES)
+        self.assertIs(context_mod.WORKFLOW_PHASES, context_mod.hpaths.WORKFLOW_PHASES)
 
     def test_validation_phases_match_the_workflow_policy_contract(self) -> None:
         """验证项 → 阶段的映射在 Python 与契约里各存一份，必须逐条一致。"""
@@ -178,13 +181,16 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         for node in policy["requiredGateDag"]["nodes"]:
             if node.get("phase") == "test":
                 node["phase"] = "verification"
-        aliases = dict(hpaths.LEGACY_PHASE_ALIASES)
-        hpaths.LEGACY_PHASE_ALIASES["verification"] = "test"
+        # 必须改 harness_phase 实际读到的那份 harness_paths：测试套件里同一文件
+        # 会被加载成多份模块实例，改错实例这条用例会静默失效。
+        table = hp.hpaths.LEGACY_PHASE_ALIASES
+        aliases = dict(table)
+        table["verification"] = "test"
         try:
             target = hp.target_required_dag(policy, "test")
         finally:
-            hpaths.LEGACY_PHASE_ALIASES.clear()
-            hpaths.LEGACY_PHASE_ALIASES.update(aliases)
+            table.clear()
+            table.update(aliases)
 
         # 解析回当前阶段名，节点照常参与裁剪。
         self.assertIn("validation:unitTestFull", {n["id"] for n in target["nodes"]})
@@ -195,11 +201,12 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         release、deploy、sync 这些名字真实出现在阶段位置（GATE_RELEASE_PHASES、
         workflow-policy 的 skills.*.phase），它们不是拼错的阶段名。
         """
-        self.assertEqual(hpaths.classify_phase_name("run"), "workflow")
-        self.assertEqual(hpaths.classify_phase_name("release"), "non_workflow")
-        self.assertEqual(hpaths.classify_phase_name("sync"), "non_workflow")
-        self.assertEqual(hpaths.classify_phase_name("nonsense"), "unknown")
-        self.assertEqual(hpaths.classify_phase_name(""), "unknown")
+        classify = hp.hpaths.classify_phase_name
+        self.assertEqual(classify("run"), "workflow")
+        self.assertEqual(classify("release"), "non_workflow")
+        self.assertEqual(classify("sync"), "non_workflow")
+        self.assertEqual(classify("nonsense"), "unknown")
+        self.assertEqual(classify(""), "unknown")
 
     def test_real_classifier_policies_only_require_target_predecessors(self) -> None:
         cases = {

@@ -422,13 +422,22 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 | `context` | project_id/run_id/branch_name/attempt（复用 plan-run-id 与 attempt） | 0.5 |
 | `expected_baseline` | 首次发布 `{state:"absent", manifest_hash:null, generation:0}` | 8 |
 
-> ⚠️ **已知缺口：v2 派生的 `meta/scenario-manifest.json` 目前喂不了 run/test 门禁。**
-> 它是 artifact 包装体，每条场景只有 `scenario_id/coverage_dimension/execution_level/
-> evidence_requirements/risk_level/task_refs/requirement_refs`；而门禁按
-> `id/priority/requiredEvidenceKind/ownerPhase/executableTestId/testFile/testTitle`
-> 判定哪些场景需要 ledger 证据。缺 `priority` 与 `requiredEvidenceKind` 时"必需场景"会算成空集，
-> 所以门禁**明确报 `SCENARIO_MANIFEST_V2_UNSUPPORTED` 并列出 `missingFields`，绝不静默放行**。
-> 需要 ledger 证据闭环的变更，在 v2 场景契约补齐这些字段前请走 legacy 路径。
+> **场景契约与门禁的对接**（曾经的已知缺口，现已打通）
+>
+> v2 派生的 `meta/scenario-manifest.json` 是 artifact 包装体，键名与门禁消费的不同。消费端
+> （`harness_gate` 的 C9、`harness_ledger` 的三处）统一调 `harness_plan_finalize.unpack_v2_scenario_manifest`
+> 解成 legacy 形状再判定：`scenario_id→id`、`owner_phase→ownerPhase`、`required_evidence_kind→requiredEvidenceKind`
+> 、可执行三元 `executable_test_id/test_file/test_title→executableTestId/testFile/testTitle`。
+> `required_evidence_kind` 由 `priority` 派生（P0/P1→`ledger`，P2→`advisory`），写在 artifact 里，
+> 消费侧不重推。
+>
+> 因此自然输入的 `scenarios` **必须**带 `priority`（P0/P1/P2）与 `owner_phase`。缺任一项，
+> 门禁**逐场景**校验后报 `SCENARIO_MANIFEST_V2_UNSUPPORTED` 并列出 `missingFields`，绝不静默放行
+> ——逐场景而不是取键的并集：并集只要有一条场景带了 `priority` 就算通过，其余缺字段的会静默
+> 落进非必需集，"必需场景"随之缩水。
+>
+> 可执行三元是**可选**的，但要么整组给全、要么整组省略。ledger 场景全部带齐 → manifest 声明
+> `schemaVersion 2`，关门可绑结构化执行收据；否则降为 1。
 
 - **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。
 - **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。

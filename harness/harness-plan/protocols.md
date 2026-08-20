@@ -128,4 +128,6 @@ description: harness-plan 的原生规划协议。吸收 brainstorming、grill-m
 - implementation-planning-protocol：plan 简表、implementation-detail、test-scenarios 三件套一致，无占位符
 ```
 
-该自检作为 `verification` 事件的 `note` 追加；关键结论分别追加 `decision` / `issue` 事件。渲染器在 `phase.end` 后生成执行日志。
+自检结论直接展示给用户即可，**不要**再追加一条 `verification` 事件——「协议自检通过」不改变
+任何结论，只增加监控噪声（roadmap 12 号「事件规则」）。真正影响行为的东西照常留痕：关键决策
+追加 `decision`，发现的冲突与阻塞追加 `issue`。渲染器在 `phase.end` 后生成执行日志。

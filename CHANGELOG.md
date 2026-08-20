@@ -1,12 +1,82 @@
 # Changelog
 
-## Unreleased — @hunter-harness/workflow-harness
+## Unreleased — hunter-harness ＋ @hunter-harness/workflow-harness
 
-流程治理收敛第一批：生命周期与默认档位。起因是一份外部诊断——新旧两代状态机、两套
-租约、两类身份叠加，让普通任务承担了接近发布系统的复杂度。本轮只动编排层与默认值，
-不碰原子写入、并发 fencing、哈希/readback 这些底层边界。
+> **双发**：本轮同时改了 CLI（`plan evidence-pack` 的场景键集与模板）与 harness 脚本，
+> 发布时 `minimumCliVersion` 需同步提升到本次 CLI 版本。新旧配对的两种错配方向都
+> fail-closed（旧 CLI + 新 Bundle：manifest 缺字段被点名；新 CLI + 旧 Bundle：门禁不认
+> 包装体），不会静默放行。
 
-阶段编排合并（Run/Test/Review → Execute）与 v2 Plan 契约打通不在本批，单独立项。
+流程治理收敛。起因是一份外部诊断——新旧两代状态机、两套租约、两类身份叠加，让普通
+任务承担了接近发布系统的复杂度。全程不碰原子写入、并发 fencing、哈希/readback 这些
+底层边界。
+
+**Run/Test/Review 合并为 Execute 仍未做**，且是有意推迟的：`target_required_dag` 对历史
+`gate-policy.json` 里的旧阶段名硬 raise，TS 侧 partition 等长断言同样硬失败，而仓库没有
+任何 change 级 schema 迁移机制——改阶段名会让所有在途 change 当场报废且无回收路径。本轮
+先把迁移层与单一真相源做出来，届时合并变成一次可逆的配置改动。
+
+### Added — v2 Plan 的场景契约接上了 run/test 门禁
+
+v2 派生的 `meta/scenario-manifest.json` 是 artifact 包装体，键名与门禁消费的不同，缺
+`priority`/`requiredEvidenceKind`/`ownerPhase` 与可执行测试三元。结果是 v2 计划能发布成功，
+却走不完 run/test 的证据闭环——只能回退 legacy。
+
+不做纯适配器：缺的字段在 v2 数据里根本不存在，靠 `risk_level` 猜 `priority` 是语义伪造，
+而解包后"必需场景"会算成空集、C9 返回 `NO_LEDGER_REQUIRED_SCENARIOS`，等于对所有 v2 计划
+静默关掉证据门禁。所以在生产端补齐字段：`TestScenarioInput` 加必填 `priority`/`owner_phase`
+与可选三元，投影白名单带上它们并派生 `required_evidence_kind`。
+
+解包器 `unpack_v2_scenario_manifest` 落在 `harness_plan_finalize`（它本就定义了 legacy
+manifest 的 schema），gate 与 ledger 共用同一份。**逐场景**校验而非取键的并集——并集只要
+有一条场景带了 `priority` 就算通过，其余缺字段的会静默落进非必需集。字段不齐仍 fail-closed。
+
+新增跨语言端到端：拿真实 finalize 产出的 manifest 喂真实的 Python 解包器。此前 Python 侧
+的 v2 夹具是手写 JSON，生产端字段一变测试不会失效。
+
+### Changed — 阶段清单收敛为单一真相源，并加读时迁移层
+
+阶段清单曾在 `harness_context` 与 `harness_phase` 各写一遍，靠约定同步——直到后者少了一个
+`merge`，worktree 变更走到 merge 阶段就硬 raise。权威清单下沉到 `harness_paths`（叶子模块），
+两边转引同一个对象。
+
+新增 `LEGACY_PHASE_ALIASES` 读时映射与三态判定（`workflow` / `non_workflow` / `unknown`）。
+别名表现在为空，但三态今天就有真实内容：`release`、`deploy`、`sync` 这些名字真实出现在阶段
+位置，它们不是拼错的阶段名。`_phase_plan` 不再静默降级——遇未知阶段名以前一律退成 legacy、
+阶段计划整个失效而调用方看不出，现在先过映射，仍解析不了才降级并带上原因与具体阶段名。
+
+### Changed — 阶段特化收敛为声明式规则表
+
+`cmd_begin`/`cmd_close` 里散落着八处 `if args.phase == ...`。两个五百行的函数，想知道
+"test 关门时到底跑哪几项"要通读全文；更要紧的是 run/test/review 的差异被摊平在控制流里，
+看不出它们本可以共用同一套生命周期。改为 `PHASE_GATE_RULES` 查表，行为逐条对齐并测试锁死。
+
+### Fixed — fixback 的 run 事件从来没被打上标记
+
+fixback 靠嗅探 note 里有没有 "fixback" 字样判定，而真正的启动路径写的 note 是"开始处理评审
+中确认需要修改的代码问题。"——一个 "fixback" 字都没有。现在 `gate begin/close` 接受
+`--fixback` 显式信号，note 嗅探保留为兼容回退。
+
+### Fixed — `merge` 不是一个合法阶段
+
+`harness_phase.PHASE_ORDER` 少一个 `merge`，而 worktree 场景会自动插入它，于是走到 merge
+阶段直接 `unsupported reconcile target phase`。
+
+### Changed — Plan 文档去重与 legacy 退役门槛
+
+按 roadmap 11 号实施步骤 8 裁掉 `checklist.md` 里 17 条**已由 finalizer fail-closed 判定**
+的勾选项（文件是否齐全、哈希是否一致、身份是否匹配、计数是否对得上），以及两处跨文件复述
+（问题预算数值的权威在 `protocols.md`，Plan 结束行为的权威在 `SKILL.md` + `reference.md`）。
+checklist 315 → 254 行。保留的是机器判不了的：层序依赖是否合理、维度是否真被覆盖、详略是否
+配得上复杂度。新增文档测试锁住"同一事实只在一处维护"。
+
+按 roadmap 12 号事件规则，取消"协议自检通过"必须追加 `verification` 事件的要求——它不改变
+任何结论，只增加监控噪声。影响行为的 `decision`/`issue` 照常留痕，机器事件类型一个不删。
+
+roadmap 14 号补上 legacy Plan 路径的**删除点**（workflow-harness 0.3.0）与可执行的采纳度判据。
+此前 12 号把排期推给 14 号、14 号只给条件不给排期，而采纳度基线六项全部「待采集」，实际无法
+度量。legacy 现标记为 deprecated，新 change 默认 v2；**本轮不删任何 legacy 代码**，历史归档
+必须保持可读。
 
 ### Fixed — ledger 对 v2 场景清单静默降级（安全）
 

@@ -184,8 +184,8 @@ source: harness-plan
 □ 已用 decision / issue 事件 note 记录五类输出：风险识别 / 复用机会 / 替代方案 / 推荐方案 / 关键决策
 □ 已叠加项目架构约束（分层规范、数据模型、接口规范）
 □ 需求澄清结论已追加到 events.ndjson，阶段结束后执行日志由渲染器生成
-□ 用户问题未超预算：简单修复 0-1 问，普通需求 1-3 问，高风险需求 5-7 问；无必须裁决事项时 0 问
-□ 提问遵循"一次一问、等答再继续"；能由 context pack / 阶段3代码探索 / CodeGraph 自答的问题已自答，未打扰用户
+□ 提问方式与问题预算符合 protocols.md 的 decision-grilling-protocol（预算数值以那份为准，此处不复述）
+□ 能由 context pack / 阶段3代码探索 / CodeGraph 自答的问题已自答，未打扰用户
 □ 每个需要用户决策的问题，AI 先给出了推荐答案、理由和取舍，用户仅确认或修正
 □ 高风险/业务语义决策（范围、权限、安全、支付、迁移、删除、API契约、用户可见行为）已显式等待用户确认
 ```
@@ -199,97 +199,34 @@ source: harness-plan
 ```
 □ 已读取 protocols.md，并按 implementation-planning-protocol 执行
 □ 输入为阶段4已审核设计文档
-□ 已生成基础任务列表，并用 artifact 事件 note 记录任务拆分摘要
+□ 已用 artifact 事件 note 记录任务拆分摘要
 □ 已叠加项目层序依赖（数据/契约→业务层→接口层）
 □ 已生成 4 维度场景表（单元/接口/数据兼容/集成）
 □ 每个自动化场景均标注执行层级、预计时长、资源预算、超时、可复用证据；快速反馈不默认扫描全仓库
 □ 已确定变更名（kebab-case）
-□ 产物已写入 .harness/changes/<change-name>/plans/：
-  - <change-name>-plan.md（简洁任务表）
-  - <change-name>-implementation-detail.md（自适应详细执行参考）
-  - <change-name>-test-scenarios.md（测试场景表）
 □ implementation-detail.md 按复杂度自适应：简单任务不过度展开，复杂任务写清接口/数据/顺序/风险/测试策略
 □ plan / implementation-detail / test-scenarios 三件套互相引用一致，无 TBD/TODO/空泛占位
 ```
+
+> 产物是否齐全、任务表与场景表是否非空、优先级与 ownerPhase 取值是否合法，由 finalizer
+> fail-closed 判定（`PLAN_ARTIFACT_MISSING` / `PLAN_TASKS_EMPTY` / `PLAN_SCENARIOS_EMPTY` /
+> `PLAN_SCENARIO_PRIORITY_INVALID`），此处不重复勾选。上面留下的都是机器判不了的：
+> 层序依赖是否合理、维度是否真被覆盖、详略是否配得上复杂度、三件套是否自洽。
 
 > 不再检查 Superpowers writing-plans 是否安装或调用；阶段 6 是 harness 原生协议，不存在 `docs/superpowers/` 同步分支。
 
 ## 阶段 8：结束前产物完整性检查 ⚠️ 强制
 
-> **缺任一文件 → ❌FAIL，不得宣称 plan 完成。**
+> **先认路径**：v2 与 legacy 的完整性口径不同，混用会得出错误结论。两条路径各自的必需文件清单 → `reference.md`「阶段 8」。
 
-> **先认路径再对表**：v2 与 legacy 的完整性口径不同，混用会得出错误结论。
+文件是否齐全、哈希是否一致、身份是否匹配、计数是否对得上——这些 **finalizer 与 verify 已经 fail-closed 判定**，逐条复述不产生新结论，只会把一份事实变成两份。命令失败时按返回的 `code` 查 `reference.md`，不要对着清单猜。
 
-### v2 路径（新 change 默认）
+下面三条不在机器判定范围内，必须自己守：
 
-- [ ] 只手写 `meta/plan-evidence-input.json`；`plans/*.md` 由 finalize 派生，**不得**手写后再被覆盖
-- [ ] `evidence-pack` 返回 `code:"PLAN_EVIDENCE_PACK_BUILT"`；结构报错按 `field_path`/`problems[]` 修正后重跑
-- [ ] `finalize` exit 0 且 `code:"PLAN_FINALIZED"`
-- [ ] 八 target 齐全：`plans/` ×4（design / implementation-detail / plan / test-scenarios）+ `meta/` ×4（gate-policy / implementation-checkpoints / scenario-manifest / worktree）
-- [ ] `meta/publication-journals/<op>.json` 的 `state === "committed"`
-- [ ] `meta/plan-events.ndjson` 含 `artifact_published` 与 `phase_ended` 两类终态事件
-- [ ] 以上任一缺失都不得手工补写；回到对应阶段改自然输入后重跑
+- [ ] **v2**：只手写 `meta/plan-evidence-input.json`。`plans/*.md` 由 finalize 派生，手写的会被渲染覆盖，只是白写
+- [ ] 任何缺失**都不得手工补写**（包括 `phase.end`）；回到对应阶段改自然输入/staging 后重跑
+- [ ] v2 过渡期**不写** `meta/plan-finalization.json` 与 `logs/execution-log.md`；缺这两项不算失败，不得为凑表手工补
 
-| 文件（v2） | 必须存在 | 检查结果 |
-|------|:---:|:---:|
-| `.harness/changes/<change>/meta/plan-evidence-input.json` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-design.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-plan.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ | □ |
-| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/worktree.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/scenario-manifest.json`（非空且计数一致） | ✅ | □ |
-| `.harness/changes/<change>/meta/publication-journals/<op>.json`（committed） | ✅ | □ |
-| `.harness/changes/<change>/meta/plan-events.ndjson` | ✅ | □ |
-| `.harness/changes/<change>/events.ndjson` | ✅ | □ |
-
-> v2 过渡期**不写** `meta/plan-finalization.json` 与 `logs/execution-log.md`；缺这两项不算失败，不得为凑表手工补。
-
-### legacy 路径（自然输入不完整时的回退）
-
-- [ ] 所有待发布产物先写入 staging，不直接覆盖正式 change 目录
-- [ ] 执行 `harness_plan_finalize.py finalize --change-dir ... --staging-dir ... --change ... --run-id <plan-run-id> --attempt <attempt> --json`；身份必须与本次 `phase.start` 完全相同
-- [ ] finalizer 返回 `ok=true`、`artifactsHash`、绝对 `receiptPath` 与稳定 `artifactRef=meta/plan-finalization.json`；重复执行返回 `idempotent=true`
-- [ ] 紧接着执行 `harness_plan_finalize.py verify --change-dir ... --json`
-- [ ] verify 返回 `phaseStartCount=1`、`phaseEndCount=1`、`phaseEndStatus=OK`、`receiptConsistent=true`
-- [ ] 收据 `files` 完整包含 design / plan / implementation-detail / test-scenarios / gate-policy / worktree 六项标准产物；不得省略、重复或经 symlink/junction/reparse point 引用
-- [ ] verify 的 `taskCount` 等于全部任务表行数，`scenarioCount` 等于 Markdown 中全部唯一场景 ID 数；任一为 0 或不一致即 ❌FAIL
-- [ ] finalizer 失败时正式目录无半发布产物、无成功 `phase.end`、无伪造 execution log
-- [ ] 禁止在 finalizer 之前手工追加成功 `phase.end`
-- [ ] context close 的 `--artifact` 只传 finalizer 原样返回的 `receiptPath` 或 `artifactRef`，不得猜测、拼接或使用 `<plan-finalization>` 占位文本
-
-| 文件（legacy） | 必须存在 | 检查结果 |
-|------|:---:|:---:|
-| `.harness/changes/<change>/spec/<change>-design.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-plan.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅ | □ |
-| `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅ | □ |
-| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/worktree.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | □ |
-| `.harness/changes/<change>/meta/scenario-manifest.json`（非空且计数一致） | ✅ | □ |
-| `.harness/changes/<change>/meta/plan-finalization.json`（finalized） | ✅ | □ |
-| `.harness/changes/<change>/logs/execution-log.md` | ✅ | □ |
-| `.harness/changes/<change>/events.ndjson` | ✅ | □ |
-
-### Plan 结束行为检查
-
-```
-□ 未询问 Subagent-Driven / Inline Execution 等执行模式
-□ 最终输出只提示了产出物路径和下一步 /harness-run
-□ 未将 docs/superpowers/ 列为最终产物路径
-```
-
-### Legacy Frontmatter 兼容
-
-```
-□ 已确认 plan 文件 frontmatter 存在
-□ 如不存在 → 已从路径推断 change-name 和 plan-name
-□ 如不存在 → 执行日志中已标记 🟡 legacy-plan
-□ 旧 plan 不因 frontmatter 缺失而 FAIL
-```
 
 ## 关键原则
 
@@ -300,7 +237,9 @@ source: harness-plan
 - 场景表是后续所有步骤的真相源——宁可多花时间打磨，不要草草了事
 - 如果需求不明确，优先提问而不是猜测后继续设计
 - 任务拆分粒度按复杂度调整——plan 简表保持可追踪，implementation-detail 按风险和复杂度自适应展开
-- **Plan 结束禁止询问执行模式**：Subagent-Driven / Inline Execution 属于 /harness-run 阶段
+
+> Plan 的结束行为（禁止询问执行模式、只提示 `/harness-run`）由 `SKILL.md` 的关键规则表定义，
+> 详细规则见 `reference.md`「Plan 结束行为规则」。此处不再复述。
 
 ## 事件记录（前置规则）
 

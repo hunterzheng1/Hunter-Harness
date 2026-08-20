@@ -117,6 +117,47 @@
 
 阶段 08 及后续阶段应保留这些指标的可采集身份；阶段 14 候选验收时使用新流程的真实样本填充结果，并与本记录的「待采集」状态区分。
 
+## legacy Plan 路径的退役门槛
+
+2026-08-20 之前，本文档只给了条件门径（下游全部切换 + 一个稳定发布周期），12 号文档 `:255`
+又把排期推回本阶段——两边互指，而 Plan 采纳度基线六项全部「待采集」，"v2 采用证据"实际上
+无法度量。结果是 legacy 六项标准产物与 v2 八 target 两套必需文件集被无限期同时维护。
+
+**阻塞退役的技术前提已经解除。** legacy 此前唯一不可替代的地方是：v2 派生的
+`meta/scenario-manifest.json` 缺 `priority`/`requiredEvidenceKind`/`ownerPhase` 与可执行测试
+三元，run/test 门禁与 `harness_ledger.py record` 都 fail-closed，所以"需要 ledger 证据闭环的
+变更只能走 legacy"。v2 场景契约补齐这些字段并接通解包器后，这条限制不再成立。
+
+### 删除点
+
+**`@hunter-harness/workflow-harness` 0.3.0 移除 legacy plan finalize 路径。**
+
+移除范围：`harness_plan_finalize.py` 的 legacy staging/finalize/verify 分支、六项标准产物的
+必需性、`meta/plan-finalization.json` 收据、`packages/cli/src/plan-finalization/legacy-lifecycle-projection.ts`，
+以及 harness-plan 四份文档里的 legacy 路径表。
+
+**不移除**：`LegacyV1HumanArtifactSet` 等只读身份投影。按 12 号 `:251` 的冻结语义，历史归档
+必须保持可读；本节的退役指的是不再**写入** legacy 产物，不是让旧 change 变成不可读。这与
+本文档验收条件「所有旧项目均能平滑读取和自然迁移，无需用户清空状态」一致。
+
+### 采纳度怎么度量
+
+把「v2 采用证据」从"待采集"变成可执行定义。三项都满足才允许在 0.3.0 执行删除：
+
+| 判据 | 读取位置 | 阈值 |
+|---|---|---|
+| v2 finalize 首次成功率 | `meta/plan-finalization-transactions/*.json` 的 `status` 与同 `operation_id` 的重试次数 | 连续 10 次 finalize 中首次即 `publication_committed_event_complete` ≥ 8 次 |
+| v2 计划能走完证据闭环 | 走 v2 的 change 的 `evidence/verification-ledger.json` 是否覆盖全部 `requiredEvidenceKind=ledger` 场景 | 连续 5 个 v2 change 的 run/test close 未因 `SCENARIO_MANIFEST_*` 阻断 |
+| legacy 回退实际发生率 | 新建 change 中写出 `meta/plan-finalization.json` 的比例 | 最近 10 个 change 中 ≤ 1 个 |
+
+三项都从真实 change 目录读，不从测试 fixture 或本次实施会话推算——这正是 2026-08-13 那次
+基线记录拒绝补造数值的同一条原则。任一项不达标时，删除点顺延一个 minor 版本并在此登记原因。
+
+### 在此之前
+
+legacy 标记为 **deprecated**：新 change 默认走 v2，legacy 只用于自然输入不完整（例如缺真实
+审批记录）的回退。这个收窄写在 `harness/harness-plan/SKILL.md` 的阶段 8 路由规则里。
+
 ## 必测场景
 
 ### Push/Pull 同步
