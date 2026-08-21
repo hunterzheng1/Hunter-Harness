@@ -515,7 +515,7 @@ function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput):
       scenario_refs: task.scenario_refs, requirement_refs: task.requirement_refs,
       evidence_refs: task.evidence_refs, ownership_refs: task.ownership_refs })), foundation_gate: "approved" });
   // 白名单式投影：新增的场景字段不写进这里就到不了 meta/scenario-manifest.json，
-  // run/test 门禁也就消费不了它。priority/owner_phase/required_evidence_kind 与
+  // execute 门禁也就消费不了它。priority/owner_phase/required_evidence_kind 与
   // 可执行三元正是门禁判定 "哪些场景必须带 ledger 证据、在哪个阶段到期" 的依据。
   const scenario_manifest = machineArtifact("scenario_manifest", human,
     { scenarios: human.test_scenarios.content.scenarios.map((scenario) => ({

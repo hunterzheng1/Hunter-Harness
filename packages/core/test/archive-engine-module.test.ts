@@ -34,7 +34,7 @@ function phaseSet(): PlannedPhaseSet {
     has_remote: true,
     uses_worktree: false,
     available_phases: [
-      "plan", "run", "test", "review", "package", "apidoc", "submit", "merge", "archive"
+      "plan", "execute", "review", "package", "apidoc", "submit", "merge", "archive"
     ],
     requested_optional_phases: [],
     requested_omissions: [],
@@ -65,8 +65,8 @@ function completedPolicy(
     available_evidence: {
       phase_terminals: [
         { phase: "plan", status: "passed", evidence_hash: sha("2") },
-        { phase: "run", status: "passed", evidence_hash: sha("3") },
-        { phase: "test", status: "not_run" }
+        { phase: "execute", status: "passed", evidence_hash: sha("3") },
+        { phase: "review", status: "not_run" }
       ]
     },
     ...overrides
@@ -105,11 +105,11 @@ describe("ArchiveEngine v1 closure policy", () => {
     const plan = await archive.prepareArchive(change(), completedPolicy());
 
     expect(plan.blockers).toEqual([]);
-    expect(plan.planned_phase_set_ref?.planned_phases).toEqual(["plan", "run", "archive"]);
+    expect(plan.planned_phase_set_ref?.planned_phases).toEqual(["plan", "execute", "archive"]);
     expect(plan.phase_outcomes).toEqual([
       { phase: "plan", status: "passed", evidence_hash: sha("2") },
-      { phase: "run", status: "passed", evidence_hash: sha("3") },
-      { phase: "test", status: "not_run" }
+      { phase: "execute", status: "passed", evidence_hash: sha("3") },
+      { phase: "review", status: "not_run" }
     ]);
     expect(plan.phase_outcomes).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ phase: "review" }),
@@ -130,12 +130,12 @@ describe("ArchiveEngine v1 closure policy", () => {
     expect(plan.blockers).toEqual([expect.objectContaining({
       reason_code: "PLANNED_PHASE_TERMINAL_MISSING",
       classification: "auto_fixable",
-      phase: "run"
+      phase: "execute"
     })]);
   });
 
   it.each([
-    { planned_phase_set_id: "planned_phase_set:one", planned_phase_set_hash: sha("1"), planned_phases: ["plan", "run"] },
+    { planned_phase_set_id: "planned_phase_set:one", planned_phase_set_hash: sha("1"), planned_phases: ["plan", "execute"] },
     { ...phaseSet(), phase_set_id: `planned_phase_set:${"f".repeat(64)}` },
     { ...phaseSet(), outcome: "not_publishable", reason_code: "required_phase_omission_rejected" }
   ])("rejects a weak or forged planned phase set reference", async (planned_phase_set_ref) => {
@@ -154,7 +154,7 @@ describe("ArchiveEngine v1 closure policy", () => {
       available_evidence: {
         phase_terminals: [
           { phase: "plan", status: "passed", evidence_hash: sha("2") },
-          { phase: "run", status: "passed", evidence_hash: sha("3") }
+          { phase: "execute", status: "passed", evidence_hash: sha("3") }
         ],
         release: {
           git_repository: true,
@@ -188,7 +188,7 @@ describe("ArchiveEngine v1 closure policy", () => {
       available_evidence: {
         phase_terminals: [
           { phase: "plan", status: "passed", evidence_hash: sha("2") },
-          { phase: "run", status: "passed", evidence_hash: sha("3") }
+          { phase: "execute", status: "passed", evidence_hash: sha("3") }
         ],
         release: {
           git_repository: true,
@@ -209,7 +209,7 @@ describe("ArchiveEngine v1 closure policy", () => {
       available_evidence: {
         phase_terminals: [
           { phase: "plan", status: "passed", evidence_hash: sha("2") },
-          { phase: "run", status: "failed", evidence_hash: sha("3") }
+          { phase: "execute", status: "failed", evidence_hash: sha("3") }
         ],
         release: {
           git_repository: false,
@@ -231,7 +231,7 @@ describe("ArchiveEngine v1 closure policy", () => {
       available_evidence: {
         phase_terminals: [
           { phase: "plan", status: "passed", evidence_hash: sha("2") },
-          { phase: "run", status: "passed", evidence_hash: sha("3") },
+          { phase: "execute", status: "passed", evidence_hash: sha("3") },
           { phase: "review", status: "passed", evidence_hash: sha("4") }
         ]
       }
@@ -356,7 +356,7 @@ describe("ArchiveEngine v1 local transaction", () => {
       available_evidence: {
         phase_terminals: [
           { phase: "plan", status: "warning", evidence_hash: sha("2") },
-          { phase: "run", status: "passed", evidence_hash: sha("3") }
+          { phase: "execute", status: "passed", evidence_hash: sha("3") }
         ]
       }
     }));

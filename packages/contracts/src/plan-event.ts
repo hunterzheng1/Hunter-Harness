@@ -3,7 +3,7 @@ import { z } from "zod";
 import { canonicalJson } from "./canonical-json.js";
 
 export const PLAN_EVENT_PHASES = [
-  "plan", "run", "test", "review", "package", "apidoc", "submit", "merge", "archive"
+  "plan", "execute", "review", "package", "apidoc", "submit", "merge", "archive"
 ] as const;
 export type PlanEventPhase = (typeof PLAN_EVENT_PHASES)[number];
 

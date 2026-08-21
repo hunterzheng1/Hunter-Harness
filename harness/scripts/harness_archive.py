@@ -3762,7 +3762,7 @@ def _risks_from_test_results(change_dir: Path) -> tuple[list[dict[str, Any]], li
         note = str(item.get("note") or item.get("message") or "").strip()
         risks.append(
             {
-                "phase": "test",
+                "phase": "execute",
                 "severity": "medium",
                 "scenarioId": scenario_id,
                 "status": status,
@@ -3771,7 +3771,7 @@ def _risks_from_test_results(change_dir: Path) -> tuple[list[dict[str, Any]], li
         )
         actions.append(
             {
-                "stage": "test",
+                "stage": "execute",
                 "status": status,
                 "scenarioId": scenario_id,
                 "action": "补齐该场景的完整验证或显式接受风险",
@@ -4028,15 +4028,17 @@ def _skill_calls_from_stages(stages: list[dict[str, Any]]) -> list[dict[str, Any
 
 def _phases_from_events_summary(summary: dict[str, Any]) -> dict[str, Any]:
     phases_out: dict[str, Any] = {}
-    for name in ("plan", "run", "test", "review", "submit", "archive"):
+    for name in ("plan", "execute", "review", "submit", "archive"):
         phases_out[name] = {"duration_ms": None, "event_count": 0}
     for name, info in (summary.get("phases") or {}).items():
-        key = str(name).lower()
+        # 旧事件里的 run/test 折叠进 execute（event_count 求和、duration 取后写值）。
+        key = hp.resolve_phase_name(str(name).lower()) or str(name).lower()
         if key not in phases_out:
             phases_out[key] = {"duration_ms": None, "event_count": 0}
         phases_out[key] = {
             "duration_ms": info.get("duration_ms"),
-            "event_count": int(info.get("event_count") or 0),
+            "event_count": int(info.get("event_count") or 0)
+            + int(phases_out[key].get("event_count") or 0),
         }
     return phases_out
 
@@ -4192,20 +4194,23 @@ def _stage_status_from_sources(
 ) -> dict[str, str]:
     status = {
         "plan": "OK",
-        "run": "OK",
-        "test": "OK",
+        "execute": "OK",
         "review": "ADVISORY",
         "submit": "OK",
         "archive": "OK",
     }
     projected_events = he.apply_event_corrections(events)
+    execute_phase_end_seen = False
     for event in projected_events:
         if event.get("type") != "phase.end":
             continue
-        phase = str(event.get("phase") or "").lower()
+        # 旧事件的 run/test phase.end 折叠进 execute，按事件序后写胜。
+        phase = hp.resolve_phase_name(str(event.get("phase") or "").lower()) or ""
         raw = str(event.get("status") or "").upper()
         if phase not in status or not raw:
             continue
+        if phase == "execute":
+            execute_phase_end_seen = True
         if raw in {"PASS", "PASSED", "SUCCESS"}:
             raw = "OK"
         elif raw in {"FAILED", "ERROR"}:
@@ -4238,7 +4243,7 @@ def _stage_status_from_sources(
             continue
         if sev in {"", "info", "note", "informational"}:
             continue
-        phase = str(e.get("phase") or "").lower()
+        phase = hp.resolve_phase_name(str(e.get("phase") or "").lower()) or ""
         if phase in status and sev in {"error", "fail", "failed", "critical"}:
             status[phase] = "FAIL"
         elif phase in status and sev in {"warn", "warning"} and status[phase] == "OK":
@@ -4248,17 +4253,21 @@ def _stage_status_from_sources(
     db = _ledger_db_compat(ledger)
     api_status = str(api.get("status") or "").upper()
     if api_status in {"FAIL", "FAILED", "ERROR"} or int(api.get("failed") or 0) > 0:
-        status["test"] = "FAIL"
+        status["execute"] = "FAIL"
     elif api_status in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA"}:
-        status["test"] = api_status
+        status["execute"] = api_status
     elif api_status == "USER_SKIPPED":
-        status["test"] = "USER_SKIPPED"
+        status["execute"] = "USER_SKIPPED"
     elif db == "BLOCKED_BY_DBA":
-        status["test"] = "BLOCKED_BY_DBA"
+        status["execute"] = "BLOCKED_BY_DBA"
     elif api.get("status") == "NOT_RUN" and not find_test_reports(change_dir):
         unit = _ledger_unit_tests(ledger)
         if unit.get("source") == "not-run" and unit.get("run", 0) == 0:
-            status["test"] = "NOT_RUN"
+            # "无证据按未运行"只在事件侧也没有终态信号时成立：execute 组已有
+            # phase.end（含旧 run/test）说明阶段跑过，缺账本/报告不该把它抹成
+            # NOT_RUN——FAIL/BLOCKED 等有据分支不受影响。
+            if not execute_phase_end_seen:
+                status["execute"] = "NOT_RUN"
 
     if not review_evidence_present(change_dir, projected_events):
         status["review"] = "ADVISORY"

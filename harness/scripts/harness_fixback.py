@@ -333,7 +333,7 @@ def open_review_batch(
     _write_json(_session_path(change_dir), session)
     he.append_event(
         change_dir,
-        phase="run",
+        phase="execute",
         type_="decision",
         note=f"已从评审结果创建修复批次，共 {len(issue_entries)} 个代码修复项。",
         run_id=run_id,
@@ -355,7 +355,7 @@ def _default_context_prepare(**kwargs: Any) -> dict[str, Any]:
 
     return hctx.prepare_context(
         kwargs["project"],
-        phase="run",
+        phase="execute",
         executor=kwargs["executor"],
         change=kwargs["change"],
         trigger="review-fixback",
@@ -369,7 +369,7 @@ def _default_context_begin(**kwargs: Any) -> dict[str, Any]:
     return hctx.begin_transition(
         kwargs["project"],
         kwargs["change"],
-        phase="run",
+        phase="execute",
         executor=kwargs["executor"],
         preparation_id=kwargs["preparation_id"],
     )
@@ -381,7 +381,7 @@ def _default_context_cancel(**kwargs: Any) -> dict[str, Any]:
     return hctx.cancel_prepared_context(
         kwargs["project"],
         kwargs["change"],
-        phase="run",
+        phase="execute",
         executor=kwargs["executor"],
         preparation_id=kwargs["preparation_id"],
     )
@@ -394,7 +394,7 @@ def _default_gate_begin(**kwargs: Any) -> dict[str, Any]:
         "begin",
         "--json",
         "--phase",
-        "run",
+        "execute",
         "--change",
         str(kwargs["change"]),
         "--project",
@@ -487,7 +487,7 @@ def launch_review_fixback(
     started_at = time.monotonic()
     start_event = he.append_event(
         change_dir,
-        phase="run",
+        phase="execute",
         type_="phase.prepare.start",
         note="正在检查评审修复的前置条件。",
         run_id=effective_run_id,
@@ -522,7 +522,7 @@ def launch_review_fixback(
         message = str(result.get("message") or result.get("error") or "前置条件未满足，修复未启动。")
         he.append_event(
             change_dir,
-            phase="run",
+            phase="execute",
             type_="phase.prepare.end",
             status="BLOCKED",
             code=code,
@@ -541,7 +541,7 @@ def launch_review_fixback(
             "ok": False,
             "code": code,
             "message": message,
-            "recoveryAction": "处理提示的前置条件后重新执行 /harness-run --fixback",
+            "recoveryAction": "处理提示的前置条件后重新执行 /harness-execute --fixback",
             "preparationDurationMs": duration,
             "contextCancellation": cancellation,
         }
@@ -566,7 +566,7 @@ def launch_review_fixback(
     duration = max(0, round((time.monotonic() - started_at) * 1000))
     he.append_event(
         change_dir,
-        phase="run",
+        phase="execute",
         type_="phase.prepare.end",
         status="STARTED",
         message="前置条件已满足，修复编码已启动。",
@@ -665,7 +665,7 @@ def resume_batch(
     _write_json(session_path, session)
     he.append_event(
         change_dir,
-        phase="run",
+        phase="execute",
         type_="decision",
         note=(
             "已恢复现有修复批次，将从未完成步骤继续。"

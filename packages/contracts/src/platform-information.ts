@@ -52,8 +52,7 @@ export const platformInformationSortSchema = z.enum([
 /** Stage 12 canonical Plan phases consumed by the branch-monitor projection. */
 export const platformInformationPlanPhaseSchema = z.enum([
   "plan",
-  "run",
-  "test",
+  "execute",
   "review",
   "package",
   "apidoc",

@@ -44,8 +44,7 @@ function capabilities(overrides: Partial<PlanCapabilities> = {}): PlanCapabiliti
     uses_worktree: false,
     available_phases: [
       "plan",
-      "run",
-      "test",
+      "execute",
       "review",
       "package",
       "apidoc",
@@ -210,7 +209,7 @@ describe("PlanClassificationModule phase configuration", () => {
       risk_signals: ["security"]
     }));
     const phaseSet = configurePlannedPhases(profile, capabilities({
-      available_phases: ["plan", "run", "test", "archive"]
+      available_phases: ["plan", "execute", "archive"]
     }));
 
     expect(phaseSet.outcome).toBe("not_publishable");
@@ -227,13 +226,13 @@ describe("PlanClassificationModule phase configuration", () => {
       risk_signals: ["migration"]
     }));
     const phaseSet = configurePlannedPhases(profile, capabilities({
-      available_phases: ["plan", "run", "archive"],
+      available_phases: ["plan", "review", "archive"],
       requested_omissions: ["review"]
     }));
 
     expect(phaseSet.omitted_phases).toEqual(expect.arrayContaining([
       {
-        phase: "test",
+        phase: "execute",
         disposition: "required_but_unavailable",
         reason_code: "required_phase_capability_missing"
       },
@@ -256,18 +255,18 @@ describe("PlanClassificationModule phase configuration", () => {
       risk_signals: ["production_code", "cross_file"]
     }));
     const firstCapabilities = capabilities({
-      available_phases: ["archive", "submit", "test", "run", "plan", "review"],
+      available_phases: ["archive", "submit", "execute", "plan", "review"],
       requested_optional_phases: ["submit", "review"]
     });
     const secondCapabilities = capabilities({
-      available_phases: ["plan", "run", "test", "review", "submit", "archive"],
+      available_phases: ["plan", "execute", "review", "submit", "archive"],
       requested_optional_phases: ["review", "submit"]
     });
     const first = configurePlannedPhases(profile, firstCapabilities);
     const second = configurePlannedPhases(profile, secondCapabilities);
 
     expect(first.planned_phases).toEqual([
-      "plan", "run", "test", "review", "submit", "archive"
+      "plan", "execute", "review", "submit", "archive"
     ]);
     expect(second.capability_snapshot_hash).toBe(first.capability_snapshot_hash);
     expect(second.phase_set_id).toBe(first.phase_set_id);
@@ -408,9 +407,9 @@ describe("PlanClassificationModule strict current schemas", () => {
     const downgradedFields = {
       ...assurance,
       mode: "quick" as const,
-      required_phases: ["plan", "run", "archive"] as const,
+      required_phases: ["plan", "execute", "archive"] as const,
       optional_phases: [
-        "test", "review", "package", "apidoc", "submit", "merge"
+        "review", "package", "apidoc", "submit", "merge"
       ] as const,
       required_validations: ["deterministic_check"] as const,
       interaction_budget: {
@@ -528,7 +527,7 @@ describe("PlanClassificationModule strict current schemas", () => {
     })).toThrow(/PLAN_PHASE_SET_CONTRADICTION/u);
 
     const unavailable = configurePlannedPhases(profile, capabilities({
-      available_phases: ["plan", "run", "test", "archive"]
+      available_phases: ["plan", "execute", "archive"]
     }));
     expect(unavailable.reason_code).toBe("required_phase_capability_missing");
     expect(() => plannedPhaseSetSchema.parse({
@@ -573,7 +572,7 @@ describe("PlanClassificationModule strict current schemas", () => {
   it("rejects unverifiable optional-selected provenance after identity recomputation", () => {
     const quick = classifyPlan(classificationInput({ risk_signals: ["narrow_fix"] }));
     const phaseSet = configurePlannedPhases(quick, capabilities());
-    expect(phaseSet.planned_phases).toEqual(["plan", "run", "archive"]);
+    expect(phaseSet.planned_phases).toEqual(["plan", "execute", "archive"]);
     const attack = {
       ...phaseSet,
       source_reason_codes: [
@@ -661,7 +660,7 @@ describe("PlanClassificationModule legacy compatibility", () => {
     expect(normalized.profile.mode).toBe("assurance");
     expect(normalized.profile.profile_version).toBe(1);
     expect(normalized.phase_set.planned_phases).toEqual([
-      "plan", "run", "test", "review", "submit", "archive"
+      "plan", "execute", "review", "submit", "archive"
     ]);
     expect(normalized.phase_set.outcome).toBe("configured");
     expect(planProfileSchema.parse(normalized.profile)).toEqual(normalized.profile);
@@ -750,7 +749,7 @@ describe("PlanClassificationModule legacy compatibility", () => {
     expect(normalized.profile.mode).toBe("standard");
     expect(normalized.profile.reason_codes).toContain("legacy_complexity_mapped");
     expect(normalized.phase_set.planned_phases).toEqual([
-      "plan", "run", "test", "submit", "archive"
+      "plan", "execute", "submit", "archive"
     ]);
   });
 

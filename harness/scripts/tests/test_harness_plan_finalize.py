@@ -739,7 +739,7 @@ class ScenarioManifestTests(unittest.TestCase):
             self.assertEqual(scenarios[0]["scenario"], "no placeholder metrics")
             self.assertEqual(scenarios[0]["priority"], "P1")
             self.assertEqual(scenarios[0]["requiredEvidenceKind"], "ledger")
-            self.assertEqual(scenarios[0]["ownerPhase"], "test")
+            self.assertEqual(scenarios[0]["ownerPhase"], "execute")
             self.assertEqual(scenarios[0]["executionTier"], "affected")
             self.assertNotIn("executionTier", scenarios[2])
 

@@ -458,10 +458,10 @@ class GateAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             gate.append_phase_event(
                 change_dir,
-                phase="run",
+                phase="execute",
                 type_="phase.start",
                 run_id="run-fixback",
-                note="/harness-run --fixback",
+                note="/harness-execute --fixback",
             )
 
             event = events.load_events(events.events_path(change_dir))[0]

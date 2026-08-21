@@ -169,7 +169,7 @@ class PassRateAndStageTest(unittest.TestCase):
                 },
             ]
             status = ha._stage_status_from_sources(events, None, change_dir)
-            self.assertEqual(status["run"], "WARN")
+            self.assertEqual(status["execute"], "WARN")
 
 
 class SummaryBaseAndAdequacyTest(unittest.TestCase):

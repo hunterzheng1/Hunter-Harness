@@ -686,6 +686,12 @@ class HarnessGateTests(unittest.TestCase):
                     command="python -m compileall",
                 ),
                 "unitTest": self._v2_entry(status=unit_status, evidence=unit_evidence),
+                # execute 合并后关门要求 run∪test 并集；unitTestFull 不在本组
+                # 用例的考察面内，给一条常态 OK 记录。
+                "unitTestFull": self._v2_entry(
+                    status="OK",
+                    evidence="evidence/unit-full.log",
+                ),
             },
         }
         path = self.change_dir / "evidence" / "verification-ledger.json"
@@ -1274,7 +1280,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_close_refuses_an_expired_lease_for_another_phase(self) -> None:
         code, _, errors, claim = self._expired_lease_close(lease={
             "state": "expired",
-            "lease": {"runId": "run-long", "phase": "test"},
+            "lease": {"runId": "run-long", "phase": "review"},
         })
 
         self.assertEqual(code, 1)
@@ -1564,7 +1570,7 @@ class HarnessGateTests(unittest.TestCase):
         self.assertEqual(persisted["capabilities"], payload["capabilities"])
         self.assertEqual(persisted["stageDecisions"], payload["stageDecisions"])
         self.assertEqual(persisted["requiredGateDag"], payload["requiredGateDag"])
-        self.assertIn("dbCompatibility", persisted["requiredValidationsByPhase"]["test"])
+        self.assertIn("dbCompatibility", persisted["requiredValidationsByPhase"]["execute"])
 
     def test_close_uses_change_required_validations_by_phase(self) -> None:
         policy_path = self.change_dir / "meta" / "gate-policy.json"
@@ -1943,14 +1949,14 @@ class ScenarioCoverageTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "SCENARIO_MANIFEST_EMPTY")
 
-    def test_run_close_defers_test_owned_scenarios(self) -> None:
-        """run close must not demand receipts for ownerPhase=test scenarios."""
+    def test_execute_close_defers_review_owned_scenarios(self) -> None:
+        """execute close must not demand receipts for ownerPhase=review scenarios."""
         self._write_manifest(
             [
                 {
                     "id": "UT-001",
                     "priority": "P1",
-                    "ownerPhase": "run",
+                    "ownerPhase": "execute",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "unit::ut1",
                     "testFile": "tests/unit.spec.ts",
@@ -1959,7 +1965,7 @@ class ScenarioCoverageTests(unittest.TestCase):
                 {
                     "id": "API-001",
                     "priority": "P1",
-                    "ownerPhase": "test",
+                    "ownerPhase": "review",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "api::a1",
                     "testFile": "tests/api.spec.ts",
@@ -1970,21 +1976,21 @@ class ScenarioCoverageTests(unittest.TestCase):
         )
         self._write_receipt_ledger(["UT-001"])
 
-        result = gate._validate_scenario_coverage(self.change_dir, "run")
+        result = gate._validate_scenario_coverage(self.change_dir, "execute")
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["code"], "SCENARIO_COVERAGE_OK")
         self.assertEqual(result["deferred"], ["API-001"])
         self.assertEqual(result["unexecuted"], [])
 
-    def test_test_close_still_requires_test_owned_scenarios(self) -> None:
-        """The same manifest must still block at test close."""
+    def test_execute_close_still_requires_execute_owned_scenarios(self) -> None:
+        """The same manifest must still block at execute close."""
         self._write_manifest(
             [
                 {
                     "id": "UT-001",
                     "priority": "P1",
-                    "ownerPhase": "run",
+                    "ownerPhase": "execute",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "unit::ut1",
                     "testFile": "tests/unit.spec.ts",
@@ -1993,7 +1999,7 @@ class ScenarioCoverageTests(unittest.TestCase):
                 {
                     "id": "API-001",
                     "priority": "P1",
-                    "ownerPhase": "test",
+                    "ownerPhase": "execute",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "api::a1",
                     "testFile": "tests/api.spec.ts",
@@ -2004,20 +2010,20 @@ class ScenarioCoverageTests(unittest.TestCase):
         )
         self._write_receipt_ledger(["UT-001"])
 
-        result = gate._validate_scenario_coverage(self.change_dir, "test")
+        result = gate._validate_scenario_coverage(self.change_dir, "execute")
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["code"], "REQUIRED_SCENARIO_NOT_EXECUTED")
         self.assertEqual(result["unexecuted"], ["API-001"])
         self.assertEqual(result["deferred"], [])
 
-    def test_run_close_ok_when_every_scenario_is_test_owned(self) -> None:
+    def test_execute_close_ok_when_every_scenario_is_review_owned(self) -> None:
         self._write_manifest(
             [
                 {
                     "id": "API-001",
                     "priority": "P0",
-                    "ownerPhase": "test",
+                    "ownerPhase": "review",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "api::a1",
                     "testFile": "tests/api.spec.ts",
@@ -2028,7 +2034,7 @@ class ScenarioCoverageTests(unittest.TestCase):
         )
         self._write_ledger([])
 
-        result = gate._validate_scenario_coverage(self.change_dir, "run")
+        result = gate._validate_scenario_coverage(self.change_dir, "execute")
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["code"], "SCENARIO_COVERAGE_DEFERRED")
@@ -2279,8 +2285,8 @@ class ScenarioCoverageTests(unittest.TestCase):
         close_context.assert_called_once_with(
             self.project,
             "demo",
-            from_phase="run",
-            to_phase="test",
+            from_phase="execute",
+            to_phase="execute",
             executor=None,
             artifacts=["evidence/verification-ledger.json"],
             status="OK",
@@ -2353,11 +2359,11 @@ class V2ArtifactManifestTests(unittest.TestCase):
         self.assertNotEqual(result.get("code"), "NO_LEDGER_REQUIRED_SCENARIOS")
         self.assertFalse(result["ok"], result)
 
-    def test_legacy_shaped_v2_manifest_defers_test_owned_scenarios(self) -> None:
+    def test_legacy_shaped_v2_manifest_defers_review_owned_scenarios(self) -> None:
         """解包后 ownerPhase 分区照常工作——这是 v2 契约真的接上了的证据。"""
-        self._write_v2_manifest(self._scenario("UT-001", owner_phase="test"))
+        self._write_v2_manifest(self._scenario("UT-001", owner_phase="review"))
 
-        result = gate._validate_scenario_coverage(self.change_dir, "run")
+        result = gate._validate_scenario_coverage(self.change_dir, "execute")
 
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["code"], "SCENARIO_COVERAGE_DEFERRED")
@@ -2522,12 +2528,12 @@ class PhaseGateRuleTableTests(unittest.TestCase):
     def test_rules_match_the_behaviour_they_replaced(self) -> None:
         """逐条对齐重构前的内联条件，确认这是行为保持的改写。"""
         expected = {
-            "plan_handoff": {"run"},
-            "test_guard": {"run", "test"},
-            "scenario_coverage": {"run", "test"},
-            "ledger_blocking": {"run", "test", "package"},
+            "plan_handoff": {"execute"},
+            "test_guard": {"execute"},
+            "scenario_coverage": {"execute"},
+            "ledger_blocking": {"execute", "package"},
             "review_outputs": {"review"},
-            "head_may_advance": {"run", "submit", "merge"},
+            "head_may_advance": {"execute", "submit", "merge"},
             "projection_drift": {"submit", "archive"},
         }
         for rule, phases in expected.items():

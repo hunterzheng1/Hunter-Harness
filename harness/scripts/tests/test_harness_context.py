@@ -105,7 +105,7 @@ class HarnessContextTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["changeName"], "active")
             self.assertTrue(result["legacyBootstrap"])
-            self.assertEqual(result["nextPhases"], ["plan", "run"])
+            self.assertEqual(result["nextPhases"], ["plan", "execute"])
             self.assertEqual(result["executionRoot"], str(project.resolve()))
 
     def test_prepare_persists_the_first_plan_display_title(self) -> None:
@@ -331,7 +331,7 @@ class HarnessContextTest(unittest.TestCase):
             )
 
             self.assertTrue(selected["ok"], selected)
-            self.assertEqual(selected["latestTransition"]["toPhase"], "run")
+            self.assertEqual(selected["latestTransition"]["toPhase"], "execute")
             self.assertEqual(
                 selected["latestTransition"]["trigger"], "review-fixback"
             )
@@ -553,7 +553,7 @@ class HarnessContextTest(unittest.TestCase):
             )
             self.assertTrue(begun["ok"])
             self.assertEqual(begun["receipt"]["fromPhase"], "plan")
-            self.assertEqual(begun["receipt"]["toPhase"], "run")
+            self.assertEqual(begun["receipt"]["toPhase"], "execute")
 
     def test_configured_phase_plan_allows_run_to_archive_and_skips_optional_phases(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -579,10 +579,10 @@ class HarnessContextTest(unittest.TestCase):
                 reason="本次只需本地快速迭代",
             )
             self.assertTrue(configured["ok"], configured)
-            self.assertEqual(configured["plannedPhases"], ["plan", "run", "archive"])
+            self.assertEqual(configured["plannedPhases"], ["plan", "execute", "archive"])
             self.assertEqual(
                 [item["phase"] for item in configured["skippedPhases"]],
-                ["test", "review", "package", "apidoc", "submit"],
+                ["review", "package", "apidoc", "submit"],
             )
 
             prepared = CONTEXT.prepare_context(
@@ -591,8 +591,8 @@ class HarnessContextTest(unittest.TestCase):
                 phase="plan",
                 executor="codex",
             )
-            self.assertEqual(prepared["nextPhases"], ["run"])
-            self.assertEqual(prepared["plannedPhases"], ["plan", "run", "archive"])
+            self.assertEqual(prepared["nextPhases"], ["execute"])
+            self.assertEqual(prepared["plannedPhases"], ["plan", "execute", "archive"])
             self.assertTrue(
                 CONTEXT.close_transition(
                     project,
@@ -616,7 +616,7 @@ class HarnessContextTest(unittest.TestCase):
                 phase="run",
                 executor="codex",
             )
-            self.assertEqual(run_context["nextPhases"], ["archive"])
+            self.assertEqual(run_context["nextPhases"], ["archive", "execute"])
             self.assertTrue(
                 CONTEXT.close_transition(
                     project,
@@ -630,7 +630,7 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "fast-change",
                 from_phase="run",
-                to_phase="test",
+                to_phase="review",
                 executor="codex",
             )
             self.assertFalse(illegal["ok"])
@@ -656,7 +656,7 @@ class HarnessContextTest(unittest.TestCase):
             configured = CONTEXT.configure_phase_plan(
                 project,
                 "worktree-change",
-                phases=["plan", "run", "test", "review", "submit", "archive"],
+                phases=["plan", "execute", "review", "submit", "archive"],
                 operator="tester",
                 reason="使用隔离 worktree 完成实现",
             )
@@ -664,7 +664,7 @@ class HarnessContextTest(unittest.TestCase):
             self.assertTrue(configured["ok"], configured)
             self.assertEqual(
                 configured["plannedPhases"],
-                ["plan", "run", "test", "review", "submit", "merge", "archive"],
+                ["plan", "execute", "review", "submit", "merge", "archive"],
             )
             persisted = json.loads(
                 (change / "meta/gate-policy.json").read_text(encoding="utf-8")
@@ -936,7 +936,7 @@ class HarnessContextTest(unittest.TestCase):
             )
             view = CONTEXT.context_view(project, "change")
             self.assertEqual(len(view["transitions"]), 1)
-            self.assertEqual(view["currentPhase"], "run")
+            self.assertEqual(view["currentPhase"], "execute")
             self.assertIn("attemptHistory", view)
 
 
@@ -1188,7 +1188,7 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             self.assertEqual(len(transitions), 1, transitions)
             receipt = transitions[-1]
             self.assertEqual(receipt["fromPhase"], "plan")
-            self.assertEqual(receipt["toPhase"], "run")
+            self.assertEqual(receipt["toPhase"], "execute")
             self.assertEqual(receipt["status"], "OK")
             # 自动补录必须留痕，否则事后无法把它与人工 close 区分开
             self.assertEqual(receipt["bootstrapSource"], "plan_publication_journal")
@@ -1249,11 +1249,11 @@ class PhasePlanDegradationTests(unittest.TestCase):
 
     def test_a_valid_plan_is_read_as_planned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            change = self._policy(Path(tmp), ["plan", "run", "archive"])
+            change = self._policy(Path(tmp), ["plan", "execute", "archive"])
 
             planned, source = CONTEXT._phase_plan(change)
 
-            self.assertEqual(planned, ["plan", "run", "archive"])
+            self.assertEqual(planned, ["plan", "execute", "archive"])
             self.assertEqual(source, "change")
 
     def test_an_unknown_phase_names_itself_in_the_degradation_reason(self) -> None:
@@ -1268,18 +1268,16 @@ class PhasePlanDegradationTests(unittest.TestCase):
             self.assertIn("teleport", source)
 
     def test_a_renamed_phase_is_read_through_the_alias_table(self) -> None:
-        """阶段改名后历史 change 仍要能读——本仓库没有 change 级 schema 迁移。"""
+        """run/test 合并为 execute 后历史 change 仍要能读——本仓库没有 change 级 schema 迁移。"""
         with tempfile.TemporaryDirectory() as tmp:
-            change = self._policy(Path(tmp), ["plan", "verification", "archive"])
-            aliases = dict(hpaths.LEGACY_PHASE_ALIASES)
-            hpaths.LEGACY_PHASE_ALIASES["verification"] = "test"
-            try:
-                planned, source = CONTEXT._phase_plan(change)
-            finally:
-                hpaths.LEGACY_PHASE_ALIASES.clear()
-                hpaths.LEGACY_PHASE_ALIASES.update(aliases)
+            change = self._policy(
+                Path(tmp), ["plan", "run", "test", "review", "archive"]
+            )
 
-            self.assertEqual(planned, ["plan", "test", "archive"])
+            planned, source = CONTEXT._phase_plan(change)
+
+            # 两个旧名映射到同一个 execute，保序去重。
+            self.assertEqual(planned, ["plan", "execute", "review", "archive"])
             self.assertEqual(source, "change")
 
     def test_unreadable_policy_is_distinguished_from_a_missing_one(self) -> None:
@@ -1367,7 +1365,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             self.assertEqual(len(adoptions), 1, adoptions)
             self.assertEqual(adoptions[0]["previousExecutor"], "codex")
             self.assertEqual(adoptions[0]["newExecutor"], "codebuddy")
-            self.assertEqual(adoptions[0]["phase"], "run")
+            self.assertEqual(adoptions[0]["phase"], "execute")
             self.assertEqual(adoptions[0]["reason"], "same_phase_handoff")
 
     def test_expired_lease_recovery_is_recorded_as_such(self) -> None:

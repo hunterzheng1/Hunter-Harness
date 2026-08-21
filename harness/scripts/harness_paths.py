@@ -42,8 +42,7 @@ CHANGE_CONTEXT_REL = Path("meta") / "change-context.json"
 # "unsupported reconcile target phase"。同一份事实不该有两个副本。
 WORKFLOW_PHASES = (
     "plan",
-    "run",
-    "test",
+    "execute",
     "review",
     "package",
     "apidoc",
@@ -68,9 +67,11 @@ KNOWN_NON_WORKFLOW_PHASES = frozenset({
 })
 
 # 旧阶段名 → 现阶段名。阶段合并/改名时在这里登记，读时映射即可让历史
-# gate-policy.json 与 plannedPhases 继续可读，不必迁移已落盘的 change。
-# 目前为空：还没有发生过阶段改名。
-LEGACY_PHASE_ALIASES: dict[str, str] = {}
+# gate-policy.json、plannedPhases 与已落盘 transitions 继续可读，不必迁移
+# 已落盘的 change。注意：映射只能用在哈希校验之后的业务比较层——对已哈希
+# 的 receipt 先映射再重算会断 _payload_hash 链。
+# 2026-08 run+test 合并为 execute（方案 c，review 保留独立阶段）。
+LEGACY_PHASE_ALIASES: dict[str, str] = {"run": "execute", "test": "execute"}
 
 
 def resolve_phase_name(phase: Any) -> str | None:

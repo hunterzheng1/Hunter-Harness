@@ -41,6 +41,8 @@ const STANDARD_SIGNALS = new Set<PlanRiskSignal>([
   "api_change", "cross_file", "production_code", "user_visible_behavior"
 ]);
 
+const QUICK_SIGNALS = new Set<PlanRiskSignal>(["docs_only", "narrow_fix"]);
+
 export interface PlanModePolicy {
   readonly mode: PlanMode;
   readonly required_phases: readonly PlanPhase[];
@@ -53,15 +55,15 @@ export interface PlanModePolicy {
 const MODE_POLICY: Readonly<Record<PlanMode, PlanModePolicy>> = {
   quick: {
     mode: "quick",
-    required_phases: ["plan", "run", "archive"],
-    optional_phases: ["test", "review", "package", "apidoc", "submit", "merge"],
+    required_phases: ["plan", "execute", "archive"],
+    optional_phases: ["review", "package", "apidoc", "submit", "merge"],
     required_validations: ["deterministic_check"],
     max_clarification_rounds: 1,
     reason_code: "low_risk_scope"
   },
   standard: {
     mode: "standard",
-    required_phases: ["plan", "run", "test", "archive"],
+    required_phases: ["plan", "execute", "archive"],
     optional_phases: ["review", "package", "apidoc", "submit", "merge"],
     required_validations: ["deterministic_check", "semantic_consistency"],
     max_clarification_rounds: 3,
@@ -69,7 +71,7 @@ const MODE_POLICY: Readonly<Record<PlanMode, PlanModePolicy>> = {
   },
   assurance: {
     mode: "assurance",
-    required_phases: ["plan", "run", "test", "review", "archive"],
+    required_phases: ["plan", "execute", "review", "archive"],
     optional_phases: ["package", "apidoc", "submit", "merge"],
     required_validations: [
       "deterministic_check", "semantic_consistency", "adversarial_review"
@@ -92,7 +94,13 @@ export function derivePlanProfilePolicy(
   if (signals.some((signal) => STANDARD_SIGNALS.has(signal))) {
     return planPolicyForMode("standard");
   }
-  return planPolicyForMode("quick");
+  if (signals.some((signal) => QUICK_SIGNALS.has(signal))) {
+    return planPolicyForMode("quick");
+  }
+  // 空信号地板对齐 Python 侧（harness_gate.py classify 的 default-standard）：
+  // 没有信号不等于低风险，standard 保留证据闭环，只去掉默认 review 与 apiTest。
+  // docs_only/narrow_fix 是正向的低风险证据，不受此地板影响。
+  return planPolicyForMode("standard");
 }
 
 export function derivePlannedPhaseSetOutcome(

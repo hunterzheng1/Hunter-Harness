@@ -155,14 +155,14 @@ GATE_WARNINGS_REL = Path("evidence") / "gate-warnings.ndjson"
 # Lifecycle order used to scope C9 scenario coverage by scenario ownerPhase.
 # A scenario owned by a later phase is deferred, not missing, at an earlier
 # phase close. Must stay a superset-ordering of hpf.VALID_OWNER_PHASES.
-SCENARIO_OWNER_PHASE_ORDER = ("plan", "run", "test", "review", "submit")
+SCENARIO_OWNER_PHASE_ORDER = ("plan", "execute", "review", "submit")
 
 # ---------------------------------------------------------------------------
 # 阶段能力表：每个阶段在 begin/close 里额外做什么，集中在这里声明。
 #
 # 这些开关以前是 cmd_begin / cmd_close 里散落的 `if args.phase == ...` —— 两个
-# 五百行的函数，想知道"test 阶段关门时到底跑哪几项"要通读全文。更要紧的是
-# run/test/review 的差异被摊平在控制流里，看不出它们其实共用同一套生命周期。
+# 五百行的函数，想知道"execute 阶段关门时到底跑哪几项"要通读全文。更要紧的是
+# execute/review 的差异被摊平在控制流里，看不出它们其实共用同一套生命周期。
 #
 # 键的含义：
 #   plan_handoff      begin 时校验 plan 已 finalize（只有进入实现的第一个阶段需要）
@@ -174,11 +174,10 @@ SCENARIO_OWNER_PHASE_ORDER = ("plan", "run", "test", "review", "submit")
 #   projection_drift  close 时 projection receipt 变化即硬失败（外发边界）
 PHASE_GATE_RULES: dict[str, frozenset[str]] = {
     "plan": frozenset(),
-    "run": frozenset({
+    "execute": frozenset({
         "plan_handoff", "test_guard", "scenario_coverage",
         "ledger_blocking", "head_may_advance",
     }),
-    "test": frozenset({"test_guard", "scenario_coverage", "ledger_blocking"}),
     "review": frozenset({"review_outputs"}),
     "package": frozenset({"ledger_blocking"}),
     "apidoc": frozenset(),
@@ -481,8 +480,20 @@ def _phase_capsule_path(change_dir: Path, phase: str, run_id: str) -> Path:
 def load_phase_capsule(
     change_dir: Path, phase: str, run_id: str
 ) -> dict[str, Any] | None:
-    path = _phase_capsule_path(change_dir, phase, run_id)
-    if not path.is_file():
+    # 在途 change 的 capsule 可能按旧名（run/test）写入：先归一入参，canonical
+    # 查不到时对所有解析为该 canonical 的旧名各查一次。新写一律 canonical。
+    phase = hp.resolve_phase_name(phase) or phase
+    candidates = [phase] + [
+        legacy for legacy, canonical in hp.LEGACY_PHASE_ALIASES.items()
+        if canonical == phase
+    ]
+    path: Path | None = None
+    for name in candidates:
+        candidate = _phase_capsule_path(change_dir, name, run_id)
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
         return None
     try:
         data = _read_json(path)
@@ -719,7 +730,16 @@ def validate_ledger_for_phase_close(
     individual validation status to be FAIL/NOT_RUN, so a failing phase can
     close honestly without polluting evidence or blocking lease release.
     """
-    required = policy.get("requiredValidations", {}).get(phase, [])
+    resolved_phase = hp.resolve_phase_name(phase) or phase
+    # requiredValidations 的键可能还是合并前的旧名（在途 change 的旧契约），
+    # 入参也可能是旧名（手工 --phase run）——两侧都归一后再匹配；旧契约的
+    # run/test 两个键都映射到 execute，取并集。
+    required: list[str] = []
+    for key, value in (policy.get("requiredValidations") or {}).items():
+        if (hp.resolve_phase_name(key) or str(key)) == resolved_phase:
+            for item in value or []:
+                if item not in required:
+                    required.append(item)
     if not required:
         return {"ok": True, "code": "LEDGER_NOT_REQUIRED", "phase": phase}
 
@@ -1334,7 +1354,7 @@ def _apply_required_gate_contract(
         if stage_name == "package":
             dependencies = [
                 f"validation:{item}" for item in required
-                if validation_phases.get(item) in {"run", "test"}
+                if hp.resolve_phase_name(validation_phases.get(item)) == "execute"
             ]
         elif stage_name == "apidoc" and "apiTest" in required_set:
             dependencies = ["validation:apiTest"]
@@ -1364,7 +1384,7 @@ def classify_risk(
     workflow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # 无风险信号时的起步档。曾经是 full，于是每个普通变更都默认背上
-    # plan→run→test→review→submit→archive 六阶段和 apiTest；风险信号推断只在
+    # plan→execute→review→submit→archive 五阶段和 apiTest；风险信号推断只在
     # --stage post-run 下跑，而生产流程没有任何地方调用它，起步值实际就是终值。
     # standard 保留 compile/unitTest/unitTestFull 的证据闭环，只去掉默认的
     # review 阶段与 apiTest。下面的单调升级逻辑不变，有信号照样升到 full。
@@ -1803,7 +1823,7 @@ def append_phase_event(
             trigger=("fixback" if fixback or "fixback" in note.lower() else None),
             from_phase=(
                 "review"
-                if phase == "run" and (fixback or "fixback" in note.lower())
+                if phase == "execute" and (fixback or "fixback" in note.lower())
                 else None
             ),
             result_status=None,
@@ -1940,7 +1960,7 @@ def validate_context_for_gate_begin(
     if not isinstance(current, dict):
         return {"ok": True, "code": "CONTEXT_LEGACY_COMPATIBLE"}
     current_phase = str(current.get("phase") or view.get("currentPhase") or "")
-    if current_phase != phase:
+    if hp.resolve_phase_name(current_phase) != phase:
         return {
             "ok": False,
             "code": "CONTEXT_HANDOFF_REQUIRED",
@@ -1954,11 +1974,11 @@ def validate_context_for_gate_begin(
         begin_items = begins if isinstance(begins, list) else []
         acknowledged = any(
             isinstance(item, dict)
-            and item.get("phase") == phase
+            and hp.resolve_phase_name(item.get("phase")) == phase
             and item.get("receiptHash") == receipt_hash
             for item in begin_items
         )
-        if latest.get("toPhase") != phase or not acknowledged:
+        if hp.resolve_phase_name(latest.get("toPhase")) != phase or not acknowledged:
             return {
                 "ok": False,
                 "code": "CONTEXT_BEGIN_REQUIRED",
@@ -1970,7 +1990,7 @@ def validate_context_for_gate_begin(
 
 def _phase_event_exists(change_dir: Path, phase: str, type_: str, run_id: str) -> bool:
     return any(
-        event.get("phase") == phase
+        hp.resolve_phase_name(event.get("phase")) == phase
         and event.get("type") == type_
         and event.get("run_id") == run_id
         for event in he.load_events(he.events_path(change_dir))
@@ -1983,7 +2003,10 @@ def _latest_phase_end(
     run_id: str | None = None,
 ) -> dict[str, Any] | None:
     for event in reversed(he.load_events(he.events_path(change_dir))):
-        if event.get("phase") != phase or event.get("type") != "phase.end":
+        if (
+            hp.resolve_phase_name(event.get("phase")) != phase
+            or event.get("type") != "phase.end"
+        ):
             continue
         if run_id and event.get("run_id") != run_id:
             continue
@@ -2001,7 +2024,7 @@ def _latest_open_run_id(change_dir: Path, phase: str) -> str | None:
     started: list[str] = []
     ended: set[str] = set()
     for event in he.load_events(he.events_path(change_dir)):
-        if event.get("phase") != phase:
+        if hp.resolve_phase_name(event.get("phase")) != phase:
             continue
         run_id = str(event.get("run_id") or "")
         if not run_id:
@@ -2047,12 +2070,15 @@ def _close_context_handoff(
     to_phase = getattr(args, "to_phase", None)
     if not to_phase:
         return None
+    # 写边界归一：旧名（--to-phase test）落 canonical；未知名交给
+    # close_transition 的 PHASE_UNKNOWN 报错，不在此吞掉。
+    to_phase = hp.resolve_phase_name(to_phase) or str(to_phase)
     try:
         return hctx.close_transition(
             project,
             change_id,
             from_phase=args.phase,
-            to_phase=str(to_phase),
+            to_phase=to_phase,
             executor=getattr(args, "executor", None),
             artifacts=list(getattr(args, "artifact", None) or []),
             status=status,
@@ -2081,6 +2107,10 @@ def _scenario_owner_phase_rank(owner_phase: str | None) -> int | None:
     if not owner_phase:
         return None
     normalized = str(owner_phase).strip().lower()
+    # 旧 manifest 的 ownerPhase=run/test 经别名表归一到 execute 后再定秩。
+    resolved = hp.resolve_phase_name(normalized)
+    if resolved is not None:
+        normalized = resolved
     if normalized not in hpf.VALID_OWNER_PHASES:
         return None
     try:
@@ -2514,8 +2544,32 @@ def validate_review_outputs_for_close(
     }
 
 
+def _normalize_gate_phase(args: argparse.Namespace, as_json: bool) -> int | None:
+    """cmd_begin/cmd_close 入口归一：旧名（run/test）映射到现阶段名。
+
+    归一后 args.phase 全链路只流动 canonical 名；未知名报错并列出合法名与别名。
+    """
+    resolved = hp.resolve_phase_name(getattr(args, "phase", None))
+    if resolved is not None:
+        args.phase = resolved
+        return None
+    return emit_error(
+        "PHASE_UNKNOWN",
+        f"未知阶段名 {getattr(args, 'phase', None)!r}；合法阶段 "
+        f"{list(hp.WORKFLOW_PHASES)}，旧名别名 {hp.LEGACY_PHASE_ALIASES}。",
+        as_json=as_json,
+        extra={
+            "allowedPhases": list(hp.WORKFLOW_PHASES),
+            "legacyAliases": dict(hp.LEGACY_PHASE_ALIASES),
+        },
+    )
+
+
 def cmd_begin(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
+    normalized = _normalize_gate_phase(args, as_json)
+    if normalized is not None:
+        return normalized
     project = hc.resolve_main_project_root()
     resolved = hc.resolve_change(project, args.change)
     if not resolved.get("ok"):
@@ -2646,7 +2700,9 @@ def cmd_begin(args: argparse.Namespace) -> int:
     current_lease = hc.inspect_lease(project, resolved["changeId"])
     run_id = explicit_run_id or (
         str(current_lease.get("runId"))
-        if isinstance(current_lease, dict) and current_lease.get("phase") == args.phase
+        if isinstance(current_lease, dict) and (
+            hp.resolve_phase_name(current_lease.get("phase")) == args.phase
+        )
         else "run-" + uuid.uuid4().hex
     )
     try:
@@ -2870,6 +2926,9 @@ def cmd_begin(args: argparse.Namespace) -> int:
 
 def cmd_close(args: argparse.Namespace) -> int:
     as_json = bool(args.json)
+    normalized = _normalize_gate_phase(args, as_json)
+    if normalized is not None:
+        return normalized
     project = hc.resolve_main_project_root()
     resolved = hc.resolve_change(project, args.change)
     if not resolved.get("ok"):
@@ -2940,7 +2999,7 @@ def cmd_close(args: argparse.Namespace) -> int:
         if (
             expired_run_id
             and expired_run_id == expected_run_id
-            and str(expired_lease.get("phase") or "") == args.phase
+            and hp.resolve_phase_name(expired_lease.get("phase")) == args.phase
         ):
             reacquired = hc.claim_lease(
                 project,
@@ -3042,7 +3101,9 @@ def cmd_close(args: argparse.Namespace) -> int:
             },
         )
     run_id = explicit_run_id or str(current_lease.get("runId") or "")
-    if str(current_lease.get("runId")) != run_id or str(current_lease.get("phase")) != args.phase:
+    if str(current_lease.get("runId")) != run_id or (
+        hp.resolve_phase_name(current_lease.get("phase")) != args.phase
+    ):
         return emit_error(
             "LEASE_OWNER_MISMATCH",
             "active lease does not match close phase/run-id",

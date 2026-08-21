@@ -104,7 +104,7 @@ function humanInput(mode: "quick" | "standard" | "assurance", rejectedReuse = fa
   const requirement_refs = requirements.map((item) => item.requirement_id);
   const task_refs = ["task:quality"];
   const executable = (id: string) => ({
-    priority: "P1" as const, owner_phase: "run" as const,
+    priority: "P1" as const, owner_phase: "execute" as const,
     executable_test_id: `unit::${id}`, test_file: "tests/unit.spec.ts", test_title: id
   });
   const scenarios = [{ scenario_id: "scenario:normal", title: "正常发布", acceptance: "完整验证后发布",
@@ -131,7 +131,7 @@ function humanInput(mode: "quick" | "standard" | "assurance", rejectedReuse = fa
   return { schema_version: 2, profile, phase_set, context, intent, evidence, graph, approval_package,
     approval_package_input, approval_receipt, structured_input: { change_key: `quality-${mode}`, tasks: [{
       task_id: "task:quality", objective: "实现分层质量门", affected_paths: ["packages/core/src/plan-quality/module.ts"],
-      depends_on: [], owner_phase: "run", decision_refs: rejectedReuse ? [rejectedDecision.decision_id] : [],
+      depends_on: [], owner_phase: "execute", decision_refs: rejectedReuse ? [rejectedDecision.decision_id] : [],
       scenario_refs: scenarios.map((item) => item.scenario_id),
       requirement_refs, evidence_refs, ownership_refs: [ownership.ownership_ref]
     }], scenarios, coverage, requirements, approved_scopes: [{ scope_ref, text: scopeText }], ownership: [ownership] } };
@@ -652,15 +652,15 @@ describe("PlanEvent serialized bundle verification", () => {
     const planEnd = planEvent({ type: "phase_ended", producer_seq: 2,
       occurred_at: "2026-08-13T10:00:01.000Z" });
     expect(await module.readEventBundle(serializedEventBundle([planEvent(), planEnd,
-      planEvent({ phase: "run", attempt: 37, occurred_at: "2026-08-13T10:00:02.000Z" })])))
+      planEvent({ phase: "execute", attempt: 37, occurred_at: "2026-08-13T10:00:02.000Z" })])))
       .toEqual({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
-    const runStart = planEvent({ phase: "run", attempt: 1,
+    const runStart = planEvent({ phase: "execute", attempt: 1,
       occurred_at: "2026-08-13T10:00:02.000Z" });
     expect(await module.readEventBundle(serializedEventBundle([planEvent(), planEnd, runStart])))
       .toMatchObject({ ok: true, mode: "current", value: { events: [
         { phase: "plan", attempt: 1, type: "phase_started" },
         { phase: "plan", attempt: 1, type: "phase_ended" },
-        { phase: "run", attempt: 1, type: "phase_started" }
+        { phase: "execute", attempt: 1, type: "phase_started" }
       ] } });
     expect(await module.readEventBundle(serializedEventBundle([planEvent(), planEnd,
       planEvent({ type: "risk_found", producer_seq: 3,
@@ -684,8 +684,8 @@ describe("PlanEvent serialized bundle verification", () => {
     expect(await module.readEventBundle(serializedEventBundle([planEvent(), planEvent({ run_id: "run:foreign",
       type: "phase_ended", producer_seq: 2, occurred_at: "2026-08-13T10:00:01.000Z" })])))
       .toEqual({ ok: false, reason_code: "PLAN_EVENT_BUNDLE_INVALID" });
-    const runStart = planEvent({ phase: "run", occurred_at: "2026-08-13T10:00:02.000Z" });
-    const runEnd = planEvent({ phase: "run", type: "phase_ended", producer_seq: 2,
+    const runStart = planEvent({ phase: "execute", occurred_at: "2026-08-13T10:00:02.000Z" });
+    const runEnd = planEvent({ phase: "execute", type: "phase_ended", producer_seq: 2,
       occurred_at: "2026-08-13T10:00:03.000Z" });
     const planStart = planEvent({ occurred_at: "2026-08-13T10:00:04.000Z" });
     expect(await module.readEventBundle(serializedEventBundle([runStart, runEnd, planStart])))

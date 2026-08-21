@@ -22,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import harness_events  # noqa: E402
+import harness_paths  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -44,7 +45,7 @@ _BUILD_FILE_NAMES = {
 }
 
 # C8: valid ownerPhase values (lifecycle phases that can own tasks).
-VALID_OWNER_PHASES = {"plan", "run", "test", "review", "submit"}
+VALID_OWNER_PHASES = {"plan", "execute", "review", "submit"}
 SLICE_CANDIDATE_TYPES = {
     "independent-release-candidate",
     "child-of-aggregate",
@@ -210,7 +211,7 @@ def parse_test_scenarios(scenarios_path: Path) -> list[dict[str, Any]]:
                         and complete_row
                         and owner_phase_index < len(cells)
                         and cells[owner_phase_index].strip()
-                        else "test"
+                        else "execute"
                     ),
                     "requiredEvidenceKind": PRIORITY_EVIDENCE_KIND.get(
                         priority,
@@ -667,7 +668,11 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
         )
     for task in tasks:
         owner = task.get("ownerPhase")
-        if owner is not None and owner != "" and owner not in VALID_OWNER_PHASES:
+        if (
+            owner is not None
+            and owner != ""
+            and harness_paths.resolve_phase_name(owner) not in VALID_OWNER_PHASES
+        ):
             return _result_error(
                 "PLAN_OWNER_PHASE_INVALID",
                 f"task {task.get('num', '?')}: ownerPhase '{owner}' not in {sorted(VALID_OWNER_PHASES)}",
@@ -708,7 +713,7 @@ def validate_staging(staging: Path, change_name: str) -> dict[str, Any]:
                 f"scenario {scenario.get('id', '?')}: unsupported priority '{priority}'",
             )
         owner = str(scenario.get("ownerPhase") or "")
-        if owner not in VALID_OWNER_PHASES:
+        if harness_paths.resolve_phase_name(owner) not in VALID_OWNER_PHASES:
             return _result_error(
                 "PLAN_SCENARIO_OWNER_PHASE_INVALID",
                 f"scenario {scenario.get('id', '?')}: unsupported ownerPhase '{owner}'",

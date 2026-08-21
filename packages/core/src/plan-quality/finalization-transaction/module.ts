@@ -183,7 +183,7 @@ function validContext(value: unknown): value is PlanFinalizationExecutionContext
       value.schema_version !== 1 || !text(value.project_id) || !ID.test(value.project_id) || !text(value.change_key) || !ID.test(value.change_key) ||
       !text(value.run_id) || !ID.test(value.run_id) || !text(value.branch_name) || !BRANCH.test(value.branch_name) ||
       !Number.isSafeInteger(value.attempt) || (value.attempt as number) < 1 ||
-      !["plan", "run", "test", "review", "package", "apidoc", "submit", "merge", "archive"].includes(String(value.phase))) return false;
+      !["plan", "execute", "review", "package", "apidoc", "submit", "merge", "archive"].includes(String(value.phase))) return false;
   try {
     const authority = snapshotPlanDurablePublicationFilesystemAuthority(value.root_authority);
     return authority.root_identity.project_identity === value.project_id &&

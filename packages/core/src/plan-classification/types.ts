@@ -24,8 +24,7 @@ export type PlanRiskSignal = (typeof PLAN_RISK_SIGNALS)[number];
 
 export const PLAN_PHASES = [
   "plan",
-  "run",
-  "test",
+  "execute",
   "review",
   "package",
   "apidoc",

@@ -39,7 +39,7 @@
       "description": "Low-risk docs/comments/non-behavioral config; no API/DB/security/concurrency. Policy notes: checkpointRules apply only when meta/implementation-checkpoints.json defines the entry for this change; missing file/entry = disabled (gate must not require --task).",
       "defaultPhases": [
         "plan",
-        "run",
+        "execute",
         "archive"
       ],
       "requiredValidations": [
@@ -62,8 +62,7 @@
       "description": "Ordinary production code and non-breaking API/features. Policy notes: requiredValidations may close DEGRADED when ledger status=NOT_RUN and evidence starts with 'DEGRADED: <reason>' (close code CLOSED_DEGRADED, phase status <= WARN); do not fake OK with unrelated tests.",
       "defaultPhases": [
         "plan",
-        "run",
-        "test",
+        "execute",
         "submit",
         "archive"
       ],
@@ -92,8 +91,7 @@
       "description": "Auth/security/delete/migration/concurrency/service protocol/shared state/breaking contracts. Policy notes: (1) DEGRADED close — ledger status=NOT_RUN and evidence 'DEGRADED: <reason>' → CLOSED_DEGRADED with phase <= WARN; never fake OK with unrelated tests. (2) checkpointRules — only when plan created meta/implementation-checkpoints.json entry; missing file/entry = not enabled, gate must not require --task.",
       "defaultPhases": [
         "plan",
-        "run",
-        "test",
+        "execute",
         "review",
         "submit",
         "archive"
@@ -135,7 +133,7 @@
       ]
     },
     "harness-run": {
-      "phase": "run",
+      "phase": "execute",
       "inputs": [
         "implementation-detail",
         "state-snapshot"
@@ -158,7 +156,7 @@
       ]
     },
     "harness-test": {
-      "phase": "test",
+      "phase": "execute",
       "inputs": [
         "test-scenarios",
         "verification-ledger"
@@ -391,6 +389,36 @@
       "capabilities": [
         "remote-sync-pull@1"
       ]
+    },
+    "harness-execute": {
+      "phase": "execute",
+      "inputs": [
+        "implementation-detail",
+        "state-snapshot",
+        "test-scenarios",
+        "verification-ledger"
+      ],
+      "artifacts": [
+        "code",
+        "test-reports",
+        "verification-ledger"
+      ],
+      "events": [
+        "command",
+        "phase.end",
+        "phase.start",
+        "verification"
+      ],
+      "allowedInteractions": [
+        "resource-intensive-test-confirmation"
+      ],
+      "capabilities": [
+        "gate-begin",
+        "gate-close",
+        "ledger-record",
+        "resource-safe-test-runner",
+        "test-guard"
+      ]
     }
   },
   "requiredArtifacts": {
@@ -412,11 +440,9 @@
     ]
   },
   "requiredValidations": {
-    "run": [
+    "execute": [
       "compile",
-      "unitTest"
-    ],
-    "test": [
+      "unitTest",
       "unitTestFull"
     ],
     "submit": [],
@@ -425,12 +451,12 @@
     ]
   },
   "validationPhases": {
-    "compile": "run",
-    "unitTest": "run",
-    "unitTestFull": "test",
-    "apiTest": "test",
-    "browserTest": "test",
-    "dbCompatibility": "test",
+    "compile": "execute",
+    "unitTest": "execute",
+    "unitTestFull": "execute",
+    "apiTest": "execute",
+    "browserTest": "execute",
+    "dbCompatibility": "execute",
     "package": "package"
   },
   "capabilityGates": {
@@ -520,6 +546,9 @@
     ],
     "harness-plan": [
       "risk-confirmation"
+    ],
+    "harness-execute": [
+      "resource-intensive-test-confirmation"
     ]
   },
   "checkpointRules": {

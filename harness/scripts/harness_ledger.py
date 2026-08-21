@@ -202,14 +202,16 @@ def frozen_ownership_check(change_dir: Path) -> dict[str, Any]:
     if not capsule_root.is_dir():
         return {"ok": True, "code": "OWNERSHIP_FREEZE_NOT_APPLICABLE"}
     capsules: list[dict[str, Any]] = []
-    for path in capsule_root.glob("run-*.json"):
+    # capsule 文件名是 <phase>-<hash>.json；execute 合并（run/test→execute）后
+    # 新旧两批名字都可能躺在在途 change 里，按内容归一判定而不是按文件名。
+    for path in capsule_root.glob("*.json"):
         try:
             item = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
         if (
             isinstance(item, dict)
-            and item.get("phase") == "run"
+            and harness_paths.resolve_phase_name(item.get("phase")) == "execute"
             and not item.get("closedAt")
             and _nonempty_str(item.get("ownershipHash"))
         ):

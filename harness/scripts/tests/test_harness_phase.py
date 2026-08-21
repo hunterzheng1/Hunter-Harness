@@ -87,16 +87,16 @@ class ReconcileDagTests(unittest.TestCase):
         self.assertEqual({node["decision"] for node in result["nodes"]}, {"BLOCK"})
         self.assertIn("HEAD_MISMATCH", result["blockers"][0]["code"])
 
-    def test_browser_test_is_owned_by_test_phase_and_depends_on_unit_test(self) -> None:
+    def test_browser_test_is_owned_by_execute_phase_and_depends_on_unit_test(self) -> None:
         workflow = json.loads(
             (SCRIPTS_DIR.parent / "contracts" / "workflow-policy.json").read_text(
                 encoding="utf-8"
             )
         )
 
-        self.assertEqual(hp.VALIDATION_PHASES["browserTest"], "test")
+        self.assertEqual(hp.VALIDATION_PHASES["browserTest"], "execute")
         self.assertEqual(hg.VALIDATION_DEPENDENCIES["browserTest"], ("unitTest",))
-        self.assertEqual(workflow["validationPhases"]["browserTest"], "test")
+        self.assertEqual(workflow["validationPhases"]["browserTest"], "execute")
 
 
 class TargetPhaseReconcileTests(unittest.TestCase):

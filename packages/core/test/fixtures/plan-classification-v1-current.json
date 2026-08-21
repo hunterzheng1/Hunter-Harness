@@ -3,7 +3,10 @@
     "schema_version": 1,
     "change_id": "current-plan-change",
     "display_title": "当前 Plan 契约",
-    "risk_signals": ["cross_file", "production_code"],
+    "risk_signals": [
+      "cross_file",
+      "production_code"
+    ],
     "created_at": "2026-08-13T08:00:00.000+08:00"
   },
   "capabilities": {
@@ -11,42 +14,95 @@
     "is_git": true,
     "has_remote": true,
     "uses_worktree": false,
-    "available_phases": ["plan", "run", "test", "review", "package", "apidoc", "submit", "merge", "archive"],
-    "requested_optional_phases": ["review"],
+    "available_phases": [
+      "plan",
+      "execute",
+      "review",
+      "package",
+      "apidoc",
+      "submit",
+      "merge",
+      "archive"
+    ],
+    "requested_optional_phases": [
+      "review"
+    ],
     "requested_omissions": [],
     "configured_at": "2026-08-13T08:01:00.000+08:00"
   },
   "profile": {
     "schema_version": 1,
-    "profile_id": "plan_profile:866d2cb7fb3c9a7c8075dfec029af631b30604e0ad4b0da3baaa261fa693fa96",
+    "profile_id": "plan_profile:bf8fcf74838c9d87ebe969d1f2e34d0ca368fb80f93daf0a5a9545d2681443ac",
     "profile_version": 1,
     "change_id": "current-plan-change",
     "mode": "standard",
-    "risk_signals": ["cross_file", "production_code"],
-    "required_phases": ["plan", "run", "test", "archive"],
-    "optional_phases": ["review", "package", "apidoc", "submit", "merge"],
-    "required_validations": ["deterministic_check", "semantic_consistency"],
+    "risk_signals": [
+      "cross_file",
+      "production_code"
+    ],
+    "required_phases": [
+      "plan",
+      "execute",
+      "archive"
+    ],
+    "optional_phases": [
+      "review",
+      "package",
+      "apidoc",
+      "submit",
+      "merge"
+    ],
+    "required_validations": [
+      "deterministic_check",
+      "semantic_consistency"
+    ],
     "interaction_budget": {
       "max_clarification_rounds": 3,
-      "allowed_blocking_interactions": ["product_or_risk_decision", "concise_design_approval"]
+      "allowed_blocking_interactions": [
+        "product_or_risk_decision",
+        "concise_design_approval"
+      ]
     },
-    "classification_hash": "sha256:76ce005052c0b7881855383451d77aad07557efbc618be851110cfcb6699d374",
-    "reason_codes": ["ordinary_change"],
+    "classification_hash": "sha256:32340adea865a4271570c80ed47613dafa76b30998a4f54eb0c049cfbc5a321a",
+    "reason_codes": [
+      "ordinary_change"
+    ],
     "created_at": "2026-08-13T08:00:00.000+08:00"
   },
   "phase_set": {
     "schema_version": 1,
-    "phase_set_id": "planned_phase_set:3626ac92d54d20985f417008f990b33cfa154bdfecda7faba31772103f0c341a",
+    "phase_set_id": "planned_phase_set:838016584b6e7d4546cebce1043c88b597baee638eb7c9073b007bf4aa242444",
     "phase_set_version": 1,
-    "profile_classification_hash": "sha256:76ce005052c0b7881855383451d77aad07557efbc618be851110cfcb6699d374",
-    "planned_phases": ["plan", "run", "test", "review", "submit", "archive"],
-    "omitted_phases": [
-      { "phase": "package", "disposition": "optional_not_selected", "reason_code": "optional_phase_not_selected" },
-      { "phase": "apidoc", "disposition": "optional_not_selected", "reason_code": "optional_phase_not_selected" },
-      { "phase": "merge", "disposition": "optional_not_selected", "reason_code": "optional_phase_not_selected" }
+    "profile_classification_hash": "sha256:32340adea865a4271570c80ed47613dafa76b30998a4f54eb0c049cfbc5a321a",
+    "planned_phases": [
+      "plan",
+      "execute",
+      "review",
+      "submit",
+      "archive"
     ],
-    "capability_snapshot_hash": "sha256:38adca0e1569aaae332c0317de2829facac096d0f408d097387a87946514c75b",
-    "source_reason_codes": ["optional_phase_not_selected", "profile_required_phases"],
+    "omitted_phases": [
+      {
+        "phase": "package",
+        "disposition": "optional_not_selected",
+        "reason_code": "optional_phase_not_selected"
+      },
+      {
+        "phase": "apidoc",
+        "disposition": "optional_not_selected",
+        "reason_code": "optional_phase_not_selected"
+      },
+      {
+        "phase": "merge",
+        "disposition": "optional_not_selected",
+        "reason_code": "optional_phase_not_selected"
+      }
+    ],
+    "capability_snapshot_hash": "sha256:1b78e69ba2d4d6cbdb11c344948f880c6b6423f95c4f644ab2dadf9f772d328c",
+    "source_reason_codes": [
+      "optional_phase_not_selected",
+      "profile_required_phases"
+    ],
     "blocking_interactions": [],
     "outcome": "configured",
     "reason_code": "phase_set_configured",

@@ -1,3 +1,5 @@
+import { LEGACY_PLAN_PHASE_ALIASES } from "@hunter-harness/contracts";
+
 import { buildPlanProfile } from "./classification.js";
 import { PlanSchemaError } from "./schemas.js";
 import {
@@ -85,15 +87,17 @@ function legacyPhases(value: unknown, label: string): PlanPhase[] {
   }
   const phases = value.map((item) => {
     const phase = legacyText(item, label);
-    if (!(PLAN_PHASES as readonly string[]).includes(phase)) {
+    // 历史 gate-policy.json 里的 run/test 经别名表归一为 execute
+    // （与 harness_paths.resolve_phase_name 同语义）。
+    const canonical = (LEGACY_PLAN_PHASE_ALIASES as Record<string, string>)[phase] ?? phase;
+    if (!(PLAN_PHASES as readonly string[]).includes(canonical)) {
       throw new PlanSchemaError("PLAN_SCHEMA_INVALID", `legacy.${label}.${phase}`);
     }
-    return phase as PlanPhase;
+    return canonical as PlanPhase;
   });
-  if (new Set(phases).size !== phases.length) {
-    throw new PlanSchemaError("PLAN_SCHEMA_INVALID", `legacy.${label}.duplicate`);
-  }
-  return phases;
+  // 映射后可能出现重复（run/test 两个旧名合并成 execute），保序去重。
+  const deduped = [...new Set(phases)];
+  return deduped;
 }
 
 function legacyDate(value: unknown): string {

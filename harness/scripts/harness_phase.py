@@ -37,12 +37,12 @@ CI_METRICS_SCHEMA_VERSION = 1
 # 一份拷贝，少了 merge，worktree 变更走到 merge 就在 target_required_dag 里硬 raise。
 PHASE_ORDER = hpaths.WORKFLOW_PHASES
 VALIDATION_PHASES = {
-    "compile": "run",
-    "unitTest": "run",
-    "unitTestFull": "test",
-    "apiTest": "test",
-    "browserTest": "test",
-    "dbCompatibility": "test",
+    "compile": "execute",
+    "unitTest": "execute",
+    "unitTestFull": "execute",
+    "apiTest": "execute",
+    "browserTest": "execute",
+    "dbCompatibility": "execute",
     "package": "package",
 }
 FINAL_SEQUENCE_RECEIPTS_REL = (
@@ -1633,7 +1633,7 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("--json", action="store_true")
     reconcile_parser.add_argument("--output")
     reconcile_parser.add_argument("--close", action="store_true")
-    reconcile_parser.add_argument("--phase", default="run")
+    reconcile_parser.add_argument("--phase", default="execute")
     reconcile_parser.add_argument("--run-id")
     reconcile_parser.set_defaults(func=_cmd_reconcile)
 

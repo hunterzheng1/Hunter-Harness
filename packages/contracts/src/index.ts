@@ -19,6 +19,7 @@ export * from "./remote-sync-http.js";
 export * from "./remote-sync-archive-http.js";
 export * from "./remote-content-upload-http.js";
 export * from "./plan-event.js";
+export * from "./plan-phase-aliases.js";
 export * from "./protocol.js";
 export * from "./dashboard.js";
 export * from "./external-skill.js";

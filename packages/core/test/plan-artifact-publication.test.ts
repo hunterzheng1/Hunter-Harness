@@ -31,7 +31,7 @@ function scenario(id: string, dimension: TestScenarioInput["coverage_dimension"]
   return { scenario_id: id, title: `验证 ${dimension}`, acceptance: `${dimension} 行为符合批准设计`,
     coverage_dimension: dimension, execution_level: dimension === "integration_impact" ? "integration" : "unit",
     evidence_requirements: ["focused_test"], verification_command: `npm test -- ${id}`, risk_level: "medium",
-    priority: "P1", owner_phase: "run",
+    priority: "P1", owner_phase: "execute",
     executable_test_id: `unit::${id}`, test_file: "tests/unit.spec.ts", test_title: id,
     task_refs: ["task:module"], requirement_refs: [] };
 }
@@ -94,7 +94,7 @@ function trustedInput(): HumanArtifactBuildInput {
     approval_package_input, approval_receipt, structured_input: { change_key: "change-11-publication",
       requirements, approved_scopes: [{ scope_ref, text: scopeText }], ownership: [ownership], tasks: [{
         task_id: "task:module", objective: "实现发布payload契约",
-        affected_paths: [ownership.path], depends_on: [], owner_phase: "run", decision_refs: [],
+        affected_paths: [ownership.path], depends_on: [], owner_phase: "execute", decision_refs: [],
         scenario_refs: scenarios.map((item) => item.scenario_id), requirement_refs: requirementRefs,
         evidence_refs: evidenceRefs, ownership_refs: [ownership.ownership_ref]
       }], scenarios, coverage } };

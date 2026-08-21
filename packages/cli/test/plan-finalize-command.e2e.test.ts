@@ -102,7 +102,7 @@ function humanInput(): HumanArtifactBuildInput {
     evidence_requirements: ["focused_test"],
     risk_level: "medium" as const,
     priority: "P1" as const,
-    owner_phase: "run" as const,
+    owner_phase: "execute" as const,
     executable_test_id: `unit::${dimension}`,
     test_file: "tests/unit.spec.ts",
     test_title: `${dimension}`,
@@ -125,7 +125,7 @@ function humanInput(): HumanArtifactBuildInput {
       change_key: CHANGE_KEY,
       tasks: [{
         task_id: "task:e2e", objective: "端到端发布", affected_paths: ["packages/cli/src/commands/plan-finalize.ts"],
-        depends_on: [], owner_phase: "run", decision_refs: [],
+        depends_on: [], owner_phase: "execute", decision_refs: [],
         scenario_refs: scenarios.map((item) => item.scenario_id),
         requirement_refs, evidence_refs, ownership_refs: [ownership.ownership_ref]
       }],
@@ -301,7 +301,7 @@ describe("hunter-harness plan finalize (e2e)", () => {
       `cd = Path(${JSON.stringify(changeDir)})`,
       `policy = m._load_workflow_policy(project=Path(${JSON.stringify(root)}))`,
       "eff = m.effective_workflow_policy(policy, cd)",
-      "print(json.dumps({'ok': True, 'run': eff['requiredValidations'].get('run')}))"
+      "print(json.dumps({'ok': True, 'execute': eff['requiredValidations'].get('execute')}))"
     ].join("\n");
     const run = spawnSync("python", ["-c", probe], { cwd: root, encoding: "utf8" });
     expect(run.status, run.stderr).toBe(0);
@@ -320,9 +320,9 @@ describe("hunter-harness plan finalize (e2e)", () => {
       schemaVersion: 1,
       tier: "standard",
       source: "default-standard",
-      defaultPhases: ["plan", "run", "test", "submit", "archive"],
+      defaultPhases: ["plan", "execute", "submit", "archive"],
       requiredValidations: ["compile", "unitTest", "unitTestFull"],
-      requiredValidationsByPhase: { run: ["compile", "unitTest"], test: ["unitTestFull"] },
+      requiredValidationsByPhase: { execute: ["compile", "unitTest", "unitTestFull"] },
       requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] }
     };
     await fs.writeFile(policyPath, JSON.stringify(pythonPolicy), "utf8");

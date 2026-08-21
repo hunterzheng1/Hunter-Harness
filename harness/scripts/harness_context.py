@@ -25,10 +25,9 @@ import harness_paths as hpaths  # noqa: E402
 
 
 PHASE_GRAPH = {
-    "plan": ("run",),
-    "run": ("test",),
-    "test": ("review", "run"),
-    "review": ("submit", "run"),
+    "plan": ("execute",),
+    "execute": ("review", "execute"),
+    "review": ("submit", "execute"),
     "submit": (),
 }
 
@@ -304,14 +303,15 @@ def _phase_plan(contract_root: Path) -> tuple[list[str] | None, str]:
 
 def _allowed_next_phases(contract_root: Path, from_phase: str) -> list[str]:
     planned, _source = _phase_plan(contract_root)
+    resolved_from = hpaths.resolve_phase_name(from_phase) or from_phase
     if planned is None:
-        return list(PHASE_GRAPH.get(from_phase, ()))
-    if from_phase not in planned:
+        return list(PHASE_GRAPH.get(resolved_from, ()))
+    if resolved_from not in planned:
         return []
-    index = planned.index(from_phase)
+    index = planned.index(resolved_from)
     allowed = planned[index + 1 : index + 2]
-    if from_phase in {"test", "review"} and "run" in planned:
-        allowed = [*allowed, "run"]
+    if resolved_from in {"execute", "review"} and "execute" in planned:
+        allowed = [*allowed, "execute"]
     return list(dict.fromkeys(allowed))
 
 
@@ -330,12 +330,14 @@ def configure_phase_plan(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "code": _contract_error_code(exc), "error": str(exc)}
     normalized = [str(item).strip() for item in phases if str(item).strip()]
+    resolved = [hpaths.resolve_phase_name(item) for item in normalized]
     if (
         not normalized
         or len(normalized) != len(set(normalized))
-        or any(item not in WORKFLOW_PHASES for item in normalized)
-        or normalized[0] != "plan"
-        or normalized[-1] != "archive"
+        or any(item is None for item in resolved)
+        or len(set(resolved)) != len(resolved)
+        or resolved[0] != "plan"
+        or resolved[-1] != "archive"
     ):
         return {
             "ok": False,
@@ -348,6 +350,9 @@ def configure_phase_plan(
             "ok": False,
             "code": "PHASE_PLAN_JUSTIFICATION_REQUIRED",
         }
+    # 旧名入参（plan,run,test,review,archive）归一为现阶段名后落盘；
+    # 上面已校验 resolved 无 None 且保序唯一。
+    normalized = [str(item) for item in resolved]
     worktree_path = contract_root / "meta" / "worktree.json"
     if worktree_path.is_file():
         try:
@@ -451,7 +456,7 @@ def _reselect_review_fixback(
     state_root: Path,
     executor: str,
 ) -> dict[str, Any]:
-    """Supersede an unbegun review→submit choice with review→run."""
+    """Supersede an unbegun review→submit choice with review→execute."""
 
     paths = _paths(state_root)
     with _exclusive_state_lock(paths["runtime"] / "branch-selection.lock"):
@@ -459,8 +464,8 @@ def _reselect_review_fixback(
         latest = transitions[-1] if transitions else None
         if (
             isinstance(latest, dict)
-            and latest.get("fromPhase") == "review"
-            and latest.get("toPhase") == "run"
+            and hpaths.resolve_phase_name(latest.get("fromPhase")) == "review"
+            and hpaths.resolve_phase_name(latest.get("toPhase")) == "execute"
             and latest.get("trigger") == "review-fixback"
         ):
             return {
@@ -512,14 +517,14 @@ def _reselect_review_fixback(
                 }
             paths["lease"].unlink(missing_ok=True)
         # Any submit context present here was only prepared, never begun.  The
-        # new run context is written by prepare_context after this atomic choice.
+        # new execute context is written by prepare_context after this atomic choice.
         paths["current"].unlink(missing_ok=True)
 
         receipt: dict[str, Any] = {
             "schemaVersion": 1,
             "changeName": change,
             "fromPhase": "review",
-            "toPhase": "run",
+            "toPhase": "execute",
             "status": "OK",
             "executor": executor,
             "productCommit": _head(project),
@@ -528,8 +533,8 @@ def _reselect_review_fixback(
             + sum(
                 1
                 for item in transitions
-                if item.get("fromPhase") == "review"
-                and item.get("toPhase") == "run"
+                if hpaths.resolve_phase_name(item.get("fromPhase")) == "review"
+                and hpaths.resolve_phase_name(item.get("toPhase")) == "execute"
             ),
             "closedAt": _now().isoformat(),
             "previousReceiptHash": latest.get("receiptHash"),
@@ -543,7 +548,7 @@ def _reselect_review_fixback(
             state_root,
             transition_hash=receipt["receiptHash"],
             from_phase="review",
-            to_phase="run",
+            to_phase="execute",
         )
         return {
             "ok": True,
@@ -620,12 +625,13 @@ def _claim_prepared_context(
         # 「租约已过期」和「租约已被上一阶段 close 删除」两种情况。
         adoption: dict[str, Any] | None = None
         if recovery is None and isinstance(current, dict) and (
-            current.get("phase") != phase
+            hpaths.resolve_phase_name(current.get("phase")) != phase
         ):
             valid_receipt = (
                 isinstance(latest, dict)
-                and latest.get("toPhase") == phase
-                and latest.get("fromPhase") == current.get("phase")
+                and hpaths.resolve_phase_name(latest.get("toPhase")) == phase
+                and hpaths.resolve_phase_name(latest.get("fromPhase"))
+                == hpaths.resolve_phase_name(current.get("phase"))
             )
             if not valid_receipt:
                 return {
@@ -711,6 +717,20 @@ def _claim_prepared_context(
         }
 
 
+def _unknown_phase_error(phase: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "code": "PHASE_UNKNOWN",
+        "phase": str(phase),
+        "allowedPhases": list(WORKFLOW_PHASES),
+        "legacyAliases": dict(hpaths.LEGACY_PHASE_ALIASES),
+        "message": (
+            f"未知阶段名 {phase!r}；合法阶段 {list(WORKFLOW_PHASES)}，"
+            f"旧名别名 {hpaths.LEGACY_PHASE_ALIASES}。"
+        ),
+    }
+
+
 def prepare_context(
     project: Path,
     *,
@@ -723,6 +743,10 @@ def prepare_context(
     preparation_id: str | None = None,
 ) -> dict[str, Any]:
     project = Path(project).resolve()
+    canonical_phase = hpaths.resolve_phase_name(phase)
+    if canonical_phase is None:
+        return _unknown_phase_error(phase)
+    phase = canonical_phase
     candidates = _active_changes(project)
     if change is None:
         if not candidates:
@@ -769,7 +793,7 @@ def prepare_context(
     paths = _paths(state_root)
     paths["runtime"].mkdir(parents=True, exist_ok=True)
     reselection: dict[str, Any] | None = None
-    if trigger == "review-fixback" and phase == "run":
+    if trigger == "review-fixback" and phase == "execute":
         reselection = _reselect_review_fixback(
             project,
             change,
@@ -811,9 +835,14 @@ def prepare_context(
         _allowed_next_phases(contract_root, phase)
         if planned_phases is not None
         else (
-            list(PHASE_GRAPH.get(str(latest.get("toPhase")), ()))
+            list(
+                PHASE_GRAPH.get(
+                    hpaths.resolve_phase_name(str(latest.get("toPhase"))) or "",
+                    (),
+                )
+            )
             if latest
-            else ["plan", "run"]
+            else ["plan", "execute"]
         )
     )
     return {
@@ -1057,7 +1086,7 @@ def _bootstrap_v2_plan_transition(
     """v2 发布已 committed 却没有交接凭证时，补录 plan → to_phase 凭证。
 
     v2 plan finalize 只写 plan-events.ndjson 与发布 journal，不碰 context 事务
-    存储，于是 run 阶段 prepare 必报 HANDOFF_REQUIRED、begin 必报
+    存储，于是 execute 阶段 prepare 必报 HANDOFF_REQUIRED、begin 必报
     LEGACY_BOOTSTRAP_REQUIRED——两个错误都不给恢复路径，调用方只能读脚本源码
     自己拼出 classify + configure-plan + close，参数全靠现编，可审计性更差。
 
@@ -1104,6 +1133,14 @@ def close_transition(
     status: str = "OK",
 ) -> dict[str, Any]:
     project = Path(project).resolve()
+    canonical_from = hpaths.resolve_phase_name(from_phase)
+    canonical_to = hpaths.resolve_phase_name(to_phase)
+    if canonical_from is None:
+        return _unknown_phase_error(from_phase)
+    if canonical_to is None:
+        return _unknown_phase_error(to_phase)
+    from_phase = canonical_from
+    to_phase = canonical_to
     try:
         contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1179,8 +1216,8 @@ def close_transition(
         latest = transitions[-1] if transitions else None
         if (
             isinstance(latest, dict)
-            and latest.get("fromPhase") == from_phase
-            and latest.get("toPhase") == to_phase
+            and hpaths.resolve_phase_name(latest.get("fromPhase")) == from_phase
+            and hpaths.resolve_phase_name(latest.get("toPhase")) == to_phase
             and latest.get("status") == status
             and latest.get("artifacts") == artifact_entries
             and (executor is None or latest.get("executor") == executor)
@@ -1201,7 +1238,9 @@ def close_transition(
     effective_executor = executor or str(lease.get("owner") or "")
     if not effective_executor:
         return {"ok": False, "code": "CONTEXT_EXECUTOR_REQUIRED"}
-    if lease.get("owner") != effective_executor or lease.get("phase") != from_phase:
+    if lease.get("owner") != effective_executor or (
+        hpaths.resolve_phase_name(lease.get("phase")) != from_phase
+    ):
         return {
             "ok": False,
             "code": "CONTEXT_LEASE_MISMATCH",
@@ -1220,8 +1259,8 @@ def close_transition(
         + sum(
             1
             for item in transitions
-            if item.get("fromPhase") == from_phase
-            and item.get("toPhase") == to_phase
+            if hpaths.resolve_phase_name(item.get("fromPhase")) == from_phase
+            and hpaths.resolve_phase_name(item.get("toPhase")) == to_phase
         )
     )
     receipt: dict[str, Any] = {
@@ -1247,7 +1286,7 @@ def close_transition(
     _append_ndjson(paths["transitions"], receipt)
     paths["lease"].unlink(missing_ok=True)
     invalidation = None
-    if to_phase == "run" and from_phase in {"test", "review"}:
+    if to_phase == "execute" and from_phase in {"execute", "review"}:
         invalidation = _invalidate_for_fixback(
             state_root,
             transition_hash=receipt["receiptHash"],
@@ -1326,7 +1365,7 @@ def _begin_transition_unlocked(
             ),
         }
     receipt = transitions[-1]
-    if receipt.get("toPhase") != phase:
+    if hpaths.resolve_phase_name(receipt.get("toPhase")) != phase:
         return {
             "ok": False,
             "code": "HANDOFF_REQUIRED",
@@ -1403,6 +1442,10 @@ def begin_transition(
     """Acknowledge a transition while serializing branch selection."""
 
     project = Path(project).resolve()
+    canonical_phase = hpaths.resolve_phase_name(phase)
+    if canonical_phase is None:
+        return _unknown_phase_error(phase)
+    phase = canonical_phase
     try:
         _contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1429,6 +1472,10 @@ def cancel_prepared_context(
     """Remove a target-phase preparation that never obtained its gate."""
 
     project = Path(project).resolve()
+    canonical_phase = hpaths.resolve_phase_name(phase)
+    if canonical_phase is None:
+        return _unknown_phase_error(phase)
+    phase = canonical_phase
     try:
         _contract_root, _contract_data, state_root = _contract(project, change)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1443,7 +1490,8 @@ def cancel_prepared_context(
             except (OSError, ValueError, json.JSONDecodeError):
                 current = None
             if isinstance(current, dict) and (
-                current.get("phase") == phase and current.get("executor") == executor
+                hpaths.resolve_phase_name(current.get("phase")) == phase
+                and current.get("executor") == executor
                 and (
                     preparation_id is None
                     or current.get("preparationId") == preparation_id
@@ -1458,7 +1506,8 @@ def cancel_prepared_context(
             except (OSError, ValueError, json.JSONDecodeError):
                 lease = None
             if isinstance(lease, dict) and (
-                lease.get("phase") == phase and lease.get("owner") == executor
+                hpaths.resolve_phase_name(lease.get("phase")) == phase
+                and lease.get("owner") == executor
                 and (
                     preparation_id is None
                     or lease.get("preparationId") == preparation_id
@@ -1472,7 +1521,7 @@ def cancel_prepared_context(
             for item in begins
             if not (
                 receipt_hash is not None
-                and item.get("phase") == phase
+                and hpaths.resolve_phase_name(item.get("phase")) == phase
                 and item.get("executor") == executor
                 and item.get("receiptHash") == receipt_hash
                 and (

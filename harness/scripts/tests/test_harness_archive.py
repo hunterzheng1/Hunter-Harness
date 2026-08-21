@@ -752,7 +752,7 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                 ["feature-2.txt", "feature.txt"],
             )
             self.assertEqual(summary["verification"]["unitTests"]["run"], 27)
-            self.assertEqual(summary["stageStatus"]["test"], "BLOCKED")
+            self.assertEqual(summary["stageStatus"]["execute"], "BLOCKED")
             self.assertEqual(summary["finalStatus"], "CONDITIONAL_OK")
             self.assertEqual(summary["timeline"][1]["handoffFromTool"], "claude-code")
 
@@ -1900,6 +1900,14 @@ class KnownRisksFilterTests(unittest.TestCase):
             events = [
                 {
                     "schema_version": 3,
+                    "id": "end-1",
+                    "timestamp": "2026-07-19T09:59:00+08:00",
+                    "phase": "run",
+                    "type": "phase.end",
+                    "status": "OK",
+                },
+                {
+                    "schema_version": 3,
                     "id": "issue-1",
                     "timestamp": "2026-07-19T10:00:00+08:00",
                     "phase": "run",
@@ -1925,7 +1933,7 @@ class KnownRisksFilterTests(unittest.TestCase):
             status = ha._stage_status_from_sources(events, None, change)
             summary = ha.collect_summary_data(change, write=False)
 
-            self.assertEqual(status["run"], "OK")
+            self.assertEqual(status["execute"], "OK")
             self.assertEqual(summary["knownRisks"], [])
 
 

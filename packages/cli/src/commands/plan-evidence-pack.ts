@@ -99,7 +99,7 @@ const EVIDENCE_PACK_TEMPLATE = {
         task_id: "<T1>",
         objective: "<这个任务要达成什么>",
         affected_paths: ["<相对路径，如 src/module/file.ts>"],
-        owner_phase: "run"
+        owner_phase: "execute"
       }
     ],
     // 至少 3 条（冻结校验器下限）。八维度缺项由命令补 not_applicable，
@@ -115,8 +115,8 @@ const EVIDENCE_PACK_TEMPLATE = {
         risk_level: "medium",
         // P0/P1 = 必须带 ledger 证据；P2 = advisory。门禁按它判定哪些场景必须闭环。
         priority: "P0",
-        // 这条场景在哪个阶段到期。run 关门时 owner_phase=test 的场景按计划顺延。
-        owner_phase: "run",
+        // 这条场景在哪个阶段到期。execute 关门时 owner_phase=review/submit 的场景按计划顺延。
+        owner_phase: "execute",
         // P0/P1 场景要么三元给全、要么整组省略；省略时 manifest 降为 schemaVersion 1，
         // 关门无法绑定结构化执行收据。
         executable_test_id: "<可执行测试 ID，如 unit::ut1>",
@@ -133,7 +133,7 @@ const EVIDENCE_PACK_TEMPLATE = {
         evidence_requirements: ["<证据要求，如 focused_test>"],
         risk_level: "low",
         priority: "P2",
-        owner_phase: "run"
+        owner_phase: "execute"
       },
       {
         scenario_id: "<UT-003>",
@@ -144,7 +144,7 @@ const EVIDENCE_PACK_TEMPLATE = {
         evidence_requirements: ["<证据要求，如 focused_test>"],
         risk_level: "medium",
         priority: "P2",
-        owner_phase: "test"
+        owner_phase: "execute"
       }
     ],
     approved_scopes: [{ text: "<纳入范围条目>" }]

@@ -51,7 +51,7 @@ function scenario(scenario_id: string, coverage_dimension: TestScenarioInput["co
   return { scenario_id, title: `验证 ${coverage_dimension}`, acceptance: `${coverage_dimension} 行为符合批准设计`,
     coverage_dimension, execution_level: coverage_dimension === "integration_impact" ? "integration" : "unit",
     evidence_requirements: ["focused_test"], verification_command: `npm test -- ${scenario_id}`, risk_level,
-    priority: "P1", owner_phase: "run",
+    priority: "P1", owner_phase: "execute",
     executable_test_id: `unit::${scenario_id}`, test_file: "tests/unit.spec.ts", test_title: scenario_id,
     task_refs, requirement_refs };
 }
@@ -112,10 +112,10 @@ function trustedInput(mode: "quick" | "standard" | "assurance" = "standard"): Hu
   return { schema_version: 2, profile, phase_set, context, intent, evidence, graph, approval_package,
     approval_package_input, approval_receipt, structured_input: { change_key: `change-11-${mode}`, tasks: [{
       task_id: "task:module", objective: "实现 PlanArtifactModel", affected_paths: ["packages/core/src/plan-artifacts/module.ts"],
-      depends_on: [], owner_phase: "run", decision_refs: [], scenario_refs: scenarios.map((item) => item.scenario_id),
+      depends_on: [], owner_phase: "execute", decision_refs: [], scenario_refs: scenarios.map((item) => item.scenario_id),
       requirement_refs, evidence_refs, ownership_refs: [moduleOwnership.ownership_ref]
     }, { task_id: "task:test", objective: "验证产物派生", affected_paths: ["packages/core/test/plan-artifacts-module.test.ts"],
-      depends_on: ["task:module"], owner_phase: mode === "quick" ? "run" : "test", decision_refs: [],
+      depends_on: ["task:module"], owner_phase: "execute", decision_refs: [],
       scenario_refs: scenarios.map((item) => item.scenario_id), requirement_refs, evidence_refs,
       ownership_refs: [testOwnership.ownership_ref] }], scenarios, coverage, requirements,
       approved_scopes: [{ scope_ref, text: scopeText }], ownership } };
@@ -165,9 +165,9 @@ describe("PlanArtifactModel human truth sources", () => {
   it("requires each task owner phase to be in the trusted planned phase set", () => {
     const model = createPlanArtifactModel();
     const input = trustedInput("quick");
-    expect(input.phase_set.planned_phases).not.toContain("test");
+    expect(input.phase_set.planned_phases).not.toContain("review");
     const tasks = input.structured_input.tasks.map((task) => task.task_id === "task:test" ?
-      { ...task, owner_phase: "test" as const } : task);
+      { ...task, owner_phase: "review" as const } : task);
     expect(() => model.buildHumanArtifacts({ ...input, structured_input: { ...input.structured_input, tasks } }))
       .toThrowError(expect.objectContaining({ code: "PLAN_ARTIFACT_REFERENCE_INVALID" }));
   });
