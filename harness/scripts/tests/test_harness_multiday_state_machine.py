@@ -40,7 +40,7 @@ class MultiDayStateMachineTests(unittest.TestCase):
                 {
                     "id": "validation:unitTest",
                     "kind": "validation",
-                    "phase": "run",
+                    "phase": "execute",
                     "dependsOn": [],
                 }
             ],

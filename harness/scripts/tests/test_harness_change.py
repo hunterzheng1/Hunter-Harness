@@ -222,14 +222,14 @@ class HarnessChangeTests(unittest.TestCase):
         first = change.claim_lease(
             self.project,
             change_id="alpha",
-            phase="run",
+            phase="execute",
             run_id="run-a",
             ttl_seconds=3600,
         )
         second = change.claim_lease(
             self.project,
             change_id="alpha",
-            phase="run",
+            phase="execute",
             run_id="run-b",
             ttl_seconds=3600,
         )
@@ -242,7 +242,7 @@ class HarnessChangeTests(unittest.TestCase):
             return change.claim_lease(
                 self.project,
                 change_id="alpha",
-                phase="run",
+                phase="execute",
                 run_id=f"parallel-{index}",
                 ttl_seconds=3600,
             )
@@ -257,14 +257,14 @@ class HarnessChangeTests(unittest.TestCase):
         first = change.claim_lease(
             self.project,
             change_id="alpha",
-            phase="run",
+            phase="execute",
             run_id="run-a",
             ttl_seconds=3600,
         )
         second = change.claim_lease(
             self.project,
             change_id="beta",
-            phase="run",
+            phase="execute",
             run_id="run-b",
             ttl_seconds=3600,
         )
@@ -335,7 +335,7 @@ class HarnessChangeTests(unittest.TestCase):
         first = change.claim_lease(
             self.project,
             change_id="generation-change",
-            phase="run",
+            phase="execute",
             run_id="generation-run",
             ttl_seconds=3600,
         )
@@ -344,7 +344,7 @@ class HarnessChangeTests(unittest.TestCase):
         stale = change.claim_lease(
             self.project,
             change_id="generation-change",
-            phase="run",
+            phase="execute",
             run_id="generation-run",
             ttl_seconds=3600,
             expected_generation=generation - 1,
@@ -354,7 +354,7 @@ class HarnessChangeTests(unittest.TestCase):
         released = change.release_lease(
             self.project,
             change_id="generation-change",
-            phase="run",
+            phase="execute",
             run_id="generation-run",
             lease_id=first["lease"]["leaseId"],
             generation=generation,
@@ -803,7 +803,7 @@ class InspectLeaseStateTests(unittest.TestCase):
         claimed = change.claim_lease(
             self.project,
             change_id="demo",
-            phase="run",
+            phase="execute",
             run_id=run_id,
             ttl_seconds=3600,
         )

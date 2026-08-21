@@ -194,9 +194,9 @@ class BatchAppendTests(unittest.TestCase):
         result = he.batch_append_events(
             self.change,
             [
-                {"phase": "run", "type": "issue", "severity": "info", "note": "a"},
-                {"phase": "run", "type": "issue", "severity": "info", "note": "b"},
-                {"phase": "run", "type": "issue", "severity": "info", "note": "c"},
+                {"phase": "execute", "type": "issue", "severity": "info", "note": "a"},
+                {"phase": "execute", "type": "issue", "severity": "info", "note": "b"},
+                {"phase": "execute", "type": "issue", "severity": "info", "note": "c"},
             ],
         )
         self.assertTrue(result["ok"], result)
@@ -208,8 +208,8 @@ class BatchAppendTests(unittest.TestCase):
         result = he.batch_append_events(
             self.change,
             [
-                {"phase": "run", "type": "issue", "severity": "info", "note": "ok"},
-                {"phase": "run", "type": "artifact", "note": "bad"},
+                {"phase": "execute", "type": "issue", "severity": "info", "note": "ok"},
+                {"phase": "execute", "type": "artifact", "note": "bad"},
             ],
         )
         self.assertFalse(result["ok"])

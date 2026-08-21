@@ -163,7 +163,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
         (self.change_dir / "meta" / "gate-policy.json").write_text(
             json.dumps({
                 "schemaVersion": 1,
-                "plannedPhases": ["plan", "run", "archive"],
+                "plannedPhases": ["plan", "execute", "archive"],
                 "skippedPhases": [{"phase": "submit", "reason": "本次不需要提交"}],
             }),
             encoding="utf-8",
@@ -174,7 +174,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
                 "id": "evt-run-end",
                 "timestamp": "2026-08-08T10:00:00+08:00",
                 "type": "phase.end",
-                "phase": "run",
+                "phase": "execute",
                 "status": "OK",
             }) + "\n",
             encoding="utf-8",
@@ -192,7 +192,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
 
         self.assertTrue(result["ok"], result)
         payload = batches[0]["events"][0]["payload"]
-        self.assertEqual(payload["planned_phases"], ["plan", "run", "archive"])
+        self.assertEqual(payload["planned_phases"], ["plan", "execute", "archive"])
         self.assertEqual(payload["next_phase"], "archive")
         self.assertEqual(payload["phase_plan_source"], "change")
 
@@ -494,7 +494,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
                 "id": f"evt-{index}",
                 "timestamp": f"2026-08-08T10:00:0{index}+08:00",
                 "type": "decision",
-                "phase": "run",
+                "phase": "execute",
                 "decision": f"decision-{index}",
                 "note": "",
             }))
@@ -540,7 +540,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
                 "id": f"evt-{index}",
                 "timestamp": f"2026-08-08T10:00:0{index}+08:00",
                 "type": "decision",
-                "phase": "run",
+                "phase": "execute",
                 "decision": f"decision-{index}",
                 "note": "",
             }) for index in range(3, 5)) + "\n",
@@ -694,7 +694,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
                 "id": "evt-start",
                 "timestamp": "2026-08-08T10:00:00+08:00",
                 "type": "phase.start",
-                "phase": "run",
+                "phase": "execute",
                 "attempt": 1,
             }) + "\n",
             encoding="utf-8",
@@ -710,7 +710,7 @@ class HarnessEventsSyncTests(unittest.TestCase):
                         "id": "evt-end",
                         "timestamp": "2026-08-08T10:00:10+08:00",
                         "type": "phase.end",
-                        "phase": "run",
+                        "phase": "execute",
                         "attempt": 1,
                         "status": "OK",
                     }) + "\n")

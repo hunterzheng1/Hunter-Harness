@@ -141,7 +141,7 @@ class HarnessGateTests(unittest.TestCase):
         with mock.patch.object(gate.he, "nudge_remote_sync") as nudge:
             result = gate.append_phase_event(
                 self.change_dir,
-                phase="run",
+                phase="execute",
                 type_="phase.end",
                 status="OK",
                 run_id="run-1",
@@ -153,13 +153,13 @@ class HarnessGateTests(unittest.TestCase):
     def test_retry_never_uses_a_terminal_event_from_an_older_context_session(self) -> None:
         terminal = {
             "type": "phase.end",
-            "phase": "run",
+            "phase": "execute",
             "timestamp": "2026-08-09T10:00:00+00:00",
         }
         with mock.patch.object(gate.hctx, "context_view", return_value={
             "ok": True,
             "current": {
-                "phase": "run",
+                "phase": "execute",
                 "preparedAt": "2026-08-09T11:00:00+00:00",
             },
         }):
@@ -172,7 +172,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_validate_ledger_for_phase_close_rejects_handwritten_ut026(self) -> None:
         self._handwritten_ledger()
         workflow = policy.load_policy(REPO_ROOT)
-        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["code"], "MISSING_V2_FIELDS")
         self.assertIn("natural-language override", result["detail"])
@@ -259,12 +259,12 @@ class HarnessGateTests(unittest.TestCase):
         self._write_checkpoints("approved")
         args = gate.build_parser().parse_args(
             [
-                "close", "--phase", "test", "--change", "demo",
+                "close", "--phase", "execute", "--change", "demo",
                 "--status", "OK", "--run-id", "wrong-owner", "--task", "10",
                 "--json",
             ]
         )
-        holder = {"runId": "real-owner", "phase": "test"}
+        holder = {"runId": "real-owner", "phase": "execute"}
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
@@ -278,7 +278,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_begin_requires_task_number_while_foundation_is_pending(self) -> None:
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project):
             args = gate.build_parser().parse_args(
-                ["begin", "--phase", "run", "--change", "demo", "--json"]
+                ["begin", "--phase", "execute", "--change", "demo", "--json"]
             )
             self.assertEqual(gate.cmd_begin(args), 1)
 
@@ -758,7 +758,7 @@ class HarnessGateTests(unittest.TestCase):
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }):
             args = gate.build_parser().parse_args([
-                "begin", "--phase", "run", "--change", "demo",
+                "begin", "--phase", "execute", "--change", "demo",
                 "--skills-root", str(skills_root), "--executor-tool", "codex", "--json",
             ])
             self.assertEqual(gate.cmd_begin(args), 0)
@@ -784,7 +784,7 @@ class HarnessGateTests(unittest.TestCase):
 
     def test_run_begin_stops_before_lease_when_plan_handoff_is_invalid(self) -> None:
         args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo", "--task", "1",
+            "begin", "--phase", "execute", "--change", "demo", "--task", "1",
             "--skills-root", str(self.project / ".agents" / "skills"), "--json",
         ])
         invalid = {
@@ -817,7 +817,7 @@ class HarnessGateTests(unittest.TestCase):
 
     def test_gate_begin_rejects_a_phase_when_context_handoff_did_not_finish(self) -> None:
         args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo", "--json",
+            "begin", "--phase", "execute", "--change", "demo", "--json",
         ])
         resolved = {
             "ok": True,
@@ -857,7 +857,7 @@ class HarnessGateTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "evt-blocked",
                 "timestamp": "2026-08-09T12:00:00+00:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "gate.blocked",
                 "code": "CONTEXT_HANDOFF_REQUIRED",
                 "run_id": "blocked-run",
@@ -869,7 +869,7 @@ class HarnessGateTests(unittest.TestCase):
         with mock.patch.object(gate, "append_phase_event") as append_event:
             result = gate.record_gate_recovered(
                 self.change_dir,
-                phase="run",
+                phase="execute",
                 run_id="active-run",
             )
 
@@ -894,7 +894,7 @@ class HarnessGateTests(unittest.TestCase):
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         identity = {"adapter": "codex", "bundleHash": "sha256:" + "a" * 64}
         begin_args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "begin", "--phase", "execute", "--change", "demo", "--run-id", "capsule-run",
             "--project", str(execution), "--skills-root", str(skills_root), "--json",
         ])
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
@@ -908,18 +908,18 @@ class HarnessGateTests(unittest.TestCase):
             self.assertEqual(gate.cmd_begin(begin_args), 0)
         guard_begin.assert_called_once_with(execution.resolve(), self.change_dir)
 
-        capsule = gate.load_phase_capsule(self.change_dir, "run", "capsule-run")
+        capsule = gate.load_phase_capsule(self.change_dir, "execute", "capsule-run")
         self.assertEqual(capsule["stateRoot"], str(self.change_dir.resolve()))
         self.assertEqual(capsule["executionRoot"], str(execution.resolve()))
         self.assertEqual(capsule["skillsRoot"], str(skills_root.resolve()))
 
         resume_args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "begin", "--phase", "execute", "--change", "demo", "--run-id", "capsule-run",
             "--skills-root", str(skills_root), "--json",
         ])
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "execute"}), \
              mock.patch.object(gate.hc, "claim_lease", return_value={"ok": True, "lease": {}}), \
              mock.patch.object(gate, "validate_identity", return_value=identity), \
              mock.patch.object(gate, "_phase_event_exists", return_value=True), \
@@ -928,12 +928,12 @@ class HarnessGateTests(unittest.TestCase):
         resumed_guard.assert_not_called()
 
         close_args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo", "--run-id", "capsule-run",
+            "close", "--phase", "execute", "--change", "demo", "--run-id", "capsule-run",
             "--status", "OK", "--json",
         ])
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "capsule-run", "phase": "execute"}), \
              mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True, "code": "LEDGER_OK"}), \
              mock.patch.object(gate, "_phase_event_exists", return_value=False), \
@@ -951,7 +951,7 @@ class HarnessGateTests(unittest.TestCase):
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         identity = {"adapter": "codebuddy", "bundleHash": "sha256:" + "a" * 64}
         args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo", "--run-id", "inferred-root-run",
+            "begin", "--phase", "execute", "--change", "demo", "--run-id", "inferred-root-run",
             "--json",
         ])
 
@@ -966,22 +966,22 @@ class HarnessGateTests(unittest.TestCase):
              mock.patch.object(gate.htg, "begin", return_value={"ok": True}):
             self.assertEqual(gate.cmd_begin(args), 0)
 
-        capsule = gate.load_phase_capsule(self.change_dir, "run", "inferred-root-run")
+        capsule = gate.load_phase_capsule(self.change_dir, "execute", "inferred-root-run")
         self.assertEqual(capsule["skillsRoot"], str(installed_root.resolve()))
 
     def test_corrupt_phase_capsule_is_not_treated_as_absent(self) -> None:
-        path = gate._phase_capsule_path(self.change_dir, "run", "corrupt-run")
+        path = gate._phase_capsule_path(self.change_dir, "execute", "corrupt-run")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{not-json\n", encoding="utf-8")
         with self.assertRaises(ValueError):
-            gate.load_phase_capsule(self.change_dir, "run", "corrupt-run")
+            gate.load_phase_capsule(self.change_dir, "execute", "corrupt-run")
 
     def test_phase_capsule_rejects_head_and_skills_root_drift(self) -> None:
         skills_root = (self.project / ".agents" / "skills").resolve()
         capsule = {
             "schemaVersion": 1,
             "changeId": "demo",
-            "phase": "run",
+            "phase": "execute",
             "runId": "identity-run",
             "projectRoot": str(self.project.resolve()),
             "stateRoot": str(self.change_dir.resolve()),
@@ -996,7 +996,7 @@ class HarnessGateTests(unittest.TestCase):
                 capsule,
                 change_dir=self.change_dir,
                 change_id="demo",
-                phase="run",
+                phase="execute",
                 run_id="identity-run",
                 project=self.project,
                 execution_root=self.project,
@@ -1012,7 +1012,7 @@ class HarnessGateTests(unittest.TestCase):
                 capsule,
                 change_dir=self.change_dir,
                 change_id="demo",
-                phase="run",
+                phase="execute",
                 run_id="identity-run",
                 project=self.project,
                 execution_root=self.project,
@@ -1078,7 +1078,7 @@ class HarnessGateTests(unittest.TestCase):
         capsule = {
             "schemaVersion": 1,
             "changeId": "demo",
-            "phase": "run",
+            "phase": "execute",
             "runId": "release-retry",
             "projectRoot": str(self.project.resolve()),
             "stateRoot": str(self.change_dir.resolve()),
@@ -1089,16 +1089,16 @@ class HarnessGateTests(unittest.TestCase):
             "currentHead": head,
             "createdAt": gate.he.now_iso(),
         }
-        gate.write_phase_capsule(self.change_dir, "run", "release-retry", capsule)
+        gate.write_phase_capsule(self.change_dir, "execute", "release-retry", capsule)
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--run-id", "release-retry", "--status", "OK", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
              mock.patch.object(gate.hc, "inspect_lease", return_value={
-                 "runId": "release-retry", "phase": "run"
+                 "runId": "release-retry", "phase": "execute"
              }), \
              mock.patch.object(gate.hc, "release_lease", return_value={
                  "ok": False, "code": "LEASE_IO_ERROR", "message": "busy"
@@ -1134,14 +1134,14 @@ class HarnessGateTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "evt-start",
                 "timestamp": "2026-08-19T14:41:00+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.start",
                 "run_id": "run-long",
                 "attempt": 1,
             },
         )
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo", "--status", "OK", "--json",
+            "close", "--phase", "execute", "--change", "demo", "--status", "OK", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         errors: list[str] = []
@@ -1165,18 +1165,18 @@ class HarnessGateTests(unittest.TestCase):
             {
                 "schema_version": 3, "id": "evt-s1",
                 "timestamp": "2026-08-19T10:00:00+08:00",
-                "phase": "run", "type": "phase.start",
+                "phase": "execute", "type": "phase.start",
                 "run_id": "run-done", "attempt": 1,
             },
             {
                 "schema_version": 3, "id": "evt-e1",
                 "timestamp": "2026-08-19T11:00:00+08:00",
-                "phase": "run", "type": "phase.end",
+                "phase": "execute", "type": "phase.end",
                 "run_id": "run-done", "attempt": 1,
             },
         )
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo", "--status", "OK", "--json",
+            "close", "--phase", "execute", "--change", "demo", "--status", "OK", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         errors: list[str] = []
@@ -1200,7 +1200,7 @@ class HarnessGateTests(unittest.TestCase):
         """Drive cmd_close with no active lease but an expired one on disk."""
         self._write_checkpoints("approved")
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--run-id", run_id, "--status", "OK", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
@@ -1209,7 +1209,7 @@ class HarnessGateTests(unittest.TestCase):
             "code": "LEASE_REFRESHED",
             "lease": {
                 "runId": run_id,
-                "phase": "run",
+                "phase": "execute",
                 "refreshedAt": "2026-08-20T09:00:00.000+08:00",
             },
         }
@@ -1247,7 +1247,7 @@ class HarnessGateTests(unittest.TestCase):
             "state": "expired",
             "lease": {
                 "runId": "run-long",
-                "phase": "run",
+                "phase": "execute",
                 "acquiredAt": "2026-08-20T07:00:00.000+08:00",
                 "expiresAt": "2026-08-20T08:00:00.000+08:00",
             },
@@ -1269,7 +1269,7 @@ class HarnessGateTests(unittest.TestCase):
             run_id="run-mine",
             lease={
                 "state": "expired",
-                "lease": {"runId": "run-someone-else", "phase": "run"},
+                "lease": {"runId": "run-someone-else", "phase": "execute"},
             },
         )
 
@@ -1418,7 +1418,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_begin_conflict_withholds_release_advice_for_a_live_phase(self) -> None:
         """Without a phase.end the holder may still be running — never advise release."""
         self._write_events()
-        holder = {"phase": "run", "runId": "run-live", "expiresAt": "2026-08-19T15:21:00+08:00"}
+        holder = {"phase": "execute", "runId": "run-live", "expiresAt": "2026-08-19T15:21:00+08:00"}
         payload = self._begin_conflict_payload(holder)
         self.assertEqual(payload["code"], "LEASE_CONFLICT")
         self.assertFalse(payload["holderPhaseClosed"])
@@ -1431,7 +1431,7 @@ class HarnessGateTests(unittest.TestCase):
         scripts_dir.mkdir(parents=True, exist_ok=True)
         (scripts_dir.parent / ".harness-build.json").write_text("{}\n", encoding="utf-8")
         args = gate.build_parser().parse_args([
-            "begin", "--phase", "run", "--change", "demo",
+            "begin", "--phase", "execute", "--change", "demo",
             "--run-id", "run-new", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
@@ -1582,14 +1582,14 @@ class HarnessGateTests(unittest.TestCase):
             },
         }) + "\n", encoding="utf-8")
         args = gate.build_parser().parse_args([
-            "close", "--phase", "test", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--run-id", "dag-close", "--status", "OK", "--task", "1", "--json",
         ])
         resolved = {"ok": True, "changeId": "demo", "changeDir": str(self.change_dir)}
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value=resolved), \
              mock.patch.object(gate.hc, "inspect_lease", return_value={
-                 "runId": "dag-close", "phase": "test"
+                 "runId": "dag-close", "phase": "execute"
              }), \
              mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={
@@ -1689,20 +1689,20 @@ class HarnessGateTests(unittest.TestCase):
             unit_evidence="DEGRADED: sdk 无测试基础设施，已静态验证",
         )
         workflow = policy.load_policy(REPO_ROOT)
-        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["code"], "LEDGER_OK_DEGRADED")
         self.assertIn("unitTest", result["degraded"])
 
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--status", "OK", "--run-id", "run-deg", "--task", "1", "--json",
         ])
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-deg", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-deg", "phase": "execute"}), \
              mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
              mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
              mock.patch("sys.stdout") as stdout:
@@ -1723,14 +1723,14 @@ class HarnessGateTests(unittest.TestCase):
     def test_degraded_prefix_without_reason_ut311(self) -> None:
         self._write_v2_ledger(unit_status="NOT_RUN", unit_evidence="DEGRADED:")
         workflow = policy.load_policy(REPO_ROOT)
-        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
         self.assertFalse(result["ok"], result)
         self.assertIn(result["code"], {"MISSING_FIELDS", "MISSING_V2_FIELDS"})
 
     def test_plain_not_run_rejected_ut312(self) -> None:
         self._write_v2_ledger(unit_status="NOT_RUN", unit_evidence="skipped for now")
         workflow = policy.load_policy(REPO_ROOT)
-        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
         self.assertFalse(result["ok"], result)
         problems = result.get("problems") or []
         unit = next(p for p in problems if p["verification"] == "unitTest")
@@ -1741,7 +1741,7 @@ class HarnessGateTests(unittest.TestCase):
     def test_all_ok_ledger_close_unchanged_ut313(self) -> None:
         self._write_v2_ledger(unit_status="OK", unit_evidence="evidence/unit.log")
         workflow = policy.load_policy(REPO_ROOT)
-        result = gate.validate_ledger_for_phase_close(self.change_dir, "run", workflow)
+        result = gate.validate_ledger_for_phase_close(self.change_dir, "execute", workflow)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["code"], "LEDGER_OK")
         self.assertEqual(result.get("degraded", []), [])
@@ -1753,14 +1753,14 @@ class HarnessGateTests(unittest.TestCase):
             unit_evidence="DEGRADED: env unavailable",
         )
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--status", "OK", "--run-id", "run-warn", "--task", "1", "--json",
         ])
         with mock.patch.object(gate.hc, "resolve_main_project_root", return_value=self.project), \
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-warn", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-warn", "phase": "execute"}), \
              mock.patch.object(gate.hc, "release_lease", return_value={"ok": True}), \
              mock.patch.object(gate.htg, "close", return_value={"ok": True}), \
              mock.patch("sys.stdout") as stdout:
@@ -1885,7 +1885,7 @@ class ScenarioCoverageTests(unittest.TestCase):
 
     def _close_args(self) -> object:
         return gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--status", "OK", "--run-id", "run-1", "--task", "5",
             "--json",
         ])
@@ -1893,8 +1893,8 @@ class ScenarioCoverageTests(unittest.TestCase):
     def test_close_fails_when_p0_scenario_missing(self) -> None:
         # ownerPhase=run so the scenarios are due at the run close under test.
         self._write_manifest([
-            {"id": "C5-S1", "priority": "P0", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
-            {"id": "C5-S2", "priority": "P1", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "execute", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "execute", "requiredEvidenceKind": "ledger"},
         ])
         # ledger only covers C5-S2, missing C5-S1 (P0)
         self._write_ledger(["C5-S2"])
@@ -1906,7 +1906,7 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
              mock.patch.object(gate, "load_phase_capsule", return_value=None), \
              mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
@@ -1919,8 +1919,8 @@ class ScenarioCoverageTests(unittest.TestCase):
 
     def test_close_passes_when_all_p0_scenarios_covered(self) -> None:
         self._write_manifest([
-            {"id": "C5-S1", "priority": "P0", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
-            {"id": "C5-S2", "priority": "P1", "ownerPhase": "run", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S1", "priority": "P0", "ownerPhase": "execute", "requiredEvidenceKind": "ledger"},
+            {"id": "C5-S2", "priority": "P1", "ownerPhase": "execute", "requiredEvidenceKind": "ledger"},
         ])
         # ledger covers both P0 and P1
         self._write_ledger(["C5-S1", "C5-S2"])
@@ -1930,7 +1930,7 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
              mock.patch.object(gate, "load_phase_capsule", return_value=None), \
              mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
@@ -2057,7 +2057,7 @@ class ScenarioCoverageTests(unittest.TestCase):
             {
                 "id": "UT-001",
                 "priority": "P1",
-                "ownerPhase": "test",
+                "ownerPhase": "execute",
                 "requiredEvidenceKind": "ledger",
             }
         ])
@@ -2073,7 +2073,7 @@ class ScenarioCoverageTests(unittest.TestCase):
             {
                 "id": "UT-ADVISORY",
                 "priority": "P1",
-                "ownerPhase": "test",
+                "ownerPhase": "execute",
                 "requiredEvidenceKind": "advisory",
             }
         ])
@@ -2090,7 +2090,7 @@ class ScenarioCoverageTests(unittest.TestCase):
                 {
                     "id": "UT-RECEIPT",
                     "priority": "P0",
-                    "ownerPhase": "test",
+                    "ownerPhase": "execute",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "unit::receipt",
                     "testFile": "tests/unit.spec.ts",
@@ -2111,7 +2111,7 @@ class ScenarioCoverageTests(unittest.TestCase):
         scenario = {
             "id": "UT-RECEIPT",
             "priority": "P0",
-            "ownerPhase": "test",
+            "ownerPhase": "execute",
             "requiredEvidenceKind": "ledger",
             "executableTestId": "unit::receipt",
             "testFile": "tests/unit.spec.ts",
@@ -2156,7 +2156,7 @@ class ScenarioCoverageTests(unittest.TestCase):
         scenario = {
             "id": "UT-EXACT",
             "priority": "P0",
-            "ownerPhase": "test",
+            "ownerPhase": "execute",
             "requiredEvidenceKind": "ledger",
             "executableTestId": "unit::exact",
             "testFile": "tests/expected.spec.ts",
@@ -2202,7 +2202,7 @@ class ScenarioCoverageTests(unittest.TestCase):
             {
                 "id": "UT-ROUTED",
                 "priority": "P1",
-                "ownerPhase": "test",
+                "ownerPhase": "execute",
                 "requiredEvidenceKind": "ledger",
             }
         ])
@@ -2242,7 +2242,7 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
              mock.patch.object(gate, "load_phase_capsule", return_value=None), \
              mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
@@ -2255,9 +2255,9 @@ class ScenarioCoverageTests(unittest.TestCase):
 
     def test_close_finishes_handoff_and_remote_sync_in_one_command(self) -> None:
         args = gate.build_parser().parse_args([
-            "close", "--phase", "run", "--change", "demo",
+            "close", "--phase", "execute", "--change", "demo",
             "--status", "OK", "--run-id", "run-1",
-            "--to-phase", "test", "--artifact", "evidence/verification-ledger.json",
+            "--to-phase", "execute", "--artifact", "evidence/verification-ledger.json",
             "--json",
         ])
         emitted: list[dict] = []
@@ -2265,7 +2265,7 @@ class ScenarioCoverageTests(unittest.TestCase):
              mock.patch.object(gate.hc, "resolve_change", return_value={
                  "ok": True, "changeId": "demo", "changeDir": str(self.change_dir)
              }), \
-             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "run"}), \
+             mock.patch.object(gate.hc, "inspect_lease", return_value={"runId": "run-1", "phase": "execute"}), \
              mock.patch.object(gate, "validate_ledger_for_phase_close", return_value={"ok": True}), \
              mock.patch.object(gate, "load_phase_capsule", return_value=None), \
              mock.patch.object(gate, "resolve_execution_root", return_value=self.project), \
@@ -2325,7 +2325,7 @@ class V2ArtifactManifestTests(unittest.TestCase):
             "evidence_requirements": ["focused_test"],
             "risk_level": "medium",
             "priority": "P0",
-            "owner_phase": "run",
+            "owner_phase": "execute",
             "required_evidence_kind": "ledger",
             "executable_test_id": f"unit::{scenario_id}",
             "test_file": "tests/unit.spec.ts",
@@ -2583,16 +2583,21 @@ class FixbackSignalTests(unittest.TestCase):
         self.assertNotIn("fixback", note_line.lower())
 
     def test_both_lifecycle_commands_accept_the_flag(self) -> None:
-        for phase, extra in (("run", ["--status", "OK"]), ("run", [])):
+        for phase, extra in (("execute", ["--status", "OK"]), ("execute", [])):
             command = "close" if extra else "begin"
             args = gate.build_parser().parse_args(
                 [command, "--phase", phase, "--change", "demo", "--fixback", *extra]
             )
             self.assertTrue(args.fixback)
+        # 旧名入参也被接受（归一到 execute）。
+        args = gate.build_parser().parse_args(
+            ["begin", "--phase", "run", "--change", "demo", "--fixback"]
+        )
+        self.assertTrue(args.fixback)
 
     def test_the_flag_is_off_by_default(self) -> None:
         args = gate.build_parser().parse_args(
-            ["begin", "--phase", "run", "--change", "demo"]
+            ["begin", "--phase", "execute", "--change", "demo"]
         )
         self.assertFalse(args.fixback)
 

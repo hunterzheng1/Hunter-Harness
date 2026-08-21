@@ -128,7 +128,7 @@ class MultiDayReleaseHardeningTests(unittest.TestCase):
             "archiveCommit": self.product_commit,
             "environmentHash": "sha256:" + "e" * 64,
             "diffStat": {"filesChanged": 0, "insertions": 0, "deletions": 0},
-            "stageStatus": {"test": "OK", "review": "OK", "submit": "OK"},
+            "stageStatus": {"execute": "OK", "review": "OK", "submit": "OK"},
             "stageStatusFromEvents": {
                 "test": "OK",
                 "review": "OK",

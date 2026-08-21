@@ -605,10 +605,10 @@ class TimingSealTests(unittest.TestCase):
 
     def test_overlapping_stage_spans_are_counted_as_interval_union(self) -> None:
         rows = [
-            {"type": "phase.start", "phase": "run", "timestamp": "2026-07-23T09:00:00+00:00"},
-            {"type": "phase.start", "phase": "test", "timestamp": "2026-07-23T09:30:00+00:00"},
-            {"type": "phase.end", "phase": "run", "timestamp": "2026-07-23T10:00:00+00:00"},
-            {"type": "phase.end", "phase": "test", "timestamp": "2026-07-23T10:30:00+00:00"},
+            {"type": "phase.start", "phase": "execute", "timestamp": "2026-07-23T09:00:00+00:00"},
+            {"type": "phase.start", "phase": "review", "timestamp": "2026-07-23T09:30:00+00:00"},
+            {"type": "phase.end", "phase": "execute", "timestamp": "2026-07-23T10:00:00+00:00"},
+            {"type": "phase.end", "phase": "review", "timestamp": "2026-07-23T10:30:00+00:00"},
         ]
 
         timing = ha.build_workflow_timing(rows)
@@ -620,19 +620,19 @@ class TimingSealTests(unittest.TestCase):
         events = [
             {
                 "type": "phase.start",
-                "phase": "test",
+                "phase": "execute",
                 "attempt": 1,
                 "timestamp": "2026-07-23T10:00:00+00:00",
             },
             {
                 "type": "command",
-                "phase": "test",
+                "phase": "execute",
                 "attempt": 1,
                 "timestamp": "2026-07-23T10:05:00+00:00",
             },
             {
                 "type": "recovery",
-                "phase": "test",
+                "phase": "execute",
                 "attempt": 1,
                 "timestamp": "2026-07-23T13:00:00+00:00",
                 "note": "late recovery",
@@ -665,13 +665,13 @@ class TimingSealTests(unittest.TestCase):
             },
             {
                 "type": "phase.start",
-                "phase": "test",
+                "phase": "execute",
                 "attempt": 1,
                 "timestamp": "2026-07-23T09:20:00+00:00",
             },
             {
                 "type": "phase.end",
-                "phase": "test",
+                "phase": "execute",
                 "attempt": 1,
                 "status": "OK",
                 "timestamp": "2026-07-23T09:40:00+00:00",

@@ -76,6 +76,7 @@ EVENT_SUMMARY_MAX_LENGTH = 500
 
 PHASE_LABELS = {
     "plan": "计划",
+    "execute": "执行",
     "run": "编码",
     "test": "测试",
     "review": "评审",

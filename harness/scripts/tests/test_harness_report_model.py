@@ -241,7 +241,7 @@ class OutcomeAndFindingTests(unittest.TestCase):
                 "finalStatus": "WARN",
                 "finalStatusReasons": ["browser pending"],
                 "stageStatus": {"run": "OK", "test": "WARN"},
-                "timeline": [{"phase": "run", "status": "OK"}],
+                "timeline": [{"phase": "execute", "status": "OK"}],
                 "releaseDecision": "DEFER",
                 "releaseEligible": False,
                 "candidateVerification": {"status": "FAIL"},
@@ -250,7 +250,7 @@ class OutcomeAndFindingTests(unittest.TestCase):
             }
         )
         self.assertEqual(report["outcomes"]["current"]["status"], "WARN")
-        self.assertEqual(report["outcomes"]["history"]["timeline"][0]["phase"], "run")
+        self.assertEqual(report["outcomes"]["history"]["timeline"][0]["phase"], "execute")
         self.assertEqual(report["outcomes"]["release"]["decision"], "DEFER")
 
     def test_record_only_normalizes_release_as_not_requested(self) -> None:

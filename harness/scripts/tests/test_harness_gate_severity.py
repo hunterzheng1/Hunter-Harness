@@ -132,14 +132,14 @@ class RecordGateWarningTests(unittest.TestCase):
         change_dir = Path(tempfile.mkdtemp(prefix="harness-gate-warn-"))
         first = gate.record_gate_warning(
             change_dir,
-            phase="run",
+            phase="execute",
             site="capsule",
             code="PHASE_CAPSULE_MISMATCH",
             message="stale capsule",
         )
         second = gate.record_gate_warning(
             change_dir,
-            phase="run",
+            phase="execute",
             site="scenario-coverage",
             code="SCENARIO_COVERAGE_FAILED",
             message="missing scenario",
@@ -151,7 +151,7 @@ class RecordGateWarningTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         parsed = [json.loads(line) for line in lines]
         self.assertEqual(parsed[0]["code"], "PHASE_CAPSULE_MISMATCH")
-        self.assertEqual(parsed[1]["phase"], "run")
+        self.assertEqual(parsed[1]["phase"], "execute")
 
 
 if __name__ == "__main__":

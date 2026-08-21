@@ -501,7 +501,7 @@ class SourceConsistencyTests(_FinalizeFixture):
         manifest["fileCount"] = int(manifest["fileCount"]) + 1
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         summary["artifacts"] = [
-            {"path": "evidence/does-not-exist.json", "kind": "probe", "phase": "test"}
+            {"path": "evidence/does-not-exist.json", "kind": "probe", "phase": "execute"}
         ]
         result = ha.validate_source_consistency(archive_dir, summary)
         codes = {i["code"] for i in result["issues"]}
@@ -829,7 +829,7 @@ class SummaryProjectionTests(unittest.TestCase):
             "finalStatus": "CONDITIONAL_OK",
             "verification": {},
             "knownRisks": [
-                {"phase": "test", "severity": "high", "message": "DB 兼容性未验证"}
+                {"phase": "execute", "severity": "high", "message": "DB 兼容性未验证"}
             ],
         }
         result = ha.validate_summary_data(summary)
@@ -843,7 +843,7 @@ class SummaryProjectionTests(unittest.TestCase):
             "finalStatus": "CONDITIONAL_OK",
             "verification": {},
             "knownRisks": [
-                {"phase": "test", "severity": "high", "message": "真实风险未渲染"}
+                {"phase": "execute", "severity": "high", "message": "真实风险未渲染"}
             ],
         }
         result = ha.validate_summary_data(summary)
@@ -991,10 +991,10 @@ class ExecutionLogRebuildTests(unittest.TestCase):
         self.change = self.tmp / "proj" / ".harness" / "changes" / "l"
         self.change.mkdir(parents=True)
         for args in (
-            ["--phase", "run", "--type", "phase.start"],
-            ["--phase", "run", "--type", "command", "--command", "pytest -q",
+            ["--phase", "execute", "--type", "phase.start"],
+            ["--phase", "execute", "--type", "command", "--command", "pytest -q",
              "--exit-code", "0", "--duration-ms", "100"],
-            ["--phase", "run", "--type", "phase.end"],
+            ["--phase", "execute", "--type", "phase.end"],
         ):
             code = he.main(["--json", "append", "--change-dir", str(self.change), *args])
             assert code == 0

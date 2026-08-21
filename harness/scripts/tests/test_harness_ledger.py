@@ -646,7 +646,7 @@ class RecordTests(unittest.TestCase):
             )
             capsule = {
                 "schemaVersion": 1,
-                "phase": "run",
+                "phase": "execute",
                 "runId": "run-1",
                 "ownershipHash": harness_ledger.ownership_hash(contract),
                 "createdAt": "2026-08-09T10:00:00+00:00",
@@ -2307,7 +2307,7 @@ class ScenarioReceiptTemplateTests(unittest.TestCase):
                     {
                         "id": "UT-001",
                         "priority": "P1",
-                        "ownerPhase": "run",
+                        "ownerPhase": "execute",
                         "requiredEvidenceKind": "ledger",
                         "executableTestId": "unit::ut1",
                         "testFile": "tests/unit.spec.ts",
@@ -2445,7 +2445,7 @@ class V2ScenarioManifestFailsClosedTests(unittest.TestCase):
                 "evidence_requirements": ["focused_test"],
                 "risk_level": "medium",
                 "priority": "P0",
-                "owner_phase": "run",
+                "owner_phase": "execute",
                 "required_evidence_kind": "ledger",
                 "executable_test_id": "unit::ut1",
                 "test_file": "tests/unit.spec.ts",
@@ -2462,7 +2462,7 @@ class V2ScenarioManifestFailsClosedTests(unittest.TestCase):
         entry = resolved["manifest"]["scenarios"][0]
         self.assertEqual(entry["id"], "UT-001")
         self.assertEqual(entry["requiredEvidenceKind"], "ledger")
-        self.assertEqual(entry["ownerPhase"], "run")
+        self.assertEqual(entry["ownerPhase"], "execute")
         # 与门禁走的是同一个解包器，不是两份各自实现。
         self.assertEqual(
             resolved["manifest"],

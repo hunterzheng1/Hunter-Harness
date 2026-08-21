@@ -49,7 +49,7 @@ class ArtifactKindTests(unittest.TestCase):
     def test_file_backed_artifact_without_path_rejected(self) -> None:
         result = he.append_event(
             self.change_dir,
-            phase="run",
+            phase="execute",
             type_="artifact",
             kind="file-backed",
             note="missing path",
@@ -62,7 +62,7 @@ class ArtifactKindTests(unittest.TestCase):
         # H-8: artifact always requires path; use issue/decision for notes.
         result = he.append_event(
             self.change_dir,
-            phase="run",
+            phase="execute",
             type_="artifact",
             kind="informational",
             note="preview without materialized file",
@@ -75,7 +75,7 @@ class ArtifactKindTests(unittest.TestCase):
         _write(self.change_dir / "reports" / "test.md", "# report\n")
         result = he.append_event(
             self.change_dir,
-            phase="run",
+            phase="execute",
             type_="artifact",
             kind="file-backed",
             path="reports/test.md",

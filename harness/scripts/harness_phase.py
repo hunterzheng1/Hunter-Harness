@@ -786,6 +786,13 @@ def select_phase_capsule(
             "message": f"invalid phase selector: {phase}",
             "remediation": "pass the phase name emitted by harness_gate.py begin",
         }
+    # 在途 change 的 capsule 可能按旧名（run/test）写入：归一后按 canonical
+    # 优先、旧名兜底查找。新写一律 canonical。
+    phase = hpaths.resolve_phase_name(phase) or phase
+    phase_names = [phase] + [
+        legacy for legacy, canonical in hpaths.LEGACY_PHASE_ALIASES.items()
+        if canonical == phase
+    ]
     state_dir = hpaths.resolve_state_dir_for_contract(change_dir, project_root)
     capsule_dir = state_dir / "runtime" / "phase-context"
     candidates = (
@@ -793,7 +800,7 @@ def select_phase_capsule(
             path
             for path in capsule_dir.iterdir()
             if path.is_file()
-            and path.name.startswith(f"{phase}-")
+            and any(path.name.startswith(f"{name}-") for name in phase_names)
             and path.suffix == ".json"
         ]
         if capsule_dir.is_dir()
@@ -813,14 +820,20 @@ def select_phase_capsule(
             "message": f"{len(candidates)} capsule(s) exist for phase {phase}",
             "remediation": f"rerun reconcile with --phase {phase} --run-id <run-id>",
         }
-    key = hashlib.sha256(f"{phase}\0{run_id}".encode("utf-8")).hexdigest()[:20]
-    path = capsule_dir / f"{phase}-{key}.json"
-    if not path.is_file():
+    path: Path | None = None
+    for name in phase_names:
+        key = hashlib.sha256(f"{name}\0{run_id}".encode("utf-8")).hexdigest()[:20]
+        candidate = capsule_dir / f"{name}-{key}.json"
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
+        key = hashlib.sha256(f"{phase}\0{run_id}".encode("utf-8")).hexdigest()[:20]
         return {
             "ok": False,
             "code": "PHASE_CAPSULE_NOT_FOUND",
             "message": f"no capsule for phase {phase} and run-id {run_id}",
-            "expectedPath": str(path),
+            "expectedPath": str(capsule_dir / f"{phase}-{key}.json"),
             "remediation": f"begin/resume the phase or verify --phase {phase} --run-id {run_id}",
         }
     try:
@@ -833,7 +846,10 @@ def select_phase_capsule(
             "path": str(path),
             "remediation": f"repair or resume the capsule for --phase {phase} --run-id {run_id}",
         }
-    if capsule.get("phase") != phase or capsule.get("runId") != run_id:
+    if (
+        hpaths.resolve_phase_name(capsule.get("phase")) != phase
+        or capsule.get("runId") != run_id
+    ):
         return {
             "ok": False,
             "code": "PHASE_CAPSULE_IDENTITY_MISMATCH",

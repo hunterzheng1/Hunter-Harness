@@ -141,10 +141,10 @@ class HarnessEventsTest(unittest.TestCase):
                 "风险更低",
             ],
             ["--phase", "plan", "--type", "phase.end", "--note", "规划完成"],
-            ["--phase", "run", "--type", "phase.start"],
+            ["--phase", "execute", "--type", "phase.start"],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "command",
                 "--command",
@@ -158,7 +158,7 @@ class HarnessEventsTest(unittest.TestCase):
             ],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "command",
                 "--command",
@@ -172,7 +172,7 @@ class HarnessEventsTest(unittest.TestCase):
             ],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "command",
                 "--command",
@@ -184,7 +184,7 @@ class HarnessEventsTest(unittest.TestCase):
             ],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "verification",
                 "--name",
@@ -194,7 +194,7 @@ class HarnessEventsTest(unittest.TestCase):
             ],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "artifact",
                 "--path",
@@ -204,7 +204,7 @@ class HarnessEventsTest(unittest.TestCase):
             ],
             [
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "issue",
                 "--code",
@@ -214,11 +214,11 @@ class HarnessEventsTest(unittest.TestCase):
                 "--message",
                 "偶发超时已重试成功",
             ],
-            ["--phase", "run", "--type", "phase.end"],
-            ["--phase", "test", "--type", "phase.start"],
+            ["--phase", "execute", "--type", "phase.end"],
+            ["--phase", "execute", "--type", "phase.start"],
             [
                 "--phase",
-                "test",
+                "execute",
                 "--type",
                 "verification",
                 "--name",
@@ -228,7 +228,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "--reason",
                 "setup 失败",
             ],
-            ["--phase", "test", "--type", "phase.end"],
+            ["--phase", "execute", "--type", "phase.end"],
         ]
 
         for args in sequence:
@@ -279,12 +279,12 @@ class HarnessEventsTest(unittest.TestCase):
     def test_render_idempotent(self) -> None:
         seed = [
             {"schema_version": 2, "id": "evt-a", "timestamp": "2026-07-10T01:00:00.000+08:00",
-             "phase": "run", "type": "phase.start", "note": ""},
+             "phase": "execute", "type": "phase.start", "note": ""},
             {"schema_version": 2, "id": "evt-b", "timestamp": "2026-07-10T01:01:00.000+08:00",
-             "phase": "run", "type": "command", "command": "echo hi", "exit_code": 0,
+             "phase": "execute", "type": "command", "command": "echo hi", "exit_code": 0,
              "duration_ms": 10, "note": "你好"},
             {"schema_version": 2, "id": "evt-c", "timestamp": "2026-07-10T01:02:00.000+08:00",
-             "phase": "run", "type": "phase.end", "note": ""},
+             "phase": "execute", "type": "phase.end", "note": ""},
         ]
         events_file = self.change_dir / "events.ndjson"
         events_file.write_text(
@@ -315,14 +315,14 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 1,
                 "id": "evt-old",
                 "timestamp": "2026-07-01T00:00:00.000Z",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.start",
             },
             {
                 "schema_version": 1,
                 "id": "evt-cmd",
                 "timestamp": "2026-07-01T00:01:00.000Z",
-                "phase": "run",
+                "phase": "execute",
                 "type": "command",
                 "command": "npm test",
                 "exit_code": 0,
@@ -332,7 +332,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 2,
                 "id": "evt-new",
                 "timestamp": "2026-07-01T00:02:00.000Z",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.end",
                 "note": "结束",
             },
@@ -360,7 +360,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 2,
                 "id": "evt-1",
                 "timestamp": "2026-07-10T10:00:00.000+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.start",
                 "note": "",
             },
@@ -368,7 +368,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 2,
                 "id": "evt-2",
                 "timestamp": "2026-07-10T10:00:30.000+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "command",
                 "command": "echo 中文",
                 "exit_code": 0,
@@ -379,7 +379,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 2,
                 "id": "evt-3",
                 "timestamp": "2026-07-10T10:01:00.000+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "issue",
                 "code": "x",
                 "severity": "error",
@@ -390,7 +390,7 @@ class HarnessEventsTest(unittest.TestCase):
                 "schema_version": 2,
                 "id": "evt-4",
                 "timestamp": "2026-07-10T10:01:00.000+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.end",
                 "note": "",
             },
@@ -408,9 +408,9 @@ class HarnessEventsTest(unittest.TestCase):
         payload = json.loads(out)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["event_count"], 4)
-        self.assertEqual(payload["phases"]["run"]["duration_ms"], 60_000)
-        self.assertEqual(payload["phases"]["run"]["started_at"], seed[0]["timestamp"])
-        self.assertEqual(payload["phases"]["run"]["ended_at"], seed[3]["timestamp"])
+        self.assertEqual(payload["phases"]["execute"]["duration_ms"], 60_000)
+        self.assertEqual(payload["phases"]["execute"]["started_at"], seed[0]["timestamp"])
+        self.assertEqual(payload["phases"]["execute"]["ended_at"], seed[3]["timestamp"])
         self.assertEqual(len(payload["issues"]), 1)
         self.assertEqual(payload["issues"][0]["message"], "示例问题")
 
@@ -424,35 +424,35 @@ class HarnessEventsTest(unittest.TestCase):
     def test_schema3_provenance_and_repeated_phase_attempts(self) -> None:
         seed = [
             {"schema_version": 3, "id": "1", "timestamp": "2026-07-10T10:00:00+08:00",
-             "phase": "test", "type": "phase.start", "attempt": 1,
+             "phase": "execute", "type": "phase.start", "attempt": 1,
              "executor_tool": "claude-code", "run_id": "run-a", "note": ""},
             {"schema_version": 3, "id": "2", "timestamp": "2026-07-10T10:01:00+08:00",
-             "phase": "test", "type": "phase.end", "attempt": 1, "status": "fail", "note": ""},
+             "phase": "execute", "type": "phase.end", "attempt": 1, "status": "fail", "note": ""},
             {"schema_version": 3, "id": "3", "timestamp": "2026-07-10T10:02:00+08:00",
-             "phase": "test", "type": "phase.start", "attempt": 2,
+             "phase": "execute", "type": "phase.start", "attempt": 2,
              "executor_tool": "codex", "handoff_from_tool": "claude-code", "note": ""},
             {"schema_version": 3, "id": "4", "timestamp": "2026-07-10T10:05:00+08:00",
-             "phase": "test", "type": "phase.end", "attempt": 2, "status": "ok", "note": ""},
+             "phase": "execute", "type": "phase.end", "attempt": 2, "status": "ok", "note": ""},
         ]
         events_file = self.change_dir / "events.ndjson"
         events_file.write_text(
             "".join(json.dumps(event) + "\n" for event in seed), encoding="utf-8"
         )
         summary = he.build_summary(self.change_dir, he.load_events(events_file))
-        phase = summary["phases"]["test"]
+        phase = summary["phases"]["execute"]
         self.assertEqual(phase["duration_ms"], 240_000)
         self.assertEqual(phase["status"], "ok")
         self.assertEqual([attempt["attempt"] for attempt in phase["attempts"]], [1, 2])
         self.assertEqual(phase["attempts"][1]["executor_tool"], "codex")
         rendered = he.render_execution_log(he.load_events(events_file))
-        self.assertIn("test（尝试 1）", rendered)
-        self.assertIn("test（尝试 2）", rendered)
+        self.assertIn("execute（尝试 1）", rendered)
+        self.assertIn("execute（尝试 2）", rendered)
         self.assertIn("claude-code → codex", rendered)
 
     def test_append_accepts_cross_tool_provenance(self) -> None:
         code, out, err = self._run([
             "append", "--change-dir", str(self.change_dir), "--json",
-            "--phase", "run", "--type", "phase.start", "--attempt", "2",
+            "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             "--run-id", "run-2", "--executor-tool", "codex",
             "--executor-agent", "main", "--handoff-from-tool", "claude-code",
             "--handoff-reason", "continue implementation",
@@ -467,14 +467,14 @@ class HarnessEventsTest(unittest.TestCase):
     def test_run_id_derives_attempt_and_rejects_a_conflicting_explicit_attempt(self) -> None:
         first, _, first_err = self._run([
             "append", "--change-dir", str(self.change_dir), "--json",
-            "--phase", "run", "--type", "phase.start", "--attempt", "2",
+            "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             "--run-id", "run-fixback",
         ])
         self.assertEqual(first, 0, first_err)
 
         derived, out, derived_err = self._run([
             "append", "--change-dir", str(self.change_dir), "--json",
-            "--phase", "run", "--type", "decision",
+            "--phase", "execute", "--type", "decision",
             "--decision", "修复第一项建议", "--run-id", "run-fixback",
         ])
         self.assertEqual(derived, 0, derived_err)
@@ -482,7 +482,7 @@ class HarnessEventsTest(unittest.TestCase):
 
         conflict, _, conflict_err = self._run([
             "append", "--change-dir", str(self.change_dir), "--json",
-            "--phase", "run", "--type", "decision",
+            "--phase", "execute", "--type", "decision",
             "--decision", "冲突事件", "--run-id", "run-fixback",
             "--attempt", "1",
         ])
@@ -614,7 +614,7 @@ class RenderQualityTests(unittest.TestCase):
 
     def test_ut201_issue_note_only(self) -> None:
         lines = he.render_event_line(
-            {"type": "issue", "note": "知识查询命中3条", "phase": "run"}
+            {"type": "issue", "note": "知识查询命中3条", "phase": "execute"}
         )
         self.assertEqual(lines, ["- issue: 知识查询命中3条"])
         self.assertNotIn("issue: issue", "\n".join(lines))
@@ -625,14 +625,14 @@ class RenderQualityTests(unittest.TestCase):
                 "type": "issue",
                 "severity": "warning",
                 "note": "偶发超时",
-                "phase": "run",
+                "phase": "execute",
             }
         )
         self.assertEqual(lines, ["- issue: 🟡WARN(偶发超时)"])
 
     def test_ut203_issue_all_empty_skipped(self) -> None:
         lines = he.render_event_line(
-            {"type": "issue", "phase": "run", "timestamp": "2026-07-16T00:00:00+08:00"}
+            {"type": "issue", "phase": "execute", "timestamp": "2026-07-16T00:00:00+08:00"}
         )
         self.assertEqual(lines, [])
 
@@ -642,7 +642,7 @@ class RenderQualityTests(unittest.TestCase):
                 "type": "verification",
                 "note": "回归 155 tests passed successfully",
                 "status": "ok",
-                "phase": "run",
+                "phase": "execute",
             }
         )
         joined = "\n".join(lines)
@@ -651,7 +651,7 @@ class RenderQualityTests(unittest.TestCase):
 
     def test_ut205_verification_missing_status_emdash(self) -> None:
         lines = he.render_event_line(
-            {"type": "verification", "name": "unitTest", "phase": "run"}
+            {"type": "verification", "name": "unitTest", "phase": "execute"}
         )
         joined = "\n".join(lines)
         self.assertIn("—", joined)
@@ -659,12 +659,12 @@ class RenderQualityTests(unittest.TestCase):
 
     def test_ut206_artifact_note_fallback(self) -> None:
         lines = he.render_event_line(
-            {"type": "artifact", "note": "测试报告已写入", "phase": "run"}
+            {"type": "artifact", "note": "测试报告已写入", "phase": "execute"}
         )
         self.assertEqual(lines, ["- artifact: 测试报告已写入"])
 
     def test_ut207_artifact_all_empty_skipped(self) -> None:
-        lines = he.render_event_line({"type": "artifact", "phase": "run"})
+        lines = he.render_event_line({"type": "artifact", "phase": "execute"})
         self.assertEqual(lines, [])
 
     def test_ut208_command_empty_note_fallback_and_skip(self) -> None:
@@ -693,7 +693,7 @@ class RenderQualityTests(unittest.TestCase):
 
     def test_ut209_decision_empty_uses_note(self) -> None:
         lines = he.render_event_line(
-            {"type": "decision", "note": "选择方案B", "phase": "run"}
+            {"type": "decision", "note": "选择方案B", "phase": "execute"}
         )
         self.assertEqual(lines, ["- decision: 选择方案B"])
         self.assertNotIn("—", "\n".join(lines))
@@ -745,7 +745,7 @@ class RenderQualityTests(unittest.TestCase):
                 str(self.change_dir),
                 "--json",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "issue",
                 "--note",
@@ -765,7 +765,7 @@ class RenderQualityTests(unittest.TestCase):
                 str(self.change_dir),
                 "--json",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "verification",
                 "--status",
@@ -787,7 +787,7 @@ class RenderQualityTests(unittest.TestCase):
                 str(self.change_dir),
                 "--json",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "issue",
                 "--severity",
@@ -812,7 +812,7 @@ class RenderQualityTests(unittest.TestCase):
                 "--json",
                 "--legacy-lenient",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "issue",
                 "--note",
@@ -830,7 +830,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "1",
                 "timestamp": "2026-07-16T10:00:00+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.start",
                 "note": "",
             },
@@ -838,7 +838,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "2",
                 "timestamp": "2026-07-16T10:00:01+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "issue",
                 "note": "知识查询命中3条",
             },
@@ -846,7 +846,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "3",
                 "timestamp": "2026-07-16T10:00:02+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "verification",
                 "note": "回归 155 tests",
             },
@@ -854,7 +854,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "4",
                 "timestamp": "2026-07-16T10:00:03+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "artifact",
                 "note": "报告已写",
             },
@@ -862,7 +862,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "5",
                 "timestamp": "2026-07-16T10:00:04+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "command",
                 "note": "探测完成",
                 "exit_code": 0,
@@ -871,7 +871,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "6",
                 "timestamp": "2026-07-16T10:00:05+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "decision",
                 "note": "选择方案B",
             },
@@ -879,7 +879,7 @@ class RenderQualityTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "7",
                 "timestamp": "2026-07-16T10:00:06+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.end",
                 "note": "",
             },
@@ -914,7 +914,7 @@ def _mp_append_worker(change_dir: str, worker_id: int, per: int) -> None:
                 change_dir,
                 "--json",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "command",
                 "--command",
@@ -959,7 +959,7 @@ class O1ConcurrentAppendTests(unittest.TestCase):
                     "schema_version": 2,
                     "id": "evt-seed",
                     "timestamp": he.now_iso(),
-                    "phase": "run",
+                    "phase": "execute",
                     "type": "phase.start",
                     "note": "",
                 },
@@ -980,7 +980,7 @@ class O1ConcurrentAppendTests(unittest.TestCase):
                     str(self.change_dir),
                     "--json",
                     "--phase",
-                    "run",
+                    "execute",
                     "--type",
                     "command",
                     "--command",
@@ -997,10 +997,10 @@ class O1ConcurrentAppendTests(unittest.TestCase):
     def test_phase_end_renders_all_events(self) -> None:
         log_path = self.change_dir / "logs" / "execution-log.md"
         seq = [
-            ["--phase", "run", "--type", "phase.start"],
-            ["--phase", "run", "--type", "command", "--command", "cmd-alpha", "--exit-code", "0", "--duration-ms", "5"],
-            ["--phase", "run", "--type", "command", "--command", "cmd-beta", "--exit-code", "0", "--duration-ms", "5"],
-            ["--phase", "run", "--type", "command", "--command", "cmd-gamma", "--exit-code", "0", "--duration-ms", "5"],
+            ["--phase", "execute", "--type", "phase.start"],
+            ["--phase", "execute", "--type", "command", "--command", "cmd-alpha", "--exit-code", "0", "--duration-ms", "5"],
+            ["--phase", "execute", "--type", "command", "--command", "cmd-beta", "--exit-code", "0", "--duration-ms", "5"],
+            ["--phase", "execute", "--type", "command", "--command", "cmd-gamma", "--exit-code", "0", "--duration-ms", "5"],
         ]
         for args in seq:
             code, _, err = self._run(
@@ -1019,7 +1019,7 @@ class O1ConcurrentAppendTests(unittest.TestCase):
                 str(self.change_dir),
                 "--json",
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "phase.end",
             ]
@@ -1069,7 +1069,7 @@ class O1ConcurrentAppendTests(unittest.TestCase):
                     str(self.change_dir),
                     "--json",
                     "--phase",
-                    "run",
+                    "execute",
                     "--type",
                     "command",
                     "--command",
@@ -1214,7 +1214,7 @@ class PhasePreparationEventTests(unittest.TestCase):
     def test_preparation_events_are_structured_without_opening_a_phase_attempt(self) -> None:
         started = he.append_event(
             self.change_dir,
-            phase="run",
+            phase="execute",
             type_="phase.prepare.start",
             note="正在检查修复前置条件。",
             run_id="run-fixback",
@@ -1224,7 +1224,7 @@ class PhasePreparationEventTests(unittest.TestCase):
         )
         ended = he.append_event(
             self.change_dir,
-            phase="run",
+            phase="execute",
             type_="phase.prepare.end",
             status="BLOCKED",
             code="CONTEXT_HANDOFF_REQUIRED",

@@ -130,10 +130,10 @@ def _seed_change_dir(change_dir: Path) -> None:
     seq = [
         ["--phase", "plan", "--type", "phase.start", "--note", "开始"],
         ["--phase", "plan", "--type", "phase.end"],
-        ["--phase", "run", "--type", "phase.start"],
+        ["--phase", "execute", "--type", "phase.start"],
         [
             "--phase",
-            "run",
+            "execute",
             "--type",
             "command",
             "--command",
@@ -147,7 +147,7 @@ def _seed_change_dir(change_dir: Path) -> None:
         ],
         [
             "--phase",
-            "run",
+            "execute",
             "--type",
             "verification",
             "--name",
@@ -155,9 +155,9 @@ def _seed_change_dir(change_dir: Path) -> None:
             "--status",
             "ok",
         ],
-        ["--phase", "run", "--type", "phase.end"],
-        ["--phase", "test", "--type", "phase.start"],
-        ["--phase", "test", "--type", "phase.end"],
+        ["--phase", "execute", "--type", "phase.end"],
+        ["--phase", "execute", "--type", "phase.start"],
+        ["--phase", "execute", "--type", "phase.end"],
         ["--phase", "submit", "--type", "phase.start"],
         [
             "--phase",
@@ -729,9 +729,9 @@ class ArchiveFactDerivationTests(unittest.TestCase):
             })
             events = [
                 {"schema_version": 3, "id": "1", "timestamp": "2026-07-15T10:00:00+08:00",
-                 "phase": "test", "type": "phase.start", "attempt": 1, "executor_tool": "claude-code"},
+                 "phase": "execute", "type": "phase.start", "attempt": 1, "executor_tool": "claude-code"},
                 {"schema_version": 3, "id": "2", "timestamp": "2026-07-15T10:01:00+08:00",
-                 "phase": "test", "type": "phase.end", "attempt": 1, "status": "BLOCKED"},
+                 "phase": "execute", "type": "phase.end", "attempt": 1, "status": "BLOCKED"},
                 {"schema_version": 3, "id": "3", "timestamp": "2026-07-15T10:02:00+08:00",
                  "phase": "submit", "type": "phase.start", "attempt": 1, "executor_tool": "codex",
                  "handoff_from_tool": "claude-code"},
@@ -770,7 +770,7 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                 "baseCommit": "a" * 40,
                 "finalCommitBranch": "origin/main",
                 "diffStat": {"filesChanged": 1, "insertions": 3, "deletions": 1, "range": "a..b"},
-                "stageStatus": {"plan": "OK", "test": "BLOCKED"},
+                "stageStatus": {"plan": "OK", "execute": "BLOCKED"},
                 "durations": {"totalLabel": "3 分钟", "totalMinutes": 3, "stages": []},
                 "verification": {
                     "unitTests": {"status": "OK", "run": 2, "failures": 0, "errors": 0},
@@ -787,11 +787,11 @@ class ArchiveFactDerivationTests(unittest.TestCase):
                 "changedFiles": [{"path": "src/demo.ts", "insertions": 3, "deletions": 1}],
                 "knownRisks": [{"message": "API 环境未启动"}],
                 "manualActions": [{"action": "启动环境后补测"}],
-                "timeline": [{"phase": "run", "attempt": 1, "status": "OK", "executorTool": "codex"}],
+                "timeline": [{"phase": "execute", "attempt": 1, "status": "OK", "executorTool": "codex"}],
                 "archiveManifest": {"checksumStatus": "OK", "totalArchiveFiles": 8},
                 "reportPipeline": {
                     "sources": ["events.ndjson"],
-                    "commands": [{"phase": "test", "command": "npm test", "exit_code": 0}],
+                    "commands": [{"phase": "execute", "command": "npm test", "exit_code": 0}],
                 },
             })
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -1161,7 +1161,7 @@ class RemoteKnowledgeOwnershipTests(unittest.TestCase):
 
 class ConditionalOkTests(unittest.TestCase):
     def test_user_skipped_forces_conditional_ok(self) -> None:
-        stage = {"plan": "OK", "run": "OK", "test": "USER_SKIPPED", "review": "ADVISORY", "submit": "OK", "archive": "OK"}
+        stage = {"plan": "OK", "execute": "USER_SKIPPED", "review": "ADVISORY", "submit": "OK", "archive": "OK"}
         verification = {
             "unitTests": {"run": 0, "failures": 0, "errors": 0},
             "apiTests": {"status": "USER_SKIPPED", "failed": 0},
@@ -1173,7 +1173,7 @@ class ConditionalOkTests(unittest.TestCase):
 
     def test_browser_failure_forces_fail(self) -> None:
         status, reasons = ha._compute_final_status(
-            {"plan": "OK", "run": "OK", "test": "OK"},
+            {"plan": "OK", "execute": "OK"},
             {
                 "unitTests": {"run": 1, "failures": 0, "errors": 0},
                 "apiTests": {"status": "OK", "failed": 0},
@@ -1187,7 +1187,7 @@ class ConditionalOkTests(unittest.TestCase):
 
     def test_browser_not_run_forces_conditional_ok(self) -> None:
         status, reasons = ha._compute_final_status(
-            {"plan": "OK", "run": "OK", "test": "OK"},
+            {"plan": "OK", "execute": "OK"},
             {
                 "unitTests": {"run": 1, "failures": 0, "errors": 0},
                 "apiTests": {"status": "OK", "failed": 0},
@@ -1807,7 +1807,7 @@ class FinalStatusReasonsTests(unittest.TestCase):
 
     def test_ut110_db_not_run_reasons(self) -> None:
         status, reasons = ha._compute_final_status(
-            {"plan": "OK", "run": "OK", "test": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
+            {"plan": "OK", "execute": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
             {
                 "unitTests": {"run": 10, "failures": 0, "errors": 0},
                 "apiTests": {"status": "OK", "failed": 0},
@@ -1819,7 +1819,7 @@ class FinalStatusReasonsTests(unittest.TestCase):
 
     def test_ut111_all_green_empty_reasons(self) -> None:
         status, reasons = ha._compute_final_status(
-            {"plan": "OK", "run": "OK", "test": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
+            {"plan": "OK", "execute": "OK", "review": "OK", "submit": "OK", "archive": "OK"},
             {
                 "unitTests": {"run": 10, "failures": 0, "errors": 0},
                 "apiTests": {"status": "OK", "failed": 0, "total": 1, "passed": 1},
@@ -1845,7 +1845,7 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "--change-dir",
                     str(change),
                     "--phase",
-                    "run",
+                    "execute",
                     "--type",
                     "issue",
                     "--code",
@@ -1863,7 +1863,7 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "--change-dir",
                     str(change),
                     "--phase",
-                    "run",
+                    "execute",
                     "--type",
                     "issue",
                     "--code",
@@ -1902,7 +1902,7 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "schema_version": 3,
                     "id": "end-1",
                     "timestamp": "2026-07-19T09:59:00+08:00",
-                    "phase": "run",
+                    "phase": "execute",
                     "type": "phase.end",
                     "status": "OK",
                 },
@@ -1910,7 +1910,7 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "schema_version": 3,
                     "id": "issue-1",
                     "timestamp": "2026-07-19T10:00:00+08:00",
-                    "phase": "run",
+                    "phase": "execute",
                     "type": "issue",
                     "issue_id": "compile-warning",
                     "severity": "warning",
@@ -1920,7 +1920,7 @@ class KnownRisksFilterTests(unittest.TestCase):
                     "schema_version": 3,
                     "id": "resolve-1",
                     "timestamp": "2026-07-19T10:01:00+08:00",
-                    "phase": "run",
+                    "phase": "execute",
                     "type": "issue.resolve",
                     "issue_id": "compile-warning",
                 },
@@ -1944,7 +1944,7 @@ class ArchiveCorrectionProjectionTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "artifact-1",
                 "timestamp": "2026-07-19T10:00:00+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "artifact",
                 "path": "reports/old.json",
                 "kind": "report",
@@ -1953,7 +1953,7 @@ class ArchiveCorrectionProjectionTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "correction-1",
                 "timestamp": "2026-07-19T10:01:00+08:00",
-                "phase": "run",
+                "phase": "execute",
                 "type": "correction",
                 "target_event_id": "artifact-1",
                 "target_field": "path",
@@ -2097,7 +2097,7 @@ class GatePolicyConsumeTests(unittest.TestCase):
                 {
                     "schemaVersion": 1,
                     "tier": "full",
-                    "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
+                    "defaultPhases": ["plan", "execute", "review", "submit", "archive"],
                     "requiredValidations": ["compile", "unitTest", "unitTestFull", "apiTest"],
                     "classifiedAt": "2026-07-16T00:00:00+08:00",
                     "source": "default-full",
@@ -2121,7 +2121,7 @@ class GatePolicyConsumeTests(unittest.TestCase):
                 {
                     "schemaVersion": 1,
                     "tier": "full",
-                    "defaultPhases": ["plan", "run", "test", "review", "submit", "archive"],
+                    "defaultPhases": ["plan", "execute", "review", "submit", "archive"],
                     "requiredValidations": ["compile"],
                     "classifiedAt": "2026-07-16T00:00:00+08:00",
                     "source": "default-full",
@@ -2408,7 +2408,7 @@ class ComArchiveMetaReplayReadonlyTests(unittest.TestCase):
                 "finalStatus": "OK",
                 "baseCommit": "aaaaaaa",
                 "finalCommit": "bbbbbbb",
-                "stageStatus": {"run": "OK", "archive": "OK"},
+                "stageStatus": {"execute": "OK", "archive": "OK"},
                 "verification": {
                     "unitTests": {
                         "run": 2,
@@ -2495,8 +2495,8 @@ class NoPatchConsistencyTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="harness-nopatch-"))
         self.work = self.tmp / "change"
         self.work.mkdir()
-        ha.append_event(self.work, phase="run", type_="phase.start", note="run start")
-        ha.append_event(self.work, phase="run", type_="phase.end", status="OK")
+        ha.append_event(self.work, phase="execute", type_="phase.start", note="run start")
+        ha.append_event(self.work, phase="execute", type_="phase.end", status="OK")
         import time
 
         time.sleep(0.02)
@@ -2516,7 +2516,7 @@ class NoPatchConsistencyTests(unittest.TestCase):
         self.assertEqual(archive_stages[0].get("result"), "OK")
         self.assertEqual((summary.get("stageStatus") or {}).get("archive"), "OK")
         # non-archive stage preserved
-        self.assertTrue(any(s.get("stage") == "run" for s in stages))
+        self.assertTrue(any(s.get("stage") == "execute" for s in stages))
         # canonical timing fields present (UT-008)
         self.assertIn("activeExecutionMs", archive_stages[0])
         self.assertIn("wallClockSpanMs", archive_stages[0])
@@ -2588,7 +2588,7 @@ class ArtifactPreflightIntegrationTests(unittest.TestCase):
         # 追加一个含绝对路径的 artifact 事件
         he.append_event(
             self.change,
-            phase="run",
+            phase="execute",
             type_="artifact",
             path="C:/secret/escape.txt",
             kind="file-backed",
@@ -2608,7 +2608,7 @@ class ArtifactPreflightIntegrationTests(unittest.TestCase):
         """同 change 仓库相对路径应分类为 canonicalizable（warning，非 blocker）。"""
         he.append_event(
             self.change,
-            phase="run",
+            phase="execute",
             type_="artifact",
             path=f".harness/changes/preflight-demo/reports/run-task-status.md",
             kind="file-backed",
@@ -2625,7 +2625,7 @@ class ArtifactPreflightIntegrationTests(unittest.TestCase):
         _write(product, '{"ok":true}\n')
         he.append_event(
             self.change,
-            phase="run",
+            phase="execute",
             type_="artifact",
             path="build/contract.json",
             kind="product",
@@ -2991,7 +2991,7 @@ class ArchiveAutoGateTests(unittest.TestCase):
                 "schemaVersion": 1,
                 "tier": "fast",
                 "source": "change",
-                "plannedPhases": ["plan", "run", "archive"],
+                "plannedPhases": ["plan", "execute", "archive"],
                 "skippedPhases": [
                     {"phase": "submit", "reason": "本次不需要 Git 提交"}
                 ],
@@ -3012,7 +3012,7 @@ class ArchiveAutoGateTests(unittest.TestCase):
                 "id": "evt-run-end",
                 "timestamp": "2026-08-09T00:01:00+00:00",
                 "type": "phase.end",
-                "phase": "run",
+                "phase": "execute",
                 "status": "OK",
             },
         ]
@@ -3032,8 +3032,8 @@ class ArchiveAutoGateTests(unittest.TestCase):
         result = ha.archive_auto_gate(self.change, archive_intent="record-only")
 
         self.assertTrue(result["ok"], msg=json.dumps(result, ensure_ascii=False))
-        self.assertEqual(result["completedPrerequisitePhase"], "run")
-        self.assertEqual(result["plannedPhases"], ["plan", "run", "archive"])
+        self.assertEqual(result["completedPrerequisitePhase"], "execute")
+        self.assertEqual(result["plannedPhases"], ["plan", "execute", "archive"])
 
 
 class ArchiveRangeAdoptionTests(unittest.TestCase):
@@ -3839,7 +3839,7 @@ class ArchiveRepublishTests(unittest.TestCase):
                     }
                 ],
                 "knownRisks": [
-                    {"phase": "test", "severity": "WARN", "message": "apiTest skipped"}
+                    {"phase": "execute", "severity": "WARN", "message": "apiTest skipped"}
                 ],
             },
         )

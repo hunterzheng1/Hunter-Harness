@@ -49,7 +49,7 @@ events = load_module("harness_events", "harness_events.py")
 
 
 def ev(ts: str, etype: str, **extra):
-    payload = {"timestamp": ts, "type": etype, "phase": "run"}
+    payload = {"timestamp": ts, "type": etype, "phase": "execute"}
     payload.update(extra)
     return payload
 
@@ -87,7 +87,7 @@ class EventTypeRegistrationTests(unittest.TestCase):
             change_dir = Path(tmp)
             code, out, err = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.auto_sealed",
+                "--phase", "execute", "--type", "phase.auto_sealed",
                 "--reason", "superseded", "--command", "should-not-be-allowed",
             ])
             self.assertNotEqual(code, 0)
@@ -104,21 +104,21 @@ class WriteAppendAutoSealTests(unittest.TestCase):
 
             code1, out1, err1 = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "1",
             ])
             self.assertEqual(code1, 0, err1)
             self.assertEqual(json.loads(out1).get("autoSealed"), [])
 
             code2, out2, err2 = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "2",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             ])
             self.assertEqual(code2, 0, err2)
             payload2 = json.loads(out2)
             sealed = payload2.get("autoSealed")
             self.assertEqual(len(sealed), 1)
             self.assertEqual(sealed[0]["type"], "phase.auto_sealed")
-            self.assertEqual(sealed[0]["phase"], "run")
+            self.assertEqual(sealed[0]["phase"], "execute")
             self.assertEqual(sealed[0]["attempt"], 1)
             self.assertEqual(sealed[0]["reason"], "superseded")
             self.assertEqual(sealed[0]["status"], "RECOVERED")
@@ -131,14 +131,14 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             )
 
             attempts = events.split_phase_attempts(
-                [e for e in written if e.get("phase") == "run"]
+                [e for e in written if e.get("phase") == "execute"]
             )
             self.assertEqual(len(attempts), 2)
             self.assertEqual(attempts[0]["events"][-1]["type"], "phase.auto_sealed")
             self.assertEqual(attempts[0]["warnings"], [])
 
             # Only the newest attempt remains open after the auto-seal.
-            open_attempts = events.open_attempts_for_phase(written, "run")
+            open_attempts = events.open_attempts_for_phase(written, "execute")
             self.assertEqual(len(open_attempts), 1)
             self.assertEqual(open_attempts[0]["attempt"], 2)
 
@@ -147,7 +147,7 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             code0, _, err0 = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "1",
             ])
             self.assertEqual(code0, 0, err0)
 
@@ -158,7 +158,7 @@ class WriteAppendAutoSealTests(unittest.TestCase):
                 "schema_version": 3,
                 "id": "evt-recovery-1",
                 "timestamp": events.now_iso(),
-                "phase": "run",
+                "phase": "execute",
                 "type": "attempt.recovery",
                 "attempt": 1,
                 "note": "",
@@ -170,7 +170,7 @@ class WriteAppendAutoSealTests(unittest.TestCase):
 
             code2, out2, err2 = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "2",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             ])
             self.assertEqual(code2, 0, err2)
             sealed = json.loads(out2)["autoSealed"]
@@ -182,13 +182,13 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "1",
             ])
             wait_event = {
                 "schema_version": 3,
                 "id": "evt-wait-1",
                 "timestamp": events.now_iso(),
-                "phase": "run",
+                "phase": "execute",
                 "type": "external.wait",
                 "attempt": 1,
                 "note": "",
@@ -199,7 +199,7 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             )
             code, out, err = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "2",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             ])
             self.assertEqual(code, 0, err)
             sealed = json.loads(out)["autoSealed"]
@@ -210,15 +210,15 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "1",
             ])
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "2",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             ])
             code, out, err = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.end", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.end", "--attempt", "1",
                 "--status", "OK",
             ])
             self.assertNotEqual(code, 0)
@@ -230,11 +230,11 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start",
+                "--phase", "execute", "--type", "phase.start",
             ])
             code, out, err = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "test", "--type", "phase.start",
+                "--phase", "review", "--type", "phase.start",
             ])
             self.assertEqual(code, 0, err)
             self.assertEqual(json.loads(out).get("autoSealed"), [])
@@ -248,16 +248,16 @@ class WriteAppendAutoSealTests(unittest.TestCase):
             change_dir = Path(tmp)
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "1",
             ])
             run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.end", "--attempt", "1",
+                "--phase", "execute", "--type", "phase.end", "--attempt", "1",
                 "--status", "OK",
             ])
             code, out, err = run_cli([
                 "append", "--change-dir", str(change_dir), "--json",
-                "--phase", "run", "--type", "phase.start", "--attempt", "2",
+                "--phase", "execute", "--type", "phase.start", "--attempt", "2",
             ])
             self.assertEqual(code, 0, err)
             self.assertEqual(json.loads(out).get("autoSealed"), [])
@@ -363,7 +363,7 @@ class TimingReducerTests(unittest.TestCase):
                 reason="superseded",
             ),
         ]
-        candidate = {"phase": "run", "attempt": 1, "type": "phase.end"}
+        candidate = {"phase": "execute", "attempt": 1, "type": "phase.end"}
         self.assertTrue(events.phase_end_already_recorded(existing, candidate))
 
 
@@ -381,12 +381,12 @@ class SealHelperUnitTests(unittest.TestCase):
             ),
         ]
         sealed = events.seal_open_phase_attempts(
-            existing, phase="run", seal_reason="user_wait"
+            existing, phase="execute", seal_reason="user_wait"
         )
         self.assertEqual(len(sealed), 1)
         event = sealed[0]
         self.assertEqual(event["type"], "phase.auto_sealed")
-        self.assertEqual(event["phase"], "run")
+        self.assertEqual(event["phase"], "execute")
         self.assertEqual(event["attempt"], 1)
         self.assertEqual(event["reason"], "user_wait")
         self.assertEqual(event["status"], "RECOVERED")
@@ -399,15 +399,15 @@ class SealHelperUnitTests(unittest.TestCase):
             ev("2026-07-30T10:00:00+08:00", "phase.start", attempt=1),
             ev("2026-07-30T10:05:00+08:00", "phase.end", attempt=1, status="OK"),
         ]
-        self.assertEqual(events.seal_open_phase_attempts(existing, phase="run"), [])
+        self.assertEqual(events.seal_open_phase_attempts(existing, phase="execute"), [])
 
     def test_seal_open_phase_attempts_noop_for_unstarted_phase(self) -> None:
-        self.assertEqual(events.seal_open_phase_attempts([], phase="run"), [])
+        self.assertEqual(events.seal_open_phase_attempts([], phase="execute"), [])
 
     def test_seal_open_phase_attempts_clamps_unknown_reason(self) -> None:
         existing = [ev("2026-07-30T10:00:00+08:00", "phase.start", attempt=1)]
         sealed = events.seal_open_phase_attempts(
-            existing, phase="run", seal_reason="totally-bogus"
+            existing, phase="execute", seal_reason="totally-bogus"
         )
         self.assertEqual(sealed[0]["reason"], "unknown")
 

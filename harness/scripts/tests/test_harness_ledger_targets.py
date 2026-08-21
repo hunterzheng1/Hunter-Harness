@@ -59,7 +59,7 @@ class LedgerTargetTest(unittest.TestCase):
                     "id": "SC-001",
                     "priority": "P0",
                     "scenario": "compile succeeds",
-                    "ownerPhase": "test",
+                    "ownerPhase": "execute",
                     "requiredEvidenceKind": "ledger",
                     "executableTestId": "compile::happy-path",
                     "testFile": "tests/compile.spec.ts",

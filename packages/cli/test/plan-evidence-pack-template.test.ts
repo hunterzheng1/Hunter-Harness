@@ -83,7 +83,7 @@ describe("hunter-harness plan evidence-pack 自然输入边界", () => {
   it("tasks 缺 objective/affected_paths 时报出字段路径", async () => {
     const input = await template();
     (input.structured_input as Record<string, unknown>).tasks = [
-      { task_id: "T1", cluster: "簇", title: "任务", owner_phase: "run" }
+      { task_id: "T1", cluster: "簇", title: "任务", owner_phase: "execute" }
     ];
 
     const { exit, body } = await pack(input);

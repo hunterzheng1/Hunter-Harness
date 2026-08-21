@@ -172,28 +172,25 @@ class TargetPhaseReconcileTests(unittest.TestCase):
         self.assertIn("classify", message)
 
     def test_a_renamed_phase_is_read_through_the_alias_table(self) -> None:
-        """阶段改名后，历史 change 的 gate-policy.json 仍要能读。
+        """run/test 合并为 execute 后，历史 change 的 gate-policy.json 仍要能读。
 
         本仓库没有 change 级 schema 迁移机制，硬 raise 等于让所有在途变更报废。
         """
         policy = self._policy("standard")
-        # 把 DAG 里的 test 节点改成一个"旧名"，模拟改名后的历史产物。
+        # 把 DAG 里的 execute 节点改成合并前的旧名，模拟在途 change 的历史产物。
+        legacy_names = iter(("run", "test"))
         for node in policy["requiredGateDag"]["nodes"]:
-            if node.get("phase") == "test":
-                node["phase"] = "verification"
-        # 必须改 harness_phase 实际读到的那份 harness_paths：测试套件里同一文件
-        # 会被加载成多份模块实例，改错实例这条用例会静默失效。
-        table = hp.hpaths.LEGACY_PHASE_ALIASES
-        aliases = dict(table)
-        table["verification"] = "test"
-        try:
-            target = hp.target_required_dag(policy, "test")
-        finally:
-            table.clear()
-            table.update(aliases)
+            if node.get("phase") == "execute":
+                node["phase"] = next(legacy_names, "run")
 
-        # 解析回当前阶段名，节点照常参与裁剪。
+        target = hp.target_required_dag(policy, "execute")
+
+        # 旧名解析回 execute，节点照常参与裁剪。
         self.assertIn("validation:unitTestFull", {n["id"] for n in target["nodes"]})
+        self.assertEqual(
+            {n["phase"] for n in target["nodes"] if n["kind"] == "validation"},
+            {"execute"},
+        )
 
     def test_phase_name_classification_is_three_state(self) -> None:
         """workflow / non_workflow / unknown 要分得开。
@@ -243,6 +240,7 @@ class TargetPhaseReconcileTests(unittest.TestCase):
             change = project / ".harness" / "changes" / "demo"
             capsule_dir = change / "runtime" / "phase-context"
             capsule_dir.mkdir(parents=True)
+            # 在途 change 的 capsule：文件名与内容都是旧名 run。
             expected = {"schemaVersion": 1, "phase": "run", "runId": "run-a"}
             other = {"schemaVersion": 1, "phase": "review", "runId": "run-b"}
             for phase, run_id, value in (
@@ -255,16 +253,17 @@ class TargetPhaseReconcileTests(unittest.TestCase):
                 )
 
             selected = hp.select_phase_capsule(
-                change, project, phase="run", run_id="run-a"
+                change, project, phase="execute", run_id="run-a"
             )
             missing = hp.select_phase_capsule(
-                change, project, phase="run", run_id="missing"
+                change, project, phase="execute", run_id="missing"
             )
             unspecified = hp.select_phase_capsule(
-                change, project, phase="run", run_id=None
+                change, project, phase="execute", run_id=None
             )
 
         self.assertTrue(selected["ok"])
+        # 内容原样返回（读侧不迁移），别名只决定找不找得到。
         self.assertEqual(selected["capsule"], expected)
         self.assertEqual(missing["code"], "PHASE_CAPSULE_NOT_FOUND")
         self.assertIn("--run-id missing", missing["remediation"])
@@ -301,11 +300,11 @@ class TargetPhaseReconcileTests(unittest.TestCase):
 class TimingAndTraceTests(unittest.TestCase):
     def test_obs_ut004_timing_dimensions_are_not_conflated(self) -> None:
         events = [
-            {"id": "1", "phase": "run", "attempt": 1, "type": "phase.start", "timestamp": "2026-07-19T10:00:00+00:00"},
-            {"id": "2", "phase": "run", "attempt": 1, "type": "command", "timestamp": "2026-07-19T10:01:00+00:00", "duration_ms": 30000},
-            {"id": "3", "phase": "run", "attempt": 1, "type": "decision", "timestamp": "2026-07-19T10:02:00+00:00", "user_wait_ms": 120000},
-            {"id": "4", "phase": "run", "attempt": 1, "type": "phase.end", "timestamp": "2026-07-19T10:05:00+00:00", "status": "OK"},
-            {"id": "5", "phase": "run", "attempt": 1, "type": "artifact", "timestamp": "2026-07-19T10:06:00+00:00"},
+            {"id": "1", "phase": "execute", "attempt": 1, "type": "phase.start", "timestamp": "2026-07-19T10:00:00+00:00"},
+            {"id": "2", "phase": "execute", "attempt": 1, "type": "command", "timestamp": "2026-07-19T10:01:00+00:00", "duration_ms": 30000},
+            {"id": "3", "phase": "execute", "attempt": 1, "type": "decision", "timestamp": "2026-07-19T10:02:00+00:00", "user_wait_ms": 120000},
+            {"id": "4", "phase": "execute", "attempt": 1, "type": "phase.end", "timestamp": "2026-07-19T10:05:00+00:00", "status": "OK"},
+            {"id": "5", "phase": "execute", "attempt": 1, "type": "artifact", "timestamp": "2026-07-19T10:06:00+00:00"},
         ]
 
         timing = hp.timing_dimensions(events)[0]
@@ -317,9 +316,9 @@ class TimingAndTraceTests(unittest.TestCase):
 
     def test_obs_ut005_trace_parent_child_is_stable_for_legacy_events(self) -> None:
         events = [
-            {"id": "a", "phase": "run", "attempt": 1, "type": "phase.start", "executor_tool": "codex"},
-            {"id": "b", "phase": "run", "attempt": 1, "type": "command", "executor_tool": "powershell"},
-            {"id": "c", "phase": "run", "attempt": 1, "type": "phase.end", "executor_tool": "codex"},
+            {"id": "a", "phase": "execute", "attempt": 1, "type": "phase.start", "executor_tool": "codex"},
+            {"id": "b", "phase": "execute", "attempt": 1, "type": "command", "executor_tool": "powershell"},
+            {"id": "c", "phase": "execute", "attempt": 1, "type": "phase.end", "executor_tool": "codex"},
         ]
 
         first = hp.build_trace(events, change_id="demo")
@@ -341,7 +340,7 @@ class TimingAndTraceTests(unittest.TestCase):
                     "--change-dir",
                     str(change),
                     "--phase",
-                    "run",
+                    "execute",
                     "--type",
                     "phase.start",
                     "--trace-id",

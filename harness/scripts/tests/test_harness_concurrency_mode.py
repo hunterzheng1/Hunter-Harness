@@ -38,7 +38,7 @@ def _bootstrap_change(project: Path, change_id: str) -> Path:
         "schemaVersion": 1,
         "capabilities": [],
         "signals": [],
-        "requiredValidationsByPhase": {"run": ["compile"], "test": ["unitTestFull"]}
+        "requiredValidationsByPhase": {"execute": ["compile", "unitTestFull"]}
     }))
     # Mark as active: a plan file makes list_active_changes detect it.
     _write(change_dir / "plans" / f"{change_id}-plan.md", f"---\nchange-name: {change_id}\nstatus: approved\n---\n# {change_id}\n")
@@ -100,7 +100,7 @@ class ConcurrencyModeTests(unittest.TestCase):
 
         result = hg.record_blocked_attempt(
             change_dir,
-            phase="test",
+            phase="execute",
             code="SINGLE_ACTIVE_BLOCKED",
             message="another change is active",
             run_id="blocked-test-1",

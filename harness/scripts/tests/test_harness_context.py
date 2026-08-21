@@ -61,7 +61,7 @@ class HarnessContextTest(unittest.TestCase):
     def test_json_flag_is_accepted_after_every_subcommand(self) -> None:
         parser = CONTEXT.build_parser()
         command_lines = [
-            ["prepare", "--project", ".", "--phase", "run", "--executor", "codex", "--json"],
+            ["prepare", "--project", ".", "--phase", "execute", "--executor", "codex", "--json"],
             [
                 "close",
                 "--project",
@@ -69,9 +69,9 @@ class HarnessContextTest(unittest.TestCase):
                 "--change",
                 "demo",
                 "--from-phase",
-                "run",
+                "execute",
                 "--to-phase",
-                "test",
+                "execute",
                 "--executor",
                 "codex",
                 "--json",
@@ -83,7 +83,7 @@ class HarnessContextTest(unittest.TestCase):
                 "--change",
                 "demo",
                 "--phase",
-                "test",
+                "execute",
                 "--executor",
                 "codex",
                 "--json",
@@ -100,7 +100,7 @@ class HarnessContextTest(unittest.TestCase):
             make_change(project, "active")
             make_change(project, "archived", "archived")
             result = CONTEXT.prepare_context(
-                project, phase="run", executor="codex", ttl_seconds=60
+                project, phase="execute", executor="codex", ttl_seconds=60
             )
             self.assertTrue(result["ok"])
             self.assertEqual(result["changeName"], "active")
@@ -175,7 +175,7 @@ class HarnessContextTest(unittest.TestCase):
             result = CONTEXT.prepare_context(
                 project,
                 change="active",
-                phase="run",
+                phase="execute",
                 executor="codex",
                 ttl_seconds=60,
             )
@@ -203,7 +203,7 @@ class HarnessContextTest(unittest.TestCase):
                     result = CONTEXT.prepare_context(
                         project,
                         change=change_name,
-                        phase="run",
+                        phase="execute",
                         executor="codex",
                         ttl_seconds=60,
                     )
@@ -231,7 +231,7 @@ class HarnessContextTest(unittest.TestCase):
                     result = CONTEXT.prepare_context(
                         project,
                         change=change_name,
-                        phase="run",
+                        phase="execute",
                         executor="codex",
                     )
                     self.assertFalse(result["ok"], result)
@@ -264,7 +264,7 @@ class HarnessContextTest(unittest.TestCase):
             result = CONTEXT.prepare_context(
                 project,
                 change="clone",
-                phase="run",
+                phase="execute",
                 executor="codex",
             )
 
@@ -277,7 +277,7 @@ class HarnessContextTest(unittest.TestCase):
             make_change(project, "one")
             make_change(project, "two")
             result = CONTEXT.prepare_context(
-                project, phase="run", executor="codex"
+                project, phase="execute", executor="codex"
             )
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "ACTIVE_CHANGE_AMBIGUOUS")
@@ -298,7 +298,7 @@ class HarnessContextTest(unittest.TestCase):
             state = project / ".harness/state/changes/change/runtime"
             (state / "context-lease.json").unlink()
             second = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codex"
+                project, change="change", phase="execute", executor="codex"
             )
             self.assertFalse(second["ok"])
             self.assertEqual(second["code"], "HANDOFF_REQUIRED")
@@ -325,7 +325,7 @@ class HarnessContextTest(unittest.TestCase):
             selected = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 trigger="review-fixback",
             )
@@ -353,17 +353,17 @@ class HarnessContextTest(unittest.TestCase):
             prepared = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 trigger="review-fixback",
             )
             self.assertTrue(prepared["ok"], prepared)
             self.assertTrue(CONTEXT.begin_transition(
-                project, "change", phase="run", executor="cursor"
+                project, "change", phase="execute", executor="cursor"
             )["ok"])
 
             cancelled = CONTEXT.cancel_prepared_context(
-                project, "change", phase="run", executor="cursor"
+                project, "change", phase="execute", executor="cursor"
             )
 
             self.assertTrue(cancelled["ok"], cancelled)
@@ -372,7 +372,7 @@ class HarnessContextTest(unittest.TestCase):
             runtime = project / ".harness" / "state" / "changes" / "change" / "runtime"
             self.assertFalse((runtime / "context-lease.json").exists())
             self.assertFalse(any(
-                item.get("phase") == "run"
+                item.get("phase") == "execute"
                 for item in view["attemptHistory"]["begins"]
             ))
 
@@ -393,7 +393,7 @@ class HarnessContextTest(unittest.TestCase):
             first = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 trigger="review-fixback",
                 preparation_id="fixback-run-1",
@@ -402,7 +402,7 @@ class HarnessContextTest(unittest.TestCase):
             begun = CONTEXT.begin_transition(
                 project,
                 "change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 preparation_id="fixback-run-1",
             )
@@ -411,7 +411,7 @@ class HarnessContextTest(unittest.TestCase):
             duplicate = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 trigger="review-fixback",
                 preparation_id="fixback-run-2",
@@ -421,7 +421,7 @@ class HarnessContextTest(unittest.TestCase):
             cancellation = CONTEXT.cancel_prepared_context(
                 project,
                 "change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 preparation_id="fixback-run-2",
             )
@@ -468,7 +468,7 @@ class HarnessContextTest(unittest.TestCase):
                 return CONTEXT.prepare_context(
                     project,
                     change="change",
-                    phase="run",
+                    phase="execute",
                     executor="cursor",
                     trigger="review-fixback",
                     preparation_id=preparation_id,
@@ -521,7 +521,7 @@ class HarnessContextTest(unittest.TestCase):
             selected = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="cursor",
                 trigger="review-fixback",
             )
@@ -543,13 +543,13 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor="codebuddy",
                 artifacts=[str(artifact)],
             )
             self.assertTrue(closed["ok"])
             begun = CONTEXT.begin_transition(
-                project, "change", phase="run", executor="codex"
+                project, "change", phase="execute", executor="codex"
             )
             self.assertTrue(begun["ok"])
             self.assertEqual(begun["receipt"]["fromPhase"], "plan")
@@ -565,7 +565,7 @@ class HarnessContextTest(unittest.TestCase):
                         "schemaVersion": 1,
                         "tier": "fast",
                         "source": "change",
-                        "defaultPhases": ["plan", "run", "archive"],
+                        "defaultPhases": ["plan", "execute", "archive"],
                     }
                 ),
                 encoding="utf-8",
@@ -574,7 +574,7 @@ class HarnessContextTest(unittest.TestCase):
             configured = CONTEXT.configure_phase_plan(
                 project,
                 "fast-change",
-                phases=["plan", "run", "archive"],
+                phases=["plan", "execute", "archive"],
                 operator="tester",
                 reason="本次只需本地快速迭代",
             )
@@ -598,7 +598,7 @@ class HarnessContextTest(unittest.TestCase):
                     project,
                     "fast-change",
                     from_phase="plan",
-                    to_phase="run",
+                    to_phase="execute",
                     executor="codex",
                 )["ok"]
             )
@@ -606,14 +606,14 @@ class HarnessContextTest(unittest.TestCase):
                 CONTEXT.begin_transition(
                     project,
                     "fast-change",
-                    phase="run",
+                    phase="execute",
                     executor="codex",
                 )["ok"]
             )
             run_context = CONTEXT.prepare_context(
                 project,
                 change="fast-change",
-                phase="run",
+                phase="execute",
                 executor="codex",
             )
             self.assertEqual(run_context["nextPhases"], ["archive", "execute"])
@@ -621,7 +621,7 @@ class HarnessContextTest(unittest.TestCase):
                 CONTEXT.close_transition(
                     project,
                     "fast-change",
-                    from_phase="run",
+                    from_phase="execute",
                     to_phase="archive",
                     executor="codex",
                 )["ok"]
@@ -629,7 +629,7 @@ class HarnessContextTest(unittest.TestCase):
             illegal = CONTEXT.close_transition(
                 project,
                 "fast-change",
-                from_phase="run",
+                from_phase="execute",
                 to_phase="review",
                 executor="codex",
             )
@@ -695,7 +695,7 @@ class HarnessContextTest(unittest.TestCase):
                     project,
                     "change",
                     from_phase="plan",
-                    to_phase="run",
+                    to_phase="execute",
                     executor="planner",
                     artifacts=[artifact_form(project, change, artifact)],
                 )
@@ -719,14 +719,14 @@ class HarnessContextTest(unittest.TestCase):
             state_artifact.parent.mkdir(parents=True)
             state_artifact.write_text('{"schemaVersion":3}\n', encoding="utf-8")
             CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="runner"
+                project, change="change", phase="execute", executor="runner"
             )
 
             result = CONTEXT.close_transition(
                 project,
                 "change",
-                from_phase="run",
-                to_phase="test",
+                from_phase="execute",
+                to_phase="execute",
                 executor="runner",
                 artifacts=["evidence/verification-ledger.json"],
             )
@@ -758,7 +758,7 @@ class HarnessContextTest(unittest.TestCase):
                         project,
                         "change",
                         from_phase="plan",
-                        to_phase="run",
+                        to_phase="execute",
                         executor="planner",
                         artifacts=[invalid_path],
                     )
@@ -784,7 +784,7 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor="planner",
                 artifacts=["meta/plan-finalization.json"],
             )
@@ -803,14 +803,14 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor=None,
             )
             second = CONTEXT.close_transition(
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor=None,
             )
 
@@ -836,13 +836,13 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor="codebuddy",
                 artifacts=[str(artifact)],
             )
             artifact.write_text("tampered", encoding="utf-8")
             result = CONTEXT.begin_transition(
-                project, "change", phase="run", executor="codex"
+                project, "change", phase="execute", executor="codex"
             )
             self.assertFalse(result["ok"])
             self.assertEqual(result["code"], "HANDOFF_IDENTITY_MISMATCH")
@@ -854,13 +854,13 @@ class HarnessContextTest(unittest.TestCase):
             first = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="agent-a",
                 ttl_seconds=60,
             )
             self.assertTrue(first["ok"])
             blocked = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="agent-b"
+                project, change="change", phase="execute", executor="agent-b"
             )
             self.assertEqual(blocked["code"], "CONTEXT_LEASE_HELD")
             lease_path = project / ".harness/state/changes/change/runtime/context-lease.json"
@@ -870,7 +870,7 @@ class HarnessContextTest(unittest.TestCase):
             ).isoformat()
             lease_path.write_text(json.dumps(lease), encoding="utf-8")
             recovered = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="agent-b"
+                project, change="change", phase="execute", executor="agent-b"
             )
             self.assertTrue(recovered["ok"])
             self.assertEqual(recovered["recovery"]["code"], "LEASE_EXPIRED_RECOVERED")
@@ -909,7 +909,7 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="review",
-                to_phase="run",
+                to_phase="execute",
                 executor="reviewer",
             )
             self.assertTrue(result["ok"])
@@ -931,7 +931,7 @@ class HarnessContextTest(unittest.TestCase):
                 project,
                 "change",
                 from_phase="plan",
-                to_phase="run",
+                to_phase="execute",
                 executor="planner",
             )
             view = CONTEXT.context_view(project, "change")
@@ -973,7 +973,7 @@ class ContextLeaseLifetimeTests(unittest.TestCase):
             self._expire_lease(project)
 
             result = CONTEXT.close_transition(
-                project, "demo", from_phase="plan", to_phase="run",
+                project, "demo", from_phase="plan", to_phase="execute",
                 executor="codex", artifacts=[], status="OK",
             )
 
@@ -990,7 +990,7 @@ class ContextLeaseLifetimeTests(unittest.TestCase):
             state.write_text(json.dumps(lease), encoding="utf-8")
 
             result = CONTEXT.close_transition(
-                project, "demo", from_phase="plan", to_phase="run",
+                project, "demo", from_phase="plan", to_phase="execute",
                 executor="codex", artifacts=[], status="OK",
             )
 
@@ -1164,7 +1164,7 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             self._write_committed_journal(project, "demo-change")
 
             result = CONTEXT.prepare_context(
-                project, change="demo-change", phase="run", executor="codebuddy"
+                project, change="demo-change", phase="execute", executor="codebuddy"
             )
 
             self.assertTrue(result["ok"], result)
@@ -1180,7 +1180,7 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             self._write_committed_journal(project, "demo-change")
 
             CONTEXT.prepare_context(
-                project, change="demo-change", phase="run", executor="codebuddy"
+                project, change="demo-change", phase="execute", executor="codebuddy"
             )
 
             view = CONTEXT.context_view(project, "demo-change")
@@ -1203,7 +1203,7 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             CONTEXT.bootstrap_plan(project, change="demo-change", executor="codebuddy")
 
             result = CONTEXT.prepare_context(
-                project, change="demo-change", phase="run", executor="codebuddy"
+                project, change="demo-change", phase="execute", executor="codebuddy"
             )
 
             self.assertFalse(result["ok"], result)
@@ -1222,7 +1222,7 @@ class V2PlanHandoffBootstrapTests(unittest.TestCase):
             journal.write_text(json.dumps(payload), encoding="utf-8")
 
             result = CONTEXT.prepare_context(
-                project, change="demo-change", phase="run", executor="codebuddy"
+                project, change="demo-change", phase="execute", executor="codebuddy"
             )
 
             self.assertFalse(result["ok"], result)
@@ -1326,7 +1326,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             first = CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="codex",
                 ttl_seconds=60,
             )
@@ -1336,7 +1336,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             (state / "context-lease.json").unlink()
 
             second = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codebuddy"
+                project, change="change", phase="execute", executor="codebuddy"
             )
 
             self.assertTrue(second["ok"], second)
@@ -1348,7 +1348,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="codex",
                 ttl_seconds=60,
             )
@@ -1356,7 +1356,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             (state / "context-lease.json").unlink()
 
             CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codebuddy"
+                project, change="change", phase="execute", executor="codebuddy"
             )
 
             # 接管必须落盘。以前过期租约允许任何执行者顶替，但只在返回体里挂一个
@@ -1375,7 +1375,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="codex",
                 ttl_seconds=1,
             )
@@ -1386,7 +1386,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             lease_path.write_text(json.dumps(lease), encoding="utf-8")
 
             second = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codebuddy"
+                project, change="change", phase="execute", executor="codebuddy"
             )
 
             self.assertTrue(second["ok"], second)
@@ -1411,7 +1411,7 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             (state / "context-lease.json").unlink()
 
             second = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codex"
+                project, change="change", phase="execute", executor="codex"
             )
 
             self.assertFalse(second["ok"], second)
@@ -1425,13 +1425,13 @@ class SamePhaseAdoptionTests(unittest.TestCase):
             CONTEXT.prepare_context(
                 project,
                 change="change",
-                phase="run",
+                phase="execute",
                 executor="codex",
                 ttl_seconds=3600,
             )
 
             second = CONTEXT.prepare_context(
-                project, change="change", phase="run", executor="codebuddy"
+                project, change="change", phase="execute", executor="codebuddy"
             )
 
             self.assertFalse(second["ok"], second)

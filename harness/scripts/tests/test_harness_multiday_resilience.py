@@ -84,26 +84,26 @@ class MultiDayResilienceTests(unittest.TestCase):
     def test_attempts_are_typed_and_timing_dimensions_conserve_wall_clock(self) -> None:
         events = [
             {
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.start",
                 "attempt": 1,
                 "timestamp": "2026-01-01T00:00:00+00:00",
             },
             {
-                "phase": "test",
+                "phase": "review",
                 "type": "phase.start",
                 "attempt": 1,
                 "timestamp": "2026-01-01T00:00:05+00:00",
             },
             {
-                "phase": "run",
+                "phase": "execute",
                 "type": "phase.end",
                 "attempt": 1,
                 "status": "OK",
                 "timestamp": "2026-01-01T00:00:10+00:00",
             },
             {
-                "phase": "test",
+                "phase": "review",
                 "type": "phase.end",
                 "attempt": 1,
                 "status": "OK",
@@ -293,7 +293,7 @@ class MultiDayResilienceTests(unittest.TestCase):
         event = {
             "schema_version": 3,
             "id": "artifact-1",
-            "phase": "run",
+            "phase": "execute",
             "type": "artifact",
             "path": "shared.bin",
             "kind": "test-data",
@@ -344,7 +344,7 @@ class MultiDayResilienceTests(unittest.TestCase):
         target.mkdir(parents=True)
         capsule = {
             "schemaVersion": 1,
-            "phase": "run",
+            "phase": "execute",
             "runId": "active",
             "executionRoot": str(target.resolve()),
             "closeTransaction": {"status": "CLOSING"},

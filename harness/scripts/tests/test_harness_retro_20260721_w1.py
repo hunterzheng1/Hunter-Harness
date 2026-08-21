@@ -158,10 +158,10 @@ class PassRateAndStageTest(unittest.TestCase):
             change_dir = Path(tmp) / "chg"
             change_dir.mkdir()
             events = [
-                {"type": "phase.end", "phase": "run", "status": "OK", "id": "e1"},
+                {"type": "phase.end", "phase": "execute", "status": "OK", "id": "e1"},
                 {
                     "type": "issue",
-                    "phase": "run",
+                    "phase": "execute",
                     "severity": "warning",
                     "note": "partial evidence: INT scenarios not batch-run",
                     "id": "e2",
@@ -282,7 +282,7 @@ class CheckStatusMinSetTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             change_dir = self._bare_change(Path(tmp))
             (change_dir / "events.ndjson").write_text(
-                '{"type":"phase.end","phase":"run","status":"OK","id":"1"}\n',
+                '{"type":"phase.end","phase":"execute","status":"OK","id":"1"}\n',
                 encoding="utf-8",
             )
             (change_dir / "evidence").mkdir()
@@ -324,7 +324,7 @@ class CheckStatusMinSetTest(unittest.TestCase):
             (change_dir / "plans").mkdir()
             (change_dir / "plans" / "chg-plan.md").write_text("# plan\n", encoding="utf-8")
             (change_dir / "events.ndjson").write_text(
-                '{"type":"phase.end","phase":"run","status":"OK","id":"1"}\n',
+                '{"type":"phase.end","phase":"execute","status":"OK","id":"1"}\n',
                 encoding="utf-8",
             )
             (change_dir / "reports" / "test").mkdir(parents=True)
@@ -344,7 +344,7 @@ class CheckStatusMinSetTest(unittest.TestCase):
             (change_dir / "plans").mkdir()
             (change_dir / "plans" / "chg-plan.md").write_text("# plan\n", encoding="utf-8")
             (change_dir / "events.ndjson").write_text(
-                '{"type":"phase.end","phase":"run","status":"OK","id":"1"}\n',
+                '{"type":"phase.end","phase":"execute","status":"OK","id":"1"}\n',
                 encoding="utf-8",
             )
             (change_dir / "evidence").mkdir()

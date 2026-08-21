@@ -703,8 +703,8 @@ describe("PlanClassificationModule legacy compatibility", () => {
     )) as Record<string, unknown>;
     legacy.tier = "fast";
     legacy.signals = ["docs-only"];
-    legacy.defaultPhases = ["plan", "run", "archive"];
-    legacy.plannedPhases = ["plan", "run", "archive"];
+    legacy.defaultPhases = ["plan", "execute", "archive"];
+    legacy.plannedPhases = ["plan", "execute", "archive"];
     legacy.requiredValidations = ["unitTest"];
     legacy.skippedPhases = [{
       phase: "submit",

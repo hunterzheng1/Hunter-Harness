@@ -39,7 +39,7 @@ events = load_module("harness_events", "harness_events.py")
 
 
 def ev(ts: str, etype: str, **extra):
-    payload = {"timestamp": ts, "type": etype, "phase": "run"}
+    payload = {"timestamp": ts, "type": etype, "phase": "execute"}
     payload.update(extra)
     return payload
 
@@ -190,7 +190,7 @@ class AttemptInvocationTests(unittest.TestCase):
                 "--change-dir",
                 str(change_dir),
                 "--phase",
-                "run",
+                "execute",
                 "--attempt",
                 "1",
                 "--json",
@@ -273,7 +273,7 @@ class AppendOnlyProjectionTests(unittest.TestCase):
                             "--change-dir",
                             str(change_dir),
                             "--phase",
-                            "run",
+                            "execute",
                             "--type",
                             "verification",
                             "--name",
@@ -291,7 +291,7 @@ class AppendOnlyProjectionTests(unittest.TestCase):
                 "--change-dir",
                 str(change_dir),
                 "--phase",
-                "run",
+                "execute",
                 "--type",
                 "correction",
                 "--target-event-id",

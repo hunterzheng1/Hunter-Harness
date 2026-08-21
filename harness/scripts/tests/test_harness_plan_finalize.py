@@ -63,7 +63,7 @@ def seed_staging(root: Path, change: str = "demo") -> None:
         valid_markdown(change, "Scenarios")
         + "\n| ID | 优先级 | 场景 | 验证方式 | owner phase |\n"
         "|---|---|---|---|---|\n"
-        "| UT-001 | P0 | approved behavior | unit test | test |\n",
+        "| UT-001 | P0 | approved behavior | unit test | execute |\n",
     )
     write(root / "meta" / "gate-policy.json", json.dumps({"schemaVersion": 1}))
     write(
@@ -474,17 +474,17 @@ class OwnerPhaseParseTests(unittest.TestCase):
             write(
                 staging / "plans" / f"{change}-plan.md",
                 self._plan_with_owner_phase(change, [
-                    "| 1 | C1 | task one | run | code done | test |",
-                    "| 2 | C2 | task two | test | tests pass | test |",
+                    "| 1 | C1 | task one | execute | code done | execute |",
+                    "| 2 | C2 | task two | execute | tests pass | execute |",
                 ]),
             )
 
             tasks = finalizer.parse_plan_tasks(staging / "plans" / f"{change}-plan.md")
             self.assertEqual(len(tasks), 2)
-            self.assertEqual(tasks[0]["ownerPhase"], "run")
+            self.assertEqual(tasks[0]["ownerPhase"], "execute")
             self.assertEqual(tasks[0]["implementationDoneWhen"], "code done")
-            self.assertEqual(tasks[0]["verificationPhase"], "test")
-            self.assertEqual(tasks[1]["ownerPhase"], "test")
+            self.assertEqual(tasks[0]["verificationPhase"], "execute")
+            self.assertEqual(tasks[1]["ownerPhase"], "execute")
 
     def test_parse_plan_owner_phase_optional(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -597,8 +597,8 @@ class OwnerPhaseParseTests(unittest.TestCase):
             write(
                 staging / "plans" / f"{change}-plan.md",
                 self._plan_with_owner_phase(change, [
-                    "| 1 | C1 | task one | run | code done | test |",
-                    "| 2 | C2 | task two | test | tests pass | test |",
+                    "| 1 | C1 | task one | execute | code done | execute |",
+                    "| 2 | C2 | task two | execute | tests pass | execute |",
                 ]),
             )
 
@@ -616,8 +616,8 @@ class OwnerPhaseParseTests(unittest.TestCase):
             data = json.loads(checkpoints_path.read_text(encoding="utf-8"))
             self.assertIn("tasks", data)
             self.assertEqual(len(data["tasks"]), 2)
-            self.assertEqual(data["tasks"][0]["ownerPhase"], "run")
-            self.assertEqual(data["tasks"][1]["ownerPhase"], "test")
+            self.assertEqual(data["tasks"][0]["ownerPhase"], "execute")
+            self.assertEqual(data["tasks"][1]["ownerPhase"], "execute")
 
 
 class ScenarioManifestTests(unittest.TestCase):
@@ -633,12 +633,12 @@ class ScenarioManifestTests(unittest.TestCase):
             "## C5: CLI 默认 compact 输出\n\n"
             "| ID | 优先级 | 场景 | 验证方式 | owner phase | executable test ID | test file | test title |\n"
             "|---|---|---|---|---|---|---|---|\n"
-            "| C5-S1 | P0 | knowledge query 默认返回 compact JSON | assert matches not in compact output | test | tests/query.spec.ts::compact | tests/query.spec.ts | compact output |\n"
-            "| C5-S2 | P1 | knowledge query --verbose 返回完整 matches | assert matches in verbose output | test | tests/query.spec.ts::verbose | tests/query.spec.ts | verbose output |\n\n"
+            "| C5-S1 | P0 | knowledge query 默认返回 compact JSON | assert matches not in compact output | execute | tests/query.spec.ts::compact | tests/query.spec.ts | compact output |\n"
+            "| C5-S2 | P1 | knowledge query --verbose 返回完整 matches | assert matches in verbose output | execute | tests/query.spec.ts::verbose | tests/query.spec.ts | verbose output |\n\n"
             "## C7: common profile\n\n"
             "| ID | 优先级 | 场景 | 验证方式 | owner phase | executable test ID | test file | test title |\n"
             "|---|---|---|---|---|---|---|---|\n"
-            "| C7-S1 | P0 | common_root 从 git common dir 解析 | assert common_root(worktree) == main project root | test | tests/worktree.spec.ts::common-root | tests/worktree.spec.ts | common root |\n"
+            "| C7-S1 | P0 | common_root 从 git common dir 解析 | assert common_root(worktree) == main project root | execute | tests/worktree.spec.ts::common-root | tests/worktree.spec.ts | common root |\n"
         )
 
     def test_finalize_outputs_scenario_manifest(self) -> None:
@@ -673,7 +673,7 @@ class ScenarioManifestTests(unittest.TestCase):
             s1 = data["scenarios"][0]
             self.assertEqual(s1["id"], "C5-S1")
             self.assertEqual(s1["priority"], "P0")
-            self.assertEqual(s1["ownerPhase"], "test")
+            self.assertEqual(s1["ownerPhase"], "execute")
             # P0 scenario has requiredEvidenceKind
             self.assertIn("requiredEvidenceKind", s1)
             self.assertEqual(
@@ -1135,7 +1135,7 @@ class PlanVerifyV2Tests(unittest.TestCase):
         artifact_type = Path(rel).stem.replace("-", "_")
         content: dict[str, Any] = {
             "plan_profile": {"mode": "standard", "capabilities": [],
-                             "planned_phases": ["plan", "run", "test", "submit", "archive"],
+                             "planned_phases": ["plan", "execute", "submit", "archive"],
                              "required_validations": ["deterministic_check"]},
             "worktree": {"policy": "project_default", "requested": False},
             "implementation_checkpoints": {"tasks": [], "foundation_gate": "approved"},

@@ -19,14 +19,14 @@ class HeadlessContractTests(unittest.TestCase):
             ok=True,
             exit_code=0,
             change="demo",
-            phase="test",
+            phase="execute",
             result={"reused": False},
         )
         self.assertEqual(payload["schema_version"], 1)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["command"], "gate.close")
         self.assertEqual(payload["change"], "demo")
-        self.assertEqual(payload["phase"], "test")
+        self.assertEqual(payload["phase"], "execute")
         self.assertEqual(payload["exit_code"], 0)
         self.assertEqual(payload["warnings"], [])
         self.assertEqual(payload["errors"], [])
