@@ -338,7 +338,7 @@ status: approved
 | 取值 | `fast` / `standard` / `full` | `quick` / `standard` / `assurance` |
 | 写到哪 | `meta/gate-policy.json`（`schemaVersion:1`，camelCase） | `meta/plan-profile.json`（artifact 包装体，snake_case） |
 | 谁写 | `harness_gate.py classify`（阶段 0.5 由 bootstrap-plan 调起） | `hunter-harness plan finalize`（阶段 8 发布） |
-| 地位 | **门禁权威**：驱动 `requiredGateDag`、`requiredValidationsByPhase`，execute 开门读它 | **派生视图**：供展示与下游只读消费，门禁不读 |
+| 地位 | **classify 工作副本**：0.5 分类 + 0.6 阶段计划落盘处；未发布的 change 由它驱动门禁 | **门禁权威**：发布时把工作副本的门禁字段（DAG/validations/tier/source）并入 content 并哈希绑定；`harness_paths.load_change_gate_policy` v2 优先、工作副本回退 |
 | 输入 | 计划文档的「风险等级」正则 + capabilityGates 信号 | `risk_signals`（手填与命令推断取并集）+ 真实仓库 capabilities |
 
 **两者不共用文件名。** v2 发布对 `binding.ownership_paths` 逐个原子覆盖，若派生视图占用 `meta/gate-policy.json`，阶段 8 会把 classify 写的那份换成包装体，之后 `gate begin --phase execute` 直接 `POLICY_LOAD_FAILED`——`harness_gate.effective_workflow_policy` 读 `schemaVersion` 拿不到就 raise。
@@ -348,7 +348,7 @@ status: approved
 1. `risk_signals` 不再是纯手填。`plan evidence-pack` 按 `structured_input.tasks[].affected_paths`（主源）与 `git status --porcelain --untracked-files=all`（次源）经 marker 表推断信号（与 `harness_gate.py` classify 同一张表），**与手填取并集**——推断是安全地板，手填不能删除推断项；逐条信号在 `pack.context.signal_provenance` 标注 `declared / inferred / declared+inferred`。
 2. `capabilities` 由命令真实探测：`is_git`（`rev-parse --is-inside-work-tree`）、`has_remote`（`git remote` 非空）、`uses_worktree`（`--git-dir` ≠ `--git-common-dir`，或 `machine.worktree_policy=required`）；探针不可用（非 git 目录/无 git）则全 false 并标注 `provenance: "unavailable"`。阶段 0.6 `configure-plan` 落的 `meta/gate-policy.json` `plannedPhases` 也会被读取（顶层 `plannedPhases` 为字符串数组才视为权威形状，v2 包装体/坏 JSON 一律回退派生），可选阶段照它取舍，required 阶段缺失时保留并在 stdout 告警 `phase_set_required_retained`，来源标注 `phase_set_source: gate-policy | derived`。
 
-**仍不是门禁权威**：以上让派生视图"配"当权威，但权威切换（gate 改读 v2 gate_policy、双读对账）未做——`meta/plan-profile.json` 依旧是派生视图，门禁不读。provenance 标注只进 stdout 与 `pack.context`，不进任何哈希身份字段。
+**权威已切换（2026-08）**：`meta/plan-profile.json` 是门禁权威。发布时 `plan evidence-pack` 把工作副本的 `requiredGateDag`/`requiredValidationsByPhase`/`tier`/`source` 并入 v2 gate_policy content（白名单键，哈希绑定），`harness_paths.load_change_gate_policy` 在 gate/context/phase/archive 各处统一 v2 优先：快照完整（含 `mode`/`planned_phases`/`required_gate_dag`/`required_validations_by_phase`）即以它为准；0.2.92-era 的不完整快照与未发布的 change 回退工作副本。两者并存且 `plannedPhases`（canonical 去重后）不一致 → drift 报告，以 v2 为准——发布后改写工作副本本身就是异常。provenance 标注只进 stdout 与 `pack.context`，不进任何哈希身份字段。
 
 `meta/implementation-checkpoints.json` 的情况不同：v2 包装体里的 `content.foundation_gate` 信息是够的，所以门禁在**只读侧**解包（`checkpoint_status` 同时认 `checkpoints[]`、顶层 `foundationGate` 与 v2 包装体三种形状），不改文件名。注意写回路径（`gate checkpoint approve`）仍然操作原始文档——用归一化结构覆盖会破坏 v2 产物的哈希绑定。
 

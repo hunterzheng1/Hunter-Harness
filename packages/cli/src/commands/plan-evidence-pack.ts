@@ -400,18 +400,26 @@ const stableId = (prefix: string, body: unknown): string =>
 
 
 /**
- * 阶段 0.6 的 plannedPhases 接缝：读 configure-plan 落在
- * `.harness/changes/<change_key>/meta/gate-policy.json` 的阶段计划。
+ * 阶段 0.6 的 plannedPhases 接缝 + 门禁权威快照：读 configure-plan 落在
+ * `.harness/changes/<change_key>/meta/gate-policy.json` 的阶段计划与门禁字段。
  *
  * 权威形状校验：顶层 `plannedPhases` 必须是字符串数组——v2 包装体（同名不同形，
  * reference.md:377 警告过）、坏 JSON、文件缺失一律回退 derived。旧阶段名经
  * LEGACY_PLAN_PHASE_ALIASES 归一并保序去重（与 Python `_phase_plan` 同语义）；
  * 出现未知阶段名视为整份计划不可读（fail-safe 回退 derived，与 Python 降级同向）。
+ *
+ * `document` 是原样文档（门禁权威快照的原料）：requiredGateDag /
+ * requiredValidationsByPhase 等由调用方按白名单并入 v2 gate_policy。
  */
-async function readGatePolicyPlannedPhases(
+interface GatePolicySnapshot {
+  readonly plannedPhases: readonly PlanPhase[];
+  readonly document: Record<string, unknown>;
+}
+
+async function readGatePolicySnapshot(
   cwd: string,
   changeKey: string
-): Promise<readonly PlanPhase[] | undefined> {
+): Promise<GatePolicySnapshot | undefined> {
   let raw: unknown;
   try {
     raw = JSON.parse(
@@ -431,7 +439,28 @@ async function readGatePolicyPlannedPhases(
   if (mapped.some((name) => !(PLAN_PHASES as readonly string[]).includes(name))) {
     return undefined;
   }
-  return [...new Set(mapped as PlanPhase[])];
+  return { plannedPhases: [...new Set(mapped as PlanPhase[])], document: raw };
+}
+
+/** 旧契约的 requiredValidationsByPhase 键（run/test）归一到 execute 并取并集。 */
+function canonicalValidationsByPhase(
+  value: unknown
+): Record<string, readonly string[]> | undefined {
+  if (!isRecord(value)) return undefined;
+  const merged: Record<string, string[]> = {};
+  for (const [key, validations] of Object.entries(value)) {
+    if (!Array.isArray(validations) || !validations.every((item) => typeof item === "string")) {
+      return undefined;
+    }
+    const canonical = (LEGACY_PLAN_PHASE_ALIASES as Record<string, string>)[key] ?? key;
+    if (!(PLAN_PHASES as readonly string[]).includes(canonical)) continue;
+    const bucket = merged[canonical] ?? [];
+    for (const item of validations as string[]) {
+      if (!bucket.includes(item)) bucket.push(item);
+    }
+    merged[canonical] = bucket;
+  }
+  return merged;
 }
 
 
@@ -577,7 +606,8 @@ export async function runPlanEvidencePack(
     // 阶段 0.6 接缝：configure-plan 落的 plannedPhases 不再被忽略。
     // 可选阶段取 planned ∩ optional；optional − planned 记为显式省略（绝不含 required，
     // 否则 outcome 翻 not_publishable）；planned 缺 required 时 required 仍保留并告警。
-    const gatePlanned = await readGatePolicyPlannedPhases(dependencies.cwd, input.change_key);
+    const gateSnapshot = await readGatePolicySnapshot(dependencies.cwd, input.change_key);
+    const gatePlanned = gateSnapshot?.plannedPhases;
     const phaseSetSource = gatePlanned === undefined ? "derived" : "gate-policy";
     const requestedOptional = gatePlanned === undefined
       ? []
@@ -753,8 +783,27 @@ export async function runPlanEvidencePack(
       approval_package, approval_package_input, approval_receipt, structured_input
     } as unknown as HumanArtifactBuildInput;
     const human = model.buildHumanArtifacts(human_input);
+    // 门禁权威快照：classify 在 0.5 落的 DAG/tier/source 与 0.6 计划一并并入
+    // v2 gate_policy content（白名单键，哈希绑定）——gate 侧由此可优先读
+    // plan-profile.json，工作副本（meta/gate-policy.json）降级为回退。
+    const gatePolicyOverlay = gateSnapshot === undefined
+      ? undefined
+      : {
+          ...(typeof gateSnapshot.document.tier === "string"
+            ? { tier: gateSnapshot.document.tier } : {}),
+          ...(typeof gateSnapshot.document.source === "string"
+            ? { source: gateSnapshot.document.source } : {}),
+          ...(gateSnapshot.document.requiredGateDag !== undefined
+            ? { required_gate_dag: gateSnapshot.document.requiredGateDag } : {}),
+          ...(canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) !== undefined
+            ? { required_validations_by_phase:
+                canonicalValidationsByPhase(gateSnapshot.document.requiredValidationsByPhase) }
+            : {}),
+          phase_set_source: phaseSetSource
+        };
     const machine_input = { schema_version: 2 as const, profile, phase_set,
-      capabilities: input.machine.capabilities as never, worktree_policy: input.machine.worktree_policy as never };
+      capabilities: input.machine.capabilities as never, worktree_policy: input.machine.worktree_policy as never,
+      ...(gatePolicyOverlay === undefined ? {} : { gate_policy_overlay: gatePolicyOverlay }) };
     const machine = model.deriveMachineArtifacts({ ...machine_input, human_input, human });
     const detail = model.deriveImplementationDetail({
       // HP-06：detail mode 唯一事实源是 profile.mode（分类结果）；自然输入的 mode 字段已弃用

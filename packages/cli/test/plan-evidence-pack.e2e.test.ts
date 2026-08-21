@@ -503,4 +503,46 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
     // affected_paths 指向 .ts 源文件：production_code 同时被手填与推断命中
     expect(sources).toContainEqual({ signal: "production_code", source: "declared+inferred" });
   });
+
+  it("门禁权威快照：工作副本的 DAG/validations 并入 v2 gate_policy content", async () => {
+    const pythonPolicy = {
+      schemaVersion: 1,
+      tier: "standard",
+      source: "default-standard",
+      plannedPhases: ["plan", "execute", "submit", "archive"],
+      requiredValidations: ["compile", "unitTest", "unitTestFull"],
+      requiredValidationsByPhase: { execute: ["compile", "unitTest", "unitTestFull"] },
+      requiredGateDag: {
+        schemaVersion: 1,
+        nodes: [{ id: "validation:compile", kind: "validation", dependsOn: [] }],
+        edges: []
+      }
+    };
+    const { pack } = await packWithGatePolicy(pythonPolicy);
+    const gatePolicy = (pack.trusted as unknown as {
+      machine: { gate_policy: { content: Record<string, unknown> } }
+    }).machine.gate_policy;
+    // 权威切换（2026-08）：v2 产物自带门禁字段，gate 无需再读工作副本
+    expect(gatePolicy.content.tier).toBe("standard");
+    expect(gatePolicy.content.source).toBe("default-standard");
+    expect(gatePolicy.content.required_gate_dag).toEqual(pythonPolicy.requiredGateDag);
+    expect(gatePolicy.content.required_validations_by_phase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+    expect(gatePolicy.content.phase_set_source).toBe("gate-policy");
+    // 白名单之外的 Python 字段不得混入身份内容
+    expect(gatePolicy.content).not.toHaveProperty("classifiedAt");
+  });
+
+  it("旧契约 run/test validations 键并入时归一到 execute 取并集", async () => {
+    const { pack } = await packWithGatePolicy({
+      schemaVersion: 1,
+      plannedPhases: ["plan", "run", "test", "archive"],
+      requiredValidationsByPhase: { run: ["compile", "unitTest"], test: ["unitTestFull"] }
+    });
+    const gatePolicy = (pack.trusted as unknown as {
+      machine: { gate_policy: { content: Record<string, unknown> } }
+    }).machine.gate_policy;
+    expect(gatePolicy.content.required_validations_by_phase)
+      .toEqual({ execute: ["compile", "unitTest", "unitTestFull"] });
+  });
 });

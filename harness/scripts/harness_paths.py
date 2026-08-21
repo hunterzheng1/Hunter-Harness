@@ -231,6 +231,120 @@ def load_change_contract(contract_dir: Path) -> dict[str, Any]:
     return data
 
 
+def _unpack_v2_gate_policy(wrapper: Any) -> dict[str, Any] | None:
+    """meta/plan-profile.json（v2 包装体）→ Python schemaVersion:1 形状。
+
+    门禁权威所需的四个字段（mode/planned_phases/required_gate_dag/
+    required_validations_by_phase）缺一即视为不完整快照（0.2.92-era 的发布
+    没有门禁 overlay），调用方回退工作副本。返回 None 表示不可用作权威。
+    """
+    if not isinstance(wrapper, dict):
+        return None
+    if wrapper.get("artifact_type") != "gate_policy":
+        return None
+    content = wrapper.get("content")
+    if not isinstance(content, dict):
+        return None
+    planned = content.get("planned_phases")
+    dag = content.get("required_gate_dag")
+    by_phase = content.get("required_validations_by_phase")
+    if (
+        not isinstance(content.get("mode"), str)
+        or not (isinstance(planned, list) and all(isinstance(p, str) for p in planned))
+        or not isinstance(dag, dict)
+        or not isinstance(by_phase, dict)
+    ):
+        return None
+    policy: dict[str, Any] = {
+        "schemaVersion": 1,
+        "tier": content.get("tier"),
+        "source": content.get("source"),
+        "plannedPhases": list(planned),
+        "requiredValidations": list(content.get("required_validations") or []),
+        "requiredValidationsByPhase": dict(by_phase),
+        "requiredGateDag": dict(dag),
+    }
+    return policy
+
+
+def load_change_gate_policy(change_dir: Path) -> dict[str, Any]:
+    """v2-first 的每 change 门禁策略加载（权威切换 2026-08）。
+
+    meta/plan-profile.json（v2 发布快照，门禁字段已哈希绑定）优先于
+    meta/gate-policy.json（classify 在 0.5 写的工作副本）。v2 快照不完整
+    或缺失 → 回退工作副本。两者并存且 plannedPhases（canonical 归一去重
+    后）不一致 → drift 报告，策略以 v2 为准（已审批定稿 > 工作副本；
+    发布后改写工作副本本身就是异常）。
+
+    返回 ``{"policy": <schemaVersion:1 dict 或 None>, "source":
+    "v2-plan-profile" | "gate-policy-json" | None, "drift": dict | None,
+    "working_error": bool}``——``working_error`` 区分"工作副本不存在"与
+    "存在但不可读"（`_phase_plan` 的 legacy:policy-unreadable 语义靠它）。
+    """
+    change_dir = Path(change_dir)
+    v2_policy: dict[str, Any] | None = None
+    v2_path = change_dir / "meta" / "plan-profile.json"
+    if v2_path.is_file():
+        try:
+            v2_policy = _unpack_v2_gate_policy(
+                json.loads(v2_path.read_text(encoding="utf-8-sig"))
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            v2_policy = None
+
+    working: dict[str, Any] | None = None
+    working_error = False
+    working_path = change_dir / "meta" / "gate-policy.json"
+    if working_path.is_file():
+        try:
+            candidate = json.loads(working_path.read_text(encoding="utf-8-sig"))
+            # 工作副本保持与历史一致的宽松接受：任何 dict 都交给下游各自的
+            # 形状校验（effective_workflow_policy 查 schemaVersion，reconcile
+            # 查 requiredGateDag），加载器不提前收紧。
+            if isinstance(candidate, dict):
+                working = candidate
+            else:
+                working_error = True
+        except (OSError, ValueError, json.JSONDecodeError):
+            working_error = True
+
+    drift: dict[str, Any] | None = None
+    if v2_policy is not None and working is not None:
+        canonical = lambda names: sorted(
+            {name for raw in (names or []) if (name := resolve_phase_name(raw))}
+        )
+        v2_phases = canonical(v2_policy.get("plannedPhases"))
+        working_phases = canonical(working.get("plannedPhases"))
+        if v2_phases != working_phases:
+            drift = {
+                "kind": "plannedPhases",
+                "v2": v2_phases,
+                "gate_policy_json": working_phases,
+                "resolution": "v2-plan-profile wins (approved publication snapshot)",
+            }
+
+    if v2_policy is not None:
+        return {
+            "policy": v2_policy,
+            "source": "v2-plan-profile",
+            "drift": drift,
+            "working_error": working_error,
+        }
+    if working is not None:
+        return {
+            "policy": working,
+            "source": "gate-policy-json",
+            "drift": None,
+            "working_error": False,
+        }
+    return {
+        "policy": None,
+        "source": None,
+        "drift": None,
+        "working_error": working_error,
+    }
+
+
 def contract_layout_kind(contract: dict[str, Any]) -> str:
     """``split-v1`` when the contract declares a separate runtime root."""
     ownership = contract.get("stateOwnership")

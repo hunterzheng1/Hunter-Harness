@@ -162,6 +162,13 @@ export interface MachineArtifactDerivationInput {
   readonly worktree_policy: "project_default" | "required" | "forbidden";
   readonly human_input: HumanArtifactBuildInput;
   readonly human: HumanArtifactSet;
+  /**
+   * Python 门禁策略快照（可选）：classify 在阶段 0.5 写入 meta/gate-policy.json 的
+   * requiredGateDag / requiredValidationsByPhase / tier / source 等门禁字段。
+   * evidence-pack 读出后以白名单键并入 gate_policy content 并哈希绑定——v2 产物
+   * 由此成为门禁权威（gate 优先读 plan-profile.json），不再依赖工作副本漂移风险。
+   */
+  readonly gate_policy_overlay?: Readonly<Record<string, unknown>>;
 }
 
 export interface MachineArtifact extends ArtifactIdentity {

@@ -4,7 +4,34 @@
 
 > 诊断第 5/6/8 项闭环：run+test 合并为 execute（方案 c）、evidence-pack 接通
 > 推断与真实 capabilities、legacy 退役补上采纳度度量。另修复一个 main 上长红的
-> 测试漂移（`check_status` 内容扫描停用契约未同步）。
+> 测试漂移（`check_status` 内容扫描停用契约未同步）。后续追加两项用户决策：
+> legacy 计划管线写侧直接删除（解除采纳度 gating）、PlanProfile 权威切换落地。
+
+### Removed — legacy 计划管线写侧（BREAKING）
+
+`harness_plan_finalize.py` 不再提供 `finalize`/`republish` 子命令与 staging 校验；
+新 change 的发布唯一入口为 `npx hunter-harness plan evidence-pack` + `plan
+finalize`（v2）。计划修订走 v2 重跑流（`context.attempt` 递增 +
+`expected_baseline=present` 带上次 manifest 哈希/generation）。采纳度 gating 由
+用户决策解除（样本量记录在 roadmap 14）；`harness_adoption_metrics.py` 保留作
+事后审计轨迹。TS 侧 `legacy-lifecycle-projection.ts`（HP-09 events.ndjson 投影）
+一并移除。**不移除读侧**：`verify_plan`（legacy receipt 与 v2 事务/journal 双形状，
+`gate.validate_plan_handoff` 依赖）、v2 manifest/checkpoints 解包、plan/scenario
+表解析——历史 change 的 legacy 产物保持可读。
+
+### Changed — PlanProfile 权威切换：`meta/plan-profile.json` 成为门禁权威
+
+诊断第 5 项权威切换落地。`plan evidence-pack` 发布时把 classify 工作副本
+（`meta/gate-policy.json`）的门禁字段（`requiredGateDag`/
+`requiredValidationsByPhase`/`tier`/`source`）以白名单键并入 v2 gate_policy
+content 并哈希绑定；`harness_paths.load_change_gate_policy` 在
+gate/context/phase/archive 各处统一 **v2 优先**：快照完整（含
+`mode`/`planned_phases`/`required_gate_dag`/`required_validations_by_phase`）
+即以它为准；0.2.92-era 的不完整快照与未发布的 change 回退工作副本。两者并存且
+`plannedPhases`（canonical 去重后）不一致 → drift 报告，以 v2 为准——发布后改写
+工作副本本身就是异常。TS 侧 `MachineArtifactDerivationInput` 新增可选
+`gate_policy_overlay`（白名单并入 + source_hashes 记录）；旧契约 run/test
+validations 键并入时归一到 execute 取并集。
 
 ### Changed — run+test 合并为 execute（方案 c，review 保留独立阶段）
 

@@ -270,14 +270,16 @@ def _phase_plan(contract_root: Path) -> tuple[list[str] | None, str]:
 
     未知名先过 LEGACY_PHASE_ALIASES 读时映射（阶段改名后历史 change 靠它继续可读），
     仍然解析不了才降级，并把原因与具体阶段名带在 source 里。
+
+    权威切换（2026-08）：v2 发布快照（plan-profile.json）优先，classify 工作
+    副本回退——发布后的阶段计划以已审批快照为准。
     """
-    policy_path = contract_root / "meta" / "gate-policy.json"
-    if not policy_path.is_file():
+    loaded = hpaths.load_change_gate_policy(contract_root)
+    policy = loaded.get("policy")
+    if policy is None:
+        if loaded.get("working_error"):
+            return None, "legacy:policy-unreadable"
         return None, "legacy"
-    try:
-        policy = _read_json(policy_path)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None, "legacy:policy-unreadable"
     unknown: list[str] = []
     for field, source in (
         ("plannedPhases", "change"),

@@ -378,5 +378,130 @@ class CommonRootTests(unittest.TestCase):
         self.assertEqual(result, non_repo.resolve())
 
 
+
+
+class V2GatePolicyLoaderTests(unittest.TestCase):
+    """权威切换（2026-08）：load_change_gate_policy 的 v2 优先 / 回退 / 漂移语义。
+
+    meta/plan-profile.json（v2 发布快照，门禁字段哈希绑定）是门禁权威；
+    meta/gate-policy.json 降级为 classify 工作副本（未发布的 change 仍靠它）。
+    """
+
+    def _v2_wrapper(self, **content_overrides) -> dict:
+        content = {
+            "mode": "standard",
+            "capabilities": ["api"],
+            "planned_phases": ["plan", "execute", "submit", "archive"],
+            "required_validations": ["compile", "unitTest", "unitTestFull"],
+            "tier": "standard",
+            "source": "default-standard",
+            "required_gate_dag": {"schemaVersion": 1, "nodes": [], "edges": []},
+            "required_validations_by_phase": {
+                "execute": ["compile", "unitTest", "unitTestFull"]
+            },
+            "phase_set_source": "gate-policy",
+        }
+        content.update(content_overrides)
+        return {
+            "schema_version": 2,
+            "artifact_type": "gate_policy",
+            "content_hash": "sha256:" + "a" * 64,
+            "artifact_id": "plan_artifact:gate_policy:" + "a" * 64,
+            "source_hashes": {},
+            "generator_version": 1,
+            "content": content,
+        }
+
+    def _change_dir(self, tmp: str) -> Path:
+        change = Path(tmp) / ".harness" / "changes" / "demo"
+        (change / "meta").mkdir(parents=True)
+        return change
+
+    def test_v2_snapshot_is_authoritative_without_a_working_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_dir(tmp)
+            (change / "meta" / "plan-profile.json").write_text(
+                json.dumps(self._v2_wrapper()), encoding="utf-8"
+            )
+            result = paths.load_change_gate_policy(change)
+        self.assertEqual(result["source"], "v2-plan-profile")
+        self.assertIsNone(result["drift"])
+        policy = result["policy"]
+        # 解包回 Python schemaVersion:1 形状，下游消费零改动。
+        self.assertEqual(policy["schemaVersion"], 1)
+        self.assertEqual(
+            policy["plannedPhases"], ["plan", "execute", "submit", "archive"]
+        )
+        self.assertEqual(policy["tier"], "standard")
+        self.assertEqual(
+            policy["requiredValidationsByPhase"],
+            {"execute": ["compile", "unitTest", "unitTestFull"]},
+        )
+        self.assertEqual(policy["requiredGateDag"]["schemaVersion"], 1)
+
+    def test_incomplete_v2_snapshot_falls_back_to_the_working_copy(self) -> None:
+        # 0.2.92-era 发布没有门禁 overlay（缺 required_gate_dag），不能当权威。
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_dir(tmp)
+            (change / "meta" / "plan-profile.json").write_text(
+                json.dumps(self._v2_wrapper(required_gate_dag=None,
+                                            required_validations_by_phase=None)),
+                encoding="utf-8",
+            )
+            # 清掉 None 键模拟旧产物
+            wrapper = json.loads(
+                (change / "meta" / "plan-profile.json").read_text(encoding="utf-8")
+            )
+            wrapper["content"] = {
+                key: value
+                for key, value in wrapper["content"].items()
+                if value is not None
+            }
+            (change / "meta" / "plan-profile.json").write_text(
+                json.dumps(wrapper), encoding="utf-8"
+            )
+            (change / "meta" / "gate-policy.json").write_text(
+                json.dumps({"schemaVersion": 1, "plannedPhases": ["plan", "archive"]}),
+                encoding="utf-8",
+            )
+            result = paths.load_change_gate_policy(change)
+        self.assertEqual(result["source"], "gate-policy-json")
+        self.assertEqual(result["policy"]["plannedPhases"], ["plan", "archive"])
+
+    def test_drift_is_reported_and_v2_wins(self) -> None:
+        # 发布后改写工作副本是异常：漂移报告 + 已审批快照为准（旧名归一后比较）。
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_dir(tmp)
+            (change / "meta" / "plan-profile.json").write_text(
+                json.dumps(self._v2_wrapper()), encoding="utf-8"
+            )
+            (change / "meta" / "gate-policy.json").write_text(
+                json.dumps({
+                    "schemaVersion": 1,
+                    "plannedPhases": ["plan", "run", "test", "archive"],
+                }),
+                encoding="utf-8",
+            )
+            result = paths.load_change_gate_policy(change)
+        self.assertEqual(result["source"], "v2-plan-profile")
+        self.assertEqual(
+            result["drift"]["v2"], ["archive", "execute", "plan", "submit"]
+        )
+        self.assertEqual(
+            result["drift"]["gate_policy_json"], ["archive", "execute", "plan"]
+        )
+
+    def test_missing_and_unreadable_working_copies_are_distinguished(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = self._change_dir(tmp)
+            missing = paths.load_change_gate_policy(change)
+            (change / "meta" / "gate-policy.json").write_text("{not json", encoding="utf-8")
+            unreadable = paths.load_change_gate_policy(change)
+        self.assertIsNone(missing["policy"])
+        self.assertFalse(missing["working_error"])
+        self.assertIsNone(unreadable["policy"])
+        self.assertTrue(unreadable["working_error"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -483,7 +483,7 @@ function machineArtifact(type: MachineArtifact["artifact_type"], human: HumanArt
 
 function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput): MachineArtifactSet {
   if (!plainRecord(input) || !exact(input, ["schema_version", "profile", "phase_set", "capabilities",
-    "worktree_policy", "human_input", "human"]) || input.schema_version !== 2 ||
+    "worktree_policy", "human_input", "human"], ["gate_policy_overlay"]) || input.schema_version !== 2 ||
     input.human_input.schema_version !== 2 ||
     !planProfileSchema.safeParse(input.profile).success || !plannedPhaseSetSchema.safeParse(input.phase_set).success ||
     input.phase_set.profile_classification_hash !== input.profile.classification_hash ||
@@ -498,12 +498,26 @@ function deriveMachineArtifactsCanonical(input: MachineArtifactDerivationInput):
     !same(input.phase_set, input.human_input.phase_set)) return fail("PLAN_ARTIFACT_INPUT_INVALID");
   const human = expectedHuman;
   const caps = sortedUnique(input.capabilities);
+  // overlay 白名单：只并门禁权威所需键（Python classify 产物快照），
+  // 其余字段不得混入哈希身份内容。
+  const GATE_POLICY_OVERLAY_KEYS = [
+    "tier", "source", "required_gate_dag", "required_validations_by_phase",
+    "planned_phases_source", "capabilities_provenance", "phase_set_source"
+  ] as const;
+  const overlay = input.gate_policy_overlay === undefined
+    ? {}
+    : Object.fromEntries(GATE_POLICY_OVERLAY_KEYS
+        .filter((key) => input.gate_policy_overlay?.[key] !== undefined)
+        .map((key) => [key, input.gate_policy_overlay?.[key]]));
   const gate_policy = machineArtifact("gate_policy", human, {
     mode: input.profile.mode, capabilities: caps, planned_phases: input.phase_set.planned_phases,
-    required_validations: input.profile.required_validations
+    required_validations: input.profile.required_validations,
+    ...overlay
   }, {
     capabilities: stableHash(caps), plan_profile: stableHash(input.profile),
-    planned_phase_set: stableHash(input.phase_set)
+    planned_phase_set: stableHash(input.phase_set),
+    ...(input.gate_policy_overlay === undefined
+      ? {} : { gate_policy_overlay: stableHash(overlay) })
   });
   const worktree = machineArtifact("worktree", human,
     { policy: input.worktree_policy, requested: input.worktree_policy === "required" },

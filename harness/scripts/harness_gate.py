@@ -933,11 +933,17 @@ def validate_ledger_for_phase_close(
 def effective_workflow_policy(
     workflow: dict[str, Any], change_dir: Path
 ) -> dict[str, Any]:
-    """Overlay a classified change's per-phase gate requirements."""
-    path = change_dir / "meta" / "gate-policy.json"
-    if not path.is_file():
+    """Overlay a classified change's per-phase gate requirements.
+
+    权威切换（2026-08）：经 ``harness_paths.load_change_gate_policy`` 读取——
+    v2 发布快照（meta/plan-profile.json）优先，classify 工作副本回退。
+    返回值保持与历史一致的纯净 workflow 形状；source/drift 由需要记录的
+    调用方另行调用 ``load_change_gate_policy`` 获取（见 gate begin 路径）。
+    """
+    loaded = hp.load_change_gate_policy(change_dir)
+    document = loaded.get("policy")
+    if document is None:
         return workflow
-    document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or document.get("schemaVersion") != 1:
         raise ValueError("gate-policy.json must be a schemaVersion 1 object")
     by_phase = document.get("requiredValidationsByPhase")

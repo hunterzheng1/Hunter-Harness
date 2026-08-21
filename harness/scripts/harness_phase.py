@@ -76,10 +76,11 @@ def _write_json(path: Path, value: Any) -> None:
 
 
 def _final_sequence_contract(change_dir: Path) -> dict[str, Any] | None:
-    policy_path = change_dir / "meta" / "gate-policy.json"
-    if not policy_path.is_file():
+    # 权威切换（2026-08）：v2 发布快照优先，classify 工作副本回退。
+    loaded = hpaths.load_change_gate_policy(change_dir)
+    policy = loaded.get("policy")
+    if policy is None:
         return None
-    policy = _read_json(policy_path)
     declared = policy.get("finalSequence")
     if isinstance(declared, dict) and isinstance(declared.get("nodeIds"), list):
         return declared
@@ -1384,7 +1385,14 @@ def reconcile(
 ) -> dict[str, Any]:
     change_dir = change_dir.resolve()
     project_root = project_root.resolve()
-    policy = _read_json(change_dir / "meta" / "gate-policy.json")
+    # 权威切换（2026-08）：v2 发布快照优先，classify 工作副本回退。
+    loaded = hpaths.load_change_gate_policy(change_dir)
+    policy = loaded.get("policy")
+    if policy is None:
+        raise ValueError(
+            "gate policy missing; run harness_gate.py classify "
+            "or publish via plan finalize"
+        )
     dag = (
         target_required_dag(policy, target_phase)
         if target_phase is not None
