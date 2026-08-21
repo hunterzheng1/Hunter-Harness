@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — 同步 4458708 上传扫描停用契约的测试漂移（main 长红 29 例清零）
+
+4458708 在六个子系统停用上传/发布链路的敏感扫描（正确逻辑：上传时不查敏感
+信息；扫描器模块本体未动，被停用的是各发布路径对它的调用），但测试未同步，
+main 上长红 9 文件 29 例。全部改为冻结停用契约：`preview.security`/
+`security_scan` 恒 `disabled-for-publication`、`--skip-sensitive-scan` 与
+`confirmSensitiveScanSkip` 为兼容 no-op、finalize 不再携带 skip 键、密钥内容
+绝不回显输出、checker 不再产出 SENSITIVE 项。顺带修正一例 reason_code 漂移
+（`INSTRUCTION_CURRENT_PROPOSAL_MISMATCH` 身份级拒绝，非扫描）。全量 TS 首次
+154 文件全绿。
+
 ## [0.3.0] — hunter-harness ＋ [0.3.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > **双发**：execute 合并、legacy 管线删除与权威切换横跨 CLI 与 workflow bundle，
