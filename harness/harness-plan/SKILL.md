@@ -68,7 +68,7 @@ disallowed-tools:
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
 | 5–6 | **v2（默认）**：任务与场景只沉淀进 `meta/plan-evidence-input.json`（自然输入，字段定稿时点见 `reference.md` 阶段 8 v2 表）；`plans/*.md` 四份由 finalize 派生，**不得手写**——手写的会被派生渲染覆盖，只是白写。**legacy**：才手写 plan + implementation-detail + test-scenarios → `plans/` |
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | **v2 路径（新 change 优先）**：`npx hunter-harness plan evidence-pack --input <meta/plan-evidence-input.json> --output <meta/plan-evidence.json>`，再 `npx hunter-harness plan finalize --input <meta/plan-evidence.json>`；exit 0 且 `code:"PLAN_FINALIZED"` 即发布完成（契约见 `reference.md` 阶段 8 v2 路径）。**legacy 路径**：自然输入不完整（如缺真实审批记录）时才在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | **v2 路径（新 change 优先）**：`npx hunter-harness plan evidence-pack --input <meta/plan-evidence-input.json> --output <meta/plan-evidence.json>`，再 `npx hunter-harness plan finalize --input <meta/plan-evidence.json>`；exit 0 且 `code:"PLAN_FINALIZED"` 即发布完成（契约见 `reference.md` 阶段 8 v2 路径）。`risk_signals` 可留空：evidence-pack 按 affected_paths 与 git status 推断信号并与手填取并集；capabilities 由命令探测真实仓库状态，阶段 0.6 的 plannedPhases 会被读取。**legacy 路径**：自然输入不完整（如缺真实审批记录）时才在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 

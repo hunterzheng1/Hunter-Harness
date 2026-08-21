@@ -63,6 +63,12 @@ export interface CommandDependencies {
   env: Readonly<Record<string, string | undefined>>;
   /** Actual TTY width when available; preferred over the optional COLUMNS environment hint. */
   terminalColumns?: number;
+  /**
+   * git 只读命令执行接缝（可选）：plan evidence-pack 的 capabilities 探针与
+   * risk_signals 次源使用；缺省为真实 `git` execFile。测试注入假实现以避免
+   * 依赖 tmpdir 是不是 git 仓库。
+   */
+  gitExec?: (args: readonly string[], cwd: string) => Promise<string>;
 }
 
 async function configureCodeBuddyExtras(

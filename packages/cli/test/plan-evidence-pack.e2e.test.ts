@@ -9,6 +9,18 @@ import { planDurablePublicationTargetPaths } from "@hunter-harness/core";
 import { runPlanEvidencePack } from "../src/commands/plan-evidence-pack.js";
 import { runPlanFinalize } from "../src/commands/plan-finalize.js";
 
+// tmpdir 不是 git 仓库：既有用例统一注入 stub（is_git:true, has_remote:true），
+// 探针行为本身由 git-probe.test.ts 覆盖。
+const stubGitExec = async (args: readonly string[]): Promise<string> => {
+  const key = args.join(" ");
+  if (key === "rev-parse --is-inside-work-tree") return "true\n";
+  if (key === "remote") return "origin\n";
+  if (key === "rev-parse --git-dir") return ".git\n";
+  if (key === "rev-parse --git-common-dir") return ".git\n";
+  if (key === "status --porcelain --untracked-files=all") return "";
+  throw new Error(`unexpected git call: ${key}`);
+};
+
 const CHANGE_KEY = "pack-bridge01";
 const dimensions = ["business_rules", "concurrency_idempotency", "data_compatibility", "error_codes",
   "integration_impact", "normal_path", "parameter_validation", "permission_boundaries"] as const;
@@ -117,7 +129,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
 
     const deps = (outputs: string[]) => ({
-      cwd: root,
+      cwd: root, gitExec: stubGitExec,
       stdout: (chunk: string) => { outputs.push(chunk); return true; },
       stderr: () => true
     });
@@ -151,7 +163,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural));
 
     const deps = (outputs: string[]) => ({
-      cwd: root,
+      cwd: root, gitExec: stubGitExec,
       stdout: (chunk: string) => { outputs.push(chunk); return true; },
       stderr: () => true
     });
@@ -178,7 +190,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural));
     const out: string[] = [];
     const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "x.json") }, {
-      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
     });
     expect(exit).toBe(1);
     const result = JSON.parse(out.join("")) as {
@@ -202,7 +214,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
       await fs.writeFile(inputPath, JSON.stringify(natural));
       const out: string[] = [];
       const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
-        cwd: dir, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+        cwd: dir, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
       });
       expect(exit).toBe(0);
       return JSON.parse(await fs.readFile(packPath, "utf8")) as {
@@ -232,7 +244,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural));
     const out1: string[] = [];
     const exit1 = await runPlanEvidencePack({ input: inputPath, output: join(root, "scope1.json") }, {
-      cwd: root, stdout: (chunk: string) => { out1.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out1.push(chunk); return true; }, stderr: () => true
     });
     expect(exit1).toBe(0);
 
@@ -242,7 +254,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural2));
     const out2: string[] = [];
     const exit2 = await runPlanEvidencePack({ input: inputPath, output: join(root, "scope2.json") }, {
-      cwd: root, stdout: (chunk: string) => { out2.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out2.push(chunk); return true; }, stderr: () => true
     });
     expect(exit2).toBe(1);
     const result = JSON.parse(out2.join("")) as { code: string; diff: { in_scope: { missing: string[] } } };
@@ -275,7 +287,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural));
     const out: string[] = [];
     const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
-      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
     });
     if (exit !== 0) console.error("HP05-OUT:", out.join(""));
     expect(exit).toBe(0);
@@ -298,7 +310,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     }
     const finalizeOut: string[] = [];
     const finalizeExit = await runPlanFinalize({ input: packPath }, {
-      cwd: root, stdout: (chunk: string) => { finalizeOut.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { finalizeOut.push(chunk); return true; }, stderr: () => true
     });
     if (finalizeExit !== 0) console.error("HP05-FIN:", finalizeOut.join(""));
     expect(finalizeExit).toBe(0);
@@ -330,7 +342,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(natural));
     const out: string[] = [];
     const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
-      cwd: root, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
     });
     if (exit !== 0) console.error("HP12-OUT:", out.join(""));
     expect(exit).toBe(0);
@@ -367,7 +379,7 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(implicit));
     const fanoutOut: string[] = [];
     expect(await runPlanEvidencePack({ input: inputPath, output: join(root, "fanout.json") }, {
-      cwd: root, stdout: (chunk: string) => { fanoutOut.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { fanoutOut.push(chunk); return true; }, stderr: () => true
     })).toBe(0);
     expect((JSON.parse(fanoutOut.join("")) as { warnings?: string[] }).warnings)
       .toContain("graph_density_full_fanout");
@@ -380,9 +392,115 @@ describe("hunter-harness plan evidence-pack → finalize (阶段 14 桥 e2e)", (
     await fs.writeFile(inputPath, JSON.stringify(forged));
     const forgedOut: string[] = [];
     const forgedExit = await runPlanEvidencePack({ input: inputPath, output: join(root, "forged.json") }, {
-      cwd: root, stdout: (chunk: string) => { forgedOut.push(chunk); return true; }, stderr: () => true
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { forgedOut.push(chunk); return true; }, stderr: () => true
     });
     expect(forgedExit).toBe(1);
     expect(JSON.parse(forgedOut.join("")).code).toBe("PLAN_SCOPE_REF_FORGED");
+  });
+});
+
+describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), "harness-pack-seam-"));
+    await fs.mkdir(join(root, ".harness", "changes", CHANGE_KEY, "meta"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  async function packWithGatePolicy(policy: unknown | undefined) {
+    if (policy !== undefined) {
+      await fs.writeFile(
+        join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
+        JSON.stringify(policy)
+      );
+    }
+    const inputPath = join(root, "natural.json");
+    const packPath = join(root, "pack.json");
+    await fs.writeFile(inputPath, JSON.stringify(naturalInput()));
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: packPath }, {
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const pack = JSON.parse(await fs.readFile(packPath, "utf8")) as {
+      trusted: { human_input: { phase_set: { planned_phases: string[] } } };
+      context: { phase_set_source: string; capabilities_provenance: { probe: string } };
+    };
+    return { stdout: JSON.parse(out.join("")) as Record<string, unknown>, pack };
+  }
+
+  it("无 gate-policy.json → derived 派生（提交按探针能力判定）", async () => {
+    const { stdout, pack } = await packWithGatePolicy(undefined);
+    expect(pack.context.phase_set_source).toBe("derived");
+    expect(pack.context.capabilities_provenance.probe).toBe("probe");
+    expect(pack.trusted.human_input.phase_set.planned_phases)
+      .toEqual(["plan", "execute", "submit", "archive"]);
+  });
+
+  it("权威 plannedPhases（含 submit）→ 照 0.6 计划", async () => {
+    const { pack } = await packWithGatePolicy({
+      schemaVersion: 1, plannedPhases: ["plan", "execute", "submit", "archive"]
+    });
+    expect(pack.context.phase_set_source).toBe("gate-policy");
+    expect(pack.trusted.human_input.phase_set.planned_phases)
+      .toEqual(["plan", "execute", "submit", "archive"]);
+  });
+
+  it("权威 plannedPhases（不含 submit）→ submit 记显式省略", async () => {
+    const { pack } = await packWithGatePolicy({
+      schemaVersion: 1, plannedPhases: ["plan", "execute", "archive"]
+    });
+    expect(pack.context.phase_set_source).toBe("gate-policy");
+    expect(pack.trusted.human_input.phase_set.planned_phases)
+      .toEqual(["plan", "execute", "archive"]);
+  });
+
+  it("旧名 plannedPhases（plan,run,test,archive）→ 归一去重后照用", async () => {
+    const { pack } = await packWithGatePolicy({
+      schemaVersion: 1, plannedPhases: ["plan", "run", "test", "archive"]
+    });
+    expect(pack.context.phase_set_source).toBe("gate-policy");
+    expect(pack.trusted.human_input.phase_set.planned_phases)
+      .toEqual(["plan", "execute", "archive"]);
+  });
+
+  it("v2 包装体形状（无顶层 plannedPhases）→ 回退 derived", async () => {
+    const { pack } = await packWithGatePolicy({
+      artifact_type: "gate_policy", content_hash: "sha256:" + "a".repeat(64),
+      content: { planned_phases: ["plan", "archive"] }
+    });
+    expect(pack.context.phase_set_source).toBe("derived");
+  });
+
+  it("plannedPhases 缺 required（assurance 砍 review）→ required 保留并告警", async () => {
+    const natural = naturalInput() as { risk_signals: string[] };
+    natural.risk_signals = ["security", "payment"];
+    const inputPath = join(root, "natural-assurance.json");
+    await fs.writeFile(inputPath, JSON.stringify(natural));
+    await fs.writeFile(
+      join(root, ".harness", "changes", CHANGE_KEY, "meta", "gate-policy.json"),
+      JSON.stringify({ schemaVersion: 1, plannedPhases: ["plan", "execute", "archive"] })
+    );
+    const out: string[] = [];
+    const exit = await runPlanEvidencePack({ input: inputPath, output: join(root, "p.json") }, {
+      cwd: root, gitExec: stubGitExec, stdout: (chunk: string) => { out.push(chunk); return true; }, stderr: () => true
+    });
+    expect(exit).toBe(0);
+    const stdout = JSON.parse(out.join("")) as { warnings?: string[] };
+    expect(stdout.warnings).toContain("phase_set_required_retained");
+  });
+
+  it("provenance 标注进 pack.context 且不进 stdout 之外的身份区", async () => {
+    const { pack } = await packWithGatePolicy(undefined);
+    expect(pack.context.signal_provenance).toBeDefined();
+    const sources = (pack.context as unknown as {
+      signal_provenance: { signal: string; source: string }[]
+    }).signal_provenance;
+    // affected_paths 指向 .ts 源文件：production_code 同时被手填与推断命中
+    expect(sources).toContainEqual({ signal: "production_code", source: "declared+inferred" });
   });
 });

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 
-import { canonicalJson, isValidPlanRunId } from "@hunter-harness/contracts";
+import { canonicalJson, isValidPlanRunId, LEGACY_PLAN_PHASE_ALIASES } from "@hunter-harness/contracts";
 
 import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
 import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   PLAN_PHASES,
@@ -13,11 +14,21 @@ import {
   createPlanDecisionModule,
   createPlanningContextModule,
   type ApprovalContentInput,
-  type HumanArtifactBuildInput
+  type HumanArtifactBuildInput,
+  type PlanPhase,
+  type PlanRiskSignal
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
 import { createPlanFinalizationRenderer } from "../plan-finalization/production-ports.js";
+import {
+  createGitExec,
+  probeGitCapabilities
+} from "../plan-evidence/git-probe.js";
+import {
+  inferRiskSignals,
+  parsePorcelainPaths
+} from "../plan-evidence/risk-signal-inference.js";
 
 export interface PlanEvidencePackOptions {
   input: string;
@@ -44,7 +55,9 @@ const EVIDENCE_PACK_TEMPLATE = {
   change_key: "replace-with-change-name",
   // 枚举见 PLAN_RISK_SIGNALS：api_change/artifact_protocol/auth/breaking_contract/
   // concurrency/cross_file/delete/docs_only/irreversible_operation/migration/
-  // narrow_fix/payment/permission/production_code/security/shared_state/user_visible_behavior
+  // narrow_fix/payment/permission/production_code/security/shared_state/user_visible_behavior。
+  // 可留空数组：命令会按 affected_paths 与 git status 推断信号并与手填取并集，
+  // 逐条标注来源（declared / inferred / declared+inferred），手填不能删除推断项。
   risk_signals: ["production_code"],
   mode: "standard",
   intent: {
@@ -386,6 +399,42 @@ const stableId = (prefix: string, body: unknown): string =>
   `${prefix}:${createHash("sha256").update(canonicalJson(body)).digest("hex")}`;
 
 
+/**
+ * 阶段 0.6 的 plannedPhases 接缝：读 configure-plan 落在
+ * `.harness/changes/<change_key>/meta/gate-policy.json` 的阶段计划。
+ *
+ * 权威形状校验：顶层 `plannedPhases` 必须是字符串数组——v2 包装体（同名不同形，
+ * reference.md:377 警告过）、坏 JSON、文件缺失一律回退 derived。旧阶段名经
+ * LEGACY_PLAN_PHASE_ALIASES 归一并保序去重（与 Python `_phase_plan` 同语义）；
+ * 出现未知阶段名视为整份计划不可读（fail-safe 回退 derived，与 Python 降级同向）。
+ */
+async function readGatePolicyPlannedPhases(
+  cwd: string,
+  changeKey: string
+): Promise<readonly PlanPhase[] | undefined> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(
+      await readFile(join(cwd, ".harness", "changes", changeKey, "meta", "gate-policy.json"), "utf8")
+    );
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(raw)) return undefined;
+  const planned: unknown = raw.plannedPhases;
+  if (!Array.isArray(planned) || !planned.every((item) => typeof item === "string")) {
+    return undefined;
+  }
+  const mapped = (planned as string[]).map(
+    (name) => (LEGACY_PLAN_PHASE_ALIASES as Record<string, string>)[name] ?? name
+  );
+  if (mapped.some((name) => !(PLAN_PHASES as readonly string[]).includes(name))) {
+    return undefined;
+  }
+  return [...new Set(mapped as PlanPhase[])];
+}
+
+
 function coverageFrom(scenarios: readonly Record<string, unknown>[]): readonly Record<string, unknown>[] {
   // 与 core fixture 同一推导：八维全覆盖，无场景维度记 not_applicable
   return COVERAGE_DIMENSIONS.map((dimension) => {
@@ -485,11 +534,66 @@ export async function runPlanEvidencePack(
     const decision = createPlanDecisionModule();
     const model = createPlanArtifactModel();
 
+    // capabilities 真实化：从真实仓库状态探测（不再是写死的三个布尔）。
+    // uses_worktree = 身在 worktree 或 worktree_policy=required（计划要求 worktree
+    // 时 configuration.ts 也会补 merge 阶段），provenance 只进 stdout 与 pack.context。
+    const gitExec = dependencies.gitExec ?? createGitExec();
+    const probe = await probeGitCapabilities(dependencies.cwd, gitExec);
+    const usesWorktree = probe.uses_worktree || input.machine.worktree_policy === "required";
+    const capabilitiesProvenance = {
+      probe: probe.provenance,
+      uses_worktree: probe.uses_worktree
+        ? "probe"
+        : input.machine.worktree_policy === "required"
+          ? "worktree_policy"
+          : "probe"
+    };
+
+    // risk_signals 推断层：affected_paths（主源）+ git status（次源），
+    // 与手填取并集并逐条标注来源——推断是安全地板，手填不可删推断项。
+    let gitStatusPaths: string[] | undefined;
+    if (probe.is_git) {
+      try {
+        const statusOutput = await gitExec(
+          ["status", "--porcelain", "--untracked-files=all"], dependencies.cwd
+        );
+        gitStatusPaths = parsePorcelainPaths(statusOutput);
+      } catch {
+        gitStatusPaths = undefined;
+      }
+    }
+    const affectedPaths = input.structured_input.tasks.flatMap((task) =>
+      Array.isArray(task.affected_paths) ? task.affected_paths.map(String) : []
+    );
+    const signalInference = inferRiskSignals({
+      declared: (input.risk_signals ?? []) as PlanRiskSignal[],
+      affectedPaths,
+      gitStatusPaths
+    });
+
     const profile = classifyPlan({ schema_version: 1, change_id: input.change_key,
-      risk_signals: input.risk_signals as never, created_at: createdAt });
-    const phase_set = configurePlannedPhases(profile, { schema_version: 1, is_git: true, has_remote: true,
-      uses_worktree: false, available_phases: PLAN_PHASES, requested_optional_phases: [],
-      requested_omissions: [], configured_at: createdAt });
+      risk_signals: [...signalInference.effective], created_at: createdAt });
+
+    // 阶段 0.6 接缝：configure-plan 落的 plannedPhases 不再被忽略。
+    // 可选阶段取 planned ∩ optional；optional − planned 记为显式省略（绝不含 required，
+    // 否则 outcome 翻 not_publishable）；planned 缺 required 时 required 仍保留并告警。
+    const gatePlanned = await readGatePolicyPlannedPhases(dependencies.cwd, input.change_key);
+    const phaseSetSource = gatePlanned === undefined ? "derived" : "gate-policy";
+    const requestedOptional = gatePlanned === undefined
+      ? []
+      : profile.optional_phases.filter((phase) => gatePlanned.includes(phase));
+    const requestedOmissions = gatePlanned === undefined
+      ? []
+      : profile.optional_phases.filter((phase) => !gatePlanned.includes(phase));
+    const requiredRetained = gatePlanned === undefined
+      ? []
+      : profile.required_phases.filter((phase) => !gatePlanned.includes(phase));
+
+    const phase_set = configurePlannedPhases(profile, { schema_version: 1,
+      is_git: probe.is_git, has_remote: probe.has_remote,
+      uses_worktree: usesWorktree, available_phases: PLAN_PHASES,
+      requested_optional_phases: [...requestedOptional],
+      requested_omissions: [...requestedOmissions], configured_at: createdAt });
     const intent = planning.buildIntent({ schema_version: 1,
       source_input: input.intent.source_input, goal: input.intent.goal,
       user_visible_outcome: input.intent.user_visible_outcome,
@@ -711,18 +815,30 @@ export async function runPlanEvidencePack(
         change_key: input.change_key,
         run_id: input.context.run_id,
         branch_name: input.context.branch_name,
-        attempt: input.context.attempt
+        attempt: input.context.attempt,
+        // provenance 标注只进 context（非哈希身份区）：审计能看到哪些信号是推断的、
+        // capabilities 来自探针还是不可用回退、phase_set 来自 0.6 计划还是派生。
+        capabilities_provenance: capabilitiesProvenance,
+        signal_provenance: signalInference.provenance,
+        phase_set_source: phaseSetSource
       },
       expected_baseline: input.expected_baseline
     };
     await writeFile(options.output, JSON.stringify(pack));
+    const warnings: string[] = [
+      ...(fullFanout ? ["graph_density_full_fanout"] : []),
+      ...(requiredRetained.length > 0 ? ["phase_set_required_retained"] : [])
+    ];
     dependencies.stdout(JSON.stringify({
       ok: true,
       code: "PLAN_EVIDENCE_PACK_BUILT",
       output: options.output,
       publication_intent_id: plan.publication_intent_id,
       approval_receipt_id: approval_receipt.receipt_id,
-      ...(fullFanout ? { warnings: ["graph_density_full_fanout"] } : {})
+      phase_set_source: phaseSetSource,
+      capabilities_provenance: capabilitiesProvenance,
+      signal_provenance: signalInference.provenance,
+      ...(warnings.length > 0 ? { warnings } : {})
     }) + "\n");
     return 0;
   } catch (error) {
