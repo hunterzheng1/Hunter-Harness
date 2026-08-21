@@ -4281,6 +4281,9 @@ class PublicationContentPrecheckTests(unittest.TestCase):
 
     触发源是 plans/*-design.md 里的内网默认地址，命中 packages/core 的
     HH_INTERNAL_ADDRESS（medium，overridable），本来有行内标注这条正规豁免通道。
+
+    2026-08 后 status 路径停用内容扫描（上传归档链路下线），
+    `check_status` 只记录停用契约、不再发起扫描；本类最后一条用例冻结该契约。
     """
 
     # 用本仓构建出的 CLI，而不是让解析器回退到 npx——npx 拉的是已发布版本，
@@ -4372,21 +4375,22 @@ class PublicationContentPrecheckTests(unittest.TestCase):
             self.assertEqual(result["reasonCode"], "PUBLICATION_CONTENT_SCAN_UNAVAILABLE")
             self.assertIn("422", result["message"])
 
-    def test_status_surfaces_the_precheck_as_a_warning_not_a_blocker(self) -> None:
+    def test_status_records_content_scan_as_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = self._change(
                 tmp,
                 "# design\n\nDEFAULT_SERVER_URL = http://10.29.213.80:8080\n",
             )
 
-            with self._local_cli():
-                status = ha.check_status(change)
+            status = ha.check_status(change)
 
             check = status["checks"]["publication_content_scan"]
-            self.assertTrue(check["blocked"], check)
+            self.assertTrue(check["ok"], check)
+            self.assertFalse(check["scan_performed"], check)
+            self.assertEqual(check["findings"], [], check)
+            self.assertIn("停用", check["message"], check)
             codes = {str(item.get("code")) for item in status["warnings"]}
-            # 服务端策略不归本地裁决：如实预警，不替平台拦下归档。
-            self.assertIn("PUBLICATION_CONTENT_SCAN_FLAGGED", codes)
+            self.assertNotIn("PUBLICATION_CONTENT_SCAN_FLAGGED", codes)
             blocker_codes = {str(item.get("code")) for item in status["blockers"]}
             self.assertNotIn("PUBLICATION_CONTENT_SCAN_FLAGGED", blocker_codes)
 
