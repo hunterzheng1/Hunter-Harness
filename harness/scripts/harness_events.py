@@ -2014,7 +2014,7 @@ def cmd_append(args: argparse.Namespace) -> int:
             "PHASE_ALREADY_CLOSED: refusing a second phase.end for the same "
             "attempt. A retry needs a fresh run id AND the next attempt number "
             "(attempts are global per phase, not per run id). For a published "
-            "plan use harness_plan_finalize.py republish, which allocates both.",
+            "plan rerun plan evidence-pack + plan finalize with the next attempt.",
             as_json=as_json,
             error_code="PHASE_ALREADY_CLOSED",
         )

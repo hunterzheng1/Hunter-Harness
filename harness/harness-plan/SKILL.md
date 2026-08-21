@@ -66,9 +66,9 @@ disallowed-tools:
 | 2 | 歧义优先检查 + 复杂度分级；先确认会改变实现方向的语义歧义 |
 | 3 | 按复杂度执行有预算的代码探索；简单修复不得扩散到无关模块 |
 | 4 | **设计审批包** blocking user confirmation；确认事件早于 approved 设计文档和 `meta/worktree.json` |
-| 5–6 | **v2（默认）**：任务与场景只沉淀进 `meta/plan-evidence-input.json`（自然输入，字段定稿时点见 `reference.md` 阶段 8 v2 表）；`plans/*.md` 四份由 finalize 派生，**不得手写**——手写的会被派生渲染覆盖，只是白写。**legacy**：才手写 plan + implementation-detail + test-scenarios → `plans/` |
+| 5–6 | **v2（默认）**：任务与场景只沉淀进 `meta/plan-evidence-input.json`（自然输入，字段定稿时点见 `reference.md` 阶段 8 v2 表）；`plans/*.md` 四份由 finalize 派生，**不得手写**——手写的会被派生渲染覆盖，只是白写。|
 | 7.5 | 仅 `--adversarial` 对抗评审 |
-| 8 | **v2 路径（新 change 优先）**：`npx hunter-harness plan evidence-pack --input <meta/plan-evidence-input.json> --output <meta/plan-evidence.json>`，再 `npx hunter-harness plan finalize --input <meta/plan-evidence.json>`；exit 0 且 `code:"PLAN_FINALIZED"` 即发布完成（契约见 `reference.md` 阶段 8 v2 路径）。`risk_signals` 可留空：evidence-pack 按 affected_paths 与 git status 推断信号并与手填取并集；capabilities 由命令探测真实仓库状态，阶段 0.6 的 plannedPhases 会被读取。**legacy 路径**：自然输入不完整（如缺真实审批记录）时才在临时产物集上运行 `harness_plan_finalize.py finalize`，随后立即运行 `verify`；成功后把 finalizer 返回的绝对 `receiptPath` 原样传给 `harness_context.py close`，`--to-phase` 必须取 `plannedPhases` 中 plan 的真实后继，不得写死。写 append-only handoff receipt；不得手写占位路径；原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
+| 8 | **v2 路径（新 change 优先）**：`npx hunter-harness plan evidence-pack --input <meta/plan-evidence-input.json> --output <meta/plan-evidence.json>`，再 `npx hunter-harness plan finalize --input <meta/plan-evidence.json>`；exit 0 且 `code:"PLAN_FINALIZED"` 即发布完成（契约见 `reference.md` 阶段 8 v2 路径）。`risk_signals` 可留空：evidence-pack 按 affected_paths 与 git status 推断信号并与手填取并集；capabilities 由命令探测真实仓库状态，阶段 0.6 的 plannedPhases 会被读取。发布成功后把 `harness_context.py close` 的 `--to-phase` 取 `plannedPhases` 中 plan 的真实后继，不得写死。原子发布、派生清单计数对账、完整生命周期、render → `checklist.md` |
 
 change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`）
 
@@ -87,9 +87,9 @@ change-name 范围变更 → 提示重命名或记 🟡WARN（→ `reference.md`
 | 空目录 | 不得为“预留目录”生成 `.gitkeep`；只有产品明确需要跟踪空目录时才能创建，并在计划中说明业务原因 |
 | 设计审批包 | 一次 blocking user confirmation 含 worktree（读 `harness.json` `defaultWorktree`）。必须同时展示 **in_scope 与 out_of_scope 两个列表**——只展示"做什么"会让范围误判活到发布之后，代价是整份计划 republish |
 | 引用即追问 | 需求引用了外部设计文档章节（贴段落、指 `### Bn`、说"之前设计的时候如…"）时，阶段 2 必须确认该章节是否纳入本次范围，落到 in_scope 或 out_of_scope；引用 ≠ 纳入，也 ≠ 排除 |
-| 阶段 8 | 二选一且不得混用：**v2** = `hunter-harness plan finalize`（证据包 → 八 target + journal committed + plan-events.ndjson）；**legacy** = 六项标准产物先进入 staging，仅 finalizer 校验成功后发布并写唯一 `phase.end`/log，随后 `verify` 确认 start/end、收据完整覆盖六项标准产物、哈希、全部任务表和非空场景清单一致。失败均不得手工补终态 |
-| 选 v2 还是 legacy | **默认 v2**；legacy 已 deprecated，将在 workflow-harness 0.3.0 移除，只用于自然输入不完整（例如缺真实审批记录）的回退。v2 的场景契约已补齐 `priority`/`owner_phase` 与可执行测试三元，派生的 `meta/scenario-manifest.json` 能被 execute 门禁与 `harness_ledger.py record` 解包消费，证据闭环走得通。P0/P1 场景必须给全可执行三元（要么整组给全、要么整组省略；省略则 manifest 降为 schemaVersion 1，关门绑不上结构化执行收据） |
-| 发布后改产物 | 用 `harness_plan_finalize.py republish --run-id <全新> --reason "<why>"` 一次完成（新 attempt + 换收据 + 重新派生 manifest）。重跑 `finalize` 会报 `PLAN_FINALIZATION_HASH_CONFLICT`；**绝不手改 `meta/scenario-manifest.json`**（派生物，手改必致 `ARTIFACT_HASH_DRIFT`）→ `reference.md`「发布后修订计划」 |
+| 阶段 8 | 唯一入口：`hunter-harness plan finalize`（证据包 → 八 target + journal committed + plan-events.ndjson）。失败不得手工补终态；历史 legacy 收据只读（`harness_plan_finalize.py verify`） |
+| 发布路径 | **只有 v2**（`plan evidence-pack` → `plan finalize`）；legacy staging/finalize/republish 已于 0.3.0 移除，历史 legacy 收据保持可读（`harness_plan_finalize.py verify`）。v2 的场景契约已补齐 `priority`/`owner_phase` 与可执行测试三元，派生的 `meta/scenario-manifest.json` 能被 execute 门禁与 `harness_ledger.py record` 解包消费，证据闭环走得通。P0/P1 场景必须给全可执行三元（要么整组给全、要么整组省略；省略则 manifest 降为 schemaVersion 1，关门绑不上结构化执行收据） |
+| 发布后改产物 | 改 `meta/plan-evidence-input.json` 后重跑 `plan evidence-pack`（`context.attempt` 递增、`expected_baseline` 置 present 并带上次 manifest 哈希/generation），再 `plan finalize`——新 attempt + 重新派生 manifest 一次完成。**绝不手改 `meta/scenario-manifest.json`**（派生物，手改必致 `ARTIFACT_HASH_DRIFT`）→ `reference.md`「发布后修订计划」 |
 | v2 输入骨架 | 不要猜 `plan-evidence-input.json` 结构：`npx hunter-harness plan evidence-pack --print-template` 给出**一个字不改就能通过 evidence-pack** 的骨架（结构合法；`change_key`/`run_id` 仍须换成真实身份才能 finalize），逐项替换即可。结构不符时命令返回 `PLAN_EVIDENCE_INPUT_INVALID`，带 `field_path` 与 `problems[]`（缺失/多余键、枚举取值）——按 problems 改完重跑；**不得**为找契约去反编译 `dist/bin.js` 或翻 npx 缓存。带不了 `<>` 的占位字段与硬约束清单 → `reference.md` 阶段 8 v2 路径 |
 | Plan 结束 | **禁止**询问执行模式；只提示 `/harness-execute` |
 | 知识查询 | 阶段 1 失败不得假装已读历史，也不得改用本地索引或其他执行入口 |

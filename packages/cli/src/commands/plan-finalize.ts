@@ -21,7 +21,6 @@ import {
   createPlanFinalizationQualityVerifier,
   createPlanFinalizationRenderer
 } from "../plan-finalization/production-ports.js";
-import { projectLegacyPlanLifecycle } from "../plan-finalization/legacy-lifecycle-projection.js";
 import { emitPlanError, planErrorEnvelope } from "./plan-error.js";
 import type { CommandDependencies } from "./configure.js";
 
@@ -215,19 +214,6 @@ export async function runPlanFinalize(
       recovery_token: `plan_recovery:${canonicalHash(`${operationId}${idempotencyKey}`)}` as `plan_recovery:${string}`
     });
 
-    // HP-09：发布已提交时，向 legacy events.ndjson 幂等投影 plan 终态
-    let lifecycleProjection: string | undefined;
-    if (result.ok) {
-      const projection = await projectLegacyPlanLifecycle({
-        changeDir,
-        runId: input.context.run_id,
-        attempt: input.context.attempt,
-        receiptId: result.publication_receipt?.receipt_id ?? result.operation_id,
-        now
-      });
-      lifecycleProjection = projection.reason;
-    }
-
     dependencies.stdout(JSON.stringify({
       ok: result.ok,
       code: result.ok ? "PLAN_FINALIZED" : (result.reason_code ?? "PLAN_FINALIZE_FAILED"),
@@ -235,7 +221,6 @@ export async function runPlanFinalize(
       status: result.status,
       publication_receipt: result.publication_receipt,
       event_outbox_id: result.event_outbox?.outbox_id ?? null,
-      ...(lifecycleProjection === undefined ? {} : { legacy_lifecycle_projection: lifecycleProjection }),
       change_dir: changeDir
     }) + "\n");
     return result.ok ? 0 : 1;

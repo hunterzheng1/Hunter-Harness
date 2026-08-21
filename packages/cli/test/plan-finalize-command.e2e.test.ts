@@ -448,43 +448,4 @@ describe("hunter-harness plan finalize (e2e)", () => {
     }
   });
 
-  it("HP-09：finalize 成功向 legacy events.ndjson 幂等投影 plan 终态", async () => {
-    const changeDir = join(root, ".harness", "changes", CHANGE_KEY);
-    const eventsPath = join(changeDir, "events.ndjson");
-    // 种子：一个打开的 plan attempt（phase.start 无终端）
-    await fs.writeFile(eventsPath, JSON.stringify({
-      schema_version: 3,
-      id: "evt-seed",
-      timestamp: "2026-08-16T09:00:00.000Z",
-      phase: "plan",
-      type: "phase.start",
-      run_id: "run_e2e01",
-      attempt: 1
-    }) + "\n");
-
-    const deps = (outputs: string[]) => ({
-      cwd: root,
-      stdout: (chunk: string) => { outputs.push(chunk); return true; },
-      stderr: () => true
-    });
-    const firstOut: string[] = [];
-    expect(await runPlanFinalize({ input: inputPath }, deps(firstOut))).toBe(0);
-    const first = JSON.parse(firstOut.join("")) as { legacy_lifecycle_projection?: string };
-    expect(first.legacy_lifecycle_projection).toBe("closed_open_attempt");
-    const afterFirst = (await fs.readFile(eventsPath, "utf8")).trim().split("\n")
-      .map((line) => JSON.parse(line) as { type: string; run_id?: string; attempt?: number });
-    const terminals = afterFirst.filter((event) =>
-      event.type === "phase.end" && event.run_id === "run_e2e01" && event.attempt === 1);
-    expect(terminals).toHaveLength(1);
-
-    // 幂等：重复执行不再产生第二个终态
-    const secondOut: string[] = [];
-    expect(await runPlanFinalize({ input: inputPath }, deps(secondOut))).toBe(0);
-    const second = JSON.parse(secondOut.join("")) as { legacy_lifecycle_projection?: string };
-    expect(second.legacy_lifecycle_projection).toBe("already_closed");
-    const afterSecond = (await fs.readFile(eventsPath, "utf8")).trim().split("\n")
-      .map((line) => JSON.parse(line) as { type: string; run_id?: string; attempt?: number });
-    expect(afterSecond.filter((event) =>
-      event.type === "phase.end" && event.run_id === "run_e2e01" && event.attempt === 1)).toHaveLength(1);
-  });
 });

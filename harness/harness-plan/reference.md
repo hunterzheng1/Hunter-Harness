@@ -108,12 +108,13 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 
 | 路径 | 审批内容去哪 | 设计文档 |
 |------|------------|---------|
-| **v2**（默认） | `meta/plan-evidence-input.json` 的 `approval.content` + `approver_id` | `plans/<change-name>-design.md`，由 finalize 从审批内容派生——**不要手写**，手写的会被派生渲染覆盖 |
-| **legacy** | 直接写文档 | `.harness/changes/<change-name>/spec/<change-name>-design.md`（不存在则不得进入阶段 6） |
+| **v2**（唯一路径） | `meta/plan-evidence-input.json` 的 `approval.content` + `approver_id` | `plans/<change-name>-design.md`，由 finalize 从审批内容派生——**不要手写**，手写的会被派生渲染覆盖 |
+
+> 历史 change 的 `spec/<change-name>-design.md`（legacy 产物）保持可读，归档与 read-protocol 照常消费。
 
 **设计文档路径规则**：禁止保存到 `docs/superpowers/specs/` 作为正式产物；`/harness-plan` 不运行时调用 Superpowers。同一 change 不得同时存在 `plans/` 与 `spec/` 两份设计——v2 发布的那份才受完整性门禁保护。
 
-### 设计文档模板（legacy 路径手写时使用；v2 由 finalize 派生，此模板仅作内容清单参考）
+### 设计文档模板（v2 由 finalize 派生；此模板仅作内容清单参考）
 
 ```markdown
 ---
@@ -293,47 +294,13 @@ status: approved
    .harness/changes/<change-name>/backups/
    ```
 
-3. **保存设计文档**：
-   - **v2**：不手写文档；把审批内容填进 `meta/plan-evidence-input.json` 的 `approval.content`，
-     `plans/<change-name>-design.md` 由 finalize 派生（frontmatter 也由渲染器写）
-   - **legacy**：保存到 `.harness/changes/<change-name>/spec/<change-name>-design.md`
-
-   legacy 设计文档 frontmatter 格式：
-   ```yaml
-   ---
-   change-name: <change-name>
-   created: YYYY-MM-DD HH:mm
-   status: approved
-   source: harness-plan
-   ---
-   ```
-
-   > 如果 frontmatter 缺失，后续 execute/review/submit/archive 不得依赖模型猜测 change-name。
+3. **保存设计文档**：不手写文档；把审批内容填进 `meta/plan-evidence-input.json` 的
+   `approval.content`，`plans/<change-name>-design.md` 由 finalize 派生（frontmatter 也由渲染器写）。
 
 4. **初始化结构化事件**：由阶段 0.5 的 `harness_context.py bootstrap-plan` 一次完成——它生成合规的 `<plan-run-id>`（`plan_<uuid>` 形状，必须小写字母开头：v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒）、`<attempt>`（首次为 `1`）并追加 `phase.start`，重跑复用同一身份不重复写事件。finalizer 必须复用引导返回的 `runId`/`attempt`，否则 verify 会按生命周期身份 fail-closed。同一次 plan 尝试内不得改变身份。执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
-5. **保存计划文件**：
-   - **v2**：不手写；任务填 `structured_input.tasks`、场景填 `structured_input.scenarios`，
-     `plans/` 下四份 Markdown 全部由 finalize 派生
-   - **legacy**：手写并保存到（含 YAML frontmatter，含 change-name）
-     - `.harness/changes/<change-name>/plans/<change-name>-plan.md`（简洁任务表）
-     - `.harness/changes/<change-name>/plans/<change-name>-implementation-detail.md`（自适应详细执行参考）
-     - `.harness/changes/<change-name>/plans/<change-name>-test-scenarios.md`（测试场景表）
-
-   legacy 计划文件 frontmatter 格式：
-   ```yaml
-   ---
-   change-name: <change-name>
-   plan-name: <change-name>
-   created: YYYY-MM-DD HH:mm
-   source-spec: ../spec/<change-name>-design.md
-   implementation-detail: ./<change-name>-implementation-detail.md
-   test-scenarios: ./<change-name>-test-scenarios.md
-   status: approved
-   ---
-   ```
-
-   > 如果 frontmatter 缺失，后续 execute 不得依赖模型猜测 change-name 或关联文件路径。
+5. **保存计划文件**：不手写；任务填 `structured_input.tasks`、场景填 `structured_input.scenarios`，
+   `plans/` 下四份 Markdown 全部由 finalize 派生。
 
 6. **等待用户确认后**，提示下一步：运行 `/harness-execute`
 
@@ -341,7 +308,7 @@ status: approved
 
 ## 阶段 8：结束前产物完整性检查 ⚠️ 强制
 
-> **缺任一文件 → ❌FAIL，不得宣称 plan 完成。先认清走的是 v2 还是 legacy——两条路径的必需文件集不同，拿 legacy 的表去查 v2 会得出假失败。**
+> **缺任一文件 → ❌FAIL，不得宣称 plan 完成。新 change 只走 v2；legacy 列仅用于读历史 change（0.3.0 起不再写入）。**
 
 | 文件 | v2 | legacy |
 |------|:---:|:---:|
@@ -358,11 +325,11 @@ status: approved
 | `.harness/changes/<change>/meta/scenario-manifest.json` | ✅ | ✅ |
 | `.harness/changes/<change>/meta/publication-journals/<op>.json`（committed） | ✅ | — |
 | `.harness/changes/<change>/meta/plan-events.ndjson` | ✅ | — |
-| `.harness/changes/<change>/meta/plan-finalization.json` | — | ✅ |
-| `.harness/changes/<change>/logs/execution-log.md` | — | ✅ |
+| `.harness/changes/<change>/meta/plan-finalization.json` | — | ✅（只读） |
+| `.harness/changes/<change>/logs/execution-log.md` | — | ✅（只读） |
 | `.harness/changes/<change>/events.ndjson` | ✅ | ✅ |
 
-legacy 的 `plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
+历史 change 的 legacy `plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`harness_plan_finalize.py verify`（唯一保留子命令）对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
 
 ### 两套分类模型的边界（别把它们当同一件事）
 
@@ -464,31 +431,24 @@ npx hunter-harness plan finalize --input .harness/changes/<cn>/meta/plan-evidenc
 - **证据包**（`plan-evidence.json`）是命令推导的产物（trusted/publication/context/baseline），不得手改；任何字段变化必须改自然输入后重跑 evidence-pack。
 - **成功语义**：finalize exit 0 且 `code:"PLAN_FINALIZED"`。落盘事实 = 八 target（plans/*.md ×4 + meta/*.json ×4）+ `meta/publication-journals/<op>.json`（状态 committed）+ `meta/plan-events.ndjson`（artifact_published/phase_ended）。确定性门失败 exit 1 且 `code:"PLAN_FINALIZE_DETERMINISTIC_FAILED"` 附 findings——此时必须回到对应阶段修正规划内容，**不得**手改证据包或 staged 内容绕过。
 - **验证**：journal `state==="committed"` + 八 target 存在 + plan-events.ndjson 含两类终态事件；不得手工补写任何一项。
-- **legacy 收据**：过渡期（阶段 14 前）v2 路径不写 `plan-finalization.json`；消费方若仍读 legacy receipt，由兼容投影单独提供，不得反向要求 v2 双写。
-- **回退**：v2 自然输入不完整（如缺真实审批记录）时才允许走 Python finalizer（legacy 路径）；同一次发布不得两条路径混用。
+- **legacy 收据**：v2 路径不写 `plan-finalization.json`；消费方若读历史 legacy receipt，`harness_plan_finalize.py verify` 保持可读。0.3.0 起 v2 无 legacy 回退——自然输入不完整先补齐（例如补真实审批记录），不得走已删除的 Python finalizer。
 
-### 发布后修订计划（republish）
+### 发布后修订计划（v2 重跑流）
 
-计划发布后又要改产物，是**正常且高频**的情况——用户看完计划补一个回归场景、修正一条任务、调整验收标准。这时不要与哈希守卫搏斗：
+计划发布后又要改产物，是**正常且高频**的情况——用户看完计划补一个回归场景、修正一条任务、调整验收标准。这时不要与哈希守卫搏斗，按三步重跑修订流：
 
-```bash
-python <skills-root>/scripts/harness_plan_finalize.py republish \
-  --change-dir ".harness/changes/<cn>" --staging-dir ".harness/changes/<cn>/runtime/plan-staging" \
-  --change <cn> --run-id "plan_$(uuidgen)" --reason "<为什么要改>" --json
-```
+1. 改 `meta/plan-evidence-input.json`（自然输入是唯一可编辑面）。
+2. 重跑 `npx hunter-harness plan evidence-pack --input <input> --output <pack>`：
+   - `context.attempt` 递增（1→2→…）；
+   - `expected_baseline` 置 `present`，带上次发布的 `manifest_hash` 与 `generation`
+     （读 `meta/plan-finalization-transactions/` 最新事务的对应字段）。
+3. 再跑 `npx hunter-harness plan finalize --input <pack>`。
 
-它一次性完成整套动作：校验 staging → 分配新 attempt（自动取已用最大值 +1）→ 追加 `phase.start` → 替换收据 → 重新派生 `scenario-manifest.json` 与 `implementation-checkpoints.json` → 写 `phase.end`。收据里保留 `supersedes`（被取代的 hash/runId/attempt）与 `amendReason`，修订全程可审计。
+新 attempt + 换收据 + 重新派生 `scenario-manifest.json` 与 `implementation-checkpoints.json`
+一次完成；事务链天然保留历史（每次 finalize 一条事务记录），修订全程可审计。
+（0.3.0 前 legacy change 用的 `republish` 子命令已删除；历史收据只读。）
 
-| 约束 | 说明 |
-|------|------|
-| `--reason` 必填 | 修订已发布计划必须留下理由，否则 `PLAN_AMEND_REASON_REQUIRED` |
-| `--run-id` 必须全新 | 复用旧 run-id 报 `PLAN_AMEND_RUN_ID_IN_USE`（attempt 与 run-id 一一绑定） |
-| 首次发布不能用它 | 无收据时报 `PLAN_NOT_FINALIZED`，首次发布走 `finalize` |
-| 内容没变则空操作 | 返回 `idempotent:true`，不写事件、不消耗 attempt |
-
-⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，execute 阶段 `validate_plan_handoff` 也会记 WARN。`republish` 会重新派生它，这才是唯一正确入口。
-
-> 直接重跑 `finalize` 会报 `PLAN_FINALIZATION_HASH_CONFLICT`——这是守卫在防止发布后产物被悄悄改动，不是 bug。报错信息里已经给出 `republish` 命令行。
+⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，execute 阶段 `validate_plan_handoff` 也会记 WARN。重跑修订流会重新派生它，这才是唯一正确入口。
 
 ### Plan 结束行为规则
 

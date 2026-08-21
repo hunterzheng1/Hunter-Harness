@@ -131,14 +131,20 @@
 ### 删除点
 
 **`@hunter-harness/workflow-harness` 0.3.0 移除 legacy plan finalize 路径。**
+**已于 2026-08-21 执行**（用户决策解除采纳度 gating：判据样本量不足——dogfood 仅 2 个
+change——但 legacy 的技术前提已解除且双轨维护成本持续，删除按本节范围执行；采纳度
+采集脚本保留作事后审计轨迹）。
 
 移除范围：`harness_plan_finalize.py` 的 legacy staging/finalize/verify 分支、六项标准产物的
 必需性、`meta/plan-finalization.json` 收据、`packages/cli/src/plan-finalization/legacy-lifecycle-projection.ts`，
 以及 harness-plan 四份文档里的 legacy 路径表。
 
-**不移除**：`LegacyV1HumanArtifactSet` 等只读身份投影。按 12 号 `:251` 的冻结语义，历史归档
-必须保持可读；本节的退役指的是不再**写入** legacy 产物，不是让旧 change 变成不可读。这与
-本文档验收条件「所有旧项目均能平滑读取和自然迁移，无需用户清空状态」一致。
+**不移除**：`LegacyV1HumanArtifactSet` 等只读身份投影；`verify_plan`（含 legacy receipt 验收
+与 `_verify_plan_v2`）、v2 manifest/checkpoints 解包、plan/scenario 表解析——gate 与 ledger 的
+只读侧依赖它们，历史 change 的 legacy 产物必须保持可读。本节的退役指的是不再**写入** legacy
+产物，不是让旧 change 变成不可读。这与本文档验收条件「所有旧项目均能平滑读取和自然迁移，
+无需用户清空状态」一致。计划修订的 v2 流程见 `harness/harness-plan/reference.md`「发布后修订
+计划」（重跑 evidence-pack：attempt 递增 + `expected_baseline=present`）。
 
 ### 采纳度怎么度量
 

@@ -20,7 +20,6 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import harness_archive as ha  # noqa: E402
 import harness_gate as hg  # noqa: E402
-import harness_plan_finalize as hpf  # noqa: E402
 
 
 def _write(path: Path, text: str) -> None:
@@ -108,38 +107,6 @@ class MultiDayUsabilityTests(unittest.TestCase):
         self.assertEqual(by_id["candidate-a"]["runCount"], 2)
         self.assertEqual(by_id["candidate-a"]["duplicateRunCount"], 1)
 
-    def test_slice_plan_requires_candidate_parent_reuse_and_budget(self) -> None:
-        staging = self.tmp / "staging"
-        _seed_staging(
-            staging,
-            "slice-plan: true\ncandidate-type: child-of-aggregate\n",
-        )
-
-        invalid = hpf.validate_staging(staging, "demo")
-        self.assertFalse(invalid["ok"], invalid)
-        self.assertEqual(invalid["code"], "SLICE_PLAN_CONTRACT_INVALID")
-
-        _write(
-            staging / "plans" / "demo-plan.md",
-            _markdown(
-                "demo",
-                "Plan",
-                "slice-plan: true\n"
-                "candidate-type: child-of-aggregate\n"
-                "aggregate-parent: integration-demo\n"
-                "evidence-reuse: aggregate-candidate\n"
-                "artifact-budget-bytes: 1048576\n",
-            )
-            + "\n| # | 任务 |\n"
-            "|---|---|\n"
-            "| 1 | validate the slice contract |\n",
-        )
-        valid = hpf.validate_staging(staging, "demo")
-        self.assertTrue(valid["ok"], valid)
-        self.assertEqual(
-            valid["slicePlan"]["candidateType"],
-            "child-of-aggregate",
-        )
 
     def test_parallel_child_isolation_rejects_any_shared_resource(self) -> None:
         contract = {

@@ -77,21 +77,10 @@ description: harness-plan 的阶段检查清单和覆盖检查列表。仅在执
 
 确认后立即追加 decision 事件，并写入 `meta/worktree.json`。设计文档按路径分流：
 
-- **v2**：审批内容写进 `meta/plan-evidence-input.json` 的 `approval.content`（含 `approver_id`），
+- 审批内容写进 `meta/plan-evidence-input.json` 的 `approval.content`（含 `approver_id`），
   `plans/<change>-design.md` 由 finalize 从审批内容派生——**不要**手写它，手写的会被覆盖
-- **legacy**：写 `spec/<change>-design.md`（含下方 frontmatter）
 
 - [ ] 确认事件早于 approved 设计文档；未获确认时不得先落盘 `status: approved`
-
-legacy 设计文档必须包含 frontmatter：
-```yaml
----
-change-name: <change-name>
-created: YYYY-MM-DD HH:mm
-status: approved
-source: harness-plan
----
-```
 
 展示可审核包后，使用 `blocking user confirmation` 询问用户：
 - **确认**：设计方向正确，继续任务拆分
@@ -217,7 +206,7 @@ source: harness-plan
 
 ## 阶段 8：结束前产物完整性检查 ⚠️ 强制
 
-> **先认路径**：v2 与 legacy 的完整性口径不同，混用会得出错误结论。两条路径各自的必需文件清单 → `reference.md`「阶段 8」。
+> **先认路径**：新 change 只走 v2；legacy 产物（历史 change）只读。必需文件清单 → `reference.md`「阶段 8」。
 
 文件是否齐全、哈希是否一致、身份是否匹配、计数是否对得上——这些 **finalizer 与 verify 已经 fail-closed 判定**，逐条复述不产生新结论，只会把一份事实变成两份。命令失败时按返回的 `code` 查 `reference.md`，不要对着清单猜。
 
