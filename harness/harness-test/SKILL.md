@@ -26,6 +26,15 @@ disallowed-tools:
 
 # harness-test — 测试执行
 
+> **2026-08 阶段合并**：原 `run`（编码）与 `test`（验证）合并为单一 `execute` 阶段，
+> 统一入口为 **`/harness-execute`**（`harness/harness-execute/SKILL.md`）。本 skill 作为
+> 别名保留，frontmatter `name` 不变、内容照旧可用；门禁入参 `--phase test` 经
+> `LEGACY_PHASE_ALIASES` 归一为 execute。别名至少保留一个 minor 版本，退役时间见
+> `docs/harness-improvement-roadmap/`。下文出现的阶段名 `run`/`test` 均按别名解析。
+>
+> 合并语义注意：execute 关门时 C9 场景覆盖要求全部 `ownerPhase=execute` 场景有通过
+> receipt（包括本属 test 的接口/兼容场景）；`ownerPhase=review`/`submit` 仍按计划顺延。
+
 ## Purpose
 
 读取测试场景表，逐条执行单元测试和接口测试，验证代码变更的正确性，输出测试报告。

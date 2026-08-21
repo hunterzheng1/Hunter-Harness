@@ -117,7 +117,7 @@ python <skills-root>/scripts/harness_ledger.py can-reuse `
 
 **review 报告**（参考性）：如果 `.harness/changes/<change-name>/reports/review/review-report-*.md` 存在（旧路径 `reviews/` 兼容），可读取并展示摘要（如“review 报告：RED 高风险建议 N 个，YELLOW 中低风险建议 M 个，仅供参考”），但不得因 review 结果阻塞提交。
 
-**review fixback**（参考性）：如果 `.harness/changes/<change-name>/reports/review/fixback-*.md` 存在，展示最新 fixback 摘要并提示“可回到 `/harness-run --fixback` 处理”；除非 `review.strict-review-gate=true` 且存在 RED，否则不得阻塞提交。
+**review fixback**（参考性）：如果 `.harness/changes/<change-name>/reports/review/fixback-*.md` 存在，展示最新 fixback 摘要并提示“可回到 `/harness-execute --fixback` 处理”；除非 `review.strict-review-gate=true` 且存在 RED，否则不得阻塞提交。
 
 ## 步骤 3：.gitignore 检查 + 暂存业务文件 ⚠️ 强制阻断
 

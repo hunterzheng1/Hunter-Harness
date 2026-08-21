@@ -34,7 +34,7 @@ description: harness-review 的原生修复反馈协议。内化 receiving-code-
 | 风险说明 | 说明为什么值得处理 |
 | 推荐修复 | 可执行的修复方向，不写空泛建议 |
 | 验证方式 | 构建、测试、场景编号或人工确认方式 |
-| 修复动作 | `code` / `manual` / `workflow`；只有 `code` 会进入 `/harness-run --fixback` |
+| 修复动作 | `code` / `manual` / `workflow`；只有 `code` 会进入 `/harness-execute --fixback` |
 | submit 影响 | 默认 advisory；仅 strict-review-gate=true 时标记阻塞 |
 
 如果没有 RED/YELLOW，必须明确写：

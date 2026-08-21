@@ -25,6 +25,12 @@ disallowed-tools:
 
 # harness-run — 需求编码
 
+> **2026-08 阶段合并**：原 `run`（编码）与 `test`（验证）合并为单一 `execute` 阶段，
+> 统一入口为 **`/harness-execute`**（`harness/harness-execute/SKILL.md`）。本 skill 作为
+> 别名保留，frontmatter `name` 不变、内容照旧可用；门禁入参 `--phase run` 经
+> `LEGACY_PHASE_ALIASES` 归一为 execute。别名至少保留一个 minor 版本，退役时间见
+> `docs/harness-improvement-roadmap/`。下文出现的阶段名 `run`/`test` 均按别名解析。
+
 ## Purpose
 
 基于 plan + test-scenarios，按**变更簇**执行 TDD（RED→GREEN→REFACTOR→构建验证），写入 verification-ledger。负责 worktree 创建/切换（见 [[shared/worktree-gate.md|worktree-gate]]）。

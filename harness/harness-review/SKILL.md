@@ -33,7 +33,7 @@ disallowed-tools:
 
 仅当用户显式调用 `/harness-review` 时执行。test 阶段结束后**不自动**进入本阶段；用户口头提到"审查/review"而未调用本 skill 时，先确认是否走 Harness 审查阶段。
 
-**单阶段原则**：review 关门（报告 + fixback 产出）后必须停止并交还用户，仅提示下一步可执行 `/harness-run --fixback`（有待修项）或 `/harness-submit`；禁止自动接续执行。
+**单阶段原则**：review 关门（报告 + fixback 产出）后必须停止并交还用户，仅提示下一步可执行 `/harness-execute --fixback`（有待修项）或 `/harness-submit`；禁止自动接续执行。
 
 ## Inputs
 

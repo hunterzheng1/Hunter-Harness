@@ -6,7 +6,7 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 
 ## Worktree 决策文件模板
 
-阶段 4 设计审批包确认后必须生成 `.harness/changes/<change-name>/meta/worktree.json`。这是后续 `/harness-run` 是否创建/切换 worktree 的唯一机器可读依据。
+阶段 4 设计审批包确认后必须生成 `.harness/changes/<change-name>/meta/worktree.json`。这是后续 `/harness-execute` 是否创建/切换 worktree 的唯一机器可读依据。
 
 ### 使用 Worktree
 
@@ -21,7 +21,7 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
   "branch": "harness/<change-name>",
   "decisionBy": "user",
   "decisionAt": "YYYY-MM-DD HH:mm",
-  "ownerSkill": "harness-run"
+  "ownerSkill": "harness-execute"
 }
 ```
 
@@ -43,7 +43,7 @@ description: harness-plan 的需求提取模板、任务拆分规则、测试场
 
 `path` 与 `branch` 必须来自 `harness_runtime.py adapter`/`meta/runtime.json`。所有 agent 共享统一路径 `.worktrees/<change-name>` 与统一分支前缀 `harness/`；`agent` 字段仅作创建者元数据，不再决定路径。
 
-`用户选择使用 Worktree；决策文件为 meta/worktree.json；requested=true, created=false；创建责任为 harness-run。`
+`用户选择使用 Worktree；决策文件为 meta/worktree.json；requested=true, created=false；创建责任为 harness-execute。`
 
 ## 参考 — 详细格式
 
@@ -189,8 +189,8 @@ source: harness-plan
 ```
 .harness/changes/<change-name>/plans/
 ├── <change-name>-design.md                  # 设计（v2 由 finalize 派生）
-├── <change-name>-plan.md                    # harness 简洁任务表，run 默认读取
-├── <change-name>-implementation-detail.md   # 原生自适应详细执行参考，run 补充读取
+├── <change-name>-plan.md                    # harness 简洁任务表，execute 默认读取
+├── <change-name>-implementation-detail.md   # 原生自适应详细执行参考，execute 补充读取
 └── <change-name>-test-scenarios.md          # 测试场景表
 ```
 
@@ -308,7 +308,7 @@ status: approved
    ---
    ```
 
-   > 如果 frontmatter 缺失，后续 run/test/review/submit/archive 不得依赖模型猜测 change-name。
+   > 如果 frontmatter 缺失，后续 execute/review/submit/archive 不得依赖模型猜测 change-name。
 
 4. **初始化结构化事件**：由阶段 0.5 的 `harness_context.py bootstrap-plan` 一次完成——它生成合规的 `<plan-run-id>`（`plan_<uuid>` 形状，必须小写字母开头：v2 identity 规则，裸 UUID 有 10/16 概率数字开头被拒）、`<attempt>`（首次为 `1`）并追加 `phase.start`，重跑复用同一身份不重复写事件。finalizer 必须复用引导返回的 `runId`/`attempt`，否则 verify 会按生命周期身份 fail-closed。同一次 plan 尝试内不得改变身份。执行日志在 `phase.end` 时由完整事件流渲染，任何阶段都不得直接用 Write/Edit 维护该投影。
 
@@ -333,11 +333,11 @@ status: approved
    ---
    ```
 
-   > 如果 frontmatter 缺失，后续 run 不得依赖模型猜测 change-name 或关联文件路径。
+   > 如果 frontmatter 缺失，后续 execute 不得依赖模型猜测 change-name 或关联文件路径。
 
-6. **等待用户确认后**，提示下一步：运行 `/harness-run`
+6. **等待用户确认后**，提示下一步：运行 `/harness-execute`
 
-   > 后续 skill（run/test/review）启动时，会扫描 `.harness/changes/*/plans/`（排除 `.harness/archive/*/`）自动定位变更名目录，无需手动指定路径。同一时间最多一个未归档变更。
+   > 后续 skill（execute/review）启动时，会扫描 `.harness/changes/*/plans/`（排除 `.harness/archive/*/`）自动定位变更名目录，无需手动指定路径。同一时间最多一个未归档变更。
 
 ## 阶段 8：结束前产物完整性检查 ⚠️ 强制
 
@@ -371,10 +371,10 @@ legacy 的 `plan-finalization.json.files` 必须完整列出 design、plan、imp
 | 取值 | `fast` / `standard` / `full` | `quick` / `standard` / `assurance` |
 | 写到哪 | `meta/gate-policy.json`（`schemaVersion:1`，camelCase） | `meta/plan-profile.json`（artifact 包装体，snake_case） |
 | 谁写 | `harness_gate.py classify`（阶段 0.5 由 bootstrap-plan 调起） | `hunter-harness plan finalize`（阶段 8 发布） |
-| 地位 | **门禁权威**：驱动 `requiredGateDag`、`requiredValidationsByPhase`，run/test 开门读它 | **派生视图**：供展示与下游只读消费，门禁不读 |
+| 地位 | **门禁权威**：驱动 `requiredGateDag`、`requiredValidationsByPhase`，execute 开门读它 | **派生视图**：供展示与下游只读消费，门禁不读 |
 | 输入 | 计划文档的「风险等级」正则 + capabilityGates 信号 | 自然输入里手填的 `risk_signals` |
 
-**两者不共用文件名。** v2 发布对 `binding.ownership_paths` 逐个原子覆盖，若派生视图占用 `meta/gate-policy.json`，阶段 8 会把 classify 写的那份换成包装体，之后 `gate begin --phase run` 直接 `POLICY_LOAD_FAILED`——`harness_gate.effective_workflow_policy` 读 `schemaVersion` 拿不到就 raise。
+**两者不共用文件名。** v2 发布对 `binding.ownership_paths` 逐个原子覆盖，若派生视图占用 `meta/gate-policy.json`，阶段 8 会把 classify 写的那份换成包装体，之后 `gate begin --phase execute` 直接 `POLICY_LOAD_FAILED`——`harness_gate.effective_workflow_policy` 读 `schemaVersion` 拿不到就 raise。
 
 **为什么派生视图目前不能当权威**（将来要接通就得先解决这两条）：
 
@@ -484,14 +484,14 @@ python <skills-root>/scripts/harness_plan_finalize.py republish \
 | 首次发布不能用它 | 无收据时报 `PLAN_NOT_FINALIZED`，首次发布走 `finalize` |
 | 内容没变则空操作 | 返回 `idempotent:true`，不写事件、不消耗 attempt |
 
-⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，run 阶段 `validate_plan_handoff` 也会记 WARN。`republish` 会重新派生它，这才是唯一正确入口。
+⚠️ **绝对不要手改 `meta/scenario-manifest.json`**。它是 finalizer 从 `test-scenarios.md` 派生的产物，手改会造成真实漂移：`verify` 报 `ARTIFACT_HASH_DRIFT`，execute 阶段 `validate_plan_handoff` 也会记 WARN。`republish` 会重新派生它，这才是唯一正确入口。
 
 > 直接重跑 `finalize` 会报 `PLAN_FINALIZATION_HASH_CONFLICT`——这是守卫在防止发布后产物被悄悄改动，不是 bug。报错信息里已经给出 `republish` 命令行。
 
 ### Plan 结束行为规则
 
-- **禁止询问执行模式**：Subagent-Driven / Inline Execution 属于 /harness-run 阶段
-- 最终输出只提示产出物路径和下一步 `/harness-run`
+- **禁止询问执行模式**：Subagent-Driven / Inline Execution 属于 /harness-execute 阶段
+- 最终输出只提示产出物路径和下一步 `/harness-execute`
 - `docs/superpowers/` 不得作为最终产物路径出现在输出中
 
 ## C2 升级口：跨 provider 评审（显式、非默认）
