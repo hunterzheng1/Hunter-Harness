@@ -595,19 +595,39 @@ def load_checkpoints(change_dir: Path) -> dict[str, Any] | None:
         data = _read_json(path)
     except (OSError, json.JSONDecodeError):
         return None
+    # 刻意返回**原样**文档：cmd_checkpoint approve 会把这里的返回值写回盘，
+    # 返回归一化结构会用合成内容覆盖 v2 的哈希绑定产物（ARTIFACT_HASH_DRIFT）。
+    # 形状差异在只读的 checkpoint_status 里消化。
     return data if isinstance(data, dict) else None
 
 
 def checkpoint_status(checkpoints: dict[str, Any] | None, checkpoint_id: str) -> str:
+    """Read a checkpoint's status across the three shapes this file is written in.
+
+    `meta/implementation-checkpoints.json` 有三个写入者，形状各不相同：
+    `harness_change.migrate` 写 ``checkpoints[{id,status}]``；legacy plan finalize 写
+    顶层 ``foundationGate``；v2 plan finalize 写 artifact 包装体，状态在
+    ``content.foundation_gate``。以前只认第一种，另外两种一律返回 "missing"
+    ——checkpoint 的状态对整条 v2 路径和 legacy finalize 之后都是读不出来的。
+
+    只读归一化：调用方拿到的是状态，不是文档。写回路径（cmd_checkpoint approve）
+    仍然操作原始文档，不能用归一化结构覆盖哈希绑定的 v2 产物。
+    """
     if not checkpoints:
         return "missing"
     items = checkpoints.get("checkpoints")
-    if not isinstance(items, list):
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("id") == checkpoint_id:
+                return str(item.get("status") or "pending")
         return "missing"
-    for item in items:
-        if isinstance(item, dict) and item.get("id") == checkpoint_id:
-            return str(item.get("status") or "pending")
-    return "missing"
+    if checkpoint_id != "foundation-gate":
+        return "missing"
+    unpacked = hpf.unpack_v2_implementation_checkpoints(checkpoints)
+    if unpacked is not None:
+        return str(unpacked["checkpoints"][0]["status"])
+    legacy = checkpoints.get("foundationGate")
+    return str(legacy).strip() if str(legacy or "").strip() else "missing"
 
 
 def foundation_gate_blocks(task_number: int | None, change_dir: Path) -> dict[str, Any] | None:

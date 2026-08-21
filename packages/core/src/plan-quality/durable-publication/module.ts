@@ -18,7 +18,7 @@ const DURABLE_EVENT_REF = /^(?:plan_event:[a-f0-9]{64}|audit_event:sha256:[a-f0-
 const PATHS = (changeKey: string): readonly string[] => [
   "plans/" + changeKey + "-design.md", "plans/" + changeKey + "-plan.md",
   "plans/" + changeKey + "-test-scenarios.md", "plans/" + changeKey + "-implementation-detail.md",
-  "meta/gate-policy.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
+  "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
 ];
 function canonicalOwnershipPath(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > 512 || value.trim() !== value ||

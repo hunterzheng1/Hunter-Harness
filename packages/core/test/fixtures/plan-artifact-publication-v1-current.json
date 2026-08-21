@@ -5,7 +5,7 @@
     "plans/change-11-publication-plan.md",
     "plans/change-11-publication-test-scenarios.md",
     "plans/change-11-publication-implementation-detail.md",
-    "meta/gate-policy.json",
+    "meta/plan-profile.json",
     "meta/worktree.json",
     "meta/implementation-checkpoints.json",
     "meta/scenario-manifest.json"

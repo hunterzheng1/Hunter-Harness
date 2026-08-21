@@ -194,14 +194,30 @@ def _load_findings(change_dir: Path) -> dict[str, Any] | None:
 
 
 def validate_dispositions(
-    doc: Any, known_ids: set[str]
+    doc: Any, known_ids: set[str], findings_run_id: str | None = None
 ) -> list[str]:
+    """校验处置文档。``findings_run_id`` 给出时，还要求两份 sidecar 同属一轮。
+
+    runId 以前完全不校验——``write_dispositions`` 直接透传 ``doc.get("runId")``，
+    写 ``None`` 都能落盘，整条 sidecar 的强制力全压在 gate 关门时的一行断言上。
+    而这条断言防的是 fixback 循环里的跨轮重放：sidecar 是 per-change 单文件、不带
+    runId 后缀，第二轮 review 关门时磁盘上躺着第一轮那份（finding 全已 FIXED）。
+    在写入端就挡住，比等到关门再拒绝早一整轮。
+    """
     problems: list[str] = []
     if not isinstance(doc, dict):
         return ["dispositions document must be an object"]
+    run_id = doc.get("runId")
+    if not isinstance(run_id, str) or not run_id.strip():
+        problems.append("runId is required")
+    elif findings_run_id is not None and run_id != findings_run_id:
+        problems.append(
+            f"runId {run_id} does not match review findings runId {findings_run_id}"
+        )
     dispositions = doc.get("dispositions")
     if not isinstance(dispositions, list):
-        return ["dispositions must be a list"]
+        problems.append("dispositions must be a list")
+        return problems
     for index, item in enumerate(dispositions):
         if not isinstance(item, dict):
             problems.append(f"dispositions[{index}] must be an object")
@@ -226,12 +242,17 @@ def write_dispositions(change_dir: Path, doc: dict[str, Any]) -> dict[str, Any]:
         f.get("id") for f in (findings_doc or {}).get("findings", [])
         if isinstance(f, dict)
     }
-    problems = validate_dispositions(doc, known_ids)
+    findings_run_id = (findings_doc or {}).get("runId")
+    problems = validate_dispositions(
+        doc,
+        known_ids,
+        findings_run_id if isinstance(findings_run_id, str) else None,
+    )
     if problems:
         return {"ok": False, "code": "DISPOSITIONS_INVALID", "problems": problems}
     payload = {
         "schemaVersion": 1,
-        "runId": doc.get("runId"),
+        "runId": doc["runId"],
         "dispositions": doc["dispositions"],
     }
     out = dispositions_path(change_dir)

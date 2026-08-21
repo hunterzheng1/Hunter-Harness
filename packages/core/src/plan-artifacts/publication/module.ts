@@ -234,7 +234,11 @@ function paths(changeKey: string): readonly string[] {
     `plans/${changeKey}-plan.md`,
     `plans/${changeKey}-test-scenarios.md`,
     `plans/${changeKey}-implementation-detail.md`,
-    "meta/gate-policy.json",
+    // 不是 meta/gate-policy.json：那个文件的权威写者是 Python 的 classify
+    // （schemaVersion:1 + requiredGateDag，run/test 门禁靠它开门）。这里发布的是
+    // 派生视图，占用同一个文件名会在阶段 8 把它原子覆盖掉，之后 gate begin 直接
+    // POLICY_LOAD_FAILED。
+    "meta/plan-profile.json",
     "meta/worktree.json",
     "meta/implementation-checkpoints.json",
     "meta/scenario-manifest.json"

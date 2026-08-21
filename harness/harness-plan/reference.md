@@ -351,7 +351,8 @@ status: approved
 | `.harness/changes/<change>/plans/<change>-plan.md` | ✅（派生） | ✅ |
 | `.harness/changes/<change>/plans/<change>-implementation-detail.md` | ✅（派生） | ✅ |
 | `.harness/changes/<change>/plans/<change>-test-scenarios.md` | ✅（派生） | ✅ |
-| `.harness/changes/<change>/meta/gate-policy.json` | ✅ | ✅ |
+| `.harness/changes/<change>/meta/gate-policy.json` | ✅（**classify 写，非发布产物**） | ✅ |
+| `.harness/changes/<change>/meta/plan-profile.json` | ✅（派生） | — |
 | `.harness/changes/<change>/meta/worktree.json` | ✅ | ✅ |
 | `.harness/changes/<change>/meta/implementation-checkpoints.json` | ✅ | ✅ |
 | `.harness/changes/<change>/meta/scenario-manifest.json` | ✅ | ✅ |
@@ -362,6 +363,25 @@ status: approved
 | `.harness/changes/<change>/events.ndjson` | ✅ | ✅ |
 
 legacy 的 `plan-finalization.json.files` 必须完整列出 design、plan、implementation-detail、test-scenarios、gate-policy、worktree 六项标准输入。`verify` 对缺项、重复项、越界路径以及 symlink/junction/reparse point 一律 fail-closed；不得通过删减收据文件集后重算哈希来绕过完整性检查。
+
+### 两套分类模型的边界（别把它们当同一件事）
+
+| | Python `tier` | TS `mode` |
+|---|---|---|
+| 取值 | `fast` / `standard` / `full` | `quick` / `standard` / `assurance` |
+| 写到哪 | `meta/gate-policy.json`（`schemaVersion:1`，camelCase） | `meta/plan-profile.json`（artifact 包装体，snake_case） |
+| 谁写 | `harness_gate.py classify`（阶段 0.5 由 bootstrap-plan 调起） | `hunter-harness plan finalize`（阶段 8 发布） |
+| 地位 | **门禁权威**：驱动 `requiredGateDag`、`requiredValidationsByPhase`，run/test 开门读它 | **派生视图**：供展示与下游只读消费，门禁不读 |
+| 输入 | 计划文档的「风险等级」正则 + capabilityGates 信号 | 自然输入里手填的 `risk_signals` |
+
+**两者不共用文件名。** v2 发布对 `binding.ownership_paths` 逐个原子覆盖，若派生视图占用 `meta/gate-policy.json`，阶段 8 会把 classify 写的那份换成包装体，之后 `gate begin --phase run` 直接 `POLICY_LOAD_FAILED`——`harness_gate.effective_workflow_policy` 读 `schemaVersion` 拿不到就 raise。
+
+**为什么派生视图目前不能当权威**（将来要接通就得先解决这两条）：
+
+1. `plan evidence-pack` 对 `risk_signals` **不做任何推断**——不读 git diff、不扫路径、不解析 frontmatter，值完全来自自然输入里手填的那个数组。拿它当门禁权威等于让 agent 自声明低风险来跳门禁。
+2. 命令里的 `capabilities` 是写死的（`is_git:true, has_remote:true, uses_worktree:false`），用户在阶段 0.6 通过 `configure-plan` 选的阶段计划被完全忽略，`planned_phases` 退化成 mode 的纯函数。
+
+`meta/implementation-checkpoints.json` 的情况不同：v2 包装体里的 `content.foundation_gate` 信息是够的，所以门禁在**只读侧**解包（`checkpoint_status` 同时认 `checkpoints[]`、顶层 `foundationGate` 与 v2 包装体三种形状），不改文件名。注意写回路径（`gate checkpoint approve`）仍然操作原始文档——用归一化结构覆盖会破坏 v2 产物的哈希绑定。
 
 ### 阶段 8 v2 路径（结构化证据包流程，新 change 优先）
 

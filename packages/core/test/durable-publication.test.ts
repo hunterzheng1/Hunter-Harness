@@ -15,7 +15,7 @@ const projectId = "project-demo";
 const paths = [
   "plans/change-12-quality-design.md", "plans/change-12-quality-plan.md",
   "plans/change-12-quality-test-scenarios.md", "plans/change-12-quality-implementation-detail.md",
-  "meta/gate-policy.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
+  "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
 ];
 function hash(value: unknown): string {
   return "sha256:" + createHash("sha256").update(canonicalJson(value)).digest("hex");

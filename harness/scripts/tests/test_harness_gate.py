@@ -2420,6 +2420,83 @@ class V2ArtifactManifestTests(unittest.TestCase):
         ))
 
 
+class CheckpointShapeTests(unittest.TestCase):
+    """meta/implementation-checkpoints.json 有三个写入者，形状各不相同。
+
+    harness_change.migrate 写 checkpoints[{id,status}]；legacy plan finalize 写顶层
+    foundationGate；v2 plan finalize 写 artifact 包装体，状态在 content.foundation_gate。
+    以前只认第一种，另外两种一律 "missing" ——checkpoint 状态对整条 v2 路径和
+    legacy finalize 之后都是读不出来的。
+    """
+
+    def test_migrate_shape_is_read(self) -> None:
+        doc = {"schemaVersion": 1, "checkpoints": [
+            {"id": "foundation-gate", "status": "pending"}]}
+
+        self.assertEqual(gate.checkpoint_status(doc, "foundation-gate"), "pending")
+
+    def test_legacy_finalizer_shape_is_read(self) -> None:
+        doc = {"schemaVersion": 1, "changeName": "demo", "tasks": [],
+               "foundationGate": "approved"}
+
+        self.assertEqual(gate.checkpoint_status(doc, "foundation-gate"), "approved")
+
+    def test_v2_artifact_wrapper_is_read(self) -> None:
+        doc = {
+            "schema_version": 2,
+            "artifact_type": "implementation_checkpoints",
+            "content": {"tasks": [], "foundation_gate": "approved"},
+        }
+
+        self.assertEqual(gate.checkpoint_status(doc, "foundation-gate"), "approved")
+
+    def test_a_pending_v2_wrapper_still_blocks(self) -> None:
+        """这才是要紧的：包装体里状态不是 approved 时，门必须关着。"""
+        doc = {
+            "schema_version": 2,
+            "artifact_type": "implementation_checkpoints",
+            "content": {"tasks": [], "foundation_gate": "pending"},
+        }
+
+        self.assertEqual(gate.checkpoint_status(doc, "foundation-gate"), "pending")
+
+    def test_an_explicit_checkpoints_list_wins_over_the_fallback(self) -> None:
+        """有 checkpoints[] 时以它为准，不去看顶层回退字段。"""
+        doc = {"schemaVersion": 1, "foundationGate": "approved",
+               "checkpoints": [{"id": "foundation-gate", "status": "pending"}]}
+
+        self.assertEqual(gate.checkpoint_status(doc, "foundation-gate"), "pending")
+
+    def test_other_checkpoint_ids_do_not_borrow_the_foundation_fallback(self) -> None:
+        doc = {"schemaVersion": 1, "foundationGate": "approved"}
+
+        self.assertEqual(gate.checkpoint_status(doc, "some-other-gate"), "missing")
+
+    def test_load_checkpoints_returns_the_document_verbatim(self) -> None:
+        """归一化只能发生在只读路径上。
+
+        cmd_checkpoint approve 会把 load_checkpoints 的返回值原样写回盘——返回
+        合成结构会用它覆盖 v2 的哈希绑定产物，直接造成 ARTIFACT_HASH_DRIFT。
+        """
+        project = Path(tempfile.mkdtemp(prefix="harness-cp-shape-"))
+        self.addCleanup(shutil.rmtree, project, True)
+        change_dir = project / ".harness" / "changes" / "demo"
+        (change_dir / "meta").mkdir(parents=True)
+        wrapper = {
+            "schema_version": 2,
+            "artifact_type": "implementation_checkpoints",
+            "content_hash": "sha256:" + "a" * 64,
+            "content": {"tasks": [], "foundation_gate": "approved"},
+        }
+        (change_dir / gate.CHECKPOINTS_REL).write_text(
+            json.dumps(wrapper), encoding="utf-8")
+
+        loaded = gate.load_checkpoints(change_dir)
+
+        self.assertEqual(loaded, wrapper)
+        self.assertNotIn("checkpoints", loaded)
+
+
 class PhaseGateRuleTableTests(unittest.TestCase):
     """每阶段在 begin/close 里额外做什么，集中声明在一张表里。
 

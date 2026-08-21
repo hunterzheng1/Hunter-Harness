@@ -265,6 +265,118 @@ describe("hunter-harness plan finalize (e2e)", () => {
     expect(eventTypes).toContain("phase_ended");
   });
 
+  it("v2 发布之后 Python 门禁仍然开得了门", async () => {
+    // 这条是本轮的真正验收：TS 的 e2e 从不调 Python，Python 的 v2 夹具是手写假产物，
+    // 于是"发布覆盖门禁文件"这类碰撞可以无声进入默认路径。这里跑真实链路——
+    // classify 写策略 → v2 finalize 发布八 target → gate begin --phase run。
+    const changeDir = join(root, ".harness", "changes", CHANGE_KEY);
+    const { fileURLToPath } = await import("node:url");
+    const scriptsDir = fileURLToPath(new URL("../../../harness/scripts/", import.meta.url));
+    const contracts = fileURLToPath(new URL("../../../harness/contracts/workflow-policy.json",
+      import.meta.url));
+    const { spawnSync } = await import("node:child_process");
+
+    // 阶段 0.5 等价物：真实 classify 落 meta/gate-policy.json
+    await fs.mkdir(join(root, "harness", "contracts"), { recursive: true });
+    await fs.copyFile(contracts, join(root, "harness", "contracts", "workflow-policy.json"));
+    const classify = spawnSync("python", [join(scriptsDir, "harness_gate.py"), "classify",
+      "--project", root, "--change", CHANGE_KEY, "--stage", "plan", "--json"],
+      { cwd: root, encoding: "utf8" });
+    expect(classify.status, classify.stderr).toBe(0);
+
+    // 阶段 8：v2 finalize 发布八 target
+    const outputs: string[] = [];
+    expect(await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    })).toBe(0);
+
+    // 发布后 Python 侧读策略必须仍然成立——这一步以前会 POLICY_LOAD_FAILED。
+    const probe = [
+      "import importlib.util, json, sys",
+      `spec = importlib.util.spec_from_file_location('hg', ${JSON.stringify(join(scriptsDir, "harness_gate.py"))})`,
+      "m = importlib.util.module_from_spec(spec); sys.modules['hg'] = m; spec.loader.exec_module(m)",
+      "from pathlib import Path",
+      `cd = Path(${JSON.stringify(changeDir)})`,
+      `policy = m._load_workflow_policy(project=Path(${JSON.stringify(root)}))`,
+      "eff = m.effective_workflow_policy(policy, cd)",
+      "print(json.dumps({'ok': True, 'run': eff['requiredValidations'].get('run')}))"
+    ].join("\n");
+    const run = spawnSync("python", ["-c", probe], { cwd: root, encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+    expect((JSON.parse(run.stdout) as { ok: boolean }).ok).toBe(true);
+  });
+
+  it("发布不覆盖 Python 写的 meta/gate-policy.json", async () => {
+    // v2 finalize 对 binding.ownership_paths 逐个 writeFileAtomic——不读旧内容、不合并。
+    // 阶段 0.5 的 classify 已经把 gate-policy 写成 Python 形状（schemaVersion:1 +
+    // requiredGateDag），阶段 8 若把它换成 TS 的 artifact 包装体，run 阶段开门时
+    // harness_gate 读 schemaVersion 拿到 None 就 raise，整条工作流卡死。
+    const changeDir = join(root, ".harness", "changes", CHANGE_KEY);
+    const policyPath = join(changeDir, "meta", "gate-policy.json");
+    await fs.mkdir(join(changeDir, "meta"), { recursive: true });
+    const pythonPolicy = {
+      schemaVersion: 1,
+      tier: "standard",
+      source: "default-standard",
+      defaultPhases: ["plan", "run", "test", "submit", "archive"],
+      requiredValidations: ["compile", "unitTest", "unitTestFull"],
+      requiredValidationsByPhase: { run: ["compile", "unitTest"], test: ["unitTestFull"] },
+      requiredGateDag: { schemaVersion: 1, nodes: [], edges: [] }
+    };
+    await fs.writeFile(policyPath, JSON.stringify(pythonPolicy), "utf8");
+
+    const outputs: string[] = [];
+    const exitCode = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+    expect(exitCode).toBe(0);
+
+    const after = JSON.parse(await fs.readFile(policyPath, "utf8")) as Record<string, unknown>;
+    // Python 是 gate-policy 的权威写者；TS 那份是派生视图，不该占用这个文件名。
+    expect(after.schemaVersion, "gate-policy 被 v2 发布覆盖了").toBe(1);
+    expect(after).toHaveProperty("requiredGateDag");
+    expect(after).not.toHaveProperty("artifact_type");
+  });
+
+  it("发布的 implementation-checkpoints 不让 foundation-gate 失效", async () => {
+    // Python 的 checkpoint_status 找 checkpoints[] 数组；找不到就返回 "missing"，
+    // foundation_gate_blocks 随即放行——对所有 v2 计划静默关掉这道门。
+    const outputs: string[] = [];
+    const exitCode = await runPlanFinalize({ input: inputPath }, {
+      cwd: root,
+      stdout: (chunk: string) => { outputs.push(chunk); return true; },
+      stderr: () => true
+    });
+    expect(exitCode).toBe(0);
+
+    const checkpointsPath = join(root, ".harness", "changes", CHANGE_KEY,
+      "meta", "implementation-checkpoints.json");
+    const { fileURLToPath } = await import("node:url");
+    const gatePath = fileURLToPath(
+      new URL("../../../harness/scripts/harness_gate.py", import.meta.url));
+    const probe = [
+      "import importlib.util, json, sys",
+      `spec = importlib.util.spec_from_file_location('hg', ${JSON.stringify(gatePath)})`,
+      "m = importlib.util.module_from_spec(spec); sys.modules['hg'] = m; spec.loader.exec_module(m)",
+      "from pathlib import Path",
+      `cps = m.load_checkpoints(Path(${JSON.stringify(join(root, ".harness", "changes", CHANGE_KEY))}))`,
+      "print(json.dumps(m.checkpoint_status(cps, 'foundation-gate')))"
+    ].join("\n");
+    const { spawnSync } = await import("node:child_process");
+    const run = spawnSync("python", ["-c", probe], { encoding: "utf8" });
+    expect(run.status, run.stderr).toBe(0);
+
+    await fs.access(checkpointsPath);
+    const status = JSON.parse(run.stdout) as string;
+    // v2 的 content.foundation_gate 是 "approved"，Python 必须看得见它——
+    // "missing" 意味着这道门对整条 v2 路径是关的。
+    expect(status, "foundation-gate 对 v2 计划静默失效").not.toBe("missing");
+  });
+
   it("发布的 scenario-manifest 能被 Python 门禁解包消费", async () => {
     // 这条补的是双语言之间的缺口：Python 侧的 v2 夹具是手写 JSON，生产端字段一变
     // 它不会失效。这里拿**真实 finalize 产出的**那份 manifest 去喂真实的解包器，

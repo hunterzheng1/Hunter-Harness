@@ -16,6 +16,40 @@
 任何 change 级 schema 迁移机制——改阶段名会让所有在途 change 当场报废且无回收路径。本轮
 先把迁移层与单一真相源做出来，届时合并变成一次可逆的配置改动。
 
+### Fixed — v2 发布会覆盖 Python 门禁依赖的文件（P0）
+
+TS 的八 target 清单里有 `meta/gate-policy.json` 与 `meta/implementation-checkpoints.json`，
+FS 端口对 `binding.ownership_paths` 逐个 `writeFileAtomic`——不读旧内容、不合并。而这两个
+文件在阶段 0.5 已由 `classify` 写成 Python 形状。阶段 8 的 finalize 把它们换成 TS 的 artifact
+包装体（`schema_version` 而非 `schemaVersion`，业务字段埋在 `content` 一层里）。
+
+- `meta/gate-policy.json` → **硬失败**：`gate begin --phase run` 报 `POLICY_LOAD_FAILED`
+  （`effective_workflow_policy` 读 `schemaVersion` 拿到 `None` 就 raise）。
+- `meta/implementation-checkpoints.json` → **静默失效**：`checkpoint_status` 找 `checkpoints[]`
+  数组，找不到返回 `"missing"`，`foundation_gate_blocks` 随即放行。
+
+两者的修法不同，取决于 TS 的 content 里有没有 Python 需要的信息：
+
+- **gate-policy 改名**。TS 的 content 没有 `requiredGateDag`，补它需要把 `VALIDATION_DEPENDENCIES`
+  与 `workflow-policy.json` 的 DAG 编译逻辑整体移植到 TS 并长期双写。既然 Python 是这个文件的
+  权威写者、TS 那份只是派生视图，就让派生视图换名到 `meta/plan-profile.json`——冲突当场消失。
+- **checkpoints 解包**。`content.foundation_gate` 就是要的状态，信息够，所以在**只读侧**归一化：
+  `checkpoint_status` 现在同时认 `checkpoints[]`、顶层 `foundationGate`（legacy finalize 写的）
+  与 v2 包装体三种形状。`load_checkpoints` 刻意仍返回原样文档——`gate checkpoint approve` 会把
+  它写回盘，返回归一化结构会用合成内容覆盖 v2 的哈希绑定产物，造成 `ARTIFACT_HASH_DRIFT`。
+
+**根因是测试形状**：TS 的三个 e2e 从不调用 Python；Python 的 v2 夹具把 `meta/gate-policy.json`
+写成字面量 `b"v2-demo:meta/gate-policy.json\n"`——连合法 JSON 都不是，测试照样通过，因为
+`verify_plan` 只比对 journal 哈希。现已补上真实链路 e2e（classify → finalize → Python 读策略）
+并让那个夹具写真实形状。
+
+### Fixed — review 处置文档完全不校验 runId
+
+`validate_dispositions` 从头到尾不看 `runId`，`write_dispositions` 直接透传，**写 `None` 都能
+落盘**，整条 sidecar 的强制力压在 gate 关门时的一行断言上。而那条断言防的是 fixback 循环里的
+跨轮重放：sidecar 是 per-change 单文件、不带 runId 后缀，第二轮 review 关门时磁盘上躺着第一轮
+那份（finding 全已 `FIXED`）。现在写入端就要求 runId 非空且与 findings 同轮。
+
 ### Added — v2 Plan 的场景契约接上了 run/test 门禁
 
 v2 派生的 `meta/scenario-manifest.json` 是 artifact 包装体，键名与门禁消费的不同，缺

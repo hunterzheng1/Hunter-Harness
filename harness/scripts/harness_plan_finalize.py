@@ -355,6 +355,33 @@ def unpack_v2_scenario_manifest(manifest: Any) -> dict[str, Any] | None:
     }
 
 
+def unpack_v2_implementation_checkpoints(document: Any) -> dict[str, Any] | None:
+    """v2 的 implementation_checkpoints artifact 包装体 → 门禁消费的形状。
+
+    返回 None 表示"这不是 v2 包装体"，调用方按原样处理。
+
+    v2 的 content 是 ``{tasks, foundation_gate}``，而 ``checkpoint_status`` 找的是
+    ``checkpoints: [{id, status}]``——找不到就返回 "missing"，``foundation_gate_blocks``
+    随即放行。也就是说 foundation-gate 对**所有 v2 计划**是静默关闭的。信息本身是够
+    的（``foundation_gate`` 就是那个状态），只是形状不同，所以这里解包而不是改文件名
+    ——与 scenario-manifest 同一模式。
+    """
+    if (
+        not isinstance(document, dict)
+        or document.get("artifact_type") != "implementation_checkpoints"
+    ):
+        return None
+    content = document.get("content")
+    content = content if isinstance(content, dict) else {}
+    status = str(content.get("foundation_gate") or "").strip() or "pending"
+    tasks = content.get("tasks")
+    return {
+        "schemaVersion": 1,
+        "checkpoints": [{"id": "foundation-gate", "status": status, "blocking": True}],
+        "tasks": tasks if isinstance(tasks, list) else [],
+    }
+
+
 def parse_plan_tasks(plan_path: Path) -> list[dict[str, str]]:
     """C8: parse plan.md task table rows, extracting optional ownerPhase/implementationDoneWhen/verificationPhase columns.
 
@@ -971,7 +998,9 @@ def _verify_plan_v2(change_dir: Path) -> dict[str, Any] | None:
         f"plans/{change_dir.name}-plan.md",
         f"plans/{change_dir.name}-implementation-detail.md",
         f"plans/{change_dir.name}-test-scenarios.md",
-        "meta/gate-policy.json",
+        # v2 发布的是派生视图 meta/plan-profile.json，不是 Python classify 写的
+        # meta/gate-policy.json——后者是 run/test 门禁的权威输入，不能被发布覆盖。
+        "meta/plan-profile.json",
         "meta/worktree.json",
     }
     missing_required = sorted(required - set(ownership_paths))

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -1121,6 +1122,35 @@ if __name__ == "__main__":
 class PlanVerifyV2Tests(unittest.TestCase):
     """v2 finalizer（TS）证据路径：无 legacy receipt 时的结构验收。"""
 
+    @staticmethod
+    def _v2_payload(change: str, rel: str) -> bytes:
+        """真实形状的 v2 产物字节。
+
+        以前这里对每个 target 都写字面量 ``f"{change}:{rel}\\n"`` —— `meta/*.json`
+        连合法 JSON 都不是，测试照样通过，因为 verify_plan 只比对 journal 哈希。
+        于是 "v2 发布覆盖 Python 门禁文件" 这类问题在 Python 侧完全看不见。
+        """
+        if not rel.endswith(".json"):
+            return (f"{change}:{rel}\n").encode("utf-8")
+        artifact_type = Path(rel).stem.replace("-", "_")
+        content: dict[str, Any] = {
+            "plan_profile": {"mode": "standard", "capabilities": [],
+                             "planned_phases": ["plan", "run", "test", "submit", "archive"],
+                             "required_validations": ["deterministic_check"]},
+            "worktree": {"policy": "project_default", "requested": False},
+            "implementation_checkpoints": {"tasks": [], "foundation_gate": "approved"},
+            "scenario_manifest": {"scenarios": [], "coverage": []},
+        }.get(artifact_type, {})
+        return (json.dumps({
+            "schema_version": 2,
+            "artifact_type": artifact_type,
+            "artifact_id": f"plan_artifact:{artifact_type}:{'a' * 64}",
+            "generator_version": "hunter-harness-plan-artifacts/3",
+            "content_hash": "sha256:" + "a" * 64,
+            "source_hashes": {},
+            "content": content,
+        }, sort_keys=True) + "\n").encode("utf-8")
+
     def _seed_v2_change(self, change: str = "v2-demo") -> tuple[Path, Path, dict]:
         root = Path(tempfile.mkdtemp(prefix="plan-verify-v2-"))
         change_dir = root / ".harness" / "changes" / change
@@ -1133,14 +1163,16 @@ class PlanVerifyV2Tests(unittest.TestCase):
             f"plans/{change}-plan.md",
             f"plans/{change}-implementation-detail.md",
             f"plans/{change}-test-scenarios.md",
-            "meta/gate-policy.json",
+            # v2 发布的是派生视图 plan-profile，不占用 Python classify 写的
+            # meta/gate-policy.json——后者是 run/test 门禁的权威输入。
+            "meta/plan-profile.json",
             "meta/worktree.json",
             "meta/implementation-checkpoints.json",
             "meta/scenario-manifest.json",
         ]
         payload_hashes = {}
         for rel in targets:
-            content = (f"{change}:{rel}\n").encode("utf-8")
+            content = self._v2_payload(change, rel)
             (change_dir / rel).write_bytes(content)
             payload_hashes[rel] = "sha256:" + hashlib.sha256(content).hexdigest()
         operation_id = f"plan_finalize:{change}:abc123"

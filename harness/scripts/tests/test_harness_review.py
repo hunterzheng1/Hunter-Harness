@@ -190,6 +190,60 @@ class DispositionsTests(ReviewFixture):
         out_path = self.state_dir / "reports" / "review" / "review-findings.json"
         return json.loads(out_path.read_text(encoding="utf-8"))
 
+    def test_dispositions_without_a_run_id_are_refused(self) -> None:
+        """写入端以前完全不看 runId，写 None 都能落盘。
+
+        整条 sidecar 的强制力压在 gate 关门时的一行断言上，而那条断言防的是
+        fixback 循环里的跨轮重放：sidecar 是 per-change 单文件、不带 runId 后缀，
+        第二轮 review 关门时磁盘上躺着第一轮那份（finding 全已 FIXED）。
+        """
+        written = self._write_findings()
+        fid = written["findings"][0]["id"]
+
+        result = review.write_dispositions(
+            self.change_dir,
+            {"schemaVersion": 1, "dispositions": [
+                {"findingId": fid, "disposition": "FIXED", "note": "done"}]},
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "DISPOSITIONS_INVALID")
+        self.assertIn("runId is required", result["problems"])
+        # 拒绝必须发生在落盘之前。
+        self.assertFalse(
+            (self.state_dir / "reports" / "review" / "fixback-dispositions.json").is_file()
+        )
+
+    def test_dispositions_from_another_round_are_refused(self) -> None:
+        """跨轮重放在写入端就挡住，而不是等到关门。"""
+        written = self._write_findings()
+        fid = written["findings"][0]["id"]
+
+        result = review.write_dispositions(
+            self.change_dir,
+            {"schemaVersion": 1, "runId": "review-run-0", "dispositions": [
+                {"findingId": fid, "disposition": "FIXED", "note": "done"}]},
+        )
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["code"], "DISPOSITIONS_INVALID")
+        self.assertTrue(
+            any("does not match review findings runId" in p for p in result["problems"]),
+            result["problems"],
+        )
+
+    def test_a_blank_run_id_is_not_a_run_id(self) -> None:
+        written = self._write_findings()
+        fid = written["findings"][0]["id"]
+
+        result = review.write_dispositions(
+            self.change_dir,
+            {"schemaVersion": 1, "runId": "   ", "dispositions": [
+                {"findingId": fid, "disposition": "FIXED"}]},
+        )
+
+        self.assertFalse(result["ok"], result)
+
     def test_dispositions_reference_existing_ids(self) -> None:
         written = self._write_findings()
         fid = written["findings"][0]["id"]

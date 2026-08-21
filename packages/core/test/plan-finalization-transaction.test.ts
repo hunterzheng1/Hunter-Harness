@@ -45,7 +45,7 @@ function plan() {
   const paths = [
     `plans/${changeKey}-design.md`, `plans/${changeKey}-plan.md`,
     `plans/${changeKey}-test-scenarios.md`, `plans/${changeKey}-implementation-detail.md`,
-    "meta/gate-policy.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
+    "meta/plan-profile.json", "meta/worktree.json", "meta/implementation-checkpoints.json", "meta/scenario-manifest.json"
   ];
   const payloads = paths.map((path, index) => {
     const serialized_content = `${path}\n`;

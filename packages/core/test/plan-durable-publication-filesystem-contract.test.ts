@@ -95,7 +95,7 @@ describe("Stage12-Plan durable publication filesystem contract", () => {
       "plans/change-contract-plan.md",
       "plans/change-contract-test-scenarios.md",
       "plans/change-contract-implementation-detail.md",
-      "meta/gate-policy.json",
+      "meta/plan-profile.json",
       "meta/worktree.json",
       "meta/implementation-checkpoints.json",
       "meta/scenario-manifest.json"

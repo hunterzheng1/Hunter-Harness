@@ -183,7 +183,7 @@ function expectedPaths(changeKey: string): readonly string[] {
     `plans/${changeKey}-plan.md`,
     `plans/${changeKey}-test-scenarios.md`,
     `plans/${changeKey}-implementation-detail.md`,
-    "meta/gate-policy.json",
+    "meta/plan-profile.json",
     "meta/worktree.json",
     "meta/implementation-checkpoints.json",
     "meta/scenario-manifest.json"
