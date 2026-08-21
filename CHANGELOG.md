@@ -1,5 +1,80 @@
 # Changelog
 
+## [Unreleased]
+
+> 诊断第 5/6/8 项闭环：run+test 合并为 execute（方案 c）、evidence-pack 接通
+> 推断与真实 capabilities、legacy 退役补上采纳度度量。另修复一个 main 上长红的
+> 测试漂移（`check_status` 内容扫描停用契约未同步）。
+
+### Changed — run+test 合并为 execute（方案 c，review 保留独立阶段）
+
+0.2.92 铺好的迁移层（单一真相源 + 别名表 + 阶段规则表）本轮兑现：合并从"改七处
+清单 + 写迁移器 + 重建 fixback 语义"降为"改一张表 + 登记别名"。两条不变量：
+
+- **写边界归一化**：gate begin/close、context prepare/begin/close/configure-plan、
+  fixback 入口先经 `resolve_phase_name` 归一，之后系统内只流动 canonical
+  `execute`；旧名 `--phase run`/`--phase test` 仍被接受并等价归一，未知名报
+  `PHASE_UNKNOWN` 并列出合法名与别名。
+- **读侧不迁移**：落盘的 transitions/events/capsule/gate-policy 一律不改写，
+  `_payload_hash` 与哈希链校验保持对原始字节；别名只在哈希校验之后的业务比较层
+  生效（两侧 resolve 后比 canonical）。在途 change 的租约、capsule（文件名与内容
+  身份）、`requiredValidations` 旧键（run/test 取并集）、旧 DAG 节点、旧 manifest
+  `ownerPhase=run/test` 都经别名层继续工作。
+
+语义变化（有意为之，升级前请知悉）：
+
+- **C9 场景到期**：`SCENARIO_OWNER_PHASE_ORDER` 变为 `(plan, execute, review,
+  submit)`，旧 manifest 中 `ownerPhase=run`/`test` 的场景在 execute 关门时**到期**
+  （不再顺延）——execute 关门 = 原 run+test 合并关门，对"只做完原 run 半段"的
+  在途 change 会要求 test 侧 ledger 证据齐备。
+- **fixback**：旧 `test→run` 折叠为 `execute→execute` 自迁移（attempt 单调连续，
+  旧腿与新腿同族计数）；`review→run` 为 `review→execute`。transitions 审计脊柱保留。
+- **review 全程不动**：sidecar runId 绑定与 run_id 铸造零改动（方案 c 下"review
+  sidecar runId 重定义"问题不存在）。
+- **空信号地板对齐**：TS profile 空信号从 quick 改 standard（与 Python
+  default-standard 一致）；`docs_only`/`narrow_fix` 仍是 quick。
+- 建议**在阶段边界升级**：升级瞬间持有旧名租约/capsule 的在途 change 虽由别名
+  回退兜底，但阶段边界处升级路径最简单。
+
+入口与产物：`/harness-execute` 为统一入口；`/harness-run`、`/harness-test` 保留
+为别名（frontmatter name 不变、内容照旧，顶部横幅指向 execute，至少保留一个
+minor）。`harness/contracts/workflow-policy.json` 的
+defaultPhases/requiredValidations（并集）/validationPhases/skills 同步；
+TS 的 `PLAN_PHASES`/`MODE_POLICY`/`PLAN_EVENT_PHASES` 同步；
+`@hunter-harness/contracts` 新增 `LEGACY_PLAN_PHASE_ALIASES`（与 Python 互为镜像，
+各加单测冻结）。兼容测试集中在 `harness/scripts/tests/test_harness_phase_aliases.py`
+（11 条在途场景：停在 run/test 的 change、fixback attempt 连续、reselect 写
+canonical、`_phase_plan` 去重、旧 DAG/manifest resolve、旧 capsule 冻结、未知名
+拒绝、归档折叠）。
+
+### Changed — plan evidence-pack 接通信号推断、真实 capabilities 与 0.6 计划接缝
+
+`reference.md` 钉的两条前置缺陷已接通（接通 ≠ 权威切换，门禁权威仍是 Python
+gate-policy）：
+
+- `risk_signals` 不再是纯手填：命令按 `affected_paths`（主源）与 `git status
+  --porcelain`（次源）经 marker 表推断，**与手填取并集**（推断是安全地板），逐条
+  标注 `declared / inferred / declared+inferred`。
+- `capabilities` 由 `plan-evidence/git-probe.ts` 真实探测（execFile，零新增依赖）；
+  阶段 0.6 `configure-plan` 落的 `plannedPhases` 被读取（权威形状校验，v2 包装体
+  一律回退派生），可选阶段照它取舍，required 缺失保留并告警
+  `phase_set_required_retained`。provenance 只进 stdout 与 `pack.context`，不进任何
+  哈希身份字段。
+
+### Added — legacy 采纳度采集脚本（roadmap 14 三判据只读度量）
+
+`harness/scripts/harness_adoption_metrics.py`（stdlib、只读）：对一组项目根聚合
+roadmap 14 的三条 0.3.0 删除判据（v2 finalize 首次成功率 10 窗 ≥8、证据闭环 5 窗
+全净、legacy 回退率 10 窗 ≤1），输出 `pass/fail/indeterminate`（样本不足显式标注，
+不从 fixture 推算）。删除本身仍以判据达标为前提。
+
+### Fixed — archive 测试漂移
+
+`test_harness_archive.py` 断言 `publication_content_scan.blocked`，而 status 路径
+自上传链路停用扫描后只记录停用契约（ok/scan_performed:false/findings:[]/
+message），KeyError 长红。改为冻结停用契约，并移除已无 CLI 依赖的 `_local_cli`
+包裹。
+
 ## [0.2.92] — hunter-harness ＋ [0.2.86] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > **双发**：本轮同时改了 CLI（`plan evidence-pack` 的场景键集与模板、v2 发布的 target 路径）
