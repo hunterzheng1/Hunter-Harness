@@ -1,6 +1,6 @@
 {
   "name": "hunter-harness",
-  "version": "0.2.91",
+  "version": "0.2.92",
   "description": "Local-first, server-governed agent harness",
   "license": "MIT",
   "type": "module",

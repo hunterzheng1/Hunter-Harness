@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased — hunter-harness ＋ @hunter-harness/workflow-harness
+## [0.2.92] — hunter-harness ＋ [0.2.86] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
-> **双发**：本轮同时改了 CLI（`plan evidence-pack` 的场景键集与模板）与 harness 脚本，
-> 发布时 `minimumCliVersion` 需同步提升到本次 CLI 版本。新旧配对的两种错配方向都
-> fail-closed（旧 CLI + 新 Bundle：manifest 缺字段被点名；新 CLI + 旧 Bundle：门禁不认
-> 包装体），不会静默放行。
+> **双发**：本轮同时改了 CLI（`plan evidence-pack` 的场景键集与模板、v2 发布的 target 路径）
+> 与 harness 脚本，`minimumCliVersion` 提到 `0.2.92`。这不是形式要求——本 Bundle 的
+> `_verify_plan_v2` 按 `meta/plan-profile.json` 校验 journal，而 0.2.91 的 CLI 仍会把派生视图
+> 写到 `meta/gate-policy.json` 上，既让 verify 报 `RECEIPT_FILES_INCOMPLETE`，也会把 classify
+> 写的门禁策略原子覆盖掉。其余错配方向同样 fail-closed，不会静默放行。
 
 流程治理收敛。起因是一份外部诊断——新旧两代状态机、两套租约、两类身份叠加，让普通
 任务承担了接近发布系统的复杂度。全程不碰原子写入、并发 fencing、哈希/readback 这些

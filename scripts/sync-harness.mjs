@@ -44,8 +44,12 @@ const BUNDLE_VERSION = "0.2.73";
 // 旧的 PUSH_PULL_SENSITIVE_HARD_BLOCKED / PUSH_PULL_ARCHIVE_UNAVAILABLE，文档对不上；
 // 0.2.88 起 archive upload 才保留服务端错误码；0.2.89 起认的才是服务端真正返回的
 // ARCHIVE_ALREADY_EXISTS（0.2.88 挂在 ARCHIVE_PACKAGE_CONFLICT 上，那句提示从没触发过），
-// 本 Bundle 的 republish 在冲突时引导用户看该码并给出 --retry-retained
-const MINIMUM_CLI_VERSION = "0.2.91";
+// 本 Bundle 的 republish 在冲突时引导用户看该码并给出 --retry-retained；
+// 0.2.92 起 v2 plan finalize 发布的是 meta/plan-profile.json 而不是 meta/gate-policy.json
+// ——本 Bundle 的 _verify_plan_v2 按前者校验 journal，而 0.2.91 仍会把派生视图写到
+// meta/gate-policy.json 上，既让 verify 报 RECEIPT_FILES_INCOMPLETE，也会把 classify
+// 写的门禁策略原子覆盖掉，之后 gate begin --phase run 直接 POLICY_LOAD_FAILED
+const MINIMUM_CLI_VERSION = "0.2.92";
 const REQUIRED_CAPABILITIES = [
   "sync@2",
   "rules-sync@1",
