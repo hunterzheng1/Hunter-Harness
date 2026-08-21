@@ -153,6 +153,10 @@
 三项都从真实 change 目录读，不从测试 fixture 或本次实施会话推算——这正是 2026-08-13 那次
 基线记录拒绝补造数值的同一条原则。任一项不达标时，删除点顺延一个 minor 版本并在此登记原因。
 
+采集脚本：`harness/scripts/harness_adoption_metrics.py`（只读、stdlib）。用法
+`--project <dogfood 根>... [--json] [--strict]`，三判据的读数/阈值/样本量不足标注
+（`indeterminate`）由脚本输出，不从 fixture 推算。
+
 ### 在此之前
 
 legacy 标记为 **deprecated**：新 change 默认走 v2，legacy 只用于自然输入不完整（例如缺真实
