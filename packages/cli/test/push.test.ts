@@ -161,7 +161,7 @@ describe("hunter-harness push", () => {
     expect(paths.some((path) => /^\.codebuddy\/(?:skills|agents)\/harness-/.test(path))).toBe(false);
   }, 120000);
 
-  it("does not let forged local bundle state skip sensitive scanning", async () => {
+  it("扫描停用后 dry-run 对含密钥文件照常出预览（上传不查敏感信息）", async () => {
     await writeFile(
       join(root, ".claude", "rules", "harness-general.md"),
       "authorization: Bearer secret-test-token\n"
@@ -187,8 +187,12 @@ describe("hunter-harness push", () => {
       stderr: (value) => stderr.push(value)
     });
 
-    expect(code).toBe(6);
-    expect(stderr.join(" ")).toMatch(/sensitive/i);
+    // 停用契约（2026-08）：上传路径不做敏感检查——退出码 0、findings 恒为 0。
+    expect(code).toBe(0);
+    const payload = JSON.parse(stdout.join("")) as {
+      summary: { findings: number };
+    };
+    expect(payload.summary.findings).toBe(0);
   });
 
   it("returns auth failure when token_env is unset", async () => {
@@ -370,13 +374,13 @@ describe("hunter-harness push", () => {
     expect(baseline.complete_project_version).toBe("pv_demo_1");
   });
 
-  it("returns sensitive-blocked without contacting the server", async () => {
+  it("含密钥内容不阻断上传（扫描已停用），且输出不回显密钥", async () => {
     await writeFile(
       join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer unsafe-secret-token-1234567890\n"
     );
     const fetch = vi.fn();
-    const code = await runCli(["push", "--non-interactive", "--yes", "--json"], {
+    const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
       cwd: root,
       resourcesRoot,
       fetch,
@@ -384,14 +388,12 @@ describe("hunter-harness push", () => {
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
-    expect(code).toBe(6);
-    expect(fetch).not.toHaveBeenCalled();
+    // 停用契约（2026-08）：上传不查敏感信息——dry-run 照常出预览，
+    // 没有 SENSITIVE_CONTENT_BLOCKED，也绝不把密钥内容打印到输出。
+    expect(code).toBe(0);
     expect(stdout.join("")).not.toContain("unsafe-secret-token");
-    const payload = JSON.parse(stdout.join("")) as {
-      errors: Array<{ code: string; details?: { findings?: unknown[] } }>;
-    };
-    expect(payload.errors[0]).toMatchObject({ code: "SENSITIVE_CONTENT_BLOCKED" });
-    expect(payload.errors[0]?.details?.findings?.length).toBeGreaterThan(0);
+    expect(stdout.join("")).not.toContain("SENSITIVE_CONTENT_BLOCKED");
+    expect(stderr.join("")).not.toContain("unsafe-secret-token");
   });
 
   it("passes sensitive_scan_skip to finalize when --skip-sensitive-scan --yes", async () => {
@@ -466,8 +468,10 @@ describe("hunter-harness push", () => {
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
+    // 停用契约（2026-08）：--skip-sensitive-scan 是兼容 no-op——上传照常完成，
+    // finalize 不再携带 sensitive_scan_skip 键。
     expect(code).toBe(0);
-    expect(finalizeBody).toMatchObject({ sensitive_scan_skip: true });
+    expect(finalizeBody).not.toHaveProperty("sensitive_scan_skip");
   });
 
   it("INT-002: interactively confirms sensitive scan skip and sends reason to finalize", async () => {
@@ -544,17 +548,15 @@ describe("hunter-harness push", () => {
         prompts.push(question);
         if (question.includes("确认创建或绑定该项目")) return "y\n";
         if (question.includes("Create this proposal")) return "y\n";
-        if (question.includes("是否显式跳过")) return "y\n";
-        if (question.includes("跳过原因")) return "interactive-fixture\n";
         return "\n";
       }
     });
+    // 停用契约（2026-08）：交互路径不再询问敏感扫描跳过，finalize 不带相关键。
     expect(code).toBe(0);
-    expect(prompts.some((item) => item.includes("是否显式跳过"))).toBe(true);
-    expect(finalizeBody).toMatchObject({
-      sensitive_scan_skip: true,
-      sensitive_scan_skip_reason: "interactive-fixture"
-    });
+    expect(prompts.some((item) => item.includes("是否显式跳过"))).toBe(false);
+    expect(prompts.some((item) => item.includes("跳过原因"))).toBe(false);
+    expect(finalizeBody).not.toHaveProperty("sensitive_scan_skip");
+    expect(finalizeBody).not.toHaveProperty("sensitive_scan_skip_reason");
   });
 
   it("INT-003: merges interactive token entry with existing credentials.local server_url", async () => {

@@ -94,7 +94,9 @@ describe("proposal diff generation", () => {
     ]));
   });
 
-  it("blocks proposal preview when included content contains high-risk secrets", () => {
+  it("含高危密钥的内容不阻断 proposal preview（上传扫描已停用）", () => {
+    // 停用契约（2026-08 4458708）：preview 的 security 恒为
+    // disabled-for-publication，上传路径不做敏感检查。
     const preview = generateProposalPreview({
       baseline: {},
       files: {
@@ -104,7 +106,13 @@ describe("proposal diff generation", () => {
       deleteReason: "removed locally",
       confirmedProjectLocal: []
     });
-    expect(preview.blocked).toBe(true);
-    expect(preview.security.findings[0]).toMatchObject({ severity: "high" });
+    expect(preview.blocked).toBe(false);
+    expect(preview.security).toMatchObject({
+      scan_performed: false,
+      scanner_version: "disabled-for-publication",
+      blocked: false,
+      hard_blocked: false,
+      findings: []
+    });
   });
 });

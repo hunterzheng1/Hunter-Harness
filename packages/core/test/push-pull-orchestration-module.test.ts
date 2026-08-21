@@ -220,31 +220,25 @@ describe("PushPullOrchestration v1", () => {
     ]);
   });
 
-  it("binds overridable sensitive confirmation to the trusted preview hash", async () => {
+  it("上传不查敏感信息：confirm 无需 scan_overrides，execute 直接完成", async () => {
+    // 停用契约（2026-08）：security_scan 恒为 disabled-for-publication，
+    // block 策略参数不再生效；confirm 不要求 scan_overrides。
     const sensitive = file(".harness/rules/review.md", "rule", "password=supersecret\n");
     const { interaction, port } = engine({ local_files: [sensitive], remote_files: [] }, "block");
     const preview = await interaction.buildPushPreview(input(["rules"]));
-    expect(preview.security_scan).toMatchObject({ blocked: true, review_required: true });
-    const finding = preview.security_scan.findings[0];
-    if (finding === undefined) throw new Error("expected sensitive finding");
-
-    expect(() => interaction.confirmPush(preview.preview_hash, {
-      action: "continue",
-      idempotency_key: "push-sensitive-missing-confirmation",
-      conflict_decisions: []
-    })).toThrowError(expect.objectContaining({
-      code: "PUSH_PULL_SENSITIVE_CONFIRMATION_REQUIRED"
-    }));
+    expect(preview.security_scan).toMatchObject({
+      scan_performed: false,
+      scanner_version: "disabled-for-publication",
+      blocked: false,
+      hard_blocked: false,
+      review_required: false,
+      findings: []
+    });
 
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue",
       idempotency_key: "push-sensitive",
-      conflict_decisions: [],
-      scan_overrides: [{
-        finding_fingerprint: finding.fingerprint,
-        actor: "reviewer",
-        reason: "fixture credential is synthetic"
-      }]
+      conflict_decisions: []
     });
     if (confirmed.status !== "confirmed") throw new Error("push should be confirmed");
     const receipt = await interaction.executePush(confirmed.confirmation_id);
@@ -260,7 +254,7 @@ describe("PushPullOrchestration v1", () => {
     expect(port.versionCount(source_ref)).toBe(1);
   });
 
-  it("needs no scan confirmation under the default warn policy", async () => {
+  it("扫描已停用：findings 恒空且 confirm 无需扫描确认", async () => {
     const secret = file(
       ".harness/rules/secret.md",
       "rule",
@@ -268,13 +262,17 @@ describe("PushPullOrchestration v1", () => {
     );
     const { interaction, port } = engine({ local_files: [secret], remote_files: [] });
     const preview = await interaction.buildPushPreview(input(["rules"]));
-    // The finding is still reported; it just no longer gates the upload.
-    expect(preview.security_scan.findings.length).toBeGreaterThan(0);
-    expect(preview.security_scan.blocked).toBe(false);
+    // 停用契约：不再计算 findings，上传不做敏感检查。
+    expect(preview.security_scan).toMatchObject({
+      scan_performed: false,
+      scanner_version: "disabled-for-publication",
+      blocked: false,
+      findings: []
+    });
 
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue",
-      idempotency_key: "warn-policy-no-scan-confirmation",
+      idempotency_key: "scan-disabled-no-confirmation",
       conflict_decisions: []
     });
     if (confirmed.status !== "confirmed") throw new Error("push should be confirmed");
@@ -283,7 +281,7 @@ describe("PushPullOrchestration v1", () => {
     expect(port.versionCount(source_ref)).toBe(1);
   });
 
-  it("delegates hard-block applicability to RemoteSync and preserves zero writes on rejection", async () => {
+  it("block 策略参数不再产生 hard-block：execute 不被 SYNC_SENSITIVE 拒绝", async () => {
     const secret = file(
       ".harness/rules/secret.md",
       "rule",
@@ -291,19 +289,21 @@ describe("PushPullOrchestration v1", () => {
     );
     const { interaction, port } = engine({ local_files: [secret], remote_files: [] }, "block");
     const preview = await interaction.buildPushPreview(input(["rules"]));
-    expect(preview.security_scan).toMatchObject({ blocked: true, hard_blocked: true });
+    expect(preview.security_scan).toMatchObject({
+      blocked: false,
+      hard_blocked: false,
+      findings: []
+    });
 
     const confirmed = interaction.confirmPush(preview.preview_hash, {
       action: "continue",
-      idempotency_key: "hard-sensitive",
-      conflict_decisions: [],
-      scan_overrides: []
+      idempotency_key: "hard-sensitive-disabled",
+      conflict_decisions: []
     });
     if (confirmed.status !== "confirmed") throw new Error("explicit confirmation should be bound");
-    await expect(interaction.executePush(confirmed.confirmation_id)).rejects.toMatchObject({
-      code: "SYNC_SENSITIVE_CONTENT_BLOCKED"
-    });
-    expect(port.versionCount(source_ref)).toBe(0);
+    const receipt = await interaction.executePush(confirmed.confirmation_id);
+    expect(receipt.status).toBe("completed");
+    expect(port.versionCount(source_ref)).toBe(1);
   });
 
   it("supports conflict continue/review/stop without executing review or stop", async () => {

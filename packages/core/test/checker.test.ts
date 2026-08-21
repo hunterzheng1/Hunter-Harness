@@ -36,9 +36,11 @@ describe("checkSkill (source-file driven)", () => {
     expect(r.items.find((i) => i.id === "ENTRY_SKILL_MD")?.status).toBe("red");
   });
 
-  it("UT-011 sensitive content → SENSITIVE red", () => {
+  it("UT-011 SENSITIVE 检查项已随上传链路扫描停用移除", () => {
+    // 停用契约（2026-08 4458708）：checker 不再产出 SENSITIVE 检查项，
+    // 含密钥的 skill 文件不再被本地审计拦截。
     const r = checkSkill(baseInput([skillFile(fm("harness-x") + "\n" + PRIVATE_KEY)]));
-    expect(r.items.find((i) => i.id === "SENSITIVE")?.status).toBe("red");
+    expect(r.items.find((i) => i.id === "SENSITIVE")).toBeUndefined();
   });
 
   it("UT-012 no forbidden_actions → PERMISSIONS not red (suggestion)", () => {

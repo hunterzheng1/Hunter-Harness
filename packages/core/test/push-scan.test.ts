@@ -22,32 +22,31 @@ describe("pushProject sensitive scan UX", () => {
     return root;
   }
 
-  it("throws SENSITIVE_CONTENT_BLOCKED with findings details when blocked", async () => {
+  it("上传时不做敏感检查：密钥内容不阻断 push（扫描已停用）", async () => {
+    // 停用契约（2026-08 4458708 起）：scanner_version=disabled-for-publication、
+    // scan_performed=false、blocked/findings 恒为空——上传路径不再做敏感检查。
     const root = await initRoot();
     await writeFile(
       join(root, ".harness", "rules", "unsafe.md"),
       "Authorization: Bearer blocked-secret-token-1234567890\n"
     );
-    await expect(pushProject({
+    const result = await pushProject({
       projectRoot: root,
       resourcesRoot,
       env: {},
       dryRun: true
-    })).rejects.toMatchObject({
-      code: "SENSITIVE_CONTENT_BLOCKED",
-      details: {
-        finding_count: expect.any(Number),
-        findings: expect.arrayContaining([
-          expect.objectContaining({
-            path: ".harness/rules/unsafe.md",
-            rule_id: "HH_AUTHORIZATION_BEARER"
-          })
-        ])
-      }
+    });
+    expect(result.preview.blocked).toBe(false);
+    expect(result.preview.security).toMatchObject({
+      scan_performed: false,
+      scanner_version: "disabled-for-publication",
+      blocked: false,
+      hard_blocked: false,
+      findings: []
     });
   });
 
-  it("allows blocked preview when sensitiveScanSkip is true", async () => {
+  it("sensitiveScanSkip 是兼容 no-op：被接受但不改变停用契约", async () => {
     const root = await initRoot();
     await writeFile(
       join(root, ".harness", "rules", "unsafe.md"),
@@ -60,8 +59,8 @@ describe("pushProject sensitive scan UX", () => {
       dryRun: true,
       sensitiveScanSkip: true
     });
-    expect(result.preview.blocked).toBe(true);
-    expect(result.preview.security.findings.length).toBeGreaterThan(0);
+    expect(result.preview.blocked).toBe(false);
+    expect(result.preview.security.findings).toEqual([]);
   });
 
   it("excludes generated Python caches before scan and proposal construction", async () => {
@@ -91,14 +90,9 @@ describe("pushProject sensitive scan UX", () => {
         expect.objectContaining({ path: relativePath })
       ])
     );
-    expect(result.preview.security.findings).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: relativePath })
-      ])
-    );
   });
 
-  it("still scans user-authored Python files in adapter skills", async () => {
+  it("用户 Python 文件含密钥同样不阻断（停用契约覆盖全部文件类型）", async () => {
     const root = await initRoot();
     const skillRoot = join(root, ".claude", "skills", "harness-local", "scripts");
     await mkdir(skillRoot, { recursive: true });
@@ -107,22 +101,14 @@ describe("pushProject sensitive scan UX", () => {
       "header = 'Authorization: Bearer blocked-secret-token-1234567890'\n"
     );
 
-    await expect(pushProject({
+    const result = await pushProject({
       projectRoot: root,
       resourcesRoot,
       env: {},
       dryRun: true
-    })).rejects.toMatchObject({
-      code: "SENSITIVE_CONTENT_BLOCKED",
-      details: {
-        findings: expect.arrayContaining([
-          expect.objectContaining({
-            path: ".claude/skills/harness-local/scripts/unsafe.py",
-            rule_id: "HH_AUTHORIZATION_BEARER"
-          })
-        ])
-      }
     });
+    expect(result.preview.blocked).toBe(false);
+    expect(result.preview.security.scan_performed).toBe(false);
   });
 
   it("rejects a cache-named symlink before applying cache exclusions", async () => {

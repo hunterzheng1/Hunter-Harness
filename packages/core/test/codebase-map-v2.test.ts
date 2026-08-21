@@ -635,7 +635,8 @@ describe("CodebaseMapModule v2 evidence selection", () => {
     ]));
   });
 
-  it("excludes a secret-bearing candidate even when its path appears ordinary", () => {
+  it("扫描停用后不再按内容排除候选（SENSITIVE_CONTENT_EXCLUDED 不再出现）", () => {
+    // 停用契约（2026-08 4458708）：evidence 选择不再做内容敏感排除。
     const result = selectMapEvidence({
       schema_version: 2,
       manifest_hash: sha("8"),
@@ -650,8 +651,8 @@ describe("CodebaseMapModule v2 evidence selection", () => {
       }]
     });
 
-    expect(result.snippets).toEqual([]);
-    expect(result.truncation_reasons).toContain("SENSITIVE_CONTENT_EXCLUDED");
+    expect(result.truncation_reasons ?? []).not.toContain("SENSITIVE_CONTENT_EXCLUDED");
+    expect(result.snippets.length).toBeGreaterThan(0);
   });
 
   it.each([
@@ -1057,7 +1058,9 @@ describe("CodebaseMapModule v2 execution and publication planning", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("rejects sensitive output before producing an atomic publication plan", () => {
+  it("发布规划不再做内容敏感检查：含密钥文档照常产出计划", () => {
+    // 停用契约（2026-08 4458708）：planMapPublication 不扫描内容，
+    // SENSITIVE_OUTPUT_DETECTED 不再出现。
     const previous_documents = Object.fromEntries(
       CODEBASE_MAP_V2_DOCUMENTS.map((name) => [name, `# ${name}\npackages/core/src/index.ts\n`])
     );
@@ -1074,11 +1077,8 @@ describe("CodebaseMapModule v2 execution and publication planning", () => {
       summary_content: "# Map summary\npackages/core/src/index.ts\n"
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      reason_codes: ["SENSITIVE_OUTPUT_DETECTED"],
-      operations: []
-    });
+    expect(result).toMatchObject({ ok: true });
+    expect("reason_codes" in result ? result.reason_codes : []).not.toContain("SENSITIVE_OUTPUT_DETECTED");
   });
 
   it.each([
@@ -1087,7 +1087,8 @@ describe("CodebaseMapModule v2 execution and publication planning", () => {
     ["-----BEGIN PRIVATE KEY-----", "HH_PRIVATE_KEY"],
     [`token=ghp_${"a".repeat(36)}`, "HH_GITHUB_TOKEN"],
     ["database=postgresql://user:secret@example.invalid/db", "HH_DATABASE_URL"]
-  ])("uses the canonical scanner to reject %s", (secret, canonicalRule) => {
+  ])("canonical 扫描器本体仍识别 %s（但发布路径不再调用它）", (secret, canonicalRule) => {
+    // 扫描器模块保持完好——被停用的是发布/上传路径对它的调用。
     expect(scanSensitiveFiles({ "fixture.txt": secret }).findings.map((item) => item.rule_id))
       .toContain(canonicalRule);
     const previous_documents = Object.fromEntries(
@@ -1104,15 +1105,10 @@ describe("CodebaseMapModule v2 execution and publication planning", () => {
       summary_content: "# Map summary\npackages/core/src/index.ts\n"
     });
 
-    expect(result).toEqual({
-      ok: false,
-      reason_codes: ["SENSITIVE_OUTPUT_DETECTED"],
-      retained_manifest_hash: sha("9"),
-      operations: []
-    });
+    expect(result).toMatchObject({ ok: true });
   });
 
-  it("scans the durable manifest output with the canonical sensitive scanner", () => {
+  it("durable manifest 内容也不再触发 SENSITIVE_OUTPUT_DETECTED", () => {
     const previous_documents = Object.fromEntries(
       CODEBASE_MAP_V2_DOCUMENTS.map((name) => [name, `# ${name}\npackages/core/src/index.ts\n`])
     );
@@ -1130,12 +1126,7 @@ describe("CodebaseMapModule v2 execution and publication planning", () => {
       summary_content: "# Map summary\npackages/core/src/index.ts\n"
     });
 
-    expect(result).toEqual({
-      ok: false,
-      reason_codes: ["SENSITIVE_OUTPUT_DETECTED"],
-      retained_manifest_hash: sha("9"),
-      operations: []
-    });
+    expect(result).toMatchObject({ ok: true });
   });
 
   it("does not reject ordinary password terminology or placeholders", () => {

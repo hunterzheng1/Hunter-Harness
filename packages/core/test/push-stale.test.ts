@@ -100,6 +100,13 @@ describe("pushProject stale baseline UX", () => {
     await writeBaseline(root, baseline);
   }
 
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" }
+    });
+  }
+
   function projectGetResponse(
     projectId: string,
     latestProjectVersion: string | null
@@ -561,34 +568,55 @@ describe("pushProject stale baseline UX", () => {
     expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
   });
 
-  it("requires sensitive-scan approval again when locked content changes", async () => {
+  it("扫描停用后 locked 内容变化不再触发敏感确认（confirmSensitiveScanSkip 不被调用）", async () => {
+    // 停用契约（2026-08）：上传路径不做敏感检查，confirmSensitiveScanSkip 回调
+    // 是历史兼容面，永不调用。
     const root = await initRoot();
     const projectId = "prj_lock_rescan";
     const path = ".harness/rules/rescan.md";
     await bindProject(root, projectId, "pv_00000001");
     await seedCurrentFilesAsBaseline(root, projectId, "pv_00000001");
     await writeFile(join(root, path), "Authorization: Bearer secret-A-12345678901234567890\n");
-    const calls: string[] = [];
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const method = (init?.method ?? "GET").toUpperCase();
-      calls.push(method + " " + url.pathname);
       if (method === "GET" && url.pathname === "/api/v1/projects/" + projectId) {
         return projectGetResponse(projectId, "pv_00000001");
       }
-      throw new Error("proposal must not be created after final scan approval is denied: " +
-        method + " " + url.pathname);
-    });
-    const confirmSensitiveScanSkip = vi.fn(async () => {
-      if (confirmSensitiveScanSkip.mock.calls.length === 1) {
-        await writeFile(
-          join(root, path),
-          "Authorization: Bearer secret-B-09876543210987654321\n"
-        );
-        return { skip: true, reason: "first preview only" } as const;
+      if (url.pathname.endsWith("/proposal-sessions")) {
+        const body = JSON.parse(String(init?.body)) as {
+          proposal_manifest: { files: Array<{ content_sha256?: string }> };
+        };
+        const hash = body.proposal_manifest.files.find(
+          (item) => item.content_sha256 !== undefined
+        )?.content_sha256 ?? "";
+        return jsonResponse({
+          session_id: "ups_rescan",
+          expires_at: "2099-06-21T00:00:00Z",
+          missing_blobs: [hash],
+          max_chunk_bytes: 1024 * 1024,
+          request_id: "req"
+        }, 201);
       }
-      return "cancelled" as const;
+      if (url.pathname.endsWith("/blobs:query")) {
+        const body = JSON.parse(String(init?.body)) as { content_sha256: string[] };
+        return jsonResponse({ present: [], missing: body.content_sha256, request_id: "req" });
+      }
+      if (method === "PUT" && url.pathname.includes("/blobs/")) {
+        return jsonResponse({ verified: true }, 201);
+      }
+      if (url.pathname.endsWith("ups_rescan:finalize")) {
+        return jsonResponse({
+          proposal_id: "prp_rescan",
+          status: "approved",
+          artifact_id: "art_rescan",
+          received_files: 1,
+          request_id: "req"
+        }, 201);
+      }
+      throw new Error("unexpected request: " + method + " " + url.pathname);
     });
+    const confirmSensitiveScanSkip = vi.fn(async () => ({ skip: true }) as const);
 
     const result = await pushProject({
       projectRoot: root,
@@ -599,9 +627,8 @@ describe("pushProject stale baseline UX", () => {
       confirmSensitiveScanSkip
     });
 
-    expect(result).toMatchObject({ cancelled: true, projectId });
-    expect(confirmSensitiveScanSkip).toHaveBeenCalledTimes(2);
-    expect(calls.some((call) => call.includes("proposal-sessions"))).toBe(false);
+    expect(confirmSensitiveScanSkip).not.toHaveBeenCalled();
+    expect(result).not.toMatchObject({ cancelled: true });
   });
 
   it("API-006 stale guidance must not mention unconditional git pull", { timeout: 60_000 }, async () => {

@@ -502,7 +502,9 @@ describe("07B proposal and apply planning", () => {
     });
   });
 
-  it("rejects sensitive content supplied by the trusted pinned raw model action", async () => {
+  it("trusted raw action 被替换内容 → 身份级 MISMATCH（非内容扫描）", async () => {
+    // 校验拒绝来自 candidate 与 trusted raw action 的身份失配
+    // （INSTRUCTION_CURRENT_PROPOSAL_MISMATCH），不是内容敏感扫描。
     const candidate = await proposal();
     const trusted = await currentProposalVerificationInput();
 
@@ -514,7 +516,7 @@ describe("07B proposal and apply planning", () => {
       }]
     })).toEqual({
       valid: false,
-      reason_code: "INSTRUCTION_CURRENT_PROPOSAL_INVALID"
+      reason_code: "INSTRUCTION_CURRENT_PROPOSAL_MISMATCH"
     });
   });
 
@@ -735,16 +737,38 @@ describe("07B proposal and apply planning", () => {
       prompt_version: "instruction-proposal-v1",
       model_identity: "memory:test-model"
     };
+    // 注：原第四条（content 含 Authorization Bearer 密钥）已随扫描停用移除——
+    // 内容不再触发拒绝；其余三条（伪造证据引用、术语候选写规则、非规范路径）仍然拒绝。
     for (const action of [
       { operation: "modify", target_path: ".harness/rules/testing.md", topic: "testing", content: "ok", evidence_refs: ["invented:ref"], rationale_zh: "说明", confidence: "low", review_mode: "confirmation_required" },
       { operation: "modify", target_path: ".harness/rules/core.md", topic: "core", content: "ok", evidence_refs: ["candidate:pcc_glossary_01"], rationale_zh: "说明", confidence: "low", review_mode: "confirmation_required" },
-      { operation: "modify", target_path: ".harness/rules/testing.md", topic: "testing", content: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz", evidence_refs: ["candidate:pcc_rule_01"], rationale_zh: "说明", confidence: "low", review_mode: "confirmation_required" },
       { operation: "modify", target_path: ".env", topic: "testing", content: "ok", evidence_refs: ["candidate:pcc_rule_01"], rationale_zh: "说明", confidence: "low", review_mode: "confirmation_required" }
     ]) {
       await expect(proposeInstructionChanges(base, {
         propose: async () => ({ actions: [action] as never })
       })).rejects.toBeInstanceOf(InstructionProposalError);
     }
+  });
+
+  it("含密钥内容不再触发 InstructionProposalError（扫描已停用）", async () => {
+    const base = {
+      inspection_ref: inspectionRef,
+      current_inspection_ref: inspectionRef,
+      evidence: await evidence(),
+      expected_baseline_hash: inspectionRef.canonical_hash,
+      canonical_file_hashes: {
+        ".harness/rules/core.md": H("c"),
+        ".harness/rules/testing.md": H("d")
+      },
+      created_at: "2026-08-13T02:00:00.000Z",
+      expires_at: "2026-08-14T02:00:00.000Z",
+      prompt_version: "instruction-proposal-v1",
+      model_identity: "memory:test-model"
+    };
+    const action = { operation: "modify", target_path: ".harness/rules/testing.md", topic: "testing", content: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz", evidence_refs: ["candidate:pcc_rule_01"], rationale_zh: "说明", confidence: "low", review_mode: "confirmation_required" };
+    await expect(proposeInstructionChanges(base, {
+      propose: async () => ({ actions: [action] as never })
+    })).resolves.toBeDefined();
   });
 
   it("rejects a self-hashed evidence bundle that forges glossary as proposable", async () => {

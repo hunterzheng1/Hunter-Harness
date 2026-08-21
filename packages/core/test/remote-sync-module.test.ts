@@ -642,7 +642,9 @@ describe("RemoteSyncModule v1", () => {
     expect(JSON.stringify(preview)).not.toMatch(/mtime|modified_at/iu);
   });
 
-  it("skips content scanning only for config while hard-blocking credentials in rules", async () => {
+  it("扫描停用：config 与 rules 的密钥内容都不阻断 push", async () => {
+    // 停用契约（2026-08 4458708）：sensitiveScanPolicy 参数不再生效，
+    // security_scan 恒为 disabled-for-publication，上传不做敏感检查。
     const secret = "Authorization: Bearer secret-token-value-1234567890";
     const configPort = new InMemoryRemoteSyncPort();
     configPort.seed(source_ref, {
@@ -652,6 +654,8 @@ describe("RemoteSyncModule v1", () => {
     const configModule = new RemoteSyncModule(configPort, { sensitiveScanPolicy: "block" });
     const configPreview = await configModule.previewPush(["config"], source_ref);
     expect(configPreview.security_scan).toMatchObject({
+      scan_performed: false,
+      scanner_version: "disabled-for-publication",
       blocked: false,
       findings: []
     });
@@ -663,24 +667,20 @@ describe("RemoteSyncModule v1", () => {
     });
     const ruleModule = new RemoteSyncModule(rulePort, { sensitiveScanPolicy: "block" });
     const preview = await ruleModule.previewPush(["rules"], source_ref);
-    expect(preview.security_scan).toMatchObject({ blocked: true, hard_blocked: true });
-    const finding = preview.security_scan.findings[0];
-    if (finding === undefined) throw new Error("expected security finding");
-    await expect(ruleModule.push(["rules"], source_ref, {
-      ...confirmation(preview.preview_hash, "hard-secret"),
-      scan_confirmation: {
-        expected_preview_hash: preview.preview_hash,
-        overrides: [{
-          finding_fingerprint: finding.fingerprint,
-          actor: "test",
-          reason: "must remain non-overridable"
-        }]
-      }
-    })).rejects.toMatchObject({ code: "SYNC_SENSITIVE_CONTENT_BLOCKED" });
-    expect(rulePort.versionCount(source_ref)).toBe(0);
+    expect(preview.security_scan).toMatchObject({
+      scan_performed: false,
+      blocked: false,
+      hard_blocked: false,
+      findings: []
+    });
+    const receipt = await ruleModule.push(
+      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
+    );
+    expect(receipt.applied).toEqual(preview.operations);
+    expect(rulePort.versionCount(source_ref)).toBe(1);
   });
 
-  it("binds an overridable sensitive finding authorization to preview_hash", async () => {
+  it("扫描停用后 push 无需 scan_confirmation 授权即可执行", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(".harness/rules/review.md", "password=supersecret\n")],
@@ -689,40 +689,21 @@ describe("RemoteSyncModule v1", () => {
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
     expect(preview.security_scan).toMatchObject({
-      blocked: true,
+      scan_performed: false,
+      blocked: false,
       hard_blocked: false,
-      review_required: true
+      review_required: false,
+      findings: []
     });
-    await expect(module.push(
-      ["rules"], source_ref, confirmation(preview.preview_hash, "review-missing")
-    )).rejects.toMatchObject({ code: "SYNC_SENSITIVE_CONTENT_BLOCKED" });
-    const finding = preview.security_scan.findings[0];
-    if (finding === undefined) throw new Error("expected review finding");
-    const override = {
-      finding_fingerprint: finding.fingerprint,
-      actor: "reviewer",
-      reason: "fixture credential is synthetic"
-    };
-    await expect(module.push(["rules"], source_ref, {
-      ...confirmation(preview.preview_hash, "review-wrong-hash"),
-      scan_confirmation: {
-        expected_preview_hash: sha256Bytes("wrong preview"),
-        overrides: [override]
-      }
-    })).rejects.toMatchObject({ code: "SYNC_PREVIEW_HASH_MISMATCH" });
 
-    const receipt = await module.push(["rules"], source_ref, {
-      ...confirmation(preview.preview_hash, "review-authorized"),
-      scan_confirmation: {
-        expected_preview_hash: preview.preview_hash,
-        overrides: [override]
-      }
-    });
+    const receipt = await module.push(
+      ["rules"], source_ref, confirmation(preview.preview_hash, "scan-disabled")
+    );
     expect(receipt.applied).toEqual(preview.operations);
     expect(port.versionCount(source_ref)).toBe(1);
   });
 
-  it("does not block a credential that a push conflict decision keeps remote", async () => {
+  it("冲突决策 accept_remote 保留远端：本地含密钥文件不上传（与扫描无关）", async () => {
     const path = ".harness/rules/not-uploaded.md";
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
@@ -736,7 +717,7 @@ describe("RemoteSyncModule v1", () => {
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
-    expect(preview.security_scan.hard_blocked).toBe(true);
+    expect(preview.security_scan.hard_blocked).toBe(false);
     const receipt = await module.push(["rules"], source_ref, {
       ...confirmation(preview.preview_hash, "keep-safe-remote"),
       conflict_decisions: [{
@@ -752,7 +733,7 @@ describe("RemoteSyncModule v1", () => {
     expect(port.versionCount(source_ref)).toBe(0);
   });
 
-  it("reports but never blocks under the default warn policy", async () => {
+  it("默认 warn 策略下同样不计算 findings（扫描已停用）", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
@@ -763,10 +744,12 @@ describe("RemoteSyncModule v1", () => {
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "warn" });
     const preview = await module.previewPush(["rules"], source_ref);
-    // The operator still learns exactly what tripped; only the veto is gone.
-    expect(preview.security_scan.findings.length).toBeGreaterThan(0);
     expect(preview.security_scan).toMatchObject({
-      blocked: false, hard_blocked: false, review_required: false
+      scan_performed: false,
+      blocked: false,
+      hard_blocked: false,
+      review_required: false,
+      findings: []
     });
     const receipt = await module.push(
       ["rules"], source_ref, confirmation(preview.preview_hash, "warn-policy")
@@ -793,7 +776,7 @@ describe("RemoteSyncModule v1", () => {
     expect(receipt.applied).toEqual(preview.operations);
   });
 
-  it("scores a credential-free connection string below the hard block", async () => {
+  it("credential-free 连接串不再产生 HH_DATABASE_URL finding", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
@@ -804,18 +787,11 @@ describe("RemoteSyncModule v1", () => {
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
-    const dbFinding = preview.security_scan.findings.find(
-      (finding) => finding.rule_id === "HH_DATABASE_URL"
-    );
-    if (dbFinding === undefined) throw new Error("expected a database URL finding");
-    // A documentation URL with no userinfo carries no credential, so it must
-    // stay waivable rather than permanently blocking every push.
-    expect(dbFinding.severity).toBe("low");
-    expect(dbFinding.overridable).toBe(true);
+    expect(preview.security_scan.findings).toEqual([]);
     expect(preview.security_scan.hard_blocked).toBe(false);
   });
 
-  it("keeps a credential-bearing connection string a hard block", async () => {
+  it("credential-bearing 连接串也不再产生 hard block（扫描已停用）", async () => {
     const port = new InMemoryRemoteSyncPort();
     port.seed(source_ref, {
       local_files: [rule(
@@ -826,12 +802,12 @@ describe("RemoteSyncModule v1", () => {
     });
     const module = new RemoteSyncModule(port, { sensitiveScanPolicy: "block" });
     const preview = await module.previewPush(["rules"], source_ref);
-    const dbFinding = preview.security_scan.findings.find(
-      (finding) => finding.rule_id === "HH_DATABASE_URL"
+    expect(preview.security_scan.findings).toEqual([]);
+    expect(preview.security_scan.hard_blocked).toBe(false);
+    const receipt = await module.push(
+      ["rules"], source_ref, confirmation(preview.preview_hash, "db-disabled")
     );
-    if (dbFinding === undefined) throw new Error("expected a database URL finding");
-    expect(dbFinding.severity).toBe("high");
-    expect(preview.security_scan.hard_blocked).toBe(true);
+    expect(receipt.applied).toEqual(preview.operations);
   });
 
   it("paginates snapshots, versions and immutable files in stable order", async () => {
