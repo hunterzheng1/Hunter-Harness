@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] — hunter-harness ＋ [0.3.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
+
+> **双发**：execute 合并、legacy 管线删除与权威切换横跨 CLI 与 workflow bundle，
+> 同步升 0.3.0；`minimumCliVersion` 提到 `0.3.0`（完整门禁快照只有 0.3.0 CLI 产出，
+> 旧 CLI 降级为工作副本回退）。Bundle 版本保持 0.2.73（2×4 矩阵的 schema 版本，
+> 内容变化由 content_sha256 跟踪）。
 
 > 诊断第 5/6/8 项闭环：run+test 合并为 execute（方案 c）、evidence-pack 接通
 > 推断与真实 capabilities、legacy 退役补上采纳度度量。另修复一个 main 上长红的

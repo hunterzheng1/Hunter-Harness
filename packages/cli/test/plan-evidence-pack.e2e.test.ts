@@ -434,7 +434,7 @@ describe("阶段 0.6 plannedPhases 接缝与 capabilities 探针", () => {
   }
 
   it("无 gate-policy.json → derived 派生（提交按探针能力判定）", async () => {
-    const { stdout, pack } = await packWithGatePolicy(undefined);
+    const { pack } = await packWithGatePolicy(undefined);
     expect(pack.context.phase_set_source).toBe("derived");
     expect(pack.context.capabilities_provenance.probe).toBe("probe");
     expect(pack.trusted.human_input.phase_set.planned_phases)
