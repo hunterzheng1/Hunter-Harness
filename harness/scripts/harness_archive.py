@@ -503,6 +503,96 @@ def _remote_ci_history_present(change_dir: Path) -> bool:
     )
 
 
+# decisions.json 单条记录的上限：防呆，不是安全边界（归档包大小限制在服务端）。
+_DECISIONS_MAX_ENTRIES = 200
+_DECISIONS_MAX_TITLE = 500
+_DECISIONS_MAX_RATIONALE = 4000
+_DECISIONS_MAX_KEYWORDS = 32
+_DECISIONS_MAX_KEYWORD_CHARS = 80
+
+
+def _decision_record_valid(record: dict[str, Any]) -> bool:
+    """evidence/decisions.json 单条记录的确定性校验（与 hkc 的消费端口径一致）。"""
+    title = str(record.get("title") or "").strip()
+    if not title or len(title) > _DECISIONS_MAX_TITLE:
+        return False
+    if str(record.get("entry_type") or "").strip() not in {
+        "decision",
+        "requirement",
+        "api-contract",
+    }:
+        return False
+    if str(record.get("status") or "").strip().lower() not in {
+        "adopted",
+        "proposed",
+        "rejected",
+        "superseded",
+    }:
+        return False
+    rationale = record.get("rationale")
+    if rationale is not None and (
+        not isinstance(rationale, str) or len(rationale) > _DECISIONS_MAX_RATIONALE
+    ):
+        return False
+    record_id = record.get("id")
+    if record_id is not None and (
+        not isinstance(record_id, str) or len(record_id.strip()) > 80
+    ):
+        return False
+    path = record.get("path")
+    if path is not None:
+        if not isinstance(path, str) or len(path) > 500:
+            return False
+        normalized = path.replace("\\", "/")
+        if normalized.startswith("/") or ".." in normalized.split("/") or ":" in normalized:
+            return False
+    line = record.get("line")
+    if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+        return False
+    keywords = record.get("keywords")
+    if keywords is not None:
+        if not isinstance(keywords, list) or len(keywords) > _DECISIONS_MAX_KEYWORDS:
+            return False
+        if any(
+            not isinstance(item, str) or not item.strip() or len(item) > _DECISIONS_MAX_KEYWORD_CHARS
+            for item in keywords
+        ):
+            return False
+    source = record.get("source")
+    if source is not None and str(source).strip() not in {"plan", "review", "manual", "archive"}:
+        return False
+    return True
+
+
+def load_change_decisions(change_dir: Path) -> tuple[list[dict[str, Any]], int]:
+    """Load ``evidence/decisions.json`` — 上游（plan/execute/review）采纳的结构化决策。
+
+    Returns (valid records, dropped count). 文件缺失/损坏/版本不符视为没有决策；
+    单条不合法的记录被丢弃并计数，由调用方决定是否告警——丢弃不能无声。
+    """
+    path = _first_archive_path(change_dir, "evidence/decisions.json")
+    if path is None:
+        return [], 0
+    try:
+        data = read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return [], 0
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        return [], 0
+    records = data.get("decisions")
+    if not isinstance(records, list):
+        return [], 0
+    valid: list[dict[str, Any]] = []
+    dropped = 0
+    for record in records[: _DECISIONS_MAX_ENTRIES]:
+        if isinstance(record, dict) and _decision_record_valid(record):
+            valid.append(record)
+        else:
+            dropped += 1
+    dropped += max(0, len(records) - _DECISIONS_MAX_ENTRIES)
+    return valid, dropped
+
+
 def load_product_candidate_ci(change_dir: Path) -> dict[str, Any] | None:
     """Load platform-neutral candidate evidence, then legacy CI evidence."""
     for relative in (
@@ -5282,6 +5372,7 @@ def collect_summary_data(
             "changedFiles",
             "artifacts",
             "reviewSummary",
+            "decisions",
             "archiveManifest",
             "uncommittedTestEvidence",
             "maintenanceNotes",
@@ -5648,6 +5739,12 @@ def collect_summary_data(
     )
     review_status = hr.status(change_dir)
     data["reviewFindings"] = list(review_status.get("items") or [])
+    decisions_dropped = 0
+    if not for_replay:
+        decisions, decisions_dropped = load_change_decisions(change_dir)
+        data["decisions"] = decisions
+    else:
+        data.setdefault("decisions", [])
     if not for_replay:
         data["timeline"] = _timeline_from_events(event_summary, projected_events)
     else:
@@ -5680,6 +5777,12 @@ def collect_summary_data(
                 if note:
                     maintenance_notes.append(note)
         data["maintenanceNotes"] = maintenance_notes
+        if decisions_dropped:
+            # 丢弃不能无声：decisions.json 是人/agent 显式写的上游产物。
+            data["maintenanceNotes"].append(
+                f"evidence/decisions.json：{decisions_dropped} 条记录不符合 "
+                "schema（缺 title/entry_type/status 或越界）已丢弃"
+            )
         scenario_risks, scenario_actions = _risks_from_test_results(change_dir)
         data["knownRisks"] = known_risks + scenario_risks
         data["manualActions"] = scenario_actions
@@ -8614,15 +8717,27 @@ def cmd_finalize(
 
     # --- 8b. knowledge candidates (also before the after-manifest) ---
     # Soft-fail like archive-meta: an archive must never be rolled back because
-    # knowledge extraction found nothing. An empty array is a valid outcome.
+    # knowledge extraction found nothing. An empty array is a valid outcome —
+    # but an empty array in the presence of unadjudicated findings is a
+    # *different* situation and must be said out loud, not silently shown as
+    # "ready / 0 results" downstream.
     try:
         summary = read_json(summary_path)
         candidates_path = write_knowledge_candidates(work_dir, summary)
+        candidate_count = len(read_json(candidates_path))
+        unadjudicated = hkc.count_unadjudicated_findings(summary)
         payload["steps"]["knowledge_candidates"] = {
             "ok": True,
             "path": str(candidates_path),
-            "count": len(read_json(candidates_path)),
+            "count": candidate_count,
+            "droppedUnadjudicated": unadjudicated,
         }
+        if unadjudicated > 0 and candidate_count == 0:
+            warnings.append(
+                f"本次归档有 {unadjudicated} 条未裁决（OPEN/UNKNOWN）的评审发现，"
+                "知识候选为 0：它们按现行策略被丢弃而未形成知识。"
+                "若其中有值得沉淀的内容，请先完成裁决再 republish。"
+            )
     except Exception as exc:  # noqa: BLE001 — candidates soft-fail
         warnings.append(f"knowledge candidates write failed: {exc}")
         payload["steps"]["knowledge_candidates"] = {"ok": False, "error": str(exc)}

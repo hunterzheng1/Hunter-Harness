@@ -2,9 +2,10 @@
 """Tests for knowledge candidate generation from summary-data.json.
 
 The mapping is fixed by docs/superpowers/specs/2026-08-18-three-views-data-flow-design.md
-("知识来源的选定"): only reviewFindings with disposition FIXED / ACCEPTED_RISK /
-DEFERRED and knownRisks[] become candidates. Everything else is dropped, and every
-emitted field is derived from real summary-data content — nothing is invented.
+("知识来源的选定"), extended 2026-08-23: reviewFindings with disposition FIXED /
+ACCEPTED_RISK / DEFERRED, knownRisks[], and adopted decisions[] become candidates.
+Everything else is dropped, and every emitted field is derived from real
+summary-data content — nothing is invented.
 """
 from __future__ import annotations
 
@@ -202,12 +203,123 @@ class MappingTableTests(unittest.TestCase):
         committed = json.loads(fixture.read_text(encoding="utf-8"))
         self.assertEqual(build(), committed)
 
+    def test_counts_only_unadjudicated_knowledge_carrying_findings(self) -> None:
+        # SUMMARY 里只有 F-006（RED + OPEN）是未裁决且带知识严重度的；
+        # F-005 虽 RED 但已裁决为 NOT_APPLICABLE，F-004 已裁决 FIXED。
+        self.assertEqual(hkc.count_unadjudicated_findings(SUMMARY), 1)
+        self.assertEqual(hkc.count_unadjudicated_findings({}), 0)
+        self.assertEqual(hkc.count_unadjudicated_findings({"reviewFindings": None}), 0)
+        self.assertEqual(
+            hkc.count_unadjudicated_findings({"reviewFindings": [
+                {"severity": "YELLOW", "disposition": "UNKNOWN", "title": "x"},
+                {"severity": "RED", "title": "缺 disposition 等同未裁决"},
+                {"severity": "OK", "disposition": "OPEN", "title": "OK 不带知识"},
+                "not-a-dict",
+            ]}),
+            2,
+        )
+
     def test_serializes_as_a_json_array(self) -> None:
         payload = hkc.render_knowledge_candidates_json(build())
         parsed = json.loads(payload)
         self.assertIsInstance(parsed, list)
         self.assertEqual(len(parsed), 4)
         self.assertTrue(payload.endswith("\n"))
+
+
+DECISIONS = [
+    {
+        "id": "D-001",
+        "title": "归档候选生成零 LLM，仅做确定性投影",
+        "rationale": "可复现、无幻觉、无成本；筛选在上游完成。",
+        "entry_type": "decision",
+        "status": "adopted",
+        "path": "docs/design/knowledge.md",
+        "line": 42,
+        "keywords": ["零 LLM", "确定性"],
+        "source": "plan",
+    },
+    {
+        "id": "D-002",
+        "title": "summary 的 stageStatus 必须含 run/test 键",
+        "rationale": "服务端 CLI schema 2.3 的必需键。",
+        "entry_type": "requirement",
+        "status": "adopted",
+        "path": "docs/contracts/summary-schema.md",
+        "source": "review",
+    },
+    {
+        "id": "D-003",
+        "title": "尚未采纳的提案",
+        "entry_type": "decision",
+        "status": "proposed",
+    },
+    {
+        "id": "D-004",
+        "title": "已被否决的做法",
+        "entry_type": "decision",
+        "status": "rejected",
+    },
+    {
+        "id": "D-005",
+        "title": "非法 entry_type",
+        "entry_type": "pitfall",
+        "status": "adopted",
+    },
+]
+
+
+class DecisionSourceTests(unittest.TestCase):
+    def build(self, decisions):
+        return hkc.build_knowledge_candidates(
+            {"decisions": decisions},
+            change_key="decisions-demo",
+            archive_id="decisions-demo",
+            producer_version="0.4.0",
+            created_at="2026-08-23T12:00:00.000Z",
+        )
+
+    def test_only_adopted_decisions_become_candidates(self) -> None:
+        candidates = self.build(DECISIONS)
+        titles = [item["summary"] for item in candidates]
+        self.assertEqual(titles, [
+            "归档候选生成零 LLM，仅做确定性投影",
+            "summary 的 stageStatus 必须含 run/test 键",
+        ])
+
+    def test_entry_type_and_provenance_come_from_the_record(self) -> None:
+        by_title = {item["summary"]: item for item in self.build(DECISIONS)}
+        decision = by_title["归档候选生成零 LLM，仅做确定性投影"]
+        self.assertEqual(decision["entry_type"], "decision")
+        self.assertEqual(decision["confidence"], 0.85)
+        self.assertEqual(decision["provenance"]["source_kind"], "plan")
+        self.assertEqual(decision["provenance"]["source_ref"], "archive:decisions-demo#D-001")
+        self.assertEqual(decision["source_refs"], ["docs/design/knowledge.md#L42"])
+        self.assertEqual(decision["reusability_scope"], "docs")
+        self.assertIn("零 LLM", decision["keywords"])
+        self.assertIn("decision", decision["keywords"])
+        requirement = by_title["summary 的 stageStatus 必须含 run/test 键"]
+        self.assertEqual(requirement["entry_type"], "requirement")
+        self.assertEqual(requirement["provenance"]["source_kind"], "review")
+        self.assertEqual(requirement["source_refs"], ["docs/contracts/summary-schema.md"])
+
+    def test_output_is_deterministic(self) -> None:
+        first = self.build(DECISIONS)
+        self.assertEqual(first, self.build(DECISIONS))
+        for item in first:
+            self.assertRegex(item["candidate_id"], r"^kc_[A-Za-z0-9][A-Za-z0-9_-]{0,155}$")
+            self.assertRegex(item["content_hash"], r"^sha256:[a-f0-9]{64}$")
+
+    def test_missing_source_defaults_to_plan_and_no_path_to_archive_ref(self) -> None:
+        candidates = self.build([{
+            "title": "无溯源字段的决策",
+            "entry_type": "decision",
+            "status": "adopted",
+        }])
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["provenance"]["source_kind"], "plan")
+        self.assertEqual(candidates[0]["source_refs"], ["archive:decisions-demo"])
+        self.assertEqual(candidates[0]["reusability_scope"], "project")
 
 
 class ArchiveWiringTests(unittest.TestCase):
@@ -239,6 +351,43 @@ class ArchiveWiringTests(unittest.TestCase):
 
             paths = ha.collect_archive_core_paths(root, archive)
             self.assertIn("candidates/knowledge.json", "\n".join(paths))
+
+    def test_load_change_decisions_validates_and_counts_drops(self) -> None:
+        import tempfile
+
+        import harness_archive as ha
+
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / ".harness" / "changes" / "decisions-demo"
+            evidence = change / "evidence"
+            evidence.mkdir(parents=True)
+
+            # 缺失文件 → 无决策、无丢弃
+            self.assertEqual(ha.load_change_decisions(change), ([], 0))
+
+            (evidence / "decisions.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "decisions": [
+                        DECISIONS[0],
+                        DECISIONS[2],  # proposed：合法但不成候选
+                        {"title": "缺 entry_type"},
+                        {"title": "越界路径", "entry_type": "decision",
+                         "status": "adopted", "path": "../escape.md"},
+                    ],
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            valid, dropped = ha.load_change_decisions(change)
+            self.assertEqual([item["id"] for item in valid], ["D-001", "D-003"])
+            self.assertEqual(dropped, 2)
+
+            # 版本不符 → 视为没有决策
+            (evidence / "decisions.json").write_text(
+                json.dumps({"schema_version": 99, "decisions": [DECISIONS[0]]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(ha.load_change_decisions(change), ([], 0))
 
     def test_archive_without_findings_still_writes_an_empty_array(self) -> None:
         import tempfile

@@ -2,17 +2,21 @@
 """Knowledge candidate generation from an archived change's summary-data.json.
 
 The archive workflow has already filtered once: review findings were produced by
-an independent reviewer and then adjudicated, and knownRisks are evidence-derived
-facts. This module turns those two — and only those two — into KnowledgeCandidate
-records for the archive package's ``candidates/knowledge.json``.
+an independent reviewer and then adjudicated, knownRisks are evidence-derived
+facts, and decisions are structured records adopted upstream (plan/execute/
+review). This module turns those three — and only those three — into
+KnowledgeCandidate records for the archive package's ``candidates/knowledge.json``.
 
 Mapping is fixed by docs/superpowers/specs/2026-08-18-three-views-data-flow-design.md
-("知识来源的选定")::
+("知识来源的选定"), extended 2026-08-23 with the decisions source::
 
     disposition = FIXED                      -> pitfall   RED 0.95 / YELLOW 0.85
     disposition = ACCEPTED_RISK | DEFERRED   -> risk      RED 0.95 / YELLOW 0.85
     knownRisks[]                             -> risk      0.85
+    decisions[status=adopted]                -> record's entry_type (decision |
+                                                requirement | api-contract)  0.85
     severity = OK | disposition = NOT_APPLICABLE -> dropped
+    decisions[status != adopted]             -> kept in summary, not knowledge
 
 Dispositions outside the adopted set (OPEN / UNKNOWN) are dropped too: an
 unadjudicated finding is not yet knowledge. maintenanceNotes, finalStatusReasons
@@ -41,6 +45,16 @@ _DISPOSITION_ENTRY_TYPES = {
 }
 _SEVERITY_CONFIDENCE = {"RED": 0.95, "YELLOW": 0.85}
 _KNOWN_RISK_CONFIDENCE = 0.85
+
+# decisions[]（来自 change 的 evidence/decisions.json，经 summary.decisions 传入）
+# 与 findings 的裁决门槛同源：只有已采纳（adopted）的决策才成为候选——
+# proposed/rejected/superseded 留在 summary 里做记录，但不构成知识。
+# entry_type 直接取自记录，取值与 knowledgeCandidateEntryTypeSchema 对齐；
+# source 对应 candidateProvenanceSourceKindSchema 的枚举。
+_DECISION_ENTRY_TYPES = {"decision", "requirement", "api-contract"}
+_DECISION_STATUSES = {"adopted", "proposed", "rejected", "superseded"}
+_DECISION_SOURCE_KINDS = {"plan", "review", "manual", "archive"}
+_DECISION_CONFIDENCE = 0.85
 
 _MAX_KEYWORDS = 32
 _MAX_KEYWORD_CHARS = 80
@@ -204,6 +218,86 @@ def _risk_candidate(
     }
 
 
+def _decision_candidate(
+    record: dict[str, Any],
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> dict[str, Any] | None:
+    """Project one adopted design decision / requirement / API contract entry.
+
+    Every field is copied from the record (written upstream by a human or an
+    agent during plan/execute/review); nothing is inferred at archive time.
+    """
+    title = _text(record.get("title"))
+    entry_type = _text(record.get("entry_type"))
+    status = _text(record.get("status")).lower()
+    if not title or entry_type not in _DECISION_ENTRY_TYPES or status != "adopted":
+        return None
+
+    rationale = _text(record.get("rationale"))
+    path = _text(record.get("path"))
+    line = record.get("line")
+    location = _location(path, line)
+    segments = _path_segments(path)
+    record_id = _text(record.get("id"))
+    source = _text(record.get("source"))
+    if source not in _DECISION_SOURCE_KINDS:
+        source = "plan"
+    raw_keywords = record.get("keywords")
+    record_keywords = (
+        [item for item in raw_keywords if isinstance(item, str)]
+        if isinstance(raw_keywords, list)
+        else []
+    )
+
+    body_lines = [title]
+    if rationale:
+        body_lines.append(f"理由：{rationale}")
+    if location:
+        body_lines.append(f"位置：{location}")
+    body_lines.append(f"类型：{entry_type}")
+    body = "\n".join(body_lines)[:_MAX_BODY_CHARS]
+    keywords = _keywords(
+        *record_keywords,
+        segments[-1] if segments else "",
+        segments[-2] if len(segments) >= 2 else "",
+        entry_type,
+    )
+    if path and location != path:
+        source_refs = [f"{path}#L{line}"]
+    elif path:
+        source_refs = [path]
+    else:
+        source_refs = [f"archive:{archive_id}"]
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "candidate_id": _candidate_id(
+            change_key, "decision", record_id or f"{title}\0{path}\0{line}"
+        ),
+        "source_change_key": change_key,
+        "source_refs": source_refs,
+        "summary": title,
+        "reusability_scope": segments[0] if segments else "project",
+        "content_hash": _content_hash(entry_type, title, body, keywords),
+        "confidence": _DECISION_CONFIDENCE,
+        "status": "pending",
+        "entry_type": entry_type,
+        "body": body,
+        "keywords": keywords,
+        "provenance": {
+            "source_kind": source,
+            "source_ref": f"archive:{archive_id}#{record_id}" if record_id else f"archive:{archive_id}",
+            "producer": PRODUCER,
+            "producer_version": producer_version,
+            "created_at": created_at,
+        },
+    }
+
+
 def build_knowledge_candidates(
     summary: dict[str, Any],
     *,
@@ -252,7 +346,49 @@ def build_knowledge_candidates(
                     created_at=created_at,
                 ))
 
+    decisions = summary.get("decisions")
+    if isinstance(decisions, list):
+        for record in decisions:
+            if isinstance(record, dict):
+                collect(_decision_candidate(
+                    record,
+                    change_key=change_key,
+                    archive_id=archive_id,
+                    producer_version=producer_version,
+                    created_at=created_at,
+                ))
+
     return candidates
+
+
+# Dispositions that mean "not yet adjudicated". A finding in this state with a
+# knowledge-carrying severity is dropped by the mapping above — correctly — but
+# the drop must be visible, or an archive with real findings looks identical to
+# an archive with nothing worth keeping (both ship an empty candidates file).
+_UNADJUDICATED_DISPOSITIONS = {"", "OPEN", "UNKNOWN"}
+
+
+def count_unadjudicated_findings(summary: dict[str, Any]) -> int:
+    """Count RED/YELLOW reviewFindings whose disposition is not yet adjudicated.
+
+    These are the findings the mapping table silently drops. Callers use the
+    count to warn when an archive would otherwise show "ready / 0 results"
+    despite carrying real, unprocessed review signal.
+    """
+    if not isinstance(summary, dict):
+        return 0
+    findings = summary.get("reviewFindings")
+    if not isinstance(findings, list):
+        return 0
+    count = 0
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        severity = _text(finding.get("severity"))
+        disposition = _text(finding.get("disposition")).upper()
+        if severity in _SEVERITIES and disposition in _UNADJUDICATED_DISPOSITIONS:
+            count += 1
+    return count
 
 
 def render_knowledge_candidates_json(candidates: list[dict[str, Any]]) -> str:

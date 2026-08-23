@@ -67,9 +67,38 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "harness-skills/harness-
 - `changedFiles`：path/summary/insertions/deletions —— 来自 `git diff --numstat <base>..<head>`；
 - `reviewSummary`：red/yellow + redFixed/redConfirmed/yellowFixed/yellowDeferred 修复进度；
 - `maintenanceNotes`：给后续维护者看的结论；
-- `knownRisks`：剩余风险或人工确认项。
+- `knownRisks`：剩余风险或人工确认项；
+- `decisions`：已采纳的设计决策/需求/API 契约 —— 来自 `evidence/decisions.json`（见下节），生成器只做校验与透传，不从 markdown 提取。
 
 报告必须突出业务目标和维护者结论。所有统计数字只能来自 events、summary-data、ledger 或 manifest，不得手写另一套。历史 archive 没有 `events.ndjson` 时，允许从 ledger/log/manifest 回放，并在 `reportPipeline.sources` 中记录来源。
+
+## evidence/decisions.json（可选，知识沉淀入口）
+
+重要设计决策、长期约束、API 契约要进入平台知识库的唯一通道：在 plan/execute/review 阶段由人或 agent 把**已采纳**的结论写入 `.harness/changes/<change>/evidence/decisions.json`（schema_version 1）：
+
+```json
+{
+  "schema_version": 1,
+  "decisions": [
+    {
+      "id": "D-001",
+      "title": "一句话结论（必填，≤500 字）",
+      "rationale": "为什么（可选，≤4000 字）",
+      "entry_type": "decision | requirement | api-contract",
+      "status": "adopted | proposed | rejected | superseded",
+      "path": "docs/design/x.md（可选，相对路径，溯源用）",
+      "line": 42,
+      "keywords": ["可选，≤32 个"],
+      "source": "plan | review | manual | archive"
+    }
+  ]
+}
+```
+
+- 只有 `status: "adopted"` 的记录会成为知识候选（`entry_type` 原样落到知识条目上）；其余状态保留在 summary 里做记录。
+- 与 reviewFindings 的裁决门槛同源：**筛选必须在上游发生**——不要把讨论过程原文倒进来，归档时不做任何 LLM 提取。
+- 不合 schema 的记录会被丢弃并在 `maintenanceNotes` 留一条计数说明；丢弃不无声。
+- 未裁决（OPEN/UNKNOWN）的 RED/YELLOW findings 若导致候选为 0，finalize 会显式告警提示先裁决再 republish。
 
 ## 平台展示与数据校验
 

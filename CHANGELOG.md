@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.4.0] — hunter-harness ＋ [0.4.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
+
+> 知识沉淀从「只收已裁决 findings/risks」扩展到「设计决策/需求/API 契约」，
+> 但守住 spec 的两条底线：**筛选在上游发生**（仅 adopted 成为候选）、**零 LLM**
+> （归档只做确定性投影）。契约侧零变更——`knowledgeCandidateEntryTypeSchema`
+> 本来就含 decision/requirement/api-contract。
+
+### Added — evidence/decisions.json → 知识候选
+
+- 新增可选产物 `.harness/changes/<change>/evidence/decisions.json`
+  （schema_version 1）：plan/execute/review 阶段由人或 agent 写入**已采纳**的
+  设计决策、长期约束、API 契约，带 `title/rationale/entry_type/status/path:line/
+  keywords/source` 结构化字段与溯源。
+- `collect_summary_data` 校验并透传到 summary `decisions[]`（不合 schema 的
+  记录丢弃并在 maintenanceNotes 留计数，丢弃不无声）；replay 保留旧归档的
+  decisions（golden-stable）。
+- `build_knowledge_candidates` 把 `status=adopted` 的记录按记录的 entry_type
+  （decision/requirement/api-contract，confidence 0.85 ≥ 提取阈值 0.82）投影为
+  候选；proposed/rejected/superseded 留在 summary 做记录但不构成知识。
+- `harness/harness-archive/reference.md` 新增 decisions.json 书写规范；summary
+  模板携带 `decisions` 键。
+
+### Fixed — 未裁决 findings 导致候选为 0 时显式告警
+
+此前「有 OPEN findings」与「无知识可沉淀」在下游都显示为 ready / 0 results。
+现在 finalize 步骤 8b 输出 `droppedUnadjudicated` 计数（机器可读）；未裁决
+（OPEN/UNKNOWN）的 RED/YELLOW findings > 0 且候选为 0 时，归档 warnings 显式
+提示先完成裁决再 republish。
+
 ## [0.3.1] — hunter-harness ＋ [0.3.1] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > **修复 2026-10-27 归档 422 事故的全部根因**：工具生成的归档被自己的服务端拒绝

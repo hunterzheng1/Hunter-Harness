@@ -22,6 +22,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import harness_archive as ha  # noqa: E402
 import harness_events as he  # noqa: E402
+import harness_knowledge_candidates as hkc  # noqa: E402
 
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -793,6 +794,44 @@ class ArchiveFactDerivationTests(unittest.TestCase):
             self.assertEqual(stage["run"], "OK")
             self.assertEqual(stage["test"], "FAIL")
             self.assertEqual(stage["execute"], "FAIL")
+
+    def test_summary_embeds_validated_decisions_for_knowledge_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / ".harness" / "changes" / "decisions-demo"
+            _write(change / "plans" / "decisions-demo-plan.md", "# Plan\n\ngoal: embed decisions\n")
+            _write_json(change / "evidence" / "decisions.json", {
+                "schema_version": 1,
+                "decisions": [
+                    {
+                        "id": "D-001",
+                        "title": "知识候选仅做确定性投影",
+                        "rationale": "筛选在上游完成，零 LLM。",
+                        "entry_type": "decision",
+                        "status": "adopted",
+                        "path": "docs/design/knowledge.md",
+                        "line": 7,
+                        "source": "plan",
+                    },
+                    {"title": "缺 entry_type 的非法记录"},
+                ],
+            })
+
+            summary = ha.collect_summary_data(change, write=False)
+            self.assertEqual([item["id"] for item in summary["decisions"]], ["D-001"])
+            self.assertTrue(
+                any("decisions.json" in str(note) for note in summary["maintenanceNotes"])
+            )
+
+            candidates = hkc.build_knowledge_candidates(
+                summary,
+                change_key="decisions-demo",
+                archive_id="decisions-demo",
+                producer_version="0.4.0",
+                created_at="2026-08-23T12:00:00.000Z",
+            )
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["entry_type"], "decision")
+            self.assertEqual(candidates[0]["source_refs"], ["docs/design/knowledge.md#L7"])
 
     def test_summary_data_keeps_full_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
