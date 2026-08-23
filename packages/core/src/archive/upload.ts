@@ -73,7 +73,15 @@ async function bindResolvedProject(
   await runTransaction(root, operations);
 }
 
-export async function uploadArchivePackage(options: UploadArchivePackageOptions) {
+interface ArchiveUploadContext {
+  archivePath: string;
+  client: HunterHarnessApiClient;
+  projectId: string;
+}
+
+async function resolveArchiveUploadContext(
+  options: UploadArchivePackageOptions
+): Promise<ArchiveUploadContext> {
   const root = resolve(options.projectRoot);
   const archivePath = resolve(root, options.archivePath);
   if (!inside(root, archivePath)) {
@@ -152,6 +160,11 @@ export async function uploadArchivePackage(options: UploadArchivePackageOptions)
     projectId = resolved.project_id;
     await bindResolvedProject(root, project, projectId);
   }
+  return { archivePath, client, projectId };
+}
+
+export async function uploadArchivePackage(options: UploadArchivePackageOptions) {
+  const { archivePath, client, projectId } = await resolveArchiveUploadContext(options);
 
   const archive = new Uint8Array(await readFile(archivePath));
   const expectedHash = sha256Bytes(archive);
@@ -189,4 +202,17 @@ export async function uploadArchivePackage(options: UploadArchivePackageOptions)
     );
   }
   return result;
+}
+
+// 只读预检：把 ZIP 发给服务端的 validate 端点，跑与正式上传完全相同的包校验
+// （含 summary CLI schema 2.2/3 与字段级 issues），但不产生任何服务端状态。
+export async function validateArchivePackage(options: UploadArchivePackageOptions) {
+  const { archivePath, client, projectId } = await resolveArchiveUploadContext(options);
+  const archive = new Uint8Array(await readFile(archivePath));
+  return client.validateChangeArchivePackage({
+    projectId,
+    changeKey: options.changeKey,
+    archive,
+    requestId: uuidV7()
+  });
 }

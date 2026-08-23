@@ -1,7 +1,8 @@
 import {
   ApiError,
   ArchiveUploadError,
-  uploadArchivePackage
+  uploadArchivePackage,
+  validateArchivePackage
 } from "@hunter-harness/core";
 
 import type { CommandDependencies } from "./configure.js";
@@ -14,6 +15,8 @@ export interface ArchiveUploadOptions {
   nonInteractive?: boolean;
   yes?: boolean;
   json?: boolean;
+  // 只读预检：走服务端 validate 端点校验 ZIP，不产生任何服务端状态。
+  validate?: boolean;
   onReceipt?: (
     receipt: Awaited<ReturnType<typeof uploadArchivePackage>>
   ) => void | Promise<void>;
@@ -23,11 +26,38 @@ export async function runArchiveUpload(
   options: ArchiveUploadOptions,
   dependencies: CommandDependencies
 ): Promise<number> {
-  if (options.nonInteractive === true && options.yes !== true) {
+  if (options.nonInteractive === true && options.yes !== true && options.validate !== true) {
     dependencies.stderr("非交互归档上传需要 --yes\n");
     return 2;
   }
   try {
+    if (options.validate === true) {
+      const result = await validateArchivePackage({
+        projectRoot: dependencies.cwd,
+        archivePath: options.file,
+        changeKey: options.changeKey,
+        ...(options.serverUrl === undefined ? {} : { serverUrl: options.serverUrl }),
+        ...(options.tokenEnv === undefined ? {} : { tokenEnv: options.tokenEnv }),
+        env: dependencies.env,
+        fetch: dependencies.fetch
+      });
+      const output = {
+        schema_version: 1,
+        command: "archive upload --validate",
+        ok: true,
+        exit_code: 0,
+        project_id: result.project_id,
+        change_key: result.change_key,
+        package_sha256: result.package_sha256,
+        manifest_sha256: result.manifest_sha256,
+        file_count: result.file_count,
+        request_id: result.request_id
+      };
+      dependencies.stdout(options.json === true
+        ? JSON.stringify(output) + "\n"
+        : `归档 ${result.change_key} 通过服务端预检（未上传）。\n`);
+      return 0;
+    }
     const receipt = await uploadArchivePackage({
       projectRoot: dependencies.cwd,
       archivePath: options.file,
@@ -68,7 +98,7 @@ export async function runArchiveUpload(
       : undefined;
     const code = error instanceof ArchiveUploadError
       ? error.code
-      : serverCode ?? "ARCHIVE_UPLOAD_FAILED";
+      : serverCode ?? (options.validate === true ? "ARCHIVE_VALIDATE_FAILED" : "ARCHIVE_UPLOAD_FAILED");
     const exitCode = error instanceof ArchiveUploadError ? error.exitCode : 1;
     const message = error instanceof Error ? error.message : String(error);
     // The archive endpoint answers 409 ARCHIVE_ALREADY_EXISTS; ARCHIVE_PACKAGE_CONFLICT
@@ -78,7 +108,19 @@ export async function runArchiveUpload(
       ? "\n该 change key 在服务端已存有一个不可变归档包，不接受不同字节的替换；" +
         "补传只适用于从未成功上传、或重试盘上留存的原包（republish --retry-retained）。\n"
       : "";
-    dependencies.stderr(message + "\n" + hint);
+    // 服务端 422 会带字段级 issues（如 stageStatus.run: required），直接显示，
+    // 避免再回到靠真实上传探针二分的黑盒排障。
+    const details = error instanceof ApiError ? error.details : undefined;
+    const issues = typeof details === "object" && details !== null &&
+      Array.isArray((details as { issues?: unknown }).issues)
+      ? (details as { issues: Array<{ path?: unknown; message?: unknown; code?: unknown }> }).issues
+      : [];
+    const issueText = issues.length === 0
+      ? ""
+      : "\n服务端校验未通过的字段：\n" + issues.slice(0, 10).map((issue) =>
+        `  ${String(issue.path ?? "(root)")}: ${String(issue.message ?? issue.code ?? "invalid")}`
+      ).join("\n") + "\n";
+    dependencies.stderr(message + "\n" + hint + issueText);
     if (options.json === true) {
       dependencies.stdout(JSON.stringify({
         schema_version: 1,

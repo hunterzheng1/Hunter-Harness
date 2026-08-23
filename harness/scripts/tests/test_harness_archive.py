@@ -756,6 +756,44 @@ class ArchiveFactDerivationTests(unittest.TestCase):
             self.assertEqual(summary["finalStatus"], "CONDITIONAL_OK")
             self.assertEqual(summary["timeline"][1]["handoffFromTool"], "claude-code")
 
+    def test_stage_status_carries_run_test_keys_for_server_schema_23(self) -> None:
+        # 服务端 CLI schema 2.3 要求 stageStatus 含 {plan, run, test, review,
+        # submit, archive} 必需键；2026-08 起事件侧 run+test 已合并为 execute，
+        # 生成器必须自己补齐，否则自己的服务端会以 422 拒绝自己的产物。
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / ".harness" / "changes" / "stage-keys-demo"
+            _write(change / "plans" / "stage-keys-demo-plan.md", "# Plan\n\ngoal: check stage keys\n")
+            events = [
+                {"schema_version": 3, "id": "1", "timestamp": "2026-07-15T10:00:00+08:00",
+                 "phase": "execute", "type": "phase.end", "attempt": 1, "status": "OK"},
+            ]
+            _write(change / "events.ndjson", "".join(json.dumps(e) + "\n" for e in events))
+
+            summary = ha.collect_summary_data(change, write=False)
+            stage = summary["stageStatus"]
+            for key in ("plan", "run", "test", "review", "submit", "archive"):
+                self.assertIn(key, stage)
+            self.assertEqual(stage["run"], stage["execute"])
+            self.assertEqual(stage["test"], stage["execute"])
+
+    def test_stage_status_splits_legacy_run_test_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            change = Path(tmp) / ".harness" / "changes" / "legacy-stage-demo"
+            _write(change / "plans" / "legacy-stage-demo-plan.md", "# Plan\n\ngoal: split legacy stages\n")
+            events = [
+                {"schema_version": 3, "id": "1", "timestamp": "2026-07-15T10:00:00+08:00",
+                 "phase": "run", "type": "phase.end", "attempt": 1, "status": "OK"},
+                {"schema_version": 3, "id": "2", "timestamp": "2026-07-15T10:01:00+08:00",
+                 "phase": "test", "type": "phase.end", "attempt": 1, "status": "FAILED"},
+            ]
+            _write(change / "events.ndjson", "".join(json.dumps(e) + "\n" for e in events))
+
+            summary = ha.collect_summary_data(change, write=False)
+            stage = summary["stageStatus"]
+            self.assertEqual(stage["run"], "OK")
+            self.assertEqual(stage["test"], "FAIL")
+            self.assertEqual(stage["execute"], "FAIL")
+
     def test_summary_data_keeps_full_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             change = Path(tmp) / ".harness" / "changes" / "report-demo"

@@ -12,6 +12,13 @@ const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
 );
 
+// 注入精简 env 的用例必须带上恢复存储重定向，否则会写进开发者机器的真实
+// %LOCALAPPDATA%（tests/setup/global-temp.ts 的重定向只覆盖 process.env）。
+const recoveryEnv: Record<string, string> =
+  process.env["HUNTER_HARNESS_RECOVERY_ROOT"] === undefined
+    ? {}
+    : { HUNTER_HARNESS_RECOVERY_ROOT: process.env["HUNTER_HARNESS_RECOVERY_ROOT"] };
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -35,7 +42,7 @@ describe("hunter-harness archive upload", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
     await mkdir(join(root, ".harness", "state", "local", "archive-packages"), {
       recursive: true
@@ -224,5 +231,123 @@ describe("hunter-harness archive upload", () => {
       errors: [{ code: "ARCHIVE_ALREADY_EXISTS", server_status: 409 }]
     });
     expect(stderr.join("")).toContain("不可变归档包");
+  });
+
+  it("validates a package read-only through the dedicated validate endpoint", async () => {
+    const packagePath = join(
+      root, ".harness", "state", "local", "archive-packages", "change-validate.zip"
+    );
+    await writeFile(packagePath, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+    const requests: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      requests.push(url.pathname);
+      if (url.pathname === "/api/v1/projects:resolve") {
+        return json({
+          schema_version: 1,
+          project_id: "prj_archive",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {},
+          request_id: "resolve-request"
+        });
+      }
+      if (url.pathname.endsWith("/archive-package/validate")) {
+        return json({
+          schema_version: 1,
+          ok: true,
+          project_id: "prj_archive",
+          change_key: "change-validate",
+          package_sha256: sha256Bytes(new Uint8Array([0x50, 0x4b, 0x03, 0x04])),
+          manifest_sha256: "sha256:" + "c".repeat(64),
+          file_count: 3,
+          request_id: "validate-request"
+        }, 200);
+      }
+      return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    const code = await runCli([
+      "archive", "upload", "--file", packagePath,
+      "--change-key", "change-validate", "--validate", "--non-interactive", "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: { ...recoveryEnv },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code, stderr.join("\n")).toBe(0);
+    // --validate 只打 validate 端点，不碰正式 PUT。
+    expect(requests).toEqual([
+      "/api/v1/projects:resolve",
+      "/api/v1/projects/prj_archive/changes/change-validate/archive-package/validate"
+    ]);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      command: "archive upload --validate",
+      ok: true,
+      project_id: "prj_archive",
+      change_key: "change-validate",
+      file_count: 3
+    });
+  });
+
+  it("surfaces field-level issues from a 422 refusal", async () => {
+    const packagePath = join(
+      root, ".harness", "state", "local", "archive-packages", "change-issues.zip"
+    );
+    await writeFile(packagePath, new Uint8Array([0x50, 0x4b, 0x03, 0x04]));
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/api/v1/projects:resolve") {
+        return json({
+          schema_version: 1,
+          project_id: "prj_archive",
+          binding_status: "created",
+          project_version: null,
+          baseline_manifest: {},
+          request_id: "resolve-request"
+        });
+      }
+      if (url.pathname.endsWith("/archive-package/validate")) {
+        // 服务端 2.3 schema 拒绝缺 run/test 键的 stageStatus，附字段级 issues。
+        return json({
+          error: {
+            code: "ARCHIVE_PACKAGE_INVALID",
+            message: "archive summary does not match CLI schema 2.2 or 2.3",
+            details: {
+              path: "reports/final/summary-data.json",
+              issues: [
+                { path: "stageStatus.run", code: "invalid_type", message: "Invalid input: expected string, received undefined" },
+                { path: "stageStatus.test", code: "invalid_type", message: "Invalid input: expected string, received undefined" }
+              ]
+            }
+          }
+        }, 422);
+      }
+      return json({ error: { code: "NOT_FOUND", message: "not found" } }, 404);
+    });
+
+    const code = await runCli([
+      "archive", "upload", "--file", packagePath,
+      "--change-key", "change-issues", "--validate", "--non-interactive", "--json"
+    ], {
+      cwd: root,
+      resourcesRoot,
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: { ...recoveryEnv },
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value)
+    });
+
+    expect(code).toBe(1);
+    expect(JSON.parse(stdout.join(""))).toMatchObject({
+      ok: false,
+      errors: [{ code: "ARCHIVE_PACKAGE_INVALID", server_status: 422 }]
+    });
+    expect(stderr.join("")).toContain("stageStatus.run");
+    expect(stderr.join("")).toContain("stageStatus.test");
   });
 });

@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.3.1] — hunter-harness ＋ [0.3.1] @hunter-harness/workflow-harness（Bundle 0.2.73）
+
+> **修复 2026-10-27 归档 422 事故的全部根因**：工具生成的归档被自己的服务端拒绝
+> （`stageStatus` 键集漂移），且 422 零字段定位把修复变成黑盒探针二分（耗时约 10
+> 小时）。Bundle 版本保持 0.2.73（内容变化由 content_sha256 跟踪，已随 sync 重算）。
+
+### Fixed — 归档生成器补齐 schema 2.3 全阶段键集
+
+`harness_archive.py` 的 `_stage_status_from_sources` 自 2026-08 run+test 合并为
+execute 后只输出 `{plan, execute, review, submit, archive}`，而服务端 CLI schema
+2.3 要求 `plan/run/test/review/submit/archive` 六个必需键——standard 档 change
+的归档在上传最后一跳必 422。现在生成器输出补齐 `run`/`test`：旧事件仍带
+run/test 原名时按原名拆分还原，否则镜像 execute 聚合值；`execute` 键保留
+（2.3 为 passthrough，既有消费方与模板文档不受影响）。manualActions 对镜像键
+去重。bundle 模板与 reference.md 本来就写着全阶段键集，本次是生成器对齐回
+文档契约。
+
+### Added — 归档上传只读预检与字段级 422 定位
+
+- 服务端（hunter-platform 同步发布）：422 响应 details 携带 `issues
+  [{path, code, message}]`（如 `stageStatus.run: required`）；新增
+  `POST …/archive-package/validate` 端点，跑与 PUT 完全相同的包校验但不落盘、
+  不占正式收据。
+- CLI：`hunter-harness archive upload --validate` 走 validate 端点做只读预检
+  （无需 `--yes`）；上传被拒时 stderr 直接逐字段打印服务端 issues。排障 422
+  不再需要 probe-* change key 探针二分。
+
 ### Fixed — 同步 4458708 上传扫描停用契约的测试漂移（main 长红 29 例清零）
 
 4458708 在六个子系统停用上传/发布链路的敏感扫描（正确逻辑：上传时不查敏感

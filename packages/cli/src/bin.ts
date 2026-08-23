@@ -492,6 +492,7 @@ export async function runCli(
     .description("上传一个确定性 ZIP，并由服务端解包和建立知识索引")
     .requiredOption("--file <path>", "归档 ZIP 路径")
     .requiredOption("--change-key <key>", "变更标识")
+    .option("--validate", "只做服务端只读预检（不落盘、不占收据），用于排障 422")
     .action(async (options: ArchiveUploadOptions) => {
       exitCode = await runArchiveUpload(
         { ...program.opts<ArchiveUploadOptions>(), ...options },

@@ -300,6 +300,35 @@ export class HunterHarnessApiClient {
     );
   }
 
+  // 只读预检：与 PUT 相同的服务端包校验（含 summary CLI schema 2.2/2.3 与字段级
+  // issues），但不落盘、不占正式收据。排障 422 时不必再用 probe-* change key 试传。
+  async validateChangeArchivePackage(options: {
+    projectId: string;
+    changeKey: string;
+    archive: Uint8Array;
+    requestId: string;
+  }): Promise<{
+    schema_version: 1;
+    ok: true;
+    project_id: string;
+    change_key: string;
+    package_sha256: string;
+    manifest_sha256: string;
+    file_count: number;
+    request_id: string;
+  }> {
+    return this.request(
+      "POST",
+      "/api/v1/projects/" + encodeURIComponent(options.projectId) +
+        "/changes/" + encodeURIComponent(options.changeKey) + "/archive-package/validate",
+      {
+        requestId: options.requestId,
+        rawBody: options.archive,
+        headers: { "Content-Type": "application/zip" }
+      }
+    );
+  }
+
   async searchSemanticKnowledge(options: {
     projectId: string;
     query: string;

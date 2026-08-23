@@ -417,8 +417,10 @@ class InFlightChangeAliasTests(unittest.TestCase):
 
             status = ARCHIVE._stage_status_from_sources(events, None, change)
 
-            self.assertNotIn("run", status)
-            self.assertNotIn("test", status)
+            # 2026-10 起：服务端 CLI schema 2.3 要求 run/test 必需键，旧名事件
+            # 在折叠进 execute 的同时按原名还原到 run/test 键上。
+            self.assertEqual(status["run"], "FAIL")
+            self.assertEqual(status["test"], "OK")
             # 按事件序后写胜：run 的 FAIL 先写、test 的 OK 后写。
             self.assertEqual(status["execute"], "OK")
 

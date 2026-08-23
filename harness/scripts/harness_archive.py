@@ -4201,11 +4201,16 @@ def _stage_status_from_sources(
     }
     projected_events = he.apply_event_corrections(events)
     execute_phase_end_seen = False
+    # 服务端 CLI schema 2.3 要求全阶段键集 {plan, run, test, review, submit,
+    # archive}，而 2026-08 起事件侧 run+test 已合并为 execute。仍带 run/test
+    # 原名的旧事件在折叠进 execute 之前单独留一份，供归档时拆分还原。
+    raw_run_test: dict[str, str] = {}
     for event in projected_events:
         if event.get("type") != "phase.end":
             continue
         # 旧事件的 run/test phase.end 折叠进 execute，按事件序后写胜。
-        phase = hp.resolve_phase_name(str(event.get("phase") or "").lower()) or ""
+        raw_phase = str(event.get("phase") or "").strip().lower()
+        phase = hp.resolve_phase_name(raw_phase) or ""
         raw = str(event.get("status") or "").upper()
         if phase not in status or not raw:
             continue
@@ -4218,6 +4223,8 @@ def _stage_status_from_sources(
         elif raw in {"SKIP", "SKIPPED"}:
             raw = "USER_SKIPPED"
         status[phase] = raw
+        if raw_phase in {"run", "test"}:
+            raw_run_test[raw_phase] = raw
     # Issues in events can downgrade. H-14: informational / hygiene / agent-preflight
     # notes must not downgrade an already-OK phase.end.
     _informational_markers = (
@@ -4272,7 +4279,18 @@ def _stage_status_from_sources(
     if not review_evidence_present(change_dir, projected_events):
         status["review"] = "ADVISORY"
 
-    return status
+    # 服务端 schema 2.3 是 passthrough：execute 键保留供既有消费方使用，
+    # 同时补上 run/test 满足必需键。旧事件带 run/test 原名时按原名拆分，
+    # 否则镜像 execute 聚合值（合并事件流里没有更细的信号可拆）。
+    return {
+        "plan": status["plan"],
+        "execute": status["execute"],
+        "run": raw_run_test.get("run", status["execute"]),
+        "test": raw_run_test.get("test", status["execute"]),
+        "review": status["review"],
+        "submit": status["submit"],
+        "archive": status["archive"],
+    }
 
 
 def _compute_final_status(
@@ -5665,7 +5683,11 @@ def collect_summary_data(
         scenario_risks, scenario_actions = _risks_from_test_results(change_dir)
         data["knownRisks"] = known_risks + scenario_risks
         data["manualActions"] = scenario_actions
+        execute_status = (data.get("stageStatus") or {}).get("execute")
         for name, value in (data.get("stageStatus") or {}).items():
+            # run/test 镜像 execute 聚合值时不重复生成同一条人工动作。
+            if name in {"run", "test"} and value == execute_status:
+                continue
             if value in {"BLOCKED", "BLOCKED_BY_ENV", "BLOCKED_BY_DBA", "NOT_RUN", "USER_SKIPPED"}:
                 data["manualActions"].append({
                     "stage": name,
