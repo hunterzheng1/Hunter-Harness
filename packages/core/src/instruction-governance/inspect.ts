@@ -21,7 +21,8 @@ const EXPECTED_ENTRYPOINT: Readonly<Record<InstructionTargetAgent, string>> = {
   codex: "AGENTS.md",
   claude_code: "CLAUDE.md",
   cursor: "AGENTS.md",
-  codebuddy: "CODEBUDDY.md"
+  codebuddy: "CODEBUDDY.md",
+  pi: "AGENTS.md"
 };
 
 interface NormalizedInspectionInput extends Omit<

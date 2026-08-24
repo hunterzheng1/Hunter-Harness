@@ -70,7 +70,7 @@ SKIP_DIR_NAMES = {
     ".git",
 }
 SKIP_TOP_NAMES = {"harness-merge", "harness-report"}
-HARNESS_AGENTS = ("claude-code", "codex", "cursor", "codebuddy")
+HARNESS_AGENTS = ("claude-code", "codex", "cursor", "codebuddy", "pi")
 AGENTS_WITH_CUSTOM_AGENTS = frozenset({"claude-code", "codebuddy"})
 
 

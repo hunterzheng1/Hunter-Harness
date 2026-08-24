@@ -239,6 +239,18 @@ const ADAPTERS: Record<HarnessAgent, HarnessAgentAdapter> = {
     branchPrefix: "codebuddy/",
     extraInstructionFiles: ["CODEBUDDY.md"],
     ruleExt: null
+  }),
+  pi: makeAdapter({
+    name: "pi",
+    skillsRoot: ".pi/skills",
+    rulesRoot: null,
+    agentsRoot: null,
+    commandsRoot: null,
+    instructions: "AGENTS.md",
+    worktreeRoot: ".pi/worktrees",
+    branchPrefix: "pi/",
+    extraInstructionFiles: [],
+    ruleExt: null
   })
 };
 

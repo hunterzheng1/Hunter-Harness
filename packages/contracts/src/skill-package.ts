@@ -60,13 +60,29 @@ export const skillPackageVariantSchema = z.object({
   components: z.array(z.string().min(1))
 }).strict();
 
+// variants 采用部分记录：pi 为可选变体（M1 新增 agent，存量包不含其变体仍须可安装），
+// 其余四个 agent 保持必填，维持既有发布契约。
+const LEGACY_REQUIRED_VARIANTS = ["claude-code", "codex", "cursor", "codebuddy"] as const;
+
 export const skillPackageManifestV3Schema = z.object({
   schema_version: z.literal(3),
   slug: registrySlugSchema,
   version: registrySemverSchema,
   files: z.array(skillPackageFileSchema),
   components: z.array(skillBundleComponentSchema).min(1),
-  variants: z.record(skillTargetAgentSchema, skillPackageVariantSchema)
+  variants: z.partialRecord(skillTargetAgentSchema, skillPackageVariantSchema).superRefine(
+    (variants, context) => {
+      for (const required of LEGACY_REQUIRED_VARIANTS) {
+        if (variants[required] === undefined) {
+          context.addIssue({
+            code: "custom",
+            path: [required],
+            message: `missing required variant: ${required}`
+          });
+        }
+      }
+    }
+  )
 }).strict();
 
 export type SkillComponentRole = z.infer<typeof skillComponentRoleSchema>;

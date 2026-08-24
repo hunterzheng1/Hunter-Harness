@@ -32,7 +32,8 @@ export const HARNESS_AGENT_ORDER = [
   "claude-code",
   "codex",
   "cursor",
-  "codebuddy"
+  "codebuddy",
+  "pi"
 ] as const;
 
 export const harnessAgentSchema = z.enum(HARNESS_AGENT_ORDER);
@@ -50,6 +51,7 @@ export const adapterNameSchema = z.enum([
   "codex",
   "cursor",
   "codebuddy",
+  "pi",
   "generic",
   "mcp"
 ]);

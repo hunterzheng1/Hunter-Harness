@@ -46,6 +46,14 @@ const SURFACES: Readonly<Record<SkillTargetAgent, AgentSurface>> = Object.freeze
     subagentFormat: "markdown",
     subagentExtension: ".md",
     nativeSkillAliases: Object.freeze([])
+  }),
+  pi: Object.freeze({
+    agent: "pi",
+    skillRoots: Object.freeze({ project: ".pi/skills", user: ".pi/skills" }),
+    subagentRoots: Object.freeze({ project: ".pi/agents", user: ".pi/agents" }),
+    subagentFormat: "markdown",
+    subagentExtension: ".md",
+    nativeSkillAliases: Object.freeze([])
   })
 });
 
@@ -106,5 +114,6 @@ export const SKILL_TARGET_AGENTS = Object.freeze([
   "claude-code",
   "codex",
   "cursor",
-  "codebuddy"
+  "codebuddy",
+  "pi"
 ] as const satisfies readonly SkillTargetAgent[]);

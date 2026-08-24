@@ -9,14 +9,16 @@ describe("native skill agent destinations", () => {
     expect(AGENT_DESCRIPTORS.cursor.installTarget("demo")).toBe(".cursor/skills/demo/");
     expect(Reflect.get(AGENT_DESCRIPTORS, "codebuddy")?.installTarget("demo"))
       .toBe(".codebuddy/skills/demo/");
+    expect(AGENT_DESCRIPTORS.pi.installTarget("demo")).toBe(".pi/skills/demo/");
   });
 
-  it("exposes only the four native agents as new install targets", () => {
+  it("exposes the native agents as new install targets", () => {
     expect(INSTALLABLE_AGENTS).toEqual([
       "claude-code",
       "codex",
       "cursor",
-      "codebuddy"
+      "codebuddy",
+      "pi"
     ]);
   });
 });

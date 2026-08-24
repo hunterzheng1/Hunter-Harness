@@ -20,7 +20,7 @@ function shaHex(bytes: Uint8Array): string {
 }
 
 function syntheticBundle(
-  agent: "claude-code" | "codex" | "cursor" | "codebuddy",
+  agent: "claude-code" | "codex" | "cursor" | "codebuddy" | "pi",
   entries: Array<{ path: string; bytes: Uint8Array }>
 ): LoadedAgentBundle {
   const files = new Map<string, Uint8Array>();
@@ -83,6 +83,33 @@ describe("agent adapters", () => {
       branchPrefix: "codex/",
       branch: "codex/runtime-plan"
     });
+  });
+
+  it("pi projects everything to .pi/skills and has no rules or agents", () => {
+    const adapter = getAdapter("pi");
+    expect(adapter.rulesRoot).toBeNull();
+    expect(adapter.agentsRoot).toBeNull();
+    expect(adapter.commandsRoot).toBeNull();
+    const bundle = syntheticBundle("pi", [
+      { path: "agents/demo.md", bytes: new TextEncoder().encode("a") },
+      { path: "harness-demo/SKILL.md", bytes: new TextEncoder().encode("b") }
+    ]);
+    const projected = adapter.projectBundle(bundle, {
+      profile: "general", codebuddySurface: "both"
+    });
+    expect(projected.map((p) => p.target_path)).toEqual([
+      ".pi/skills/harness-demo/SKILL.md"
+    ]);
+    expect(adapter.contextIndex({ profile: "general", codebuddySurface: "both" }))
+      .toEqual({ instructions: "AGENTS.md", skills_root: ".pi/skills", rules: [] });
+    expect(adapter.worktreeFor("runtime-plan")).toEqual({
+      root: ".pi/worktrees",
+      path: ".pi/worktrees/runtime-plan",
+      branchPrefix: "pi/",
+      branch: "pi/runtime-plan"
+    });
+    expect(adapter.pruneBoundaries({ profile: "general", codebuddySurface: "both" }))
+      .toEqual([".pi/skills", ".pi"]);
   });
 
   it("worktree decisions stay adapter-specific", () => {

@@ -2,12 +2,13 @@ import { z } from "zod";
 
 import { sha256Schema } from "./protocol.js";
 
-export const skillTargetAgentSchema = z.enum(["claude-code", "codex", "cursor", "codebuddy"]);
+export const skillTargetAgentSchema = z.enum(["claude-code", "codex", "cursor", "codebuddy", "pi"]);
 export const registryAgentSchema = z.enum([
   "claude-code",
   "codex",
   "cursor",
   "codebuddy",
+  "pi",
   "generic",
   "mcp"
 ]);

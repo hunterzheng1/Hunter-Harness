@@ -19,18 +19,23 @@ npx hunter-harness
 ```powershell
 npx hunter-harness --profile general --non-interactive --yes
 npx hunter-harness --profile java --non-interactive --yes
-npx hunter-harness --agents claude-code,codex,cursor,codebuddy --profile general --non-interactive --yes
+npx hunter-harness --agents claude-code,codex,cursor,codebuddy,pi --profile general --non-interactive --yes
 npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general --non-interactive --yes
 ```
 
-`--agents` 接受逗号分隔的 `claude-code`、`codex`、`cursor`、`codebuddy`，或 `all`；输出顺序固定。`--codebuddy-surface` 接受 `both|ide|cli`，未选择 CodeBuddy 时不能提供该参数。
+`--agents` 接受逗号分隔的 `claude-code`、`codex`、`cursor`、`codebuddy`、`pi`，或 `all`；输出顺序固定。`--codebuddy-surface` 接受 `both|ide|cli`，未选择 CodeBuddy 时不能提供该参数。
 
-| 能力 | Claude Code | Codex | Cursor | CodeBuddy `both` |
-|---|---|---|---|---|
-| 项目指令 | `AGENTS.md` + `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` + `CODEBUDDY.md` |
-| Skills | `.claude/skills/` | `.agents/skills/` | `.cursor/skills/` | `.codebuddy/skills/` |
-| 项目规则 | `.claude/rules/*.md` | `AGENTS.md` | `.cursor/rules/*.mdc` | `CODEBUDDY.md` + IDE `.codebuddy/.rules/*.mdc` + CLI `.codebuddy/rules/*.md` |
-| 自定义 Agent | `.claude/agents/` | 不生成 | 不生成 | `.codebuddy/agents/` |
+| 能力 | Claude Code | Codex | Cursor | CodeBuddy `both` | pi |
+|---|---|---|---|---|---|
+| 项目指令 | `AGENTS.md` + `CLAUDE.md` | `AGENTS.md` | `AGENTS.md` | `AGENTS.md` + `CODEBUDDY.md` | `AGENTS.md` |
+| Skills | `.claude/skills/` | `.agents/skills/` | `.cursor/skills/` | `.codebuddy/skills/` | `.pi/skills/` |
+| 项目规则 | `.claude/rules/*.md` | `AGENTS.md` | `.cursor/rules/*.mdc` | `CODEBUDDY.md` + IDE `.codebuddy/.rules/*.mdc` + CLI `.codebuddy/rules/*.md` | `AGENTS.md` |
+| 自定义 Agent | `.claude/agents/` | 不生成 | 不生成 | `.codebuddy/agents/` | 不生成 |
+| Worktree | `.claude/worktrees/`，`claude/` 分支前缀 | `.codex/worktrees/`，`codex/` 分支前缀 | `.cursor/worktrees/`，`cursor/` 分支前缀 | `.codebuddy/worktrees/`，`codebuddy/` 分支前缀 | `.pi/worktrees/`，`pi/` 分支前缀 |
+
+pi 适配（M1）说明：Skill 内容按通用 Agent Skills 标准投放（frontmatter 只保留 `name`/`description`，Claude 专属的 `allowed-tools`/`disallowed-tools` 等字段被剥离，约束以正文协议形式生效）；不安装 `.pi/agents/` 固定角色，plan/review 等阶段使用主会话或 pi 自身的 subagent 机制。
+
+注意：pi 仅在**项目被信任后**才加载 `.pi/skills/` 项目级技能。交互模式下首次进入会提示信任确认；非交互模式（`pi -p`）需 `--approve`/`-a` 或已保存的信任决策（`~/.pi/agent/trust.json`）。Harness CLI 不会代替用户写入 pi 的信任存储。
 
 已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。
 

@@ -66,7 +66,8 @@ const AGENT_BY_INDEX: Record<string, HarnessAgent> = {
   "1": "claude-code",
   "2": "codex",
   "3": "cursor",
-  "4": "codebuddy"
+  "4": "codebuddy",
+  "5": "pi"
 };
 
 function normalizeProfile(value: unknown): "general" | "java" | undefined {
@@ -76,7 +77,7 @@ function normalizeProfile(value: unknown): "general" | "java" | undefined {
   throw new InitConfigurationError("配置类型必须为 general 或 java");
 }
 
-const ALL_AGENT_TOKENS = new Set(["all", "5"]);
+const ALL_AGENT_TOKENS = new Set(["all", "6"]);
 
 export function parseAgentsInput(raw: string): HarnessAgent[] {
   const trimmed = raw.trim();

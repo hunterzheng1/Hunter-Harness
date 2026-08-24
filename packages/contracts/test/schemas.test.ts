@@ -114,7 +114,7 @@ describe("multi-agent contracts", () => {
   it("sortHarnessAgents dedupes and orders deterministically", () => {
     expect(sortHarnessAgents(["codebuddy", "claude-code", "codebuddy", "codex"]))
       .toEqual(["claude-code", "codex", "codebuddy"]);
-    expect(HARNESS_AGENT_ORDER).toEqual(["claude-code", "codex", "cursor", "codebuddy"]);
+    expect(HARNESS_AGENT_ORDER).toEqual(["claude-code", "codex", "cursor", "codebuddy", "pi"]);
   });
 
   it("initConfigSchema requires agents array and defaults codebuddy_surface", () => {

@@ -4,7 +4,8 @@ export const AGENT_LABELS: Record<HarnessAgent, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
-  codebuddy: "CodeBuddy"
+  codebuddy: "CodeBuddy",
+  pi: "pi"
 };
 
 /** User-facing profile name — always Chinese in interactive UI. */
@@ -35,5 +36,5 @@ export function agentMenuLines(
     const suffix = profile === undefined ? "" : `（已安装：${profileLabel(profile)}）`;
     return `  ${index + 1}. ${agentLabel(agent)}${suffix}`;
   }).join("\n");
-  return lines + "\n  5. 全部";
+  return lines + `\n  ${HARNESS_AGENT_ORDER.length + 1}. 全部`;
 }

@@ -293,7 +293,7 @@ function statusCounts(components: readonly ComponentReceipt[]): Record<string, n
 }
 
 function adapterName(targetPath: string): string {
-  const match = /^\.(agents|claude|codebuddy|cursor)(?:\/|$)/.exec(
+  const match = /^\.(agents|claude|codebuddy|cursor|pi)(?:\/|$)/.exec(
     targetPath.replaceAll("\\", "/")
   );
   return match?.[1] ?? "unknown";
@@ -303,7 +303,8 @@ const ADAPTER_REMEDIATION_AGENTS = {
   agents: "codex",
   claude: "claude-code",
   cursor: "cursor",
-  codebuddy: "codebuddy"
+  codebuddy: "codebuddy",
+  pi: "pi"
 } as const satisfies Record<string, HarnessAgent>;
 
 export function adapterAgentForRemediation(

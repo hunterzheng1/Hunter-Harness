@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added — pi 作为第五个目标 Agent（M1 本地适配）
+
+- `--agents` / 交互菜单 / `refresh` 支持 `pi`（交互序号 5，`all` 顺移到 6）；
+  安装落点：`.pi/skills/`、指令 `AGENTS.md`、worktree `.pi/worktrees/`（`pi/`
+  分支前缀）；不生成规则文件与固定角色（agentsRoot=null）。
+- Skill 内容走通用 Agent Skills 标准：frontmatter 只保留 `name`/`description`，
+  与 codex/cursor/codebuddy 同一套 adapt 管线；`.harness/` 状态、事件流、
+  ledger、归档 ZIP 等 agent 无关层零改动复用。
+- 契约：`HARNESS_AGENT_ORDER` / `skillTargetAgentSchema` / `registryAgentSchema`
+  增加 `pi`；指令治理新增 `pi` 投影（仅 AGENTS.md 根入口）。
+- 兼容：npm Skill 包 v3 manifest 的 variants 改为部分记录——旧四家（claude-code/
+  codex/cursor/codebuddy）保持必填，`pi` 变体可选，存量已发布包在新 CLI 上仍可安装。
+- 已知限制：pi 仅在项目被信任后加载 `.pi/skills/`（交互首次确认；非交互需 `-a`）；
+  `skill-cli upload` 的服务端发布校验与 hunter-platform 的枚举接受属 M3，本仓先把
+  本地安装/上传边界打开。
+
 ## [0.4.0] — hunter-harness ＋ [0.4.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > 知识沉淀从「只收已裁决 findings/risks」扩展到「设计决策/需求/API 契约」，

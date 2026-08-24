@@ -8,7 +8,8 @@ const SKILL_ALLOW = {
   "claude-code": null,
   codex: ["name", "description"],
   cursor: ["name", "description"],
-  codebuddy: ["name", "description"]
+  codebuddy: ["name", "description"],
+  pi: ["name", "description"]
 };
 
 const AGENT_FILE_ALLOW = {
@@ -119,7 +120,7 @@ async function listFiles(directory, base = directory) {
 /**
  * Rewrite frontmatter and semantically validate an agent bundle directory in place.
  * @param {string} dir Absolute path to a built profile×agent bundle directory
- * @param {"claude-code"|"codex"|"cursor"|"codebuddy"} agent
+ * @param {"claude-code"|"codex"|"cursor"|"codebuddy"|"pi"} agent
  * @returns {Promise<{ rewritten: string[], validated: string[] }>}
  */
 export async function adaptBundleDir(dir, agent) {

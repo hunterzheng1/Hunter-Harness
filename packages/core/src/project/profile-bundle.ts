@@ -81,7 +81,7 @@ function isProfile(value: unknown): value is HarnessProfile {
 
 function isAgent(value: unknown): value is HarnessAgent {
   return value === "claude-code" || value === "codex" ||
-    value === "cursor" || value === "codebuddy";
+    value === "cursor" || value === "codebuddy" || value === "pi";
 }
 
 function validateRelativeBundlePath(path: unknown): asserts path is string {

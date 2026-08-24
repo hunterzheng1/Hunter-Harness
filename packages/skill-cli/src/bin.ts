@@ -93,9 +93,9 @@ interface InstallManifest {
 
 // skill-cli 独立 upload 白名单：建 per-agent draft（低风险），扩 codex/generic（#1 后有真 render + per-agent version）。
 // mcp 仍不支持（installable=false，不参与 upload/install）。
-const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy"]);
+const UPLOADABLE_AGENTS: ReadonlySet<RegistryAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy", "pi"]);
 // skill-cli 独立 install 白名单：install 链路 codex/generic 未验证，维持 claude-code/cursor。
-const INSTALLABLE_AGENTS: ReadonlySet<SkillTargetAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy"]);
+const INSTALLABLE_AGENTS: ReadonlySet<SkillTargetAgent> = new Set(["claude-code", "cursor", "codex", "codebuddy", "pi"]);
 
 interface LegacyArtifactMetadata {
   schema_version?: 1 | 2;

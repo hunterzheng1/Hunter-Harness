@@ -16,9 +16,11 @@ describe("parseAgentsInput", () => {
     ["1", ["claude-code"]],
     ["1,2,4", ["claude-code", "codex", "codebuddy"]],
     ["claude-code,codex,codebuddy", ["claude-code", "codex", "codebuddy"]],
-    ["all", ["claude-code", "codex", "cursor", "codebuddy"]],
-    ["5", ["claude-code", "codex", "cursor", "codebuddy"]],
-    ["1,5", ["claude-code", "codex", "cursor", "codebuddy"]],
+    ["all", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
+    ["5", ["pi"]],
+    ["6", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
+    ["1,6", ["claude-code", "codex", "cursor", "codebuddy", "pi"]],
+    ["pi", ["pi"]],
     ["4,1,4", ["claude-code", "codebuddy"]],
     [" 2 , 3 ", ["codex", "cursor"]]
   ])("parses %j", (input, expected) => {
@@ -26,7 +28,7 @@ describe("parseAgentsInput", () => {
   });
 
   it("rejects unknown agent tokens", () => {
-    expect(() => parseAgentsInput("codex,6")).toThrow(InitConfigurationError);
+    expect(() => parseAgentsInput("codex,7")).toThrow(InitConfigurationError);
     expect(() => parseAgentsInput("gpt")).toThrow(InitConfigurationError);
     try {
       parseAgentsInput("gpt");

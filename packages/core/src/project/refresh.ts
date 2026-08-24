@@ -115,7 +115,8 @@ const RETIRED_ARCHIVE_RENDERER_TARGETS: Readonly<Record<HarnessAgent, string>> =
   "claude-code": ".claude/skills/harness-archive/templates/render-summary.mjs",
   codex: ".agents/skills/harness-archive/templates/render-summary.mjs",
   cursor: ".cursor/skills/harness-archive/templates/render-summary.mjs",
-  codebuddy: ".codebuddy/skills/harness-archive/templates/render-summary.mjs"
+  codebuddy: ".codebuddy/skills/harness-archive/templates/render-summary.mjs",
+  pi: ".pi/skills/harness-archive/templates/render-summary.mjs"
 };
 const RETIRED_ARCHIVE_RENDERER_HASHES = new Set([
   "fb171bc2a3aaa3a99bf298f3d9697f9dd7025881b0437851a7af4937d224ef30",
@@ -210,7 +211,8 @@ async function readInstalledState(root: string): Promise<InstalledState> {
   const adapters: HarnessAgent[] = (schemaVersion === 3 || schemaVersion === 4) &&
     Array.isArray(parsed.adapters)
     ? sortHarnessAgents(parsed.adapters.filter((value): value is HarnessAgent =>
-      value === "claude-code" || value === "codex" || value === "cursor" || value === "codebuddy"
+      value === "claude-code" || value === "codex" || value === "cursor" || value === "codebuddy" ||
+      value === "pi"
     ))
     : schemaVersion === 1 || schemaVersion === 2 ? ["claude-code"] : [];
   const profiles = new Map<HarnessAgent, HarnessProfile>();

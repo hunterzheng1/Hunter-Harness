@@ -132,9 +132,9 @@ try {
     assert(await exists(join(packagedRoot, "resources", legacyResource)) === false,
       `packaged CLI must not contain legacy resource: ${legacyResource}`);
   }
-  // 工作流数据包含 2 profile × 4 agent Bundles + 可信迁移 manifest。
+  // 工作流数据包含 2 profile × 5 agent Bundles + 可信迁移 manifest。
   for (const profile of ["general", "java"]) {
-    for (const agent of ["claude-code", "codex", "cursor", "codebuddy"]) {
+    for (const agent of ["claude-code", "codex", "cursor", "codebuddy", "pi"]) {
       assert(await exists(join(
         workflowDataRoot, "harness", "bundles", profile, agent
       )), `workflow data package missing ${profile}/${agent} bundle`);

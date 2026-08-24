@@ -281,6 +281,22 @@ function renderCodex(
   return { files, failures };
 }
 
+function renderPi(
+  ref: NormalizedCanonicalRef,
+  request: NormalizedRequest
+): RenderResult {
+  const rules = agentRules(ref, "pi");
+  const root = rootAgents(ref);
+  if (root === null || !rules.some((file) => file.topic === "core")) {
+    return { files: [], failures: [{
+      reason_code: "INSTRUCTION_PROJECTION_RENDER_INVALID",
+      target_agent: request.agent,
+      path: "AGENTS.md"
+    }] };
+  }
+  return { files: [{ ...root, agent: "pi" }], failures: [] };
+}
+
 function renderClaude(
   ref: NormalizedCanonicalRef,
   request: NormalizedRequest
@@ -421,6 +437,7 @@ function render(ref: NormalizedCanonicalRef, request: NormalizedRequest): Render
     case "claude_code": return renderClaude(ref, request);
     case "cursor": return renderCursor(ref, request);
     case "codebuddy": return renderCodeBuddy(ref, request);
+    case "pi": return renderPi(ref, request);
   }
 }
 

@@ -28,7 +28,7 @@ function pythonRuntime() {
 }
 
 const PROFILES = ["general", "java"];
-const AGENTS = ["claude-code", "codex", "cursor", "codebuddy"];
+const AGENTS = ["claude-code", "codex", "cursor", "codebuddy", "pi"];
 const BUNDLE_VERSION = "0.2.73";
 // skills 明确要求消费 PLAN_EVIDENCE_INPUT_INVALID 的 field_path/problems[]，
 // 且 --print-template 的可运行骨架自 0.2.83 起才正确；
@@ -400,7 +400,7 @@ async function writeWorkflowFamilyManifest() {
 async function main() {
   const inputHash = await syncInputHash();
   if (!process.argv.includes("--force") && await generatedProjectionIsCurrent(inputHash)) {
-    process.stdout.write("Harness Bundles are up to date (2 profiles × 4 agents)\n");
+    process.stdout.write("Harness Bundles are up to date (2 profiles × 5 agents)\n");
     return;
   }
   for (const profile of PROFILES) {
@@ -413,7 +413,7 @@ async function main() {
   await writeWorkflowFamilyManifest();
   await mkdir(dirname(syncStampPath), { recursive: true });
   await writeFile(syncStampPath, inputHash + "\n");
-  process.stdout.write("generated 2 profiles × 4 agents Harness Bundles\n");
+  process.stdout.write("generated 2 profiles × 5 agents Harness Bundles\n");
 }
 
 // Run only when executed directly (node scripts/sync-harness.mjs), not when

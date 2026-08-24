@@ -26,7 +26,8 @@ export const INSTRUCTION_TARGET_AGENTS = [
   "codex",
   "claude_code",
   "cursor",
-  "codebuddy"
+  "codebuddy",
+  "pi"
 ] as const;
 
 export type RuleTopic = typeof RULE_TOPICS[number];

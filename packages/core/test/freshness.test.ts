@@ -78,9 +78,9 @@ describe("Post-adaptation freshness projection (变更簇 D / task 12)", () => {
     expect(entry.profile).toBe("general");
   });
 
-  it("COM-003: all four agents from one publication are CURRENT with their own projections", async () => {
-    const root = await mkdtemp(join(tmpdir(), "hunter-fresh-four-"));
-    const agents: HarnessAgent[] = ["claude-code", "codex", "cursor", "codebuddy"];
+  it("COM-003: all five agents from one publication are CURRENT with their own projections", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hunter-fresh-five-"));
+    const agents: HarnessAgent[] = ["claude-code", "codex", "cursor", "codebuddy", "pi"];
     await install(root, agents);
 
     const report = await collectFreshness({ projectRoot: root, resourcesRoot, agents });

@@ -53,7 +53,7 @@ async function resolveSkillsRoot(root: string): Promise<string | null> {
   } catch {
     // Fall through to conventional roots.
   }
-  for (const candidate of [".claude/skills", ".cursor/skills", ".codebuddy/skills"]) {
+  for (const candidate of [".claude/skills", ".cursor/skills", ".codebuddy/skills", ".pi/skills"]) {
     const absolute = join(root, candidate);
     if (await pathExists(absolute)) return absolute;
   }

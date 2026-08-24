@@ -46,6 +46,12 @@ export const AGENT_DESCRIPTORS: Record<RegistryAgent, AgentDescriptor> = {
     installTarget: (slug) => `${getAgentSurface("codebuddy").skillRoots.project}/${slug}/`,
     installMode: "folder"
   },
+  pi: {
+    agent: "pi",
+    installable: true,
+    installTarget: (slug) => `${getAgentSurface("pi").skillRoots.project}/${slug}/`,
+    installMode: "folder"
+  },
   generic: {
     agent: "generic",
     installable: false,
