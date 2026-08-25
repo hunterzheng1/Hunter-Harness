@@ -35,6 +35,8 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 
 pi 适配（M1）说明：Skill 内容按通用 Agent Skills 标准投放（frontmatter 只保留 `name`/`description`，Claude 专属的 `allowed-tools`/`disallowed-tools` 等字段被剥离，约束以正文协议形式生效）；不安装 `.pi/agents/` 固定角色，plan/review 等阶段使用主会话或 pi 自身的 subagent 机制。
 
+用户级安装（`skill-cli install --scope user`）的 pi 落点：技能 `~/.pi/agent/skills/`，subagent `~/.pi/agent/agents/`（pi 还会原生发现 `~/.agents/skills/` 与项目 `.agents/skills/`，但不作为 Harness 写入目标）。项目级指令治理投影与 codex 相同：根 `AGENTS.md` 加上按 glob 作用域的 `<dir>/AGENTS.md`（pi 与 codex 一样从 cwd 向上发现 AGENTS.md）。若项目根存在 `AGENTS.override.md`，pi 会改读它而忽略投影生成的 `AGENTS.md`，`doctor` 会对此告警。
+
 注意：pi 仅在**项目被信任后**才加载 `.pi/skills/` 项目级技能。交互模式下首次进入会提示信任确认；非交互模式（`pi -p`）需 `--approve`/`-a` 或已保存的信任决策（`~/.pi/agent/trust.json`）。Harness CLI 不会代替用户写入 pi 的信任存储。
 
 已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。

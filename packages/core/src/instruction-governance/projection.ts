@@ -231,11 +231,13 @@ function rootAgents(ref: NormalizedCanonicalRef): RenderedFile | null {
   };
 }
 
-function renderCodex(
+// codex 与 pi 共用同一套 AGENTS.md 发现模型（从 cwd 向上查找），
+// 因此根入口 + 按 glob 作用域的 <dir>/AGENTS.md 投影逻辑完全一致。
+function renderAgentsMdTree(
   ref: NormalizedCanonicalRef,
   request: NormalizedRequest
 ): RenderResult {
-  const rules = agentRules(ref, "codex");
+  const rules = agentRules(ref, request.agent);
   const failures: InstructionProjectionFailure[] = [];
   const root = rootAgents(ref);
   if (root === null || !rules.some((file) => file.topic === "core")) {
@@ -262,13 +264,13 @@ function renderCodex(
       byRoot.set(scope, values);
     }
   }
-  const files: RenderedFile[] = [{ ...root, agent: "codex" }];
+  const files: RenderedFile[] = [{ ...root, agent: request.agent }];
   for (const [scope, scopedRules] of [...byRoot].sort(([left], [right]) =>
     compareCodepoint(left, right)
   )) {
     const sorted = scopedRules.sort((left, right) => compareCodepoint(left.path, right.path));
     files.push({
-      agent: "codex",
+      agent: request.agent,
       path: `${scope}/AGENTS.md`,
       source_paths: sorted.map((file) => file.path),
       content: sorted.map((file) => [
@@ -279,22 +281,6 @@ function renderCodex(
     });
   }
   return { files, failures };
-}
-
-function renderPi(
-  ref: NormalizedCanonicalRef,
-  request: NormalizedRequest
-): RenderResult {
-  const rules = agentRules(ref, "pi");
-  const root = rootAgents(ref);
-  if (root === null || !rules.some((file) => file.topic === "core")) {
-    return { files: [], failures: [{
-      reason_code: "INSTRUCTION_PROJECTION_RENDER_INVALID",
-      target_agent: request.agent,
-      path: "AGENTS.md"
-    }] };
-  }
-  return { files: [{ ...root, agent: "pi" }], failures: [] };
 }
 
 function renderClaude(
@@ -433,11 +419,11 @@ function renderCodeBuddy(
 
 function render(ref: NormalizedCanonicalRef, request: NormalizedRequest): RenderResult {
   switch (request.agent) {
-    case "codex": return renderCodex(ref, request);
+    case "codex":
+    case "pi": return renderAgentsMdTree(ref, request);
     case "claude_code": return renderClaude(ref, request);
     case "cursor": return renderCursor(ref, request);
     case "codebuddy": return renderCodeBuddy(ref, request);
-    case "pi": return renderPi(ref, request);
   }
 }
 

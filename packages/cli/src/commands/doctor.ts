@@ -89,6 +89,42 @@ async function runPython(
   }
 }
 
+export interface DoctorWarning {
+  path: string;
+  code: string;
+  message: string;
+}
+
+/** True when the project has the pi adapter enabled (context-index or deployed root). */
+async function piAdapterInUse(root: string): Promise<boolean> {
+  try {
+    const raw = await readFile(join(root, ".harness", "context-index.json"), "utf8");
+    const parsed = JSON.parse(raw) as { adapters?: Record<string, unknown> };
+    if (Object.keys(parsed.adapters ?? {}).includes("pi")) return true;
+  } catch {
+    // Fall through to the deployed-root probe.
+  }
+  return pathExists(join(root, ".pi", "skills"));
+}
+
+/**
+ * pi loads AGENTS.override.md instead of AGENTS.md in the same directory,
+ * so a user-authored override silently shadows the harness-generated root
+ * projection. Surface that as a warning (pi only reads AGENTS.md variants;
+ * other agents are unaffected).
+ */
+async function collectPiWarnings(root: string): Promise<DoctorWarning[]> {
+  if (!(await piAdapterInUse(root))) return [];
+  if (!(await pathExists(join(root, "AGENTS.override.md")))) return [];
+  return [{
+    path: "AGENTS.override.md",
+    code: "PI_AGENTS_OVERRIDE_SHADOWS_PROJECTION",
+    message:
+      "pi loads AGENTS.override.md instead of the harness-generated AGENTS.md; " +
+      "projected instructions are ignored until the override is removed or reconciled"
+  }];
+}
+
 /**
  * Rebuild regenerable local execution-log projections. Knowledge is remote
  * owned and is deliberately never repaired or indexed on the client.
@@ -190,11 +226,12 @@ export async function runDoctor(
   if (options.fix === true && python !== null && python.available) {
     await applyFixes(dependencies.cwd, python.argvPrefix, fixes);
   }
+  const warnings = await collectPiWarnings(dependencies.cwd);
   const runtimeFailed = python !== null && !python.available;
   const fixFailed = fixes.some((fix) => !fix.ok);
   const status = runtimeFailed
     ? "FAIL"
-    : findings.length > 0 || fixFailed
+    : findings.length > 0 || fixFailed || warnings.length > 0
       ? "WARN"
       : "OK";
   const payload = {
@@ -204,16 +241,19 @@ export async function runDoctor(
       ? "PYTHON_RUNTIME_UNAVAILABLE"
       : findings.length > 0
         ? "MANAGED_BLOCK_STRUCTURE_INVALID"
-        : fixFailed
-          ? "FIX_PARTIAL"
-          : "OK",
+        : warnings.length > 0
+          ? warnings[0]?.code
+          : fixFailed
+            ? "FIX_PARTIAL"
+            : "OK",
     ...(python === null ? {} : { runtime: { python } }),
     managedBlocks: {
       checked: options.managedBlocks === true,
       findings
     },
+    warnings,
     ...(options.fix === true ? { fixes } : {})
   };
   dependencies.stdout(JSON.stringify(payload) + "\n");
-  return runtimeFailed ? 4 : findings.length > 0 ? 5 : 0;
+  return runtimeFailed ? 4 : findings.length > 0 || warnings.length > 0 ? 5 : 0;
 }

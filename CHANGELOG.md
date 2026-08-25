@@ -17,6 +17,16 @@
 
 ## [Unreleased]
 
+### Changed — pi 指令治理投影补齐 scoped AGENTS.md
+
+- `renderPi` 与 codex 合并为共享的 AGENTS.md 树投影：除根 `AGENTS.md` 外，
+  path 激活的规则同样按 glob 作用域生成 `<dir>/AGENTS.md`（pi 与 codex 一样
+  从 cwd 向上发现 AGENTS.md，scoped 文件在同一路径合写，target_agents 双向
+  标注）。
+- `doctor` 新增 pi 告警：项目启用 pi 适配且根目录存在 `AGENTS.override.md` 时，
+  报告 `PI_AGENTS_OVERRIDE_SHADOWS_PROJECTION`（pi 会改读 override 而忽略投影
+  生成的 AGENTS.md），status WARN、退出码 5。
+
 ### Fixed — pi 用户级安装落点纠正
 
 - pi 的用户级技能根由 `~/.pi/skills` 更正为 `~/.pi/agent/skills`：pi 全局技能
