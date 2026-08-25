@@ -177,16 +177,25 @@ describe("Stage11-M4A artifact publication payload contract", () => {
     const design = result.plan.payloads[0]?.serialized_content ?? "";
     expect(design).toContain(`content_hash: ${value.human.design.content_hash}`);
     const requirementSection = design.split("## Requirements\n\n")[1]?.split("\n\n## Approved scopes")[0] ?? "";
+    const scopeLabels = new Map(value.human.design.content.approved_scopes.map((item) => [item.scope_ref, item.text]));
     for (const requirement of value.human.design.content.requirements) {
       const block = requirementSection.split(`- ${requirement.requirement_id} `)[1]?.split("\n- requirement:")[0] ?? "";
-      expect(block).toContain(`  - Evidence refs: ${[...requirement.evidence_refs].sort().join(", ")}`);
-      expect(block).toContain(`  - Approved scope refs: ${[...requirement.approved_scope_refs].sort().join(", ")}`);
+      expect(block).toContain(`  - Evidence refs: ${[...requirement.evidence_refs].sort().map((ref) => `\`${ref}\``).join(", ")}`);
+      const scopeLabelsExpected = [...requirement.approved_scope_refs].sort().map((ref) => {
+        const label = scopeLabels.get(ref);
+        return label === undefined ? `\`${ref}\`` : `${label} (\`${ref}\`)`;
+      }).join(", ");
+      expect(block).toContain(`  - Approved scopes: ${scopeLabelsExpected}`);
     }
     const ownershipSection = design.split("## Ownership\n\n")[1] ?? "";
     for (const ownership of value.human.design.content.ownership) {
       const block = ownershipSection.split(`- ${ownership.ownership_ref}: `)[1]?.split("\n- ownership:")[0] ?? "";
-      expect(block).toContain(`  - Evidence refs: ${[...ownership.evidence_refs].sort().join(", ")}`);
-      expect(block).toContain(`  - Approved scope refs: ${[...ownership.approved_scope_refs].sort().join(", ")}`);
+      expect(block).toContain(`  - Evidence refs: ${[...ownership.evidence_refs].sort().map((ref) => `\`${ref}\``).join(", ")}`);
+      const scopeLabelsExpected = [...ownership.approved_scope_refs].sort().map((ref) => {
+        const label = scopeLabels.get(ref);
+        return label === undefined ? `\`${ref}\`` : `${label} (\`${ref}\`)`;
+      }).join(", ");
+      expect(block).toContain(`  - Approved scopes: ${scopeLabelsExpected}`);
     }
     const tampered = structuredClone(value);
     tampered.human.design.content.requirements[0]?.evidence_refs.splice(0, 1, "symbol:foreign");

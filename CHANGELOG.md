@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.1] — hunter-harness ＋ [0.4.1] @hunter-harness/workflow-harness
+
+### Changed — 计划产物人类可读化 + 知识候选从 plans/*.md 派生
+
+- plan finalize 派生的 `plans/*.md` 不再把哈希 refs 裸拼成一行：
+  requirement/ownership/scope 引用现在带人类可读标签（`[kind] 文本 → \`hash\``），
+  evidence refs 用 code span 包裹。机器身份（哈希）仍保留，门禁校验与
+  Python 解包不受影响——`content_hash` 是结构化内容哈希，`serialized_sha256`
+  由渲染器在发布时重新计算。
+- 归档知识候选新增 plans 源：`harness_knowledge_candidates.build_plan_candidates`
+  从 design.md（Requirements/Risks/Invariants）、plan.md（Tasks）、
+  test-scenarios.md（场景）解析出 requirement/risk/implementation/test-evidence
+  候选（confidence 0.85），与 summary 三源合并去重。没有对抗评审的变更也能
+  沉淀知识。
+
 ## [Unreleased]
 
 ### Added — pi 作为第五个目标 Agent（M1 本地适配）
