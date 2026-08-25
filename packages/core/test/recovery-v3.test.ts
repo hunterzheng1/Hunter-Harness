@@ -615,7 +615,7 @@ describe("schema v3 durable recovery", () => {
     await expect(acquireRecoveryMutationLock(transactionRoot))
       .rejects.toMatchObject({ code: "RECOVERY_CONFLICT" });
     await finalRelease();
-  }, 90_000);
+  }, 240_000);
 
   it("registers 300 durable recoveries without exhausting a global lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-index-lifecycle-"));
@@ -645,7 +645,7 @@ describe("schema v3 durable recovery", () => {
     expect(recoveryIds).toHaveLength(300);
     expect(recoveryIds).toContain("tx_index_lifecycle_000");
     expect(recoveryIds).toContain("tx_index_lifecycle_299");
-  }, 90_000);
+  }, 240_000);
 
   it("fails before project mutation when the legacy index projection is malformed", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-index-malformed-"));

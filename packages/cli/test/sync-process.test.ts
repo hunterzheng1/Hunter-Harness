@@ -90,7 +90,8 @@ describe("sync bounded process runner", () => {
       );
       expect(result.timedOut).toBe(true);
       expect(result.timeoutKind).toBe("stall");
-      expect(Date.parse(result.lastActivityAt)).toBeGreaterThan(
+      // 最后活动可能与启动落在同一毫秒（高精度机器上见过），相等也是合法时序。
+      expect(Date.parse(result.lastActivityAt)).toBeGreaterThanOrEqual(
         Date.parse(result.startedAt)
       );
       expect(Date.parse(result.lastActivityAt)).toBeLessThanOrEqual(

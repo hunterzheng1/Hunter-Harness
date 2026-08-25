@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,17 +19,37 @@ const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json
 const REVIEWER_TARGET = ".claude/agents/harness-reviewer.md";
 const REVIEW_SKILL_TARGET = ".claude/skills/harness-review/SKILL.md";
 
+// 种子安装：同配置只真实部署一次整套 bundle，后续用例用目录拷贝复用。
+// 单用例从 ~30s（initializeProject 全量投影+哈希）降到秒级拷贝。
+const installSeeds = new Map<string, string>();
+
+async function seededInstall(
+  root: string,
+  agents: HarnessAgent[],
+  profile: "general" | "java"
+): Promise<void> {
+  const key = `${agents.join("+")}:${profile}`;
+  let seedRoot = installSeeds.get(key);
+  if (seedRoot === undefined) {
+    seedRoot = await mkdtemp(join(tmpdir(), "hunter-fresh-seed-"));
+    await initializeProject({
+      projectRoot: seedRoot,
+      resourcesRoot,
+      config: { agents, profile },
+      dryRun: false
+    });
+    installSeeds.set(key, seedRoot);
+  }
+  await rm(root, { recursive: true, force: true });
+  await cp(seedRoot, root, { recursive: true });
+}
+
 async function install(
   root: string,
   agents: HarnessAgent[],
   profile: "general" | "java" = "general"
 ): Promise<void> {
-  await initializeProject({
-    projectRoot: root,
-    resourcesRoot,
-    config: { agents, profile },
-    dryRun: false
-  });
+  await seededInstall(root, agents, profile);
 }
 
 async function readInstalledState(root: string): Promise<{
@@ -90,7 +110,7 @@ describe("Post-adaptation freshness projection (变更簇 D / task 12)", () => {
       expect(entry.status, `${agent} must be CURRENT`).toBe("CURRENT");
       expect(entry.identity.manifestHash).toBeTruthy();
     }
-  }, 120000);
+  }, 300000);
 
   it("UT-018: a single locally modified managed file yields LOCALLY_MODIFIED listing only that file", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-fresh-modified-"));

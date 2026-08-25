@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { initializeProject } from "../src/project/initialize.js";
 import { refreshProject, type RefreshResult } from "../src/project/refresh.js";
+import type { HarnessAgent } from "@hunter-harness/contracts";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
@@ -26,13 +27,31 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+// 种子安装：同配置只真实部署一次整套 bundle，后续用例用目录拷贝复用。
+const refreshSeeds = new Map<string, string>();
+
+async function seededInit(
+  root: string,
+  config: { agents: readonly HarnessAgent[]; profile: "general" | "java" }
+): Promise<void> {
+  const key = `${config.agents.join("+")}:${config.profile}`;
+  let seedRoot = refreshSeeds.get(key);
+  if (seedRoot === undefined) {
+    seedRoot = await mkdtemp(join(tmpdir(), "hunter-refresh-seed-"));
+    await initializeProject({
+      projectRoot: seedRoot,
+      resourcesRoot,
+      config: { agents: [...config.agents], profile: config.profile },
+      dryRun: false
+    });
+    refreshSeeds.set(key, seedRoot);
+  }
+  await rm(root, { recursive: true, force: true });
+  await cp(seedRoot, root, { recursive: true });
+}
+
 async function installFirst(root: string, profile: "general" | "java"): Promise<void> {
-  await initializeProject({
-    projectRoot: root,
-    resourcesRoot,
-    config: { agents: ["claude-code"], profile },
-    dryRun: false
-  });
+  await seededInit(root, { agents: ["claude-code"], profile });
 }
 
 async function readInstalledState(root: string): Promise<{
@@ -137,12 +156,7 @@ describe("Conservative Refresh", () => {
 
   it("SYNC-STATE-004 keeps unselected adapters verified during a partial refresh", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-partial-state-"));
-    await initializeProject({
-      projectRoot: root,
-      resourcesRoot,
-      config: { agents: ["claude-code", "codex"], profile: "general" },
-      dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code", "codex"], profile: "general" });
     await refreshProject({
       projectRoot: root,
       resourcesRoot,
@@ -379,10 +393,7 @@ describe("Conservative Refresh", () => {
 
   it("touches only selected agents and keeps every unselected namespace byte-for-byte", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-transition-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code", "codex"], profile: "general" });
     const claudeBefore = await readFile(join(root, REVIEWER_TARGET));
     const codexPath = join(root, ".agents", "skills", "harness-review", "SKILL.md");
     const codexBefore = await readFile(codexPath);
@@ -525,10 +536,7 @@ describe("Conservative Refresh", () => {
 
   it("applies a profile transition across every enabled agent", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-multi-profile-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code", "cursor"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code", "cursor"], profile: "general" });
     await refreshProject({
       projectRoot: root, resourcesRoot, profile: "java",
       agents: ["claude-code", "cursor"], dryRun: false, forceManaged: false
@@ -546,10 +554,7 @@ describe("Conservative Refresh", () => {
 
   it("does not let a forged state hash authorize deleting a locally modified old-agent target", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-forged-delete-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code", "codex"], profile: "general" });
     const state = await readInstalledState(root);
     const codexTarget = state.files
       .map((entry) => (typeof entry === "string" ? entry : entry.target_path))
@@ -585,10 +590,7 @@ describe("Conservative Refresh", () => {
 
   it("removes a selected agent and its clean managed targets", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-remove-agent-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code", "codex"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code", "codex"], profile: "general" });
     expect(await exists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await exists(join(root, "CLAUDE.md"))).toBe(true);
 
@@ -614,10 +616,7 @@ describe("Conservative Refresh", () => {
 
   it("refuses to remove every installed agent", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-refresh-remove-all-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, { agents: ["claude-code"], profile: "general" });
     await expect(refreshProject({
       projectRoot: root,
       resourcesRoot,

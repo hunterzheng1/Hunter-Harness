@@ -8,6 +8,11 @@ harness/** text eol=lf
 # Frozen migration fixtures must keep committed bytes (CRLF) on all platforms.
 packages/core/test/fixtures/v0.1.1-bundles/** -text
 
+# Contract/state fixtures are byte-frozen test oracles (hashes, byte_count,
+# golden JSON strings). Keep committed bytes exactly; never EOL-normalize.
+packages/contracts/test/fixtures/** -text
+packages/core/test/fixtures/** -text
+
 # Stage 01 canonical contract artifacts are hashed byte-for-byte across repositories.
 packages/contracts/openapi/hunter-harness-v1.yaml text eol=lf
 packages/contracts/openapi/hunter-harness-v1.yaml.sha256 text eol=lf

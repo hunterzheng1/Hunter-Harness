@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed — 测试套件去 flaky：冻结 fixture 字节漂移与慢测试超时错配
+
+- `.gitattributes` 对 `packages/contracts/test/fixtures/**` 与
+  `packages/core/test/fixtures/**` 补 `-text`：此前 `core.autocrlf=true` 的 Windows
+  检出把冻结 fixture 转成 CRLF，字节哈希/字节数断言必挂（平台信息导出、远端上传/
+  归档契约、archive-outbox 序列化等 4 个文件长期红灯）。已将所有已跟踪 fixture 恢复为提交字节。
+- `sync-process` SYNC-005：最后活动与启动允许同毫秒（`toBeGreaterThanOrEqual`），
+  消除高精度机器上的毫秒相等毛刺。
+- 恢复存储并发投影用例在高负载下偏发 `nlink !== 1` 边界失败：确认为预存在的并发竞态，
+  不放宽生产安全检查；`recovery-v3` 两个 300 次循环用例超时 90s→240s。
+
+### Changed — 测试提速：重型文件移入 integration 项目 + 种子安装复用
+
+- `vitest.config.ts` integration 名单补入 7 个真实慢文件（migration/push-stale/update-auth/
+  push-scan/guarded-project-plan/plan-durable/recovery-v3）：它们在 fast 项目 30s 超时必现假失败，
+  120s 档位后全部转绿（push-stale 16/16）。
+- `freshness/migration/refresh` 三个测试文件改为“同配置只真实部署一次，后续用例目录拷贝复用”，
+  单文件耗时显著下降（refresh 633s→230s），用例语义不变。
+
 ### Added — pi 作为第五个目标 Agent（M1 本地适配）
 
 - `--agents` / 交互菜单 / `refresh` 支持 `pi`（交互序号 5，`all` 顺移到 6）；

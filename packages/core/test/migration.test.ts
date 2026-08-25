@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,10 +126,42 @@ async function installV1Style(root: string, profile: HarnessProfile): Promise<vo
   await writeFile(join(root, "CLAUDE.md"), upsertManagedBlock("", CLAUDE_MANAGED_BLOCK_CONTENT));
 }
 
+// 种子安装：同配置只真实构建一次，后续用例用目录拷贝复用（v1 仿真与 v2 初始化各自缓存）。
+const v1Seeds = new Map<string, string>();
+
+async function copySeedInto(seedRoot: string, root: string): Promise<void> {
+  await rm(root, { recursive: true, force: true });
+  await cp(seedRoot, root, { recursive: true });
+}
+
+async function seededV1Style(root: string, profile: HarnessProfile): Promise<void> {
+  let seedRoot = v1Seeds.get(profile);
+  if (seedRoot === undefined) {
+    seedRoot = await mkdtemp(join(tmpdir(), "hunter-mig-v1-seed-"));
+    await installV1Style(seedRoot, profile);
+    v1Seeds.set(profile, seedRoot);
+  }
+  await copySeedInto(seedRoot, root);
+}
+
+async function seededInit(root: string, profile: HarnessProfile): Promise<void> {
+  const key = `init:${profile}`;
+  let seedRoot = v1Seeds.get(key);
+  if (seedRoot === undefined) {
+    seedRoot = await mkdtemp(join(tmpdir(), "hunter-mig-init-seed-"));
+    await initializeProject({
+      projectRoot: seedRoot, resourcesRoot,
+      config: { agents: ["claude-code"], profile }, dryRun: false
+    });
+    v1Seeds.set(key, seedRoot);
+  }
+  await copySeedInto(seedRoot, root);
+}
+
 describe("0.1.1 migration", () => {
   it("real 0.1.1 general fixture refreshes to schema v2 and removes duplicate skills agents", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-mig-general-"));
-    await installV1Style(root, "general");
+    await seededV1Style(root, "general");
     expect(await exists(join(root, ".claude", "skills", "agents", "harness-reviewer.md"))).toBe(true);
 
     const result = await refreshProject({
@@ -152,7 +184,7 @@ describe("0.1.1 migration", () => {
 
   it("real 0.1.1 java fixture refreshes and removes clean duplicate skills agents", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-mig-java-"));
-    await installV1Style(root, "java");
+    await seededV1Style(root, "java");
 
     const result = await refreshProject({
       projectRoot: root, resourcesRoot, profile: "java", agents: ["claude-code"], dryRun: false, forceManaged: false
@@ -165,7 +197,7 @@ describe("0.1.1 migration", () => {
 
   it("preserves a modified duplicate skills agent as unmanaged conflict (exit 5)", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-mig-modified-"));
-    await installV1Style(root, "general");
+    await seededV1Style(root, "general");
     const dupTarget = join(root, ".claude", "skills", "agents", "harness-reviewer.md");
     await writeFile(dupTarget, "user modified duplicate\n");
 
@@ -186,7 +218,7 @@ describe("0.1.1 migration", () => {
 
   it("unknown legacy Bundle hash never authorizes deletion of duplicate files", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-mig-unknown-"));
-    await installV1Style(root, "general");
+    await seededV1Style(root, "general");
     // 破坏 context-index bundle_hash → 无迁移匹配。
     const ci = JSON.parse(await readFile(join(root, ".harness", "context-index.json"), "utf8")) as { skill_bundle: { bundle_hash: string } };
     ci.skill_bundle.bundle_hash = "sha256:unknownlegacy";
@@ -205,10 +237,7 @@ describe("0.1.1 migration", () => {
 describe("Profile Transition", () => {
   it("general to java adds Java-only files", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-gj-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" }, dryRun: false
-    });
+    await seededInit(root, "general");
     expect(await exists(join(root, ".claude", "skills", "harness-apidoc", "SKILL.md"))).toBe(false);
 
     const result = await refreshProject({
@@ -224,10 +253,7 @@ describe("Profile Transition", () => {
 
   it("java to general removes clean Java-only files", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-jg-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
-    });
+    await seededInit(root, "java");
 
     const result = await refreshProject({
       projectRoot: root, resourcesRoot, profile: "general", agents: ["claude-code"], dryRun: false, forceManaged: false
@@ -241,10 +267,7 @@ describe("Profile Transition", () => {
 
   it("modified Java-only file survives transition and produces exit code 5", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-trans-modified-"));
-    await initializeProject({
-      projectRoot: root, resourcesRoot,
-      config: { agents: ["claude-code"], profile: "java" }, dryRun: false
-    });
+    await seededInit(root, "java");
     const apidoc = join(root, ".claude", "skills", "harness-apidoc", "SKILL.md");
     await writeFile(apidoc, "user edited apidoc\n");
 
