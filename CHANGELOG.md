@@ -17,6 +17,15 @@
 
 ## [Unreleased]
 
+### Fixed — pi 技能委派路由补齐 overlay
+
+- 新增 `harness/adapters/pi/skill-overlays/`（harness-plan / harness-review）：
+  此前 pi 无 overlay，构建回退到基础文本，`plan.delegate`/`review.delegate`
+  段落仍要求 `check-agents` 固定代理预检，但 pi 不安装固定 `harness-*` 角色
+  （agentsRoot=null），每次 plan 都会产生虚假的“安装问题”记录。overlay 后
+  与 codex/cursor 一致：默认主会话 inline，仅当环境已安装 pi-subagents 扩展
+  （提供 `subagent` 工具）才临时委派只读探索/评审。
+
 ### Changed — pi 指令治理投影补齐 scoped AGENTS.md
 
 - `renderPi` 与 codex 合并为共享的 AGENTS.md 树投影：除根 `AGENTS.md` 外，

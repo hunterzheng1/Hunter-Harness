@@ -33,7 +33,7 @@ npx hunter-harness --agents codebuddy --codebuddy-surface both --profile general
 | 自定义 Agent | `.claude/agents/` | 不生成 | 不生成 | `.codebuddy/agents/` | 不生成 |
 | Worktree | `.claude/worktrees/`，`claude/` 分支前缀 | `.codex/worktrees/`，`codex/` 分支前缀 | `.cursor/worktrees/`，`cursor/` 分支前缀 | `.codebuddy/worktrees/`，`codebuddy/` 分支前缀 | `.pi/worktrees/`，`pi/` 分支前缀 |
 
-pi 适配（M1）说明：Skill 内容按通用 Agent Skills 标准投放（frontmatter 只保留 `name`/`description`，Claude 专属的 `allowed-tools`/`disallowed-tools` 等字段被剥离，约束以正文协议形式生效）；不安装 `.pi/agents/` 固定角色，plan/review 等阶段使用主会话或 pi 自身的 subagent 机制。
+pi 适配（M1）说明：Skill 内容按通用 Agent Skills 标准投放（frontmatter 只保留 `name`/`description`，Claude 专属的 `allowed-tools`/`disallowed-tools` 等字段被剥离，约束以正文协议形式生效）；不安装 `.pi/agents/` 固定角色，plan/review 的委派路由经 `harness/adapters/pi/skill-overlays/` 覆写为宿主原生语义——默认主会话 inline，仅当环境已安装 pi-subagents 扩展（提供 `subagent` 工具）时才临时委派只读探索/评审，不运行固定 `harness-*` 预检。
 
 用户级安装（`skill-cli install --scope user`）的 pi 落点：技能 `~/.pi/agent/skills/`，subagent `~/.pi/agent/agents/`（pi 还会原生发现 `~/.agents/skills/` 与项目 `.agents/skills/`，但不作为 Harness 写入目标）。项目级指令治理投影与 codex 相同：根 `AGENTS.md` 加上按 glob 作用域的 `<dir>/AGENTS.md`（pi 与 codex 一样从 cwd 向上发现 AGENTS.md）。若项目根存在 `AGENTS.override.md`，pi 会改读它而忽略投影生成的 `AGENTS.md`，`doctor` 会对此告警。
 
