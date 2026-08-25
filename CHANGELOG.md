@@ -17,6 +17,17 @@
 
 ## [Unreleased]
 
+### Fixed — pi 用户级安装落点纠正
+
+- pi 的用户级技能根由 `~/.pi/skills` 更正为 `~/.pi/agent/skills`：pi 全局技能
+  只发现 `~/.pi/agent/skills/` 与 `~/.agents/skills/`，此前用户级安装落点
+  不会被 pi 加载。
+- pi 的用户级 subagent 根由 `~/.pi/agents` 更正为 `~/.pi/agent/agents`：
+  pi-subagents 全局代理目录是 `~/.pi/agent/agents`（或 `~/.agents`），
+  `~/.pi/agents` 从未被读取。项目级落点（`.pi/skills/`、`.pi/agents/`）不变。
+- pi surface 登记 `.agents/skills` 为原生发现别名（与 cursor 同语义）；
+  `.gitignore` 补上 `.pi/`。
+
 ### Added — pi 作为第五个目标 Agent（M1 本地适配）
 
 - `--agents` / 交互菜单 / `refresh` 支持 `pi`（交互序号 5，`all` 顺移到 6）；
@@ -26,7 +37,7 @@
   与 codex/cursor/codebuddy 同一套 adapt 管线；`.harness/` 状态、事件流、
   ledger、归档 ZIP 等 agent 无关层零改动复用。
 - 契约：`HARNESS_AGENT_ORDER` / `skillTargetAgentSchema` / `registryAgentSchema`
-  增加 `pi`；指令治理新增 `pi` 投影（仅 AGENTS.md 根入口）。
+  增加 `pi`；指令治理新增 `pi` 投影。
 - 兼容：npm Skill 包 v3 manifest 的 variants 改为部分记录——旧四家（claude-code/
   codex/cursor/codebuddy）保持必填，`pi` 变体可选，存量已发布包在新 CLI 上仍可安装。
 - 已知限制：pi 仅在项目被信任后加载 `.pi/skills/`（交互首次确认；非交互需 `-a`）；

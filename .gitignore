@@ -97,6 +97,7 @@ temp/
 .claude/
 .codebuddy/
 .cursor/
+.pi/
 .codegraph/
 .mcp.json
 .harness/
