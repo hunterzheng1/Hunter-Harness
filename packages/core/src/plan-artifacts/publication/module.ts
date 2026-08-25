@@ -198,15 +198,6 @@ function renderOwnershipRefs(refs: readonly string[], lookup: RefLookup): string
     `  - ${labeledRef(ref, lookup.ownership.get(ref))}`)].join("\n");
 }
 
-/** 渲染范围引用列表（design 内的 inline 格式）。 */
-function renderScopeRefs(refs: readonly string[], lookup: RefLookup): string {
-  if (refs.length === 0) return "None";
-  return sorted(refs).map((ref) => {
-    const label = lookup.scopes.get(ref);
-    return label === undefined ? refSpan(ref) : `${markdown(label)} (${refSpan(ref)})`;
-  }).join(", ");
-}
-
 function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): string {
   const value = artifact.content;
   const scopeLabels = new Map(value.approved_scopes.map((item) => [item.scope_ref, item.text]));

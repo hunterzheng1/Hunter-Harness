@@ -169,7 +169,7 @@ export async function uploadArchivePackage(options: UploadArchivePackageOptions)
   const archive = new Uint8Array(await readFile(archivePath));
   const expectedHash = sha256Bytes(archive);
   const uploadRequestId = uuidV7();
-  let rawResult = await client.uploadChangeArchivePackage({
+  const rawResult = await client.uploadChangeArchivePackage({
     projectId,
     changeKey: options.changeKey,
     archive,
