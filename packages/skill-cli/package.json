@@ -1,6 +1,6 @@
 {
   "name": "@hunter-harness/skills",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Install and upload governed Hunter Harness skills",
   "license": "MIT",
   "type": "module",

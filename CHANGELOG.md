@@ -1,21 +1,12 @@
 # Changelog
 
-## [0.4.1] — hunter-harness ＋ [0.4.1] @hunter-harness/workflow-harness
+## [0.4.3] — hunter-harness ＋ [0.4.2] @hunter-harness/workflow-harness（Bundle 0.2.73）＋ [0.1.5] @hunter-harness/skills
 
-### Changed — 计划产物人类可读化 + 知识候选从 plans/*.md 派生
-
-- plan finalize 派生的 `plans/*.md` 不再把哈希 refs 裸拼成一行：
-  requirement/ownership/scope 引用现在带人类可读标签（`[kind] 文本 → \`hash\``），
-  evidence refs 用 code span 包裹。机器身份（哈希）仍保留，门禁校验与
-  Python 解包不受影响——`content_hash` 是结构化内容哈希，`serialized_sha256`
-  由渲染器在发布时重新计算。
-- 归档知识候选新增 plans 源：`harness_knowledge_candidates.build_plan_candidates`
-  从 design.md（Requirements/Risks/Invariants）、plan.md（Tasks）、
-  test-scenarios.md（场景）解析出 requirement/risk/implementation/test-evidence
-  候选（confidence 0.85），与 summary 三源合并去重。没有对抗评审的变更也能
-  沉淀知识。
-
-## [Unreleased]
+> pi 适配收官：M1 代码（第五个目标 Agent）此前已随 hunter-harness 0.4.1/0.4.2
+> 与 workflow-harness 0.4.1 发布；本版补齐本地适配的最后缺口——用户级安装
+> 落点、scoped AGENTS.md 投影、doctor override 告警、plan/review 委派 overlay。
+> Bundle schema 保持 0.2.73，`minimumCliVersion` 0.2.92 不动（纯增量修正）；
+> core 内部版本 0.1.1 → 0.1.2。
 
 ### Fixed — pi 技能委派路由补齐 overlay
 
@@ -62,6 +53,21 @@
 - 已知限制：pi 仅在项目被信任后加载 `.pi/skills/`（交互首次确认；非交互需 `-a`）；
   `skill-cli upload` 的服务端发布校验与 hunter-platform 的枚举接受属 M3，本仓先把
   本地安装/上传边界打开。
+
+## [0.4.1] — hunter-harness ＋ [0.4.1] @hunter-harness/workflow-harness
+
+### Changed — 计划产物人类可读化 + 知识候选从 plans/*.md 派生
+
+- plan finalize 派生的 `plans/*.md` 不再把哈希 refs 裸拼成一行：
+  requirement/ownership/scope 引用现在带人类可读标签（`[kind] 文本 → \`hash\``），
+  evidence refs 用 code span 包裹。机器身份（哈希）仍保留，门禁校验与
+  Python 解包不受影响——`content_hash` 是结构化内容哈希，`serialized_sha256`
+  由渲染器在发布时重新计算。
+- 归档知识候选新增 plans 源：`harness_knowledge_candidates.build_plan_candidates`
+  从 design.md（Requirements/Risks/Invariants）、plan.md（Tasks）、
+  test-scenarios.md（场景）解析出 requirement/risk/implementation/test-evidence
+  候选（confidence 0.85），与 summary 三源合并去重。没有对抗评审的变更也能
+  沉淀知识。
 
 ## [0.4.0] — hunter-harness ＋ [0.4.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
