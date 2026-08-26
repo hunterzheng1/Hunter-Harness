@@ -176,13 +176,28 @@ export async function uploadArchivePackage(options: UploadArchivePackageOptions)
     requestId: uploadRequestId,
     idempotencyKey: uuidV7()
   });
-  const parsed = archivePackageReceiptSchema.safeParse(rawResult);
+  let parsed = archivePackageReceiptSchema.safeParse(rawResult);
   if (!parsed.success) {
-    throw new ArchiveUploadError(
-      "server returned an invalid archive receipt",
-      "ARCHIVE_RECEIPT_INVALID",
-      4
-    );
+    // 兼容：服务端可能带 knowledge_enqueue 等审计字段，而旧版 schema 是 .strict()。
+    // 剥离未知顶层键后重试——这些字段不进收据身份，丢弃无害。
+    if (rawResult !== null && typeof rawResult === "object" && !Array.isArray(rawResult)) {
+      const record = rawResult as Record<string, unknown>;
+      const allowed = new Set(["schema_version", "archive_id", "project_id", "change_key",
+        "package_sha256", "manifest_sha256", "artifact_id", "archive_status",
+        "knowledge_status", "stored_files", "uploaded_at", "request_id"]);
+      const stripped: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(record)) {
+        if (allowed.has(key)) stripped[key] = value;
+      }
+      parsed = archivePackageReceiptSchema.safeParse(stripped);
+    }
+    if (!parsed.success) {
+      throw new ArchiveUploadError(
+        "server returned an invalid archive receipt",
+        "ARCHIVE_RECEIPT_INVALID",
+        4
+      );
+    }
   }
   const result = parsed.data;
   if (result.project_id !== projectId ||

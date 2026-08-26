@@ -391,6 +391,404 @@ def count_unadjudicated_findings(summary: dict[str, Any]) -> int:
     return count
 
 
+# --- plan/design-derived knowledge candidates ---------------------------------
+#
+# reviewFindings/knownRisks/decisions 只覆盖“经对抗评审的变更”。没有评审的简单
+# 变更（无 RED/YELLOW 发现、无 knownRisks、无 adopted decisions）仍产出了
+# 经用户确认批准的 design/plan/test-scenarios——这些也是值得沉淀的知识。
+# 这里把 plans/*.md（v2 finalize 派生的机器契约）解析回结构化的自然内容，
+# 与 summary 三源并列，但 confidence 略低（机器派生而非独立评审）。
+
+_PLAN_CONFIDENCE = 0.85
+_PLAN_SOURCE_KIND = "plan"
+
+
+def _unescape_markdown(value: str) -> str:
+    """Reverse the renderer's markdown escaping for clean knowledge text.
+
+    harness-plan finalize 的渲染器对自由文本做了反斜杠/实体转义。知识候选存
+    的是自然语言，不需要保留渲染转义。顺序有讲究：先反转义实体，再反转义
+    反斜杠序列（从长到短）。
+    """
+    value = (
+        value.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("<br>", "\n")
+    )
+    return (
+        value.replace("\\`", "`")
+        .replace("\\#", "#")
+        .replace("\\*", "*")
+        .replace("\\[", "[")
+        .replace("\\]", "]")
+        .replace("\\\\", "\\")
+    )
+
+
+def _markdown_sections(text: str) -> dict[str, list[str]]:
+    """Split a v2 rendered markdown artifact into its ``## Header`` sections.
+
+    Returns ``{header: [lines...]}``. Only the ``##`` level is split; ``###``
+    and ``####`` content stays inside its parent section's lines.
+    """
+    sections: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("## ") and not line.startswith("### "):
+            current = line[3:].strip()
+            sections[current] = []
+        elif current is not None:
+            sections[current].append(line)
+    return sections
+
+
+def _plan_source_refs(change_key: str, package_path: str) -> list[str]:
+    """source_refs must exist in the package (core-v1 containment check)."""
+    return [package_path]
+
+
+def _plan_candidate(
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+    kind: str,
+    entry_type: str,
+    summary: str,
+    body: str,
+    keywords: list[str],
+    source_refs: list[str],
+    reusability_scope: str = "project",
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "candidate_id": _candidate_id(change_key, kind, summary),
+        "source_change_key": change_key,
+        "source_refs": source_refs,
+        "summary": summary,
+        "reusability_scope": reusability_scope,
+        "content_hash": _content_hash(entry_type, summary, body, keywords),
+        "confidence": _PLAN_CONFIDENCE,
+        "status": "pending",
+        "entry_type": entry_type,
+        "body": body,
+        "keywords": keywords,
+        "provenance": {
+            "source_kind": _PLAN_SOURCE_KIND,
+            "source_ref": f"archive:{archive_id}",
+            "producer": PRODUCER,
+            "producer_version": producer_version,
+            "created_at": created_at,
+        },
+    }
+
+
+def _requirements_from_design(
+    design_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Parse ``## Requirements`` from design.md into requirement candidates.
+
+    Each line is ``- requirement:sha256:... [kind]: text`` where kind is
+    behavior | invariant | failure_behavior.
+    """
+    sections = _markdown_sections(design_text)
+    lines = sections.get("Requirements", [])
+    out: list[dict[str, Any]] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        prefix = stripped[2:]
+        # kind 位于第一个 `]: ` 之前的方括号内。
+        close_bracket = prefix.find("]")
+        if close_bracket <= 0 or not prefix.startswith("requirement:"):
+            continue
+        kind = prefix[1:close_bracket].strip()
+        if kind not in {"behavior", "invariant", "failure_behavior"}:
+            continue
+        colon = prefix.find(": ", close_bracket + 1)
+        if colon == -1:
+            continue
+        text = _unescape_markdown(prefix[colon + 2:].strip())
+        if not text:
+            continue
+        entry_type = "requirement"
+        body = f"需求类型：{kind}\n{text}"
+        keywords = _keywords(kind, entry_type)
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="requirement",
+            entry_type=entry_type,
+            summary=text,
+            body=body,
+            keywords=keywords,
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        ))
+    return out
+
+
+def _risks_from_design(
+    design_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Parse ``## Risks`` (``- risk`` + ``  - Mitigation: ...``) into risk candidates."""
+    sections = _markdown_sections(design_text)
+    lines = sections.get("Risks", [])
+    out: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped.startswith("- "):
+            index += 1
+            continue
+        risk = _unescape_markdown(stripped[2:].strip())
+        if not risk or risk == "None.":
+            index += 1
+            continue
+        mitigation = ""
+        if index + 1 < len(lines) and lines[index + 1].strip().startswith("- Mitigation:"):
+            mitigation = _unescape_markdown(
+                lines[index + 1].strip()[len("- Mitigation:"):].strip()
+            )
+            index += 1
+        body = risk if not mitigation else f"{risk}\n缓解：{mitigation}"
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="risk",
+            entry_type="risk",
+            summary=risk,
+            body=body,
+            keywords=_keywords("risk"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        ))
+        index += 1
+    return out
+
+
+def _invariants_from_design(
+    design_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Parse ``## Invariants`` bullet list into requirement candidates."""
+    sections = _markdown_sections(design_text)
+    out: list[dict[str, Any]] = []
+    for line in sections.get("Invariants", []):
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        text = _unescape_markdown(stripped[2:].strip())
+        if not text or text == "None.":
+            continue
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="invariant",
+            entry_type="requirement",
+            summary=text,
+            body=f"需求类型：invariant\n{text}",
+            keywords=_keywords("invariant", "requirement"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-design.md"),
+        ))
+    return out
+
+
+def _tasks_from_plan(
+    plan_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Parse ``## Tasks`` from plan.md into implementation candidates.
+
+    Task headings are ``### T1``; the objective is the non-empty text between
+    the heading and the first ``- `` metadata bullet.
+    """
+    sections = _markdown_sections(plan_text)
+    lines = sections.get("Tasks", [])
+    out: list[dict[str, Any]] = []
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].strip()
+        if not stripped.startswith("### "):
+            index += 1
+            continue
+        task_id = stripped[4:].strip()
+        index += 1
+        objective_parts: list[str] = []
+        while index < len(lines):
+            current = lines[index].strip()
+            if current.startswith("### ") or current.startswith("- "):
+                break
+            if current:
+                objective_parts.append(current)
+            index += 1
+        objective = " ".join(objective_parts).strip()
+        if not objective:
+            continue
+        body = f"任务：{task_id}\n{objective}"
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="task",
+            entry_type="implementation",
+            summary=objective,
+            body=body,
+            keywords=_keywords(task_id, "implementation"),
+            source_refs=_plan_source_refs(change_key, f"plans/{change_key}-plan.md"),
+        ))
+    return out
+
+
+def _scenarios_from_test_scenarios(
+    scenarios_text: str,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Parse ``## <id>: <title>`` headings into test-evidence candidates."""
+    out: list[dict[str, Any]] = []
+    for line in scenarios_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("## ") or stripped.startswith("### "):
+            continue
+        heading = stripped[3:].strip()
+        if heading == "Coverage":
+            continue
+        if ":" not in heading:
+            continue
+        scenario_id, title = heading.split(":", 1)
+        title = title.strip()
+        if not title:
+            continue
+        out.append(_plan_candidate(
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+            kind="scenario",
+            entry_type="test-evidence",
+            summary=title,
+            body=f"场景：{scenario_id.strip()}\n{title}",
+            keywords=_keywords(scenario_id.strip(), "test-evidence"),
+            source_refs=_plan_source_refs(
+                change_key, f"plans/{change_key}-test-scenarios.md"
+            ),
+        ))
+    return out
+
+
+def build_plan_candidates(
+    archive_dir,
+    *,
+    change_key: str,
+    archive_id: str,
+    producer_version: str,
+    created_at: str,
+) -> list[dict[str, Any]]:
+    """Extract knowledge candidates from the archive's plans/*.md artifacts.
+
+    Complements ``build_knowledge_candidates`` (summary 三源)。没有评审的简单
+    变更仍然产出 plans/*.md；这些是经用户确认批准的结构化真相源，parse 回来
+    就是可沉淀的知识。缺文件/解析失败返回 []（软失败）。
+    """
+    candidates: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def collect(items: list[dict[str, Any]]) -> None:
+        for candidate in items:
+            if candidate["candidate_id"] in seen_ids:
+                continue
+            seen_ids.add(candidate["candidate_id"])
+            candidates.append(candidate)
+
+    design_path = archive_dir / "plans" / f"{change_key}-design.md"
+    if design_path.is_file():
+        try:
+            design_text = design_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            design_text = ""
+        collect(_requirements_from_design(
+            design_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+        collect(_risks_from_design(
+            design_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+        collect(_invariants_from_design(
+            design_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+
+    plan_path = archive_dir / "plans" / f"{change_key}-plan.md"
+    if plan_path.is_file():
+        try:
+            plan_text = plan_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            plan_text = ""
+        collect(_tasks_from_plan(
+            plan_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+
+    scenarios_path = archive_dir / "plans" / f"{change_key}-test-scenarios.md"
+    if scenarios_path.is_file():
+        try:
+            scenarios_text = scenarios_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            scenarios_text = ""
+        collect(_scenarios_from_test_scenarios(
+            scenarios_text,
+            change_key=change_key,
+            archive_id=archive_id,
+            producer_version=producer_version,
+            created_at=created_at,
+        ))
+
+    return candidates
+
+
 def render_knowledge_candidates_json(candidates: list[dict[str, Any]]) -> str:
     """Deterministic bytes for the archive package entry."""
     return json.dumps(

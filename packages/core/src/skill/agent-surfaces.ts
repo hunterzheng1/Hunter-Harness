@@ -49,11 +49,15 @@ const SURFACES: Readonly<Record<SkillTargetAgent, AgentSurface>> = Object.freeze
   }),
   pi: Object.freeze({
     agent: "pi",
-    skillRoots: Object.freeze({ project: ".pi/skills", user: ".pi/skills" }),
-    subagentRoots: Object.freeze({ project: ".pi/agents", user: ".pi/agents" }),
+    // pi 全局技能目录是 ~/.pi/agent/skills（另原生发现 ~/.agents/skills），
+    // 项目级技能目录是 .pi/skills（另原生发现 .agents/skills）。
+    skillRoots: Object.freeze({ project: ".pi/skills", user: ".pi/agent/skills" }),
+    // pi-subagents 全局代理目录是 ~/.pi/agent/agents（或 ~/.agents），
+    // 项目级代理目录是 .pi/agents。
+    subagentRoots: Object.freeze({ project: ".pi/agents", user: ".pi/agent/agents" }),
     subagentFormat: "markdown",
     subagentExtension: ".md",
-    nativeSkillAliases: Object.freeze([])
+    nativeSkillAliases: Object.freeze([".agents/skills"])
   })
 });
 

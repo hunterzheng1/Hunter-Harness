@@ -23,6 +23,16 @@ describe("skill installation planning", () => {
       .endsWith("/sandbox/home/.cursor/skills/demo")).toBe(true);
     expect(portable(resolveSkillDestination(getAgentSurface("codebuddy"), "project", root, "demo"))
       .endsWith("/sandbox/project/.codebuddy/skills/demo")).toBe(true);
+    expect(portable(resolveSkillDestination(getAgentSurface("pi"), "project", root, "demo"))
+      .endsWith("/sandbox/project/.pi/skills/demo")).toBe(true);
+    // pi 全局技能发现目录是 ~/.pi/agent/skills（见 pi skills 文档），不是 ~/.pi/skills
+    expect(portable(resolveSkillDestination(getAgentSurface("pi"), "user", home, "demo"))
+      .endsWith("/sandbox/home/.pi/agent/skills/demo")).toBe(true);
+    // pi-subagents 全局代理目录是 ~/.pi/agent/agents（或 ~/.agents），不是 ~/.pi/agents
+    expect(portable(resolveSubagentDestination(getAgentSurface("pi"), "user", home, "reviewer"))
+      .endsWith("/sandbox/home/.pi/agent/agents/reviewer.md")).toBe(true);
+    expect(portable(resolveSubagentDestination(getAgentSurface("pi"), "project", root, "reviewer"))
+      .endsWith("/sandbox/project/.pi/agents/reviewer.md")).toBe(true);
   });
 
   it("keeps ordinary resources inside each selected skill root", () => {

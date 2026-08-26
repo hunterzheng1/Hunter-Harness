@@ -4574,22 +4574,45 @@ def write_archive_meta(work_dir: Path, summary: dict[str, Any]) -> Path:
 
 
 def write_knowledge_candidates(work_dir: Path, summary: dict[str, Any]) -> Path:
-    """Generate candidates/knowledge.json from summary-data (single ownership).
+    """Generate candidates/knowledge.json from summary-data + plans/*.md.
 
     Mirrors write_archive_meta: derived from the same summary, written before the
     after-manifest so its bytes are covered. The archive directory name is the
     archive id, matching write_archive_meta's `archive-id` field.
+
+    Sources (in merge order):
+    1. Summary 三源 (reviewFindings / knownRisks / decisions)
+    2. Plans/*.md (design Requirements / Risks / Invariants, plan Tasks, test Scenarios)
+
+    Duplicates are deduplicated by candidate_id (summary 三源优先)。
     """
     archive_id = work_dir.name
+    change_key = str(summary.get("changeName") or archive_id)
+    producer_version = SCHEMA_VERSION
+    created_at = now_iso()
+
     candidates = hkc.build_knowledge_candidates(
         summary,
-        change_key=str(summary.get("changeName") or archive_id),
+        change_key=change_key,
         archive_id=archive_id,
-        # The archive schema version identifies the producing format; there is
-        # no separate harness version constant to borrow here.
-        producer_version=SCHEMA_VERSION,
-        created_at=now_iso(),
+        producer_version=producer_version,
+        created_at=created_at,
     )
+
+    # Merge plan-derived candidates (soft-fail: empty plans still produce a valid output).
+    plan_candidates = hkc.build_plan_candidates(
+        work_dir,
+        change_key=change_key,
+        archive_id=archive_id,
+        producer_version=producer_version,
+        created_at=created_at,
+    )
+    existing_ids = {c["candidate_id"] for c in candidates}
+    for candidate in plan_candidates:
+        if candidate["candidate_id"] not in existing_ids:
+            existing_ids.add(candidate["candidate_id"])
+            candidates.append(candidate)
+
     out = work_dir / "candidates" / "knowledge.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(

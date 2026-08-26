@@ -1,6 +1,42 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.3] — hunter-harness ＋ [0.4.2] @hunter-harness/workflow-harness（Bundle 0.2.73）＋ [0.1.5] @hunter-harness/skills
+
+> pi 适配收官：M1 代码（第五个目标 Agent）此前已随 hunter-harness 0.4.1/0.4.2
+> 与 workflow-harness 0.4.1 发布；本版补齐本地适配的最后缺口——用户级安装
+> 落点、scoped AGENTS.md 投影、doctor override 告警、plan/review 委派 overlay。
+> Bundle schema 保持 0.2.73，`minimumCliVersion` 0.2.92 不动（纯增量修正）；
+> core 内部版本 0.1.1 → 0.1.2。
+
+### Fixed — pi 技能委派路由补齐 overlay
+
+- 新增 `harness/adapters/pi/skill-overlays/`（harness-plan / harness-review）：
+  此前 pi 无 overlay，构建回退到基础文本，`plan.delegate`/`review.delegate`
+  段落仍要求 `check-agents` 固定代理预检，但 pi 不安装固定 `harness-*` 角色
+  （agentsRoot=null），每次 plan 都会产生虚假的“安装问题”记录。overlay 后
+  与 codex/cursor 一致：默认主会话 inline，仅当环境已安装 pi-subagents 扩展
+  （提供 `subagent` 工具）才临时委派只读探索/评审。
+
+### Changed — pi 指令治理投影补齐 scoped AGENTS.md
+
+- `renderPi` 与 codex 合并为共享的 AGENTS.md 树投影：除根 `AGENTS.md` 外，
+  path 激活的规则同样按 glob 作用域生成 `<dir>/AGENTS.md`（pi 与 codex 一样
+  从 cwd 向上发现 AGENTS.md，scoped 文件在同一路径合写，target_agents 双向
+  标注）。
+- `doctor` 新增 pi 告警：项目启用 pi 适配且根目录存在 `AGENTS.override.md` 时，
+  报告 `PI_AGENTS_OVERRIDE_SHADOWS_PROJECTION`（pi 会改读 override 而忽略投影
+  生成的 AGENTS.md），status WARN、退出码 5。
+
+### Fixed — pi 用户级安装落点纠正
+
+- pi 的用户级技能根由 `~/.pi/skills` 更正为 `~/.pi/agent/skills`：pi 全局技能
+  只发现 `~/.pi/agent/skills/` 与 `~/.agents/skills/`，此前用户级安装落点
+  不会被 pi 加载。
+- pi 的用户级 subagent 根由 `~/.pi/agents` 更正为 `~/.pi/agent/agents`：
+  pi-subagents 全局代理目录是 `~/.pi/agent/agents`（或 `~/.agents`），
+  `~/.pi/agents` 从未被读取。项目级落点（`.pi/skills/`、`.pi/agents/`）不变。
+- pi surface 登记 `.agents/skills` 为原生发现别名（与 cursor 同语义）；
+  `.gitignore` 补上 `.pi/`。
 
 ### Fixed — 测试套件去 flaky：冻结 fixture 字节漂移与慢测试超时错配
 
@@ -42,12 +78,27 @@
   与 codex/cursor/codebuddy 同一套 adapt 管线；`.harness/` 状态、事件流、
   ledger、归档 ZIP 等 agent 无关层零改动复用。
 - 契约：`HARNESS_AGENT_ORDER` / `skillTargetAgentSchema` / `registryAgentSchema`
-  增加 `pi`；指令治理新增 `pi` 投影（仅 AGENTS.md 根入口）。
+  增加 `pi`；指令治理新增 `pi` 投影。
 - 兼容：npm Skill 包 v3 manifest 的 variants 改为部分记录——旧四家（claude-code/
   codex/cursor/codebuddy）保持必填，`pi` 变体可选，存量已发布包在新 CLI 上仍可安装。
 - 已知限制：pi 仅在项目被信任后加载 `.pi/skills/`（交互首次确认；非交互需 `-a`）；
   `skill-cli upload` 的服务端发布校验与 hunter-platform 的枚举接受属 M3，本仓先把
   本地安装/上传边界打开。
+
+## [0.4.1] — hunter-harness ＋ [0.4.1] @hunter-harness/workflow-harness
+
+### Changed — 计划产物人类可读化 + 知识候选从 plans/*.md 派生
+
+- plan finalize 派生的 `plans/*.md` 不再把哈希 refs 裸拼成一行：
+  requirement/ownership/scope 引用现在带人类可读标签（`[kind] 文本 → \`hash\``），
+  evidence refs 用 code span 包裹。机器身份（哈希）仍保留，门禁校验与
+  Python 解包不受影响——`content_hash` 是结构化内容哈希，`serialized_sha256`
+  由渲染器在发布时重新计算。
+- 归档知识候选新增 plans 源：`harness_knowledge_candidates.build_plan_candidates`
+  从 design.md（Requirements/Risks/Invariants）、plan.md（Tasks）、
+  test-scenarios.md（场景）解析出 requirement/risk/implementation/test-evidence
+  候选（confidence 0.85），与 summary 三源合并去重。没有对抗评审的变更也能
+  沉淀知识。
 
 ## [0.4.0] — hunter-harness ＋ [0.4.0] @hunter-harness/workflow-harness（Bundle 0.2.73）
 

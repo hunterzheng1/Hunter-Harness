@@ -414,6 +414,8 @@ async function canonicalRulesRef(
       ...(file.topic === "testing" && testingGlobs !== undefined
         ? { globs: testingGlobs }
         : {}),
+      // 投影测试固定让 pi 也在规则目标集合内（生产 manifest 由提案模块按启用 agent 生成）
+      target_agents: [...file.target_agents as readonly string[], "pi"],
       content_hash: sha256Bytes(contents[String(file.path)] ?? "")
     }))
   });
@@ -441,7 +443,7 @@ async function canonicalRulesRef(
 }
 
 function projectionRequests(): AgentProjectionRequest[] {
-  return ["codex", "claude_code", "cursor", "codebuddy"].map((agent) => ({
+  return ["codex", "claude_code", "cursor", "codebuddy", "pi"].map((agent) => ({
     agent: agent as AgentProjectionRequest["agent"],
     max_context_budget: 8_000,
     observed_projection_hashes: {}
@@ -453,7 +455,7 @@ function absentExpectations(): Record<string, null> {
 }
 
 describe("07A deterministic native Agent projection planning", () => {
-  it("renders one protected plan for Codex, Claude, Cursor, and CodeBuddy", async () => {
+  it("renders one protected plan for Codex, Claude, Cursor, CodeBuddy, and pi", async () => {
     const plan = planAgentProjection(
       await canonicalRulesRef(),
       projectionRequests(),
@@ -495,7 +497,8 @@ describe("07A deterministic native Agent projection planning", () => {
       "claude_code",
       "codebuddy",
       "codex",
-      "cursor"
+      "cursor",
+      "pi"
     ]);
     expect(plan.plan_hash).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(Object.isFrozen(plan.operations[0])).toBe(true);
@@ -517,8 +520,24 @@ describe("07A deterministic native Agent projection planning", () => {
       "claude_code",
       "codebuddy",
       "codex",
-      "cursor"
+      "cursor",
+      "pi"
     ]);
+  });
+
+  it("gives pi the same scoped AGENTS.md projections as codex", async () => {
+    const plan = planAgentProjection(
+      await canonicalRulesRef(),
+      projectionRequests(),
+      absentExpectations()
+    );
+
+    for (const scope of ["harness", "packages"]) {
+      const scoped = plan.operations.find((operation) => operation.path === `${scope}/AGENTS.md`);
+      expect(scoped?.target_agents).toEqual(["codex", "pi"]);
+      expect(scoped?.content).toContain("do_not_edit: true");
+      expect(scoped?.source_paths).toEqual([".harness/rules/testing.md"]);
+    }
   });
 
   it("preserves locally modified projections and empties operations on a required conflict", async () => {
@@ -600,10 +619,11 @@ describe("07A deterministic native Agent projection planning", () => {
       codex: ["AGENTS.md", "harness/AGENTS.md", "packages/AGENTS.md"],
       claude_code: [".claude/rules/testing.md", "AGENTS.md", "CLAUDE.md"],
       cursor: [".cursor/rules/testing.mdc", "AGENTS.md"],
-      codebuddy: [".codebuddy/rules/testing.md", "AGENTS.md", "CODEBUDDY.md"]
+      codebuddy: [".codebuddy/rules/testing.md", "AGENTS.md", "CODEBUDDY.md"],
+      pi: ["AGENTS.md", "harness/AGENTS.md", "packages/AGENTS.md"]
     };
     const allAgentsRef = await canonicalRulesRef(undefined, "界".repeat(2_000));
-    for (const agent of ["codex", "claude_code", "cursor", "codebuddy"] as const) {
+    for (const agent of ["codex", "claude_code", "cursor", "codebuddy", "pi"] as const) {
       const plan = planAgentProjection(
         allAgentsRef,
         [{ agent, max_context_budget: 6_000, observed_projection_hashes: {} }],

@@ -143,8 +143,70 @@ function frontmatter(type: string, hash: string): string {
   return `---\nschema_version: 2\nartifact_type: ${type}\ncontent_hash: ${hash}\ngenerated: true\n---\n`;
 }
 
+/** 哈希引用 → 人类可读标签的查找表，由 design 真相源构建。 */
+interface RefLookup {
+  readonly requirements: ReadonlyMap<string, { readonly kind: string; readonly text: string }>;
+  readonly scopes: ReadonlyMap<string, string>;
+  readonly ownership: ReadonlyMap<string, string>;
+}
+
+function buildRefLookup(design: TrustedPlanArtifactSet["human"]["design"]): RefLookup {
+  const requirements = new Map<string, { kind: string; text: string }>();
+  for (const item of design.content.requirements) {
+    requirements.set(item.requirement_id, { kind: item.kind, text: item.text });
+  }
+  const scopes = new Map<string, string>();
+  for (const item of design.content.approved_scopes) {
+    scopes.set(item.scope_ref, item.text);
+  }
+  const ownership = new Map<string, string>();
+  for (const item of design.content.ownership) {
+    ownership.set(item.ownership_ref, item.path);
+  }
+  return { requirements, scopes, ownership };
+}
+
+/** ref 本身是哈希/前缀标识（字母数字 + `:-_`），包进 code span 保持机器身份可复制。 */
+function refSpan(ref: string): string {
+  return `\`${ref}\``;
+}
+
+/** 标签 + 哈希身份；缺标签时只保留 code span。 */
+function labeledRef(ref: string, label: string | undefined): string {
+  return label === undefined ? refSpan(ref) : `${markdown(label)} ${refSpan(ref)}`;
+}
+
+/** 渲染需求引用列表：可读标签优先，每条一行。 */
+function renderRequirementRefs(refs: readonly string[], lookup: RefLookup): string {
+  if (refs.length === 0) return "- Requirements: None";
+  return ["- Requirements:", ...sorted(refs).map((ref) => {
+    const item = lookup.requirements.get(ref);
+    return `  - ${labeledRef(ref, item === undefined ? undefined : `[${item.kind}] ${item.text}`)}`;
+  })].join("\n");
+}
+
+/** 渲染证据引用列表：keep `prefix:value` 可读性。 */
+function renderEvidenceRefs(refs: readonly string[]): string {
+  if (refs.length === 0) return "- Evidence: None";
+  return ["- Evidence:", ...sorted(refs).map((ref) => `  - ${refSpan(ref)}`)].join("\n");
+}
+
+/** 渲染所有权引用列表：路径标签优先。 */
+function renderOwnershipRefs(refs: readonly string[], lookup: RefLookup): string {
+  if (refs.length === 0) return "- Ownership: None";
+  return ["- Ownership:", ...sorted(refs).map((ref) =>
+    `  - ${labeledRef(ref, lookup.ownership.get(ref))}`)].join("\n");
+}
+
 function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): string {
   const value = artifact.content;
+  const scopeLabels = new Map(value.approved_scopes.map((item) => [item.scope_ref, item.text]));
+  const scopeRefs = (refs: readonly string[]): string =>
+    refs.length === 0 ? "None" :
+    sorted(refs).map((ref) => {
+      const label = scopeLabels.get(ref);
+      return label === undefined ? refSpan(ref) : `${markdown(label)} (${refSpan(ref)})`;
+    }).join(", ");
   return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Design\n\n` +
     `## Goal\n\n${markdown(value.goal)}\n\n## User-visible outcome\n\n${markdown(value.user_visible_outcome)}\n\n` +
     list("In scope", value.in_scope) + "\n" + list("Out of scope", value.out_of_scope) + "\n" +
@@ -157,19 +219,20 @@ function renderDesign(artifact: TrustedPlanArtifactSet["human"]["design"]): stri
     `\n## Requirements\n\n${[...value.requirements].sort((left, right) =>
       compareCodepoint(left.requirement_id, right.requirement_id)).map((item) =>
       `- ${markdown(item.requirement_id)} [${item.kind}]: ${markdown(item.text)}\n` +
-      `  - Evidence refs: ${sorted(item.evidence_refs).map(markdown).join(", ")}\n` +
-      `  - Approved scope refs: ${sorted(item.approved_scope_refs).map(markdown).join(", ")}`).join("\n")}\n` +
+      `  - Evidence refs: ${item.evidence_refs.length === 0 ? "None" : sorted(item.evidence_refs).map(refSpan).join(", ")}\n` +
+      `  - Approved scopes: ${scopeRefs(item.approved_scope_refs)}`).join("\n")}\n` +
     `\n## Approved scopes\n\n${[...value.approved_scopes].sort((left, right) =>
       compareCodepoint(left.scope_ref, right.scope_ref)).map((item) =>
       `- ${markdown(item.scope_ref)}: ${markdown(item.text)}`).join("\n")}\n` +
     `\n## Ownership\n\n${[...value.ownership].sort((left, right) =>
       compareCodepoint(left.ownership_ref, right.ownership_ref)).map((item) =>
       `- ${markdown(item.ownership_ref)}: ${markdown(item.path)}\n` +
-      `  - Evidence refs: ${sorted(item.evidence_refs).map(markdown).join(", ")}\n` +
-      `  - Approved scope refs: ${sorted(item.approved_scope_refs).map(markdown).join(", ")}`).join("\n")}\n`;
+      `  - Evidence refs: ${item.evidence_refs.length === 0 ? "None" : sorted(item.evidence_refs).map(refSpan).join(", ")}\n` +
+      `  - Approved scopes: ${scopeRefs(item.approved_scope_refs)}`).join("\n")}\n`;
 }
 
-function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"]): string {
+function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"],
+  lookup: RefLookup): string {
   return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Plan\n\n## Change key\n\n` +
     `${artifact.content.change_key}\n\n## Tasks\n\n${artifact.content.tasks.map((task) => [
       `### ${task.task_id}`,
@@ -181,13 +244,14 @@ function renderPlan(artifact: TrustedPlanArtifactSet["human"]["plan"]): string {
       `- Depends on: ${task.depends_on.join(", ") || "None"}`,
       `- Decision refs: ${task.decision_refs.join(", ") || "None"}`,
       `- Scenario refs: ${task.scenario_refs.join(", ") || "None"}`,
-      `- Requirement refs: ${task.requirement_refs.join(", ") || "None"}`,
-      `- Evidence refs: ${task.evidence_refs.join(", ") || "None"}`,
-      `- Ownership refs: ${task.ownership_refs.join(", ") || "None"}`
+      renderRequirementRefs(task.requirement_refs, lookup),
+      renderEvidenceRefs(task.evidence_refs),
+      renderOwnershipRefs(task.ownership_refs, lookup)
     ].join("\n")).join("\n\n")}\n`;
 }
 
-function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenarios"]): string {
+function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenarios"],
+  lookup: RefLookup): string {
   return `${frontmatter(artifact.artifact_type, artifact.content_hash)}\n# Test Scenarios\n\n` +
     artifact.content.scenarios.map((scenario) => [
       `## ${scenario.scenario_id}: ${scenario.title}`,
@@ -201,7 +265,7 @@ function renderScenarios(artifact: TrustedPlanArtifactSet["human"]["test_scenari
       `- Owner phase: ${scenario.owner_phase}`,
       `- Evidence requirements: ${scenario.evidence_requirements.join(", ") || "None"}`,
       `- Task refs: ${scenario.task_refs.join(", ") || "None"}`,
-      `- Requirement refs: ${scenario.requirement_refs.join(", ") || "None"}`,
+      renderRequirementRefs(scenario.requirement_refs, lookup),
       ...(scenario.executable_test_id === undefined ? [] : [`- Executable test ID: ${scenario.executable_test_id}`]),
       ...(scenario.test_file === undefined ? [] : [`- Test file: ${scenario.test_file}`]),
       ...(scenario.test_title === undefined ? [] : [`- Test title: ${scenario.test_title}`]),
@@ -291,11 +355,11 @@ export function planArtifactPublication(input: unknown,
     reason_code: "PLAN_ARTIFACT_PUBLICATION_PATH_UNAUTHORIZED" });
   const value = parsed.trusted;
   let payloads: PlanPublicationPayload[];
-  try { payloads = [
+  try { const lookup = buildRefLookup(value.human.design); payloads = [
     payload(targetPaths[0] as string, value.human.design, "markdown", "human_truth", renderDesign(value.human.design)),
-    payload(targetPaths[1] as string, value.human.plan, "markdown", "human_truth", renderPlan(value.human.plan)),
+    payload(targetPaths[1] as string, value.human.plan, "markdown", "human_truth", renderPlan(value.human.plan, lookup)),
     payload(targetPaths[2] as string, value.human.test_scenarios, "markdown", "human_truth",
-      renderScenarios(value.human.test_scenarios)),
+      renderScenarios(value.human.test_scenarios, lookup)),
     payload(targetPaths[3] as string, value.detail, "markdown", "compatibility_derived",
       renderCompatibility(value.detail)),
     payload(targetPaths[4] as string, value.machine.gate_policy, "json", "machine_derived",
