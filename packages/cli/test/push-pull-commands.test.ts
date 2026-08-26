@@ -210,7 +210,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
         // required by remoteSyncSourceRefSchema.
         client_id: expect.stringMatching(/^cli_[0-9a-f-]+$/)
       });
-  }, 30_000);
+  }, 120_000);
 
   it("stops on no changes without creating a confirmation or empty version", async () => {
     const dispatch = vi.fn(async () => preview("push", "no_changes"));

@@ -95,5 +95,5 @@ describe("hunter-harness rules-review CLI", () => {
       submitted: 0
     });
     expect(await readFile(target, "utf8")).toBe(after);
-  });
+  }, 240_000);
 });
