@@ -10,13 +10,25 @@
   归档契约、archive-outbox 序列化等 4 个文件长期红灯）。已将所有已跟踪 fixture 恢复为提交字节。
 - `sync-process` SYNC-005：最后活动与启动允许同毫秒（`toBeGreaterThanOrEqual`），
   消除高精度机器上的毫秒相等毛刺。
-- 恢复存储并发投影用例在高负载下偏发 `nlink !== 1` 边界失败：确认为预存在的并发竞态，
-  不放宽生产安全检查；`recovery-v3` 两个 300 次循环用例超时 90s→240s。
+- 恢复存储并发投影用例在高负载下偏发 `nlink !== 1` 边界失败：根因为并发 rename-over 的
+  NTFS 瞬态窗口，已在下一节以二次确认修复；`recovery-v3` 两个 300 次循环用例超时 90s→240s。
+
+### Fixed — 恢复存储并发竞态：瞬态链接异常二次确认（遗留处理）
+
+- `recovery-store.ts` 两处 `nlink !== 1` 边界检查改为“短延迟后复检仍异常才失败”：
+  Windows 上并发 rename-over 同一恢复文件时，另一事务的 lstat 可能落在 NTFS 替换
+  瞬态窗口里误报多链接。真实硬链接攻击在两次 stat 间稳定，fail-closed 语义不变；
+  瞬态窗口不再让并发注册误失败。`recovery-v3` 整文件连跑 3 次 29/29（此前约 2/3 概率偶发）。
+- 测试卫生：新增共享 `packages/cli/test/recovery-env.ts`，为 7 个注入精简 env 的测试文件
+  （push/update/instructions/push-pull-commands/rules-sync/sync-command/knowledge-query，
+  共 57 处调用点）透传 `HUNTER_HARNESS_RECOVERY_ROOT`，并为 archive-upload 补齐 3 处遗漏：
+  此前这些用例把测试事务写进开发者机器的真实恢复存储（泄漏守卫从 26 条/次降到 7，
+  二分定位到 knowledge-query 里的隐藏 init，修复后实证泄漏 0）。
 
 ### Changed — 测试提速：重型文件移入 integration 项目 + 种子安装复用
 
-- `vitest.config.ts` integration 名单补入 7 个真实慢文件（migration/push-stale/update-auth/
-  push-scan/guarded-project-plan/plan-durable/recovery-v3）：它们在 fast 项目 30s 超时必现假失败，
+- `vitest.config.ts` integration 名单补入 8 个真实慢文件（migration、push-stale、update-auth、
+  push-scan、guarded-project-plan、plan-durable、recovery-v3、managed-block-refresh）：它们在 fast 项目 30s 超时必现假失败，
   120s 档位后全部转绿（push-stale 16/16）。
 - `freshness/migration/refresh` 三个测试文件改为“同配置只真实部署一次，后续用例目录拷贝复用”，
   单文件耗时显著下降（refresh 633s→230s），用例语义不变。

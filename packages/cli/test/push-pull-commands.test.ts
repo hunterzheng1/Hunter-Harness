@@ -12,6 +12,7 @@ import {
   type PushPullCliPort
 } from "../src/push-pull-adapter/index.js";
 import { resolvePushPullSource } from "../src/commands/push-pull.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,7 +70,7 @@ function dependencies(dispatch: PushPullCliPort["dispatch"]): CliDependencies & 
     stderr: vi.fn(),
     prompt: vi.fn(async () => "n"),
     fetch: vi.fn(),
-    env: {},
+    env: { ...recoveryEnv },
     pushPull: { dispatch },
     pushPullSource: vi.fn(async () => sourceRef)
   };
@@ -167,18 +168,18 @@ describe("Stage 03 Push/Pull CLI commands", () => {
   it("registers the canonical command names and Pull compatibility alias", async () => {
     const stdout: string[] = [];
     expect(await runCli(["harness-push", "--help"], {
-      stdout: (value) => stdout.push(value), stderr: () => undefined, env: {}
+      stdout: (value) => stdout.push(value), stderr: () => undefined, env: { ...recoveryEnv }
     })).toBe(0);
     expect(stdout.join("")).toContain("--scope <scopes>");
     expect(stdout.join("")).toContain("RemoteSync 未配置时安全失败");
     stdout.length = 0;
     expect(await runCli(["pull", "--help"], {
-      stdout: (value) => stdout.push(value), stderr: () => undefined, env: {}
+      stdout: (value) => stdout.push(value), stderr: () => undefined, env: { ...recoveryEnv }
     })).toBe(0);
     expect(stdout.join("")).toContain("harness-pull");
     stdout.length = 0;
     expect(await runCli(["update", "--help"], {
-      stdout: (value) => stdout.push(value), stderr: () => undefined, env: {}
+      stdout: (value) => stdout.push(value), stderr: () => undefined, env: { ...recoveryEnv }
     })).toBe(0);
     expect(stdout.join("")).toContain("生产接线完成前继续使用本命令");
   });
@@ -188,7 +189,7 @@ describe("Stage 03 Push/Pull CLI commands", () => {
     const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
     expect(await runCli([
       "--profile", "general", "--non-interactive", "--yes"
-    ], { cwd: root, resourcesRoot, stdout: () => undefined, stderr: () => undefined, env: {} }))
+    ], { cwd: root, resourcesRoot, stdout: () => undefined, stderr: () => undefined, env: { ...recoveryEnv } }))
       .toBe(0);
     const projectPath = join(root, ".harness", "project.yaml");
     await writeFile(projectPath, (await readFile(projectPath, "utf8"))

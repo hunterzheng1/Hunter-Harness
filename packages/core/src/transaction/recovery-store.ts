@@ -183,6 +183,16 @@ async function lstatIfExists(path: string) {
   }
 }
 
+/**
+ * Windows rename-over by a concurrent writer can briefly leave a recovery file
+ * in an intermediate NTFS state whose stat reports extra links. Real hardlink
+ * attacks stay stable across stats, so callers confirm persistence after this
+ * delay before failing closed; resolved transient states return a fresh stat.
+ */
+function transientLinkRecheckDelay(): Promise<void> {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+}
+
 function parseOwnershipLock(
   path: string,
   serialized: string
@@ -481,11 +491,20 @@ async function containedRegularFileExists(
   if (!await containedDirectoryExists(root, dirname(path))) return false;
   const fileStat = await lstatIfExists(path);
   if (fileStat === null) return false;
-  if (fileStat.isSymbolicLink() || !fileStat.isFile() ||
-      fileStat.nlink !== 1) {
+  if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
     throw new RecoveryStoreBoundaryError(
       "durable recovery file is linked, shared, or non-file"
     );
+  }
+  if (fileStat.nlink !== 1) {
+    await transientLinkRecheckDelay();
+    const recheck = await lstatIfExists(path);
+    if (recheck === null) return false;
+    if (recheck.nlink !== 1) {
+      throw new RecoveryStoreBoundaryError(
+        "durable recovery file is linked, shared, or non-file"
+      );
+    }
   }
   return true;
 }
@@ -501,11 +520,19 @@ async function assertSafeContainedFileDestination(
   }
   const destinationStat = await lstatIfExists(path);
   if (destinationStat !== null &&
-      (destinationStat.isSymbolicLink() || !destinationStat.isFile() ||
-        destinationStat.nlink !== 1)) {
+      (destinationStat.isSymbolicLink() || !destinationStat.isFile())) {
     throw new RecoveryStoreBoundaryError(
       "durable recovery destination is linked, shared, or non-file"
     );
+  }
+  if (destinationStat !== null && destinationStat.nlink !== 1) {
+    await transientLinkRecheckDelay();
+    const recheck = await lstatIfExists(path);
+    if (recheck !== null && recheck.nlink !== 1) {
+      throw new RecoveryStoreBoundaryError(
+        "durable recovery destination is linked, shared, or non-file"
+      );
+    }
   }
 }
 

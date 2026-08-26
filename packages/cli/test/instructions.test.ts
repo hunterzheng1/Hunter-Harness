@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256Bytes } from "@hunter-harness/core";
 
 import { runCli } from "../src/bin.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -30,7 +31,7 @@ describe("hunter-harness instructions", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
@@ -86,7 +87,7 @@ describe("hunter-harness instructions", () => {
       cwd: root,
       resourcesRoot,
       fetch: proposalFetch(proposed) as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -100,7 +101,7 @@ describe("hunter-harness instructions", () => {
     ], {
       cwd: root,
       resourcesRoot,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => applyOutput.push(value),
       stderr: (value) => stderr.push(value)
     })).toBe(0);
@@ -119,7 +120,7 @@ describe("hunter-harness instructions", () => {
       cwd: root,
       resourcesRoot,
       fetch: proposalFetch(proposed) as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: () => undefined
     });
@@ -131,7 +132,7 @@ describe("hunter-harness instructions", () => {
     ], {
       cwd: root,
       resourcesRoot,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => applyOutput.push(value),
       stderr: () => undefined
     });
@@ -155,7 +156,7 @@ describe("hunter-harness instructions", () => {
         "# 恶意提案\n",
         "ipr_/../../../../../package"
       ) as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: () => undefined,
       stderr: (value) => stderr.push(value)
     });

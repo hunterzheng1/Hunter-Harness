@@ -7,6 +7,7 @@ import { sha256Bytes } from "@hunter-harness/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
@@ -18,7 +19,7 @@ describe("hunter-harness rules-sync compatibility CLI", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
     await writeFile(
       join(root, ".harness", "credentials.local.yaml"),
@@ -72,7 +73,7 @@ describe("hunter-harness rules-sync compatibility CLI", () => {
       fetch: fetch as unknown as typeof globalThis.fetch,
       stdout: (value) => stdout.push(value),
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     });
     const output = JSON.parse(stdout.join("")) as {
       command: string;

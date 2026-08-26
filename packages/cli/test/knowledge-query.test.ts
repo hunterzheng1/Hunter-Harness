@@ -11,6 +11,7 @@ import { sha256Bytes } from "@hunter-harness/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -37,7 +38,7 @@ describe("hunter-harness knowledge query", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
     await rm(join(root, ".harness", "knowledge"), { recursive: true, force: true });
     await mkdir(join(root, ".harness"), { recursive: true });
@@ -99,7 +100,7 @@ describe("hunter-harness knowledge query", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -135,7 +136,7 @@ describe("hunter-harness knowledge query", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -184,7 +185,7 @@ describe("hunter-harness knowledge query", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -225,7 +226,7 @@ describe("hunter-harness knowledge query", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -246,7 +247,7 @@ describe("hunter-harness knowledge query", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });

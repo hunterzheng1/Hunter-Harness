@@ -112,7 +112,7 @@ describe("hunter-harness archive upload", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -172,7 +172,7 @@ describe("hunter-harness archive upload", () => {
       cwd: root,
       resourcesRoot,
       fetch: mismatchedFetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -220,7 +220,7 @@ describe("hunter-harness archive upload", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetch as unknown as typeof globalThis.fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });

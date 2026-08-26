@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { initializeProject } from "@hunter-harness/core";
 
 import { runCli } from "../src/bin.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
@@ -39,6 +40,7 @@ describe("hunter-harness sync", () => {
         stdout: (value) => stdout.push(value),
         stderr: () => undefined,
         env: {
+          ...recoveryEnv,
           HUNTER_HARNESS_PYTHON:
             "C:\\Users\\WINDOWS\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe"
         }
@@ -96,6 +98,7 @@ describe("hunter-harness sync", () => {
         stdout: (value) => stdout.push(value),
         stderr: () => undefined,
         env: {
+          ...recoveryEnv,
           HUNTER_HARNESS_PYTHON:
             "C:\\Users\\WINDOWS\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe"
         }
@@ -140,6 +143,7 @@ describe("hunter-harness sync", () => {
         stdout: (value) => stdout.push(value),
         stderr: () => undefined,
         env: {
+          ...recoveryEnv,
           HUNTER_HARNESS_PYTHON:
             "C:\\Users\\WINDOWS\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe"
         }

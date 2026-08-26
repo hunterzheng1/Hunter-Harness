@@ -10,6 +10,7 @@ import { runCli } from "../src/bin.js";
 import { promptStaleConflictStrategy } from "../src/commands/push.js";
 import { canonicalJson } from "@hunter-harness/contracts";
 import { sha256Bytes } from "@hunter-harness/core";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -40,7 +41,7 @@ describe("hunter-harness push", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
   });
 
@@ -65,7 +66,7 @@ describe("hunter-harness push", () => {
         cwd: root,
         resourcesRoot,
         fetch: vi.fn(),
-        env: {},
+        env: { ...recoveryEnv },
         stdout: () => undefined,
         stderr: (value) => stderr.push(value),
         prompt: async (question) => {
@@ -91,7 +92,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch: vi.fn(),
-      env: {},
+      env: { ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     };
@@ -115,7 +116,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -135,14 +136,14 @@ describe("hunter-harness push", () => {
       resourcesRoot,
       stdout: () => undefined,
       stderr: () => undefined,
-      env: {}
+      env: { ...recoveryEnv }
     })).toBe(0);
 
     const code = await runCli(["push", "--dry-run", "--json", "--non-interactive"], {
       cwd: root,
       resourcesRoot,
       fetch: vi.fn(),
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -182,7 +183,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch: vi.fn(),
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -200,7 +201,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch: vi.fn(),
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -315,7 +316,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -353,7 +354,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -384,7 +385,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -464,7 +465,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -541,7 +542,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
       prompt: async (question) => {
@@ -597,7 +598,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
       prompt: async (question) => {
@@ -640,7 +641,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: {},
+      env: { ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value),
       prompt: async (question) => {
@@ -716,7 +717,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch: firstFetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(4);
@@ -759,7 +760,7 @@ describe("hunter-harness push", () => {
       cwd: root,
       resourcesRoot,
       fetch: secondFetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);

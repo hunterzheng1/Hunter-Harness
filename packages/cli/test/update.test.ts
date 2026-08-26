@@ -15,6 +15,7 @@ import { canonicalJson, type BaselineManifest } from "@hunter-harness/contracts"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { recoveryEnv } from "./recovery-env.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -199,7 +200,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -253,7 +254,7 @@ describe("hunter-harness update", () => {
         [sha256Bytes(serverRule)]: serverRule,
         [sha256Bytes(serverSkill)]: serverSkill
       }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -307,7 +308,7 @@ describe("hunter-harness update", () => {
       fetch: fetchFor(manifest, {
         [sha256Bytes(updated)]: updated
       }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -356,7 +357,7 @@ describe("hunter-harness update", () => {
       fetch: fetchFor(manifest, {
         [sha256Bytes(updated)]: updated
       }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -400,7 +401,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetchFor(manifest, { [sha256Bytes(incoming)]: incoming }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     });
@@ -423,7 +424,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -437,7 +438,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: corruptFetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(4);
@@ -464,7 +465,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     })).toBe(0);
@@ -491,7 +492,7 @@ describe("hunter-harness update", () => {
     );
     await expect(updateProject({
       projectRoot: root,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       dryRun: false,
       fetch: fetchFor(manifest, { [sha256Bytes(content)]: content }),
       transactionOptions: { interruptAfterApply: 2 }
@@ -538,7 +539,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(5);
@@ -562,7 +563,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -591,7 +592,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -618,7 +619,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetchFor(manifest1, { [sha256Bytes(bodyV1)]: bodyV1 }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     });
@@ -638,7 +639,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetchFor(manifest2, { [sha256Bytes(bodyV2)]: bodyV2 }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -663,7 +664,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetchFor(manifestA, { [sha256Bytes(bodyA)]: bodyA }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     });
@@ -680,7 +681,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch: fetchFor(manifestB, { [sha256Bytes(bodyB)]: bodyB }),
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: () => undefined,
       stderr: () => undefined
     })).toBe(0);
@@ -733,7 +734,7 @@ describe("hunter-harness update", () => {
       cwd: root,
       resourcesRoot,
       fetch,
-      env: { TEST_HUNTER_TOKEN: "api-token" },
+      env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
       stdout: (value) => stdout.push(value),
       stderr: (value) => stderr.push(value)
     });
@@ -793,7 +794,7 @@ describe("hunter-harness update", () => {
       stderr = [];
       const code = await runCli(["update", "--non-interactive", "--yes", "--json"], {
         cwd: root, resourcesRoot, fetch: fetchFor(manifest, blobs),
-        env: { TEST_HUNTER_TOKEN: "api-token" },
+        env: { TEST_HUNTER_TOKEN: "api-token", ...recoveryEnv },
         stdout: (value) => stdout.push(value), stderr: (value) => stderr.push(value)
       });
       return { code, output: JSON.parse(stdout.join("")) as {
