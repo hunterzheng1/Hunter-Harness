@@ -11,6 +11,7 @@ import { promptStaleConflictStrategy } from "../src/commands/push.js";
 import { canonicalJson } from "@hunter-harness/contracts";
 import { sha256Bytes } from "@hunter-harness/core";
 import { recoveryEnv } from "./recovery-env.js";
+import { seededInit } from "./seeded-init.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -32,17 +33,19 @@ describe("hunter-harness push", () => {
     root = await mkdtemp(join(tmpdir(), "hunter-push-"));
     stdout = [];
     stderr = [];
-    expect(await runCli([
-      "--profile", "java",
-      "--server-url", "https://server.example.test",
-      "--token-env", "TEST_HUNTER_TOKEN", "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      resourcesRoot,
-      stdout: () => undefined,
-      stderr: () => undefined,
-      env: { ...recoveryEnv }
-    })).toBe(0);
+    await seededInit(root, "push-java", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "java",
+        "--server-url", "https://server.example.test",
+        "--token-env", "TEST_HUNTER_TOKEN", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        resourcesRoot,
+        stdout: () => undefined,
+        stderr: () => undefined,
+        env: { ...recoveryEnv }
+      })).toBe(0);
+    });
   });
 
   async function exists(path: string): Promise<boolean> {
@@ -160,7 +163,8 @@ describe("hunter-harness push", () => {
     expect(paths.some((path) => /^\.agents\/skills\/harness-/.test(path))).toBe(false);
     expect(paths.some((path) => /^\.cursor\/skills\/harness-/.test(path))).toBe(false);
     expect(paths.some((path) => /^\.codebuddy\/(?:skills|agents)\/harness-/.test(path))).toBe(false);
-  }, 120000);
+    expect(paths.some((path) => /^\.pi\/skills\/harness-/.test(path))).toBe(false);
+  }, 240000);
 
   it("扫描停用后 dry-run 对含密钥文件照常出预览（上传不查敏感信息）", async () => {
     await writeFile(

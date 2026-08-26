@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
 import { recoveryEnv } from "./recovery-env.js";
+import { seededInit } from "./seeded-init.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -52,22 +53,24 @@ describe("hunter-harness update", () => {
     root = await mkdtemp(join(tmpdir(), "hunter-update-"));
     stdout = [];
     stderr = [];
-    const configPath = join(root, "init.json");
-    await writeFile(configPath, JSON.stringify({
-      adapter: "claude-code",
-      profile: "java",
-      server_url: "https://server.example.test",
-      token_env: "TEST_HUNTER_TOKEN",
-      project_id: "prj_update"
-    }));
-    expect(await runCli([
-      "--config", configPath, "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      resourcesRoot,
-      stdout: () => undefined,
-      stderr: () => undefined
-    })).toBe(0);
+    await seededInit(root, "update-java", async (seedRoot) => {
+      const configPath = join(seedRoot, "init.json");
+      await writeFile(configPath, JSON.stringify({
+        adapter: "claude-code",
+        profile: "java",
+        server_url: "https://server.example.test",
+        token_env: "TEST_HUNTER_TOKEN",
+        project_id: "prj_update"
+      }));
+      expect(await runCli([
+        "--config", configPath, "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        resourcesRoot,
+        stdout: () => undefined,
+        stderr: () => undefined
+      })).toBe(0);
+    });
   });
 
   async function pathExists(path: string): Promise<boolean> {

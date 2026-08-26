@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runCli } from "../src/bin.js";
 import { recoveryEnv } from "./recovery-env.js";
+import { seededInit } from "./seeded-init.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -33,13 +34,15 @@ describe("hunter-harness knowledge query", () => {
     root = await mkdtemp(join(tmpdir(), "hunter-knowledge-query-"));
     stdout = [];
     stderr = [];
-    expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
-      cwd: root,
-      resourcesRoot,
-      stdout: () => undefined,
-      stderr: () => undefined,
-      env: { ...recoveryEnv }
-    })).toBe(0);
+    await seededInit(root, "knowledge-query-general", async (seedRoot) => {
+      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+        cwd: seedRoot,
+        resourcesRoot,
+        stdout: () => undefined,
+        stderr: () => undefined,
+        env: { ...recoveryEnv }
+      })).toBe(0);
+    });
     await rm(join(root, ".harness", "knowledge"), { recursive: true, force: true });
     await mkdir(join(root, ".harness"), { recursive: true });
     await writeFile(
