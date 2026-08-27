@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.7] — hunter-harness
+
+> 纯 CLI 增量：平台地址提示记住默认值。workflow-harness 与 skills 不随本版变动。
 
 ### Added — 平台地址提示记住默认值
 
