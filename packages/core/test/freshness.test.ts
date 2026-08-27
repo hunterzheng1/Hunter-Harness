@@ -1,9 +1,8 @@
 import { cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializeProject } from "../src/project/initialize.js";
 import {
@@ -11,9 +10,16 @@ import {
   refreshProject,
   type AgentFreshness
 } from "../src/project/refresh.js";
+import { miniResources } from "./mini-resources.js";
 import type { HarnessAgent } from "@hunter-harness/contracts";
 
-const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
+// mini bundle（见 mini-resources.ts）：freshness 断言涉及 harness-review /
+// harness-reviewer 及 manifest/adapter 哈希一致性，与 bundle 文件数无关。
+let resourcesRoot: string;
+
+beforeAll(async () => {
+  resourcesRoot = await miniResources();
+});
 
 const INSTALLED_STATE_PATH = ".harness/state/local/installed-harness-bundle.json";
 const REVIEWER_TARGET = ".claude/agents/harness-reviewer.md";

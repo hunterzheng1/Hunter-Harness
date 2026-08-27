@@ -14,6 +14,14 @@
   rules-review 单用例补 240s 显式超时（单跑 114s，贴 120s integration 上限会假失败）。
 - 机器级：Temp 目录加入 Windows Defender 排除（测试临时文件全在此，I/O 扫描是大头）。
 - `push-archive-summary` 移入 integration 档（单用例全量 init，fast 30s 偶发超时）。
+- `packages/core/test/mini-resources.ts` 合成 mini bundle（每 profile×agent 2-4 文件，
+  覆盖全部断言路径）：initialize 9/10 用例、refresh、freshness 全部改用 mini，
+  真实 718 文件 bundle 的端到端保真由“installs all four agents”与
+  bundle-content-projection 用例承担。initialize.test.ts 330s→94s、
+  refresh 263s→~90s、freshness 165s→~60s。default-recovery-contract 接入共享
+  seeded-init（223s→60s）。
+- 并行度实测结论：maxWorkers=3 与 2 墙钟持平（1514s vs 1522s），I/O 瓶颈下加并行
+  无收益，维持 2 workers。
 
 ### Fixed — Windows 瞬态 I/O 错误的系统性重试
 

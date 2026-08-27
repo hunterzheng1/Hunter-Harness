@@ -21,6 +21,7 @@ import { canonicalJson } from "@hunter-harness/contracts";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { seededInit } from "./seeded-init.js";
 
 // Windows hosted runners can expose TEMP through a junction. Use its
 // canonical target so explicit durable recovery roots exercise the contract;
@@ -53,10 +54,12 @@ describe("guarded default and recovery command contract", () => {
   it("status reports an interrupted transaction without mutating project files", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-status-contract-"));
     const init = outputCapture();
-    expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
-      cwd: root,
-      ...init.dependencies
-    }), init.stderr.join("")).toBe(0);
+    await seededInit(root, "drc-general", async (seedRoot) => {
+      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+        cwd: seedRoot,
+        ...init.dependencies
+      }), init.stderr.join("")).toBe(0);
+    });
     const target = join(root, "status.md");
     await writeFile(target, "before\n");
     await expect(runTransaction(root, [{
@@ -90,10 +93,12 @@ describe("guarded default and recovery command contract", () => {
   it("resume can explicitly roll back an interrupted transaction in non-interactive mode", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-resume-contract-"));
     const init = outputCapture();
-    expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
-      cwd: root,
-      ...init.dependencies
-    }), init.stderr.join("")).toBe(0);
+    await seededInit(root, "drc-general", async (seedRoot) => {
+      expect(await runCli(["--profile", "general", "--non-interactive", "--yes"], {
+        cwd: seedRoot,
+        ...init.dependencies
+      }), init.stderr.join("")).toBe(0);
+    });
     const target = join(root, "resume.md");
     await writeFile(target, "before\n");
     await expect(runTransaction(root, [{
@@ -132,12 +137,14 @@ describe("guarded default and recovery command contract", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-cli-resume-"));
     const recoveryRoot = await mkdtemp(join(tmpdir(), "hunter-cli-recovery-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(root, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const transactionNames = await readdir(stateLayout(root).transactions);
     const initJournal = JSON.parse(await readFile(join(
       stateLayout(root).transactions,
@@ -198,12 +205,14 @@ describe("guarded default and recovery command contract", () => {
     const source = await mkdtemp(join(tmpdir(), "hunter-early-init-source-"));
     const root = await mkdtemp(join(tmpdir(), "hunter-early-init-target-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: source,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(source, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const sourceTransaction = (await readdir(stateLayout(source).transactions))[0];
     const sourceJournal = JSON.parse(await readFile(join(
       stateLayout(source).transactions,
@@ -283,12 +292,14 @@ describe("guarded default and recovery command contract", () => {
   it("resumes a profile transition before target installed state is applied", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-transition-resume-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(root, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const initTransaction = (await readdir(stateLayout(root).transactions))[0];
     const initJournal = JSON.parse(await readFile(join(
       stateLayout(root).transactions,
@@ -395,12 +406,14 @@ describe("guarded default and recovery command contract", () => {
     const source = await mkdtemp(join(tmpdir(), "hunter-identity-source-"));
     const root = await mkdtemp(join(tmpdir(), "hunter-identity-target-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: source,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(source, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const sourceTransaction = (await readdir(stateLayout(source).transactions))[0];
     const sourceJournal = JSON.parse(await readFile(join(
       stateLayout(source).transactions,
@@ -474,12 +487,14 @@ describe("guarded default and recovery command contract", () => {
     const source = await mkdtemp(join(tmpdir(), "hunter-ownership-source-"));
     const root = await mkdtemp(join(tmpdir(), "hunter-ownership-target-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: source,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(source, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const sourceTransaction = (await readdir(stateLayout(source).transactions))[0];
     const sourceJournal = JSON.parse(await readFile(join(
       stateLayout(source).transactions,
@@ -572,12 +587,14 @@ describe("guarded default and recovery command contract", () => {
     const source = await mkdtemp(join(tmpdir(), "hunter-bundle-drift-source-"));
     const root = await mkdtemp(join(tmpdir(), "hunter-bundle-drift-target-"));
     const initialized = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: source,
-      ...initialized.dependencies
-    }), initialized.stderr.join("")).toBe(0);
+    await seededInit(source, "drc-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...initialized.dependencies
+      }), initialized.stderr.join("")).toBe(0);
+    });
     const sourceTransaction = (await readdir(stateLayout(source).transactions))[0];
     const sourceJournal = JSON.parse(await readFile(join(
       stateLayout(source).transactions,

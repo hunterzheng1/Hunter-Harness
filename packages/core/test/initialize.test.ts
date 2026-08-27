@@ -8,8 +8,13 @@ import { describe, expect, it } from "vitest";
 import { atomicWriteJson } from "../src/state/atomic.js";
 import { ensureStateLayout } from "../src/state/layout.js";
 import { initializeProject } from "../src/project/initialize.js";
+import { miniResources } from "./mini-resources.js";
 
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
+
+// 合成 mini bundle（见 mini-resources.ts）：init 的布局、幂等与内容逻辑和
+// bundle 文件数无关；真实 718 文件 bundle 的端到端保真由
+// “installs all four agents”用例保留。
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -47,7 +52,7 @@ describe("minimal first installation", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-min-"));
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
@@ -68,7 +73,7 @@ describe("minimal first installation", () => {
 
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
@@ -93,7 +98,7 @@ describe("minimal first installation", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-min-lazy-"));
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["claude-code"], profile: "general" },
       dryRun: false
     });
@@ -112,7 +117,7 @@ describe("multi-agent initialize", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-codex-"));
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["codex"], profile: "general" },
       dryRun: false
     });
@@ -130,7 +135,7 @@ describe("multi-agent initialize", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-cursor-"));
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["cursor"], profile: "general" },
       dryRun: false
     });
@@ -144,7 +149,7 @@ describe("multi-agent initialize", () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-ins-cb-"));
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
       dryRun: false
     });
@@ -170,7 +175,7 @@ describe("multi-agent initialize", () => {
 
     await initializeProject({
       projectRoot: root,
-      resourcesRoot,
+      resourcesRoot: await miniResources(),
       config: { agents: ["codebuddy"], profile: "general", codebuddy_surface: "both" },
       dryRun: false,
       recoveryStore: { root: recoveryRoot }
@@ -238,7 +243,7 @@ describe("multi-agent initialize", () => {
       agents: ["claude-code", "codex"] as const,
       profile: "general" as const
     };
-    await initializeProject({ projectRoot: root, resourcesRoot, config: { ...config }, dryRun: false });
+    await initializeProject({ projectRoot: root, resourcesRoot: await miniResources(), config: { ...config }, dryRun: false });
     const firstState = JSON.parse(
       await readFile(join(root, ".harness", "state", "local", "installed-harness-bundle.json"), "utf8")
     ) as { installed_at: string };
@@ -265,7 +270,7 @@ describe("multi-agent initialize", () => {
       return map;
     };
     const before = await snapshot();
-    await initializeProject({ projectRoot: root, resourcesRoot, config: { ...config }, dryRun: false });
+    await initializeProject({ projectRoot: root, resourcesRoot: await miniResources(), config: { ...config }, dryRun: false });
     const after = await snapshot();
     expect([...after.keys()].sort()).toEqual([...before.keys()].sort());
     for (const [path, hash] of before) {
