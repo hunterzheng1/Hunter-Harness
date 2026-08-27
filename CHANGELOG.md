@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.6] — hunter-harness
+
+> 纯 CLI 增量：pi 接入 CodeGraph MCP 合并提示。workflow-harness 与 skills
+> 不随本版变动。
 
 ### Added — pi 也接入 CodeGraph MCP 合并提示
 
