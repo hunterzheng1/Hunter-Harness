@@ -55,6 +55,7 @@ _ADAPTERS = {
     "codex": (".worktrees", "harness/"),
     "cursor": (".worktrees", "harness/"),
     "codebuddy": (".worktrees", "harness/"),
+    "pi": (".worktrees", "harness/"),
 }
 
 

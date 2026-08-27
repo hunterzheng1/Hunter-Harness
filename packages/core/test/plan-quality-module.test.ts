@@ -303,6 +303,24 @@ describe("PlanQualityGate layered execution", () => {
       }));
   });
 
+  it("keeps the layer3 input_hash stable across wall-clock completed_at values", () => {
+    const module = createPlanQualityModule(); const value = trusted("assurance");
+    const semanticA = module.runSemanticGates({ trusted: value, completed_at: now });
+    const semanticB = module.runSemanticGates({ trusted: value,
+      completed_at: "2027-01-01T00:00:00.000Z" });
+    expect(semanticA.input_hash).toBe(semanticB.input_hash);
+    expect(semanticA.receipt_hash).not.toBe(semanticB.receipt_hash);
+    const first = module.runAdversarialGates({ trusted: value, semantic: semanticA,
+      explicit_adversarial: false, prefer_delegated: false, reviewer_port: { review: () =>
+        ({ reviewer_identity: "main_session", findings: [] }) }, completed_at: now });
+    const second = module.runAdversarialGates({ trusted: value, semantic: semanticB,
+      explicit_adversarial: false, prefer_delegated: false, reviewer_port: { review: () =>
+        ({ reviewer_identity: "main_session", findings: [] }) },
+      completed_at: "2027-01-01T00:00:00.000Z" });
+    expect(first.input_hash).toBe(second.input_hash);
+    expect(first.review_execution.input_hash).toBe(second.review_execution.input_hash);
+  });
+
   it("falls back inline exactly once after delegated review failure", () => {
     const module = createPlanQualityModule(); const value = trusted("assurance"); const calls: string[] = [];
     const semantic = module.runSemanticGates({ trusted: value, completed_at: now });
@@ -484,7 +502,8 @@ describe("PlanQualityGate finalization and compatibility", () => {
     const removed = layer3.findings.find((finding) => finding.category === "high_risk_scenario");
     expect(removed).toBeDefined();
     const lenses = layer3.lenses.map((lens) => lens.lens === "failure_modes" ? { ...lens, finding_refs: ["forged.ref"] } : lens);
-    const input_hash = testHash({ artifacts: value, semantic: layer2,
+    const input_hash = testHash({ artifacts: value, semantic: { input_hash: layer2.input_hash,
+      evaluator_invoked: layer2.evaluator_invoked, findings: layer2.findings, status: layer2.status },
       capabilities: [...value.machine_input.capabilities].sort(),
       high_risk_findings_hash: layer3.high_risk_findings_hash, lenses });
     const review_execution = { ...layer3.review_execution, input_hash,

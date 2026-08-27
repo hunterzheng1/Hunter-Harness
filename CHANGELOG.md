@@ -31,6 +31,22 @@
 - `sync-harness.mjs` 的 `atomicSwapDir` 同步加重试（Windows 杀软/索引持句柄时
   rename 目录偶发 EPERM，prepack 与 bundle 同步共用此路径）。
 
+### Fixed — assurance 计划对抗评审收据的时间戳绑定死结
+
+- `plan-quality` 对抗层（layer3）`input_hash` 不再纳入 layer2 收据的运行期信封
+  （`completed_at` / `receipt_hash`）：绑定对象改为语义层内容身份
+  `{input_hash, evaluator_invoked, findings, status}`。此前 `completed_at` 取墙钟
+  （CLI 无 `--completed-at` 选项），每次 finalize 算出的 `input_hash` 都不同，
+  静态 `adversarial_review` 收据永远无法预置匹配——所有 assurance 计划卡在
+  PLAN_REVIEW_REQUIRED / PLAN_REVIEW_BINDING_FAILED。修复后静态收据可跨运行
+  复现绑定（产物内容不变则哈希不变），收据内 `completed_at` 仅作元数据保留。
+- `harness_runtime.py` 的 `_ADAPTERS` 补 `pi`：修复 doctor/run 链路报
+  `ADAPTER_UNKNOWN: pi`。
+- `.gitignore` 治理补 `/.pi/` 与 `.pi/skills/` 投影前缀：未跟踪的 `.pi/skills/**`
+  不再被 evidence-pack 的 git-status 信号误扫描（此前会凭空产生
+  migration/delete/shared_state/artifact_protocol 高风险信号）。存量项目在
+  下次 `refresh`/`connect` 时自动补齐忽略规则。
+
 ## [0.4.3] — hunter-harness ＋ [0.4.2] @hunter-harness/workflow-harness（Bundle 0.2.73）＋ [0.1.5] @hunter-harness/skills
 
 > pi 适配收官：M1 代码（第五个目标 Agent）此前已随 hunter-harness 0.4.1/0.4.2

@@ -80,7 +80,7 @@ class RuntimeDoctorTests(unittest.TestCase):
             "branchPrefix": "harness/",
             "branch": "harness/runtime-plan",
         }
-        for agent in ("codex", "claude-code", "cursor", "codebuddy"):
+        for agent in ("codex", "claude-code", "cursor", "codebuddy", "pi"):
             result = runtime.adapter_worktree(agent, "runtime-plan")
             self.assertEqual(result["agent"], agent)
             for key, value in expected.items():
@@ -89,14 +89,14 @@ class RuntimeDoctorTests(unittest.TestCase):
     def test_adapter_worktree_all_agents_share_path_and_branch(self) -> None:
         results = [
             runtime.adapter_worktree(agent, "same-change")
-            for agent in ("codex", "claude-code", "cursor", "codebuddy")
+            for agent in ("codex", "claude-code", "cursor", "codebuddy", "pi")
         ]
         paths = {r["path"] for r in results}
         branches = {r["branch"] for r in results}
         self.assertEqual(paths, {".worktrees/same-change"})
         self.assertEqual(branches, {"harness/same-change"})
         agents = {r["agent"] for r in results}
-        self.assertEqual(agents, {"codex", "claude-code", "cursor", "codebuddy"})
+        self.assertEqual(agents, {"codex", "claude-code", "cursor", "codebuddy", "pi"})
 
     def test_adapter_rejects_path_like_change_id(self) -> None:
         with self.assertRaisesRegex(ValueError, "ADAPTER_CHANGE_ID_INVALID"):

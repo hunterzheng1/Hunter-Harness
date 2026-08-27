@@ -189,6 +189,29 @@ describe("HP-01：assurance 对抗评审收据接线", () => {
     expect(JSON.parse(out.join("")).code).toBe("PLAN_FINALIZED");
   });
 
+  it("静态评审收据不绑定墙钟：不带 completedAt 也能 finalize（时间戳不进 input_hash）", async () => {
+    const pack = await buildPack();
+    // 收据用 FIXED_TIME 预计算；finalize 不传 completedAt，走真实墙钟——
+    // 修复前 input_hash 被 layer2 completed_at 污染必然绑定失败（HP 时间戳死结）
+    const inputHash = await layer3InputHash(pack);
+    const receipt = {
+      schema_version: 1,
+      reviewer_identity: "inline:test-reviewer",
+      review_mode: "inline",
+      input_hash: inputHash,
+      findings_hash: sha256Tagged([]),
+      findings: [],
+      completed_at: "2026-08-16T11:00:00.000Z"
+    };
+    const packPath = join(root, "evidence.json");
+    await fs.writeFile(packPath, JSON.stringify({ ...pack, adversarial_review: receipt }));
+    const out: string[] = [];
+    const exit = await runPlanFinalize({ input: packPath }, deps(out));
+    if (exit !== 0) console.error("FIN-OUT:", out.join(""));
+    expect(exit).toBe(0);
+    expect(JSON.parse(out.join("")).code).toBe("PLAN_FINALIZED");
+  });
+
   it("篡改 input_hash → PLAN_REVIEW_BINDING_FAILED", async () => {
     const pack = await buildPack();
     const receipt = {

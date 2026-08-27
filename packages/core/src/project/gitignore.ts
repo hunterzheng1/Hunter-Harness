@@ -26,7 +26,8 @@ const PROJECTION_PREFIXES = [
   ".codebuddy/agents/",
   ".codebuddy/rules/",
   ".codebuddy/.rules/",
-  ".codebuddy/commands/"
+  ".codebuddy/commands/",
+  ".pi/skills/"
 ] as const;
 
 export const ROOT_INSTRUCTION_DOCUMENTS = [
@@ -42,7 +43,8 @@ const HARNESS_GITIGNORE_ENTRIES = [
   { pattern: "/.claude/", probe: ".claude/__hunter_probe__" },
   { pattern: "/.agents/", probe: ".agents/__hunter_probe__" },
   { pattern: "/.cursor/", probe: ".cursor/__hunter_probe__" },
-  { pattern: "/.codebuddy/", probe: ".codebuddy/__hunter_probe__" }
+  { pattern: "/.codebuddy/", probe: ".codebuddy/__hunter_probe__" },
+  { pattern: "/.pi/", probe: ".pi/__hunter_probe__" }
 ] as const;
 
 const PROVENANCE_RELATIVE = ".harness/state/local/gitignore-provenance.json";
@@ -194,7 +196,7 @@ async function readInstalledProjectionPaths(projectRoot: string): Promise<string
 }
 
 function coveredByHarnessPattern(path: string): boolean {
-  return /^(?:\.claude|\.agents|\.cursor|\.codebuddy)\//.test(path);
+  return /^(?:\.claude|\.agents|\.cursor|\.codebuddy|\.pi)\//.test(path);
 }
 
 async function trackedPathSet(projectRoot: string, paths: readonly string[]): Promise<Set<string>> {

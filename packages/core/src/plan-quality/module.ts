@@ -311,6 +311,14 @@ function semanticAnchor(layer2: Layer2Receipt) {
     findings: layer2.findings, status: layer2.status, completed_at: layer2.completed_at });
 }
 
+// 对抗层 input_hash 只锚定语义层的内容身份（input_hash 本身已覆盖产物+投影）。
+// completed_at / receipt_hash 是运行期信封——纳入会让墙钟时间污染 input_hash，
+// 静态评审收据永远无法预置匹配（每次 finalize 哈希都不同）。
+function layer3SemanticBinding(layer2: Layer2Receipt) {
+  return freeze({ input_hash: layer2.input_hash, evaluator_invoked: layer2.evaluator_invoked,
+    findings: layer2.findings, status: layer2.status });
+}
+
 function validateSemanticAnchor(artifacts: TrustedArtifactSetInput, value: unknown):
 ReturnType<typeof semanticAnchor> {
   if (!record(value) || !exact(value, ["input_hash", "evaluator_invoked", "findings", "status", "completed_at"]) ||
@@ -395,7 +403,7 @@ function adversarial(input: Parameters<PlanQualityModule["runAdversarialGates"]>
   const triggered = artifacts.human_input.profile.mode === "assurance" || input.explicit_adversarial || highRisk.length > 0 ||
     semanticReceipt.findings.some((item) => item.severity === "blocking");
   const high_risk_findings_hash = hash(highRisk);
-  const input_hash = hash({ artifacts, semantic: semanticReceipt, capabilities,
+  const input_hash = hash({ artifacts, semantic: layer3SemanticBinding(semanticReceipt), capabilities,
     high_risk_findings_hash, lenses });
   if (!triggered) {
     const review_execution: ReviewExecutionReceipt = { schema_version: 1, review_mode: "inline",
@@ -502,7 +510,7 @@ function finalize(input: Parameters<PlanQualityModule["finalizeQuality"]>[0]): R
   const expectedLenses = derivedLenses(artifacts, input.layer2.findings);
   const expectedHighRisk = derivedHighRiskFindings(artifacts, input.layer2.findings);
   const expectedHighRiskHash = hash(expectedHighRisk);
-  const expectedLayer3Hash = hash({ artifacts, semantic: input.layer2, capabilities,
+  const expectedLayer3Hash = hash({ artifacts, semantic: layer3SemanticBinding(input.layer2), capabilities,
     high_risk_findings_hash: expectedHighRiskHash, lenses: expectedLenses });
   const required = requiredLenses(capabilities);
   const actualLenses = lensInput(input.layer3.lenses, required);
