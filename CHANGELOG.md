@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.5] — hunter-harness
+
+> 高严重度修复：push/pull（RemoteSync 通道）双向全断。纯 CLI 修复，
+> workflow-harness 与 skills 不随本版变动；core 内部版本 0.1.3 → 0.1.4。
 
 ### Fixed — push/pull 预览被自家校验器拒绝（scan_performed 契约漂移）
 
