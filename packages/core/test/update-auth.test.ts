@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,14 +15,21 @@ import { writeLocalCredentials } from "../src/push/credentials.js";
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("updateProject auth credentials.local fallback", () => {
+  // 种子安装：完整 bundle 部署只跑一次，后续用例拷贝复用。
+  let initSeedRoot: string | undefined;
   async function initBoundRoot(): Promise<string> {
+    if (initSeedRoot === undefined) {
+      initSeedRoot = await mkdtemp(join(tmpdir(), "hh-update-auth-seed-"));
+      await initializeProject({
+        projectRoot: initSeedRoot,
+        resourcesRoot,
+        config: { agents: ["claude-code"], profile: "general" },
+        dryRun: false
+      });
+    }
     const root = await mkdtemp(join(tmpdir(), "hh-update-auth-"));
-    await initializeProject({
-      projectRoot: root,
-      resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
-      dryRun: false
-    });
+    await rm(root, { recursive: true, force: true });
+    await cp(initSeedRoot, root, { recursive: true });
     const projectPath = join(root, ".harness", "project.yaml");
     const project = parseYaml(await readFile(projectPath, "utf8")) as ProjectConfig;
     const next: ProjectConfig = {

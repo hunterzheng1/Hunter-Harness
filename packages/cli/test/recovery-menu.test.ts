@@ -7,6 +7,7 @@ import { resolveRecoveryRoot, runTransaction } from "@hunter-harness/core";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { runCli } from "../src/bin.js";
+import { seededInit } from "./seeded-init.js";
 
 const resourcesRoot = fileURLToPath(
   new URL("../../workflow-data-harness", import.meta.url)
@@ -17,15 +18,17 @@ describe("configuration recovery menu", () => {
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "hunter-recovery-"));
-    expect(await runCli([
-      "--profile", "java",
-      "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      resourcesRoot,
-      stdout: () => undefined,
-      stderr: () => undefined
-    })).toBe(0);
+    await seededInit(root, "recovery-menu-java", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "java",
+        "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        resourcesRoot,
+        stdout: () => undefined,
+        stderr: () => undefined
+      })).toBe(0);
+    });
   });
 
   it("detects and resumes an interrupted update", async () => {

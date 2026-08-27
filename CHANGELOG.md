@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed — 测试再提速：种子化推广到 CLI 层 + 压力深度校准
+
+- `packages/cli/test/seeded-init.ts` 共享种子初始化：push/update/knowledge-query/push-stale
+  四个最重文件的 beforeEach 全量 init 改为一次部署+目录拷贝复用（与 core 侧 freshness/
+  refresh/migration 同构）；本轮继续推广到 recovery-menu、guarded-default-cli（3 用例）、
+  push-scan、update-auth，覆盖全部每用例全量 init 的热路径文件。
+- `recovery-v3` 两个压力用例 300→100 次迭代：锁上限 MAX_LOCK_CLAIMS=4096，300 无跨越
+  任何语义阈值，100 次对泄漏/耗尽性质等价，全量省约 2/3 压力时间。
+- push-pull-commands 生产源身份用例显式超时 30s→120s（含全量 init+git 初始化，本机常态边界）；
+  rules-review 单用例补 240s 显式超时（单跑 114s，贴 120s integration 上限会假失败）。
+- 机器级：Temp 目录加入 Windows Defender 排除（测试临时文件全在此，I/O 扫描是大头）。
+- `push-archive-summary` 移入 integration 档（单用例全量 init，fast 30s 偶发超时）。
+
+### Fixed — Windows 瞬态 I/O 错误的系统性重试
+
+- `state/atomic.ts` 的 `atomicWriteFile`：rename 失败后按瞬态错误码（EPERM/EBUSY/EACCES）
+  短退避重试——恢复存储、Skill 安装状态、归档等所有原子写路径一并加固。
+  真实错误（EINVAL 等）仍立即抛出，语义不变。
+- `sync-harness.mjs` 的 `atomicSwapDir` 同步加重试（Windows 杀软/索引持句柄时
+  rename 目录偶发 EPERM，prepack 与 bundle 同步共用此路径）。
+
 ## [0.4.3] — hunter-harness ＋ [0.4.2] @hunter-harness/workflow-harness（Bundle 0.2.73）＋ [0.1.5] @hunter-harness/skills
 
 > pi 适配收官：M1 代码（第五个目标 Agent）此前已随 hunter-harness 0.4.1/0.4.2

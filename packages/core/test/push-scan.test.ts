@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,14 +11,21 @@ import { pushProject } from "../src/push/push.js";
 const resourcesRoot = fileURLToPath(new URL("../../workflow-data-harness", import.meta.url));
 
 describe("pushProject sensitive scan UX", () => {
+  // 种子安装：完整 bundle 部署只跑一次，后续用例拷贝复用。
+  let initSeedRoot: string | undefined;
   async function initRoot(): Promise<string> {
+    if (initSeedRoot === undefined) {
+      initSeedRoot = await mkdtemp(join(tmpdir(), "hh-push-scan-seed-"));
+      await initializeProject({
+        projectRoot: initSeedRoot,
+        resourcesRoot,
+        config: { agents: ["claude-code"], profile: "general" },
+        dryRun: false
+      });
+    }
     const root = await mkdtemp(join(tmpdir(), "hh-push-scan-"));
-    await initializeProject({
-      projectRoot: root,
-      resourcesRoot,
-      config: { agents: ["claude-code"], profile: "general" },
-      dryRun: false
-    });
+    await rm(root, { recursive: true, force: true });
+    await cp(initSeedRoot, root, { recursive: true });
     return root;
   }
 

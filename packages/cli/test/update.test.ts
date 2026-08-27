@@ -811,5 +811,5 @@ describe("hunter-harness update", () => {
     const second = await run();
     expect(second.code).toBe(5);
     expect(second.output.summary).toMatchObject({ applied: 0, acknowledged: 0, skipped: 33 });
-  }, 120000);
+  }, 240_000);
 });

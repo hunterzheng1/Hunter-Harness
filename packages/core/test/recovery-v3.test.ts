@@ -600,13 +600,15 @@ describe("schema v3 durable recovery", () => {
     }
   });
 
-  it("keeps a transaction lock usable across 300 sequential lifecycles", async () => {
+  // 压力深度 100 足够暴露泄漏/耗尽（锁上限 MAX_LOCK_CLAIMS=4096，无 256 类阈值要跨）；
+  // 原 300 在此深度性质等价但耗时 3 倍，全量闸门收益大、信号不变。
+  it("keeps a transaction lock usable across 100 sequential lifecycles", async () => {
     const transactionRoot = await mkdtemp(join(
       tmpdir(),
       "hunter-lock-lifecycle-"
     ));
 
-    for (let index = 0; index < 300; index += 1) {
+    for (let index = 0; index < 100; index += 1) {
       const release = await acquireRecoveryMutationLock(transactionRoot);
       await release();
     }
@@ -615,16 +617,16 @@ describe("schema v3 durable recovery", () => {
     await expect(acquireRecoveryMutationLock(transactionRoot))
       .rejects.toMatchObject({ code: "RECOVERY_CONFLICT" });
     await finalRelease();
-  }, 240_000);
+  }, 120_000);
 
-  it("registers 300 durable recoveries without exhausting a global lock", async () => {
+  it("registers 100 durable recoveries without exhausting a global lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-index-lifecycle-"));
     const recoveryRoot = await mkdtemp(join(
       tmpdir(),
       "hunter-index-lifecycle-store-"
     ));
 
-    for (let index = 0; index < 300; index += 1) {
+    for (let index = 0; index < 100; index += 1) {
       const result = await runTransaction(root, [], {
         id: `tx_index_lifecycle_${String(index).padStart(3, "0")}`,
         kind: "update",
@@ -642,10 +644,10 @@ describe("schema v3 durable recovery", () => {
       recoveryRoot,
       identity.projectIdentity
     );
-    expect(recoveryIds).toHaveLength(300);
+    expect(recoveryIds).toHaveLength(100);
     expect(recoveryIds).toContain("tx_index_lifecycle_000");
-    expect(recoveryIds).toContain("tx_index_lifecycle_299");
-  }, 240_000);
+    expect(recoveryIds).toContain("tx_index_lifecycle_099");
+  }, 120_000);
 
   it("fails before project mutation when the legacy index projection is malformed", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-index-malformed-"));

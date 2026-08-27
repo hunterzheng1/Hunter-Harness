@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, cp, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delayMs } from "node:timers/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
@@ -172,6 +173,27 @@ async function assertSupportFilesPresent(bundleDir) {
 
 export { assertSupportFilesPresent };
 
+// Windows 上杀软/索引器会短暂持有刚写入目录的句柄，rename 偶发 EPERM；
+// 这是瞬态而非权限配置错误，短暂退避重试（与 atomic-write 的既有约定一致）。
+const RENAME_RETRY_DELAYS_MS = [100, 250, 500, 1000];
+
+async function renameWithTransientRetry(source, destination) {
+  let lastError;
+  for (let attempt = 0; attempt <= RENAME_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await rename(source, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      const retryable = error && (error.code === "EPERM" || error.code === "EBUSY" ||
+        error.code === "EACCES");
+      if (!retryable || attempt === RENAME_RETRY_DELAYS_MS.length) break;
+      await delayMs(RENAME_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+  throw lastError;
+}
+
 export async function atomicSwapDir(stage, target) {
   // §3.8 要点1 / INT-005: atomically replace target with the validated staging
   // dir. target is moved aside first, then staging is renamed into place; on
@@ -181,15 +203,15 @@ export async function atomicSwapDir(stage, target) {
   await rm(backup, { recursive: true, force: true });
   let hadTarget = true;
   try {
-    await rename(target, backup);
+    await renameWithTransientRetry(target, backup);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
     hadTarget = false;
   }
   try {
-    await rename(stage, target);
+    await renameWithTransientRetry(stage, target);
   } catch (error) {
-    if (hadTarget) await rename(backup, target);
+    if (hadTarget) await renameWithTransientRetry(backup, target);
     throw error;
   }
   await rm(backup, { recursive: true, force: true });

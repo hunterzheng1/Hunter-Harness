@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 import { stateLayout } from "@hunter-harness/core";
 
 import { runCli } from "../src/bin.js";
-
+import { seededInit } from "./seeded-init.js";
 // Windows CI may expose TEMP through a junction. Canonicalize it before
 // creating a recovery root; production rejects linked roots and internal
 // path components while allowing a safe parent alias.
@@ -100,12 +100,15 @@ describe("guarded default CLI", () => {
   it("keeps an already-current bare command byte-stable with no transaction", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-guarded-noop-"));
     const first = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes", "--json"
-    ], {
-      cwd: root,
-      ...first.dependencies
-    }), first.stderr.join("")).toBe(0);
+    // 种子：init 只做一次，拷贝复用；本用例关注的是二次裸命令的字节稳定性。
+    await seededInit(root, "guarded-default-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes", "--json"
+      ], {
+        cwd: seedRoot,
+        ...first.dependencies
+      }), first.stderr.join("")).toBe(0);
+    });
     const before = await readdir(stateLayout(root).transactions);
     const statePath = join(
       root,
@@ -134,12 +137,14 @@ describe("guarded default CLI", () => {
   it("routes update --guarded locally without calling the server", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-guarded-update-"));
     const init = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      ...init.dependencies
-    }), init.stderr.join("")).toBe(0);
+    await seededInit(root, "guarded-default-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...init.dependencies
+      }), init.stderr.join("")).toBe(0);
+    });
     const output = outputCapture();
     let fetchCalls = 0;
 
@@ -162,12 +167,14 @@ describe("guarded default CLI", () => {
   it("does not turn --yes into permission to overwrite a local modification", async () => {
     const root = await mkdtemp(join(tmpdir(), "hunter-guarded-preserve-"));
     const init = outputCapture();
-    expect(await runCli([
-      "--profile", "general", "--non-interactive", "--yes"
-    ], {
-      cwd: root,
-      ...init.dependencies
-    }), init.stderr.join("")).toBe(0);
+    await seededInit(root, "guarded-default-general", async (seedRoot) => {
+      expect(await runCli([
+        "--profile", "general", "--non-interactive", "--yes"
+      ], {
+        cwd: seedRoot,
+        ...init.dependencies
+      }), init.stderr.join("")).toBe(0);
+    });
     const target = join(root, ".claude", "agents", "harness-reviewer.md");
     await writeFile(target, "operator-owned content\n");
     const output = outputCapture();

@@ -24,7 +24,8 @@ const integrationTestFiles = [
   "packages/core/test/guarded-project-plan.test.ts",
   "packages/core/test/plan-durable-publication-filesystem-contract.test.ts",
   "packages/core/test/recovery-v3.test.ts",
-  "packages/core/test/managed-block-refresh.test.ts"
+  "packages/core/test/managed-block-refresh.test.ts",
+  "packages/core/test/push-archive-summary.test.ts"
 ];
 
 // CI_ONLY 清单里的文件本地默认不跑：它们每用例重建整套 bundle，两个文件就占掉
