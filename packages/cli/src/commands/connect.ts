@@ -11,6 +11,7 @@ import {
   writeLocalCredentials
 } from "@hunter-harness/core";
 
+import { writeLastServerUrl } from "../config/last-server.js";
 import { serializeCliResult, type CliResult } from "../output/json.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import type { CommandDependencies } from "./configure.js";
@@ -232,6 +233,8 @@ export async function runConnect(
     if (info.project_id !== undefined) {
       await bindProjectIdInProjectYaml(dependencies.cwd, info.project_id);
     }
+    // 记住本次成功连接的地址，作为下次绑定提示的默认值（失败静默，不影响连接）
+    await writeLastServerUrl(serverUrl, dependencies.env);
   } catch (error) {
     if (error instanceof InvalidCredentialsError) {
       return fail("CREDENTIALS_INVALID", error.message, 3);

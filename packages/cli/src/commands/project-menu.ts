@@ -11,6 +11,7 @@ import {
 } from "@hunter-harness/core";
 import type { HarnessAgent } from "@hunter-harness/contracts";
 
+import { readLastServerUrl } from "../config/last-server.js";
 import { agentLabel, formatAgentLine } from "../ui/labels.js";
 import { sanitizeTerminalText } from "../ui/terminal.js";
 import { runConnect } from "./connect.js";
@@ -197,9 +198,16 @@ export async function runPlatformConnectionMenu(
     if (choice !== "" && choice !== "1") return 2;
   }
 
-  const url = (await dependencies.prompt(
-    "平台地址（远端使用 https://...；本机可用 http://127.0.0.1:端口）："
+  // 默认地址：重新绑定时用当前凭据的地址，否则用最近一次成功连接的地址；
+  // 直接回车采用默认值，有输入则以输入为准。
+  const rememberedUrl = await readLastServerUrl(dependencies.env);
+  const defaultUrl = creds?.server_url ?? rememberedUrl;
+  const entered = (await dependencies.prompt(
+    defaultUrl === undefined
+      ? "平台地址（远端使用 https://...；本机可用 http://127.0.0.1:端口）："
+      : `平台地址 [${defaultUrl}]（回车使用默认地址，或输入新地址）：`
   )).trim();
+  const url = entered === "" ? (defaultUrl ?? "") : entered;
   if (url === "") {
     dependencies.stdout("已取消（未输入地址）。\n");
     return 0;

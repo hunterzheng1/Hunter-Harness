@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — 平台地址提示记住默认值
+
+- 绑定/重新绑定平台时，地址提示现在带默认值：**重新绑定取当前凭据地址，
+  首次绑定取最近一次成功连接的地址**（用户级偏好，存在系统状态目录
+  `%LOCALAPPDATA%/HunterHarness/last-server.json` 或 XDG state 下，可用
+  `HUNTER_HARNESS_USER_STATE_ROOT` 覆盖）。直接回车采用默认地址，有输入
+  则以输入为准；无默认值时保持原「未输入即取消」行为。connect 成功后自动
+  记住地址，偏好读写失败静默不影响主流程。
+
 ## [0.4.6] — hunter-harness
 
 > 纯 CLI 增量：pi 接入 CodeGraph MCP 合并提示。workflow-harness 与 skills
