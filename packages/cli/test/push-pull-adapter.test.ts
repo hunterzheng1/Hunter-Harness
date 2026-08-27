@@ -78,7 +78,7 @@ function orchestration() {
       operations: [],
       conflicts: [],
       security_scan: {
-        scanner_version: "1.1.0", blocked: false, hard_blocked: false,
+        scanner_version: "1.1.0", scan_performed: false, blocked: false, hard_blocked: false,
         review_required: false, findings: []
       },
       display_zh: { heading: "Push 预览", summary: "没有变化", detail_lines: [] }
@@ -423,7 +423,7 @@ describe("PushPullCliPort", () => {
       ...(await orchestration().buildPushPreview()),
       outcome: "sensitive_confirmation_required",
       operations: [{ path: ".harness/rules/review.md", content_kind: "rule", action: "modify" }],
-      security_scan: { scanner_version: "1.1.0", blocked: true, hard_blocked: false,
+      security_scan: { scanner_version: "1.1.0", scan_performed: true, blocked: true, hard_blocked: false,
         review_required: true, findings: [{
           rule_id: "HH_PASSWORD_VALUE", severity: "medium", path: ".harness/rules/review.md",
           line: 1, column: 1, fingerprint: "sha256:finding", redacted_preview: "[REDACTED]",

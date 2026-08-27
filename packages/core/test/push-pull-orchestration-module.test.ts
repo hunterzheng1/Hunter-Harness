@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { sha256Bytes } from "../src/fs/hash.js";
+import { readPushPullPreviewOutput } from "../src/index.js";
 import {
   createPushPullOrchestration,
   normalizePushPullInput,
@@ -60,6 +61,18 @@ function engine(
 }
 
 describe("PushPullOrchestration v1", () => {
+  it("module-built previews pass the CLI output validator (4458708 scan_performed regression)", async () => {
+    // 跨层回归：扫描停用契约给 security_scan 加了 scan_performed，而 CLI 侧
+    // readPushPullPreviewOutput 仍要求旧 5 键集合——所有 preview 被自家校验器
+    // 拒绝为 PUSH_PULL_CLI_OUTPUT_INVALID。此处用真实模块产出喂真实校验器。
+    const rule = file(".harness/rules/a.md", "rule", "rule\n");
+    const { interaction } = engine({ local_files: [rule], remote_files: [] });
+    const pushPreview = await interaction.buildPushPreview(input(["rules"]));
+    expect(readPushPullPreviewOutput(pushPreview, "push", input(["rules"]))).toBeDefined();
+    const pullPreview = await interaction.buildPullPreview(input(["rules"]));
+    expect(readPushPullPreviewOutput(pullPreview, "pull", input(["rules"]))).toBeDefined();
+  });
+
   it("maps a selected push scope and preserves the explicit unmarked identity", async () => {
     const rule = file(".harness/rules/a.md", "rule", "rule\n");
     const instruction = file("AGENTS.md", "instruction", "instructions\n");

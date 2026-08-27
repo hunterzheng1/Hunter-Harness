@@ -43,6 +43,7 @@ function preview(operations: readonly unknown[], scopes: readonly string[]): unk
     conflicts: [],
     security_scan: {
       scanner_version: "1.1.0",
+      scan_performed: false,
       blocked: false,
       hard_blocked: false,
       review_required: false,
@@ -99,5 +100,32 @@ describe("push/pull output diagnostics", () => {
 
     expect(explainPushPullPreviewOutput(value, "push", input(["rules"]))?.violated)
       .toBe("schema_version");
+  });
+
+  it("names an out-of-contract extra key instead of falling back to output.unknown", () => {
+    // 真实的 4458708 回归：security_scan 停用契约新增 scan_performed，而校验器仍要求
+    // 旧 5 键集合，导致所有 preview 被 output.unknown 兜底且无法定位。
+    const withoutScanPerformed = preview([], ["rules"]) as Record<string, unknown>;
+    const scan = { ...(withoutScanPerformed.security_scan as Record<string, unknown>) };
+    delete scan.scan_performed;
+    withoutScanPerformed.security_scan = scan;
+    expect(readPushPullPreviewOutput(withoutScanPerformed, "push", input(["rules"]))).toBeUndefined();
+    const violation = explainPushPullPreviewOutput(withoutScanPerformed, "push", input(["rules"]));
+    expect(violation?.violated).toBe("security_scan.keys");
+    expect(violation?.detail).toContain("scan_performed");
+
+    const withExtra = { ...(preview([], ["rules"]) as Record<string, unknown>), server_new_field: 1 };
+    expect(readPushPullPreviewOutput(withExtra, "push", input(["rules"]))).toBeUndefined();
+    const extraViolation = explainPushPullPreviewOutput(withExtra, "push", input(["rules"]));
+    expect(extraViolation?.violated).toBe("output.keys");
+    expect(extraViolation?.detail).toContain("server_new_field");
+  });
+
+  it("names the drifting source_ref field instead of a bare shape failure", () => {
+    const value = preview([], ["rules"]) as Record<string, unknown>;
+    (value.source_ref as Record<string, unknown>).commit_sha = "1".repeat(40);
+    const violation = explainPushPullPreviewOutput(value, "push", input(["rules"]));
+    expect(violation?.violated).toBe("source_ref");
+    expect(violation?.detail).toContain("commit_sha");
   });
 });

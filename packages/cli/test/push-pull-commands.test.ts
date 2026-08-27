@@ -46,6 +46,7 @@ function preview(direction: "push" | "pull", outcome: "ready" | "no_changes" = "
       conflicts: [],
       security_scan: {
         scanner_version: "1.1.0",
+        scan_performed: false,
         blocked: false,
         hard_blocked: false,
         review_required: false,

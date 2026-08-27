@@ -110,12 +110,29 @@ function finding(value: unknown): boolean {
     (value.disposition !== "overridden" || value.overridable === true);
 }
 
+const PREVIEW_REQUIRED_KEYS = ["schema_version", "direction", "preview_hash", "source_ref", "scopes",
+  "outcome", "base_version", "operations", "conflicts", "security_scan", "display_zh"] as const;
+const PREVIEW_OPTIONAL_KEYS = ["remote_version"] as const;
+const SECURITY_SCAN_KEYS = ["scanner_version", "scan_performed", "blocked", "hard_blocked",
+  "review_required", "findings"] as const;
+
+function keySetViolation(value: Readonly<Record<string, unknown>>, required: readonly string[],
+  optional: readonly string[], label: string): PushPullOutputViolation | undefined {
+  const keys = Object.keys(value);
+  const missing = required.filter((key) => !Object.hasOwn(value, key));
+  if (missing.length > 0) return { violated: label, detail: `缺少必需字段：${missing.join(", ")}` };
+  const extra = keys.filter((key) => !required.includes(key) && !optional.includes(key));
+  if (extra.length > 0) {
+    return { violated: label, detail: `存在契约外字段：${extra.join(", ")}（常见于客户端与服务端版本漂移）` };
+  }
+  return undefined;
+}
+
 export function readPushPullPreviewOutput(value: unknown, direction: PushPullDirection,
   input: PushPullInteractionInput): PushPullPreview | undefined {
   let copy: unknown;
   try { copy = snapshot(value); } catch { return undefined; }
-  if (!record(copy) || !exact(copy, ["schema_version", "direction", "preview_hash", "source_ref", "scopes",
-    "outcome", "base_version", "operations", "conflicts", "security_scan", "display_zh"], ["remote_version"]) ||
+  if (!record(copy) || !exact(copy, PREVIEW_REQUIRED_KEYS, PREVIEW_OPTIONAL_KEYS) ||
       copy.schema_version !== 1 || copy.direction !== direction || !text(copy.preview_hash) ||
       !(copy.base_version === null || text(copy.base_version)) || !display(copy.display_zh)) return undefined;
   const outputSource = source(copy.source_ref);
@@ -128,9 +145,9 @@ export function readPushPullPreviewOutput(value: unknown, direction: PushPullDir
       !operations(copy.operations) || !operations(copy.conflicts, true) ||
       (direction === "push" && copy.operations.some((item) => item.action === "restore")) ||
       (copy.remote_version !== undefined && !remoteVersionIdentitySchema.safeParse(copy.remote_version).success)) return undefined;
-  if (!record(copy.security_scan) || !exact(copy.security_scan,
-    ["scanner_version", "blocked", "hard_blocked", "review_required", "findings"]) ||
-      !text(copy.security_scan.scanner_version) || typeof copy.security_scan.blocked !== "boolean" ||
+  if (!record(copy.security_scan) || !exact(copy.security_scan, SECURITY_SCAN_KEYS) ||
+      !text(copy.security_scan.scanner_version) || typeof copy.security_scan.scan_performed !== "boolean" ||
+      typeof copy.security_scan.blocked !== "boolean" ||
       typeof copy.security_scan.hard_blocked !== "boolean" || typeof copy.security_scan.review_required !== "boolean" ||
       !Array.isArray(copy.security_scan.findings) || !copy.security_scan.findings.every(finding)) return undefined;
   const blocked = copy.security_scan.findings.filter((item) =>
@@ -203,11 +220,22 @@ export function explainPushPullPreviewOutput(
     return { violated: "output.shape", detail: "输出无法安全快照（可能带有访问器或代理）" };
   }
   if (!record(copy)) return { violated: "output.type", detail: "输出不是对象" };
+  const keySet = keySetViolation(copy, PREVIEW_REQUIRED_KEYS, PREVIEW_OPTIONAL_KEYS, "output.keys");
+  if (keySet !== undefined) return keySet;
   if (copy.schema_version !== 1) {
     return { violated: "schema_version", detail: `期望 1，实际 ${String(copy.schema_version)}` };
   }
   if (copy.direction !== direction) {
     return { violated: "direction", detail: `期望 ${direction}，实际 ${String(copy.direction)}` };
+  }
+  if (!text(copy.preview_hash)) {
+    return { violated: "preview_hash", detail: "preview_hash 缺失或不是合法文本" };
+  }
+  if (!(copy.base_version === null || text(copy.base_version))) {
+    return { violated: "base_version", detail: "base_version 既非 null 也非合法文本" };
+  }
+  if (!display(copy.display_zh)) {
+    return { violated: "display_zh", detail: "display_zh 缺失或结构非法（需 heading/summary/detail_lines）" };
   }
   const expectedScopes = ordinaryRequestInvariant(direction, input.source_mode, input.scopes);
   if (!expectedScopes.ok) {
@@ -223,8 +251,16 @@ export function explainPushPullPreviewOutput(
       }]`
     };
   }
-  if (source(copy.source_ref) === undefined) {
+  const outputSource = source(copy.source_ref);
+  if (outputSource === undefined) {
     return { violated: "source_ref", detail: "source_ref 字段缺失或非法" };
+  }
+  if (!sameSource(outputSource, input.source_ref)) {
+    const drift = (["project_id", "branch_name", "commit_sha", "client_id", "change_key"] as const)
+      .filter((key) => outputSource[key] !== input.source_ref[key])
+      .map((key) => `${key}: 期望 ${String(input.source_ref[key] ?? "(无)")}，实际 ${
+        String(outputSource[key] ?? "(无)")}`);
+    return { violated: "source_ref", detail: `source_ref 与请求不一致（${drift.join("；")}）` };
   }
   for (const [field, conflict] of [["operations", false], ["conflicts", true]] as const) {
     const list = copy[field];
@@ -250,8 +286,43 @@ export function explainPushPullPreviewOutput(
       };
     }
   }
+  if (direction === "push" && Array.isArray(copy.operations) &&
+      copy.operations.some((item) => record(item) && item.action === "restore")) {
+    return { violated: "operations", detail: "push 方向不允许 restore 操作" };
+  }
+  if (copy.remote_version !== undefined &&
+      !remoteVersionIdentitySchema.safeParse(copy.remote_version).success) {
+    return { violated: "remote_version", detail: "remote_version 不符合服务端版本身份契约" };
+  }
   if (!record(copy.security_scan)) {
     return { violated: "security_scan", detail: "security_scan 字段缺失或非法" };
+  }
+  const scanKeySet = keySetViolation(copy.security_scan, SECURITY_SCAN_KEYS, [], "security_scan.keys");
+  if (scanKeySet !== undefined) return scanKeySet;
+  if (!text(copy.security_scan.scanner_version) ||
+      typeof copy.security_scan.scan_performed !== "boolean" ||
+      typeof copy.security_scan.blocked !== "boolean" ||
+      typeof copy.security_scan.hard_blocked !== "boolean" ||
+      typeof copy.security_scan.review_required !== "boolean") {
+    return { violated: "security_scan", detail: "security_scan 字段类型非法" };
+  }
+  if (!Array.isArray(copy.security_scan.findings) ||
+      !copy.security_scan.findings.every(finding)) {
+    return { violated: "security_scan.findings", detail: "findings 含非法条目" };
+  }
+  const blocked = (copy.security_scan.findings as readonly Record<string, unknown>[]).filter((item) =>
+    item.disposition === "blocked");
+  if (copy.security_scan.blocked !== (blocked.length > 0) ||
+      copy.security_scan.hard_blocked !== blocked.some((item) => item.severity === "high") ||
+      copy.security_scan.review_required !== blocked.some((item) => item.severity !== "high")) {
+    return {
+      violated: "security_scan",
+      detail: "blocked/hard_blocked/review_required 与 findings 不一致"
+    };
+  }
+  const expectedOutcome = pushPullPreviewOutcome(copy as unknown as PushPullPreview);
+  if (copy.outcome !== expectedOutcome) {
+    return { violated: "outcome", detail: `期望 ${expectedOutcome}，实际 ${String(copy.outcome)}` };
   }
   return { violated: "output.unknown", detail: "输出未通过校验，但未定位到具体字段" };
 }

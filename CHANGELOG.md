@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed — push/pull 预览被自家校验器拒绝（scan_performed 契约漂移）
+
+- `readPushPullPreviewOutput` 的 `security_scan` 键集补上 `scan_performed`：
+  4458708 停用扫描时 `buildSecurityScan` 已产出 6 键形状（含 `scan_performed`），
+  但 CLI 侧校验器仍要求旧 5 键——所有 preview 被 `exact()` 拒绝为
+  `PUSH_PULL_CLI_OUTPUT_INVALID: output.unknown`，push/pull（RemoteSync 通道）
+  双向全断。新增跨层回归：真实模块产出的 preview 必须过真实校验器。
+- `explainPushPullPreviewOutput` 诊断全覆盖：新增顶层键集（缺/多字段点名）、
+  `preview_hash`/`base_version`/`display_zh`/`remote_version`、`source_ref` 内容
+  漂移（指出具体字段）、push restore 禁令、security_scan 键集/类型/一致性、
+  outcome 不一致的检查——不再落到无字段信息的 `output.unknown` 兜底。
+- 同步修复 CLI 侧测试 fixture 的旧 5 键形状（正是它掩盖了跨层漂移）。
+
 ## [0.4.4] — hunter-harness ＋ [0.4.3] @hunter-harness/workflow-harness（Bundle 0.2.73）
 
 > 高严重度修复：assurance 计划对抗评审收据的时间戳绑定死结（阻断所有
