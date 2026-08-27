@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.4] — hunter-harness ＋ [0.4.3] @hunter-harness/workflow-harness（Bundle 0.2.73）
+
+> 高严重度修复：assurance 计划对抗评审收据的时间戳绑定死结（阻断所有
+> assurance 级计划发布）+ pi 适配两处补漏；另有测试基建提速（全量 36→19
+> 分钟）与 Windows 瞬态 I/O 重试加固。Bundle schema 保持 0.2.73，
+> `minimumCliVersion` 0.2.92 不动；core 内部版本 0.1.2 → 0.1.3。
 
 ### Changed — 测试再提速：种子化推广到 CLI 层 + 压力深度校准
 

@@ -9,7 +9,7 @@
   "bundle_version": "0.2.73",
   "content_sha256": "sha256:2777665628421cf8263e206dc3be55ec94352a4b7901a1f2c0ad9d8278bafd94",
   "minimumCliVersion": "0.2.92",
-  "workflowPackageVersion": "0.4.2",
+  "workflowPackageVersion": "0.4.3",
   "capabilities": [
     "sync@2",
     "rules-sync@1",
