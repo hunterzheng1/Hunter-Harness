@@ -340,7 +340,7 @@ describe("hunter-harness initialization", () => {
     });
     expect(code).toBe(0);
     expect(questions[0]).toContain("请选择目标 Agent");
-    expect(questions[0]).toContain("5. 全部");
+    expect(questions[0]).toContain("6. 全部");
     expect(questions[1]).toContain("请选择 Harness 配置");
     const project = parseYaml(
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
@@ -370,8 +370,8 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".harness", "credentials.local.yaml"))).toBe(false);
   }, 90_000);
 
-  it("interactive first install with all agents option selects four adapters", async () => {
-    const answers = ["5", ""];
+  it("interactive first install with all agents option selects five adapters", async () => {
+    const answers = ["6", ""];
     const code = await runCli([], {
       cwd: root,
       resourcesRoot,
@@ -384,7 +384,7 @@ describe("hunter-harness initialization", () => {
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { adapters: { enabled: string[] } };
     expect(project.adapters.enabled).toEqual([
-      "claude-code", "codex", "cursor", "codebuddy"
+      "claude-code", "codex", "cursor", "codebuddy", "pi"
     ]);
   }, 240_000);
 
@@ -414,7 +414,7 @@ describe("hunter-harness initialization", () => {
     expect(agentPrompt).toBeDefined();
     expect(agentPrompt).toContain("Claude Code（已安装：通用）");
     expect(agentPrompt).toContain("Codex（已安装：通用）");
-    expect(agentPrompt).toContain("5. 全部");
+    expect(agentPrompt).toContain("6. 全部");
   }, 120_000);
 
   it("bound project menu offers rebind or credential removal", async () => {
@@ -518,7 +518,31 @@ describe("hunter-harness initialization", () => {
     expect(await readFile(join(root, ".gitignore"), "utf8")).toMatch(/^\/\.mcp\.json$/m);
   }, 90_000);
 
-  it("non-interactive --agents all projects four agent roots", async () => {
+  it("offers CodeGraph MCP when pi is selected and a .codegraph index exists", async () => {
+    // pi-mcp-adapter 直接读项目 .mcp.json，合并流程对 pi 同样适用
+    await mkdir(join(root, ".codegraph"), { recursive: true });
+    const answers = ["5", "1", "", ""];
+    const questions: string[] = [];
+    const code = await runCli([], {
+      cwd: root,
+      resourcesRoot,
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+      prompt: async (question) => {
+        questions.push(question);
+        return answers.shift() ?? "";
+      }
+    });
+    expect(code).toBe(0);
+    expect(questions.some((question) => question.includes("CodeGraph MCP"))).toBe(true);
+    const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(mcp.mcpServers.codegraph).toBeDefined();
+    expect(await readFile(join(root, ".gitignore"), "utf8")).toMatch(/^\/\.mcp\.json$/m);
+  }, 90_000);
+
+  it("non-interactive --agents all projects five agent roots", async () => {
     const code = await run([
       "--agents", "all", "--profile", "general", "--non-interactive", "--yes"
     ]);
@@ -527,7 +551,7 @@ describe("hunter-harness initialization", () => {
       await readFile(join(root, ".harness", "project.yaml"), "utf8")
     ) as { adapters: { enabled: string[] } };
     expect(project.adapters.enabled).toEqual([
-      "claude-code", "codex", "cursor", "codebuddy"
+      "claude-code", "codex", "cursor", "codebuddy", "pi"
     ]);
     expect(await pathExists(join(root, ".claude", "skills", "harness-review", "SKILL.md"))).toBe(true);
     expect(await pathExists(join(root, ".agents", "skills", "harness-review", "SKILL.md"))).toBe(true);
@@ -542,6 +566,7 @@ describe("hunter-harness initialization", () => {
     expect(await pathExists(join(root, ".codebuddy", ".rules", "harness-general.mdc"))).toBe(true);
     expect(await pathExists(join(root, ".codebuddy", "rules", "harness-general.md"))).toBe(true);
     expect(await pathExists(join(root, "CODEBUDDY.md"))).toBe(true);
+    expect(await pathExists(join(root, ".pi", "skills", "harness-review", "SKILL.md"))).toBe(true);
   }, 240_000);
 
   it("rejects unknown agent without writing files", async () => {

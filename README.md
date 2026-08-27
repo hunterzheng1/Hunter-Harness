@@ -41,7 +41,7 @@ pi 适配（M1）说明：Skill 内容按通用 Agent Skills 标准投放（fron
 
 已初始化项目可用 `npx hunter-harness refresh --agents codex,cursor --non-interactive --yes` 安全切换 Agent 集合；本地修改的 Harness working copy 会保留并报告冲突。
 
-选择 CodeBuddy 时，CLI 不再复制 Claude 规则或改写 Agent 文档，而是提示运行 `instructions audit` 生成统一优化提案。项目已有 `.codegraph/` 且 `.mcp.json` 未配置 CodeGraph 时，仍会询问是否合并项目级 MCP 配置；未选择 CodeBuddy 时不读取或修改这些配置。
+选择 CodeBuddy 时，CLI 不再复制 Claude 规则或改写 Agent 文档，而是提示运行 `instructions audit` 生成统一优化提案。项目已有 `.codegraph/` 且 `.mcp.json` 未配置 CodeGraph 时，选择 CodeBuddy 或 pi 都会询问是否合并项目级 MCP 配置（pi 经 pi-mcp-adapter 扩展读取 `.mcp.json`）；两者都未选择时不读取或修改这些配置。
 
 ## 项目级 CLI
 

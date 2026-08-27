@@ -71,22 +71,26 @@ export interface CommandDependencies {
   gitExec?: (args: readonly string[], cwd: string) => Promise<string>;
 }
 
-async function configureCodeBuddyExtras(
+async function configureAgentExtras(
   agents: readonly HarnessAgent[],
   surface: "both" | "ide" | "cli",
   options: ConfigureOptions,
   dependencies: CommandDependencies
 ): Promise<void> {
-  if (!agents.includes("codebuddy")) return;
+  const codebuddySelected = agents.includes("codebuddy");
+  // CodeGraph MCP 合并对 codebuddy 与 pi 都有意义：.mcp.json 是标准 MCP 配置，
+  // Claude Code/CodeBuddy 直读，pi 经 pi-mcp-adapter 扩展读取。
+  const codeGraphRelevant = codebuddySelected || agents.includes("pi");
+  if (!codeGraphRelevant) return;
   const plan = await inspectCodeBuddySetup(dependencies.cwd, surface);
-  if (plan.conflictingClaudeRules.length > 0) {
+  if (codebuddySelected && plan.conflictingClaudeRules.length > 0) {
     dependencies.stderr(
       `以下 CodeBuddy 规则与 Claude 源规则内容不同，已保留目标文件：${plan.conflictingClaudeRules.join(", ")}\n`
     );
   }
   const syncClaudeRules = false;
   let configureCodeGraph = false;
-  if (plan.claudeRules.length > 0) {
+  if (codebuddySelected && plan.claudeRules.length > 0) {
     dependencies.stdout(
       `发现 ${plan.claudeRules.length} 个 Claude 自定义规则；不会直接复制到其他 Agent。` +
       "请在初始化后运行 hunter-harness instructions audit 生成统一优化提案。\n"
@@ -101,7 +105,7 @@ async function configureCodeBuddyExtras(
   }
   if (options.dryRun === true) {
     if (syncClaudeRules || configureCodeGraph) {
-      dependencies.stdout("CodeBuddy 附加配置处于 dry-run，未写入规则或 .mcp.json。\n");
+      dependencies.stdout("附加配置处于 dry-run，未写入规则或 .mcp.json。\n");
     }
     return;
   }
@@ -185,7 +189,7 @@ async function runFirstInstall(
         cliVersion,
         recoveryStore
       });
-    await configureCodeBuddyExtras(
+    await configureAgentExtras(
       config.agents,
       config.codebuddy_surface,
       options,
@@ -302,7 +306,7 @@ export async function runConfigureAgentsFlow(
     if (code === 0) {
       const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
         options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
-      await configureCodeBuddyExtras(selectedAgents, surface, options, dependencies);
+      await configureAgentExtras(selectedAgents, surface, options, dependencies);
     }
     return code;
   }
@@ -349,7 +353,7 @@ export async function runConfigureAgentsFlow(
   if (code === 0) {
     const surface = options.codebuddySurface === "ide" || options.codebuddySurface === "cli" ||
       options.codebuddySurface === "both" ? options.codebuddySurface : currentSurface;
-    await configureCodeBuddyExtras(selectedAgents, surface, options, dependencies);
+    await configureAgentExtras(selectedAgents, surface, options, dependencies);
   }
   return code;
 }

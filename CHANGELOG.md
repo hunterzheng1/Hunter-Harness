@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — pi 也接入 CodeGraph MCP 合并提示
+
+- 初始化/刷新时，项目已有 `.codegraph/` 索引且 `.mcp.json` 未配置 CodeGraph，
+  选择 pi（或 CodeBuddy）都会询问是否合并 CodeGraph MCP 到项目 `.mcp.json`
+  ——pi-mcp-adapter 扩展直接读取该标准文件。此前该流程仅 CodeBuddy 触发，
+  纯 pi 项目不会生成 `.mcp.json`。
+- 顺带修复 `init.test.ts` 的 M1 菜单漂移（pi=5、all 顺移到 6）：该文件在
+  CI_ONLY 清单中本地默认不跑，漂移直到本次才暴露；4 个用例的期望已同步到
+  5 agent 菜单。
+
 ## [0.4.5] — hunter-harness
 
 > 高严重度修复：push/pull（RemoteSync 通道）双向全断。纯 CLI 修复，
